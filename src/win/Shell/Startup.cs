@@ -62,6 +62,7 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_ZOOM_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_MENU_KEYS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_CHROME_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_CLOSE_ONLY") == "1"
@@ -88,6 +89,8 @@ internal sealed partial class EditorWindow
                             await Diagnostics.MenuAccessKeyTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_STATUS_ONLY") == "1")
                             await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_CHROME_ONLY") == "1")
+                            await Diagnostics.ChromeStyleTests.Run(this, preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_PANES_ONLY") == "1")
                             await Diagnostics.PaneLayoutTests.Run(preferences);
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_RELOAD_ONLY") == "1")
@@ -148,6 +151,7 @@ internal sealed partial class EditorWindow
                     await Diagnostics.InputRoutingTests.Run(pane);
                     await Diagnostics.MenuAccessKeyTests.Run(preferences);
                     await Diagnostics.CommandStatusTests.Run(pane, this, preferences);
+                    await Diagnostics.ChromeStyleTests.Run(this, preferences);
                     await Diagnostics.DocumentCloseReviewTests.Run(preferences);
                     await Diagnostics.BlockingEditTests.Run(preferences);
                     await Diagnostics.DirectoryOpenTests.Run(preferences);
@@ -278,7 +282,7 @@ internal sealed partial class EditorWindow
         }
         App.Instance.Arguments.Clear(); App.Instance.Arguments.AddRange(paths);
         int split = args.SplitCount == 0 ? Math.Max(1, paths.Length) : args.SplitCount ?? 1;
-        split = Math.Clamp(split, 1, Math.Max(1, args.VerticalSplits ? (int)((paneGrid.ActualWidth + 5) / 105) : (int)(paneGrid.ActualHeight / Math.Max(28, preferences.StatusFontSize + 12))));
+        split = Math.Clamp(split, 1, Math.Max(1, args.VerticalSplits ? (int)((paneGrid.ActualWidth + 5) / 105) : (int)(paneGrid.ActualHeight / preferences.StatusHeight)));
         EditorPane? first = paths.Length == 0 ? ActivePane : null;
         foreach (string path in paths.Take(split))
         {

@@ -16,6 +16,7 @@ struct ScanKey {
     pattern: String,
     insensitive: bool,
     scope: Range<usize>,
+    addressed: Option<crate::command::ex_execute::ResolvedExRange>,
 }
 
 struct KnownSearchMatch {
@@ -56,7 +57,7 @@ impl<P: TextMeasurementProvider> View<P> {
     }
 
     pub(super) fn search_preview_range(&self, document: &Document) -> Option<Range<usize>> {
-        if self.search.key.as_ref() != Some(&self.commands.search_presentation_key(document)) {
+        if self.search.key.as_ref() != Some(&self.commands.search_presentation_key_with_layout(document, self.layout.snapshot())) {
             return None;
         }
         self.search.presentation.as_ref()?.incremental_match.as_ref()
@@ -73,7 +74,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get(&view_id)
             .ok_or(CoreError::UnknownView(view_id))?;
         let state = &view.search;
-        let key = view.commands.search_presentation_key(&self.document);
+        let key = view.commands.search_presentation_key_with_layout(&self.document, view.layout.snapshot());
         Ok(state.key.as_ref() != Some(&key)
             || state.style_revision != Some(self.document.projection().style_sheet().revision)
             || state
@@ -95,12 +96,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         revealed_match: Option<RevealedSearchMatch>,
     ) -> Result<bool, CoreError> {
-        let key = self
-            .views
-            .get(&view_id)
-            .ok_or(CoreError::UnknownView(view_id))?
-            .commands
-            .search_presentation_key(&self.document);
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        let key = view.commands.search_presentation_key_with_layout(&self.document, view.layout.snapshot());
         let style_revision = self.document.projection().style_sheet().revision;
         let query_changed = self.views[&view_id].search.key.as_ref() != Some(&key);
         let style_changed = self.views[&view_id].search.style_revision != Some(style_revision);
@@ -112,9 +109,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             .map(|matched| matched.matched_range.clone());
         let mut restore = None;
         if query_changed {
-            let presentation = self.views[&view_id]
-                .commands
-                .search_presentation(&self.document);
+            let view = &self.views[&view_id];
+            let presentation = view.commands.search_presentation_with_layout(&self.document, view.layout.snapshot());
             let view = self.views.get_mut(&view_id).unwrap();
             if presentation.incremental_active && view.search.viewport.is_none() {
                 update_viewport_anchor(&self.document, view);
@@ -208,6 +204,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             .search_range
                             .clone()
                             .unwrap_or(0..self.document.projection().text_tree().byte_len()),
+                        addressed: presentation.addressed_range.clone(),
                     })
             });
         {
@@ -229,6 +226,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             pattern: matched.pattern,
                             insensitive,
                             scope: 0..self.document.projection().text_tree().byte_len(),
+                            addressed: None,
                         },
                         range: matched.range,
                     });
@@ -276,6 +274,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                         let region = state.region.as_ref().expect("scanner has viewport region");
                         for matched in matches {
                             let range = matched.range();
+                            if presentation.addressed_range.as_ref().is_some_and(|addressed|
+                                !crate::command::ex_execute::addressed_match_eligible(&self.document, addressed, range.clone()).unwrap_or(false)) {
+                                continue;
+                            }
                             if range.start <= region.end && range.end >= region.start {
                                 if state.matches.len() == MAX_VISIBLE_MATCHES {
                                     break;

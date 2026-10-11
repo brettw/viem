@@ -1,8 +1,9 @@
 //! Revision-bound host file continuations. Host I/O never runs under a core lease.
 use super::*;
 
-/// Insert host-loaded file bytes after the addressed hard line (zero: before
-/// the first line). Decoding and linewise edit semantics are owned by core.
+/// Insert host-loaded file bytes at a revision-bound source byte boundary
+/// (`source = 1`) or formatted byte boundary (`source = 0`). Decoding and
+/// linewise edit semantics are owned by core.
 /// # Safety
 /// Input/output regions must be valid for their sizes and mutually disjoint.
 #[no_mangle]
@@ -11,6 +12,7 @@ pub unsafe extern "C" fn viem_core_view_read_file(
     view: ViemViewId,
     document: u64,
     revision: u64,
+    source: u32,
     after: u64,
     input: *const u8,
     length: u64,
@@ -23,7 +25,10 @@ pub unsafe extern "C" fn viem_core_view_read_file(
         ])?;
         let bytes = unsafe { input_bytes(input, length)? }.to_vec();
         unsafe { clear_outcome(out_outcome)? };
-        let after = usize::try_from(after).map_err(|_| ViemStatus::LengthOverflow)?;
+        if source > 1 { return Err(ViemStatus::InvalidArgument); }
+        let after = crate::command::ex_execute::ExInsertionPoint {
+            offset: usize::try_from(after).map_err(|_| ViemStatus::LengthOverflow)?, source: source != 0,
+        };
         let outcome = with_core_mut(handle, |core| {
             dispatch_event(
                 core,
@@ -103,12 +108,12 @@ mod tests {
         let mut outcome = ViemCoreOutcomeV1::default();
         unsafe {
             assert_eq!(
-                viem_core_view_read_file(0, 0, 0, 0, 0, std::ptr::null(), 1, &mut outcome),
+                viem_core_view_read_file(0, 0, 0, 0, 0, 0, std::ptr::null(), 1, &mut outcome),
                 ViemStatus::NullPointer
             );
             let aliased = (&outcome as *const ViemCoreOutcomeV1).cast::<u8>();
             assert_eq!(
-                viem_core_view_read_file(0, 0, 0, 0, 0, aliased, 1, &mut outcome),
+                viem_core_view_read_file(0, 0, 0, 0, 0, 0, aliased, 1, &mut outcome),
                 ViemStatus::InvalidArgument
             );
             let mut effects = 0;

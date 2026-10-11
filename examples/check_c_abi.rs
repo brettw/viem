@@ -66,6 +66,8 @@ _Static_assert(offsetof(ViemSetDocumentModeV1, formatted_markdown) == {set_mode_
 _Static_assert(sizeof(ViemSetMarkdownSourceV1) == {set_markdown_size}, "format operation size");
 _Static_assert(offsetof(ViemSetMarkdownSourceV1, source) == {set_markdown_source}, "format operation offset");
 _Static_assert(offsetof(ViemSetMarkdownSourceV1, document_id) == {set_markdown_document}, "format document offset");
+static ViemStatus (*read_file_bytes)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint32_t, uint64_t, const uint8_t *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_read_file;
+static ViemStatus (*copy_source_bytes)(ViemCoreHandle, uint64_t, uint64_t, uint64_t, uint64_t, uint8_t *, uint64_t, uint64_t *, uint32_t *) = viem_core_copy_source_range_bytes;
 static ViemStatus (*wait_for_syntax)(ViemCoreHandle, ViemViewId, uint8_t *) = viem_core_view_wait_for_syntax;
 static ViemStatus (*font_en_width)(ViemCoreHandle, ViemViewId, uint64_t, float *) = viem_core_view_font_en_width;
 static ViemStatus (*navigate_link_fragment)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, ViemUtf8Slice, uint8_t *, ViemCoreOutcomeV1 *) = viem_core_view_navigate_link_fragment;
@@ -82,6 +84,20 @@ _Static_assert(offsetof(ViemTableCellV1, rect) == {table_cell_rect}, "table cell
 _Static_assert(sizeof(ViemTableSelectionV1) == {table_selection}, "table selection size");
 _Static_assert(VIEM_LOGICAL_SELECTION_KIND_CELLS == {table_selection_kind}, "cell selection kind");
 _Static_assert(VIEM_STYLE_ROLE_TABLE == {table_role}, "table style role");
+_Static_assert(VIEM_STYLE_ROLE_CONTAINER == {container_role}, "container style role");
+_Static_assert(VIEM_EX_OPTION_NUMBER == {number_option}, "number option");
+_Static_assert(VIEM_STYLE_DEFINITION_LINE_NUMBER == {line_number_style_flag}, "line number definition flag");
+_Static_assert(VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER == {current_line_number_style_flag}, "current line number definition flag");
+_Static_assert(VIEM_LINE_NUMBER_REGION_CURRENT == {current_line_number_region_flag}, "current line number region flag");
+_Static_assert(sizeof(ViemLineNumberSnapshotInfoV1) == {line_number_info_size}, "line number info size");
+_Static_assert(offsetof(ViemLineNumberSnapshotInfoV1, viewport) == {line_number_info_viewport}, "line number viewport offset");
+_Static_assert(sizeof(ViemLineNumberRegionV1) == {line_number_region_size}, "line number region size");
+_Static_assert(offsetof(ViemLineNumberRegionV1, top) == {line_number_region_top}, "line number geometry offset");
+static ViemStatus (*line_number_info)(ViemCoreHandle, ViemViewId, ViemLineNumberSnapshotInfoV1 *) = viem_core_view_line_number_snapshot_info;
+static ViemStatus (*line_number_regions)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentityV1 *, const ViemLayoutRectV1 *, ViemLineNumberRegionV1 *, uint64_t, uint64_t *) = viem_core_view_copy_line_number_regions;
+static ViemStatus (*number_option_get)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_core_view_number;
+static ViemStatus (*number_option_set)(ViemCoreHandle, ViemViewId, uint32_t) = viem_core_view_set_number;
+
 static ViemStatus (*prepare_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t *) = viem_core_view_prepare_table_refinement;
 static ViemStatus (*install_table_refinement)(ViemCoreHandle, ViemViewId, uint64_t, uint8_t *) = viem_core_view_install_table_refinement;
 static ViemStatus (*table_context)(ViemCoreHandle, ViemViewId, ViemTableContextV1 *) = viem_core_view_table_context;
@@ -672,6 +688,15 @@ static void typecheck(void) {{
         table_selection = std::mem::size_of::<ViemTableSelectionV1>(),
         table_selection_kind = VIEM_LOGICAL_SELECTION_KIND_CELLS,
         table_role = VIEM_STYLE_ROLE_TABLE,
+        container_role = VIEM_STYLE_ROLE_CONTAINER,
+        number_option = VIEM_EX_OPTION_NUMBER,
+        line_number_style_flag = VIEM_STYLE_DEFINITION_LINE_NUMBER,
+        current_line_number_style_flag = VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER,
+        current_line_number_region_flag = VIEM_LINE_NUMBER_REGION_CURRENT,
+        line_number_info_size = std::mem::size_of::<ViemLineNumberSnapshotInfoV1>(),
+        line_number_info_viewport = std::mem::offset_of!(ViemLineNumberSnapshotInfoV1, viewport),
+        line_number_region_size = std::mem::size_of::<ViemLineNumberRegionV1>(),
+        line_number_region_top = std::mem::offset_of!(ViemLineNumberRegionV1, top),
         abi = VIEM_CORE_ABI_VERSION,
         selection_character = VIEM_MODE_SELECTION_CHARACTER,
         selection_line = VIEM_MODE_SELECTION_LINE,

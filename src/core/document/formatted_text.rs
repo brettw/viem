@@ -411,6 +411,20 @@ impl FormattedTextTree {
         Ok(Self { root })
     }
 
+    /// Replace a verified range with existing immutable text storage. Moving
+    /// a source contributor must preserve its allocation coordinates, so old
+    /// anchors can recover through slices after its leaf has been split.
+    pub(crate) fn splice_subrope(&self, range: Range<usize>, replacement: &Self)
+        -> Result<Self, FormattedTextError> {
+        self.validate_range(&range, false)?;
+        let mut stats = FormattedTextSpliceStats::default();
+        let (before, tail) = split_optional(self.root.clone(), range.start, Retain::Left, &mut stats)?;
+        let (_, after) = split_optional(tail, range.len(), Retain::Right, &mut stats)?;
+        let root = join_optional(before, replacement.root.clone(), &mut stats)?;
+        let root = join_optional(root, after, &mut stats)?;
+        Ok(Self { root })
+    }
+
     /// Return a copied UTF-8 slice. Reading only visits intersecting leaves.
     pub fn slice(&self, range: Range<usize>) -> Result<String, FormattedTextError> {
         self.validate_range(&range, false)?;

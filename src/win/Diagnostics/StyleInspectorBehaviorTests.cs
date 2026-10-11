@@ -103,8 +103,10 @@ internal static class StyleInspectorBehaviorTests
                 byte[][] before = formats.Select(preferences.ThemeStyleDefaults).ToArray();
                 inspector.DocumentPicker.SelectedIndex = index;
                 if (formats[index] == VIEM_FORMAT_PLAIN_TEXT)
-                    Check(inspector.StylePicker.Items.Count == 1 && inspector.StylePicker.Items[0] is StyleDefinition { Id: "Paragraph" },
-                        "the single Plain Text paragraph section contains its style without a redundant heading");
+                    Check(inspector.StylePicker.Items.OfType<StyleDefinition>().Where(style => (style.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0)
+                        .Single().Id == "Paragraph" && new[] { "Builtin line number", "Builtin current line number", "Status bar", "Status bar command" }
+                        .All(id => inspector.StylePicker.Items.OfType<StyleDefinition>().Any(style => style.Id == id && StyleIcons.Kind(style) == StyleIconKind.Builtin)),
+                        "Plain Text exposes its paragraph and chrome definitions with built-in style icons");
                 Check(formats.Select((format, i) => before[i].AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(format))).All(same => same),
                     "selecting a Document stylesheet makes no theme edit");
                 originalSizes[index] = Size();

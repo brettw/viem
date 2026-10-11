@@ -309,7 +309,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         XCTAssertTrue(window.makeFirstResponder(surface.editorView))
         surface.formattingToolbar.formattedView.performClick(nil)
         let session = try XCTUnwrap(surface.session)
-        surface.performInput { _ = try session.goToLine(101) }
+        surface.performInput { _ = try session.goToLine(202) }
         let codeLayout = try XCTUnwrap(surface.layoutSnapshot)
         let label = try XCTUnwrap(codeLayout.decorations.first { $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 })
         let row = try XCTUnwrap(codeLayout.rows.first { $0.row_index == label.row_index })
@@ -339,7 +339,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         // The reverse change also has a visible caret. Its delayed keyword
         // capture grows from the declared 14-point base to 40 points; applying
         // those metrics must not pin the caret baseline by changing scroll.
-        surface.performInput { _ = try session.goToLine(101) }
+        surface.performInput { _ = try session.goToLine(202) }
         let visibleBefore = surface.viewportState
         let visibleCaret = surface.viewPresentation.cursor_utf8_offset
         XCTAssertEqual(visibleCaret, row.text_start)

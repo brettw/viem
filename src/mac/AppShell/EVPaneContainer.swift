@@ -11,6 +11,7 @@ final class EVPaneContainer: NSViewController {
   private var ids: [ObjectIdentifier: UInt64] = [:]
   private var splitters: [UInt64: EVVerticalSplitter] = [:]
   private var applyingLayout = false
+  private var adjustingGutterWindow = false
   private weak var lastAccessedPane: EVDocumentContentViewController?
 
   init(first: EVDocumentContentViewController) {
@@ -112,9 +113,27 @@ final class EVPaneContainer: NSViewController {
       else { self.focus(pane) }
     }
     pane.statusBarHeightDidChange = { [weak self] in self?.layoutStack() }
+    pane.editorSurface.lineNumberGutterWidthWillChange = { [weak self, weak pane] old, new in
+      guard let self, let pane else { return }
+      self.reserveGutterSpace(in: pane, delta: new - old)
+    }
   }
   private func unbind(_ pane: EVDocumentContentViewController) {
     pane.statusBar.dragDidMove = nil; pane.statusBar.clicked = nil; pane.statusBarHeightDidChange = nil
+    pane.editorSurface.lineNumberGutterWidthWillChange = nil
+  }
+  private func reserveGutterSpace(in pane: EVDocumentContentViewController, delta: CGFloat) {
+    guard !adjustingGutterWindow, panes.contains(where: { $0 === pane }), delta != 0,
+          let window = view.window, !window.isZoomed, !window.styleMask.contains(.fullScreen),
+          (window.tabGroup?.windows.count ?? 1) == 1,
+          Set(panes.compactMap(\.document).map(ObjectIdentifier.init)).count <= 1,
+          !geometry.snapshot().frames.contains(where: { $0.kind == 1 }),
+          let screen = window.screen?.visibleFrame else { return }
+    adjustingGutterWindow = true; defer { adjustingGutterWindow = false }
+    let next = EVDocumentWindowPlacement.frameForGutterChange(window.frame, delta: delta,
+      screen: screen, minimumWidth: max(window.minSize.width,
+        window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).width))
+    if next != window.frame { window.setFrame(next, display: true); layoutStack() }
   }
   func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false) throws {
     let source = source ?? activePane

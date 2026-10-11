@@ -188,8 +188,8 @@ candidate decoding on reopen and reject conversions that would change the
 logical sequence. This explicitly requested conversion may touch every break.
 Plain Text gives each logical break a paragraph boundary, preserves consecutive
 empty lines, and has no source-backed rich styles or hidden style sidecar.
-Its generated stylesheet contains only Base Paragraph and the internal
-Incremental match overlay. Themes may explicitly supply additional definitions;
+Its generated stylesheet contains Base Paragraph, the internal Incremental
+match overlay, and the builtin editor-chrome definitions. Themes may explicitly supply additional definitions;
 loading retains them rather than filtering by format.
 
 ### Position identity and incremental work
@@ -750,9 +750,50 @@ toggles the choice with eye/file icons. Visual counts displayed rows; Physical
 Source counts actual source-line tokens, including hidden syntax. This policy
 applies to ordinary line motions/operators, line-oriented insertion and Visual
 Line, including counts/replay. Explicit `g` visual motions retain their visual
-meaning; Ex addresses retain formatted hard-line meaning. `gq`/`gw` implicit line
+meaning. `gq`/`gw` implicit line
 motions count complete hard lines. Native Select All always selects the entire
 formatted document through its terminal boundary.
+
+Absolute line addresses always name physical source-file lines, independently
+of a view's line mode. This includes counted `G`/`gg` motions and operators,
+counted `zt`/`zz`/`zb`, percentage jumps and native/launch line navigation.
+Navigation counts beyond the file clamp to its last numbered line, excluding the
+zero-byte editable boundary after a final terminator; invalid explicit Ex
+addresses reject without changing state. Uncounted document-edge motions retain
+their existing behavior.
+
+Ex decimal addresses use physical lines; contextual `.`, `$`, marks and search
+addresses use the view's selected line meaning. Offsets and trailing line counts
+inherit their base address's domain: `23+2` names physical line 25, while `.+2`
+advances two displayed rows in Visual mode. Resolve mixed endpoint ranges
+precisely, without expanding a wrapped row to its enclosing paragraph. Hidden
+source locations retain exact source identity until typing makes them visible.
+Document-only Ex planners, which have no view geometry, use formatted hard lines
+for contextual addresses and physical source lines for decimals.
+
+`:set number` and the checked View-menu toggle share a view-local gutter
+preference, independent of Visual/Physical Source command line meaning, source
+bytes and history. It always displays
+physical source ordinals; hidden syntax has no separate rendered band. If several
+source lines contribute to one visual row, display only its first ordinal.
+Current-line appearance follows that displayed representative. Table cells on
+one source line share one number, and wrapped lines retain their full vertical
+region while scrolling.
+Center numbers vertically and shrink typography to fit short regions. The
+builtin line-number paragraph styles are editable presentation only; the current
+line style inherits the ordinary style without default overrides. Their display
+names are Line number and Current line number; immutable builtin identity keeps
+them separate from same-named content and syntax styles. Apply them only to
+gutter furniture. Paint backgrounds and borders without seams or accidental
+alpha overdraw at fractional positions and display scales. Reserve the
+widest numeral advance times the document's decimal digit count plus the larger
+resolved box width of the two styles. Reuse numeral measurements while font
+dependencies remain unchanged, including across decimal digit-count changes.
+Cursor motion and ordinary edits within a decimal range do not recompute width.
+Gutter changes use content width in multi-document windows, maximized/fullscreen
+windows, and vertical splits. A single-document window without vertical splits
+instead preserves content width where monitor space allows, then preserves the
+content's left screen position by changing the frame from its left edge first.
 
 Visual motion retains desired x; physical motion retains checked source column,
 including invisible destinations. Visual-row deletion invents no newline;
@@ -857,8 +898,10 @@ Key compatibility distinctions:
 
 Search sees logical formatted text, never hidden markup, and crosses style and
 source-piece boundaries. A substitute match must fit wholly within its addressed
-hard-line span. Without `g`, select the first non-overlapping match starting on
-each addressed line; with `g`, select all contained matches. A multiline match
+range. Physical endpoints restrict matches to contributors from their declared
+source lines; visual endpoints restrict them to exact displayed-row boundaries.
+Without `g`, select the first non-overlapping match starting on each addressed
+line; with `g`, select all contained matches. A multiline match
 belongs only to its start line. Raw matches may split a grapheme for decoration,
 but navigation skips illegal starts. Any selected edit match with an illegal
 start/end, including an empty match, rejects the entire command without changing
@@ -887,7 +930,8 @@ empty matches, stale work and atomic reverse-edit failures.
 of the current query without changing `hlsearch`. Accepting or cancelling the
 prompt returns to normal saved-pattern highlighting and suppression behavior.
 Incremental search also supports counted, Visual and operator searches; substitute
-previews highlight matches within addressed hard lines, never replacement text.
+previews use the same exact addressed units and contributor restrictions as
+final substitution, never replacement text.
 Preview reveals candidates without changing authoritative cursor/selection,
 pending origin, registers or history. Ctrl-G/T navigate candidates; prompt
 changes reset that navigation.
@@ -1278,8 +1322,9 @@ promise filesystem compare-and-swap.
 
 ### Ex and prompt gotchas
 
-Ex ranges always address logical hard lines. A Visual `:` range retains the
-selected revision and becomes stale after an intervening edit in another view;
+Ex ranges retain each endpoint's physical or contextual line meaning and exact
+snapshot identity. A Visual `:` range retains the selected rows and revision and
+becomes stale after an intervening edit in another view;
 never reinterpret its old coordinates. Prompt selection, clipboard, and register
 insertion target validated prompt identity and must never edit the underlying
 document or submit a command through expanded register text. Command output is
@@ -1309,10 +1354,11 @@ Keep these deliberate restrictions and differences:
   successful earlier commands with ordinary undo units. Interactive confirmation,
   `:source!`, and general Vimscript remain unsupported.
 - Sort is a source-preserving permutation, retaining encoding, final terminator,
-  and delimiters. WYSIWYG supports complete single-hard-line Markdown paragraphs
-  with their syntax/styles; split or ambiguous owners fail atomically. Literal
-  views sort visible source rows and reparse. Float/locale sorting and command
-  chaining remain unsupported.
+  delimiter slots and moved position identities. Numeric ranges sort physical
+  source lines and reproject in either Markdown view. Contextual ranges use exact
+  displayed boundaries; complete Markdown paragraphs retain their syntax/styles,
+  while unsupported split or ambiguous owners fail atomically. Float/locale
+  sorting and command chaining remain unsupported.
 
 ### Opening, launching, and closing
 
@@ -1374,6 +1420,12 @@ Status bars are the stacked-pane drag handles, including their controls; a plain
 click focuses the buffer above and retains the control's action. Drags do not
 focus or activate controls; show an up/down cursor during status-bar drags.
 All visible status bars share the theme's height and vertically centered text.
+The internal Status bar container style owns status typography, foreground,
+background, borders and padding; ignore its margins and alignment. These two
+status styles are shared across stylesheet families in one theme. Status bar
+command inherits that container with only inverse colors and no borders by
+default. Its font cannot affect bar layout: clip the existing command region
+inside the bar border and center its text vertically without vertical padding.
 Show the up/down hover cursor only over empty background in a movable bar;
 text, controls and command selection retain their usual hover cursors.
 The bottom bar in each column is fixed. Bars may touch but

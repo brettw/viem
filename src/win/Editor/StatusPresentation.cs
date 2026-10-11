@@ -3,6 +3,10 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.Graphics.Canvas.UI.Xaml;
+using Microsoft.Graphics.Canvas;
+using Viem.Windows.Core;
+using Viem.Windows.Rendering;
 using Windows.System;
 using Viem.Windows.Shell;
 using Viem.Windows.Input;
@@ -12,7 +16,11 @@ namespace Viem.Windows.Editor;
 
 internal sealed partial class EditorPane
 {
-    internal const double StatusInset = 10;
+    private ChromeStyle? statusStyle, commandStyle;
+    private readonly CanvasControl statusBox = new() { IsHitTestVisible = false };
+    internal ChromeStyle CommandStyle => commandStyle ?? preferences.StatusStyles.Command;
+    internal float CommandInset => (statusStyle ?? preferences.StatusStyles.Status).Padding.Left;
+    internal float CommandRightInset => (statusStyle ?? preferences.StatusStyles.Status).Padding.Right;
     internal double StatusBarHeight => status.Visibility == Visibility.Visible ? status.Height : 0;
     private readonly Button locationToggle = new() { MinWidth = 0, MinHeight = 0, Padding = new(2, 0, 2, 0), BorderThickness = new(0), VerticalAlignment = VerticalAlignment.Stretch };
     private readonly FontIcon lineModeIcon = new() { FontSize = 14 };
@@ -22,13 +30,13 @@ internal sealed partial class EditorPane
     private bool statusSelectingOutput;
     private double filePathTextWidth, modeTextWidth, messageTextWidth;
     private (string Mode, string Message, string Family, double Size)? resizeHoverTextIdentity;
-    private readonly Grid normalStatus = new() { Margin = new(StatusInset, 0, 0, 0), ColumnSpacing = 12 };
+    private readonly Grid normalStatus = new() { ColumnSpacing = 12 };
     private readonly TextBlock filePath = new() { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
     private readonly TextBlock statusMeasure = new() { TextWrapping = TextWrapping.NoWrap };
     private readonly Grid filePathHost = new();
     private (string? Path, string Cwd)? filePathIdentity;
     private string fullStatusFilePath = "Untitled";
-    private readonly Grid commandOutput = new() { Margin = new(StatusInset, 0, 0, 0), ColumnSpacing = 6, Visibility = Visibility.Collapsed };
+    private readonly Grid commandOutput = new() { ColumnSpacing = 6, Visibility = Visibility.Collapsed };
     private readonly TextBlock outputText = new() { IsTextSelectionEnabled = true, TextWrapping = TextWrapping.NoWrap, VerticalAlignment = VerticalAlignment.Center };
     private readonly ScrollViewer outputScroll = new() {
         HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollMode = ScrollMode.Enabled,
@@ -95,6 +103,8 @@ internal sealed partial class EditorPane
             locationIdentity = null;
         }
         location.Text = (Document.IsReadOnly ? "🔒  " : "") + locationText;
+        location.Width = Math.Ceiling(MeasureStatusText(location.Text));
+        statusTextCanvas.Invalidate();
         lineModeIcon.Glyph = lineMode == VIEM_LINE_MODE_VISUAL ? "\uE890" : "\uE8A5";
         ToolTipService.SetToolTip(locationToggle, lineMode == VIEM_LINE_MODE_VISUAL
             ? "Visual lines · click for physical source lines" : "Physical source lines · click for visual lines");
@@ -105,6 +115,12 @@ internal sealed partial class EditorPane
     {
         status.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
         status.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
+        status.Children.Add(statusBox); SetColumnSpan(statusBox, 2);
+        statusBox.Draw += (_, args) => {
+            args.DrawingSession.Clear(Microsoft.UI.Colors.Transparent);
+            (statusStyle ?? preferences.StatusStyles.Status).DrawBox(args.DrawingSession, new(0, 0, statusBox.ActualWidth, statusBox.ActualHeight));
+        };
+        status.SizeChanged += (_, _) => status.Clip = new RectangleGeometry { Rect = new(0, 0, status.ActualWidth, status.ActualHeight) };
         foreach (var width in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto })
             normalStatus.ColumnDefinitions.Add(new() { Width = width });
         normalStatus.Children.Add(mode);
@@ -124,7 +140,8 @@ internal sealed partial class EditorPane
         status.Children.Add(normalStatus); status.Children.Add(prompt); status.Children.Add(commandOutput);
         var position = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
         position.Children.Add(lineModeIcon); position.Children.Add(location); locationToggle.Content = position;
-        locationToggle.Margin = new(0, 0, StatusInset, 0); status.Children.Add(locationToggle); SetColumn(locationToggle, 1);
+        status.Children.Add(locationToggle); SetColumn(locationToggle, 1);
+        BuildStatusText();
         locationToggle.Click += (_, _) => {
             if (statusDragging || View == null) return;
             Run(() => View.LineMode(View.CurrentLineMode == VIEM_LINE_MODE_VISUAL ? VIEM_LINE_MODE_PHYSICAL_SOURCE : VIEM_LINE_MODE_VISUAL));
@@ -217,28 +234,43 @@ internal sealed partial class EditorPane
 
     private void ApplyStatusTheme()
     {
-        outputText.FontFamily = new("Consolas"); outputText.FontSize = preferences.StatusFontSize;
-        outputText.Foreground = outputClose.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
+        var styles = preferences.StatusStyles;
+        if (statusStyle == styles.Status && commandStyle == styles.Command) return;
+        if (statusStyle?.FontIdentity != styles.Status.FontIdentity) {
+            ClearStatusText(); resizeHoverTextIdentity = null;
+        }
+        statusStyle = styles.Status; commandStyle = styles.Command;
+        var style = statusStyle;
+        status.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
+        status.BorderThickness = new(0);
+        // The box owns padding and border. Chrome placement ignores margins
+        // and alignment; command font changes cannot change container height.
+        var inset = new Thickness(style.Padding.Left + style.Border.Left, style.Padding.Top + style.Border.Top,
+            style.Padding.Right + style.Border.Right, style.Padding.Bottom + style.Border.Bottom);
+        normalStatus.Margin = commandOutput.Margin = inset;
+        locationToggle.Margin = inset;
+        prompt.Margin = new(style.Border.Left, style.Border.Top,
+            style.Border.Right, style.Border.Bottom);
+        var font = FontCatalog.Resolve(style.Family, style.Face) ?? (Family: "Segoe UI", Stretch: global::Windows.UI.Text.FontStretch.Normal);
+        foreach (var label in new[] { mode, message, location, filePath, outputText, statusMeasure }) {
+            label.FontFamily = new(font.Family); label.FontStretch = font.Stretch; label.FontSize = style.Size;
+            label.FontWeight = new() { Weight = style.Weight }; label.FontStyle = style.Slant;
+            label.CharacterSpacing = (int)Math.Clamp(Math.Round(style.Tracking * 1000d / style.Size), int.MinValue, int.MaxValue);
+            label.Foreground = new SolidColorBrush(label == outputText ? style.Foreground : Microsoft.UI.Colors.Transparent);
+        }
+        using var statusFontProbe = style.Layout(CanvasDevice.GetSharedDevice(), "Mg");
+        status.Height = Math.Max(1, Math.Ceiling(statusFontProbe.LayoutBounds.Height) + style.Padding.Vertical + style.Border.Vertical);
+        outputText.Foreground = outputClose.Foreground = new SolidColorBrush(style.Foreground);
         outputClose.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
         locationToggle.Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent);
-        locationToggle.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
-        filePath.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
+        locationToggle.Foreground = new SolidColorBrush(style.Foreground);
         filePath.FontFamily = statusMeasure.FontFamily = mode.FontFamily;
         filePath.FontSize = statusMeasure.FontSize = mode.FontSize;
         mode.Width = Math.Ceiling(new[] { "NORMAL", "INSERT", "REPLACE", "VISUAL", "V-LINE", "V-BLOCK",
             "SELECTION", "SELECT", "S-LINE", "S-BLOCK", "COMMAND" }.Max(MeasureStatusText));
         UpdateFilePathText();
         UpdateStatusPresentation();
-    }
-
-    private double MeasureStatusText(string text)
-    {
-        statusMeasure.Text = text;
-        // This detached probe is reused synchronously, before XAML's next
-        // layout pass has processed Text changes. Discard its prior measure.
-        statusMeasure.InvalidateMeasure();
-        statusMeasure.Measure(new(double.PositiveInfinity, double.PositiveInfinity));
-        return statusMeasure.DesiredSize.Width;
+        statusBox.Invalidate(); statusTextCanvas.Invalidate(); prompt.Refresh();
     }
 
     internal void RefreshStatusFilePath()
@@ -268,13 +300,15 @@ internal sealed partial class EditorPane
     private void UpdateFilePathText()
     {
         filePath.Text = StatusFilePath.TrimLeft(fullStatusFilePath, filePathHost.ActualWidth, MeasureStatusText);
+        filePath.Width = Math.Max(0, filePathHost.ActualWidth);
         filePathTextWidth = MeasureStatusText(filePath.Text);
+        statusTextCanvas.Invalidate();
     }
 
     private void UpdateStatusPresentation(bool refreshPrompt = true)
     {
         RefreshStatusFilePath();
-        var resizeText = (mode.Text, message.Text, preferences.StatusFontFamily, preferences.StatusFontSize);
+        var resizeText = (mode.Text, message.Text, mode.FontFamily.Source, mode.FontSize);
         if (resizeHoverTextIdentity != resizeText)
         {
             modeTextWidth = mode.Text.Length == 0 ? 0 : MeasureStatusText(mode.Text);
@@ -282,6 +316,7 @@ internal sealed partial class EditorPane
             resizeHoverTextIdentity = resizeText;
         }
         message.Visibility = message.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+        message.Width = Math.Ceiling(MeasureStatusText(message.Text));
         bool command = presentation.mode == VIEM_MODE_COMMAND_LINE;
         if (command) { output = null; outputText.Text = ""; outputTimer.Stop(); outputDeadline = 0; outputHadFocus = false; }
         bool showingOutput = !command && output != null;
@@ -289,6 +324,7 @@ internal sealed partial class EditorPane
         prompt.Visibility = command ? Visibility.Visible : Visibility.Collapsed;
         commandOutput.Visibility = showingOutput ? Visibility.Visible : Visibility.Collapsed;
         status.Visibility = command || showingOutput || message.Text.Length > 0 || preferences.ShowStatus ? Visibility.Visible : Visibility.Collapsed;
+        statusTextCanvas.Invalidate();
         if (command && refreshPrompt) prompt.Refresh();
     }
 

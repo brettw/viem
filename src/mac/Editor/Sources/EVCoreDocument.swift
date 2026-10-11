@@ -324,22 +324,21 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         )
     }
 
-    public func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot {
+    public func nativeSaveSnapshot(typeName: String, sourceByteRange: Range<UInt64>) throws -> EVDocumentSaveSnapshot {
         let state = try documentState()
         try validateSerializationType(typeName, currentFormat: Self.sourceFormat(from: state))
-        guard hardLineRange.upperBound < UInt64.max else { throw EVCoreFrontendError.invalidHostEffect }
         var count: UInt64 = 0
         var complete: UInt32 = 0
-        let status = viem_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
-            hardLineRange.lowerBound, hardLineRange.upperBound + 1, nil, 0, &count, &complete)
+        let status = viem_core_copy_source_range_bytes(core, state.document_id, state.document_revision,
+            sourceByteRange.lowerBound, sourceByteRange.upperBound, nil, 0, &count, &complete)
         if status == VIEM_STATUS_POLICY_REQUIRED { throw EVDocumentHostError.preparedWriteUnavailable }
         guard status == VIEM_STATUS_OK || status == VIEM_STATUS_BUFFER_TOO_SMALL, count <= UInt64(Int.max) else {
             throw EVCoreFrontendError.core(operation: "Prepare ranged source write", status: status)
         }
         var data = Data(count: Int(count))
         let copied = data.withUnsafeMutableBytes { buffer in
-            viem_core_copy_hard_line_source_bytes(core, state.document_id, state.document_revision,
-                hardLineRange.lowerBound, hardLineRange.upperBound + 1, buffer.bindMemory(to: UInt8.self).baseAddress, count, &count, &complete)
+            viem_core_copy_source_range_bytes(core, state.document_id, state.document_revision,
+                sourceByteRange.lowerBound, sourceByteRange.upperBound, buffer.bindMemory(to: UInt8.self).baseAddress, count, &count, &complete)
         }
         try checked(copied, operation: "Copy ranged source write")
         return EVDocumentSaveSnapshot(data: data, documentID: state.document_id, documentRevision: state.document_revision, isCompleteSource: complete != 0)
@@ -1027,12 +1026,12 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func readFile(_ bytes: Data, after: UInt64, expected: EVDocumentPersistenceState) throws -> ViemCoreOutcomeV1 {
+    func readFile(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws -> ViemCoreOutcomeV1 {
         var outcome = ViemCoreOutcomeV1()
         outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         try bytes.withUnsafeBytes { raw in
             try checked(viem_core_view_read_file(document.core, viewID, expected.documentID,
-                expected.documentRevision, after, raw.bindMemory(to: UInt8.self).baseAddress,
+                expected.documentRevision, source ? 1 : 0, after, raw.bindMemory(to: UInt8.self).baseAddress,
                 UInt64(raw.count), &outcome), operation: "Read file into buffer")
         }
         finish(outcome, composition: .cancelIfChanged)
@@ -1821,7 +1820,7 @@ final class EVCoreViewSession {
     @discardableResult
     func goToLine(_ line: UInt64) throws -> ViemCoreOutcomeV1 {
         let state = try document.documentState()
-        return try performCoreOperation("Go to logical line") { outcome in
+        return try performCoreOperation("Go to physical line") { outcome in
             viem_core_view_go_to_line(document.core, viewID, state.document_id,
                 state.document_revision, line, outcome)
         }

@@ -15,6 +15,136 @@ fn assert_local(work: ProjectionWorkStatistics, max_bytes: usize) {
 }
 
 #[test]
+fn late_markdown_source_moves_and_sorts_retain_local_contributor_identities() {
+    let prefix = "untouched **paragraph**\n\n".repeat(20_000);
+    let at = prefix.len();
+    for (moving, distant) in [(false, false), (true, false), (true, true)] {
+        let gap = if distant { "retained **middle**\n\n".repeat(512) } else { String::new() };
+        let original = if distant {
+            format!("{prefix}zebra\napple\n\n{gap}destination\n\ntail")
+        } else { format!("{prefix}zebra\napple\n\ntail") };
+        let insertion = if distant { at + 13 + gap.len() + 12 } else { at + 12 };
+        let target = insertion - 6;
+        let mut document = Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8,
+            Format::MarkdownSource).unwrap();
+        let old_offset = document.visible_point_for_source(at + 1, true).unwrap();
+        let old_anchor = document.text_anchor(document.text_point(old_offset).unwrap(),
+            Association::AfterInsertion, BoundaryAffinity::Downstream,
+            DeletionRecovery::Unresolvable).unwrap();
+        let request = if moving {
+            ModelRequest::MovePhysicalSource {
+                document: document.id(), revision: document.revision(),
+                patches: vec![SourcePatch::primary(at..at + 6, Vec::new()),
+                    SourcePatch::primary(insertion..insertion, b"zebra\n".to_vec())],
+                source: at..at + 6, destination: target,
+            }
+        } else {
+            ModelRequest::ReorderPhysicalSource {
+                document: document.id(), revision: document.revision(),
+                patches: vec![SourcePatch::primary(at..at + 11, b"apple\nzebra".to_vec())],
+                relocations: vec![(at..at + 5, at + 6), (at + 6..at + 11, at)],
+            }
+        };
+        let (prepared, work) = measure_document_work(|| document.prepare_model_request(request).unwrap());
+        assert_eq!(work.source_full_materializations, 0, "move={moving}, distant={distant}: {work:?}");
+        assert_eq!(work.full_projection_candidates, 0, "move={moving}, distant={distant}: {work:?}");
+        assert_eq!(work.formatted_full_materialized_bytes, 0, "move={moving}, distant={distant}: {work:?}");
+        assert!(work.source_decoded_bytes < 16_384, "move={moving}, distant={distant}: {work:?}");
+        assert!(work.projected_formatted_bytes < 16_384, "move={moving}, distant={distant}: {work:?}");
+        assert!((1..64).contains(&work.source_relocation_graphemes_visited), "move={moving}, distant={distant}: {work:?}");
+        document.commit_model_transaction(prepared).unwrap();
+        assert!(!document.projection().compatibility_text_is_materialized());
+        let expected = if distant {
+            format!("{prefix}apple\n\n{gap}destination\nzebra\n\ntail")
+        } else { format!("{prefix}apple\nzebra\n\ntail") };
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        let new_offset = document.visible_point_for_source(target + 1, true).unwrap();
+        assert_eq!(document.resolve_text_anchor(old_anchor).unwrap().value().unwrap().offset(), new_offset);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), original.as_bytes());
+        assert_eq!(document.resolve_text_anchor(old_anchor).unwrap().value().unwrap().offset(), old_offset);
+        assert!(document.redo());
+        assert_eq!(document.resolve_text_anchor(old_anchor).unwrap().value().unwrap().offset(), new_offset);
+    }
+}
+
+#[test]
+fn late_wysiwyg_continuation_moves_and_sorts_are_local_and_preserve_owners() {
+    let prefix = "untouched **paragraph**\n\n".repeat(20_000);
+    let at = prefix.len();
+    for moving in [false, true] {
+        let original = format!("{prefix}**zebra**\napple\nretained\nlast\n\ntail");
+        let expected = format!("{prefix}apple\n**zebra**\nretained\nlast\n\ntail");
+        let mut document = Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8,
+            Format::Markdown).unwrap();
+        let old_offset = document.visible_point_for_source(at + 3, true).unwrap();
+        let inner_offset = document.visible_point_for_source(at + 12, true).unwrap();
+        let retained_offset = document.visible_point_for_source(at + 19, true).unwrap();
+        let anchor = |offset| document.text_anchor(document.text_point(offset).unwrap(),
+            Association::AfterInsertion, BoundaryAffinity::Downstream,
+            DeletionRecovery::Unresolvable).unwrap();
+        let moved_anchor = anchor(old_offset);
+        // Apple remains byte-identical in the move, but lies inside the
+        // effective visible replacement from "zebra apple" to "apple zebra".
+        let inner_anchor = anchor(inner_offset);
+        let retained_anchor = anchor(retained_offset);
+        let inner_point = document.text_point(inner_offset).unwrap();
+        let owner = document.projection().blocks_for_region(&(old_offset..old_offset + 1))[0].clone();
+        let request = if moving {
+            ModelRequest::MovePhysicalSource {
+                document: document.id(), revision: document.revision(),
+                patches: vec![SourcePatch::primary(at..at + 10, Vec::new()),
+                    SourcePatch::primary(at + 16..at + 16, b"**zebra**\n".to_vec())],
+                source: at..at + 10, destination: at + 6,
+            }
+        } else {
+            ModelRequest::ReorderPhysicalSource {
+                document: document.id(), revision: document.revision(),
+                patches: vec![SourcePatch::primary(at..at + 15, b"apple\n**zebra**".to_vec())],
+                relocations: vec![(at..at + 9, at + 6), (at + 10..at + 15, at)],
+            }
+        };
+        let (prepared, work) = measure_document_work(|| document.prepare_model_request(request).unwrap());
+        assert_local(prepared.summary().projection_work(), 4096);
+        assert_eq!(work.source_full_materializations, 0, "move={moving}: {work:?}");
+        assert_eq!(work.full_projection_candidates, 0, "move={moving}: {work:?}");
+        assert_eq!(work.formatted_full_materialized_bytes, 0, "move={moving}: {work:?}");
+        assert!(work.source_decoded_bytes < 16_384, "move={moving}: {work:?}");
+        assert!(work.projected_formatted_bytes < 16_384, "move={moving}: {work:?}");
+        assert!((1..64).contains(&work.source_relocation_graphemes_visited), "move={moving}: {work:?}");
+        let committed = document.commit_model_transaction(prepared).unwrap();
+        assert!(!document.projection().compatibility_text_is_materialized());
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        let new_offset = document.visible_point_for_source(at + 9, true).unwrap();
+        let new_inner_offset = document.visible_point_for_source(at + 2, true).unwrap();
+        assert_eq!(document.resolve_text_anchor(moved_anchor).unwrap().value().unwrap().offset(), new_offset);
+        assert_eq!(document.resolve_text_anchor(inner_anchor).unwrap().value().unwrap().offset(), new_inner_offset);
+        assert_eq!(committed.text_position_map().map_text_point(inner_point,
+            Association::AfterInsertion, BoundaryAffinity::Downstream,
+            DeletionRecovery::Unresolvable).unwrap().value().unwrap().offset(), new_inner_offset);
+        assert_eq!(document.resolve_text_anchor(retained_anchor).unwrap().value().unwrap().offset(), retained_offset);
+        let new_owner = document.projection().blocks_for_region(&(new_offset..new_offset + 1))[0].clone();
+        assert_eq!(new_owner.id, owner.id);
+        assert_eq!(new_owner.attributes, owner.attributes);
+        assert_eq!(document.projection().text_tree().slice(new_owner.range.clone()).unwrap(),
+            "apple zebra retained last");
+        let reopened = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        let reopened_owner = reopened.projection().blocks_for_region(&(new_offset..new_offset + 1))[0].clone();
+        assert_eq!(new_owner.attributes, reopened_owner.attributes);
+        assert_eq!(document.projection().style_spans_for_region(&new_owner.range),
+            reopened.projection().style_spans_for_region(&reopened_owner.range));
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), original.as_bytes());
+        assert_eq!(document.resolve_text_anchor(moved_anchor).unwrap().value().unwrap().offset(), old_offset);
+        assert_eq!(document.resolve_text_anchor(inner_anchor).unwrap().value().unwrap().offset(), inner_offset);
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        assert_eq!(document.resolve_text_anchor(moved_anchor).unwrap().value().unwrap().offset(), new_offset);
+        assert_eq!(document.resolve_text_anchor(inner_anchor).unwrap().value().unwrap().offset(), new_inner_offset);
+    }
+}
+
+#[test]
 fn literal_newlines_and_joins_are_local_and_undoable_with_default_budget() {
     for format in [Format::PlainText, Format::Code] {
         let source = "alpha beta gamma\n".repeat(65_536).into_bytes();

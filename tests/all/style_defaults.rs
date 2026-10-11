@@ -6,10 +6,11 @@ fn open(source: &str, format: Format) -> Document {
 
 fn assert_plain_text_defaults(document: &Document) {
     let sheet = document.projection().style_sheet();
-    assert_eq!(sheet.block_styles().map(|style| style.id.0.as_str()).collect::<Vec<_>>(), ["Paragraph"]);
+    assert_eq!(sheet.block_styles().map(|style| style.id.0.as_str()).collect::<Vec<_>>(),
+        ["Builtin current line number", "Builtin line number", "Paragraph", "Status bar", "Status bar command"]);
     assert_eq!(sheet.character_styles().map(|style| style.id.clone()).collect::<Vec<_>>(), [StyleId::incremental_match()]);
     let saved: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
-    assert_eq!(saved["block_styles"].as_array().unwrap().len(), 1);
+    assert_eq!(saved["block_styles"].as_array().unwrap().len(), 5);
     assert_eq!(saved["character_styles"].as_array().unwrap().len(), 1);
 }
 
@@ -395,7 +396,8 @@ fn assert_inherits_parent(document: &Document, id: &StyleId, character: bool) {
         sheet.block_style(id).unwrap().based_on.as_ref().unwrap_or(&sheet.base_paragraph)
     };
     let mut base = resolve(parent, None);
-    if !character && sheet.block_style(id).is_some_and(|style| style.role.is_container()) {
+    if !character && sheet.block_style(id).is_some_and(|style| style.role.is_container())
+        && parent == &sheet.base_paragraph {
         base = ResolvedParagraphStyle { character: base.character, ..Default::default() };
     }
     let actual = if character {

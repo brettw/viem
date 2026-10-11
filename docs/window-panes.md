@@ -32,6 +32,30 @@ Height counts use the Base Paragraph font size times its line spacing and view
 zoom. Width counts use the Base Paragraph's zoomed advance of `0`. Mixed text
 sizes and current visible rows do not change these units.
 
+`:set number` (`:set nu`) or **View > Show line numbers** shows physical source
+line numbers in the current view; `:set nonumber` hides them. The menu checkmark
+reflects that view's setting. A split copies this option, then each view
+can change it independently. Soft wrapping does not add line numbers. In
+Markdown WYSIWYG, hidden syntax keeps its source ordinal without a separate
+number. When several source lines share a rendered row, only its first source
+ordinal is displayed. Current-line styling follows that displayed number.
+
+Absolute addresses such as `23G`, `23gg`, `:23` and `:23,25d` always use
+physical source lines. Counts beyond the file stop at its last numbered line for
+navigation; an invalid Ex address produces an error. Contextual Ex addresses
+follow line mode: in Visual mode, `:.,.+2d` selects three displayed rows.
+Offsets inherit their base: `:23+2` means physical line 25. Mixed ranges preserve
+the exact boundaries of both endpoints.
+
+The builtin block styles **Line number** and **Current line number** control
+the gutter. Their builtin identity distinguishes them from content or syntax
+styles with the same names. Current line number inherits the ordinary style
+without default overrides. The gutter reserves enough width for either style
+and the document's largest line number. A single-document window without a
+vertical split grows or shrinks to preserve content width when the monitor has
+room, preferring to keep the content's left edge in the same screen position.
+Other windows take gutter space from the corresponding content view.
+
 Click a status bar to focus the buffer above it. Clicking the eye also toggles
 line mode. Dragging consumes the click and preserves focus. Status bars use an
 up/down cursor during dragging; each column's bottom bar is fixed. Status bars
@@ -40,6 +64,12 @@ background in a movable status bar also shows the up/down cursor on hover;
 text and controls keep their usual hover cursors. Editor areas
 can collapse completely, but status bars may only touch, never overlap. A
 horizontal split needs room for another status bar in the current view.
+
+The internal **Status bar** container style controls the shared status font,
+colors, borders, and padding across document formats. Margin and alignment do
+not affect the bar. **Status bar command** inherits it and controls command
+text and its background within the existing command area. Its font is centered
+and clipped without changing status bar height.
 
 Vertical dividers are five DIPs wide and use the status background and matching
 separator borders. They show a left/right cursor on hover and while dragging.

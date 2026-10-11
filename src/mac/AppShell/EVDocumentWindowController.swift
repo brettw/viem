@@ -683,7 +683,7 @@ extension EVDocumentWindowController {
       do {
         guard let path = request.path ?? document.fileURL?.path,
               let url = resolvedFileURL(path, relativeTo: nil),
-              let after = request.readAfterLine,
+              let after = request.readAfterOffset,
               let pane = (documentContentController.document === document ? documentContentController : paneContainer.panes.first(where: { $0.document === document })) else {
           throw EVDocumentHostError.noDocumentURL
         }
@@ -695,7 +695,7 @@ extension EVDocumentWindowController {
               guard self.paneContainer.panes.contains(where: { $0 === pane }), pane.document === document else {
                 throw EVDocumentHostError.staleRequest
               }
-              try pane.editorSurface.insertFileContents(bytes, after: after, expected: persistence)
+              try pane.editorSurface.insertFileContents(bytes, after: after, source: request.readAfterIsSource, expected: persistence)
               completion(.success("\(url.path) read"))
             } catch { completion(.failure(error)) }
           }
@@ -745,11 +745,11 @@ extension EVDocumentWindowController {
         completion(.failure(error))
       }
     case .write:
-      if request.path != nil || request.hardLineRange != nil {
+      if request.path != nil || request.sourceByteRange != nil {
         writeAlternate(document, request: request, closeAfter: false, completion: completion)
         return
       }
-      guard request.path == nil, request.hardLineRange == nil else {
+      guard request.path == nil, request.sourceByteRange == nil else {
         completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
         return
       }
@@ -765,11 +765,11 @@ extension EVDocumentWindowController {
       writeAlternate(document, request: request, closeAfter: false, adoptBinding: true, completion: completion)
 
     case .writeQuit:
-      if request.path != nil || request.hardLineRange != nil {
+      if request.path != nil || request.sourceByteRange != nil {
         writeAlternate(document, request: request, closeAfter: true, completion: completion)
         return
       }
-      guard request.path == nil, request.hardLineRange == nil else {
+      guard request.path == nil, request.sourceByteRange == nil else {
         completion(.failure(EVDocumentHostError.preparedWriteUnavailable))
         return
       }
@@ -1074,8 +1074,8 @@ extension EVDocumentWindowController {
     do {
       try document.validateDestinationAlias(at: destination)
       let snapshot: EVDocumentSaveSnapshot
-      if let range = request.hardLineRange {
-        snapshot = try document.editorBackend.nativeSaveSnapshot(typeName: document.fileType ?? EVDocument.plainTextType, hardLineRange: range)
+      if let range = request.sourceByteRange {
+        snapshot = try document.editorBackend.nativeSaveSnapshot(typeName: document.fileType ?? EVDocument.plainTextType, sourceByteRange: range)
       } else { snapshot = try document.editorBackend.nativeSaveSnapshot(typeName: document.fileType ?? EVDocument.plainTextType) }
       guard snapshot.documentID == request.documentID, snapshot.documentRevision == request.documentRevision else {
         throw EVDocumentHostError.staleRequest
@@ -1366,6 +1366,7 @@ extension EVDocumentWindowController {
     let pane = EVDocumentContentViewController(editorSurface: surface, configuration: configuration)
     pane.document = document
     let previous = source ?? documentContentController
+    surface.inheritLineNumberOption(from: previous.editorSurface)
     pane.argumentList = previous.argumentList
     pane.argumentIndex = previous.argumentList?.index(of: previous.document?.fileURL,
       preferring: previous.argumentIndex) ?? previous.argumentIndex

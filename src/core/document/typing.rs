@@ -363,7 +363,7 @@ impl Document {
 
     pub fn validate_typing_named_style(&self, style: &StyleId) -> Result<(), DocumentError> {
         let sheet = self.projection().style_sheet();
-        if style.is_internal()
+        if style.is_internal_in(crate::document::StyleNamespace::Character)
             || (!style.0.is_empty() && sheet.character_style(style).is_none())
             || !self.format().is_markdown()
             || !(style.0 == "Code" || style.0.is_empty())

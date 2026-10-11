@@ -97,7 +97,7 @@ fn check(
 }
 
 #[test]
-fn copy_move_and_sort_address_visible_rows_after_hidden_source_separators() {
+fn copy_move_and_sort_address_physical_rows_with_hidden_source_separators() {
     let source = "## Hé\r\n \t\r\n__two__\r\nline\r\n\r\nTail";
     for encoding in [
         Encoding::Utf8,
@@ -107,11 +107,11 @@ fn copy_move_and_sort_address_visible_rows_after_hidden_source_separators() {
     ] {
         for (command, expected) in [
             (
-                ":2,3copy 4",
-                "## Hé\r\n \t\r\n__two__\r\nline\r\n\r\nTail\r\n\r\n__two__\r\nline",
+                ":3,4copy 6",
+                "## Hé\r\n \t\r\n__two__\r\nline\r\n\r\nTail\r\n__two__\r\nline",
             ),
-            (":4move 0", "Tail\r\n\r\n## Hé\r\n \t\r\n__two__\r\nline"),
-            (":2,3sort!", "## Hé\r\n \t\r\nline\r\n__two__\r\n\r\nTail"),
+            (":6move 0", "Tail\r\n## Hé\r\n \t\r\n__two__\r\nline\r\n"),
+            (":3,4sort!", "## Hé\r\n \t\r\nline\r\n__two__\r\n\r\nTail"),
         ] {
             check(source, command, expected, encoding, FileFormat::Dos);
         }
@@ -123,28 +123,28 @@ fn sort_keeps_mixed_hidden_separator_bytes_in_their_original_slots() {
     check(
         "z\r\n \t\n__a__\n\nb\r\n\r\n",
         ":sort",
-        "__a__\r\n \t\nb\n\nz\r\n\r\n",
+        "\r\n\n \t\n__a__\nb\r\nz\r\n",
         Encoding::Utf8,
         FileFormat::Dos,
     );
     check(
         "z\r\r__a__\r\rb",
         ":sort",
-        "__a__\r\rb\r\rz",
+        "\r\r__a__\rb\rz",
         Encoding::Utf8,
         FileFormat::Mac,
     );
     check(
         "b\n\n\n\na",
         ":sort",
-        "\n\na\n\nb",
+        "\n\n\na\nb",
         Encoding::Utf8,
         FileFormat::Unix,
     );
     check(
         "z\n\na\n\na\n\nb",
         ":sort u",
-        "a\n\nb\n\nz",
+        "\na\nb\nz",
         Encoding::Utf8,
         FileFormat::Unix,
     );
@@ -154,7 +154,7 @@ fn sort_keeps_mixed_hidden_separator_bytes_in_their_original_slots() {
 fn source_copy_may_change_contextual_code_styling_without_changing_literal_syntax() {
     check(
         "```\ncode\n```\n\nTail",
-        ":2copy 4",
+        ":2copy 5",
         "```\ncode\n```\n\nTail\ncode",
         Encoding::Utf8,
         FileFormat::Unix,
@@ -162,16 +162,26 @@ fn source_copy_may_change_contextual_code_styling_without_changing_literal_synta
 }
 
 #[test]
-fn empty_source_row_copy_preserves_its_formatted_boundary() {
-    for (source, expected) in [("a\n", "a\n\n\n\n"), ("a\n\n", "a\n\n\n\n")] {
-        check(
-            source,
-            ":2copy 2",
-            expected,
-            Encoding::Utf8,
-            FileFormat::Unix,
-        );
-    }
+fn empty_source_row_copy_preserves_its_physical_boundary() {
+    check(
+        "a\n\n",
+        ":2copy 2",
+        "a\n\n\n",
+        Encoding::Utf8,
+        FileFormat::Unix,
+    );
+    let mut document =
+        Document::from_bytes(b"a\n".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+    assert!(execute_ex(
+        &mut document,
+        &mut ExExecutionState::default(),
+        &ExExecutionContext::default(),
+        &parse_ex(":2copy 2").unwrap(),
+        &()
+    )
+    .is_err());
+    assert_eq!(document.source_bytes(), b"a\n");
+    assert!(!document.undo());
 }
 
 #[test]

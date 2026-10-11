@@ -1,9 +1,9 @@
 //! Sort key policy is command grammar, while source movement belongs to the
 //! document. Every key is computed against one immutable logical snapshot.
 use super::ex::SortOptions;
-use super::ex_execute::{ExExecuteError, ExExecutionContext, HardLineRange};
+use super::ex_execute::{ExExecuteError, ExExecutionContext};
 use super::search_regex::{CompiledRegex, RegexInput, RegexLimits, RegexWork};
-use crate::document::{Document, Format};
+use crate::document::HardLineSnapshot;
 use std::{cmp::Ordering, ops::Range};
 
 #[derive(Eq, PartialEq)]
@@ -21,13 +21,15 @@ impl Key {
     }
 }
 
-pub(super) fn ordered_lines(
-    document: &Document,
+/// Compute the same sort policy for exact addressed units, including wrapped
+/// rows whose boundaries are not formatted hard-line boundaries.
+pub(super) fn ordered_ranges(
+    snapshot: &HardLineSnapshot,
+    ranges: &[(usize, Range<usize>)],
     context: &ExExecutionContext,
-    lines: HardLineRange,
     options: &SortOptions,
     reverse: bool,
-) -> Result<(Range<usize>, Vec<usize>), ExExecuteError> {
+) -> Result<Vec<usize>, ExExecuteError> {
     if options
         .radix
         .is_some_and(|radix| !matches!(radix, 2 | 8 | 10 | 16))
@@ -35,24 +37,6 @@ pub(super) fn ordered_lines(
         return Err(ExExecuteError::InvalidSortArgument(
             "unsupported numeric radix".into(),
         ));
-    }
-    let snapshot = document.hard_line_snapshot();
-    let mut source_lines = lines.start..lines.end + 1;
-    // A physical final terminator stays a terminator, rather than becoming a
-    // leading empty line. An actual empty paragraph in a rich format is content.
-    if matches!(
-        document.format(),
-        Format::PlainText | Format::Code | Format::MarkdownSource
-    ) && source_lines.end == snapshot.line_count()
-        && source_lines.end > 1
-        && snapshot
-            .line(source_lines.end - 1)
-            .unwrap()
-            .content_range()
-            .is_empty()
-    {
-        source_lines.end -= 1;
-        source_lines.start = source_lines.start.min(source_lines.end);
     }
     let limits = RegexLimits::default();
     let regex = options
@@ -72,11 +56,11 @@ pub(super) fn ordered_lines(
                 .map_err(ExExecuteError::from)
         })
         .transpose()?;
-    let input = RegexInput::new(&snapshot);
+    let input = RegexInput::new(snapshot);
     let mut work = RegexWork::new(limits);
-    let mut records = Vec::with_capacity(source_lines.len());
-    for index in source_lines.clone() {
-        let range = snapshot.line(index).unwrap().content_range();
+    let mut records = Vec::with_capacity(ranges.len());
+    for (index, range) in ranges {
+        let range = range.clone();
         let key_range = if let Some(regex) = &regex {
             match regex.find(&input, range.start, range.end, &mut work)? {
                 Some(matched) if options.match_only => matched.range(),
@@ -108,7 +92,7 @@ pub(super) fn ordered_lines(
         } else {
             String::new()
         };
-        records.push((index, key, identity));
+        records.push((*index, key, identity));
     }
     records.sort_by(|a, b| a.1.compare(&b.1));
     // Vim reverses the sorted sequence, including equal-key runs.
@@ -118,10 +102,7 @@ pub(super) fn ordered_lines(
     if options.unique {
         records.dedup_by(|a, b| a.2 == b.2);
     }
-    Ok((
-        source_lines,
-        records.into_iter().map(|record| record.0).collect(),
-    ))
+    Ok(records.into_iter().map(|record| record.0).collect())
 }
 
 fn integer_key(text: &str, radix: u32) -> Option<i64> {

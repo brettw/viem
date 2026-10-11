@@ -6,7 +6,7 @@ using static Viem.Windows.Interop.Abi;
 
 namespace Viem.Windows.Core;
 
-internal sealed unsafe class CoreDocument : IDisposable
+internal sealed unsafe partial class CoreDocument : IDisposable
 {
     public ulong Handle { get; private set; }
     public string? FilePath { get; set; }

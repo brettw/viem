@@ -20,7 +20,7 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
     private CanvasTextLayout? layout;
     private PromptState? state;
     private float scroll;
-    private float fontSize;
+    private ChromeStyle? fontStyle;
     private string displayText = "";
     private bool resourcesReady;
     private bool dragging, caret = true;
@@ -31,19 +31,20 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
         AutomationProperties.SetName(this, "Command line");
         canvas.CreateResources += (_, _) => { resourcesReady = true; layout?.Dispose(); layout = null; pane.Run(Refresh); };
         canvas.Draw += (_, e) => pane.Run(() => {
-            e.DrawingSession.Clear(preferences.Theme.StatusForeground);
+            var style = pane.CommandStyle;
+            e.DrawingSession.Clear(style.Background);
             if (layout == null || state == null) return;
-            float top = Math.Max(0, ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2);
-            float left = (float)EditorPane.StatusInset - scroll;
+            float top = ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2;
+            float left = pane.CommandInset - scroll;
             var map = new Utf8IndexMap(state.Text);
             int prefixLength = Prefix(state).Length;
             int start = map.Utf16(checked((int)Math.Min(state.Anchor, state.Active))) + prefixLength, end = map.Utf16(checked((int)Math.Max(state.Anchor, state.Active))) + prefixLength;
             if (start != end)
                 foreach (var r in layout.GetCharacterRegions(start, end - start))
                 { var bounds = r.LayoutBounds; bounds.X += left; bounds.Y += top; e.DrawingSession.FillRectangle(bounds, preferences.Theme.Selection); }
-            e.DrawingSession.DrawTextLayout(layout, left, top, preferences.Theme.StatusBackground);
+            e.DrawingSession.DrawTextLayout(layout, left, top, style.Foreground);
             int active = map.Utf16(checked((int)state.Active)) + prefixLength; var p = layout.GetCaretPosition(active, false);
-            if (caret) e.DrawingSession.DrawLine(p.X + left, top, p.X + left, top + (float)layout.LayoutBounds.Height, preferences.Theme.StatusBackground, 2);
+            if (caret) e.DrawingSession.DrawLine(p.X + left, top, p.X + left, top + (float)layout.LayoutBounds.Height, style.Foreground, 2);
 #if DEBUG
             LastDrawnText = displayText;
 #endif
@@ -61,8 +62,8 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
     private ulong Hit(global::Windows.Foundation.Point point)
     {
         if (layout == null || state == null) return 0;
-        float top = Math.Max(0, ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2);
-        layout.HitTest(new Vector2((float)(point.X - EditorPane.StatusInset) + scroll, (float)point.Y - top), out var region, out bool trailing);
+        float top = ((float)ActualHeight - (float)layout.LayoutBounds.Height) / 2;
+        layout.HitTest(new Vector2((float)(point.X - pane.CommandInset) + scroll, (float)point.Y - top), out var region, out bool trailing);
         int position = Math.Clamp(region.CharacterIndex + (trailing ? region.CharacterCount : 0) - Prefix(state).Length, 0, state.Text.Length);
         return (ulong)Encoding.UTF8.GetByteCount(state.Text.AsSpan(0, position));
     }
@@ -76,16 +77,15 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
         // CreateResources/SizeChanged will render the latest core prompt when ready.
         if (!resourcesReady || ActualWidth <= 0) return;
         string text = prefix + state.Text;
-        float size = (float)preferences.StatusFontSize;
-        if (layout == null || displayText != text || fontSize != size)
+        var style = pane.CommandStyle;
+        if (layout == null || displayText != text || fontStyle?.FontIdentity != style.FontIdentity)
         {
             layout?.Dispose();
-            using var format = new CanvasTextFormat { FontFamily = "Consolas", FontSize = size, WordWrapping = CanvasWordWrapping.NoWrap };
-            layout = new(canvas.Device, text, format, 1_000_000, 100);
-            displayText = text; fontSize = size;
+            layout = style.Layout(canvas.Device, text);
+            displayText = text; fontStyle = style;
         }
         float x = layout.GetCaretPosition(new Utf8IndexMap(state.Text).Utf16(checked((int)state.Active)) + prefix.Length, false).X;
-        float available = Math.Max(1, (float)(ActualWidth - EditorPane.StatusInset - 8));
+        float available = Math.Max(1, (float)(ActualWidth - pane.CommandInset - pane.CommandRightInset));
         scroll = Math.Min(scroll, Math.Max(0, (float)layout.LayoutBounds.Width - available));
         if (x - scroll > available) scroll = x - available;
         if (x - scroll < 0) scroll = x;

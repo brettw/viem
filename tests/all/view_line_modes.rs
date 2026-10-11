@@ -1,4 +1,5 @@
 use viem_core::command::{CommandStatus, InputEvent, Key, LineMode};
+use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
 use viem_core::document::{Encoding, Format};
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent, Document, ViewId};
@@ -560,5 +561,316 @@ fn counted_registered_home_operator_matches_first_nonblank_and_undo() {
             assert_eq!(core.document().text(), source);
         }
         assert_eq!(results[0], results[1], "{mode:?}");
+    }
+}
+
+#[test]
+fn counted_g_targets_physical_lines_in_every_selection_and_line_mode() {
+    use viem_core::command::Mode;
+    let source = "alpha\n  beta\n  gamma\n\nlast";
+    for format in [Format::MarkdownSource, Format::Markdown] {
+        for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            for mode in [Mode::Normal, Mode::VisualCharacter, Mode::VisualLine, Mode::VisualBlock] {
+                let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+                let (mut core, view) = editor(document, 50.);
+                core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+                match mode {
+                    Mode::VisualCharacter => keys(&mut core, view, "v"),
+                    Mode::VisualLine => keys(&mut core, view, "V"),
+                    Mode::VisualBlock => key(&mut core, view, Key::Ctrl('v')),
+                    _ => {},
+                }
+                let target = core.document().visible_point_for_source(source.find("gamma").unwrap(), true).unwrap();
+                keys(&mut core, view, "3G");
+                let state = core.command_state(view).unwrap();
+                assert_eq!(state.cursor(), target, "{format:?} {line_mode:?} {mode:?}");
+                assert_eq!(state.mode(), mode);
+                assert_eq!(state.physical_source_line_index(core.document()).unwrap(), 2);
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                assert!(!core.document().history_status().is_dirty);
+            }
+        }
+    }
+}
+
+#[test]
+fn counted_g_clamps_to_last_numbered_line_and_uncounted_g_retains_eof() {
+    for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let source = "first\n  last\n";
+        let (mut core, view) = editor(Document::new(source), 50.);
+        core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+        keys(&mut core, view, "999G");
+        assert_eq!(core.command_state(view).unwrap().cursor(), source.find("last").unwrap());
+        assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 1);
+        keys(&mut core, view, "G");
+        assert_eq!(core.command_state(view).unwrap().cursor(), source.len());
+    }
+    let (mut core, view) = editor(Document::new(""), 100.);
+    keys(&mut core, view, "999G");
+    assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+}
+
+#[test]
+fn absolute_line_jumps_retain_hidden_physical_destinations() {
+    let source = "# heading\n\n```text\nbody\n```\n\nafter";
+    let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let (mut core, view) = editor(document, 200.);
+    keys(&mut core, view, "3G");
+    assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 2);
+    assert_eq!(core.command_state(view).unwrap().cursor(), core.document().text().find("body").unwrap());
+    core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource)).unwrap();
+    keys(&mut core, view, "3Gj");
+    assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 3);
+
+    // Every absolute numeric jump names the same physical source line.
+    keys(&mut core, view, "2G");
+    let target = core.command_state(view).unwrap().cursor();
+    keys(&mut core, view, "2gg");
+    assert_eq!(core.command_state(view).unwrap().cursor(), target);
+    assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 1);
+    core.handle(view, CoreEvent::GoToLine {
+        document: core.document().id(), revision: core.document().revision(), line: 2,
+    }).unwrap();
+    assert_eq!(core.command_state(view).unwrap().cursor(), target);
+    assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 1);
+}
+
+#[test]
+fn numbered_navigation_uses_source_ordinals_in_normal_and_visual_modes() {
+    use viem_core::command::Mode;
+    let source = "alpha\ncontinuation\n  gamma\n\n```text\nbody\n```\n\nafter\nlast\n";
+    for format in [Format::Markdown, Format::MarkdownSource, Format::PlainText] {
+        for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            for mode in [Mode::Normal, Mode::VisualCharacter, Mode::VisualLine, Mode::VisualBlock] {
+                for (command, needle, ordinal) in [("3gg", "gamma", 2), ("60%", "body", 5), ("100%", "last", 9)] {
+                    let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+                    let (mut core, view) = editor(document, 70.);
+                    core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+                    match mode {
+                        Mode::VisualCharacter => keys(&mut core, view, "v"),
+                        Mode::VisualLine => keys(&mut core, view, "V"),
+                        Mode::VisualBlock => key(&mut core, view, Key::Ctrl('v')),
+                        _ => {},
+                    }
+                    keys(&mut core, view, command);
+                    let state = core.command_state(view).unwrap();
+                    assert_eq!(state.cursor(), core.document().text().find(needle).unwrap(), "{format:?} {line_mode:?} {mode:?} {command}");
+                    assert_eq!(state.physical_source_line_index(core.document()).unwrap(), ordinal);
+                    assert_eq!(state.mode(), mode);
+                    assert_eq!(core.document().source_bytes(), source.as_bytes());
+                    assert!(!core.document().history_status().is_dirty);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn numbered_viewport_alignment_uses_physical_source_lines() {
+    use viem_core::command::Mode;
+    let source = format!("{}first\n  continuation\n\nafter", "before\n\n".repeat(20));
+    for mode in [Mode::Normal, Mode::VisualCharacter, Mode::VisualLine, Mode::VisualBlock] {
+        for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            for suffix in ["zt", "zz", "zb"] {
+                let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+                let (mut core, view) = editor(document, 150.);
+                core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+                match mode {
+                    Mode::VisualCharacter => keys(&mut core, view, "v"),
+                    Mode::VisualLine => keys(&mut core, view, "V"),
+                    Mode::VisualBlock => key(&mut core, view, Key::Ctrl('v')),
+                    _ => {},
+                }
+                for character in format!("42{suffix}").chars() {
+                    let outcome = core.handle_with_layout(view,
+                        CoreEvent::Input(InputEvent::key(character)))
+                        .unwrap_or_else(|error| panic!("{mode:?} {line_mode:?} 42{suffix} at {character:?}: {error:?}"));
+                    assert!(matches!(outcome.command.unwrap().status,
+                        CommandStatus::Complete | CommandStatus::Pending),
+                        "{mode:?} {line_mode:?} 42{suffix} at {character:?}");
+                }
+                let state = core.command_state(view).unwrap();
+                assert_eq!(state.cursor(), core.document().text().find("continuation").unwrap(), "{mode:?} {line_mode:?} {suffix}");
+                assert_eq!(state.physical_source_line_index(core.document()).unwrap(), 41);
+                assert_eq!(state.mode(), mode);
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn counted_g_preserves_utf16_bom_dos_endings_and_graphemes() {
+    let source = "  e\u{301} first\r\n\t👩‍💻 second\r\n";
+    let mut bytes = vec![0xff, 0xfe];
+    for unit in source.encode_utf16() {
+        bytes.extend(unit.to_le_bytes());
+    }
+    for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let document = Document::from_bytes_with_file_format(
+            bytes.clone(), Encoding::Utf16Le, Format::PlainText,
+            viem_core::document::FileFormat::Dos,
+        ).unwrap();
+        let (mut core, view) = editor(document, 50.);
+        core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+        keys(&mut core, view, "1G");
+        assert_eq!(core.command_state(view).unwrap().cursor(), 2);
+        keys(&mut core, view, "2G");
+        assert_eq!(core.command_state(view).unwrap().cursor(), core.document().text().find('👩').unwrap());
+        assert_eq!(core.command_state(view).unwrap().physical_source_line_index(core.document()).unwrap(), 1);
+        key(&mut core, view, Key::Ctrl('o'));
+        assert_eq!(core.command_state(view).unwrap().cursor(), 2);
+        key(&mut core, view, Key::Ctrl('i'));
+        assert_eq!(core.command_state(view).unwrap().cursor(), core.document().text().find('👩').unwrap());
+        assert_eq!(core.document().source_bytes(), bytes);
+        assert!(!core.document().history_status().is_dirty);
+    }
+}
+
+#[test]
+fn counted_absolute_operators_edit_physical_lines_in_both_modes() {
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        for command in ["d2G", "d2gg", "d66%"] {
+            let original = "first\nsecond\nthird";
+            let document = Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let (mut core, view) = editor(document, 45.);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            keys(&mut core, view, command);
+            assert_eq!(core.document().source_bytes(), b"third", "{mode:?} {command}");
+            assert_eq!(core.command_state(view).unwrap().register('"').unwrap().text, "first\nsecond\n");
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), original.as_bytes());
+        }
+        for (command, expected) in [("gU2G", "FIRST\nSECOND\nthird"), (">2G", "    first\n    second\nthird")] {
+            let document = Document::from_bytes(b"first\nsecond\nthird".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let (mut core, view) = editor(document, 45.);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            keys(&mut core, view, command);
+            assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{mode:?} {command}");
+        }
+    }
+}
+
+#[test]
+fn physical_change_types_at_hidden_source_destination_and_repeats() {
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let original = b"first\nsecond\nthird";
+        let document = Document::from_bytes(original.to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let (mut core, view) = editor(document, 45.);
+        core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+        keys(&mut core, view, "c2G");
+        assert_eq!(core.document().source_bytes(), b"\nthird");
+        keys(&mut core, view, "X");
+        key(&mut core, view, Key::Escape);
+        assert_eq!(core.document().source_bytes(), b"X\nthird");
+        keys(&mut core, view, ".");
+        assert_eq!(core.document().source_bytes(), b"X");
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), b"X\nthird");
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), original);
+    }
+}
+
+#[test]
+fn hidden_physical_change_breaks_backspace_and_explicit_movement_are_bounded() {
+    let document = Document::from_bytes(b"first\nsecond\nthird".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let (mut core, view) = editor(document, 45.);
+    keys(&mut core, view, "c2G");
+    key(&mut core, view, Key::Backspace);
+    assert_eq!(core.document().source_bytes(), b"\nthird");
+    key(&mut core, view, Key::Enter);
+    assert_eq!(core.document().source_bytes(), b"\n\nthird");
+    key(&mut core, view, Key::Backspace);
+    assert_eq!(core.document().source_bytes(), b"\nthird");
+    assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+    key(&mut core, view, Key::Right);
+    assert_eq!(core.command_state(view).unwrap().cursor(), 1);
+    keys(&mut core, view, "X");
+    key(&mut core, view, Key::Escape);
+    assert_eq!(core.document().source_bytes(), b"\nXthird");
+}
+
+#[test]
+fn physical_address_operator_counts_registers_and_dot_stay_physical() {
+    let document = Document::from_bytes(b"a\nb\nc\nd\ne\nf\ng".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let (mut core, view) = editor(document, 40.);
+    keys(&mut core, view, "\"a2d2G");
+    assert_eq!(core.document().source_bytes(), b"e\nf\ng");
+    assert_eq!(core.command_state(view).unwrap().register('a').unwrap().text, "a\nb\nc\nd\n");
+    keys(&mut core, view, "2.");
+    assert_eq!(core.document().source_bytes(), b"g");
+    keys(&mut core, view, "u");
+    assert_eq!(core.document().source_bytes(), b"e\nf\ng");
+}
+
+#[test]
+fn counted_g_reads_only_the_prefix_of_a_giant_physical_target() {
+    let source = format!("first\n \t{}\nlast", "x".repeat(200_000));
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::PlainText).unwrap();
+        let (mut core, view) = editor(document, 100.);
+        core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+        let (_, work) = viem_core::document::measure_document_work(|| keys(&mut core, view, "2G"));
+        assert_eq!(core.command_state(view).unwrap().cursor(), 8);
+        assert_eq!(work.source_full_materializations, 0, "{mode:?}: {work:?}");
+        assert!(work.source_range_materialized_bytes < 4096, "{mode:?}: {work:?}");
+        assert!(work.source_decoded_bytes < 64, "{mode:?}: {work:?}");
+    }
+}
+
+#[test]
+fn counted_g_insert_keeps_visible_markdown_owner_and_affinity() {
+    for (source, line, before, after) in [
+        ("# H\ntail", "1G", "# XH\ntail", "# HX\ntail"),
+        ("**H**\ntail", "1G", "**XH**\ntail", "**HX**\ntail"),
+        ("> H\ntail", "1G", "> XH\ntail", "> HX\ntail"),
+        ("```\nH\n```\ntail", "2G", "```\nXH\n```\ntail", "```\nHX\n```\ntail"),
+    ] {
+        for (placement, expected) in [("i", before), ("a", after)] {
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let (mut core, view) = editor(document, 150.);
+            keys(&mut core, view, &format!("{line}{placement}X"));
+            key(&mut core, view, Key::Escape);
+            assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{source:?} {placement}");
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn hidden_physical_change_ime_cancel_commit_and_subsequent_typing_preserve_exact_source() {
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let original = b"first\nsecond\nthird";
+        let document = Document::from_bytes(original.to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let (mut core, view) = editor(document, 150.);
+        core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+        keys(&mut core, view, "c2G");
+        for cancel in [true, false] {
+            let at = core.command_state(view).unwrap().cursor();
+            let target = CompositionTarget::at_offsets(core.document(), at..at).unwrap();
+            core.handle(view, CoreEvent::Composition(CompositionEvent::Begin(target))).unwrap();
+            core.handle(view, CoreEvent::Composition(CompositionEvent::Update(
+                CompositionUpdate::new("猫", 3..3)))).unwrap();
+            assert_eq!(core.document().source_bytes(), b"\nthird", "{mode:?}");
+            core.handle(view, CoreEvent::Composition(if cancel { CompositionEvent::Cancel } else {
+                CompositionEvent::Commit
+            })).unwrap();
+            if cancel { assert_eq!(core.document().source_bytes(), b"\nthird"); }
+        }
+        assert_eq!(core.document().source_bytes(), "猫\nthird".as_bytes(), "{mode:?}");
+        assert_eq!(core.command_state(view).unwrap().cursor(), 3);
+        keys(&mut core, view, "Y");
+        key(&mut core, view, Key::Escape);
+        assert_eq!(core.document().source_bytes(), "猫Y\nthird".as_bytes());
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), "猫\nthird".as_bytes());
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), b"\nthird", "IME commit is one native undo unit");
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), original);
+        for _ in 0..3 { key(&mut core, view, Key::Ctrl('r')); }
+        assert_eq!(core.document().source_bytes(), "猫Y\nthird".as_bytes());
     }
 }

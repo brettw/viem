@@ -296,7 +296,7 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         let write = try XCTUnwrap(host.requests.last?.first)
         XCTAssertEqual(write.kind, .write)
         XCTAssertNil(write.path)
-        XCTAssertNil(write.hardLineRange)
+        XCTAssertNil(write.sourceByteRange)
         XCTAssertEqual(write.documentID, surface.documentState.document_id)
         XCTAssertEqual(write.documentRevision, surface.documentState.document_revision)
 

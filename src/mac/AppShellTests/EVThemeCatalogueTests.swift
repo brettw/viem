@@ -97,7 +97,6 @@ final class EVThemeCatalogueTests: XCTestCase {
     let config = try Data(contentsOf: directory.appendingPathComponent("config.json"))
     var appearance = store.theme
     appearance.foreground = EVThemeColor(0.12, 0.34, 0.56)
-    appearance.statusFontSize = 17
     try store.setTheme(appearance)
     var text = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(store.styleDefaults(named: "text"))) as? [String: Any])
     text["futureSetting"] = 42

@@ -63,19 +63,9 @@ impl Document {
                         breaks.extend(payload.break_offsets().iter().map(|offset| start + offset));
                     }
                     ReplacementFragment::Capture(range) => {
-                        if range.start > range.end
-                            || range.end > self.text().len()
-                            || !self.text().is_char_boundary(range.start)
-                            || !self.text().is_char_boundary(range.end)
-                        {
-                            return Err(DocumentError::InvalidRange {
-                                start: range.start,
-                                end: range.end,
-                                length: self.text().len(),
-                            }
-                            .into());
-                        }
-                        text.push_str(&self.text()[range.clone()]);
+                        let captured = snapshot.slice_utf8(range.clone())
+                            .map_err(DocumentError::FormattedTextStorage)?;
+                        text.push_str(&captured);
                         breaks.extend(
                             self.projection()
                                 .hard_breaks_for_region(range)

@@ -153,11 +153,7 @@ fn changing_code_language_preserves_scrolled_viewports_with_offscreen_carets() {
         .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
         .unwrap();
     let at = document.text().find("let value").unwrap();
-    let code_line = document
-        .projection()
-        .text_tree()
-        .hard_line_at_byte(at)
-        .unwrap();
+    let code_line = document.physical_line_index_at_source(source.find("let value").unwrap()).unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let captured = calls.clone();
     let mut core = Core::new(document);
@@ -467,11 +463,7 @@ fn shrinking_final_code_block_keeps_scroll_origin_and_real_blank_tail() {
         .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
         .unwrap();
     let at = document.text().find("let first").unwrap();
-    let line = document
-        .projection()
-        .text_tree()
-        .hard_line_at_byte(at)
-        .unwrap();
+    let line = document.physical_line_index_at_source(source.find("let first").unwrap()).unwrap();
     let calls = Arc::new(Mutex::new(Vec::new()));
     let captured = calls.clone();
     let mut core = Core::new(document);
@@ -1264,7 +1256,7 @@ fn giant_code_block_requests_and_layout_remain_regional_and_scrolling_retires_ol
     assert_fresh(&core);
     // Retiring the block's visible service also retires its base Code metrics.
     // The old first-line cache must not survive when scrolling back to it.
-    let last_line = core.document().projection().text_tree().hard_line_count() as u64;
+    let last_line = core.document().physical_source_line_number_count() as u64;
     core.handle(
         view,
         viem_core::CoreEvent::GoToLine {

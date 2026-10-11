@@ -147,7 +147,8 @@ fn parse_block_defaults(
             Err(error) => { diagnostics.push(format!("Ignored {label}: {error}.")); continue; }
         };
         let id = &entry.style.id;
-        if id.0.is_empty() || validate_definition_metadata(id, &StyleDefinitionMetadata::generated(&entry.name)).is_err() {
+        id.normalize_saved_builtin_block_name(&mut entry.name);
+        if id.0.is_empty() || validate_definition_metadata(StyleNamespace::Block, id, &StyleDefinitionMetadata::generated(&entry.name)).is_err() {
             diagnostics.push(format!("Ignored {label}: invalid style ID or display name."));
             continue;
         }
@@ -156,6 +157,12 @@ fn parse_block_defaults(
                 diagnostics.push(format!("Ignored {label}: role {:?} is incompatible with built-in role {:?}.", entry.style.role, builtin.role));
                 continue;
             }
+        }
+        if id.is_internal_in(StyleNamespace::Block) && builtins.block_style(id).is_none_or(|builtin|
+            builtins.block_style_metadata(id).is_none_or(|metadata| entry.name != metadata.display_name)
+                || entry.style.based_on != builtin.based_on || entry.style.next_paragraph_style != builtin.next_paragraph_style) {
+            diagnostics.push(format!("Ignored {label}: built-in name and relationships are fixed."));
+            continue;
         }
         if *id == builtins.base_paragraph && entry.style.based_on.is_some() {
             diagnostics.push(format!("Ignored {label}.based_on: Base Paragraph cannot inherit another style."));
@@ -194,8 +201,8 @@ fn parse_character_defaults(entries: Vec<serde_json::Value>, diagnostics: &mut V
             Err(error) => { diagnostics.push(format!("Ignored {label}: {error}.")); continue; }
         };
         let id = &entry.style.id;
-        if id.0.is_empty() || validate_definition_metadata(id, &StyleDefinitionMetadata::generated(&entry.name)).is_err()
-            || (id.is_internal() && entry.style.based_on.is_some()) {
+        if id.0.is_empty() || validate_definition_metadata(StyleNamespace::Character, id, &StyleDefinitionMetadata::generated(&entry.name)).is_err()
+            || (id.is_internal_in(StyleNamespace::Character) && entry.style.based_on.is_some()) {
             diagnostics.push(format!("Ignored {label}: invalid style ID, display name, or internal-style relationship."));
             continue;
         }
@@ -342,7 +349,7 @@ impl StyleSheet {
             if projection.has_block_style_assignment(id) { retained_blocks.insert(id.clone()); }
         }
         for id in self.character_styles.keys().filter(|id| !builtins.character_styles.contains_key(*id)) {
-            if id.is_internal() || projection.has_character_style_assignment(id) { retained_characters.insert(id.clone()); }
+            if id.is_internal_in(StyleNamespace::Character) || projection.has_character_style_assignment(id) { retained_characters.insert(id.clone()); }
         }
         // Preserve transitive source dependencies without carrying unrelated
         // definitions from a previously selected application theme.
@@ -422,7 +429,7 @@ impl StyleSheet {
             let mut candidate = self.clone();
             candidate.default_blocks = defaults.block_styles;
             candidate.default_characters = defaults.character_styles;
-            candidate.default_characters.retain(|id, _| !id.is_internal() || self.character_styles.contains_key(id));
+            candidate.default_characters.retain(|id, _| !id.is_internal_in(StyleNamespace::Character) || self.character_styles.contains_key(id));
             candidate.install_default_definitions(&defaults.block_metadata, &defaults.character_metadata);
             if repair_default_graph(&candidate, &mut blocks, &mut characters, &mut diagnostics) { continue; }
             candidate.validate_block_cycles()?;

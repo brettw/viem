@@ -69,6 +69,13 @@ mod inline_properties;
 pub(crate) use inline_properties::resolved_inline_boolean;
 #[path = "typing.rs"]
 mod typing;
+#[path = "source_typing.rs"]
+mod source_typing;
+#[path = "addressed_lines.rs"]
+mod addressed_lines;
+#[path = "source_transforms.rs"]
+mod source_transforms;
+pub use source_transforms::PhysicalSourceTransform;
 pub use fragments::{FragmentEdit, ReplacementFragment};
 pub(crate) use replacement::RecordedReplacement;
 
@@ -81,6 +88,7 @@ use super::projection::{
 use super::source_line_index::SourceHardLineSpliceStats;
 use super::transfer::{self, HardLineTransfer};
 use super::{
+    SourcePoint,
     build_state_from_decoded, ranges_overlap, spell_logical_breaks, Association, BlockProperties,
     BoundaryAffinity, CharacterProperties, ConfigurationStyleIntent, DeletionRecovery, Document,
     DocumentError, DocumentId, DocumentState, DocumentStyleAssignment, FileFormat,
@@ -205,6 +213,46 @@ pub enum ModelRequest {
         revision: Revision,
         range: Range<usize>,
         replacement: String,
+    },
+    InsertAtSource {
+        document: DocumentId,
+        revision: Revision,
+        at: SourcePoint,
+        payload: FormattedTextPayload,
+    },
+    ApplyPhysicalSourcePatches {
+        document: DocumentId,
+        revision: Revision,
+        patches: Vec<SourcePatch>,
+    },
+    /// Exact source patches for a move, with the original bytes that retain
+    /// their identity and their first byte in the resulting source snapshot.
+    MovePhysicalSource {
+        document: DocumentId,
+        revision: Revision,
+        patches: Vec<SourcePatch>,
+        source: Range<usize>,
+        destination: usize,
+    },
+    ReorderPhysicalSource {
+        document: DocumentId,
+        revision: Revision,
+        patches: Vec<SourcePatch>,
+        relocations: Vec<(Range<usize>, usize)>,
+    },
+    DeleteAddressedLines {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        source: Range<usize>,
+        physical_start: bool,
+        physical_end: bool,
+    },
+    TransformPhysicalSource {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        transform: PhysicalSourceTransform,
     },
     ApplyTextEdits {
         document: DocumentId,
@@ -335,7 +383,7 @@ impl ModelRequest {
     pub fn document(&self) -> DocumentId {
         match self {
             Self::SetStrikethrough { document, .. } | Self::SetInlineProperty { document, .. } => *document,
-            Self::ReplacePhysicalSource { document, .. } => *document,
+            Self::ReplacePhysicalSource { document, .. } | Self::ApplyPhysicalSourcePatches { document, .. } | Self::MovePhysicalSource { document, .. } | Self::ReorderPhysicalSource { document, .. } | Self::DeleteAddressedLines { document, .. } | Self::TransformPhysicalSource { document, .. } | Self::InsertAtSource { document, .. } => *document,
             Self::ApplyFragmentEdits { document, .. }
             | Self::ApplyTextEdits { document, .. }
             | Self::DeleteLines { document, .. }
@@ -362,7 +410,7 @@ impl ModelRequest {
     pub fn revision(&self) -> Revision {
         match self {
             Self::SetStrikethrough { revision, .. } | Self::SetInlineProperty { revision, .. } => *revision,
-            Self::ReplacePhysicalSource { revision, .. } => *revision,
+            Self::ReplacePhysicalSource { revision, .. } | Self::ApplyPhysicalSourcePatches { revision, .. } | Self::MovePhysicalSource { revision, .. } | Self::ReorderPhysicalSource { revision, .. } | Self::DeleteAddressedLines { revision, .. } | Self::TransformPhysicalSource { revision, .. } | Self::InsertAtSource { revision, .. } => *revision,
             Self::ApplyFragmentEdits { revision, .. }
             | Self::ApplyTextEdits { revision, .. }
             | Self::DeleteLines { revision, .. }
@@ -681,7 +729,7 @@ pub struct SourcePatch {
 }
 
 impl SourcePatch {
-    pub(super) fn primary(range: Range<usize>, replacement: Vec<u8>) -> Self {
+    pub fn primary(range: Range<usize>, replacement: Vec<u8>) -> Self {
         Self {
             part: SourcePartId::PRIMARY,
             range,
@@ -998,7 +1046,7 @@ impl From<StyleError> for ModelTransactionError {
 impl Document {
     /// Isolated candidate editing state: share the immutable document snapshot,
     /// but do not inherit UI history groups, position captures or file writes.
-    fn scratch_document(&self) -> Self {
+    pub(super) fn scratch_document(&self) -> Self {
         super::work_statistics::record(|stats| stats.scratch_documents += 1);
         Document {
             id: self.id,
@@ -1023,12 +1071,20 @@ impl Document {
         }
     }
 
-    pub(super) fn prepared_candidate_document(&self, prepared: &PreparedModelTransaction) -> Result<Document, DocumentError> {
+    pub(crate) fn prepared_candidate_document(&self, prepared: &PreparedModelTransaction) -> Result<Document, DocumentError> {
         if prepared.document != self.id() || prepared.before_revision != self.revision() { return Err(DocumentError::VerificationFailed); }
         let mut scratch = self.scratch_document();
-        if let PreparedPublication::State(state) = &prepared.publication {
-            scratch.history = super::history::History::transient(state.clone());
-        } else if !prepared.is_no_op() { return Err(DocumentError::VerificationFailed); }
+        match &prepared.publication {
+            PreparedPublication::State(state) => {
+                scratch.history = super::history::History::transient(state.clone());
+            }
+            PreparedPublication::History { target } => {
+                let state = self.history.state_at_node(*target)
+                    .ok_or(DocumentError::VerificationFailed)?.as_ref().clone();
+                scratch.history = super::history::History::transient(state);
+            }
+            PreparedPublication::NoOp => {}
+        }
         Ok(scratch)
     }
 
@@ -1101,6 +1157,16 @@ impl Document {
             ModelRequest::ReplacePhysicalSource {
                 range, replacement, ..
             } => self.prepare_physical_source(range, replacement),
+            ModelRequest::InsertAtSource { at, payload, .. } => self.prepare_insertion_at_source(at, payload, None, &[]).map(|(prepared, _, _)| prepared),
+            ModelRequest::ApplyPhysicalSourcePatches { patches, .. } => self.prepare_physical_source_patches(patches),
+            ModelRequest::MovePhysicalSource { patches, source, destination, .. } =>
+                self.prepare_physical_source_relocation(patches, vec![(source, destination)]),
+            ModelRequest::ReorderPhysicalSource { patches, relocations, .. } =>
+                self.prepare_physical_source_relocation(patches, relocations),
+            ModelRequest::DeleteAddressedLines { range, source, physical_start, physical_end, .. } =>
+                self.prepare_addressed_line_deletion(range, source, physical_start, physical_end),
+            ModelRequest::TransformPhysicalSource { range, transform, .. } =>
+                self.prepare_physical_source_transform(range, transform),
             ModelRequest::ApplyTextEdits { edits, .. } => self.prepare_text_edits(edits),
             ModelRequest::DeleteLines { range, .. } => self.prepare_line_deletion(range),
             ModelRequest::ClearDocumentContent { .. } => self.prepare_clear_document_content(),
@@ -1131,7 +1197,7 @@ impl Document {
                 style,
                 ..
             } => {
-                if style.is_internal() {
+                if style.is_internal_in(namespace) {
                     return Err(DocumentError::UnsupportedFormatting.into());
                 }
                 let range =
@@ -1180,11 +1246,11 @@ impl Document {
                 self.prepare_history_navigation(navigation)
             }
         }?;
-        if let Some(range) = numbering {
-            self.prepare_markdown_numbering(prepared, range)
-        } else {
-            Ok(prepared)
-        }
+        let mut prepared = if let Some(range) = numbering {
+            self.prepare_markdown_numbering(prepared, range)?
+        } else { prepared };
+        self.attach_prepared_source_map(&mut prepared)?;
+        Ok(prepared)
     }
 
     /// Prepare a typed style operation against one exact formatted snapshot.
@@ -1210,12 +1276,14 @@ impl Document {
                 actual: self.revision(),
             });
         }
-        match request.intent {
+        let mut prepared = match request.intent {
             StyleModelIntent::Persisted(intent) => self.prepare_persisted_style_intent(intent),
             StyleModelIntent::Configuration(intent) => {
                 self.prepare_configuration_style_intent(intent)
             }
-        }
+        }?;
+        self.attach_prepared_source_map(&mut prepared)?;
+        Ok(prepared)
     }
 
     pub fn apply_style_request(
@@ -1259,12 +1327,32 @@ impl Document {
         Ok(prepared)
     }
 
+    pub(crate) fn attach_prepared_source_map(&self, prepared: &mut PreparedModelTransaction)
+        -> Result<(), ModelTransactionError> {
+        if prepared.text_position_map.source_position_map().is_some() { return Ok(()); }
+        let source_len = self.source_byte_len();
+        let mut target_len = source_len;
+        let mut splices = Vec::new();
+        for patch in prepared.summary.source_patches() {
+            if patch.part() != SourcePartId::PRIMARY { continue; }
+            let range = patch.range();
+            target_len = target_len.checked_sub(range.len())
+                .and_then(|len| len.checked_add(patch.replacement().len()))
+                .ok_or(PositionError::ArithmeticOverflow)?;
+            splices.push(Splice::new(range, patch.replacement().len())?);
+        }
+        let map = PositionMap::for_source_part(self.id(), SourcePartId::PRIMARY,
+            prepared.before_revision, prepared.after_revision, source_len, target_len, splices)?;
+        prepared.text_position_map = prepared.text_position_map.clone().with_source_position_map(map);
+        Ok(())
+    }
+
     /// Install an already verified candidate after checking all captured model
     /// preconditions. No decoding, projection, adapter, provider, or callback
     /// work occurs after the first mutation.
     pub fn commit_model_transaction(
         &mut self,
-        prepared: PreparedModelTransaction,
+        mut prepared: PreparedModelTransaction,
     ) -> Result<CommittedModelTransaction, ModelTransactionError> {
         if prepared.document != self.id {
             return Err(ModelTransactionError::WrongDocument {
@@ -1324,6 +1412,7 @@ impl Document {
         // model operations during one input event (for example a macro). Fold
         // this transition into the coordinator's short-lived capture before
         // the first authoritative mutation so publication remains infallible.
+        self.attach_prepared_source_map(&mut prepared)?;
         let next_position_capture = self.composed_position_capture(&prepared.text_position_map)?;
         let old_line_counts = [
             self.projection().presentation_line_count(false),
@@ -1475,7 +1564,9 @@ impl Document {
                 });
             }
         }
-        self.prepare_formatted_payload_edits(request.edits)
+        let mut prepared = self.prepare_formatted_payload_edits(request.edits)?;
+        self.attach_prepared_source_map(&mut prepared)?;
+        Ok(prepared)
     }
 
     pub fn apply_formatted_payload_request(
@@ -1693,7 +1784,8 @@ impl Document {
         &self,
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if matches!(&intent, PersistedStyleIntent::AssignCharacterStyle { style, .. } if style.is_internal())
+        if matches!(&intent, PersistedStyleIntent::AssignCharacterStyle { style, .. } if style.is_internal_in(crate::document::StyleNamespace::Character))
+            || matches!(&intent, PersistedStyleIntent::AssignBlockStyle { style, .. } if style.is_internal_in(crate::document::StyleNamespace::Block))
         {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
@@ -3898,6 +3990,340 @@ impl Document {
             );
         }
         self.prepare_reprojected_source_patches(patches)
+    }
+
+    fn prepare_physical_source_patches(
+        &self,
+        patches: Vec<SourcePatch>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if self.format().is_literal() {
+            self.prepare_visible_source_patches(patches)
+        } else {
+            if self.format().is_source_view() {
+                // Benign authored Source edits have the same exact boundary
+                // relation as visible edits. Regional verification proves
+                // independence; grammar changes fall back to reprojection.
+                if let Ok(prepared) = self.prepare_visible_source_patches(patches.clone()) {
+                    return Ok(prepared);
+                }
+                if let Ok(Some(prepared)) = self.prepare_regional_markdown_source_patches(patches.clone()) {
+                    return Ok(prepared);
+                }
+            } else if let Ok(Some(prepared)) = self.prepare_regional_wysiwyg_prose_patches(patches.clone()) {
+                return Ok(prepared);
+            }
+            self.prepare_reprojected_source_patches(patches)
+        }
+    }
+
+    /// Reordering ordinary prose continuation lines changes folded text, but
+    /// cannot affect another owner when both paragraph separators stay intact.
+    /// Prove that one bounded body parses independently before deriving the
+    /// visible edit; the declared source patches remain the mutation authority.
+    fn prepare_regional_wysiwyg_prose_patches(
+        &self,
+        mut patches: Vec<SourcePatch>,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if self.format() != Format::Markdown || patches.is_empty() { return Ok(None); }
+        validate_source_patches(&mut patches)?;
+        let start = self.visible_point_for_source(patches[0].range.start, false)?;
+        let end = self.visible_point_for_source(patches.last().unwrap().range.end, true)?;
+        if start > end { return Ok(None); }
+        let projection = self.projection();
+        let Some(line) = projection.hard_line_at_offset(start) else { return Ok(None); };
+        let Some(row) = projection.hard_line_range(line) else { return Ok(None); };
+        let Some(owner) = projection.blocks_for_region(&row).into_iter().find(|block|
+            block.range == row && !row.is_empty() && block.kind == super::BlockKind::Paragraph
+                && block.style.0 == "Paragraph" && block.quote_depth == 0
+                && block.containers.is_empty() && !block.markdown_html && !block.thematic_break)
+            else { return Ok(None); };
+        if end > owner.range.end || owner.range.len() > 32768 { return Ok(None); }
+        let Some(contributors) = projection.source_range(owner.range.clone()) else { return Ok(None); };
+        if contributors.is_empty() { return Ok(None); }
+        let first = self.physical_line_index_at_source(contributors.start)?;
+        let last = self.physical_line_index_at_source(contributors.end - 1)?;
+        // Include edge delimiters such as emphasis, while excluding the final
+        // ending and the following blank separator row from the authored body.
+        let body = self.physical_line_ranges(first)?.0.start..self.physical_line_ranges(last)?.1.end;
+        if body.len() > 32768 || patches.iter().any(|patch|
+            patch.part != SourcePartId::PRIMARY || patch.range.start < body.start || patch.range.end > body.end) {
+            return Ok(None);
+        }
+        let new_end = rebase_source_boundary(body.end, &patches, Association::AfterInsertion)?;
+        if new_end < body.start || new_end - body.start > 32768 { return Ok(None); }
+        let old_bytes = self.source_bytes_in(body.clone())?;
+        let old_decoded = self.encoding().decode_region(&old_bytes, body.start)?;
+        // References and passive HTML need surrounding definition/ownership
+        // context; this proof deliberately covers ordinary prose only.
+        if old_decoded.text.contains(['[', '<']) { return Ok(None); }
+        let old_local = project(&normalize(&old_decoded, self.file_format()), Format::Markdown,
+            self.revision(), body.start, body.end);
+        let old = projection.text_tree().slice(owner.range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        if old_local.text() != old || old_local.blocks().len() != 1
+            || old_local.blocks()[0].attributes != owner.attributes
+            || markdown_source_region_signature(projection, &owner.range)
+                != markdown_source_region_signature(&old_local, &(0..old.len())) {
+            return Ok(None);
+        }
+        let source = apply_source_patches(&self.state().source, &patches)?;
+        let Some(new_bytes) = source.bytes_in(body.start..new_end) else { return Ok(None); };
+        let new_decoded = self.encoding().decode_region(&new_bytes, body.start)?;
+        if new_decoded.text.contains(['[', '<']) { return Ok(None); }
+        let new_local = project(&normalize(&new_decoded, self.file_format()), Format::Markdown,
+            Revision(self.next_revision), body.start, new_end);
+        let new = new_local.text();
+        if new.is_empty() || new.contains(['\n', '\r']) || new_local.blocks().len() != 1
+            || new_local.blocks()[0].attributes != owner.attributes {
+            return Ok(None);
+        }
+        let prefix = old.grapheme_indices(true).zip(new.graphemes(true))
+            .take_while(|((_, left), right)| left == right)
+            .map(|((at, item), _)| at + item.len()).last().unwrap_or(0);
+        let suffix = old[prefix..].graphemes(true).rev().zip(new[prefix..].graphemes(true).rev())
+            .take_while(|(left, right)| left == right).map(|(item, _)| item.len()).sum::<usize>();
+        let edit = TextEdit::new(owner.range.start + prefix..owner.range.end - suffix,
+            &new[prefix..new.len() - suffix]);
+        if self.markdown_edit_needs_reference_context(std::slice::from_ref(&edit))
+            || self.line_local_projection_region_with_context(std::slice::from_ref(&edit), &patches, true)?.is_none() {
+            return Ok(None);
+        }
+        let prepared = self.prepare_text_edits_with_patch_policy(vec![edit], Some(patches.clone()), true)?;
+        if prepared.summary.source_patches != patches { return Ok(None); }
+        Ok(Some(prepared))
+    }
+
+    /// A physical gap can lie inside a paired Source paragraph separator, so
+    /// its exact source intention has no single formatted insertion boundary.
+    /// Recover a bounded verification band, derive its actual parsed edit, and
+    /// publish the original patches without redirecting or expanding them.
+    fn prepare_regional_markdown_source_patches(
+        &self,
+        mut patches: Vec<SourcePatch>,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if !self.format().is_source_view() || patches.is_empty() { return Ok(None); }
+        validate_source_patches(&mut patches)?;
+        let seed_for = |indices: &Range<usize>| -> Result<Option<TextEdit>, ModelTransactionError> {
+            let start = self.visible_point_for_source(patches[indices.start].range.start, false)?;
+            let end = self.visible_point_for_source(patches[indices.end - 1].range.end, true)?;
+            if start > end { return Ok(None); }
+            let projection = self.projection();
+            let Some((first, last)) = projection.hard_line_at_offset(start)
+                .zip(projection.hard_line_at_offset(end)) else { return Ok(None); };
+            if last.saturating_sub(first) >= MAX_LINE_LOCAL_PROJECTION_HARD_LINES { return Ok(None); }
+            Ok(Some(TextEdit::new(start..end, "")))
+        };
+        // Grammar context can extend beyond a patch. Merge overlapping owner
+        // and support bands before proving groups independently; a distant
+        // destination does not make the unchanged intervening prose a region.
+        let mut groups: Vec<(Range<usize>, TextEdit, Range<usize>)> = Vec::new();
+        for index in 0..patches.len() {
+            let mut indices = index..index + 1;
+            loop {
+                let Some(seed) = seed_for(&indices)? else { return Ok(None); };
+                let Some(region) = self.line_local_projection_region(std::slice::from_ref(&seed),
+                    &patches[indices.clone()])? else { return Ok(None); };
+                if let Some(previous) = groups.last().filter(|previous|
+                    previous.2.start <= region.old_source.end && region.old_source.start <= previous.2.end) {
+                    indices.start = previous.0.start;
+                    groups.pop();
+                } else {
+                    groups.push((indices, seed, region.old_source));
+                    break;
+                }
+            }
+        }
+        let mut edits = Vec::with_capacity(groups.len());
+        for (indices, seed, _) in &groups {
+            let Some(edit) = self.markdown_source_reparsed_edit(seed, &patches[indices.clone()])?
+                else { return Ok(None); };
+            edits.push(edit);
+        }
+        if groups.len() == 1 {
+            return self.prepare_text_edits_with_patch_policy(edits, Some(patches), true).map(Some);
+        }
+
+        let persistent: Vec<_> = edits.iter().map(|edit| (edit.range.clone(), edit.replacement.as_str())).collect();
+        let (expected_text, text_work) = self.projection().text_tree()
+            .splice_prevalidated_batch_with_stats(&persistent).map_err(DocumentError::FormattedTextStorage)?;
+        let mut scratch = self.scratch_document();
+        let mut work = ProjectionWorkStatistics::none();
+        work.formatted_text_nodes_visited = text_work.nodes_visited;
+        work.formatted_text_nodes_copied = text_work.nodes_copied;
+        work.formatted_text_leaves_copied = text_work.leaves_copied;
+        for (group, edit) in groups.iter().zip(&edits).rev() {
+            let group_patches = patches[group.0.clone()].to_vec();
+            let prepared = scratch.prepare_text_edits_with_patch_policy(vec![edit.clone()],
+                Some(group_patches.clone()), true)?;
+            if prepared.summary.source_patches != group_patches { return Ok(None); }
+            work.accumulate(prepared.summary.projection_work);
+            scratch.commit_model_transaction(prepared)?;
+        }
+        let mut state = scratch.state().clone();
+        if state.projection.text_tree().byte_len() != expected_text.byte_len() {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        // Independent regional proofs preserve all outer text. Check the
+        // simultaneous changed bands, never flatten their unrelated gap.
+        let mut shift = 0i128;
+        for edit in &edits {
+            let start = usize::try_from(edit.range.start as i128 + shift)
+                .map_err(|_| PositionError::ArithmeticOverflow)?;
+            let end = start.checked_add(edit.replacement.len()).ok_or(PositionError::ArithmeticOverflow)?;
+            if state.projection.text_tree().slice(start..end).map_err(DocumentError::FormattedTextStorage)?
+                != edit.replacement { return Err(DocumentError::VerificationFailed.into()); }
+            shift += edit.replacement.len() as i128 - edit.range.len() as i128;
+        }
+        let revision = Revision(self.next_revision);
+        state.revision = revision;
+        let sheet = state.projection.style_sheet().clone();
+        let assignment = state.projection.document_style().clone();
+        state.projection.install_configuration_styles(revision, sheet, assignment);
+        let splices = grapheme_closed_snapshot_map_splices(self.projection(), &state.projection, &edits)?;
+        let map = PositionMap::for_text_snapshots(self.id, self.revision(), revision,
+            self.projection(), &state.projection, splices)?;
+        let formatted_splices = edits.iter().map(|edit| Splice::new(edit.range.clone(), edit.replacement.len()))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some(self.prepared(revision, ModelChangeSummary {
+            kind: ModelChangeKind::TextEdits, source_patches: patches, formatted_splices,
+            projection_work: work, style_change: None, conversion_warnings: Vec::new(),
+        }, map, None, scratch.next_projected_block_id, PreparedPublication::State(state))))
+    }
+
+    fn prepare_physical_source_relocation(
+        &self,
+        patches: Vec<SourcePatch>,
+        relocations: Vec<(Range<usize>, usize)>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        for (source, _) in &relocations {
+            self.source_point(source.start)?;
+            self.source_point(source.end)?;
+            if source.start > source.end {
+                return Err(DocumentError::InvalidRange {
+                    start: source.start, end: source.end, length: self.source_byte_len(),
+                }.into());
+            }
+        }
+        let mut prepared = self.prepare_physical_source_patches(patches)?;
+        if prepared.before_revision == prepared.after_revision { return Ok(prepared); }
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        for (source, destination) in &relocations {
+            let destination_end = destination.checked_add(source.len()).ok_or(PositionError::ArithmeticOverflow)?;
+            if candidate.source_bytes_in(*destination..destination_end)? != self.source_bytes_in(source.clone())? {
+                return Err(DocumentError::HardLineTransferProjectionMismatch.into());
+            }
+        }
+        self.attach_prepared_source_map(&mut prepared)?;
+        let source_map = prepared.text_position_map.source_position_map()
+            .ok_or(DocumentError::AmbiguousProjection)?.clone()
+            .with_relocated_content(relocations.clone())?;
+
+        if self.format().is_literal() {
+            // Literal contributors are affine within each selected source
+            // interval. Resolve only those local ranges, avoiding flattening
+            // the entire document to recover a small moved/sorted region.
+            let mut formatted = Vec::new();
+            for (source, destination) in relocations {
+                let boundary = |projection: &FormattedDocument, revision, at, affinity| {
+                    projection.map_source_boundary(revision, at, affinity)
+                        .map(|point| point.formatted_offset)
+                        .map_err(|_| DocumentError::AmbiguousProjection)
+                };
+                let start = boundary(self.projection(), self.revision(), source.start, BoundaryAffinity::Downstream)?;
+                let end = boundary(self.projection(), self.revision(), source.end, BoundaryAffinity::Upstream)?;
+                let new_start = boundary(candidate.projection(), candidate.revision(), destination, BoundaryAffinity::Downstream)?;
+                let new_end = boundary(candidate.projection(), candidate.revision(), destination + source.len(), BoundaryAffinity::Upstream)?;
+                self.text_point(start)?; self.text_point(end)?;
+                candidate.text_point(new_start)?; candidate.text_point(new_end)?;
+                if end - start != new_end - new_start
+                    || self.projection().text_tree().slice(start..end).map_err(DocumentError::FormattedTextStorage)?
+                        != candidate.projection().text_tree().slice(new_start..new_end).map_err(DocumentError::FormattedTextStorage)? {
+                    return Err(DocumentError::HardLineTransferProjectionMismatch.into());
+                }
+                formatted.push((start..end, new_start));
+            }
+            let mut changed = Vec::new();
+            let mut shift = 0i128;
+            for patch in &prepared.summary.source_patches {
+                let start = usize::try_from(patch.range.start as i128 + shift)
+                    .map_err(|_| PositionError::ArithmeticOverflow)?;
+                let end = start.checked_add(patch.replacement.len()).ok_or(PositionError::ArithmeticOverflow)?;
+                let projection = candidate.projection();
+                if let Some((first, last)) = projection.nearest_text_boundary_for_source(start, true)
+                    .zip(projection.nearest_text_boundary_for_source(end, false)) {
+                    changed.push(first.min(last)..first.max(last));
+                }
+                shift += patch.replacement.len() as i128 - patch.range.len() as i128;
+            }
+            if let PreparedPublication::State(state) = &mut prepared.publication {
+                state.projection.install_relocated_text_storage(self.projection(), &formatted)
+                    .map_err(DocumentError::FormattedTextStorage)?;
+                prepared.next_projected_block_id_after = state.projection.install_relocated_literal_line_ids(
+                    self.projection(), &formatted, &changed, prepared.next_projected_block_id_after,
+                ).map_err(super::block_identity_document_error)?;
+            }
+            prepared.text_position_map = prepared.text_position_map.clone()
+                .with_relocated_content(formatted)?.with_source_position_map(source_map);
+            prepared.summary.kind = ModelChangeKind::HardLineTransfer;
+            return Ok(prepared);
+        }
+
+        // A derived visible edit can also cover unchanged source contributors
+        // displaced within the same folded paragraph. Recover them inside the
+        // actual changed bands alongside the explicitly relocated bodies;
+        // never inspect their unrelated prefix or the gap between bands.
+        let mut old_ranges = self.projection().source_grapheme_lookup_ranges(
+            relocations.iter().map(|(source, _)| source.clone()),
+        ).map_err(DocumentError::FormattedTextStorage)?;
+        old_ranges.extend(prepared.summary.formatted_splices.iter().map(Splice::old_range));
+        let old_ranges = self.projection().grapheme_lookup_ranges(old_ranges)
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let mut preserved = Vec::new();
+        for range in old_ranges {
+            for (at, item, source) in self.projection().source_grapheme_ranges_in(&range)
+                .map_err(DocumentError::FormattedTextStorage)? {
+                let Some(source) = source else { continue; };
+                let Some(mapped) = source_map.preserved_content_ranges(source)? else { continue; };
+                let [mapped] = mapped.as_slice() else { continue; };
+                preserved.push((at, item, mapped.clone()));
+            }
+        }
+        // An unchanged folded ending may now render just outside the new edit
+        // band. Its exact mapped source contributor supplies the lookup scope.
+        let new_ranges = candidate.projection().source_grapheme_lookup_ranges(
+            preserved.iter().map(|(_, _, source)| source.clone()),
+        ).map_err(DocumentError::FormattedTextStorage)?;
+        let mut targets = std::collections::HashMap::new();
+        for range in new_ranges {
+            for (at, item, source) in candidate.projection().source_grapheme_ranges_in(&range)
+                .map_err(DocumentError::FormattedTextStorage)? {
+                if let Some(source) = source {
+                    let key = (source.start, source.end);
+                    targets.entry(key).and_modify(|entry| *entry = None)
+                        .or_insert(Some((at, item)));
+                }
+            }
+        }
+        let mut relocated: Vec<(Range<usize>, usize)> = Vec::new();
+        for (at, item, mapped) in preserved {
+            let Some(Some((new_at, new_item))) = targets.get(&(mapped.start, mapped.end)) else { continue; };
+            if item != *new_item { continue; }
+            if let Some((previous, target)) = relocated.last_mut() {
+                if previous.end == at && *target + previous.len() == *new_at {
+                    previous.end += item.len();
+                    continue;
+                }
+            }
+            relocated.push((at..at + item.len(), *new_at));
+        }
+        if let PreparedPublication::State(state) = &mut prepared.publication {
+            state.projection.install_relocated_text_storage(self.projection(), &relocated)
+                .map_err(DocumentError::FormattedTextStorage)?;
+        }
+        prepared.text_position_map = prepared.text_position_map.clone()
+            .with_relocated_content(relocated)?.with_source_position_map(source_map);
+        prepared.summary.kind = ModelChangeKind::HardLineTransfer;
+        Ok(prepared)
     }
 
     pub(super) fn prepare_reprojected_source_patches(
@@ -6828,7 +7254,8 @@ fn effective_block_definition_changes(
             | super::BlockRole::CodeBlock
             | super::BlockRole::List
             | super::BlockRole::ListItem
-            | super::BlockRole::Table => {
+            | super::BlockRole::Table
+            | super::BlockRole::Container => {
                 let before = before_sheet.resolve_assigned_paragraph_style(
                     before_assignment,
                     id,

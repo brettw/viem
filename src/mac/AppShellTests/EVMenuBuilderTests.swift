@@ -502,6 +502,19 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertNil(try submenu("View", of: menu).item(withTitle: "Wrap at Word Boundaries"))
     }
 
+    func testLineNumberCheckboxPrecedesInvisibleCharactersInViewMenu() throws {
+        let owner = Owner()
+        let builder = EVMenuBuilder(owner: owner)
+        let menu = builder.buildMainMenu(for: NSApplication.shared)
+        let view = try submenu("View", of: menu)
+        let index = try XCTUnwrap(view.items.firstIndex(where: { $0.title == "Show line numbers" }))
+        XCTAssertEqual(view.items[index + 1].title, "Show Invisible Characters")
+        XCTAssertTrue(view.showsStateColumn)
+        XCTAssertEqual(view.items[index].tag, EVMenuCommand.showLineNumbers.rawValue)
+        XCTAssertEqual(view.items[index].action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+        XCTAssertNil(view.items[index].target)
+    }
+
     func testStyleMenusReserveOneNativeCheckmarkColumnForEveryRow() throws {
         let owner = Owner()
         let provider = StyleProvider(catalogue: styleCatalogue(documentRevision: 1, styleSheetRevision: 1, entries: [

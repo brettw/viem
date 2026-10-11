@@ -20,10 +20,10 @@ import XCTest
         document.addWindowController(window)
         return (directory, backend, document, window)
     }
-    private func perform(_ window: EVDocumentWindowController, backend: EVCoreDocumentBackend, kind: EVDocumentHostRequest.Kind, path: String? = nil, force: Bool = false, range: ClosedRange<UInt64>? = nil, after: UInt64? = nil) async -> Result<String?, Error> {
+    private func perform(_ window: EVDocumentWindowController, backend: EVCoreDocumentBackend, kind: EVDocumentHostRequest.Kind, path: String? = nil, force: Bool = false, range: Range<UInt64>? = nil, after: UInt64? = nil) async -> Result<String?, Error> {
         let state = backend.persistenceState
         return await withCheckedContinuation { continuation in
-            window.perform(documentHostRequests: [.init(kind: kind, documentID: state.documentID, documentRevision: state.documentRevision, force: force, path: path, hardLineRange: range, readAfterLine: after)]) { continuation.resume(returning: $0) }
+            window.perform(documentHostRequests: [.init(kind: kind, documentID: state.documentID, documentRevision: state.documentRevision, force: force, path: path, sourceByteRange: range, readAfterOffset: after, readAfterIsSource: true)]) { continuation.resume(returning: $0) }
         }
     }
     func testNewMarkdownExOpensUsePreferenceButCurrentFileReloadKeepsItsView() async throws {
@@ -77,10 +77,10 @@ import XCTest
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }
         try document.read(from: Data("# first\r\n**second**\r\nlast".utf8), ofType: EVDocument.markdownType)
         let target = directory.appendingPathComponent("range.md")
-        _ = try await perform(window, backend: backend, kind: .write, path: target.path, range: 1...1).get()
-        XCTAssertEqual(try Data(contentsOf: target), Data("**second**\r\nlast".utf8))
+        _ = try await perform(window, backend: backend, kind: .write, path: target.path, range: 9..<21).get()
+        XCTAssertEqual(try Data(contentsOf: target), Data("**second**\r\n".utf8))
         let original = try XCTUnwrap(document.fileURL)
-        let refusal = await perform(window, backend: backend, kind: .write, path: original.path, range: 1...1)
+        let refusal = await perform(window, backend: backend, kind: .write, path: original.path, range: 9..<21)
         if case .success = refusal { XCTFail("Partial overwrite did not require force") }
         XCTAssertFalse(FileManager.default.fileExists(atPath: original.path))
         let conflictingSaveAs = await perform(window, backend: backend, kind: .saveAs, path: target.path)
@@ -132,7 +132,7 @@ import XCTest
         XCTAssertFalse(active === first)
         let input = directory.appendingPathComponent("read.txt")
         try Data("\u{feff}  one\r\n  two\r\n".utf8).write(to: input)
-        _ = try await perform(window, backend: backend, kind: .read, path: input.path, after: 1).get()
+        _ = try await perform(window, backend: backend, kind: .read, path: input.path, after: 7).get()
         XCTAssertEqual(try backend.formattedText(), "first\n  one\n  two\nlast")
         XCTAssertEqual(try firstSession.presentation().cursor_utf8_offset, 0)
         XCTAssertEqual(try session.presentation().cursor_utf8_offset, 8)
@@ -148,9 +148,9 @@ import XCTest
         document.fileType = EVDocument.plainTextType
         let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
         let stale = backend.persistenceState
-        _ = try session.readFile(Data("one\ntwo\n".utf8), after: 1, expected: stale)
+        _ = try session.readFile(Data("one\ntwo\n".utf8), after: 0, source: true, expected: stale)
         XCTAssertEqual(try backend.formattedText(), "one\ntwo")
-        XCTAssertThrowsError(try session.readFile(Data("bad".utf8), after: 1, expected: stale))
+        XCTAssertThrowsError(try session.readFile(Data("bad".utf8), after: 0, source: true, expected: stale))
         XCTAssertEqual(try backend.formattedText(), "one\ntwo")
     }
 

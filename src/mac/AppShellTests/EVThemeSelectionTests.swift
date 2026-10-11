@@ -126,7 +126,7 @@ final class EVThemeSelectionTests: XCTestCase {
     XCTAssertEqual(first.theme, .paper)
     XCTAssertEqual(second.theme, .paper)
     var edited = first.theme
-    edited.statusFontSize = 17
+    edited.caret = EVThemeColor(0.1, 0.2, 0.3)
     first.update(edited)
     XCTAssertEqual(second.theme, edited)
     XCTAssertEqual(EVThemeStore(configuration: configuration).theme, edited)

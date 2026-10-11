@@ -1056,6 +1056,20 @@ where
             captured_view,
         )
     };
+    let styles = match &input {
+        CapturedLayoutInput::UnwrappedViewport { styles, .. }
+        | CapturedLayoutInput::StreamingOverflowSlice { styles, .. }
+        | CapturedLayoutInput::Regional { styles, .. }
+        | CapturedLayoutInput::LongHardLineSlice { styles, .. } => styles,
+    };
+    captured_view.default_font_metrics = view.snapshot().filter(|snapshot| {
+        snapshot.document_id == document.id()
+            && snapshot.document_revision == document.revision()
+            && snapshot.configuration_generation == view.configuration_generation()
+            && snapshot.document_style_revision == Some(styles.style_sheet_revision)
+            && snapshot.measurement_environment_id == provider_requirements.measurement_environment_id
+            && snapshot.metrics_generation == provider_requirements.metrics_generation
+    }).and_then(|snapshot| snapshot.default_font_metrics.clone());
     if matches!(&input, CapturedLayoutInput::Regional { .. }) {
         captured_view.cached_lines = view.capture_regional_cache_hits(
             document.id(), document.revision(), provider_requirements.measurement_environment_id,
@@ -1283,6 +1297,7 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
         });
     }
 
+    engine.reuse_captured_font_metrics(&request.captured_view);
     if let Some(cache) = &request.table_measurements { engine.install_table_measurements(cache.clone()); }
     let snapshot = match &request.input {
         CapturedLayoutInput::UnwrappedViewport { text, line_ranges, following_line_range, document_hard_line_count, styles } => {
@@ -1953,12 +1968,18 @@ mod tests {
 
     #[test]
     fn hard_line_job_is_regional_and_preserves_an_installed_full_snapshot() {
-        let document = Document::from_bytes(
+        let mut document = Document::from_bytes(
             b"plain\n# Heading words\ntail".to_vec(),
             crate::document::Encoding::Utf8,
             crate::document::Format::Markdown,
         )
         .unwrap();
+        let mut defaults: serde_json::Value = serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
+        for style in defaults["block_styles"].as_array_mut().unwrap() {
+            if style["id"] == "Paragraph" { style["character"]["size"] = 17.into(); }
+            if style["id"] == "Heading1" { style["character"]["size"] = 31.into(); }
+        }
+        document.initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap()).unwrap();
         let mut full_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let mut view = ViewLayout::new(90.0, 100.0);
         full_engine.relayout(&document, &mut view).unwrap();
@@ -1977,6 +1998,7 @@ mod tests {
             LayoutCancellationToken::new(),
         )
         .unwrap();
+        assert!(request.captured_view.default_font_metrics.is_some());
         let expected = document.line_start(1).unwrap()..document.line_end(1).unwrap();
         assert_eq!(request.captured_text_len(), expected.len());
         assert!(request.captured_text_len() < request.projection_text_len());
@@ -2007,7 +2029,7 @@ mod tests {
             .provider()
             .request_default_sizes
             .iter()
-            .all(|size| *size == 24.0));
+            .all(|size| *size == 31.0));
 
         install_layout_job(
             &mut view,
@@ -2019,6 +2041,108 @@ mod tests {
         assert_eq!(view.regional_cached_ranges(), vec![1..2]);
         assert_eq!(view.regional_cache_statistics().hard_line_count(), 1);
         assert!(view.content_height().is_exact());
+    }
+
+    #[test]
+    fn default_font_metric_reuse_revalidates_font_and_snapshot_dependencies() {
+        for changed in ["metrics", "environment", "scale", "stylesheet", "font"] {
+            let mut document = Document::from_bytes(
+                b"plain\n# Heading words\ntail".to_vec(),
+                crate::document::Encoding::Utf8,
+                crate::document::Format::Markdown,
+            )
+            .unwrap();
+            let mut defaults: serde_json::Value =
+                serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
+            for style in defaults["block_styles"].as_array_mut().unwrap() {
+                if style["id"] == "Paragraph" {
+                    style["character"]["size"] = 17.into();
+                }
+                if style["id"] == "Heading1" {
+                    style["character"]["size"] = 31.into();
+                }
+            }
+            document
+                .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
+                .unwrap();
+            let mut full_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+            let mut view = ViewLayout::new(90., 100.);
+            full_engine.relayout(&document, &mut view).unwrap();
+            let mut provider = InstrumentedProvider::new(ProviderThreading::AnyWorker);
+            let mut expected = 17. * 1.12;
+            match changed {
+                "metrics" => provider.inner.set_metrics_generation(MetricsGeneration(2)),
+                "environment" => provider
+                    .inner
+                    .set_measurement_environment_id(MeasurementEnvironmentId(2)),
+                "scale" => {
+                    view.set_scale(2.).unwrap();
+                    expected *= 2.;
+                }
+                "stylesheet" => {
+                    let paragraph = defaults["block_styles"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|style| style["id"] == "Paragraph")
+                        .unwrap();
+                    paragraph["character"]["size"] = 19.into();
+                    document
+                        .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
+                        .unwrap();
+                    expected = 19. * 1.12;
+                }
+                "font" => {
+                    // Public styled-layout callers can supply different font
+                    // values with the same stylesheet revision. The captured
+                    // entry's font key must still match the worker's cascade.
+                    let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
+                    styles.whitespace_shaping_style.size = 23.;
+                    full_engine
+                        .relayout_styled_text(
+                            document.id(),
+                            document.revision(),
+                            document.text(),
+                            styles,
+                            &mut view,
+                        )
+                        .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let mut engine = LayoutEngine::new(provider);
+            let requirements = inspect_layout_provider(&engine);
+            let request = prepare_layout_job(
+                &document,
+                &mut view,
+                requirements,
+                LayoutJobId(1),
+                LayoutJobPriority::NewlyExposedRows,
+                viewport(1..2, 0., 100.),
+                LayoutCancellationToken::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                request.captured_view.default_font_metrics.is_some(),
+                changed == "font",
+                "{changed}"
+            );
+            let candidate =
+                compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+            assert!(
+                engine.provider().request_ranges.contains(&(0..0)),
+                "{changed}: stale default metrics must be measured again"
+            );
+            let install_target = LayoutInstallTarget {
+                measurement_environment_id: requirements.measurement_environment_id,
+                ..target(&document, requirements.metrics_generation)
+            };
+            install_layout_job(&mut view, install_target, candidate).unwrap();
+            assert!(
+                (view.snapshot().unwrap().default_row_advance - expected).abs() < 0.001,
+                "{changed}"
+            );
+        }
     }
 
     #[test]

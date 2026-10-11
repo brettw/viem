@@ -196,7 +196,7 @@ fn ex_move_uses_local_delete_and_insert_patches_in_both_directions() {
 #[test]
 fn command_line_markdown_transfer_targets_last_copied_line_first_nonblank() {
     let mut document = Document::from_bytes(
-        b"# H\n\n  **one**\n\n_two_\n\ntail".to_vec(),
+        b"# H\n##   **one**\n### _two_\n# tail".to_vec(),
         Encoding::Utf8,
         Format::Markdown,
     )
@@ -207,7 +207,7 @@ fn command_line_markdown_transfer_targets_last_copied_line_first_nonblank() {
 
     assert_eq!(
         document.source_bytes(),
-        b"# H\n\n  **one**\n\n_two_\n\ntail\n\n# H\n\n  **one**"
+        b"# H\n##   **one**\n### _two_\n# tail\n# H\n##   **one**"
     );
     assert_eq!(commands.cursor(), "H\none\ntwo\ntail\nH\n".len());
 }

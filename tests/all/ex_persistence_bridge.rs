@@ -16,6 +16,16 @@ fn core_from(document: Document) -> Core<MockTextMeasurementProvider> {
     Core::new(document)
 }
 
+fn write_range(document: &Document, start: usize, end: usize) -> viem_core::command::ex_execute::ResolvedExRange {
+    use viem_core::command::{ex::parse_ex, ex_execute::{prepare_ex, ExExecutionContext, ExExecutionState}};
+    let plan = prepare_ex(document, &ExExecutionState::default(), &ExExecutionContext::default(),
+        &parse_ex(&format!(":{},{}write copy", start + 1, end + 1)).unwrap(), &()).unwrap();
+    match &plan.outcome.frontend_requests[0] {
+        ExFrontendRequest::File(ExFileRequest::Write { range: Some(range), .. }) => range.clone(),
+        _ => panic!("expected ranged write"),
+    }
+}
+
 fn artifact_write(prepared: PreparedExFileRequest) -> PreparedExArtifactWrite {
     match prepared {
         PreparedExFileRequest::ArtifactWrite(write) => write,
@@ -217,7 +227,7 @@ fn ranged_writes_copy_exact_source_lines_in_every_encoding_and_line_mode() {
             encoding: Encoding::Utf8,
             format: Format::Markdown,
             file_format: FileFormat::Dos,
-            lines: HardLineRange { start: 1, end: 2 },
+            lines: HardLineRange { start: 1, end: 4 },
         },
         Case {
             source: "café\nliteral\rtwo\rfinal",
@@ -241,7 +251,7 @@ fn ranged_writes_copy_exact_source_lines_in_every_encoding_and_line_mode() {
             encoding: Encoding::Utf16Be,
             format: Format::Markdown,
             file_format: FileFormat::Dos,
-            lines: HardLineRange { start: 1, end: 1 },
+            lines: HardLineRange { start: 1, end: 2 },
         },
         Case {
             source: "one\ntwo\nunterminated",
@@ -268,7 +278,7 @@ fn ranged_writes_copy_exact_source_lines_in_every_encoding_and_line_mode() {
             core.prepare_ex_file_request(&ExFileRequest::Write {
                 path: Some(format!("selection-{index}")),
                 force: false,
-                range: Some(case.lines),
+                range: Some(write_range(core.document(), case.lines.start, case.lines.end)),
             })
             .unwrap(),
         );
@@ -310,7 +320,7 @@ fn whole_current_range_saves_but_partial_current_range_requires_bang() {
         core.prepare_ex_file_request(&ExFileRequest::Write {
             path: None,
             force: false,
-            range: Some(HardLineRange { start: 0, end: 1 }),
+            range: Some(write_range(core.document(), 0, 1)),
         })
         .unwrap(),
     );
@@ -324,7 +334,7 @@ fn whole_current_range_saves_but_partial_current_range_requires_bang() {
         core.prepare_ex_file_request(&ExFileRequest::Write {
             path: None,
             force: false,
-            range: Some(partial_range),
+            range: Some(write_range(core.document(), partial_range.start, partial_range.end)),
         }),
         Err(CoreError::PartialCurrentWriteRequiresForce {
             range: partial_range,
@@ -335,7 +345,7 @@ fn whole_current_range_saves_but_partial_current_range_requires_bang() {
         core.prepare_ex_file_request(&ExFileRequest::Write {
             path: None,
             force: true,
-            range: Some(partial_range),
+            range: Some(write_range(core.document(), partial_range.start, partial_range.end)),
         })
         .unwrap(),
     );
@@ -370,15 +380,15 @@ fn invalid_current_write_range_is_reported_before_partial_write_policy() {
         core.prepare_ex_file_request(&ExFileRequest::Write {
             path: None,
             force: false,
-            range: Some(HardLineRange { start: 1, end: 2 }),
+            range: Some({
+                let mut range = write_range(core.document(), 1, 1);
+                range.text.end = core.document().projection().text_tree().byte_len() + 1;
+                range
+            }),
         }),
-        Err(CoreError::HardLineSourceRange(
-            HardLineSourceRangeError::InvalidRange {
-                start: 1,
-                end: 3,
-                line_count: 2,
-            }
-        ))
+        Err(CoreError::Document(viem_core::document::DocumentError::InvalidRange {
+            start: 8, end: 8, length: 7,
+        }))
     );
 }
 

@@ -155,7 +155,7 @@ struct EVExHostEffect: Equatable {
     let documentID: UInt64
     let documentRevision: UInt64
     let text: String
-    let hardLineRange: ClosedRange<UInt64>?
+    let sourceByteRange: Range<UInt64>?
     let options: [EVExOptionEffect]
     let marks: [EVExMarkEffect]
     let registers: [EVExRegisterEffect]
@@ -164,7 +164,8 @@ struct EVExHostEffect: Equatable {
     var windowTarget: UInt64? = nil
     var windowResizeMode: UInt32 = 0
     var argumentNavigation: EVArgumentNavigation? = nil
-    var readAfterLine: UInt64? = nil
+    var readAfterOffset: UInt64? = nil
+    var readAfterIsSource: Bool = false
     var exitStatus: UInt32? = nil
 }
 
@@ -401,12 +402,14 @@ private extension EVRawEffectBatch {
                   request.document_id == info.document_id,
                   request.document_revision == info.document_revision
             else { throw EVCoreFrontendError.invalidHostEffect }
-            let range: ClosedRange<UInt64>? = request.flags & UInt32(VIEM_EX_FRONTEND_HAS_RANGE) != 0
-                ? request.hard_line_start ... request.hard_line_end
-                : nil
-            guard range == nil || request.hard_line_start <= request.hard_line_end else {
+            let hasSourceRange = request.flags & UInt32(VIEM_EX_FRONTEND_HAS_RANGE) != 0
+                && (request.kind == UInt32(VIEM_EX_FRONTEND_WRITE) || request.kind == UInt32(VIEM_EX_FRONTEND_WRITE_QUIT))
+            guard !hasSourceRange || request.hard_line_start <= request.hard_line_end else {
                 throw EVCoreFrontendError.invalidHostEffect
             }
+            let range: Range<UInt64>? = hasSourceRange
+                ? request.hard_line_start ..< request.hard_line_end
+                : nil
             let argumentNavigation: EVArgumentNavigation?
             if request.kind == UInt32(VIEM_EX_FRONTEND_ARGUMENT) {
                 guard let target = EVArgumentNavigation.Target(rawValue: request.argument_command),
@@ -437,7 +440,7 @@ private extension EVRawEffectBatch {
                 documentID: request.document_id,
                 documentRevision: request.document_revision,
                 text: try string(request.text),
-                hardLineRange: range,
+                sourceByteRange: range,
                 options: try options(for: request),
                 marks: try marks(for: request),
                 registers: try registers(for: request),
@@ -446,7 +449,8 @@ private extension EVRawEffectBatch {
                 windowTarget: request.kind == UInt32(VIEM_EX_FRONTEND_WINDOW) && request.argument_count > 0 ? request.argument_count : nil,
                 windowResizeMode: request.argument_command,
                 argumentNavigation: argumentNavigation,
-                readAfterLine: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil,
+                readAfterOffset: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil,
+                readAfterIsSource: request.flags & UInt32(VIEM_EX_FRONTEND_READ_SOURCE) != 0,
                 exitStatus: exitStatus
             )
         }

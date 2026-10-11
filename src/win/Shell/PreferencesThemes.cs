@@ -253,7 +253,35 @@ internal sealed partial class Preferences
         var candidate = EditableTheme(); string family = StyleFamily(format);
         if (candidate["styles"] is not JsonObject) candidate["styles"] = new JsonObject();
         var replacement = JsonNode.Parse(styles)!.AsObject();
+        var previous = candidate["styles"]![family];
+        static JsonNode? WithoutNulls(JsonNode? value) {
+            if (value is JsonObject fields) {
+                var result = new JsonObject();
+                foreach (var field in fields) if (field.Value != null) result[field.Key] = WithoutNulls(field.Value);
+                return result;
+            }
+            if (value is JsonArray array) return new JsonArray(array.Select(WithoutNulls).ToArray());
+            return value?.DeepClone();
+        }
+        static JsonNode? Definition(JsonNode? sheet, string id) => (sheet?["block_styles"] as JsonArray)
+            ?.FirstOrDefault(entry => entry?["id"]?.GetValue<string>() == id);
+        var generatedCode = family == "code" ? DefaultTheme()["styles"]!["code"] : null;
+        var shared = new[] { "Status bar", "Status bar command" }.Select(id => (Id: id, Definition: Definition(replacement, id) ?? Definition(generatedCode, id)))
+            .Where(entry => entry.Definition != null && !JsonNode.DeepEquals(
+                WithoutNulls(Definition(previous, entry.Id) ?? Definition(generatedCode, entry.Id)), WithoutNulls(entry.Definition))).ToArray();
         candidate["styles"]![family] = KeepStyleExtensions(candidate["styles"]![family], replacement);
+        // Status chrome has one Text-family authority. An inspector in any
+        // family edits that same pair atomically, without changing other styles.
+        foreach (string other in new[] { "text", "markdown", "code" }.Where(name => name != family)) {
+            if (shared.Length == 0) break;
+            if (candidate["styles"]![other] is not JsonObject) candidate["styles"]![other] = DefaultTheme()["styles"]![other]!.DeepClone();
+            var definitions = candidate["styles"]![other]!["block_styles"]!.AsArray();
+            foreach (var entry in shared) {
+                int index = Enumerable.Range(0, definitions.Count).FirstOrDefault(i => definitions[i]?["id"]?.GetValue<string>() == entry.Id, -1);
+                var next = KeepStyleExtensions(index >= 0 ? definitions[index] : null, entry.Definition!, 1);
+                if (index >= 0) definitions[index] = next; else definitions.Add(next);
+            }
+        }
         SaveTheme(candidate);
     }
     // Fresh arrays define membership; removed definitions are never copied back.

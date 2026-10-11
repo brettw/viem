@@ -14,15 +14,15 @@ internal static class StyleDefaultsLoadingTests
     private static void Write(string path, JsonNode json) => File.WriteAllText(path, json.ToJsonString());
     private static JsonObject Read(string path) => JsonNode.Parse(File.ReadAllBytes(path))!.AsObject();
 
+    private static void SetAppearance(Preferences preferences, byte value) => preferences.Set("theme", "caret", Preferences.ColorJson(Theme.Rgb(value, 2, 3)));
+    private static JsonNode Status(JsonNode theme) => theme["styles"]!["text"]!["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Status bar")!;
+
     // Fallback tests compare the complete built-in theme contract. They do not
     // freeze the font sizes or other editable numbers chosen by that preset.
     internal static bool MatchesBuiltInTheme(Preferences preferences)
     {
         var builtin = JsonNode.Parse(CoreThemes.Defaults())!;
-        var appearance = builtin["theme"]!;
         return preferences.Theme == Theme.Midnight
-            && preferences.Get("theme", "statusFontFamily", "") == appearance["statusFontFamily"]!.GetValue<string>()
-            && preferences.Get("theme", "statusFontSize", double.NaN) == appearance["statusFontSize"]!.GetValue<double>()
             && new[] { (VIEM_FORMAT_PLAIN_TEXT, "text"), (VIEM_FORMAT_MARKDOWN, "markdown"), (VIEM_FORMAT_CODE, "code") }
                 .All(pair => JsonNode.DeepEquals(JsonNode.Parse(preferences.ThemeStyleDefaults(pair.Item1)), builtin["styles"]![pair.Item2]));
     }
@@ -55,7 +55,7 @@ internal static class StyleDefaultsLoadingTests
         Check(File.ReadAllBytes(monoPath).SequenceEqual(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Resources", "themes", "Midnight Mono.json")))
             && File.ReadAllBytes(existing.SelectedThemePath!).SequenceEqual(customizedMidnight),
             "opening Theme settings restores missing presets without changing customizations");
-        existing.Set("theme", "statusFontSize", JsonValue.Create(19d));
+        SetAppearance(existing, 19);
         existing.RevertTheme();
         Check(existing.SelectedTheme == "Midnight" && File.ReadAllBytes(existing.SelectedThemePath!).SequenceEqual(midnight),
             "Revert restores the complete bundled theme byte for byte and keeps its selection");
@@ -64,13 +64,13 @@ internal static class StyleDefaultsLoadingTests
         Check(bundledDeleteRejected && File.Exists(existing.SelectedThemePath!), "bundled themes cannot be deleted through the theme API");
         preferences.SelectTheme(null);
         byte[] config = File.ReadAllBytes(Path.Combine(directory, "config.json"));
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(17d));
-        Check(preferences.StatusFontSize == 17 && MatchesBuiltInTheme(new Preferences(directory))
+        SetAppearance(preferences, 17);
+        Check(preferences.Theme.Caret == Theme.Rgb(17, 2, 3) && MatchesBuiltInTheme(new Preferences(directory))
             && File.ReadAllBytes(Path.Combine(directory, "config.json")).SequenceEqual(config)
             && File.ReadAllBytes(Path.Combine(preferences.ThemesDirectory, "Midnight.json")).SequenceEqual(midnight),
             "Default theme changes are memory only and leave named files and main config untouched");
         preferences.CreateTheme("Custom");
-        Check(preferences.SelectedTheme == "Custom" && new Preferences(directory).StatusFontSize == 17,
+        Check(preferences.SelectedTheme == "Custom" && new Preferences(directory).Theme.Caret == Theme.Rgb(17, 2, 3),
             "New theme clones the current in-memory Default and selects the saved clone");
         foreach (string name in new[] { "", "Default", "../escape", "CON", "custom", new string('a', 33) }) {
             bool rejected = false; try { preferences.CreateTheme(name); } catch { rejected = true; }
@@ -78,11 +78,11 @@ internal static class StyleDefaultsLoadingTests
         }
         string customPath = preferences.SelectedThemePath!;
         var external = Read(customPath); external["future"] = new JsonObject { ["enabled"] = true };
-        external["theme"]!["futureColor"] = 42; external["theme"]!["statusFontFamily"] = "Consolas"; Write(customPath, external);
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(18d));
+        external["theme"]!["futureColor"] = 42; Status(external)["character"]!["font_families"] = new JsonArray("Consolas"); Write(customPath, external);
+        SetAppearance(preferences, 18);
         var edited = Read(customPath);
         Check(edited["future"]!["enabled"]!.GetValue<bool>() && edited["theme"]!["futureColor"]!.GetValue<int>() == 42
-            && preferences.StatusFontFamily == "Consolas", "theme edits preserve extension fields and unrelated external edits");
+            && preferences.StatusStyles.Status.Family == "Consolas", "theme edits preserve extension fields and unrelated external edits");
         // Property maps replace rather than retaining a removed OpenType tag;
         // extension data on surviving definitions is retained.
         var stored = Read(customPath);
@@ -123,8 +123,8 @@ internal static class StyleDefaultsLoadingTests
         Check(new Preferences(directory).SelectedTheme == null && File.Exists(duplicateBare),
             "a missing selected filename falls back to Default without selecting another file with the same name");
         preferences.SelectTheme(".External", externalPath);
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(19d));
-        Check(Read(externalPath)["theme"]!["statusFontSize"]!.GetValue<int>() == 19,
+        SetAppearance(preferences, 19);
+        Check(preferences.Theme.Caret == Theme.Rgb(19, 2, 3) && Read(externalPath)["theme"]!["caret"]!["red"]!.GetValue<double>() == 19 / 255d,
             "external theme filenames keep their actual path when saving");
         preferences.DeleteTheme();
         Check(preferences.SelectedTheme == null && !File.Exists(externalPath) && File.Exists(customPath),
@@ -132,8 +132,8 @@ internal static class StyleDefaultsLoadingTests
 
         preferences.CreateTheme("Disappearing");
         string disappearedPath = preferences.SelectedThemePath!; File.Delete(disappearedPath);
-        preferences.Set("theme", "statusFontSize", JsonValue.Create(20d));
-        Check(preferences.SelectedTheme == null && preferences.StatusFontSize == 20 && !File.Exists(disappearedPath)
+        SetAppearance(preferences, 20);
+        Check(preferences.SelectedTheme == null && preferences.Theme.Caret == Theme.Rgb(20, 2, 3) && !File.Exists(disappearedPath)
             && MatchesBuiltInTheme(new Preferences(directory)),
             "editing after an active theme file disappears uses memory-only Default and never recreates the missing file");
 
@@ -169,10 +169,10 @@ internal static class StyleDefaultsLoadingTests
 
         Directory.CreateDirectory(ignored.ThemesDirectory);
         string importedPath = Path.Combine(ignored.ThemesDirectory, "Imported.json");
-        var currentTheme = JsonNode.Parse(midnight)!; currentTheme["theme"]!["statusFontSize"] = 16; Write(importedPath, currentTheme);
+        var currentTheme = JsonNode.Parse(midnight)!; Status(currentTheme)["character"]!["size"] = 16; Write(importedPath, currentTheme);
         ignored.SelectTheme("Imported");
         var selected = new Preferences(legacyDirectory);
-        Check(selected.SelectedTheme == "Imported" && selected.SelectedThemePath == importedPath && selected.StatusFontSize == 16
+        Check(selected.SelectedTheme == "Imported" && selected.SelectedThemePath == importedPath && selected.StatusStyles.Status.Size == 16
             && selected.Error == null && selected.ThemeNames.SequenceEqual(new[] { "Imported" })
             && JsonNode.DeepEquals(Read(legacyConfigPath)["theme"], legacyConfig["theme"]),
             "a current-format theme named Imported loads normally despite obsolete profile data");

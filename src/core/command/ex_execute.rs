@@ -8,8 +8,9 @@
 //! Substitution uses the versioned portable Regex v2 language and semantic
 //! hard-line assertions. Replacement captures retain their formatted content.
 
-#[path = "ex_misc.rs"]
-mod misc;
+#[path = "ex_regions.rs"]
+mod regions;
+pub use super::ex_addresses::{ExLineDomain, ResolvedExAddresses, ResolvedExLine, ResolvedExRange};
 
 use std::fmt;
 use std::ops::Range;
@@ -58,7 +59,10 @@ impl HardLineRange {
 pub struct ExExecutionContext {
     /// Zero-based current hard line.
     pub current_line: usize,
+    /// Exact addresses bound against the current view; absent for document-only callers.
+    pub resolved_addresses: Option<ResolvedExAddresses>,
     pub wrap: bool,
+    pub number: bool,
     pub fileformats: Vec<FileFormat>,
     pub search_options: super::search_regex::SearchOptions,
     pub selection_options: super::SelectionOptions,
@@ -73,7 +77,9 @@ impl Default for ExExecutionContext {
     fn default() -> Self {
         Self {
             current_line: 0,
+            resolved_addresses: None,
             wrap: false,
+            number: false,
             fileformats: vec![FileFormat::Unix, FileFormat::Dos],
             search_options: super::search_regex::SearchOptions::default(),
             selection_options: Default::default(),
@@ -266,6 +272,7 @@ pub struct ExRegisterEffect {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExOptionName {
     Wrap,
+    Number,
     FileFormat,
     FileFormats,
     HlSearch,
@@ -308,10 +315,16 @@ pub struct ExOptionDisplay {
     pub value: ExOptionValue,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExInsertionPoint {
+    pub offset: usize,
+    pub source: bool,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExFileRequest {
     Only { force: bool },
-    Read { path: Option<String>, after: usize },
+    Read { path: Option<String>, after: ExInsertionPoint },
     Source { path: String },
     File { path: Option<String>, truncate: bool },
     NavigateArgument {
@@ -350,7 +363,7 @@ pub enum ExFileRequest {
     Write {
         path: Option<String>,
         force: bool,
-        range: Option<HardLineRange>,
+        range: Option<ResolvedExRange>,
     },
     SaveAs {
         path: String,
@@ -366,7 +379,7 @@ pub enum ExFileRequest {
     WriteQuit {
         path: Option<String>,
         force: bool,
-        range: Option<HardLineRange>,
+        range: Option<ResolvedExRange>,
     },
     Xit {
         path: Option<String>,
@@ -536,7 +549,7 @@ pub enum ExInfoRequest {
     Jumps,
     Options(Vec<ExOptionDisplay>),
     PrintLines {
-        range: HardLineRange,
+        range: ResolvedExRange,
         number: bool,
         list: bool,
     },
@@ -544,7 +557,7 @@ pub enum ExInfoRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExNormalRequest {
-    pub range: HardLineRange,
+    pub range: ResolvedExRange,
     pub commands: String,
     /// `:normal!` requests literal built-in commands. Mappings are currently
     /// deferred, but retaining this bit avoids changing the interface later.
@@ -568,6 +581,8 @@ pub enum ExFrontendRequest {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExNavigation {
     TextOffset(usize),
+    /// Exact source boundary for a physical address, including hidden Markdown lines.
+    PhysicalSourceOffset(usize),
     HistoryRestoration,
 }
 
@@ -660,7 +675,7 @@ pub struct SubstitutePreview {
     document_id: DocumentId,
     revision: Revision,
     stored: StoredSubstitute,
-    lines: HardLineRange,
+    lines: ResolvedExRange,
     pub pattern: String,
     pub replacement: String,
     pub matches: usize,
@@ -695,7 +710,7 @@ impl SubstitutePreview {
                 edits: approved.iter().map(|index| self.fragment_edits[*index].clone()).collect(),
             })
         };
-        ExPlan { document_id: self.document_id, expected_revision: self.revision,
+        ExPlan { document_id: self.document_id, expected_revision: self.revision, navigation_is_candidate: false,
             mutation, outcome, next_substitute: Some(self.stored) }
     }
 }
@@ -901,6 +916,7 @@ pub struct ExPlan {
     pub mutation: ExMutation,
     pub outcome: ExOutcome,
     next_substitute: Option<StoredSubstitute>,
+    navigation_is_candidate: bool,
 }
 
 impl ExPlan {
@@ -923,6 +939,7 @@ impl ExPlan {
             mutation: ExMutation::None,
             outcome: ExOutcome::default(),
             next_substitute: None,
+            navigation_is_candidate: false,
         }
     }
 
@@ -983,96 +1000,7 @@ impl ExPlan {
     }
 }
 
-/// Resolve an ordinary Ex line address to a zero-based hard-line index.
-pub fn resolve_address(
-    address: ExAddress,
-    current_line: usize,
-    line_count: usize,
-) -> Result<usize, ExExecuteError> {
-    resolve_address_inner(address, current_line, line_count, false)
-}
-
-/// Resolve an Ex destination address. A value of zero denotes the position
-/// before the first hard line; other values are one-based line numbers.
-pub fn resolve_destination(
-    address: ExAddress,
-    current_line: usize,
-    line_count: usize,
-) -> Result<usize, ExExecuteError> {
-    let one_based = resolve_address_value(address, current_line, line_count)?;
-    if !(0..=line_count as i128).contains(&one_based) {
-        return Err(ExExecuteError::AddressOutOfBounds {
-            value: one_based,
-            line_count,
-            zero_allowed: true,
-        });
-    }
-    usize::try_from(one_based).map_err(|_| ExExecuteError::AddressOverflow)
-}
-
-pub fn resolve_range(
-    range: Option<&ExRange>,
-    current_line: usize,
-    line_count: usize,
-) -> Result<HardLineRange, ExExecuteError> {
-    validate_current_line(current_line, line_count)?;
-    match range {
-        None => Ok(HardLineRange {
-            start: current_line,
-            end: current_line,
-        }),
-        Some(ExRange::WholeFile) => Ok(HardLineRange {
-            start: 0,
-            end: line_count - 1,
-        }),
-        Some(ExRange::Single(address)) => {
-            let line = resolve_address(address.clone(), current_line, line_count)?;
-            Ok(HardLineRange {
-                start: line,
-                end: line,
-            })
-        }
-        Some(ExRange::Between {
-            start,
-            end,
-            separator,
-        }) => {
-            let start = resolve_address(start.clone(), current_line, line_count)?;
-            let end_current = match separator {
-                RangeSeparator::Comma => current_line,
-                RangeSeparator::Semicolon => start,
-            };
-            let end = resolve_address(end.clone(), end_current, line_count)?;
-            HardLineRange::new(start, end)
-        }
-    }
-}
-
-/// Resolve the last address of `:put` as a line-insertion boundary.
-///
-/// Unlike ordinary command ranges, `:put` accepts the special address zero,
-/// meaning the boundary before the first line. Multi-address ranges still use
-/// ordinary range validation; only a single put address gets this exception.
-fn resolve_put_address(
-    range: Option<&ExRange>,
-    current_line: usize,
-    line_count: usize,
-) -> Result<usize, ExExecuteError> {
-    validate_current_line(current_line, line_count)?;
-    match range {
-        None => current_line
-            .checked_add(1)
-            .ok_or(ExExecuteError::AddressOverflow),
-        Some(ExRange::Single(address)) => resolve_destination(address.clone(), current_line, line_count),
-        Some(range) => resolve_range(Some(range), current_line, line_count)?
-            .end
-            .checked_add(1)
-            .ok_or(ExExecuteError::AddressOverflow),
-    }
-}
-
-/// Convert an inclusive hard-line range to the exact formatted range occupied
-/// by those lines, including the following hard break when one exists.
+/// Capture an exact range of complete formatted hard lines.
 pub fn hard_line_text_range(
     document: &Document,
     lines: HardLineRange,
@@ -1132,6 +1060,28 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
     {
         return Err(ExExecuteError::ReadOnly);
     }
+    let addresses = if let Some(addresses) = &context.resolved_addresses {
+        if addresses.document != document.id() { return Err(ExExecuteError::WrongDocument); }
+        if addresses.revision != document.revision() {
+            return Err(ExExecuteError::StalePlan { expected: addresses.revision, actual: document.revision() });
+        }
+        addresses.clone()
+    } else {
+        super::ex_addresses::resolve_document_ex_addresses(document, command, context.current_line,
+            context.search_options, context.last_search_pattern.as_deref())?
+    };
+    if let Some(range) = &addresses.range {
+        if range.document != document.id() { return Err(ExExecuteError::WrongDocument); }
+        if range.revision != document.revision() {
+            return Err(ExExecuteError::StalePlan { expected: range.revision, actual: document.revision() });
+        }
+    }
+    if let Some(plan) = regions::prepare(document, state, context, command, registers, &addresses)? {
+        return Ok(plan);
+    }
+    let mut context = context.clone();
+    context.resolved_addresses = Some(addresses.clone());
+    let context = &context;
     let mut plan = ExPlan::empty(document);
 
     match &command.action {
@@ -1192,7 +1142,12 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             },
         ),
         ExAction::Write { path } => {
-            let range = resolve_optional_file_range(document, context, command.range.as_ref())?;
+            let range = addresses.range.clone().map(|mut range| -> Result<_, ExExecuteError> {
+                range.source = Some(document.addressed_source_range(range.text.clone(),
+                    range.start.source.as_ref().map(|source| source.start),
+                    range.end.source.as_ref().map(|source| source.end))?);
+                Ok(range)
+            }).transpose()?;
             push_file(
                 &mut plan,
                 ExFileRequest::Write {
@@ -1223,7 +1178,12 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             },
         ),
         ExAction::WriteQuit { path } => {
-            let range = resolve_optional_file_range(document, context, command.range.as_ref())?;
+            let range = addresses.range.clone().map(|mut range| -> Result<_, ExExecuteError> {
+                range.source = Some(document.addressed_source_range(range.text.clone(),
+                    range.start.source.as_ref().map(|source| source.start),
+                    range.end.source.as_ref().map(|source| source.end))?);
+                Ok(range)
+            }).transpose()?;
             push_file(
                 &mut plan,
                 ExFileRequest::WriteQuit {
@@ -1267,158 +1227,11 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
         ExAction::UndoList => plan.outcome.frontend_requests.push(
             ExFrontendRequest::Info(ExInfoRequest::Message(super::ex_history::format_undo_list(document))),
         ),
-        ExAction::Delete(arguments) => {
-            let lines = effective_counted_range(
-                document,
-                context,
-                command.range.as_ref(),
-                arguments.count,
-            )?;
-            let register_range = hard_line_text_range(document, lines)?;
-            let value = capture_linewise_register(document, register_range)?;
-            let deletion = hard_line_deletion_range(document, lines)?;
-            plan.stage_text_edits(document, vec![TextEdit::new(deletion, "")]);
-            plan.outcome.register_effects.push(ExRegisterEffect {
-                kind: ExRegisterEffectKind::Delete,
-                requested: arguments.register,
-                value,
-            });
-            plan.outcome.navigation = Some(ExNavigation::TextOffset(line_start_after_deletion(
-                document, lines,
-            )?));
-        }
-        ExAction::Yank(arguments) => {
-            let lines = effective_counted_range(
-                document,
-                context,
-                command.range.as_ref(),
-                arguments.count,
-            )?;
-            let range = hard_line_text_range(document, lines)?;
-            plan.outcome.register_effects.push(ExRegisterEffect {
-                kind: ExRegisterEffectKind::Yank,
-                requested: arguments.register,
-                value: capture_linewise_register(document, range)?,
-            });
-        }
-        ExAction::Put { register } => {
-            let value = registers
-                .read(*register)
-                .ok_or(ExExecuteError::EmptyRegister(*register))?;
-            let addressed_line = resolve_put_address(
-                command.range.as_ref(),
-                context.current_line,
-                document.line_count(),
-            )?;
-            let insertion_index = if command.bang {
-                addressed_line.saturating_sub(1)
-            } else {
-                addressed_line
-            };
-            let (edit, inserted_at) = plan_put(document, insertion_index, &value)?;
-            plan.stage_formatted_payload_edits(document, vec![edit]);
-            plan.outcome.navigation = Some(ExNavigation::TextOffset(inserted_at));
-        }
-        ExAction::Join { count } => {
-            let mut lines = resolve_range(
-                command.range.as_ref(),
-                context.current_line,
-                document.line_count(),
-            )?;
-            if let Some(count) = count {
-                lines = range_with_count(lines.end, *count, document.line_count())?;
-            } else if matches!(command.range.as_ref(), None | Some(ExRange::Single(_)))
-                && lines.end + 1 < document.line_count()
-            {
-                lines.end += 1;
-            }
-            let edits = plan_join(document, lines, command.bang)?;
-            if !edits.is_empty() {
-                plan.outcome.navigation = Some(ExNavigation::TextOffset(
-                    hard_line_first_nonblank_offset(document, lines.start)?,
-                ));
-            }
-            plan.stage_text_edits(document, edits);
-        }
-        ExAction::Copy { destination } => {
-            let lines = resolve_range(
-                command.range.as_ref(),
-                context.current_line,
-                document.line_count(),
-            )?;
-            let destination =
-                resolve_destination(destination.clone(), context.current_line, document.line_count())?;
-            let source = lines.start..lines.end + 1;
-            let cursor = transfer_cursor_offset(
-                document,
-                HardLineTransfer::Copy,
-                source.clone(),
-                destination,
-            )?;
-            plan.stage_hard_line_transfer(document, HardLineTransfer::Copy, source, destination);
-            plan.outcome.navigation = Some(ExNavigation::TextOffset(cursor));
-        }
-        ExAction::Move { destination } => {
-            let lines = resolve_range(
-                command.range.as_ref(),
-                context.current_line,
-                document.line_count(),
-            )?;
-            let destination =
-                resolve_destination(destination.clone(), context.current_line, document.line_count())?;
-            let source = lines.start..lines.end + 1;
-            let cursor = transfer_cursor_offset(
-                document,
-                HardLineTransfer::Move,
-                source.clone(),
-                destination,
-            )?;
-            plan.stage_hard_line_transfer(document, HardLineTransfer::Move, source, destination);
-            plan.outcome.navigation = Some(ExNavigation::TextOffset(cursor));
-        }
-        ExAction::Sort(options) => {
-            let lines = if command.range.is_none() {
-                HardLineRange {
-                    start: 0,
-                    end: document.line_count() - 1,
-                }
-            } else {
-                resolve_range(
-                    command.range.as_ref(),
-                    context.current_line,
-                    document.line_count(),
-                )?
-            };
-            let (source_lines, order) =
-                super::sort::ordered_lines(document, context, lines, options, command.bang)?;
-            if !source_lines.is_empty() {
-                let first = order.first().copied().unwrap_or(source_lines.start);
-                let snapshot = document.hard_line_snapshot();
-                let destination = snapshot
-                    .line(source_lines.start)
-                    .unwrap()
-                    .content_range()
-                    .start;
-                let content = snapshot.line(first).unwrap().content_range();
-                let indent = snapshot.text()[content]
-                    .char_indices()
-                    .find(|(_, c)| !c.is_whitespace())
-                    .map_or(0, |(at, _)| at);
-                plan.outcome.navigation = Some(ExNavigation::TextOffset(destination + indent));
-                plan.mutation = ExMutation::Model(ModelRequest::ReorderHardLines {
-                    document: document.id(),
-                    revision: document.revision(),
-                    source_lines,
-                    order,
-                });
-            }
-        }
+        ExAction::Delete(_) | ExAction::Yank(_) | ExAction::Put { .. }
+        | ExAction::Join { .. } | ExAction::Copy { .. } | ExAction::Move { .. }
+        | ExAction::Sort(_) => unreachable!("addressed line actions were prepared above"),
         ExAction::Normal { commands } => {
-            let range = resolve_range(
-                command.range.as_ref(),
-                context.current_line,
-                document.line_count(),
-            )?;
+            let range = addresses.range.clone().ok_or(ExExecuteError::AddressOverflow)?;
             plan.outcome
                 .frontend_requests
                 .push(ExFrontendRequest::Normal(ExNormalRequest {
@@ -1439,15 +1252,9 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
                 document, state, context, command, *pattern, flags, *count, &mut plan,
             )?;
         }
-        ExAction::GoToLine(address) => {
-            let line = resolve_address(address.clone(), context.current_line, document.line_count())?;
-            let hard_lines = document.hard_line_snapshot();
-            plan.outcome.navigation = Some(ExNavigation::TextOffset(
-                hard_lines
-                    .line(line)
-                    .map(|line| line.content_range().start)
-                    .ok_or(ExExecuteError::AddressOverflow)?,
-            ));
+        ExAction::GoToLine(_) => {
+            let line = addresses.navigation.as_ref().ok_or(ExExecuteError::AddressOverflow)?;
+            plan.outcome.navigation = Some(address_navigation(document, line)?);
         }
         ExAction::GoToByte { count } => {
             let count = effective_goto_count(
@@ -1480,11 +1287,25 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             .outcome
             .frontend_requests
             .push(ExFrontendRequest::Info(ExInfoRequest::Jumps)),
-        ExAction::Print { .. } | ExAction::Shift { .. } | ExAction::Retab { .. }
-        | ExAction::Align { .. } => misc::prepare(document, context, command, &mut plan)?,
+        ExAction::Print { number, list, .. } => {
+            let range = addresses.range.clone().ok_or(ExExecuteError::AddressOverflow)?;
+            plan.outcome.navigation = Some(address_navigation(document, &range.end)?);
+            plan.outcome.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::PrintLines {
+                range, number: *number, list: *list,
+            }));
+        }
+        ExAction::Shift { .. } | ExAction::Retab { .. } | ExAction::Align { .. } =>
+            unreachable!("addressed line actions were prepared above"),
         ExAction::Only => push_file(&mut plan, ExFileRequest::Only { force: command.bang }),
         ExAction::Read { path } => {
-            let after = resolve_put_address(command.range.as_ref(), context.current_line, document.line_count())?;
+            let after = if addresses.destination_before_first {
+                ExInsertionPoint { offset: document.physical_line_ranges(0)?.0.start, source: true }
+            } else {
+                let line = addresses.range.as_ref().map(|range| &range.end)
+                    .ok_or(ExExecuteError::AddressOverflow)?;
+                ExInsertionPoint { offset: line.source.as_ref().map_or(line.text.end, |source| source.end),
+                    source: line.source.is_some() }
+            };
             push_file(&mut plan, ExFileRequest::Read { path: path.clone(), after });
         }
         ExAction::Source { path } => push_file(&mut plan, ExFileRequest::Source { path: path.clone() }),
@@ -1516,9 +1337,9 @@ pub fn commit_ex(
 
     let before = document.revision();
     let model_transaction = match plan.mutation {
-        ExMutation::None => None,
+        ExMutation::None => { validate_source_navigation(document, &plan.outcome)?; None },
         ExMutation::Model(request) => {
-            let substitution_cursor = matches!(request, ModelRequest::ApplyFragmentEdits { .. })
+            let substitution_cursor = (!plan.navigation_is_candidate && matches!(request, ModelRequest::ApplyFragmentEdits { .. }))
                 .then(|| match plan.outcome.navigation {
                     Some(ExNavigation::TextOffset(at)) => Some(at),
                     _ => None,
@@ -1528,9 +1349,11 @@ pub fn commit_ex(
                 ModelRequest::NavigateHistory { navigation, .. } => Some(*navigation),
                 _ => None,
             };
-            let prepared = document
+            let mut prepared = document
                 .prepare_model_request(request)
                 .map_err(|error| ex_model_error(error, navigation))?;
+            document.attach_prepared_source_map(&mut prepared).map_err(|error| ex_model_error(error, navigation))?;
+            rebase_print_requests(document, &prepared, &mut plan.outcome)?;
             if let Some(at) = substitution_cursor {
                 let cursor = super::prepared_cursor(
                     document,
@@ -1541,6 +1364,10 @@ pub fn commit_ex(
                 .map_err(ExExecuteError::Document)?;
                 plan.outcome.navigation = Some(ExNavigation::TextOffset(cursor));
             }
+            if matches!(plan.outcome.navigation, Some(ExNavigation::PhysicalSourceOffset(_))) {
+                let candidate = document.prepared_candidate_document(&prepared)?;
+                validate_source_navigation(&candidate, &plan.outcome)?;
+            }
             Some(
                 document
                     .commit_model_transaction(prepared)
@@ -1548,9 +1375,15 @@ pub fn commit_ex(
             )
         }
         ExMutation::FormattedPayload(request) => {
-            let prepared = document
+            let mut prepared = document
                 .prepare_formatted_payload_request(request)
                 .map_err(|error| ex_model_error(error, None))?;
+            document.attach_prepared_source_map(&mut prepared).map_err(|error| ex_model_error(error, None))?;
+            rebase_print_requests(document, &prepared, &mut plan.outcome)?;
+            if matches!(plan.outcome.navigation, Some(ExNavigation::PhysicalSourceOffset(_))) {
+                let candidate = document.prepared_candidate_document(&prepared)?;
+                validate_source_navigation(&candidate, &plan.outcome)?;
+            }
             Some(
                 document
                     .commit_model_transaction(prepared)
@@ -1565,6 +1398,84 @@ pub fn commit_ex(
     plan.outcome.document_changed = document.revision() != before;
     plan.outcome.model_transactions.extend(model_transaction);
     Ok(plan.outcome)
+}
+
+fn address_navigation(document: &Document, line: &ResolvedExLine) -> Result<ExNavigation, ExExecuteError> {
+    if line.domain == ExLineDomain::PhysicalSource {
+        return Ok(ExNavigation::PhysicalSourceOffset(regions::source_first_nonblank(document, line.index)?));
+    }
+    let text = document.hard_line_snapshot().slice_utf8(line.content.clone())
+        .map_err(DocumentError::FormattedTextStorage)?;
+    Ok(ExNavigation::TextOffset(line.content.start + crate::document::leading_whitespace_len(&text)))
+}
+
+fn validate_source_navigation(document: &Document, outcome: &ExOutcome) -> Result<(), ExExecuteError> {
+    if let Some(ExNavigation::PhysicalSourceOffset(source)) = outcome.navigation {
+        document.source_point(source).map_err(|error| ExExecuteError::Model(ModelTransactionError::Position(error)))?;
+        let visible = document.visible_point_for_source(source, true)?;
+        document.text_point(visible)?;
+    }
+    Ok(())
+}
+
+fn rebase_print_requests(document: &Document, prepared: &crate::document::PreparedModelTransaction,
+    outcome: &mut ExOutcome) -> Result<(), ExExecuteError> {
+    if !outcome.frontend_requests.iter().any(|request| matches!(request,
+        ExFrontendRequest::Info(ExInfoRequest::PrintLines { .. }))) { return Ok(()); }
+    let candidate = document.prepared_candidate_document(prepared)?;
+    let map = prepared.text_position_map();
+    let text_range = |range: &Range<usize>| -> Result<Range<usize>, ExExecuteError> {
+        let start = map.map_text_point(document.text_point(range.start)?, crate::document::Association::BeforeInsertion,
+            BoundaryAffinity::Downstream, crate::document::DeletionRecovery::PreferFollowingThenPreceding).map_err(|error| ExExecuteError::Model(ModelTransactionError::Position(error)))?
+            .value().ok_or(DocumentError::AmbiguousProjection)?.offset();
+        let end = map.map_text_point(document.text_point(range.end)?, crate::document::Association::AfterInsertion,
+            BoundaryAffinity::Upstream, crate::document::DeletionRecovery::PreferFollowingThenPreceding).map_err(|error| ExExecuteError::Model(ModelTransactionError::Position(error)))?
+            .value().ok_or(DocumentError::AmbiguousProjection)?.offset();
+        Ok(start..end.max(start))
+    };
+    let source_range = |range: &Range<usize>| -> Result<Range<usize>, ExExecuteError> {
+        let source = map.source_position_map().ok_or(DocumentError::AmbiguousProjection)?;
+        let start = source.map_source_point(document.source_point(range.start).map_err(|error| ExExecuteError::Model(ModelTransactionError::Position(error)))?, crate::document::Association::BeforeInsertion,
+            crate::document::DeletionRecovery::PreferFollowingThenPreceding).map_err(|error| ExExecuteError::Model(ModelTransactionError::Position(error)))?.value()
+            .ok_or(DocumentError::AmbiguousProjection)?.offset();
+        let end = source.map_source_point(document.source_point(range.end).map_err(|error| ExExecuteError::Model(ModelTransactionError::Position(error)))?, crate::document::Association::AfterInsertion,
+            crate::document::DeletionRecovery::PreferFollowingThenPreceding).map_err(|error| ExExecuteError::Model(ModelTransactionError::Position(error)))?.value()
+            .ok_or(DocumentError::AmbiguousProjection)?.offset();
+        Ok(start..end.max(start))
+    };
+    let rebase_line = |line: &mut ResolvedExLine, end: bool| -> Result<(), ExExecuteError> {
+        line.content = text_range(&line.content)?;
+        line.text = text_range(&line.text)?;
+        if let Some(source) = &line.source { line.source = Some(source_range(source)?); }
+        if let Some(source) = &line.source_content { line.source_content = Some(source_range(source)?); }
+        if line.domain == ExLineDomain::PhysicalSource {
+            let source = line.source.as_ref().ok_or(DocumentError::AmbiguousProjection)?;
+            let at = if end && !source.is_empty() { source.end - 1 } else { source.start };
+            line.index = candidate.physical_line_index_at_source(at)?
+                .min(candidate.physical_source_line_number_count().saturating_sub(1));
+            let (source, content) = candidate.physical_line_ranges(line.index)?;
+            let start = candidate.visible_point_for_source(source.start, true)?;
+            let content_end = candidate.visible_point_for_source(content.end, false)?;
+            let text_end = candidate.visible_point_for_source(source.end, false)?;
+            line.content = start..content_end.max(start);
+            line.text = start..text_end.max(start);
+            line.source = Some(source);
+            line.source_content = Some(content);
+        }
+        line.position.text_offset = line.content.start;
+        Ok(())
+    };
+    for request in &mut outcome.frontend_requests {
+        let ExFrontendRequest::Info(ExInfoRequest::PrintLines { range, .. }) = request else { continue; };
+        range.document = candidate.id();
+        range.revision = candidate.revision();
+        range.text = text_range(&range.text)?;
+        if let Some(source) = &range.source { range.source = Some(source_range(source)?); }
+        rebase_line(&mut range.start, false)?;
+        rebase_line(&mut range.end, true)?;
+        for line in &mut range.lines { rebase_line(line, false)?; }
+    }
+    Ok(())
 }
 
 fn ex_model_error(
@@ -1603,53 +1514,6 @@ fn push_file(plan: &mut ExPlan, request: ExFileRequest) {
     plan.outcome
         .frontend_requests
         .push(ExFrontendRequest::File(request));
-}
-
-fn resolve_optional_file_range(
-    document: &Document,
-    context: &ExExecutionContext,
-    range: Option<&ExRange>,
-) -> Result<Option<HardLineRange>, ExExecuteError> {
-    range
-        .map(|range| resolve_range(Some(range), context.current_line, document.line_count()))
-        .transpose()
-}
-
-fn resolve_address_inner(
-    address: ExAddress,
-    current_line: usize,
-    line_count: usize,
-    zero_allowed: bool,
-) -> Result<usize, ExExecuteError> {
-    let one_based = resolve_address_value(address, current_line, line_count)?;
-    let lower = if zero_allowed { 0 } else { 1 };
-    if !(lower..=line_count as i128).contains(&one_based) {
-        return Err(ExExecuteError::AddressOutOfBounds {
-            value: one_based,
-            line_count,
-            zero_allowed,
-        });
-    }
-    usize::try_from(one_based - 1).map_err(|_| ExExecuteError::AddressOverflow)
-}
-
-fn resolve_address_value(
-    address: ExAddress,
-    current_line: usize,
-    line_count: usize,
-) -> Result<i128, ExExecuteError> {
-    validate_current_line(current_line, line_count)?;
-    let base = match address.base {
-        AddressBase::Mark(_) | AddressBase::Search { .. } => return Err(ExExecuteError::UnresolvedAddress),        AddressBase::Absolute(line) => i128::from(line),
-        AddressBase::Current => {
-            i128::try_from(current_line + 1).map_err(|_| ExExecuteError::AddressOverflow)?
-        }
-        AddressBase::Last => {
-            i128::try_from(line_count).map_err(|_| ExExecuteError::AddressOverflow)?
-        }
-    };
-    base.checked_add(i128::from(address.offset))
-        .ok_or(ExExecuteError::AddressOverflow)
 }
 
 fn effective_goto_count(
@@ -1745,44 +1609,6 @@ fn validate_line_range(range: HardLineRange, line_count: usize) -> Result<(), Ex
         });
     }
     Ok(())
-}
-
-fn range_with_count(
-    start: usize,
-    count: u64,
-    line_count: usize,
-) -> Result<HardLineRange, ExExecuteError> {
-    if count == 0 {
-        return Err(ExExecuteError::InvalidCount(count));
-    }
-    let count = usize::try_from(count).map_err(|_| ExExecuteError::AddressOverflow)?;
-    let end = start
-        .checked_add(count - 1)
-        .ok_or(ExExecuteError::AddressOverflow)?;
-    // Vim accepts a finite count that runs beyond the last line and operates
-    // through EOF. Keep the arithmetic checked first so a nonsensical count
-    // cannot wrap into a small, destructive range.
-    let end = end.min(
-        line_count
-            .checked_sub(1)
-            .ok_or(ExExecuteError::AddressOverflow)?,
-    );
-    let result = HardLineRange { start, end };
-    validate_line_range(result, line_count)?;
-    Ok(result)
-}
-
-fn effective_counted_range(
-    document: &Document,
-    context: &ExExecutionContext,
-    range: Option<&ExRange>,
-    count: Option<u64>,
-) -> Result<HardLineRange, ExExecuteError> {
-    let range = resolve_range(range, context.current_line, document.line_count())?;
-    match count {
-        Some(count) => range_with_count(range.end, count, document.line_count()),
-        None => Ok(range),
-    }
 }
 
 fn hard_line_deletion_range(
@@ -1927,55 +1753,6 @@ fn ex_register_logical_lines(register: &ExRegisterValue) -> Vec<String> {
     lines
 }
 
-fn plan_join(
-    document: &Document,
-    lines: HardLineRange,
-    bang: bool,
-) -> Result<Vec<TextEdit>, ExExecuteError> {
-    let hard_lines = document.hard_line_snapshot();
-    validate_line_range(lines, hard_lines.line_count())?;
-    if lines.start == lines.end {
-        return Ok(Vec::new());
-    }
-    let mut edits = Vec::with_capacity(lines.line_count() - 1);
-    for line in lines.start..lines.end {
-        let current = hard_lines
-            .line(line)
-            .ok_or(ExExecuteError::AddressOverflow)?;
-        let Some(separator_range) = current.separator_range() else {
-            break;
-        };
-        if bang {
-            edits.push(TextEdit::new(separator_range, ""));
-            continue;
-        }
-        let following = hard_lines
-            .line(line + 1)
-            .ok_or(ExExecuteError::AddressOverflow)?;
-        let following_range = following.content_range();
-        let following_start = following_range.start;
-        let following_end = following_range.end;
-        let end = super::document_prefix_end(document,following_start..following_end,char::is_whitespace);
-        let before = (!current.content_range().is_empty()).then(||super::document_char_before(document,current.content_range().end)).flatten();
-        let after = (end<following_end).then(||super::document_char_at(document,end)).flatten();
-        let separator = if before.is_none()
-            || after.is_none()
-            || before.is_some_and(char::is_whitespace)
-            || after.is_some_and(char::is_whitespace)
-        {
-            ""
-        } else {
-            " "
-        };
-        edits.push(TextEdit::new(separator_range.start..end, separator));
-    }
-    Ok(edits)
-}
-
-/// Resolve the Normal-mode cursor destination for a source-backed line
-/// transfer. Ex addresses denote insertion gaps in the old line order. Vim
-/// leaves the cursor on the first non-blank character of the last transferred
-/// line.
 fn transfer_cursor_offset(
     document: &Document,
     operation: HardLineTransfer,
@@ -2234,12 +2011,13 @@ fn effective_flags(
 fn plan_substitution(
     document: &Document,
     context: &ExExecutionContext,
-    range: Option<&ExRange>,
-    count: Option<u64>,
+    _range: Option<&ExRange>,
+    _count: Option<u64>,
     stored: StoredSubstitute,
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
-    let lines = effective_counted_range(document, context, range, count)?;
+    let lines = context.resolved_addresses.as_ref().and_then(|addresses| addresses.range.clone())
+        .ok_or(ExExecuteError::AddressOverflow)?;
     let limits = RegexLimits::default();
     let regex = CompiledRegex::compile(
         &stored.pattern,
@@ -2251,7 +2029,7 @@ fn plan_substitution(
     )?;
     let replacement = ReplacementTemplate::compile(&stored.replacement, &regex)?;
     let (edits, payload_edits, fragment_edits, substitutions) =
-        substitution_edits(document, lines, &regex, &replacement, &stored, limits)?;
+        substitution_edits(document, &lines, &regex, &replacement, &stored, limits)?;
     if substitutions == 0 && !stored.flags.suppress_errors {
         return Err(ExExecuteError::PatternNotFound(stored.pattern));
     }
@@ -2294,9 +2072,122 @@ fn plan_substitution(
     Ok(())
 }
 
+/// A physical endpoint contributes its exact byte boundary; a contextual edge
+/// contributes its verified visible boundary. No enclosing paragraph is added.
+pub(super) fn addressed_source_bounds(document: &Document, range: &ResolvedExRange)
+    -> Result<Option<Range<usize>>, ExExecuteError> {
+    if let Some(source) = &range.source { return Ok(Some(source.clone())); }
+    let start = range.start.source.as_ref().map(|source| source.start);
+    let end = range.end.source.as_ref().map(|source| source.end);
+    if start.is_none() && end.is_none() { return Ok(None); }
+    Ok(Some(document.addressed_source_range(range.text.clone(), start, end)?))
+}
+
+pub(super) fn addressed_match_scope(document: &Document, range: &ResolvedExRange)
+    -> Result<Range<usize>, ExExecuteError> {
+    let start = range.start.content.start;
+    let end = range.end.content.end;
+    document.text_point(start)?;
+    document.text_point(end)?;
+    Ok(start..end.max(start))
+}
+
+pub(crate) fn addressed_match_eligible(document: &Document, range: &ResolvedExRange,
+    matched: Range<usize>) -> Result<bool, ExExecuteError> {
+    if matched.start < range.text.start || range.text.end < matched.end { return Ok(false); }
+    match addressed_source_bounds(document, range)? {
+        Some(source) => {
+            // Eligibility concerns complete contributors; edit validation still
+            // checks the original regex endpoints after occurrence selection.
+            let snapshot = document.hard_line_snapshot();
+            let mut contributors = matched;
+            for (at, start) in [(contributors.start, true), (contributors.end, false)] {
+                if let Err(error) = document.text_point(at) {
+                    if !matches!(error, DocumentError::NotGraphemeBoundary(_)) { return Err(error.into()); }
+                    if start { contributors.start = snapshot.previous_grapheme_boundary(at).ok_or(ExExecuteError::AddressOverflow)?; }
+                    else { contributors.end = snapshot.next_grapheme_boundary(at).ok_or(ExExecuteError::AddressOverflow)?; }
+                }
+            }
+            Ok(document.formatted_range_within_source(contributors, source)?)
+        },
+        None => Ok(true),
+    }
+}
+
+pub(super) fn addressed_match_line(document: &Document, range: &ResolvedExRange, at: usize)
+    -> Result<usize, ExExecuteError> {
+    if !range.lines.is_empty() {
+        let index = range.lines.partition_point(|line| line.content.end <= at && line.content.start < at);
+        return Ok(range.lines.get(index).unwrap_or(&range.end).index);
+    }
+    if range.start.domain == ExLineDomain::PhysicalSource
+        || range.end.domain == ExLineDomain::PhysicalSource {
+        let source = document.projection().source_insertion_point(at, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        return Ok(document.physical_line_index_at_source(source)?);
+    }
+    document.hard_line_at_offset(at).ok_or(ExExecuteError::AddressOverflow)
+}
+
+/// Print selected visible text with physical source-file labels. Numeric ranges
+/// retain physical line boundaries; contextual ranges retain real formatted breaks.
+pub fn addressed_text_lines(document: &Document, range: &ResolvedExRange)
+    -> Result<Vec<(usize, Range<usize>, String)>, ExExecuteError> {
+    if range.document != document.id() { return Err(ExExecuteError::WrongDocument); }
+    if range.revision != document.revision() {
+        return Err(ExExecuteError::StalePlan { expected: range.revision, actual: document.revision() });
+    }
+    let snapshot = document.hard_line_snapshot();
+    let source_bounds = addressed_source_bounds(document, range)?;
+    let eligible_text = |content: Range<usize>, source: Option<&Range<usize>>| -> Result<String, ExExecuteError> {
+        if source.is_none() || document.formatted_range_within_source(content.clone(), source.unwrap().clone())? {
+            return Ok(snapshot.slice_utf8(content).map_err(DocumentError::FormattedTextStorage)?);
+        }
+        // Only a physical edge cutting a contributor requires local filtering.
+        // Interior lines take the single-slice fast path above.
+        let source = source.unwrap();
+        let mut text = String::new();
+        let mut at = content.start;
+        while at < content.end {
+            let next = snapshot.next_grapheme_boundary(at).ok_or(ExExecuteError::AddressOverflow)?.min(content.end);
+            if document.formatted_range_within_source(at..next, source.clone())? {
+                text.push_str(&snapshot.slice_utf8(at..next).map_err(DocumentError::FormattedTextStorage)?);
+            }
+            at = next;
+        }
+        Ok(text)
+    };
+    let mut result = Vec::new();
+    if range.start.domain == ExLineDomain::PhysicalSource && range.end.domain == ExLineDomain::PhysicalSource {
+        for index in range.start.index..=range.end.index {
+            let (source, content) = document.physical_line_ranges(index)?;
+            let start = document.visible_point_for_source(content.start, true)?;
+            let end = document.visible_point_for_source(content.end, false)?;
+            let content = start..end.max(start);
+            let text = eligible_text(content.clone(), Some(&source))?;
+            result.push((index, content, text));
+        }
+        return Ok(result);
+    }
+    // Contextual output follows real formatted breaks inside the selected
+    // boundaries; cached wrapping never changes print grouping.
+    let first = snapshot.line_at_offset(range.text.start).map_err(|_| ExExecuteError::AddressOverflow)?.index();
+    let last = snapshot.line_at_offset(range.end.content.end).map_err(|_| ExExecuteError::AddressOverflow)?.index();
+    for index in first..=last {
+        let content = snapshot.line(index).ok_or(ExExecuteError::AddressOverflow)?.content_range();
+        let content = content.start.max(range.text.start)..content.end.min(range.end.content.end);
+        if content.start > content.end { continue; }
+        let text = eligible_text(content.clone(), source_bounds.as_ref())?;
+        let source = document.projection().source_insertion_point(content.start, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        result.push((document.physical_line_index_at_source(source)?, content, text));
+    }
+    Ok(result)
+}
+
 fn substitution_edits(
     document: &Document,
-    lines: HardLineRange,
+    lines: &ResolvedExRange,
     regex: &CompiledRegex,
     replacement: &ReplacementTemplate,
     substitute: &StoredSubstitute,
@@ -2312,9 +2203,9 @@ fn substitution_edits(
 > {
     use crate::document::{FragmentEdit, ReplacementFragment};
     let snapshot = document.hard_line_snapshot();
-    validate_line_range(lines, snapshot.line_count())?;
-    let start = snapshot.line(lines.start).unwrap().content_range().start;
-    let end = snapshot.line(lines.end).unwrap().content_range().end;
+    let scope = addressed_match_scope(document, lines)?;
+    let start = scope.start;
+    let end = scope.end;
     let input = RegexInput::new(&snapshot);
     let mut work = RegexWork::new(limits);
     let matches = regex.find_all(&input, start..end, &mut work)?;
@@ -2325,10 +2216,8 @@ fn substitution_edits(
     let mut per_line = std::collections::HashMap::<usize, u64>::new();
     let mut selected = Vec::new();
     for matched in matches {
-        let line = snapshot
-            .line_at_offset(matched.range().start)
-            .unwrap()
-            .index();
+        if !addressed_match_eligible(document, lines, matched.range())? { continue; }
+        let line = addressed_match_line(document, lines, matched.range().start)?;
         let ordinal = per_line.entry(line).or_default();
         *ordinal += 1;
         if if substitute.flags.global {
@@ -2396,6 +2285,7 @@ fn prepare_set(
 ) -> Result<(), ExExecuteError> {
     let mut values = PendingOptions {
         wrap: context.wrap,
+        number: context.number,
         file_format: document.file_format(),
         fileformats: context.fileformats.clone(),
         search_options: context.search_options,
@@ -2434,6 +2324,9 @@ fn prepare_set(
                     ExOptionName::WrapScan,
                     ExOptionValue::Boolean(false),
                 ));
+            }
+            if values.number {
+                shown.push(display(ExOptionName::Number, ExOptionValue::Boolean(true)));
             }
             if values.wrap {
                 shown.push(display(ExOptionName::Wrap, ExOptionValue::Boolean(true)));
@@ -2491,6 +2384,7 @@ fn prepare_set(
 #[derive(Clone, Debug)]
 struct PendingOptions {
     wrap: bool,
+    number: bool,
     file_format: FileFormat,
     fileformats: Vec<FileFormat>,
     search_options: super::search_regex::SearchOptions,
@@ -2522,6 +2416,7 @@ fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
             ExOptionValue::Boolean(values.search_options.wrapscan),
         ),
         display(ExOptionName::Wrap, ExOptionValue::Boolean(values.wrap)),
+        display(ExOptionName::Number, ExOptionValue::Boolean(values.number)),
         display(
             ExOptionName::TextWidth,
             ExOptionValue::Number(values.text_width.effective()),
@@ -2739,6 +2634,9 @@ fn apply_option_operation(
             &operation.action,
             &mut values.search_options.wrapscan,
             plan,
+        ),
+        "number" | "nu" => apply_boolean_option(
+            scope, ExOptionName::Number, false, &operation.action, &mut values.number, plan,
         ),
         "wrap" => apply_boolean_option(
             scope,
@@ -2988,26 +2886,13 @@ mod tests {
     #[test]
     fn address_ranges_are_one_based_and_semicolon_rebinds_dot() {
         let document = Document::new("a\nb\nc\nd");
-        assert_eq!(
-            resolve_range(
-                parse_ex(":1;.+2join").unwrap().range.as_ref(),
-                3,
-                document.line_count()
-            )
-            .unwrap(),
-            HardLineRange { start: 0, end: 2 }
-        );
-        assert!(matches!(
-            resolve_address(
-                ExAddress {
-                    base: AddressBase::Absolute(0),
-                    offset: 0
-                },
-                0,
-                document.line_count()
-            ),
-            Err(ExExecuteError::AddressOutOfBounds { .. })
-        ));
+        let plan = prepare_ex(&document, &ExExecutionState::default(), &context(3),
+            &parse_ex(":1;.+2p").unwrap(), &()).unwrap();
+        assert!(matches!(&plan.outcome.frontend_requests[0],
+            ExFrontendRequest::Info(ExInfoRequest::PrintLines { range, .. })
+                if range.start.index == 0 && range.end.index == 2));
+        assert!(matches!(prepare_ex(&document, &ExExecutionState::default(), &context(0),
+            &parse_ex(":0p").unwrap(), &()), Err(ExExecuteError::AddressOutOfBounds { .. })));
     }
 
     #[test]
@@ -3088,7 +2973,7 @@ mod tests {
             &mut substituted,
             &mut ExExecutionState::default(),
             0,
-            ":4substitute/x/y/g 3",
+            ":7substitute/x/y/g 30",
         )
         .unwrap();
         assert_eq!(
@@ -3172,7 +3057,7 @@ mod tests {
         assert_eq!(document.source_bytes(), b"start\r  alpha\r   beta\rend");
         assert_eq!(
             outcome.navigation,
-            Some(ExNavigation::TextOffset(
+            Some(ExNavigation::PhysicalSourceOffset(
                 document.text().find("beta").unwrap()
             ))
         );
@@ -3250,7 +3135,7 @@ mod tests {
         assert_eq!(document.text(), "one\ntwo\n  three four\nfive");
         assert_eq!(
             outcome.navigation,
-            Some(ExNavigation::TextOffset(
+            Some(ExNavigation::PhysicalSourceOffset(
                 document.text().find("three").unwrap()
             ))
         );
@@ -3275,7 +3160,7 @@ mod tests {
         assert_eq!(middle.text(), "  one\n   three");
         assert_eq!(
             outcome.navigation,
-            Some(ExNavigation::TextOffset(
+            Some(ExNavigation::PhysicalSourceOffset(
                 middle.text().find("three").unwrap()
             ))
         );
@@ -3446,7 +3331,7 @@ mod tests {
 
     #[test]
     fn markdown_copy_and_move_preserve_source_syntax_and_target_the_last_line() {
-        let source = b"# H\n\n  **one**\n\n_two_\n\ntail";
+        let source = b"# H\n##   **one**\n### _two_\n# tail";
         let mut copied = Document::from_bytes(
             source.to_vec(),
             crate::document::Encoding::Utf8,
@@ -3462,12 +3347,12 @@ mod tests {
         .unwrap();
         assert_eq!(
             copied.source_bytes(),
-            b"# H\n\n  **one**\n\n_two_\n\ntail\n\n# H\n\n  **one**"
+            b"# H\n##   **one**\n### _two_\n# tail\n# H\n##   **one**"
         );
         assert_eq!(copied.text(), "H\none\ntwo\ntail\nH\none");
         assert_eq!(
             copied_outcome.navigation,
-            Some(ExNavigation::TextOffset("H\none\ntwo\ntail\nH\n".len()))
+            Some(ExNavigation::PhysicalSourceOffset(copied.physical_line_ranges(5).unwrap().1.start))
         );
         assert_eq!(
             copied_outcome
@@ -3494,11 +3379,11 @@ mod tests {
             ":1,2move 4",
         )
         .unwrap();
-        assert_eq!(moved.source_bytes(), b"_two_\n\ntail\n\n# H\n\n  **one**");
+        assert_eq!(moved.source_bytes(), b"### _two_\n# tail\n# H\n##   **one**");
         assert_eq!(moved.text(), "two\ntail\nH\none");
         assert_eq!(
             moved_outcome.navigation,
-            Some(ExNavigation::TextOffset("two\ntail\nH\n".len()))
+            Some(ExNavigation::PhysicalSourceOffset(moved.physical_line_ranges(3).unwrap().1.start))
         );
         assert_eq!(
             moved_outcome
@@ -3526,7 +3411,7 @@ mod tests {
             assert_eq!(document.history_status(), history, "{command}");
             assert_eq!(
                 outcome.navigation,
-                Some(ExNavigation::TextOffset("a\n  ".len())),
+                Some(ExNavigation::PhysicalSourceOffset("a\n  ".len())),
                 "{command}"
             );
             assert!(!outcome.document_changed, "{command}");
@@ -3726,7 +3611,7 @@ mod tests {
         execute(&mut document, &mut state, 0, ":redo").unwrap();
         assert_eq!(document.text(), "ax\nb");
         let outcome = execute(&mut document, &mut state, 0, ":2").unwrap();
-        assert_eq!(outcome.navigation, Some(ExNavigation::TextOffset(3)));
+        assert_eq!(outcome.navigation, Some(ExNavigation::PhysicalSourceOffset(3)));
     }
 
     #[test]
@@ -3783,7 +3668,9 @@ mod tests {
         ).unwrap();
         let ExFrontendRequest::Info(ExInfoRequest::Options(options)) =
             &plan.outcome.frontend_requests[0] else { panic!("expected options") };
-        assert_eq!(options.len(), 22);
+        assert_eq!(options.len(), 23);
+        assert!(options.iter().any(|option| option.name == ExOptionName::Number
+            && option.value == ExOptionValue::Boolean(false)));
         assert!(options.iter().any(|option| option.name == ExOptionName::AutoSelect
             && option.value == ExOptionValue::Boolean(true)));
         assert!(options.iter().any(|option| option.name == ExOptionName::TextWidth));
@@ -3834,7 +3721,7 @@ mod tests {
             &write.outcome.frontend_requests[0],
             ExFrontendRequest::File(ExFileRequest::Write {
                 force: true,
-                range: Some(HardLineRange { start: 0, end: 1 }),
+                range: Some(ResolvedExRange { start: ResolvedExLine { index: 0, .. }, end: ResolvedExLine { index: 1, .. }, .. }),
                 ..
             })
         ));
@@ -3847,14 +3734,9 @@ mod tests {
             &(),
         )
         .unwrap();
-        assert_eq!(
-            normal.outcome.frontend_requests[0],
-            ExFrontendRequest::Normal(ExNormalRequest {
-                range: HardLineRange { start: 0, end: 1 },
-                commands: "A!".to_owned(),
-                literal: true,
-            })
-        );
+        assert!(matches!(&normal.outcome.frontend_requests[0],
+            ExFrontendRequest::Normal(ExNormalRequest { range, commands, literal: true })
+                if range.start.index == 0 && range.end.index == 1 && commands == "A!"));
 
         let goto = prepare_ex(
             &document,

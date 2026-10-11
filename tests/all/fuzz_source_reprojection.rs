@@ -1,7 +1,7 @@
 use viem_core::command::{CommandStatus, InputEvent, Key};
 use viem_core::document::{
-    Association, BoundaryAffinity, DeletionRecovery, Document, Encoding, Format,
-    ModelRequest, ProjectionWorkScope, TextEdit,
+    Association, BoundaryAffinity, DeletionRecovery, Document, Encoding, Format, ModelRequest,
+    ProjectionWorkScope, TextEdit,
 };
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent};
@@ -135,11 +135,13 @@ fn utf16_append_after_a_truncated_code_unit_repairs_only_that_unit_atomically() 
             Document::from_bytes(source.clone(), encoding, Format::PlainText).unwrap();
         assert_eq!(document.text(), "a\u{fffd}");
         let before = document.revision();
-        let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
-            document: document.id(),
-            revision: before,
-            edits: vec![TextEdit::new(4..4, "word")],
-        }).unwrap();
+        let prepared = document
+            .prepare_model_request(ModelRequest::ApplyTextEdits {
+                document: document.id(),
+                revision: before,
+                edits: vec![TextEdit::new(4..4, "word")],
+            })
+            .unwrap();
         assert_eq!(prepared.summary().source_patches()[0].range(), 2..3);
         assert_eq!(prepared.summary().source_patches()[1].range(), 3..3);
         assert_eq!(document.source_bytes(), source);
@@ -164,8 +166,8 @@ fn utf16_append_after_a_truncated_code_unit_repairs_only_that_unit_atomically() 
 #[test]
 fn sorting_markdown_source_fences_reprojects_their_separator_context() {
     for (source, command, expected) in [
-        ("b\n\n```", ":sort", "```\n\nb"),
-        ("b\n\n```\n```\n\nTail", ":1,3sort", "```\n\n```\nb\n\nTail"),
+        ("b\n\n```", ":sort", "\n```\nb"),
+        ("b\n\n```\n```\n\nTail", ":1,3sort", "\n```\nb\n```\n\nTail"),
     ] {
         let document = Document::from_bytes(
             source.as_bytes().to_vec(),

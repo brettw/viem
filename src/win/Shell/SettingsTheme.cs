@@ -12,8 +12,6 @@ internal sealed partial class SettingsWindow
 {
     private readonly Dictionary<string, ColorPicker> colors = [];
     private readonly Dictionary<string, Border> swatches = [];
-    private readonly ComboBox statusFont = new() { IsEditable = true, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Center, ItemsSource = new[] { "System" }.Concat(FontCatalog.Families).ToArray() };
-    private readonly NumberBox statusSize = new() { Minimum = 8, Maximum = 32, Width = 92, SmallChange = 1, LargeChange = 10, SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
     private readonly TextBlock previewTitle = new() { Text = "A space for your words.", FontSize = 20, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
     private readonly TextBlock previewSelection = new() { Text = "Keep your own rhythm.", FontSize = 15, Padding = new(3, 1, 3, 1) };
     private readonly TextBlock previewStatus = new() { Text = "NORMAL      ○ Ln 1, Col 1     UTF-8     Markdown", Padding = new(12, 5, 12, 5) };
@@ -41,19 +39,8 @@ internal sealed partial class SettingsWindow
         ColorControl(row, 0, "foreground", "Text", theme.Foreground); ColorControl(row, 1, "background", "Canvas", theme.Background);
         row = ColorRow(editor);
         ColorControl(row, 0, "caret", "Caret", theme.Caret); ColorControl(row, 1, "selection", "Selection", theme.Selection);
-        var status = ThemeSection(page, "Status bar"); row = ColorRow(status);
-        ColorControl(row, 0, "statusForeground", "Text", theme.StatusForeground); ColorControl(row, 1, "statusBackground", "Background", theme.StatusBackground);
-        var fontRow = new Grid { ColumnSpacing = 10 };
-        foreach (var width in new[] { GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto }) fontRow.ColumnDefinitions.Add(new() { Width = width });
-        fontRow.Children.Add(new TextBlock { Text = "Font", VerticalAlignment = VerticalAlignment.Center, Margin = new(0, 0, 4, 0) });
-        statusFont.Text = preferences.Get("theme", "statusFontFamily", "System"); statusSize.Value = preferences.StatusFontSize;
-        statusFont.SelectedItem = ((string[])statusFont.ItemsSource).FirstOrDefault(f => string.Equals(f, statusFont.Text, StringComparison.OrdinalIgnoreCase));
-        fontRow.Children.Add(statusFont); Grid.SetColumn(statusFont, 1); fontRow.Children.Add(statusSize); Grid.SetColumn(statusSize, 2);
-        var units = new TextBlock { Text = "pt", VerticalAlignment = VerticalAlignment.Center, Opacity = .7 }; fontRow.Children.Add(units); Grid.SetColumn(units, 3); status.Children.Add(fontRow);
-        AutomationProperties.SetName(statusFont, "Status font"); AutomationProperties.SetName(statusSize, "Status font size");
-        statusFont.SelectionChanged += (_, _) => { if (!loading && statusFont.SelectedItem is string family) { statusFont.Text = family; SaveTheme(); } };
-        statusFont.LostFocus += (_, _) => SaveTheme();
-        statusSize.ValueChanged += (_, _) => { if (double.IsFinite(statusSize.Value)) SaveTheme(); };
+        var status = ThemeSection(page, "Status bar");
+        status.Children.Add(new TextBlock { Text = "Edit Status bar and Status bar command in the built-in styles.", TextWrapping = TextWrapping.Wrap });
         RefreshThemeControls();
         preferences.ThemesChanged += RefreshThemeControls;
         Closed += (_, _) => preferences.ThemesChanged -= RefreshThemeControls;
@@ -91,9 +78,6 @@ internal sealed partial class SettingsWindow
             var theme = preferences.Theme;
             colors["foreground"].Color = theme.Foreground; colors["background"].Color = theme.Background;
             colors["caret"].Color = theme.Caret; colors["selection"].Color = theme.Selection;
-            colors["statusForeground"].Color = theme.StatusForeground; colors["statusBackground"].Color = theme.StatusBackground;
-            statusFont.Text = preferences.Get("theme", "statusFontFamily", "System"); statusSize.Value = preferences.StatusFontSize;
-            statusFont.SelectedItem = ((string[])statusFont.ItemsSource).FirstOrDefault(f => string.Equals(f, statusFont.Text, StringComparison.OrdinalIgnoreCase));
             RefreshThemePreview();
         }
         finally { loading = wasLoading; }
@@ -105,28 +89,29 @@ internal sealed partial class SettingsWindow
         RefreshThemePreview();
         Commit(() => {
             var theme = new JsonObject(); foreach (var pair in colors) theme[pair.Key] = Preferences.ColorJson(pair.Value.Color);
-            theme["statusFontFamily"] = statusFont.Text.Trim(); theme["statusFontSize"] = statusSize.Value;
             preferences.SetSections(new JsonObject { ["theme"] = theme });
         });
         RefreshThemeControls();
     }
     private void RefreshThemePreview()
     {
-        if (colors.Count != 6) return;
+        if (colors.Count != 4) return;
         SolidColorBrush Paint(string key) => new(colors[key].Color);
         previewBody.Background = Paint("background"); previewTitle.Foreground = previewSelection.Foreground = Paint("foreground");
         caretPaint.Background = Paint("caret"); selectionPaint.Background = Paint("selection");
-        previewFooter.Background = Paint("statusBackground"); previewStatus.Foreground = Paint("statusForeground");
-        previewStatus.FontFamily = new FontFamily(FontCatalog.Resolve(statusFont.Text)?.Family ?? statusFont.Text);
-        if (double.IsFinite(statusSize.Value)) previewStatus.FontSize = statusSize.Value;
+        var status = preferences.StatusStyles.Status;
+        previewFooter.Background = new SolidColorBrush(status.Background); previewStatus.Foreground = new SolidColorBrush(status.Foreground);
+        previewFooter.BorderBrush = new SolidColorBrush(status.TopBorder);
+        previewFooter.BorderThickness = new(status.Border.Left, status.Border.Top, status.Border.Right, status.Border.Bottom);
+        previewStatus.Padding = new(status.Padding.Left, status.Padding.Top, status.Padding.Right, status.Padding.Bottom);
+        previewStatus.FontFamily = new FontFamily(status.Family); previewStatus.FontSize = status.Size;
+        previewStatus.FontWeight = new() { Weight = status.Weight }; previewStatus.FontStyle = status.Slant;
         foreach (var pair in swatches) pair.Value.Background = Paint(pair.Key);
     }
 #if DEBUG
     internal ComboBox ThemePicker => themePicker;
     internal Button NewTheme => newTheme;
     internal Button DeleteTheme => deleteTheme;
-    internal ComboBox StatusFont => statusFont;
-    internal NumberBox StatusSize => statusSize;
     internal TextBlock PreviewStatus => previewStatus;
 #endif
 }

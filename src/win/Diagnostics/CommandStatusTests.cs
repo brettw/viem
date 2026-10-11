@@ -3,6 +3,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
+using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Viem.Windows.Shell;
 using Windows.System;
@@ -17,6 +18,7 @@ internal static class CommandStatusTests
         void Check(bool value, string name)
         { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
         async Task Screenshot(string name) => await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + name + ".png");
+        CheckRejectedPhysicalAddress(pane, Check);
         await StatusFilePathTests.Run(pane, window, preferences, Check);
         var view = pane.View!;
         bool showStatus = preferences.ShowStatus;
@@ -97,6 +99,39 @@ internal static class CommandStatusTests
         }
         finally { preferences.Set("appearance", "showStatusBar", showStatus); pane.DismissCommandOutput(); }
         if (pane.LastError != null) throw pane.LastError;
+    }
+
+    private static void CheckRejectedPhysicalAddress(EditorPane pane, Action<bool, string> check)
+    {
+        byte[] source = "first\ncontinuation\n\nlast"u8.ToArray();
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 150, 200);
+        view.LineMode(VIEM_LINE_MODE_VISUAL);
+        view.GoToLine(2);
+        var before = view.Presentation;
+        int publishedEffects = 0;
+        view.Effects += _ => publishedEffects++;
+        foreach (bool sourced in new[] { false, true })
+        {
+            InvalidOperationException? rejected = null;
+            try
+            {
+                if (sourced) view.SourceLine("999p", 1);
+                else view.Ex("999p");
+            }
+            catch (InvalidOperationException error) { rejected = error; }
+            string entry = sourced ? ":source" : "Ex entry";
+            check(rejected?.Message == "line address 999 is outside 1..=4"
+                && view.Outcome.command_status == VIEM_COMMAND_STATUS_ERROR,
+                $"{entry} throws the precise physical line address diagnostic");
+            check(publishedEffects == 0, $"{entry} does not dispatch effects from a rejected command");
+            var after = view.Presentation;
+            check(document.State.document_revision == before.document_revision
+                && document.Source(before.document_revision).AsSpan().SequenceEqual(source)
+                && after.cursor_utf8_offset == before.cursor_utf8_offset
+                && after.cursor_affinity == before.cursor_affinity,
+                $"{entry} preserves source and caret after a rejected physical address");
+        }
     }
 
     internal static async Task RunScrolled(EditorPane pane)

@@ -421,7 +421,9 @@ final class EVFormattingToolbarTests: XCTestCase {
         let at = text.range(of: firstLine).location + (afterSpace ? 2 : 1)
         // Accessibility selections address materialized geometry; first bring
         // the demo's table into the viewport, as a user would before clicking.
-        surface.goToLine(UInt64(text.substring(to: at).filter { $0 == "\n" }.count + 1))
+        let sourceText = source as NSString
+        let sourceStart = sourceText.range(of: firstLine).location
+        surface.goToLine(UInt64(sourceText.substring(to: sourceStart).filter { $0 == "\n" }.count + 1))
         surface.performInput { _ = try session.sendText("i") }
         surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: at, length: 0))
         XCTAssertEqual(surface.editorView.accessibilitySelectedTextRange(), NSRange(location: at, length: 0))

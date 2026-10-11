@@ -72,6 +72,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case heading6
 
     case wordWrap = 400
+    case showLineNumbers = 401
     case showInvisibleCharacters = 402
     case zoomIn
     case zoomOut

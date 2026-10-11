@@ -36,7 +36,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         var acknowledgements: [EVDocumentSaveSnapshot] = []
         var events: [String] = []
         var rangedData: Data?
-        var requestedRanges: [ClosedRange<UInt64>] = []
+        var requestedRanges: [Range<UInt64>] = []
         var onAcknowledge: (() -> Void)?
 
         init(
@@ -69,10 +69,10 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             snapshots.append(snapshot)
             return snapshot
         }
-        func nativeSaveSnapshot(typeName: String, hardLineRange: ClosedRange<UInt64>) throws -> EVDocumentSaveSnapshot {
+        func nativeSaveSnapshot(typeName: String, sourceByteRange: Range<UInt64>) throws -> EVDocumentSaveSnapshot {
             guard let data = rangedData else { throw EVDocumentHostError.preparedWriteUnavailable }
             events.append("ranged snapshot")
-            requestedRanges.append(hardLineRange)
+            requestedRanges.append(sourceByteRange)
             let snapshot = EVDocumentSaveSnapshot(data: data,
                 documentID: persistenceState.documentID,
                 documentRevision: persistenceState.documentRevision,
@@ -424,7 +424,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             documentID: backend.persistenceState.documentID,
             documentRevision: backend.persistenceState.documentRevision,
             path: rangedURL.path,
-            hardLineRange: 1 ... 1
+            sourceByteRange: 1 ..< 2
         )
         let rangedCompletion = expectation(description: "ranged write completed")
         var rangedResult: Result<String?, Error>?
@@ -435,7 +435,7 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         wait(for: [rangedCompletion], timeout: 5)
         XCTAssertNoThrow(try rangedResult?.get())
         XCTAssertEqual(try Data(contentsOf: rangedURL), backend.rangedData)
-        XCTAssertEqual(backend.requestedRanges, [1 ... 1])
+        XCTAssertEqual(backend.requestedRanges, [1 ..< 2])
         XCTAssertEqual(backend.events, ["snapshot", "ranged snapshot"])
         XCTAssertEqual(try Data(contentsOf: original), originalBytes)
         XCTAssertEqual(document.fileURL?.standardizedFileURL, original.standardizedFileURL)

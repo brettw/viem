@@ -76,7 +76,9 @@ internal sealed unsafe partial class CoreView : IDisposable
         HostEffects? effects = null;
         try { if (batch != 0) effects = HostEffects.Read(batch); }
         finally { if (batch != 0) Check(viem_effect_batch_release(batch), "Release effects"); }
-        Finish(status, outcome);
+        string? diagnostic = effects?.Requests.LastOrDefault(request =>
+            request.Value.kind == VIEM_EX_FRONTEND_MESSAGE && request.Text.Length > 0)?.Text;
+        Finish(status, outcome, diagnostic);
         if (effects != null && publish) Effects?.Invoke(effects);
         return effects;
     }
@@ -144,7 +146,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     internal delegate uint Operation(ViemCoreOutcomeV1* outcome);
     internal void Apply(Operation operation)
     { var outcome = New<ViemCoreOutcomeV1>(); uint status; using (Diagnostics.InputPerformance.Measure("core.operation")) status = operation(&outcome); Finish(status, outcome); }
-    private void Finish(uint status, ViemCoreOutcomeV1 outcome)
+    private void Finish(uint status, ViemCoreOutcomeV1 outcome, string? diagnostic = null)
     {
         Check(status, Provider.LastError ?? "Editor operation"); Outcome = outcome;
         if ((outcome.flags & VIEM_OUTCOME_DOCUMENT_CHANGED) != 0) Document.NotifyChanged();
@@ -152,7 +154,7 @@ internal sealed unsafe partial class CoreView : IDisposable
         BackgroundLayout.Update();
         TableWidthRefinement.Update();
         if (outcome.command_status == VIEM_COMMAND_STATUS_READ_ONLY) throw new InvalidOperationException("E45: readonly option is set (use ! to override)");
-        if (outcome.command_status == VIEM_COMMAND_STATUS_ERROR) throw new InvalidOperationException("The command could not be completed.");
+        if (outcome.command_status == VIEM_COMMAND_STATUS_ERROR) throw new InvalidOperationException(diagnostic ?? "The command could not be completed.");
     }
     internal void TableWidthsChanged() { Changed?.Invoke(); TableWidthRefinement.Update(); }
     public void RestorePosition(CoreView previous)

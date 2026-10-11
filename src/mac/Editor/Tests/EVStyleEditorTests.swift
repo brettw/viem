@@ -11,7 +11,10 @@ final class EVStyleEditorTests: XCTestCase {
         let configuration = try styleConfiguration()
         let plain = try EVThemeStyleSession(configuration: configuration, format: .plainText)
         let definitions = try plain.snapshot().definitions
-        XCTAssertEqual(Set(definitions.map { $0.key.id.rawValue }), ["Paragraph", "* Incremental match"])
+        XCTAssertEqual(Set(definitions.map { $0.key.id.rawValue }), [
+            "Paragraph", "* Incremental match", "Builtin line number",
+            "Builtin current line number", "Status bar", "Status bar command",
+        ])
         let paragraph = try XCTUnwrap(definitions.first { $0.key == .baseParagraph })
         let single = EVStyleEditorViewController.makeStyleMenu(definitions: [paragraph])
         XCTAssertEqual(single.items.map(\.title), [paragraph.name])

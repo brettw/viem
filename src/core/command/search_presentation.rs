@@ -24,6 +24,7 @@ pub struct SearchPresentation {
     pub incremental_match: Option<IncrementalSearchPreview>,
     /// Substitution previews are limited to the explicitly addressed hard lines.
     pub search_range: Option<Range<usize>>,
+    pub(crate) addressed_range: Option<ex_execute::ResolvedExRange>,
     /// Preview failures are informational and never replace command status.
     pub diagnostic: Option<String>,
 }
@@ -40,6 +41,8 @@ pub struct SearchPresentationKey {
     confirmation_match: Option<Range<usize>>,
     address_marks: Vec<(char, usize)>,
     last_search: Option<(SearchDirection, String)>,
+    line_mode: LineMode,
+    layout: Option<(crate::layout::LayoutRevision, crate::layout::ViewConfigurationGeneration, crate::layout::MetricsGeneration)>,
     prompt: Option<(
         CommandLineKind,
         String,
@@ -55,11 +58,17 @@ struct PreviewQuery {
     count: usize,
     options: SearchOptions,
     scope: Option<Range<usize>>,
+    addressed_range: Option<ex_execute::ResolvedExRange>,
     navigation: Vec<SearchDirection>,
 }
 
 impl CommandInterpreter {
     pub fn search_presentation_key(&self, document: &Document) -> SearchPresentationKey {
+        self.search_presentation_key_with_layout(document, self.line_layout.as_ref())
+    }
+
+    pub(crate) fn search_presentation_key_with_layout(&self, document: &Document,
+        layout: Option<&crate::layout::LayoutSnapshot>) -> SearchPresentationKey {
         SearchPresentationKey {
             document: document.id(),
             revision: document.revision(),
@@ -69,6 +78,10 @@ impl CommandInterpreter {
             confirmation_match: self.substitute_confirmation_match(document),
             address_marks: self.marks.iter().map(|(name, offset)| (*name, *offset)).collect(),
             last_search: self.last_search.clone(),
+            line_mode: self.line_mode,
+            layout: layout.filter(|_| self.line_mode == LineMode::Visual
+                && self.command_line_state.as_ref().is_some_and(|state| state.kind == CommandLineKind::Ex))
+                .map(|snapshot| (snapshot.revision, snapshot.configuration_generation, snapshot.metrics_generation)),
             prompt: self.command_line_state.as_ref().map(|state| {
                 (
                     state.kind,
@@ -93,6 +106,11 @@ impl CommandInterpreter {
     }
 
     pub fn search_presentation(&self, document: &Document) -> SearchPresentation {
+        self.search_presentation_with_layout(document, self.line_layout.as_ref())
+    }
+
+    pub(crate) fn search_presentation_with_layout(&self, document: &Document,
+        layout: Option<&crate::layout::LayoutSnapshot>) -> SearchPresentation {
         let mut result = SearchPresentation {
             pattern: self
                 .last_search
@@ -103,6 +121,7 @@ impl CommandInterpreter {
             incremental_active: false,
             incremental_match: None,
             search_range: None,
+            addressed_range: None,
             diagnostic: None,
         };
         if let Some(matched_range) = self.substitute_confirmation_match(document) {
@@ -120,7 +139,7 @@ impl CommandInterpreter {
             return result;
         };
         let search_prompt = state.kind != CommandLineKind::Ex;
-        let query = self.preview_query(document, state);
+        let query = self.preview_query_with_layout(document, state, layout);
         result.incremental_active = search_prompt || query.is_some();
         let Some(query) = query else {
             if search_prompt && !state.buffer.input.is_empty() {
@@ -135,6 +154,7 @@ impl CommandInterpreter {
         // change. Leaving the prompt restores hlsearch and its suppression.
         result.highlight_all = true;
         result.search_range = query.scope.clone();
+        result.addressed_range = query.addressed_range.clone();
         match search_match(document, self.cursor, &query, preview_limits()) {
             Ok(Some(matched_range)) => {
                 result.incremental_match = Some(IncrementalSearchPreview {
@@ -156,10 +176,16 @@ impl CommandInterpreter {
     }
 
     fn preview_query(&self, document: &Document, state: &CommandLineState) -> Option<PreviewQuery> {
+        self.preview_query_with_layout(document, state, self.line_layout.as_ref())
+    }
+
+    fn preview_query_with_layout(&self, document: &Document, state: &CommandLineState,
+        layout: Option<&crate::layout::LayoutSnapshot>) -> Option<PreviewQuery> {
         if state.buffer.input.is_empty() {
             return None;
         }
         let mut options = self.search_options;
+        let mut addressed_range = None;
         let (pattern, direction, count, scope) = match state.kind {
             CommandLineKind::SearchForward | CommandLineKind::SearchBackward => (
                 state.buffer.input.clone(),
@@ -179,33 +205,23 @@ impl CommandInterpreter {
             CommandLineKind::Ex => {
                 let (range, mut pattern, override_case, count) =
                     ex::incremental_substitute(&state.buffer.input)?;
-                if state.visual_range_revision.is_some_and(|revision| revision != document.revision()) { return None; }
-                let mut command = ex::ExCommand { range, bang: false, action: ExAction::NoHighlight };
-                let address_search = self.bind_ex_addresses_with_limits(document, &mut command, preview_limits()).ok()?;
+                let command = ex::ExCommand { range, bang: false, action: ExAction::Substitute(ex::Substitute {
+                    delimiter: '/', pattern: pattern.clone(), replacement: String::new(),
+                    flags: Default::default(), count,
+                }) };
+                let addresses = self.resolve_ex_addresses_with_layout(document, &command, layout, preview_limits()).ok()?;
                 if pattern.is_empty() {
-                    pattern = address_search.as_ref().or(self.last_search.as_ref())?.1.clone();
+                    pattern = addresses.search.as_ref().or(self.last_search.as_ref())?.1.clone();
                 }
-                let current = document.hard_line_at_offset(self.cursor)?;
-                let mut lines =
-                    ex_execute::resolve_range(command.range.as_ref(), current, document.line_count())
-                        .ok()?;
-                if let Some(count) = count {
-                    let count = usize::try_from(count).ok()?.max(1);
-                    lines.start = lines.end;
-                    lines.end = lines
-                        .start
-                        .saturating_add(count - 1)
-                        .min(document.line_count() - 1);
-                }
-                let snapshot = document.hard_line_snapshot();
-                let start = snapshot.line(lines.start)?.content_range().start;
-                let end = snapshot.line(lines.end)?.content_range().end;
+                let range = addresses.range?;
+                let scope = ex_execute::addressed_match_scope(document, &range).ok()?;
+                addressed_range = Some(range);
                 if let Some(ignorecase) = override_case {
                     options.ignorecase = ignorecase;
                     options.smartcase = false;
                 }
                 options.wrapscan = false;
-                (pattern, SearchDirection::Forward, 1, Some(start..end))
+                (pattern, SearchDirection::Forward, 1, Some(scope))
             }
         };
         Some(PreviewQuery {
@@ -214,6 +230,7 @@ impl CommandInterpreter {
             count,
             options,
             scope,
+            addressed_range,
             navigation: self.incremental_navigation(state).to_vec(),
         })
     }
@@ -289,6 +306,7 @@ fn search_match(
         limits,
         &query.navigation,
         query.scope.clone(),
+        query.addressed_range.as_ref().map(|range| (document, range)),
     )
 }
 
@@ -324,6 +342,7 @@ pub(super) fn search_match_with_navigation(
         RegexLimits::default(),
         navigation,
         None,
+        None,
     )
 }
 
@@ -338,6 +357,7 @@ fn search_match_sequence(
     limits: RegexLimits,
     navigation: &[SearchDirection],
     scope: Option<Range<usize>>,
+    addressed: Option<(&Document, &ex_execute::ResolvedExRange)>,
 ) -> Result<Option<Range<usize>>, String> {
     let regex = CompiledRegex::compile(
         pattern,
@@ -369,7 +389,12 @@ fn search_match_sequence(
                     if before.is_some_and(|limit| range.start >= limit) {
                         break;
                     }
-                    if lines.is_grapheme_boundary(range.start) {
+                    let eligible = match addressed {
+                        Some((document, addressed)) => ex_execute::addressed_match_eligible(document, addressed, range.clone())
+                            .map_err(|error| error.to_string())?,
+                        None => true,
+                    };
+                    if eligible && lines.is_grapheme_boundary(range.start) {
                         if before.is_none() {
                             return Ok(Some(range));
                         }

@@ -44,14 +44,10 @@ fn print_aliases_counts_and_flags_do_not_edit_or_touch_registers() {
         (":# 2", HardLineRange { start: 0, end: 1 }, true, false),
     ] {
         let outcome = run(&mut doc, &ExExecutionContext::default(), input);
-        assert_eq!(
-            outcome.frontend_requests,
-            [ExFrontendRequest::Info(ExInfoRequest::PrintLines {
-                range,
-                number,
-                list
-            })]
-        );
+        assert!(matches!(outcome.frontend_requests.as_slice(),
+            [ExFrontendRequest::Info(ExInfoRequest::PrintLines { range: actual, number: actual_number, list: actual_list })]
+                if actual.start.index == range.start && actual.end.index == range.end
+                    && *actual_number == number && *actual_list == list));
         assert!(outcome.register_effects.is_empty());
         assert_eq!(doc.revision(), revision);
     }
@@ -230,14 +226,9 @@ fn print_and_shift_tail_flags_accept_count_then_flags_and_reject_bad_tails() {
     let mut doc = Document::new("  one\n  two\n  three");
     for command in [":p 2#l", ":print 2 #lp", ":nu 2 l", ":list 2 #"] {
         let outcome = run(&mut doc, &ExExecutionContext::default(), command);
-        assert_eq!(
-            outcome.frontend_requests,
-            [ExFrontendRequest::Info(ExInfoRequest::PrintLines {
-                range: HardLineRange { start: 0, end: 1 },
-                number: true,
-                list: true,
-            })]
-        );
+        assert!(matches!(outcome.frontend_requests.as_slice(),
+            [ExFrontendRequest::Info(ExInfoRequest::PrintLines { range, number: true, list: true })]
+                if range.start.index == 0 && range.end.index == 1));
         assert_eq!(
             outcome.navigation,
             Some(viem_core::command::ex_execute::ExNavigation::TextOffset(8))
@@ -247,14 +238,9 @@ fn print_and_shift_tail_flags_accept_count_then_flags_and_reject_bad_tails() {
         assert!(parse_ex(command).is_err(), "{command}");
     }
     let outcome = run(&mut doc, &ExExecutionContext::default(), ":>> 2#l");
-    assert_eq!(
-        outcome.frontend_requests,
-        [ExFrontendRequest::Info(ExInfoRequest::PrintLines {
-            range: HardLineRange { start: 1, end: 1 },
-            number: true,
-            list: true,
-        })]
-    );
+        assert!(matches!(outcome.frontend_requests.as_slice(),
+            [ExFrontendRequest::Info(ExInfoRequest::PrintLines { range, number: true, list: true })]
+                if range.start.index == 1 && range.end.index == 1));
     assert_eq!(doc.text(), "      one\n      two\n  three");
     assert!(doc.undo());
     assert!(!doc.undo());
@@ -268,7 +254,7 @@ fn alignment_preserves_current_line_uses_default_for_zero_and_clears_blank_left_
     assert_eq!(doc.text(), "  one\n      x\ty\n   ");
     assert_eq!(
         outcome.navigation,
-        Some(viem_core::command::ex_execute::ExNavigation::TextOffset(2))
+        Some(viem_core::command::ex_execute::ExNavigation::PhysicalSourceOffset(2))
     );
     run(&mut doc, &ExExecutionContext::default(), ":%left 0");
     assert_eq!(doc.text(), "one\nx\ty\n");

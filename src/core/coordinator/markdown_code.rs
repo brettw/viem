@@ -163,7 +163,7 @@ mod tests {
             CoreEvent::GoToLine {
                 document: core.document.id(),
                 revision: core.document.revision(),
-                line: visible_lines as u64 + 2,
+                line: visible_lines as u64 + 3,
             },
         )
         .unwrap();
@@ -276,7 +276,7 @@ mod tests {
             "after\n\n".repeat(20)
         );
         let mut document =
-            Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+            Document::from_bytes(source.clone().into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
         let mut defaults: serde_json::Value =
             serde_json::from_slice(&document.export_style_defaults().unwrap()).unwrap();
         for style in defaults["block_styles"].as_array_mut().unwrap() {
@@ -288,11 +288,7 @@ mod tests {
             .initialize_style_defaults(&serde_json::to_vec(&defaults).unwrap())
             .unwrap();
         let at = document.text().find("fn main").unwrap();
-        let line = document
-            .projection()
-            .text_tree()
-            .hard_line_at_byte(at)
-            .unwrap();
+        let line = document.physical_line_index_at_source(source.find("fn main").unwrap()).unwrap();
         let release = Arc::new(AtomicBool::new(false));
         let provider_release = release.clone();
         let mut core = Core::new(document);

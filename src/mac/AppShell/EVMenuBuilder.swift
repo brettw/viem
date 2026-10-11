@@ -374,6 +374,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(coreItem("Word Wrap", command: .wordWrap))
         menu.addItem(coreItem("Flow Source Paragraphs", command: .flowParagraphs))
+        menu.addItem(coreItem("Show line numbers", command: .showLineNumbers))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
         menu.addItem(.separator())
         menu.addItem(coreItem("Zoom In", command: .zoomIn, key: "=", modifiers: [.command]))

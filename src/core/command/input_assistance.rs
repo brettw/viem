@@ -23,6 +23,7 @@ impl Default for InputAssistance {
 
 impl CommandInterpreter {
     pub(super) fn retire_typing_context(&mut self) {
+        self.retire_source_destination();
         self.typing_style = Default::default();
         self.input_assistance.markdown_exit = None;
     }

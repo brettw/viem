@@ -54,82 +54,75 @@ impl CommandInterpreter {
 /// inserts literal lines through the existing lossless formatted payload path.
 pub(crate) fn read_file_edit(
     document: &Document,
-    after: usize,
+    after: ex_execute::ExInsertionPoint,
     bytes: &[u8],
-) -> Result<Option<(crate::document::FragmentEdit, usize)>, String> {
-    if after > document.line_count() {
-        return Err("read address is outside the document".into());
-    }
-    if bytes.is_empty() {
-        return Ok(None);
-    }
-    let loaded =
-        Document::from_bytes_detect_encoding(bytes.to_vec(), crate::document::Format::PlainText)
-            .map_err(|error| error.to_string())?;
-    if loaded.text().is_empty() {
-        return Ok(None);
-    }
-    let first_line = loaded
-        .hard_line_snapshot()
-        .line(0)
-        .expect("a document has one line")
-        .content_range();
-    let first_nonblank = loaded.text()[first_line]
-        .grapheme_indices(true)
-        .find(|(_, grapheme)| !grapheme.chars().all(char::is_whitespace))
-        .map_or(0, |(offset, _)| offset);
-    if document.projection().text_tree().byte_len() == 0 {
-        let text = loaded
-            .text()
-            .strip_suffix('\n')
-            .unwrap_or(loaded.text())
-            .to_owned();
-        let breaks = text.match_indices('\n').map(|(offset, _)| offset).collect();
-        let cursor = first_nonblank;
-        let payload = crate::document::FormattedTextPayload::new(
-            &document.hard_line_snapshot(),
-            text,
-            breaks,
-        )
+) -> Result<Option<(crate::document::ModelRequest, usize)>, String> {
+    if bytes.is_empty() { return Ok(None); }
+    let loaded = Document::from_bytes_detect_encoding(bytes.to_vec(), crate::document::Format::PlainText)
         .map_err(|error| error.to_string())?;
-        return Ok(Some((
-            crate::document::FragmentEdit {
-                range: 0..0,
-                fragments: vec![crate::document::ReplacementFragment::Literal(payload)],
-            },
-            cursor,
-        )));
-    }
-    let value = ExRegisterValue::linewise(loaded.text());
-    let (edit, _) =
-        ex_execute::plan_put(document, after, &value).map_err(|error| error.to_string())?;
-    // :read selects the first inserted line, unlike :put's last-line cursor.
-    let prefix_break = usize::from(after == document.line_count() && after != 0);
-    let cursor = edit.range().start + prefix_break + first_nonblank;
-    Ok(Some((
-        crate::document::FragmentEdit {
-            range: edit.range(),
-            fragments: vec![crate::document::ReplacementFragment::Literal(
-                edit.payload().clone(),
-            )],
-        },
-        cursor,
-    )))
+    if loaded.projection().text_tree().byte_len() == 0 { return Ok(None); }
+    let raw = loaded.text();
+    let body = raw.strip_suffix('\n').unwrap_or(raw);
+    let empty = document.projection().text_tree().byte_len() == 0;
+    let eof = if after.source { after.offset == document.source_byte_len() }
+        else { after.offset == document.projection().text_tree().byte_len() };
+    let needs_prefix = !empty && if after.source {
+        if eof {
+            let last = document.physical_source_line_number_count() - 1;
+            let (source, content) = document.physical_line_ranges(last).map_err(|error| error.to_string())?;
+            source.end == content.end
+        } else { false }
+    } else {
+        let line = document.hard_line_snapshot().line_at_offset(after.offset)
+            .map_err(|error| error.to_string())?;
+        line.content_range().start < after.offset && after.offset <= line.content_range().end
+    };
+    let mut text = String::new();
+    if needs_prefix { text.push('\n'); }
+    text.push_str(body);
+    if !empty && (!eof || !needs_prefix) { text.push('\n'); }
+    let first_nonblank = body.grapheme_indices(true)
+        .take_while(|(_, value)| *value != "\n")
+        .find(|(_, value)| !value.chars().all(char::is_whitespace))
+        .map_or(0, |(offset, _)| offset);
+    let breaks = text.match_indices('\n').map(|(offset, _)| offset).collect();
+    let payload = crate::document::FormattedTextPayload::new(&document.hard_line_snapshot(), text, breaks)
+        .map_err(|error| error.to_string())?;
+    let request = if after.source {
+        crate::document::ModelRequest::InsertAtSource { document: document.id(), revision: document.revision(),
+            at: document.source_point(after.offset).map_err(|error| error.to_string())?, payload }
+    } else {
+        document.text_point(after.offset).map_err(|error| error.to_string())?;
+        crate::document::ModelRequest::ApplyFragmentEdits { document: document.id(), revision: document.revision(),
+            edits: vec![crate::document::FragmentEdit { range: after.offset..after.offset,
+                fragments: vec![crate::document::ReplacementFragment::Literal(payload)] }] }
+    };
+    // Resolve the cursor against the verified candidate before the native
+    // transaction publishes, including an invisible source destination.
+    let prepared = document.prepare_model_request(request.clone()).map_err(|error| error.to_string())?;
+    let candidate = document.prepared_candidate_document(&prepared).map_err(|error| error.to_string())?;
+    let start = if after.source { candidate.visible_point_for_source(after.offset, true).map_err(|error| error.to_string())? }
+        else { super::prepared_cursor(document, &prepared, after.offset, crate::document::Association::BeforeInsertion).map_err(|error| error.to_string())? };
+    let cursor = start + usize::from(needs_prefix) + first_nonblank;
+    candidate.text_point(cursor).map_err(|error| error.to_string())?;
+    Ok(Some((request, cursor)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{ModelRequest, Revision};
+    use crate::document::Revision;
+
+    fn read_point(document: &Document, line: usize) -> ex_execute::ExInsertionPoint {
+        let offset = if line == 0 { document.physical_line_ranges(0).unwrap().0.start }
+            else { document.physical_line_ranges(line - 1).map_or(usize::MAX, |(line, _)| line.end) };
+        ex_execute::ExInsertionPoint { offset, source: true }
+    }
 
     fn read(document: &mut Document, after: usize, bytes: &[u8]) {
-        if let Some((edit, _)) = read_file_edit(document, after, bytes).unwrap() {
+        if let Some((edit, _)) = read_file_edit(document, read_point(document, after), bytes).unwrap() {
             let prepared = document
-                .prepare_model_request(ModelRequest::ApplyFragmentEdits {
-                    document: document.id(),
-                    revision: document.revision(),
-                    edits: vec![edit],
-                })
+                .prepare_model_request(edit)
                 .unwrap();
             document.commit_model_transaction(prepared).unwrap();
         }
@@ -166,7 +159,7 @@ mod tests {
         let before = document.history_status();
         read(&mut document, 1, b"");
         assert_eq!(document.history_status(), before);
-        assert!(read_file_edit(&document, 99, b"bad").is_err());
+        assert!(read_file_edit(&document, read_point(&document, 99), b"bad").is_err());
         assert_eq!(document.history_status(), before);
     }
 
@@ -224,17 +217,17 @@ mod tests {
             ("first\nlast", 1, 8),
             ("last", 0, 2),
             ("last", 1, 7),
-            ("last\n", 2, 8),
+            ("last\n", 1, 7),
             ("", 1, 2),
         ] {
             let document = Document::new(text);
-            let (_, cursor) = read_file_edit(&document, after, b"  one\n  two\n")
+            let (_, cursor) = read_file_edit(&document, read_point(&document, after), b"  one\n  two\n")
                 .unwrap()
                 .unwrap();
             assert_eq!(cursor, expected, "{text:?} after {after}");
         }
         let document = Document::new("first\nlast");
-        let (_, cursor) = read_file_edit(&document, 1, b"  \n  next\n").unwrap().unwrap();
+        let (_, cursor) = read_file_edit(&document, read_point(&document, 1), b"  \n  next\n").unwrap().unwrap();
         assert_eq!(cursor, 6, "blank first imported line stays at its own boundary");
     }
 }

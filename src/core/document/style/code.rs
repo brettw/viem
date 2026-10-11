@@ -29,7 +29,7 @@ pub(crate) fn markdown_sheet(document: &StyleSheet, code: &StyleSheet) -> Arc<St
     let properties = code.block_style(&code.base_paragraph).map(|style| style.character.clone()).unwrap_or_default();
     sheet.character_styles.insert(base.clone(), CharacterStyle { id: base.clone(), based_on: None, properties });
     sheet.character_metadata.insert(base.clone(), StyleDefinitionMetadata { display_name: "ViemCodeBase".into(), origin: StyleDefinitionOrigin::SyntheticReadOnly });
-    for style in code.character_styles().filter(|style| !style.id.is_internal()) {
+    for style in code.character_styles().filter(|style| !style.id.is_internal_in(StyleNamespace::Character)) {
         let mapped = id(&style.id);
         sheet.character_styles.insert(mapped.clone(), CharacterStyle { id: mapped.clone(),
             based_on: Some(style.based_on.as_ref().map(&id).unwrap_or_else(|| base.clone())), properties: style.properties.clone() });
@@ -461,6 +461,14 @@ fn validate(sheet: &StyleSheet) -> Result<(), String> {
     {
         return Err("The internal Incremental match style is required and cannot be renamed or reparented".into());
     }
+    let builtins = StyleSheet::plain_text();
+    for expected in builtins.block_styles().filter(|style| style.id.is_internal_in(StyleNamespace::Block)) {
+        if !sheet.block_style(&expected.id).is_some_and(|style| style.role == expected.role
+            && style.based_on == expected.based_on && style.next_paragraph_style.is_none())
+            || sheet.block_style_metadata(&expected.id) != builtins.block_style_metadata(&expected.id) {
+            return Err("Internal chrome styles cannot be removed or reparented".into());
+        }
+    }
     sheet
         .validate_block_cycles()
         .map_err(|e| format!("{e:?}"))?;
@@ -471,7 +479,7 @@ fn validate(sheet: &StyleSheet) -> Result<(), String> {
     for (id, style) in &sheet.block_styles {
         validate_character_properties(id, &style.character).map_err(|e| format!("{e:?}"))?;
         validate_block_properties(style).map_err(|e| format!("{e:?}"))?;
-        validate_definition_metadata(id, &sheet.block_metadata[id])
+        validate_definition_metadata(StyleNamespace::Block, id, &sheet.block_metadata[id])
             .map_err(|e| format!("{e:?}"))?;
         if style.next_paragraph_style.is_some() {
             return Err("Code paragraphs always use Base Paragraph".into());
@@ -481,11 +489,12 @@ fn validate(sheet: &StyleSheet) -> Result<(), String> {
         if metadata.display_name.trim().is_empty() || !names.insert(&metadata.display_name) {
             return Err("Code style names must be nonempty and unique".into());
         }
-        validate_definition_metadata(id, metadata).map_err(|e| format!("{e:?}"))?;
+        validate_definition_metadata(StyleNamespace::Character, id, metadata).map_err(|e| format!("{e:?}"))?;
         validate_character_properties(id, &sheet.character_styles[id].properties)
             .map_err(|e| format!("{e:?}"))?;
     }
-    if sheet.block_styles.len() != 1 || !sheet.block_styles.contains_key(&sheet.base_paragraph) {
+    if !sheet.block_styles.contains_key(&sheet.base_paragraph)
+        || sheet.block_styles.keys().any(|id| id != &sheet.base_paragraph && !id.is_internal_in(StyleNamespace::Block)) {
         return Err("Code Base Paragraph is required".into());
     }
     if matches!(sheet.block_styles[&sheet.base_paragraph].character.size, Some(FontSize::Percentage(_))) {
@@ -603,7 +612,8 @@ pub fn parse_json(bytes: &[u8]) -> Result<StyleSheet, String> {
             }
         }
         let mut seen = BTreeSet::new();
-        for entry in file.block_styles {
+        for mut entry in file.block_styles {
+            entry.style.id.normalize_saved_builtin_block_name(&mut entry.name);
             if !seen.insert((0, entry.style.id.clone())) {
                 return Err("Duplicate style ID".into());
             }
@@ -671,6 +681,30 @@ mod tests {
 
     fn named<'a>(sheet: &'a StyleSheet, name: &str) -> &'a CharacterStyle {
         &sheet.character_styles[resolve_name(sheet, name).unwrap()]
+    }
+
+    #[test]
+    fn builtin_gutter_names_do_not_satisfy_emitted_syntax_style_names() {
+        let mut sheet = default_sheet();
+        assert!(resolve_syntax_name(&sheet, "Line number").is_none());
+        assert!(resolve_syntax_name(&sheet, "Current line number").is_none());
+        assert!(!generate_implicit(&mut sheet, ["Line number", "Current line number"]));
+        for name in ["Line number", "Current line number"] {
+            let id = resolve_syntax_name(&sheet, name).unwrap().clone();
+            assert!(sheet.is_implicit_character(&id));
+            assert!(!id.is_internal_in(StyleNamespace::Character));
+            let mut style = sheet.character_style(&id).unwrap().clone();
+            style.properties.size = Some(FontSize::Points(19.0));
+            sheet.apply_configuration_edit(&StyleDefinitionEdit::UpdateCharacter(style),
+                StyleSheetRevision(sheet.revision.0 + 1), false).unwrap();
+            let content = sheet.resolve_paragraph_style(&sheet.base_paragraph, &sheet.base_paragraph, Some(&id),
+                &BlockProperties::default(), &CharacterProperties::default()).unwrap();
+            assert_eq!(content.character.size, 19.0);
+        }
+        let gutter = sheet.resolve_paragraph_style(&sheet.base_paragraph, &"Builtin line number".into(), None,
+            &BlockProperties::default(), &CharacterProperties::default()).unwrap();
+        assert_eq!(gutter.character.size, 11.0);
+        validate(&sheet).unwrap();
     }
 
     #[test]
