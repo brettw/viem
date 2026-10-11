@@ -173,7 +173,7 @@ final class EVPaneContainer: NSViewController {
     applyingLayout = true; defer { applyingLayout = false }
     let focused = panes[min(preferredIndex,panes.count-1)]
     for frame in geometry.snapshot().frames where frame.kind == 0 {
-      panes.first(where: { id($0) == frame.id })?.statusBar.hidesBottomBorder = frame.flags & 1 == 0
+      panes.first(where: { id($0) == frame.id })?.statusBar.hidesBottomBorder = frame.flags & UInt32(VIEM_PANE_FRAME_STATUS_DRAGGABLE) == 0
     }
     geometry.update(size:stack.bounds.size,chrome:panes.map { ViemPaneChrome(id:id($0),status_height:$0.statusBarHeight) })
     let snapshot = geometry.snapshot()
@@ -191,10 +191,10 @@ final class EVPaneContainer: NSViewController {
           splitter.dragDidMove = { [weak self] delta in guard let self else { return }; self.geometry.drag(token,splitter:true,delta:delta); self.layoutStack() }
         }
         splitter.frame = rect
-        splitter.updateOuterEdges(frame: frame, containerHeight: stack.bounds.height)
+        splitter.updateBorderVisibility(frame: frame, containerHeight: stack.bounds.height)
       } else if let pane = panes.first(where: { id($0) == frame.id }) {
         pane.view.frame = rect; pane.layoutContent(); next.append(pane)
-        if frame.flags & 1 == 0 { pane.statusBar.dragDidMove = nil }
+        if frame.flags & UInt32(VIEM_PANE_FRAME_STATUS_DRAGGABLE) == 0 { pane.statusBar.dragDidMove = nil }
         else if pane.statusBar.dragDidMove == nil { pane.statusBar.dragDidMove = { [weak self,weak pane] delta in if let pane { self?.dragStatusBar(of:pane,by:delta) } } }
       }
     }

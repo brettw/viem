@@ -120,18 +120,41 @@ internal static class PaneLayoutTests
             var middle = window.SplitPane(first, first.Document); await middle.Ready;
             var bottomPane = window.SplitPane(middle, first.Document); await bottomPane.Ready;
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
+            var bottomRight = window.SplitPane(bottomPane, first.Document, vertical: true); await bottomRight.Ready;
+            window.PaneStack.UpdateLayout();
+            var beneathStatus = window.PaneStack.Splitters.Single();
+            Check(beneathStatus.HidesTopBorder && beneathStatus.HidesBottomBorder,
+                "a vertical splitter below a full horizontal status bar omits its redundant top cap");
+            var translucentCap = global::Windows.UI.Color.FromArgb(128, 0, 0, 0);
+            var capPaint = ChromeStyle.Fallback(translucentCap, Microsoft.UI.Colors.Transparent) with {
+                Border = new(1, 1, 1, 1),
+                LeftBorder = translucentCap, TopBorder = translucentCap, RightBorder = translucentCap, BottomBorder = translucentCap
+            };
+            using (var target = new Microsoft.Graphics.Canvas.CanvasRenderTarget(first.Canvas.Device, 5, 20, 96))
+            {
+                using (var drawing = target.CreateDrawingSession()) {
+                    drawing.Clear(Microsoft.UI.Colors.Transparent);
+                    beneathStatus.DrawBorders(drawing, capPaint, new(5, 20));
+                }
+                Check(target.GetPixelBytes(2, 0, 1, 1)[3] == 0
+                    && Math.Abs(target.GetPixelBytes(0, 0, 1, 1)[3] - 128) <= 1,
+                    "the status junction removes only the top cap and retains the splitter side border");
+            }
             var rightPanes = new List<EditorPane>();
-            foreach (var row in new[] { first, middle, bottomPane })
+            foreach (var row in new[] { first, middle })
             {
                 var nested = window.SplitPane(row, first.Document, vertical: true); await nested.Ready;
                 rightPanes.Add(nested);
             }
+            rightPanes.Add(bottomRight);
             window.PaneStack.UpdateLayout();
             var nestedSplitters = window.PaneStack.Splitters.OrderBy(s => s.TransformToVisual(window.PaneStack).TransformPoint(new Point()).Y).ToArray();
             Check(nestedSplitters.Length == 3
                 && nestedSplitters.Select(s => s.HidesTopBorder).SequenceEqual(new[] { true, false, false })
                 && nestedSplitters.Select(s => s.HidesBottomBorder).SequenceEqual(new[] { false, false, true }),
                 "nested vertical splitters show both interior borders and clip only true outer window edges");
+            Check(nestedSplitters[2] == beneathStatus && !beneathStatus.HidesTopBorder,
+                "a reused splitter restores its top cap when the preceding status bar is split at the junction");
             foreach (float borderWidth in new[] { 1f, 4f })
             {
                 var translucent = global::Windows.UI.Color.FromArgb(128, 0, 0, 0);

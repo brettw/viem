@@ -68,6 +68,10 @@ typedef uint32_t ViemStatus;
  * Failed mutations leave geometry unchanged. All calls are serial per handle.
  * Copy outputs must be aligned and disjoint; policy-required means no room. */
 typedef struct ViemPaneChrome { uint64_t id; double status_height; } ViemPaneChrome;
+#define VIEM_PANE_FRAME_STATUS_DRAGGABLE 1u
+/* Interior vertical splitter top edge fully meets horizontal status-bar chrome.
+ * Outer-top, aligned cross and partially covered junctions remain unflagged. */
+#define VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER (1u << 1)
 typedef struct ViemPaneFrame {
   uint64_t id; uint32_t kind; uint32_t flags;
   double x; double y; double width; double height;

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 pub const MIN_WIDTH: f64 = 100.0;
 pub const SPLITTER_WIDTH: f64 = 5.0;
 pub const MAX_PANES: usize = 256;
+const EDGE_EPSILON: f64 = 0.000001;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Axis {
     Height,
@@ -240,6 +241,39 @@ impl Node {
             }
         }
     }
+    /// Whether this subtree's bottom boundary is a status bar across the
+    /// complete queried span. Width-group gaps belong to vertical splitters,
+    /// so neither an aligned cross nor a partial overlap counts as coverage.
+    fn bottom_status_covers(&self, left: f64, right: f64, chrome: &HashMap<u64, f64>) -> bool {
+        if self.rect.height <= 0.0
+            || left + EDGE_EPSILON < self.rect.x
+            || right > self.rect.x + self.rect.width + EDGE_EPSILON
+        {
+            return false;
+        }
+        match &self.kind {
+            Kind::Pane => chrome.get(&self.id).is_some_and(|height| *height > 0.0),
+            Kind::Group {
+                axis: Axis::Height,
+                children,
+            } => children
+                .iter()
+                .rev()
+                .find(|child| child.rect.height > 0.0)
+                .is_some_and(|child| child.bottom_status_covers(left, right, chrome)),
+            Kind::Group {
+                axis: Axis::Width,
+                children,
+            } => children
+                .iter()
+                .find(|child| {
+                    left + EDGE_EPSILON >= child.rect.x
+                        && right <= child.rect.x + child.rect.width + EDGE_EPSILON
+                })
+                .is_some_and(|child| child.bottom_status_covers(left, right, chrome)),
+        }
+    }
+
     fn boundary_for_status(&self, pane: u64) -> Option<u64> {
         let Kind::Group { axis, children } = &self.kind else {
             return None;
@@ -346,6 +380,9 @@ pub struct Frame {
     pub rect: Rect,
     pub splitter: bool,
     pub status_draggable: bool,
+    /// A preceding horizontal status bar owns the complete interior top edge.
+    /// Outer edges and splitter-to-splitter junctions keep their existing policy.
+    pub suppress_splitter_top_border: bool,
 }
 #[derive(Clone, Debug)]
 pub struct PaneLayout {
@@ -475,36 +512,53 @@ impl PaneLayout {
         Ok(())
     }
     pub fn frames(&self) -> Vec<Frame> {
-        fn walk(n: &Node, root: &Node, out: &mut Vec<Frame>) {
+        fn walk(
+            n: &Node,
+            root: &Node,
+            above: Option<&Node>,
+            chrome: &HashMap<u64, f64>,
+            out: &mut Vec<Frame>,
+        ) {
             match &n.kind {
                 Kind::Pane => out.push(Frame {
                     id: n.id,
                     rect: n.rect,
                     splitter: false,
                     status_draggable: root.boundary_for_status(n.id).is_some(),
+                    suppress_splitter_top_border: false,
                 }),
                 Kind::Group { axis, children } => {
+                    let mut preceding = above;
                     for (i, c) in children.iter().enumerate() {
                         if *axis == Axis::Width && i > 0 {
+                            let rect = Rect {
+                                x: c.rect.x - SPLITTER_WIDTH,
+                                y: n.rect.y,
+                                width: SPLITTER_WIDTH,
+                                height: n.rect.height,
+                            };
                             out.push(Frame {
                                 id: c.id,
-                                rect: Rect {
-                                    x: c.rect.x - SPLITTER_WIDTH,
-                                    y: n.rect.y,
-                                    width: SPLITTER_WIDTH,
-                                    height: n.rect.height,
-                                },
+                                rect,
                                 splitter: true,
                                 status_draggable: false,
+                                suppress_splitter_top_border: preceding.is_some_and(|node| {
+                                    node.bottom_status_covers(rect.x, rect.x + rect.width, chrome)
+                                }),
                             });
                         }
-                        walk(c, root, out);
+                        walk(c, root, preceding, chrome, out);
+                        // Only a stacked sibling changes the boundary directly
+                        // above. Empty zero-chrome nodes own no painted edge.
+                        if *axis == Axis::Height && c.rect.height > 0.0 {
+                            preceding = Some(c);
+                        }
                     }
                 }
             }
         }
         let mut out = Vec::new();
-        walk(&self.root, &self.root, &mut out);
+        walk(&self.root, &self.root, None, &self.chrome, &mut out);
         out
     }
     pub fn drag(&mut self, id: u64, status: bool, delta: f64) -> Result<(), Error> {
@@ -845,6 +899,133 @@ mod tests {
             before
         );
     }
+    fn splitter(p: &PaneLayout, id: u64) -> Frame {
+        p.frames()
+            .into_iter()
+            .find(|frame| frame.splitter && frame.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn splitter_top_cap_is_owned_by_a_full_status_bar_even_when_content_collapses() {
+        let mut p = layout(605.25, 500.5);
+        let lower = p.split(1, Axis::Height, 25.0).unwrap();
+        let right = p.split(lower, Axis::Width, 25.0).unwrap();
+        assert!(splitter(&p, right).suppress_splitter_top_border);
+        assert!(
+            panes(&p)
+                .iter()
+                .find(|frame| frame.id == 1)
+                .unwrap()
+                .status_draggable
+        );
+        assert!(panes(&p)
+            .iter()
+            .all(|frame| !frame.suppress_splitter_top_border));
+        p.resize(1, Axis::Height, Some(0.0), false).unwrap();
+        assert_eq!(p.pane_rect(1).unwrap().height, 25.0);
+        assert!(splitter(&p, right).suppress_splitter_top_border);
+        p.resize(lower, Axis::Height, Some(0.0), false).unwrap();
+        assert_eq!(splitter(&p, right).rect.height, 25.0);
+        assert!(splitter(&p, right).suppress_splitter_top_border);
+
+        p.update(605.25, 500.5, &[(1, 0.0), (lower, 25.0), (right, 25.0)])
+            .unwrap();
+        assert!(
+            !splitter(&p, right).suppress_splitter_top_border,
+            "zero-height chrome owns no painted boundary"
+        );
+        p.update(605.25, 500.5, &[(1, 25.0), (lower, 25.0), (right, 25.0)])
+            .unwrap();
+        assert!(splitter(&p, right).suppress_splitter_top_border);
+        p.remove(1).unwrap();
+        assert_eq!(splitter(&p, right).rect.y, 0.0);
+        assert!(
+            !splitter(&p, right).suppress_splitter_top_border,
+            "outer top keeps native outer-edge policy"
+        );
+    }
+
+    #[test]
+    fn aligned_and_partial_cross_junctions_keep_caps_until_the_full_span_meets_status() {
+        for width in [605.0, 605.7, 811.125] {
+            let mut p = layout(width, 500.25);
+            let lower = p.split(1, Axis::Height, 25.0).unwrap();
+            let upper_right = p.split(1, Axis::Width, 25.0).unwrap();
+            let lower_right = p.split(lower, Axis::Width, 25.0).unwrap();
+            assert!(p
+                .frames()
+                .iter()
+                .filter(|frame| frame.splitter)
+                .all(|frame| !frame.suppress_splitter_top_border));
+            p.drag(lower_right, false, 2.0).unwrap();
+            assert!(
+                !splitter(&p, lower_right).suppress_splitter_top_border,
+                "partial coverage is not a full T"
+            );
+            p.drag(lower_right, false, 3.0).unwrap();
+            assert!(
+                splitter(&p, lower_right).suppress_splitter_top_border,
+                "full span starts exactly at upper right pane edge"
+            );
+            p.drag(lower_right, false, -10.0).unwrap();
+            assert!(
+                splitter(&p, lower_right).suppress_splitter_top_border,
+                "full span ends exactly at upper left pane edge"
+            );
+            p.drag(lower_right, false, 5.0).unwrap();
+            assert!(!splitter(&p, lower_right).suppress_splitter_top_border);
+            p.remove(upper_right).unwrap();
+            assert!(
+                splitter(&p, lower_right).suppress_splitter_top_border,
+                "removing the upper divider restores full status coverage"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_splitters_inherit_the_actual_preceding_status_boundary() {
+        let mut p = layout(1005.5, 800.25);
+        let lower = p.split(1, Axis::Height, 25.0).unwrap();
+        let upper_right = p.split(1, Axis::Width, 25.0).unwrap();
+        let upper_bottom_right = p.split(upper_right, Axis::Height, 25.0).unwrap();
+        let lower_right = p.split(lower, Axis::Width, 25.0).unwrap();
+        p.split(lower, Axis::Height, 25.0).unwrap();
+        let inner_right = p.split(lower, Axis::Width, 25.0).unwrap();
+        assert!(
+            splitter(&p, inner_right).suppress_splitter_top_border,
+            "inherited top neighbor spans a deeper lower subtree"
+        );
+        assert!(
+            !splitter(&p, lower_right).suppress_splitter_top_border,
+            "aligned upper gap remains visible"
+        );
+        p.drag(lower_right, false, 30.0).unwrap();
+        assert!(
+            splitter(&p, lower_right).suppress_splitter_top_border,
+            "coverage descends to the preceding subtree's bottom leaf"
+        );
+        assert!(
+            panes(&p)
+                .iter()
+                .find(|frame| frame.id == upper_bottom_right)
+                .unwrap()
+                .status_draggable,
+            "the covering status bar drags a horizontal ancestor boundary"
+        );
+    }
+
+    #[test]
+    fn zero_height_nodes_do_not_hide_the_real_preceding_boundary() {
+        let mut p = layout(605.0, 500.0);
+        let zero = p.split(1, Axis::Height, 0.0).unwrap();
+        let lower = p.split(zero, Axis::Height, 25.0).unwrap();
+        let right = p.split(lower, Axis::Width, 25.0).unwrap();
+        p.resize(zero, Axis::Height, Some(0.0), false).unwrap();
+        assert_eq!(p.pane_rect(zero).unwrap().height, 0.0);
+        assert!(splitter(&p, right).suppress_splitter_top_border);
+    }
+
     #[test]
     fn pane_budget_is_finite_and_layout_never_touches_document_caches() {
         let mut p = layout(100.0, 256.0 * 25.0);
