@@ -2636,6 +2636,11 @@ typedef struct ViemLineNumberRegionV1 {
 /* View-local native preference. It changes no source, history or layout. */
 ViemStatus viem_core_view_number(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
 ViemStatus viem_core_view_set_number(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
+/* Query row-selection margins/list labels in document-layout DIPs. Exact current
+ * geometry is required. Excludes two DIPs before prose content and the table
+ * row-control strip. Native number columns remain independent fixed hot areas. */
+ViemStatus viem_core_view_row_selection_hit_test(ViemCoreHandle core, ViemViewId view,
+    const ViemLayoutSnapshotIdentityV1 *expected, float x, float y, uint32_t *out_hit);
 /* Select a complete displayed row at document-layout y. Table gutter gestures
  * select the entire semantic table row. Extension retains the initial row. */
 ViemStatus viem_core_view_select_pointer_row(ViemCoreHandle core, ViemViewId view,

@@ -108,7 +108,17 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     }
     private UIElement Control(ViemPaneFrame frame) => frame.kind == 1 ? splitters[frame.id] : ids.First(p => p.Value == frame.id).Key;
     protected override Size ArrangeOverride(Size finalSize)
-    { Fit(finalSize); foreach (var frame in frames) { var control = Control(frame); control.Arrange(new Rect(frame.x, frame.y, frame.width, frame.height)); control.Clip = new RectangleGeometry { Rect = new Rect(0, 0, frame.width, frame.height) }; } return finalSize; }
+    {
+        Fit(finalSize);
+        foreach (var frame in frames)
+        {
+            var control = Control(frame);
+            if (control is VerticalSplitter splitter) splitter.UpdateOuterEdges(frame, finalSize.Height);
+            control.Arrange(new Rect(frame.x, frame.y, frame.width, frame.height));
+            control.Clip = new RectangleGeometry { Rect = new Rect(0, 0, frame.width, frame.height) };
+        }
+        return finalSize;
+    }
     public void Dispose()
     {
         if (preferences != null) preferences.Changed -= ApplyTheme;
@@ -135,6 +145,8 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
     private bool dragging;
     private readonly Microsoft.Graphics.Canvas.UI.Xaml.CanvasControl decoration = new() { IsHitTestVisible = false };
     private Viem.Windows.Core.ChromeStyle? style;
+    internal bool HidesTopBorder { get; private set; } = true;
+    internal bool HidesBottomBorder { get; private set; } = true;
     internal VerticalSplitter(UIElement root, Action<double> move)
     {
         ProtectedCursor = cursor; BorderThickness = new(0);
@@ -142,8 +154,7 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
         Children.Add(decoration);
         decoration.Draw += (_, args) => {
             args.DrawingSession.Clear(Microsoft.UI.Colors.Transparent);
-            if (style != null) style.DrawBox(args.DrawingSession,
-                new(0, -style.Border.Top, decoration.ActualWidth, decoration.ActualHeight + style.Border.Vertical));
+            if (style != null) DrawBorders(args.DrawingSession, style, new(decoration.ActualWidth, decoration.ActualHeight));
         };
         AutomationProperties.SetName(this, "Resize views horizontally");
         PointerPressed += (_, e) => { var p = e.GetCurrentPoint(root); if (p.Properties.IsLeftButtonPressed) { pointer = e.Pointer.PointerId; press = last = p.Position; } };
@@ -156,6 +167,25 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
         };
         PointerReleased += (_, e) => { if (pointer != e.Pointer.PointerId) return; pointer = null; if (dragging) { dragging = false; ReleasePointerCapture(e.Pointer); e.Handled = true; } };
         PointerCaptureLost += (_, _) => { pointer = null; dragging = false; };
+    }
+    internal void UpdateOuterEdges(ViemPaneFrame frame, double containerHeight)
+    {
+        bool top = frame.y <= .000001, bottom = frame.y + frame.height >= containerHeight - .000001;
+        if (top == HidesTopBorder && bottom == HidesBottomBorder) return;
+        HidesTopBorder = top; HidesBottomBorder = bottom; decoration.Invalidate();
+    }
+    internal void DrawBorders(Microsoft.Graphics.Canvas.CanvasDrawingSession drawing, Viem.Windows.Core.ChromeStyle paint, Size size)
+    {
+        if (paint.Background.A > 0) drawing.FillRectangle(new Rect(0, 0, size.Width, size.Height), paint.Background);
+        // Vertical strips own corners; every border pixel is painted once.
+        double left = Math.Min(paint.Border.Left, size.Width), right = Math.Min(paint.Border.Right, Math.Max(0, size.Width - left));
+        if (left > 0) drawing.FillRectangle(new Rect(0, 0, left, size.Height), paint.LeftBorder);
+        if (right > 0) drawing.FillRectangle(new Rect(size.Width - right, 0, right, size.Height), paint.RightBorder);
+        double top = HidesTopBorder ? 0 : Math.Min(paint.Border.Top, size.Height);
+        double bottom = HidesBottomBorder ? 0 : Math.Min(paint.Border.Bottom, Math.Max(0, size.Height - top));
+        double middle = Math.Max(0, size.Width - left - right);
+        if (top > 0 && middle > 0) drawing.FillRectangle(new Rect(left, 0, middle, top), paint.TopBorder);
+        if (bottom > 0 && middle > 0) drawing.FillRectangle(new Rect(left, size.Height - bottom, middle, bottom), paint.BottomBorder);
     }
     internal void ApplyTheme(Preferences preferences) { style = preferences.StatusStyles.Status; decoration.Invalidate(); }
     public void Dispose() { ProtectedCursor = null; cursor.Dispose(); decoration.RemoveFromVisualTree(); }

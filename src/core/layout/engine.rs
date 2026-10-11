@@ -1577,6 +1577,26 @@ impl LayoutSnapshot {
         self.row_intervals.closest(y).and_then(|index| self.rows.get(index)).ok_or(LayoutError::NoRows)
     }
 
+    /// The left selection margin follows the exact displayed row's content box,
+    /// including paragraph/list padding, without requiring its glyphs to be
+    /// materialized. Keep a small text-placement slop and the native table row
+    /// controls' activation strip outside this region.
+    pub(crate) fn row_selection_hit_test(&self, point: LayoutPoint) -> Result<bool, LayoutError> {
+        if !point.x.is_finite() { return Err(LayoutError::InvalidGeometry); }
+        let row = self.gutter_row(point.y)?;
+        let right = row.table_cell.as_ref().map_or(
+            row.paragraph_content_x - 2., |cell| cell.table_x - 20.);
+        Ok(point.x < right || row.decorations.iter().any(|decoration| {
+            // Text furniture is the synthetic list label. RTL labels sit on
+            // the right; only the label itself joins the selection gutter,
+            // leaving the rest of that margin available for text placement.
+            let bounds = decoration.typographic_bounds;
+            decoration.kind == DecorationKind::Text
+                && point.x >= bounds.x && point.x < bounds.x + bounds.width
+                && point.y >= bounds.y && point.y < bounds.y + bounds.height
+        }))
+    }
+
     pub fn caret_geometry(&self, point: CaretPoint) -> Result<CaretGeometry, LayoutError> {
         self.validate_caret_point(point)?;
         for row in self.rows.iter() {
@@ -7845,6 +7865,13 @@ mod tests {
         assert_eq!(rows[1].paragraph_content_x, 10.0);
         assert_eq!(rows[1].paragraph_content_width, 100.0);
         assert!(rows[0].clusters[0].x > rows[0].paragraph_content_x);
+        let snapshot = view.snapshot().unwrap();
+        for row in snapshot.rows.iter() {
+            let y = row.y + row.height() / 2.;
+            assert!(snapshot.row_selection_hit_test(LayoutPoint { x: row.paragraph_content_x - 2.01, y }).unwrap());
+            assert!(!snapshot.row_selection_hit_test(LayoutPoint { x: row.paragraph_content_x - 2., y }).unwrap());
+            assert!(!snapshot.row_selection_hit_test(LayoutPoint { x: row.clusters[0].x - 1., y }).unwrap(), "alignment space belongs to ordinary text placement");
+        }
         let centered_x = rows[0].clusters[0].x;
         let shape_calls = engine.provider().request_calls();
 
@@ -7874,6 +7901,13 @@ mod tests {
             .unwrap();
         assert_eq!(engine.provider().request_calls(), shape_calls);
         assert_eq!(view.snapshot().unwrap().usable_width, 150.0);
+        let snapshot = view.snapshot().unwrap();
+        for row in snapshot.rows.iter() {
+            let y = row.y + row.height() / 2.;
+            assert!(snapshot.row_selection_hit_test(LayoutPoint { x: row.paragraph_content_x - 3., y }).unwrap());
+            assert!(!snapshot.row_selection_hit_test(LayoutPoint { x: row.paragraph_content_x - 1., y }).unwrap());
+        }
+        assert_eq!(engine.provider().request_calls(), shape_calls);
     }
 
     #[test]

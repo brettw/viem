@@ -860,7 +860,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
     func testEveryNumericControlHasAnAdjacentNativeStepperAndInheritedValue() throws {
         let (backend, surface, editor, _) = try makeEditor()
         defer { withExtendedLifetime(surface) {} }
-        let fields = ["Size", "Tracking", "Start indent", "End indent", "First line", "Margin top", "Margin bottom", "Line spacing value"]
+        let fields = ["Size", "Tracking", "First line", "Margin top", "Margin bottom", "Line spacing value"]
         for title in fields {
             let field = try control(NSTextField.self, label: title, in: editor.view)
             let stepper = try control(EVStyleStepper.self, label: "Adjust \(title.lowercased())", in: editor.view)
@@ -882,7 +882,36 @@ final class EVCompactStyleControlsTests: XCTestCase {
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(15))
         XCTAssertEqual(size.doubleValue, 15, accuracy: 0.0001)
         editor.selectStyle(EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code")))
-        XCTAssertFalse(try control(EVStyleStepper.self, label: "Adjust start indent", in: editor.view).isEnabled)
+        XCTAssertFalse(try control(EVStyleStepper.self, label: "Adjust first line", in: editor.view).isEnabled)
+    }
+
+    func testParagraphPanelOmitsSideIndentsAndPreservesLoadedValues() throws {
+        let (backend, surface, editor, _) = try makeEditor()
+        defer { withExtendedLifetime(surface) {} }
+        let source = try backend.serializedSource(typeName: EVDocument.markdownType)
+        // These remain valid imported/configured properties even though their
+        // authoring controls are no longer part of paragraph settings.
+        XCTAssertTrue(editor.setPropertyForTesting(.paragraphLeadingIndent, value: .float(23)))
+        XCTAssertTrue(editor.setPropertyForTesting(.paragraphTrailingIndent, value: .float(17)))
+        editor.selectTab(.paragraph)
+        func labels(_ view: NSView) -> [String] {
+            [view.accessibilityLabel()].compactMap { $0 } + view.subviews.flatMap(labels)
+        }
+        let allLabels = labels(editor.view)
+        for removed in ["Start indent", "End indent", "Adjust start indent", "Adjust end indent",
+                        "Override start indent", "Override end indent"] {
+            XCTAssertFalse(allLabels.contains(removed), removed)
+        }
+        let firstLine = try control(NSTextField.self, label: "First line", in: editor.view)
+        XCTAssertTrue(firstLine.isEnabled)
+        let stepper = try control(EVStyleStepper.self, label: "Adjust first line", in: editor.view)
+        stepper.doubleValue = 9
+        XCTAssertTrue(stepper.sendAction(try XCTUnwrap(stepper.action), to: stepper.target))
+        let properties = try XCTUnwrap(backend.styleSheetSnapshot().definition(for: .baseParagraph)).properties
+        XCTAssertEqual(properties[.paragraphLeadingIndent]?.declared, .float(23))
+        XCTAssertEqual(properties[.paragraphTrailingIndent]?.declared, .float(17))
+        XCTAssertEqual(properties[.paragraphFirstLineIndent]?.declared, .float(9))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
     }
 
     func testLineSpacingDraftPreservesIntermediateDecimalTextAndCaretUntilEditingEnds() throws {

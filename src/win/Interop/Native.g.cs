@@ -2176,6 +2176,8 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_number(ulong @core, ulong @view, uint @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_row_selection_hit_test(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, float @x, float @y, uint* @out_hit);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_select_pointer_row(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, float @y, uint @extend_selection, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_line_number_snapshot_info(ulong @core, ulong @view, ViemLineNumberSnapshotInfoV1* @out_info);

@@ -191,6 +191,7 @@ final class EVPaneContainer: NSViewController {
           splitter.dragDidMove = { [weak self] delta in guard let self else { return }; self.geometry.drag(token,splitter:true,delta:delta); self.layoutStack() }
         }
         splitter.frame = rect
+        splitter.updateOuterEdges(frame: frame, containerHeight: stack.bounds.height)
       } else if let pane = panes.first(where: { id($0) == frame.id }) {
         pane.view.frame = rect; pane.layoutContent(); next.append(pane)
         if frame.flags & 1 == 0 { pane.statusBar.dragDidMove = nil }

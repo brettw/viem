@@ -23,6 +23,20 @@ final class EVStatusFilePathTests: XCTestCase {
     XCTAssertEqual(EVStatusFilePath.relative(file, relativeTo: URL(fileURLWithPath: "/")), "Volumes/notes with café.md")
   }
 
+  func testFittingDropsDirectoriesBeforeClippingFilenameAtGraphemeBoundaries() {
+    func fit(_ path: String, _ width: CGFloat) -> String {
+      EVStatusFilePath.fitting(path, width: width) { CGFloat($0.count) }
+    }
+    XCTAssertEqual(fit("parent/drafts/notes.md", 22), "parent/drafts/notes.md")
+    XCTAssertEqual(fit("parent/drafts/notes.md", 15), "drafts/notes.md")
+    XCTAssertEqual(fit("parent/drafts/notes.md", 8), "notes.md")
+    XCTAssertEqual(fit("parent/drafts/notes.md", 7), "note...")
+    XCTAssertEqual(fit("parent/👩‍💻é-notes.md", 6), "👩‍💻é-...")
+    XCTAssertEqual(fit("parent/\u{301}notes.md", 9), "\u{301}notes.md")
+    XCTAssertEqual(fit("notes.md", 3), "...")
+    XCTAssertEqual(fit("notes.md", 2), "")
+  }
+
   @MainActor
   func testFilenameMenuCopiesCurrentBindingAndWorkingDirectoryWithoutUsingDisplayText() throws {
     _ = NSApplication.shared
@@ -38,21 +52,24 @@ final class EVStatusFilePathTests: XCTestCase {
     let bar = EVStatusBarView()
     var copied: [String] = []
     bar.writeCopiedPath = { copied.append($0) }
+    var changedDirectory: URL?
+    bar.changeDirectory = { changedDirectory = $0 }
     func descendants(_ view: NSView) -> [NSView] {
       view.subviews.flatMap { [$0] + descendants($0) }
     }
     let label = try XCTUnwrap(descendants(bar).compactMap { $0 as? NSTextField }
       .first { $0.accessibilityLabel() == "File: Untitled" })
     let menu = try XCTUnwrap(label.menu)
-    XCTAssertEqual(menu.items.map(\.title), ["Copy full path", "Copy relative path"])
+    XCTAssertEqual(menu.items.map(\.title), ["Copy full path", "Copy relative path", "", "Change directory to here"])
+    XCTAssertTrue(menu.items[2].isSeparatorItem)
     menu.update()
-    XCTAssertTrue(menu.items.allSatisfy { !$0.isEnabled })
+    XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy { !$0.isEnabled })
     XCTAssertTrue(copied.isEmpty)
 
     let original = cwd.appendingPathComponent("original.md")
     bar.fileURL = original
     menu.update()
-    XCTAssertTrue(menu.items.allSatisfy(\.isEnabled))
+    XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy(\.isEnabled))
     menu.performActionForItem(at: 0)
     XCTAssertEqual(copied.last, original.path)
 
@@ -64,18 +81,20 @@ final class EVStatusFilePathTests: XCTestCase {
     XCTAssertTrue(FileManager.default.changeCurrentDirectoryPath(cwd.appendingPathComponent("child").path))
     menu.performActionForItem(at: 1)
     XCTAssertEqual(copied.last, "../renamed café.md")
+    menu.performActionForItem(at: 3)
+    XCTAssertEqual(changedDirectory?.standardizedFileURL, renamed.deletingLastPathComponent().standardizedFileURL)
 
     bar.fileURL = nil
     menu.update()
-    XCTAssertTrue(menu.items.allSatisfy { !$0.isEnabled })
+    XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy { !$0.isEnabled })
     XCTAssertEqual(copied.count, 3)
   }
 
   @MainActor
-  func testPathStartsAtTheSamePositionInEveryModeAndTruncatesItsHead() throws {
+  func testPathStartsAtTheSamePositionInEveryModeWhenThereIsRoom() throws {
     let bar = EVStatusBarView()
-    bar.frame = NSRect(x: 0, y: 0, width: 480, height: EVStatusBarView.preferredHeight)
-    bar.fileURL = URL(fileURLWithPath: "/" + String(repeating: "parent/", count: 30) + "notes.md")
+    bar.frame = NSRect(x: 0, y: 0, width: 1200, height: EVStatusBarView.preferredHeight)
+    bar.fileURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("notes.md")
     func descendants(_ view: NSView) -> [NSView] {
       view.subviews.flatMap { [$0] + descendants($0) }
     }
@@ -93,9 +112,61 @@ final class EVStatusFilePathTests: XCTestCase {
       let needed = (mode as NSString).size(withAttributes: [.font: try XCTUnwrap(label.font)]).width
       XCTAssertGreaterThanOrEqual(label.frame.width, needed)
     }
-    XCTAssertEqual(path.lineBreakMode, .byTruncatingHead)
-    XCTAssertLessThan(path.frame.width, path.intrinsicContentSize.width)
+    XCTAssertEqual(path.lineBreakMode, .byClipping)
     XCTAssertGreaterThan(path.frame.width, 0)
     XCTAssertEqual(path.toolTip, bar.filePath)
+  }
+
+  @MainActor
+  func testNarrowingHidesModeThenDirectoriesThenClipsFilenameWhilePositionRemains() throws {
+    _ = NSApplication.shared
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 100),
+      styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    defer { window.close() }
+    let bar = EVStatusBarView()
+    bar.translatesAutoresizingMaskIntoConstraints = true
+    bar.frame = NSRect(x: 0, y: 0, width: 1200, height: EVStatusBarView.preferredHeight)
+    try XCTUnwrap(window.contentView).addSubview(bar)
+    bar.fileURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent("parent/drafts/long-filename-with-café.md")
+    func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+    let path = try XCTUnwrap(descendants(bar).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel()?.hasPrefix("File: ") == true })
+    let mode = try XCTUnwrap(descendants(bar).compactMap { $0 as? NSTextField }.first { $0.accessibilityLabel() == "Mode: NORMAL" })
+    let position = try XCTUnwrap(descendants(bar).compactMap { $0 as? NSButton }.first { $0.title == "Ln 1, Col 1" })
+    bar.layoutSubtreeIfNeeded()
+    let style = EVThemeStore.shared.chromeStyles.statusBar
+    let reserved = style.padding.left + style.padding.right + position.intrinsicContentSize.width + 14
+    func width(_ text: String) -> CGFloat { ceil(NSAttributedString(string: text, attributes: path.attributedStringValue.attributes(at: 0, effectiveRange: nil)).size().width) }
+    let fullWidth = width(bar.filePath), filenameWidth = width("long-filename-with-café.md")
+    func resize(_ width: CGFloat) {
+      window.setContentSize(NSSize(width: width, height: 100))
+      bar.setFrameSize(NSSize(width: width, height: bar.frame.height))
+      // Pane layout explicitly keeps frame and bounds in DIPs. An unattached
+      // Auto Layout root can instead retain its old bounds and scale its text.
+      bar.setBoundsSize(bar.frame.size)
+      bar.needsLayout = true
+      bar.layoutSubtreeIfNeeded()
+      XCTAssertEqual(bar.frame.width, width, accuracy: 0.01)
+      XCTAssertEqual(bar.bounds.width, width, accuracy: 0.01)
+      XCTAssertFalse(position.isHiddenOrHasHiddenAncestor)
+      XCTAssertEqual(position.convert(position.bounds, to: bar).maxX, bar.bounds.maxX - style.padding.right, accuracy: 2)
+    }
+    XCTAssertFalse(mode.isHiddenOrHasHiddenAncestor)
+    resize(reserved + fullWidth + 1)
+    XCTAssertTrue(mode.isHiddenOrHasHiddenAncestor)
+    XCTAssertEqual(path.stringValue, bar.filePath)
+    XCTAssertEqual(path.convert(path.alignmentRect(forFrame: path.bounds), to: bar).minX, style.padding.left, accuracy: 2)
+    resize(reserved + filenameWidth + 1)
+    XCTAssertEqual(path.stringValue, "long-filename-with-café.md")
+    resize(reserved + filenameWidth / 2)
+    XCTAssertTrue(path.stringValue.hasSuffix("..."))
+    XCTAssertTrue(path.stringValue.hasPrefix("long"))
+    XCTAssertLessThanOrEqual(path.convert(path.bounds, to: bar).maxX, position.frame.minX)
+    XCTAssertEqual(path.toolTip, bar.filePath)
+    XCTAssertEqual(path.accessibilityLabel(), "File: \(bar.filePath)")
+    resize(1200)
+    XCTAssertFalse(mode.isHiddenOrHasHiddenAncestor)
+    XCTAssertEqual(path.stringValue, bar.filePath)
   }
 }

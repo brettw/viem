@@ -830,8 +830,15 @@ the whole visible row; dragging extends by whole rows in either direction while
 retaining the complete origin row and the mirrored cursor. Within tables, this
 selects the complete semantic table row. Selection uses exact current geometry
 and keeps the origin anchored through edits without scrolling to its far endpoint.
+The row-selection area includes the document's left margin, paragraph/item left
+margins and padding, and list markers. Preserve the final 2 DIPs before the content
+edge for ordinary text placement. Tables retain their left row-control hot area;
+only points farther left select rows, and visible table controls stay reachable.
+The fixed number column remains a row-selection area when horizontally scrolled.
 Over text, Insert, Select and native Selection use an I-beam; Normal, Visual and
-Replace use the ordinary arrow. Gutter dragging takes precedence over mode cursors.
+Replace use the ordinary arrow. From mouse-down through mouse-up, row-selection
+drags keep the mirrored arrow and other selection drags keep the I-beam regardless
+of the content or margin under the pointer.
 
 Use exact associated-item geometry, including indivisible shaping clusters,
 without expanding logical ranges or assuming fixed monospace cells. Empty
@@ -1453,7 +1460,8 @@ the current direction; reversing releases previously pushed bars immediately,
 including after reaching an edge. Splitting requires room for one additional
 status bar in the current pane; otherwise report that there is no room to split.
 Vertical splitters are 5 DIPs wide, use the status background and matching
-left/right borders; their top/bottom borders stay outside the view. They show a
+left/right borders. Top/bottom borders are visible at interior boundaries and
+clipped outside the window only where the splitter meets its outer edge. They show a
 left/right cursor on hover and drag. Every pane
 retains at least 100 DIPs of width; splits require 205 DIPs in the current pane.
 Dragging pushes adjacent splits with their minimum widths, and reversing releases
@@ -1600,11 +1608,15 @@ The status line
 has no format popup/label; its caret widget remains right-aligned beside prompts/
 output. Show each view's file path relative to cwd, using an absolute path when
 relativizing would traverse the filesystem root or cross Windows drives. Trim
-overlong paths from the left and reserve enough fixed mode-label space that
-changing modes does not move the path's starting position. The filename context
-menu copies its full path or its cwd-relative path, independent of truncation
-and the display's root fallback. Disable path copying for unnamed documents, and
-relative copying across Windows drives/shares. Flow Source Paragraphs
+overlong paths by first hiding the mode label, leaving the path left-aligned,
+then dropping leading directory components, then shortening the filename with
+trailing `...`. Keep the position visible with priority. While the mode fits,
+reserve fixed mode-label space so changing modes does not move the path.
+The filename context menu copies its full path or its cwd-relative path,
+independent of truncation and the display's root fallback. After a divider,
+“Change directory to here” changes cwd to the file's containing directory using
+ordinary `:cd` behavior. Disable file actions for unnamed documents, and relative
+copying across Windows drives/shares. Flow Source Paragraphs
 is initially-off Markdown Source layout only,
 never a text-coordinate, serialization, or history change.
 
@@ -1621,7 +1633,9 @@ The inspector edits independent theme definitions with its own undo, never
 document source; Code retains global ownership. The inspector title identifies
 the active stylesheet family (Code, Markdown, or Plain Text) and theme. Use native
 role-sensitive controls and real resolved/shaped preview, without a private
-editable stylesheet.
+editable stylesheet. Keep first-line indentation on the Paragraph tab and
+margin/padding on the Block tab; omit Start indent and End indent controls.
+Preserve imported or previously saved start/end indentation values.
 The Document picker selects Plain Text, Markdown, or Code theme definitions
 independently of open documents. An explicit family choice stops caret/document
 following until Edit Styles is invoked again; it never changes a document's format.

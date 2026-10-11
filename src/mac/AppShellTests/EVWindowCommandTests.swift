@@ -1,4 +1,5 @@
 import AppKit
+import CViemCore
 import XCTest
 
 @testable import ViemAppShell
@@ -520,6 +521,60 @@ final class EVWindowCommandTests: XCTestCase {
     checkBars(container)
   }
 
+  func testVerticalSplitterTranslucentCornersArePaintedOnce() throws {
+    let splitter = EVVerticalSplitter(frame: NSRect(x: 0, y: 0, width: 5, height: 20))
+    var geometry = ViemPaneFrame()
+    geometry.y = 10; geometry.height = 20
+    splitter.updateOuterEdges(frame: geometry, containerHeight: 100)
+    for width in [CGFloat(1), 4] {
+      let border = EVChromeBorder(width: width, color: .black.withAlphaComponent(0.5))
+      let style = EVChromeStyle(topBorder: border, rightBorder: border, bottomBorder: border, leftBorder: border)
+      let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil,
+        pixelsWide: 5, pixelsHigh: 20, bitsPerSample: 8, samplesPerPixel: 4,
+        hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+      let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+      NSGraphicsContext.saveGraphicsState()
+      NSGraphicsContext.current = graphics
+      graphics.cgContext.clear(splitter.bounds)
+      splitter.drawBorders(style)
+      NSGraphicsContext.restoreGraphicsState()
+      for x in [0, 2, 4] {
+        for y in [0, 19] {
+          let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y))
+          XCTAssertEqual(color.alphaComponent, 0.5, accuracy: 0.01, "width \(width), pixel \(x),\(y)")
+        }
+      }
+    }
+  }
+
+  func testNestedVerticalSplittersClipBordersOnlyAtOuterWindowEdges() throws {
+    let container = try stack(panes: 3)
+    let rows = container.panes
+    var rightPanes: [EVDocumentContentViewController] = []
+    for row in rows {
+      let right = EVDocumentContentViewController(editorSurface: Surface())
+      try container.insert(right, splitting: row, vertical: true)
+      rightPanes.append(right)
+    }
+    container.layoutPanes()
+    let splitters = container.view.subviews.compactMap { $0 as? EVVerticalSplitter }
+      .sorted { $0.frame.minY < $1.frame.minY }
+    XCTAssertEqual(splitters.count, 3)
+    XCTAssertEqual(splitters.map(\.hidesTopBorder), [true, false, false])
+    XCTAssertEqual(splitters.map(\.hidesBottomBorder), [false, false, true])
+    XCTAssertTrue(splitters.allSatisfy { $0.frame.width == 5 })
+    // A surviving nested divider reaches both outer edges after the other
+    // rows close; clipping must be recomputed from the new portable frame.
+    for pane in container.panes where pane !== rows[0] && pane !== rightPanes[0] {
+      container.remove(pane)
+    }
+    let survivor = try XCTUnwrap(container.view.subviews.compactMap { $0 as? EVVerticalSplitter }.first)
+    XCTAssertTrue(survivor === splitters[0])
+    XCTAssertTrue(survivor.hidesTopBorder)
+    XCTAssertTrue(survivor.hidesBottomBorder)
+    XCTAssertEqual(survivor.frame.height, container.view.bounds.height)
+  }
+
   func testVerticalNativeSplittersPushReverseAndStatusClicksFocusWithoutDragFocus() async throws {
     let container = try stack(panes: 1)
     let first = container.panes[0]
@@ -618,7 +673,7 @@ final class EVWindowCommandTests: XCTestCase {
           let buttonText = try XCTUnwrap(button.cell).titleRect(forBounds: button.bounds)
           let buttonY = button.convert(buttonText, to: bar).midY
           let labels = descendants(bar).compactMap { $0 as? NSTextField }
-          if bar.bounds.width >= 320 { XCTAssertTrue(labels.contains { !$0.isHiddenOrHasHiddenAncestor && $0.stringValue == "NORMAL" }) }
+          XCTAssertFalse(button.isHiddenOrHasHiddenAncestor, "The position retains priority while other status text adapts")
           for label in labels where !label.isHiddenOrHasHiddenAncestor && !label.stringValue.isEmpty {
             let text = try XCTUnwrap(label.cell).titleRect(forBounds: label.bounds)
             let labelY = label.convert(text, to: bar).midY

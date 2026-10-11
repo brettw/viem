@@ -64,6 +64,39 @@ pub extern "C" fn viem_core_view_set_number(
     })
 }
 
+/// Classify the document/paragraph left margin and list labels using exact geometry.
+/// Fixed native number columns remain native hit areas, even when the document
+/// is horizontally scrolled. This query performs no layout or source work.
+///
+/// # Safety
+/// `expected` and `out_hit` identify distinct aligned readable/writable values.
+/// Coordinates are document-layout DIPs, including the viewport origin.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_row_selection_hit_test(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    expected: *const ViemLayoutSnapshotIdentityV1,
+    x: f32,
+    y: f32,
+    out_hit: *mut u32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(expected, 1)?, typed_pointer_region(out_hit, 1)?])?;
+        let expected = unsafe { read_layout_identity(expected)? };
+        unsafe { out_hit.write(0) };
+        if !x.is_finite() || !y.is_finite() { return Err(ViemStatus::InvalidArgument); }
+        let hit = with_core(handle, |core| {
+            let id = ViewId(view);
+            let snapshot = current_ffi_layout_snapshot(core, id)?;
+            validate_snapshot_identity(expected, snapshot, id)?;
+            snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x, y })
+                .map_err(layout_status)
+        })?;
+        unsafe { out_hit.write(u32::from(hit)) };
+        Ok(())
+    })
+}
+
 /// Begin or extend a gutter gesture using exact current layout geometry.
 /// The core retains the original whole row as stable selection anchors.
 ///

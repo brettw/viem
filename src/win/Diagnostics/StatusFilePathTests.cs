@@ -33,10 +33,13 @@ internal static class StatusFilePathTests
             && StatusFilePath.Relative(@"\\server\other\notes.md", @"\\server\share\work") == null,
             "relative clipboard paths are unavailable across drives or UNC shares");
         double Width(string text) => new StringInfo(text).LengthInTextElements;
-        check(StatusFilePath.TrimLeft("folder/👩‍💻é.md", 6, Width) == "…👩‍💻é.md", "left trimming preserves Unicode graphemes and filename suffix");
-        check(StatusFilePath.TrimLeft("notes.md", 8, Width) == "notes.md"
-            && StatusFilePath.TrimLeft("notes.md", 1, Width) == "…"
-            && StatusFilePath.TrimLeft("notes.md", 0, Width) == "", "status path fits exact and minimal widths");
+        check(StatusFilePath.Fit("parent/drafts/notes.md", 15, Width) == "drafts/notes.md"
+            && StatusFilePath.Fit(@"parent\drafts\notes.md", 8, Width) == "notes.md",
+            "status shortening removes whole leading directories before filename characters");
+        check(StatusFilePath.Fit("folder/👩‍💻é-notes.md", 6, Width) == "👩‍💻é-...", "filename shortening preserves Unicode graphemes and uses a trailing ellipsis");
+        check(StatusFilePath.Fit("notes.md", 8, Width) == "notes.md"
+            && StatusFilePath.Fit("notes.md", 3, Width) == "..."
+            && StatusFilePath.Fit("notes.md", 2, Width) == "", "status path fits exact and minimal widths");
 
         string? originalPath = pane.Document.FilePath;
         bool showStatus = preferences.ShowStatus;
@@ -53,8 +56,8 @@ internal static class StatusFilePathTests
             pane.Refresh();
             await Task.Delay(80);
             double x = pane.FilePathControl.TransformToVisual(pane.StatusControl).TransformPoint(new(0, 0)).X;
-            check(pane.FilePathControl.Text.StartsWith('…') && pane.FilePathControl.Text.EndsWith("café-notes.md"),
-                "narrow native status field trims the left and retains the filename");
+            check(pane.FilePathControl.Text == "café-notes.md" && pane.ModeControl.Visibility == Visibility.Collapsed,
+                "narrow native status removes mode first, then whole path components while retaining the filename");
             await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".status-file-path.png");
             await CheckCopyMenu(pane, check);
             foreach (string command in new[] { "v", "V", "i", "R" })
@@ -64,10 +67,8 @@ internal static class StatusFilePathTests
                 pane.StatusControl.UpdateLayout();
                 double changedX = pane.FilePathControl.TransformToVisual(pane.StatusControl).TransformPoint(new(0, 0)).X;
                 check(Math.Abs(x - changedX) < 0.5, $"status filename stays aligned in {pane.ModeControl.Text} mode");
-                var measure = new TextBlock { Text = pane.ModeControl.Text, FontFamily = pane.ModeControl.FontFamily, FontSize = pane.ModeControl.FontSize };
-                measure.Measure(new(double.PositiveInfinity, double.PositiveInfinity));
-                check(pane.ModeSlotWidth >= measure.DesiredSize.Width,
-                    $"status mode fits {pane.ModeControl.Text}: slot={pane.ModeSlotWidth}, needed={measure.DesiredSize.Width}, reserved={pane.ModeControl.Width}");
+                check(pane.ModeControl.Visibility == Visibility.Collapsed && pane.ModeSlotWidth < 1,
+                    "a hidden mode leaves no blank slot before the filename");
                 view.Key(VIEM_KEY_ESCAPE);
             }
         }
@@ -87,9 +88,12 @@ internal static class StatusFilePathTests
         var menu = pane.FilePathControl.ContextFlyout as MenuFlyout
             ?? throw new InvalidOperationException("Filename has no context menu.");
         var items = menu.Items.OfType<MenuFlyoutItem>().ToArray();
-        check(items.Select(item => item.Text).SequenceEqual(new[] { "Copy full path", "Copy relative path" }),
-            "filename context menu exposes full and relative path actions");
+        check(items.Select(item => item.Text).SequenceEqual(new[] { "Copy full path", "Copy relative path", "Change directory to here" })
+            && menu.Items[2] is MenuFlyoutSeparator, "filename context menu groups copy actions before the directory action");
         string? original = pane.Document.FilePath;
+        string originalDirectory = Environment.CurrentDirectory;
+        string temporaryRoot = Path.Combine(Path.GetTempPath(), "viem directory café # " + Guid.NewGuid().ToString("N"));
+        string destination = Path.Combine(temporaryRoot, "%TEMP%");
         string? copied = null;
         var before = pane.View!.Presentation;
         pane.FilePathClipboardWriterForTesting = value => copied = value;
@@ -131,9 +135,14 @@ internal static class StatusFilePathTests
             pane.Document.FilePath = Path.Combine(Environment.CurrentDirectory, "renamed café.md");
             await Close(() => new MenuFlyoutItemAutomationPeer(items[1]).Invoke());
             check(copied == "renamed café.md", "path action resolves the current binding when invoked");
+            Directory.CreateDirectory(destination);
+            pane.Document.FilePath = Path.Combine(destination, "renamed.md");
+            await Invoke(2);
+            check(Path.GetFullPath(Environment.CurrentDirectory) == Path.GetFullPath(destination)
+                && pane.FullStatusFilePath == "renamed.md", "filename directory action uses normal cd behavior and refreshes displayed relative paths");
             pane.Document.FilePath = null;
             await Open();
-            check(items.All(item => !item.IsEnabled), "unnamed documents disable both path actions");
+            check(items.All(item => !item.IsEnabled), "unnamed documents disable filename actions");
             await Close();
             string drive = Path.GetPathRoot(Environment.CurrentDirectory)!.StartsWith("C:", StringComparison.OrdinalIgnoreCase) ? "D:" : "C:";
             pane.Document.FilePath = drive + @"\notes.md";
@@ -146,6 +155,8 @@ internal static class StatusFilePathTests
         finally
         {
             menu.Hide(); pane.FilePathClipboardWriterForTesting = null;
+            Environment.CurrentDirectory = originalDirectory;
+            if (Directory.Exists(temporaryRoot)) Directory.Delete(temporaryRoot, recursive: true);
             pane.Document.FilePath = original; pane.Refresh(); pane.FocusEditor();
         }
     }

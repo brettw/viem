@@ -100,6 +100,8 @@ internal static class PaneLayoutTests
             window.FocusPane(first);
             var splitter = window.PaneStack.Splitters.Single();
             Check(Math.Abs(splitter.ActualWidth - 5) < .01, "vertical splitter occupies five DIPs");
+            Check(splitter.HidesTopBorder && splitter.HidesBottomBorder,
+                "a full-height vertical splitter clips only its outer top and bottom borders");
             double width = first.ActualWidth;
             await InputRoutingTests.Drag(window, splitter, (global::Windows.Foundation.Point[])[new(.5, .5), new(.5 + 40 / splitter.ActualWidth, .5)], _ => { });
             Check(Math.Abs(first.ActualWidth - width - 40) < 2 && window.ActivePane == first,
@@ -114,6 +116,44 @@ internal static class PaneLayoutTests
             right.View!.Ex("vnew"); await window.PendingEffectsForTesting;
             Check(window.Panes.Count == 2, "vnew obeys the same admission check before creating a document");
             Check(first.Document.State.document_revision == revision, "pane operations preserve the source revision");
+            view.Ex("only"); await window.PendingEffectsForTesting;
+            var middle = window.SplitPane(first, first.Document); await middle.Ready;
+            var bottomPane = window.SplitPane(middle, first.Document); await bottomPane.Ready;
+            window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
+            var rightPanes = new List<EditorPane>();
+            foreach (var row in new[] { first, middle, bottomPane })
+            {
+                var nested = window.SplitPane(row, first.Document, vertical: true); await nested.Ready;
+                rightPanes.Add(nested);
+            }
+            window.PaneStack.UpdateLayout();
+            var nestedSplitters = window.PaneStack.Splitters.OrderBy(s => s.TransformToVisual(window.PaneStack).TransformPoint(new Point()).Y).ToArray();
+            Check(nestedSplitters.Length == 3
+                && nestedSplitters.Select(s => s.HidesTopBorder).SequenceEqual(new[] { true, false, false })
+                && nestedSplitters.Select(s => s.HidesBottomBorder).SequenceEqual(new[] { false, false, true }),
+                "nested vertical splitters show both interior borders and clip only true outer window edges");
+            foreach (float borderWidth in new[] { 1f, 4f })
+            {
+                var translucent = global::Windows.UI.Color.FromArgb(128, 0, 0, 0);
+                var paint = ChromeStyle.Fallback(translucent, Microsoft.UI.Colors.Transparent) with {
+                    Border = new(borderWidth, borderWidth, borderWidth, borderWidth),
+                    LeftBorder = translucent, TopBorder = translucent, RightBorder = translucent, BottomBorder = translucent
+                };
+                using var target = new Microsoft.Graphics.Canvas.CanvasRenderTarget(first.Canvas.Device, 5, 20, 96);
+                using (var drawing = target.CreateDrawingSession()) {
+                    drawing.Clear(Microsoft.UI.Colors.Transparent);
+                    nestedSplitters[1].DrawBorders(drawing, paint, new(5, 20));
+                }
+                foreach (int x in new[] { 0, 2, 4 }) foreach (int y in new[] { 0, 19 })
+                    Check(Math.Abs(target.GetPixelBytes(x, y, 1, 1)[3] - 128) <= 1,
+                        "translucent splitter corners paint once even when side borders exceed its width");
+            }
+            foreach (var pane in window.Panes.Where(p => p != first && p != rightPanes[0]).ToArray())
+                await window.ClosePane(pane, force: true);
+            window.PaneStack.UpdateLayout();
+            var survivor = window.PaneStack.Splitters.Single();
+            Check(survivor == nestedSplitters[0] && survivor.HidesTopBorder && survivor.HidesBottomBorder,
+                "closing neighboring rows updates border clipping on the surviving vertical splitter");
         }
         finally
         {

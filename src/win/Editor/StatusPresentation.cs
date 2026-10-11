@@ -30,7 +30,7 @@ internal sealed partial class EditorPane
     private bool statusSelectingOutput;
     private double filePathTextWidth, modeTextWidth, messageTextWidth;
     private (string Mode, string Message, string Family, double Size)? resizeHoverTextIdentity;
-    private readonly Grid normalStatus = new() { ColumnSpacing = 12 };
+    private readonly Grid normalStatus = new();
     private readonly TextBlock filePath = new() { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.NoWrap };
     private readonly TextBlock statusMeasure = new() { TextWrapping = TextWrapping.NoWrap };
     private readonly Grid filePathHost = new();
@@ -120,9 +120,17 @@ internal sealed partial class EditorPane
             pathMenu.Opening += (_, _) => item.IsEnabled = !disposed && PathToCopy(relative) != null;
             item.Click += (_, _) => Run(() => CopyFilePath(relative));
         }
+        pathMenu.Items.Add(new MenuFlyoutSeparator());
+        var changeDirectory = new MenuFlyoutItem { Text = "Change directory to here", IsEnabled = false };
+        pathMenu.Items.Add(changeDirectory);
+        pathMenu.Opening += (_, _) => changeDirectory.IsEnabled = !disposed && Document.FilePath != null;
+        changeDirectory.Click += (_, _) => Run(() => {
+            if (!disposed && Document.FilePath is { } path && Path.GetDirectoryName(Path.GetFullPath(path)) is { } directory)
+                window.ChangeDirectory(this, directory);
+        });
         filePath.ContextFlyout = pathMenu;
         filePathHost.SizeChanged += (_, _) => UpdateFilePathText();
-        normalStatus.SizeChanged += (_, _) => message.MaxWidth = Math.Max(0, normalStatus.ActualWidth / 2);
+        normalStatus.SizeChanged += (_, _) => UpdateNormalStatusLayout();
         status.Children.Add(normalStatus); status.Children.Add(prompt); status.Children.Add(commandOutput);
         var position = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5, VerticalAlignment = VerticalAlignment.Center };
         position.Children.Add(lineModeIcon); position.Children.Add(location); locationToggle.Content = position;
@@ -275,7 +283,7 @@ internal sealed partial class EditorPane
         fullStatusFilePath = StatusFilePath.Display(identity.Item1, identity.Item2);
         ToolTipService.SetToolTip(filePath, fullStatusFilePath);
         AutomationProperties.SetName(filePath, "File: " + fullStatusFilePath);
-        UpdateFilePathText();
+        UpdateNormalStatusLayout();
     }
 
     private string? PathToCopy(bool relative) => relative
@@ -293,10 +301,23 @@ internal sealed partial class EditorPane
 
     private void UpdateFilePathText()
     {
-        filePath.Text = StatusFilePath.TrimLeft(fullStatusFilePath, filePathHost.ActualWidth, MeasureStatusText);
+        filePath.Text = StatusFilePath.Fit(fullStatusFilePath, filePathHost.ActualWidth, MeasureStatusText);
         filePath.Width = Math.Max(0, filePathHost.ActualWidth);
         filePathTextWidth = MeasureStatusText(filePath.Text);
         statusTextCanvas.Invalidate();
+    }
+
+    private void UpdateNormalStatusLayout()
+    {
+        double available = Math.Max(0, normalStatus.ActualWidth);
+        double messageWidth = Math.Min(Math.Ceiling(MeasureStatusText(message.Text)), available / 2);
+        message.Width = messageWidth;
+        filePathHost.Margin = new(0, 0, messageWidth > 0 ? 12 : 0, 0);
+        bool showMode = mode.Width + 12 + MeasureStatusText(fullStatusFilePath)
+            <= available - messageWidth - filePathHost.Margin.Right;
+        mode.Visibility = showMode ? Visibility.Visible : Visibility.Collapsed;
+        mode.Margin = new(0, 0, showMode ? 12 : 0, 0);
+        UpdateFilePathText();
     }
 
     private void UpdateStatusPresentation(bool refreshPrompt = true)
@@ -310,7 +331,7 @@ internal sealed partial class EditorPane
             resizeHoverTextIdentity = resizeText;
         }
         message.Visibility = message.Text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
-        message.Width = Math.Ceiling(MeasureStatusText(message.Text));
+        UpdateNormalStatusLayout();
         bool command = presentation.mode == VIEM_MODE_COMMAND_LINE;
         if (command) { output = null; outputText.Text = ""; outputTimer.Stop(); outputDeadline = 0; outputHadFocus = false; }
         bool showingOutput = !command && output != null;

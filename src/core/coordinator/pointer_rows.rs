@@ -138,6 +138,45 @@ mod tests {
     }
 
     #[test]
+    fn row_selection_margins_include_list_markers_but_reserve_table_controls() {
+        for source in ["- first item wraps over many many many many words\n  - nested item", "| head | other |\n| --- | --- |\n| body | last |"] {
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 160., 300.);
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            let requests = core.views[&view].engine.provider().request_calls();
+            for row in snapshot.rows.iter() {
+                let y = row.y + row.height() / 2.;
+                let edge = row.table_cell.as_ref().map_or(row.paragraph_content_x - 2., |cell| cell.table_x - 20.);
+                assert!(snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: edge - 0.1, y }).unwrap());
+                assert!(!snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: edge, y }).unwrap());
+                assert!(!snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: row.paragraph_content_x - 1., y }).unwrap());
+            }
+            assert_eq!(core.views[&view].engine.provider().request_calls(), requests);
+        }
+    }
+
+    #[test]
+    fn right_to_left_list_labels_are_row_selection_targets_without_claiming_right_margin() {
+        let document = Document::from_bytes("9. שלום עולם".as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300., 300.);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        let visual = &snapshot.rows[0];
+        let label = visual.decorations.iter().find(|item| item.kind == crate::layout::DecorationKind::Text).unwrap();
+        let bounds = label.typographic_bounds;
+        assert!(bounds.x >= visual.paragraph_content_x + visual.paragraph_content_width);
+        let point = crate::layout::LayoutPoint { x: bounds.x + bounds.width / 2., y: bounds.y + bounds.height / 2. };
+        assert!(snapshot.row_selection_hit_test(point).unwrap());
+        let after_label = visual.decorations.iter().filter(|item| item.kind == crate::layout::DecorationKind::Text)
+            .map(|item| item.typographic_bounds.x + item.typographic_bounds.width).fold(0_f32, f32::max) + 1.;
+        assert!(!snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: after_label, y: point.y }).unwrap());
+        let expected = visual.text_range.clone();
+        row(&mut core, view, 0, false);
+        assert_eq!(selected(&core, view), expected);
+    }
+
+    #[test]
     fn gutter_uses_whole_rows_with_visual_and_select_mouse_policies() {
         for select in [false, true] {
             let mut core = Core::new(Document::new("one\ntwo\nthree"));
@@ -186,6 +225,13 @@ mod tests {
         core.handle(view, CoreEvent::SetWrap(false)).unwrap();
         let calls = core.views[&view].engine.provider().request_calls();
         let revision = core.layout(view).unwrap().snapshot().unwrap().revision;
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        let visual = &snapshot.rows[0];
+        let y = visual.y + visual.height() / 2.;
+        for _ in 0..1000 {
+            assert!(snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: visual.paragraph_content_x - 3., y }).unwrap());
+            assert!(!snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: 200_000., y }).unwrap());
+        }
         row(&mut core, view, 0, false);
         assert_eq!(selected(&core, view), 0..400_000);
         assert_eq!(core.layout(view).unwrap().viewport_left(), 0.);
@@ -202,7 +248,15 @@ mod tests {
         let view = core.add_view(MockTextMeasurementProvider::new(), 240., 300.);
         let shaped = core.views[&view].engine.provider().request_calls();
         let layout_revision = core.layout(view).unwrap().snapshot().unwrap().revision;
+        assert!(matches!(core.layout(view).unwrap().snapshot().unwrap()
+            .row_selection_hit_test(crate::layout::LayoutPoint { x: -100., y: 1_000_000. }),
+            Err(LayoutError::OutsideMaterializedCoverage)));
         for index in 0..100 {
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            let visual = &snapshot.rows[index % 5];
+            assert!(snapshot.row_selection_hit_test(crate::layout::LayoutPoint {
+                x: visual.paragraph_content_x - 3., y: visual.y + visual.height() / 2.,
+            }).unwrap());
             row(&mut core, view, index % 5, index != 0);
         }
         assert_eq!(core.views[&view].engine.provider().request_calls(), shaped);

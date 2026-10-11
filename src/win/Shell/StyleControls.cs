@@ -179,7 +179,7 @@ internal sealed partial class StyleWindow
         Choice(top, "Direction", VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION, VIEM_STYLE_VALUE_WRITING_DIRECTION, ["Automatic", "Left to Right", "Right to Left"], [0, 1, 2]); Grid.SetColumn((FrameworkElement)top.Children.Last(), 1);
         paragraph.Children.Add(Separator());
         var row = Row(paragraph);
-        Number(row, "Start indent", VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT, icon: "\uE8A0"); Number(row, "End indent", VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT, icon: "\uE89F"); Number(row, "First line", VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT, icon: "\uE8A0");
+        Number(row, "First line", VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT, icon: "\uE8A0");
         row = Row(paragraph);
         var spacing = new ComboBox { ItemsSource = new[] { "Normal", "Multiple", "At least", "Exact" }, Width = 112, MinWidth = 0 };
         var amount = NumberEditor(60, .01, 1000);

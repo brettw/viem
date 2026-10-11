@@ -206,11 +206,21 @@ internal sealed unsafe partial class CoreView : IDisposable
             return viem_core_view_set_viewport_origin(Document.Handle, Id, &request, o);
         });
     }
-    public void SelectPointerRow(float y, bool extend = false)
+    public void PreparePointerSelection()
     {
         var completion = Completion();
         if ((completion.Info.flags & VIEM_COMPLETION_ACTIVE) != 0) AcceptCompletion(completion, (int)completion.Info.selected_index);
         if (Composing) CancelComposition();
+    }
+    public bool RowSelectionHitTest(ViemLayoutSnapshotIdentityV1 identity, float x, float y)
+    {
+        var viewport = Viewport; uint hit = 0;
+        Check(viem_core_view_row_selection_hit_test(Document.Handle, Id, &identity, x + viewport.left, y + viewport.top, &hit), "Read row selection margin");
+        return hit != 0;
+    }
+    public void SelectPointerRow(float y, bool extend = false)
+    {
+        PreparePointerSelection();
         var info = LayoutInfo(); var viewport = Viewport;
         Apply(o => { var identity = info.identity; return viem_core_view_select_pointer_row(Document.Handle, Id, &identity, y + viewport.top, extend ? 1u : 0u, o); });
     }

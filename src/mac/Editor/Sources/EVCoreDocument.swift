@@ -1811,6 +1811,14 @@ final class EVCoreViewSession {
         return result
     }
 
+    func rowSelectionHitTest(_ point: CGPoint, in snapshot: ViemLayoutSnapshotInfoV1) throws -> Bool {
+        var identity = snapshot.identity
+        var hit: UInt32 = 0
+        try checked(viem_core_view_row_selection_hit_test(document.core, viewID, &identity,
+            Float(point.x), Float(point.y), &hit), operation: "Hit-test row selection margin")
+        return hit != 0
+    }
+
     @discardableResult
     func selectPointerRow(y: CGFloat, in snapshot: ViemLayoutSnapshotInfoV1, extending: Bool) throws -> ViemCoreOutcomeV1 {
         var identity = snapshot.identity

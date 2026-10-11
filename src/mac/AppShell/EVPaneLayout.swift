@@ -49,6 +49,8 @@ private enum EVPaneLayoutError: LocalizedError {
 @MainActor
 final class EVVerticalSplitter: NSView {
   var dragDidMove: ((CGFloat) -> Void)?
+  private(set) var hidesTopBorder = true
+  private(set) var hidesBottomBorder = true
   private var themeObserver: NSObjectProtocol?
   override init(frame: NSRect) {
     super.init(frame: frame)
@@ -61,11 +63,32 @@ final class EVVerticalSplitter: NSView {
   }
   required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
   deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
+  func updateOuterEdges(frame: ViemPaneFrame, containerHeight: CGFloat) {
+    let top = frame.y <= 0.000001
+    let bottom = frame.y + frame.height >= containerHeight - 0.000001
+    guard top != hidesTopBorder || bottom != hidesBottomBorder else { return }
+    hidesTopBorder = top; hidesBottomBorder = bottom; needsDisplay = true
+  }
   override func draw(_ dirtyRect: NSRect) {
-    let style = EVThemeStore.shared.chromeStyles.statusBar
-    for (border, x) in [(style.leftBorder, CGFloat(0)), (style.rightBorder, bounds.width - style.rightBorder.width)] where border.width > 0 {
+    drawBorders(EVThemeStore.shared.chromeStyles.statusBar)
+  }
+  func drawBorders(_ style: EVChromeStyle) {
+    // Vertical edges own the corners. Partition narrow splitters as well, so
+    // translucent or oversized authored borders never composite twice.
+    let left = min(style.leftBorder.width, bounds.width)
+    let right = min(style.rightBorder.width, max(0, bounds.width - left))
+    for (border, x, width) in [(style.leftBorder, CGFloat(0), left), (style.rightBorder, bounds.width - right, right)] where width > 0 {
       (border.color ?? style.foreground).setFill()
-      NSRect(x:x,y:0,width:border.width,height:bounds.height).fill()
+      NSRect(x:x,y:0,width:width,height:bounds.height).fill()
+    }
+    let top = hidesTopBorder ? 0 : min(style.topBorder.width, bounds.height)
+    let bottom = hidesBottomBorder ? 0 : min(style.bottomBorder.width, max(0, bounds.height - top))
+    for (border, y, height) in [
+      (style.topBorder, bounds.height - top, top),
+      (style.bottomBorder, CGFloat(0), bottom),
+    ] where height > 0 && bounds.width > left + right {
+      (border.color ?? style.foreground).setFill()
+      NSRect(x:left,y:y,width:bounds.width-left-right,height:height).fill()
     }
   }
   override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }

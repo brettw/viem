@@ -26,21 +26,29 @@ internal static class StatusFilePath
         return ascent >= depth ? target : relative;
     }
 
-    /// Fit the suffix without splitting a surrogate pair or grapheme cluster.
-    internal static string TrimLeft(string text, double width, Func<string, double> measure)
+    /// Drop whole directories before shortening the filename at grapheme edges.
+    internal static string Fit(string text, double width, Func<string, double> measure)
     {
         if (width <= 0) return "";
         if (measure(text) <= width) return text;
-        const string ellipsis = "…";
+        string filename = text;
+        for (int index = 0; index < text.Length; index++) {
+            if (text[index] is not ('/' or '\\') || index + 1 == text.Length) continue;
+            filename = text[(index + 1)..];
+            if (measure(filename) <= width) return filename;
+        }
+        const string ellipsis = "...";
         if (measure(ellipsis) > width) return "";
-        int[] boundaries = StringInfo.ParseCombiningCharacters(text);
+        int[] boundaries = StringInfo.ParseCombiningCharacters(filename);
         int low = 0, high = boundaries.Length;
         while (low < high)
         {
-            int middle = low + (high - low) / 2;
-            if (measure(ellipsis + text[boundaries[middle]..]) <= width) high = middle;
-            else low = middle + 1;
+            int middle = low + (high - low + 1) / 2;
+            int end = middle == boundaries.Length ? filename.Length : boundaries[middle];
+            if (measure(filename[..end] + ellipsis) <= width) low = middle;
+            else high = middle - 1;
         }
-        return low == boundaries.Length ? ellipsis : ellipsis + text[boundaries[low]..];
+        int prefixEnd = low == boundaries.Length ? filename.Length : boundaries[low];
+        return filename[..prefixEnd] + ellipsis;
     }
 }

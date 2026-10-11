@@ -103,6 +103,172 @@ final class EVLineNumberGutterTests: XCTestCase {
         view.mouseUp(with: try event(.leftMouseUp, outside))
     }
 
+    private func pointerEvent(_ type: NSEvent.EventType, at point: NSPoint,
+        view: EVEditorView, window: NSWindow) throws -> NSEvent {
+        try XCTUnwrap(NSEvent.mouseEvent(with: type, location: view.convert(point, to: nil), modifierFlags: [],
+            timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+    }
+
+    func testParagraphMarginSelectionIncludesPaddingAndWrappedRowsWithoutNumbers() throws {
+        let source = String(repeating: "word ", count: 50) + "\nlast"
+        let (backend, surface, session) = try makeSurface(source, declarations: [
+            (.baseParagraph, .blockMarginLeft, .float(28)),
+            (.baseParagraph, .blockPaddingLeft, .float(14)),
+        ])
+        defer { session.detach() }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        defer { window.contentViewController = nil }
+        let view = surface.editorView
+        XCTAssertEqual(view.lineNumberGutterWidth, 0)
+        let rows = try XCTUnwrap(surface.layoutSnapshot).rows
+        XCTAssertGreaterThan(rows.count, 2)
+        func point(_ row: Int, inset: CGFloat) -> CGPoint {
+            view.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(rows[row].paragraph_content_x) - inset,
+                y: CGFloat(rows[row].y + rows[row].ascent / 2)))
+        }
+        for row in 0..<2 {
+            XCTAssertTrue(view.isRowSelectionPoint(point(row, inset: 2.1)))
+            XCTAssertFalse(view.isRowSelectionPoint(point(row, inset: 2)))
+            XCTAssertFalse(view.isRowSelectionPoint(point(row, inset: 1)))
+            XCTAssertTrue(view.pointerCursor(at: point(row, inset: 3)) === EVLineNumberGutter.selectionCursor)
+        }
+        view.mouseDown(with: try pointerEvent(.leftMouseDown, at: point(1, inset: 8), view: view, window: window))
+        XCTAssertTrue(view.gutterSelectionDragging)
+        XCTAssertEqual(surface.selectedUTF8Range(), Int(rows[1].text_start)..<Int(rows[1].text_end))
+        let outside = CGPoint(x: view.bounds.maxX + 50, y: point(0, inset: 1).y)
+        view.mouseDragged(with: try pointerEvent(.leftMouseDragged, at: outside, view: view, window: window))
+        XCTAssertEqual(surface.selectedUTF8Range(), Int(rows[0].text_start)..<Int(rows[1].text_end))
+        XCTAssertTrue(view.pointerCursor(at: outside) === EVLineNumberGutter.selectionCursor)
+        XCTAssertFalse(window.areCursorRectsEnabled)
+        view.mouseUp(with: try pointerEvent(.leftMouseUp, at: outside, view: view, window: window))
+        XCTAssertTrue(window.areCursorRectsEnabled)
+        XCTAssertEqual(try backend.formattedText(), source)
+    }
+
+    func testOrdinarySelectionCursorStaysIBeamAcrossMarginsAndOutsideViewInEveryMode() throws {
+        let (_, surface, session) = try makeSurface("first line\nsecond line", declarations: [
+            (.baseParagraph, .blockMarginLeft, .float(28)),
+        ])
+        defer { session.detach() }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        defer { window.contentViewController = nil }
+        surface.performInput { try session.setNumber(true) }
+        let view = surface.editorView
+        for mode in ["normal", "insert", "visual", "select"] {
+            surface.performInput {
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+                if mode == "insert" { _ = try session.sendText("i") }
+                if mode == "visual" || mode == "select" { _ = try session.sendText("v") }
+                if mode == "select" { _ = try session.sendKey(kind: UInt32(VIEM_KEY_CONTROL_CHARACTER), codepoint: 103) }
+            }
+            let row = try XCTUnwrap(surface.layoutSnapshot?.rows.first)
+            let text = view.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(row.paragraph_content_x) + 20,
+                y: CGFloat(row.y + row.ascent / 2)))
+            view.mouseDown(with: try pointerEvent(.leftMouseDown, at: text, view: view, window: window))
+            XCTAssertFalse(view.gutterSelectionDragging, mode)
+            XCTAssertTrue(view.pointerCursor(at: text) === NSCursor.iBeam, mode)
+            let gutter = CGPoint(x: 1, y: text.y)
+            view.mouseDragged(with: try pointerEvent(.leftMouseDragged, at: gutter, view: view, window: window))
+            XCTAssertTrue(view.pointerCursor(at: gutter) === NSCursor.iBeam, mode)
+            let outside = CGPoint(x: -50, y: view.bounds.maxY + 50)
+            XCTAssertTrue(view.pointerCursor(at: outside) === NSCursor.iBeam, mode)
+            XCTAssertFalse(window.areCursorRectsEnabled, mode)
+            view.mouseUp(with: try pointerEvent(.leftMouseUp, at: gutter, view: view, window: window))
+            XCTAssertTrue(window.areCursorRectsEnabled, mode)
+            XCTAssertTrue(view.pointerCursor(at: gutter) === EVLineNumberGutter.selectionCursor, mode)
+        }
+    }
+
+    func testListMarkerMarginsAndTableControlsUseExactCoreHotZones() throws {
+        for source in ["- first item with many many many many many words\n  - nested item", "| a | b |\n| --- | --- |\n| body | other |"] {
+            let (_, surface, session) = try makeSurface(source, format: .markdown, declarations: [
+                (.baseParagraph, .blockMarginLeft, .float(64)),
+            ])
+            defer { session.detach() }
+            surface.setFormattedView(true)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentViewController = surface
+            defer { window.contentViewController = nil }
+            let view = surface.editorView
+            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+            if let cell = snapshot.tableCells.first {
+                let y = CGFloat(cell.rect.y + cell.rect.height / 2)
+                let far = view.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(cell.table_rect.x) - 21, y: y))
+                let strip = view.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(cell.table_rect.x) - 20, y: y))
+                XCTAssertTrue(view.isRowSelectionPoint(far))
+                XCTAssertFalse(view.isRowSelectionPoint(strip))
+                XCTAssertFalse(try session.rowSelectionHitTest(CGPoint(x: CGFloat(cell.table_rect.x) - 1, y: y), in: snapshot.info))
+                // Activating the existing row controls retains their complete
+                // visible widget/bridge even where it extends into the margin.
+                view.mouseMoved(with: try pointerEvent(.mouseMoved, at: strip, view: view, window: window))
+                let widget = try XCTUnwrap(view.subviews.compactMap { $0 as? NSStackView }.first { !$0.isHidden })
+                XCTAssertFalse(view.isRowSelectionPoint(CGPoint(x: widget.frame.midX, y: widget.frame.midY)))
+            } else {
+                XCTAssertGreaterThan(snapshot.rows.count, 1)
+                for row in snapshot.rows where view.textViewportRect.contains(view.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(row.paragraph_content_x), y: CGFloat(row.y)))) {
+                    let margin = CGPoint(x: CGFloat(row.paragraph_content_x) - 3, y: CGFloat(row.y + row.ascent / 2))
+                    XCTAssertTrue(try session.rowSelectionHitTest(margin, in: snapshot.info))
+                    XCTAssertTrue(view.isRowSelectionPoint(view.viewPoint(fromLayoutPoint: margin)))
+                }
+            }
+        }
+    }
+
+    func testRightToLeftListLabelSelectsItsRowWithoutClaimingTheRightMargin() throws {
+        let (_, surface, session) = try makeSurface("9. שלום עולם", format: .markdown, declarations: [
+            (.baseParagraph, .blockMarginRight, .float(64)),
+        ])
+        defer { session.detach() }
+        surface.setFormattedView(true)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        defer { window.contentViewController = nil }
+        let view = surface.editorView
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let row = try XCTUnwrap(snapshot.rows.first)
+        let labels = snapshot.decorations.filter {
+            $0.flags & ~UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) == 0 && $0.label_byte_length > 0
+        }
+        let label = try XCTUnwrap(labels.first)
+        XCTAssertGreaterThanOrEqual(label.typographic_bounds.x, row.paragraph_content_x + row.paragraph_content_width)
+        let labelRect = view.viewRect(label.typographic_bounds)
+        let point = CGPoint(x: labelRect.midX, y: labelRect.midY)
+        XCTAssertTrue(view.isRowSelectionPoint(point))
+        XCTAssertTrue(view.pointerCursor(at: point) === EVLineNumberGutter.selectionCursor)
+        let right = try XCTUnwrap(labels.map { view.viewRect($0.typographic_bounds).maxX }.max()) + 1
+        XCTAssertFalse(view.isRowSelectionPoint(CGPoint(x: right, y: point.y)))
+        view.mouseDown(with: try pointerEvent(.leftMouseDown, at: point, view: view, window: window))
+        XCTAssertTrue(view.gutterSelectionDragging)
+        XCTAssertEqual(surface.selectedUTF8Range(), Int(row.text_start)..<Int(row.text_end))
+        view.mouseUp(with: try pointerEvent(.leftMouseUp, at: point, view: view, window: window))
+    }
+
+    func testScrolledMarginHitTestingUsesDocumentCoordinatesAndFixedNumberColumn() throws {
+        let (_, surface, session) = try makeSurface(Array(repeating: String(repeating: "word ", count: 300), count: 100).joined(separator: "\n"), declarations: [
+            (.baseParagraph, .blockMarginLeft, .float(28)),
+        ])
+        defer { session.detach() }
+        surface.performInput {
+            try session.setNumber(true)
+            _ = try session.setWrap(false)
+            _ = try session.setViewportOrigin(left: 100, top: 400)
+        }
+        let view = surface.editorView
+        XCTAssertGreaterThan(surface.viewportState.left, 50)
+        XCTAssertGreaterThan(surface.viewportState.top, 100)
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let row = try XCTUnwrap(snapshot.rows.first { row in
+            let y = view.viewPoint(fromLayoutPoint: CGPoint(x: 0, y: CGFloat(row.y + row.ascent / 2))).y
+            return y >= view.textViewportRect.minY && y < view.textViewportRect.maxY
+        })
+        let y = view.viewPoint(fromLayoutPoint: CGPoint(x: 0, y: CGFloat(row.y + row.ascent / 2))).y
+        XCTAssertTrue(view.isRowSelectionPoint(CGPoint(x: 1, y: y)))
+        XCTAssertFalse(view.isRowSelectionPoint(CGPoint(x: view.textViewportRect.minX + 1, y: y)))
+        XCTAssertFalse(try session.rowSelectionHitTest(view.layoutPoint(fromViewPoint: CGPoint(x: view.textViewportRect.minX + 1, y: y)), in: snapshot.info))
+    }
+
     func testExNumberReservesRealChromeAndPreservesSourceAndHistory() throws {
         let source = (1...120).map { "Line \($0)" }.joined(separator: "\n")
         let (backend, surface, session) = try makeSurface(source)

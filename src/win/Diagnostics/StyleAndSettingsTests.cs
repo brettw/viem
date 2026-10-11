@@ -182,8 +182,22 @@ internal static class StyleAndSettingsTests
         var lineSpacingUnits = Children<TextBlock>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing units");
         var spaceBefore = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Space before");
         var spaceAfter = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Space after");
-        var startIndent = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Start indent");
-        Check(spaceBefore.Width < startIndent.Width && spaceAfter.Width < startIndent.Width,
+        var firstLineIndent = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "First line");
+        Check(!Children<NumberBox>(styles.ParagraphPanel).Any(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) is "Start indent" or "End indent"),
+            "paragraph settings retain first-line indent and omit start/end indent controls");
+        var paragraphStyle = (StyleDefinition)styles.StylePicker.SelectedItem;
+        styles.ThemeView.EditStyle(paragraphStyle, VIEM_STYLE_EDIT_SET_DECLARATION,
+            VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT, CoreView.Number(23));
+        styles.ThemeView.EditStyle(paragraphStyle, VIEM_STYLE_EDIT_SET_DECLARATION,
+            VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT, CoreView.Number(17));
+        styles.CommitThemeForTesting(); styles.RefreshForTesting();
+        firstLineIndent.Value = 9; await Task.Delay(100);
+        paragraphStyle = (StyleDefinition)styles.StylePicker.SelectedItem;
+        Check(paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT).number == 23
+            && paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number == 17
+            && paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT).number == 9,
+            "editing the retained first-line control preserves configured side indents");
+        Check(spaceBefore.Width < firstLineIndent.Width && spaceAfter.Width < firstLineIndent.Width,
             "paragraph spacing fields are narrower to preserve the fixed inspector width");
         Check(sourceBeforeInspector.AsSpan().SequenceEqual(pane.Document.Source(pane.Document.State.document_revision)),
             "opening and displaying style controls does not rewrite document source");
