@@ -52,8 +52,10 @@ if [ ! -f "$link_stamp" ] || [ "$(cat "$link_stamp")" != "$current_fingerprint" 
     touch "$project_dir/src/mac/CViemCore/shim.c"
 fi
 
-# Build both launchers explicitly; packaging must never reuse a stale helper.
+# Build the GUI and both command-line launchers explicitly so packaging cannot
+# reuse a stale helper.
 VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration" --product Viem
+VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration" --product viem-cli
 VIEM_RUST_PROFILE="$rust_profile" swift build --disable-sandbox -c "$configuration" --product blocking-viem
 # Do not bless a link if another build changed the archive while Swift ran.
 if [ "$(shasum -a 256 "$rust_archive")" != "$archive_fingerprint" ]; then
@@ -78,6 +80,8 @@ package_app() {
     # inode atomically instead of truncating bytes mapped by that process.
     cp "$swift_bin_dir/Viem" "$macos_dir/Viem.new"
     mv -f "$macos_dir/Viem.new" "$macos_dir/Viem"
+    cp "$swift_bin_dir/viem-cli" "$macos_dir/viem-cli.new"
+    mv -f "$macos_dir/viem-cli.new" "$macos_dir/viem-cli"
     cp "$swift_bin_dir/blocking-viem" "$macos_dir/blocking-viem.new"
     mv -f "$macos_dir/blocking-viem.new" "$macos_dir/blocking-viem"
     cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
@@ -104,6 +108,7 @@ package_app() {
     mkdir -p "$query_license_dir"
     cp "$query_source_dir/"*.LICENSE "$query_source_dir/nvim.NOTICES.md" "$query_license_dir/"
 
+    codesign --force --sign - "$macos_dir/viem-cli"
     codesign --force --sign - "$macos_dir/blocking-viem"
     codesign --force --sign - "$app_bundle"
     # Nested resource updates do not change the bundle directory's modification

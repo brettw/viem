@@ -1,4 +1,36 @@
-# Blocking editor and Git
+# Command-line launchers and Git
+
+On macOS, `viem-cli` starts Viem or switches to its existing process in the
+foreground. It accepts the GUI's ordinary arguments, including filenames,
+`+line`, `-o`, and `-O`, and preserves the caller's working directory. With no
+arguments, it activates an existing window or creates a blank one. Use `--help`
+to display launcher usage.
+
+For an app installed in `/Applications`:
+
+```sh
+/Applications/Viem.app/Contents/MacOS/viem-cli +12 "notes.md"
+```
+
+The launcher returns once the GUI accepts the request, without waiting for
+documents to close. Launch or handoff failure returns a nonzero status; file-open
+errors after acceptance are shown in the GUI. Use `blocking-viem` when the caller
+needs to wait for editing to finish.
+
+Both helpers live beside `Viem` in `Contents/MacOS`. The bundle has no `bin`
+directory or command symlinks. You can create an external symlink named `viem`
+in an existing directory on your `PATH`, for example:
+
+```sh
+ln -s /Applications/Viem.app/Contents/MacOS/viem-cli "$HOME/.local/bin/viem"
+```
+
+The helpers resolve symlinks to find their application bundle; leave the actual
+executables inside it. For development builds, substitute the absolute path to
+`.build/Viem.app`. `make release` and `make run` also package both helpers in
+`.build/release-app/Viem.app`, which survives subsequent debug builds.
+
+## Blocking editor
 
 `blocking-viem <file>` starts Viem or opens the file in its existing process, then
 waits until every pane and window showing that shared document has closed.

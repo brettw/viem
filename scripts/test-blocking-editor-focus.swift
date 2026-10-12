@@ -76,7 +76,7 @@ func bringToFront(_ application: NSRunningApplication) throws {
     }
     try waitFor("activate \(application.localizedName ?? bundle.lastPathComponent)") { completed }
     if let failure { throw failure }
-    try waitFor("foreground application changes before the blocking request") {
+    try waitFor("foreground application changes before the launcher request") {
         NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier
     }
 }
@@ -107,10 +107,10 @@ func run() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
     let sourceBundle = CommandLine.arguments.dropFirst().first.map { URL(fileURLWithPath: $0) }
         ?? root.appendingPathComponent(".build/Viem.app")
-    for executable in ["Viem", "blocking-viem"] {
+    for executable in ["Viem", "viem-cli", "blocking-viem"] {
         try require(FileManager.default.isExecutableFile(atPath:
             sourceBundle.appendingPathComponent("Contents/MacOS/\(executable)").path),
-            "Build Viem and blocking-viem before running this test.")
+            "Build Viem, viem-cli, and blocking-viem before running this test.")
     }
     let previousApplication = NSWorkspace.shared.frontmostApplication
     guard let backgroundApplication = NSRunningApplication.runningApplications(
@@ -126,6 +126,9 @@ func run() throws {
     try FileManager.default.copyItem(at: sourceBundle, to: bundle)
     let executable = bundle.appendingPathComponent("Contents/MacOS/Viem")
     let helper = bundle.appendingPathComponent("Contents/MacOS/blocking-viem")
+    let cliHelper = bundle.appendingPathComponent("Contents/MacOS/viem-cli")
+    let externalCLI = temporary.appendingPathComponent("viem")
+    try FileManager.default.createSymbolicLink(at: externalCLI, withDestinationURL: cliHelper)
     // Match the unique copied executable, never another user's running Viem bundle.
     func testApplications() -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter {
@@ -181,20 +184,20 @@ func run() throws {
             RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
         } while Date() < deadline
     }
-    func requireSuccess(_ process: Process) throws {
-        try waitFor("blocking helper completes after its document closes") { !process.isRunning }
+    func requireSuccess(_ process: Process, message: String = "blocking helper completes after its document closes") throws {
+        try waitFor(message) { !process.isRunning }
         try require(process.terminationStatus == 0,
             "Helper failed: \((try? String(contentsOf: logURL, encoding: .utf8)) ?? "")")
     }
 
     try require(testApplications().isEmpty, "The cold test must start without its isolated GUI process.")
     try bringToFront(backgroundApplication)
-    let cold = try launch(helper, [coldName])
-    try waitFor("cold blocking request starts its isolated application") { testApplications().count == 1 }
-    guard let primary = testApplications().first else {
+    let cliCold = try launch(cliHelper, [coldName])
+    try waitFor("cold CLI request starts its isolated application") { testApplications().count == 1 }
+    guard var primary = testApplications().first else {
         throw TestFailure("The isolated GUI exited during startup.")
     }
-    let application = AXUIElementCreateApplication(primary.processIdentifier)
+    var application = AXUIElementCreateApplication(primary.processIdentifier)
     func windows() -> [AXUIElement] {
         (attribute(application, kAXWindowsAttribute) as? [AXUIElement] ?? [])
             .filter { !editors($0).isEmpty }
@@ -225,7 +228,49 @@ func run() throws {
         }
     }
 
-    try waitFor("cold request makes its exact document and GUI frontmost without a blank window") {
+    try waitFor("cold CLI request makes its exact document and GUI frontmost without a blank window") {
+        focused(coldText, filename: coldName, paneCount: 1)
+    }
+    try requireSuccess(cliCold, message: "CLI helper completes while its document remains open")
+    try require(focused(coldText, filename: coldName, paneCount: 1) && !primary.isTerminated,
+        "CLI completion must leave its requested document open in the foreground.")
+    try closeDocumentWindow()
+
+    try bringToFront(backgroundApplication)
+    let cliSplit = try launch(cliHelper, ["-o", decoyName, warmName])
+    try requireSuccess(cliSplit, message: "CLI split request returns after opening both documents")
+    try waitFor("CLI arguments open the requested split and focus its first pane") {
+        focused(decoyText, filename: decoyName, paneCount: 2)
+            && editors(windows()[0]).contains { attribute($0, kAXValueAttribute) as? String == warmText }
+            && testApplications().map(\.processIdentifier) == [primary.processIdentifier]
+    }
+    try bringToFront(backgroundApplication)
+    let cliNoArguments = try launch(cliHelper, [])
+    try requireSuccess(cliNoArguments, message: "CLI request without arguments returns after activation")
+    try waitFor("CLI request without arguments restores the current pane without another document or process") {
+        focused(decoyText, filename: decoyName, paneCount: 2)
+            && testApplications().map(\.processIdentifier) == [primary.processIdentifier]
+    }
+    try bringToFront(backgroundApplication)
+    let cliAlias = try launch(externalCLI, ["alias.txt"])
+    try requireSuccess(cliAlias, message: "externally linked CLI helper returns after opening its request")
+    try waitFor("external CLI symlink reuses and focuses the requested pane in the original GUI") {
+        focused(warmText, filename: warmName, paneCount: 2)
+            && testApplications().map(\.processIdentifier) == [primary.processIdentifier]
+    }
+    try closeDocumentWindow()
+    stop(primary)
+    try waitFor("CLI test application exits before the cold blocking test") { testApplications().isEmpty }
+
+    try bringToFront(backgroundApplication)
+    let cold = try launch(helper, [coldName])
+    try waitFor("cold blocking request starts its isolated application") { testApplications().count == 1 }
+    guard let blockingPrimary = testApplications().first else {
+        throw TestFailure("The isolated GUI exited during blocking startup.")
+    }
+    primary = blockingPrimary
+    application = AXUIElementCreateApplication(primary.processIdentifier)
+    try waitFor("cold blocking request makes its exact document and GUI frontmost without a blank window") {
         focused(coldText, filename: coldName, paneCount: 1)
     }
     try requireWaiting([cold])
@@ -291,11 +336,11 @@ func run() throws {
     try require(recovery.terminationStatus != 0, "Cancelling recovery must fail the blocking request.")
     try require(try Data(contentsOf: recoveryFile) == recoveryBytes && Data(contentsOf: swapFile) == foreignSwapBytes,
         "Cancelling recovery must preserve both the document and foreign swap file.")
-    print("Blocking-editor cold, warm, alias, recovery focus and wait checks passed.")
+    print("CLI cold, split, no-argument, external symlink, and blocking-editor cold, warm, alias, recovery focus and wait checks passed.")
 }
 
 do { try run() }
 catch {
-    FileHandle.standardError.write(Data("Blocking-editor focus test failed: \(error)\n".utf8))
+    FileHandle.standardError.write(Data("Editor launcher focus test failed: \(error)\n".utf8))
     exit(EXIT_FAILURE)
 }

@@ -48,15 +48,20 @@ sign `.build/Viem.app`. `make debug` (also the default for `make`) builds with
 debug information; `make release` builds an optimized application. Each replaces
 the same application bundle.
 
-Both configurations explicitly build `Viem` and `blocking-viem`. Release builds
-also package `.build/release-app/Viem.app`, which remains a release build after
-later debug builds. `make run` and `make run-release` build and launch this release
-bundle. Use its `Contents/MacOS/blocking-viem` for a release-only editor redirector;
-the complete bundle supplies the GUI's syntax runtime, fonts, and themes.
+Both configurations explicitly build `Viem`, `viem-cli`, and `blocking-viem` and
+package them in `Contents/MacOS`. The command-line helpers are signed before the
+bundle. Release builds also package `.build/release-app/Viem.app`, which remains
+a release build after later debug builds. `make run` and `make run-release` build
+and launch this release bundle. Use its command-line helpers for release-only
+redirectors; the complete bundle supplies the GUI's syntax runtime, fonts, and
+themes.
 
-The bundle also includes `Contents/MacOS/blocking-viem`, a command-line editor
-launcher that waits for its requested document to close. See
-[Blocking editor](blocking-editor.md) for Git setup and cancellation behavior.
+`Contents/MacOS/viem-cli` launches or activates the GUI in the foreground and
+returns once its launch request is accepted. It forwards ordinary GUI arguments
+and the caller's working directory. `Contents/MacOS/blocking-viem` waits until its
+requested document closes. See [Command-line launchers and Git](blocking-editor.md)
+for usage, optional external symlinks, Git setup, and cancellation behavior. The
+bundle does not create a `bin` directory or command symlinks.
 
 The bundle includes the shared desktop fonts and their attribution files from
 [`assets/fonts`](../assets/fonts/README.md) in `Contents/Resources/fonts`.
@@ -89,8 +94,9 @@ for the header check alone. See [C ABI validation](abi-validation.md) for Window
 setup and CI usage. Ordinary Rust tests do not run the C compiler check.
 
 After building, run `swift scripts/test-blocking-editor-focus.swift` to check
-actual foreground activation for cold and already-running blocking editor
-requests, document focus, recovery dialogs, and completion on close. This GUI
+actual foreground activation for both command-line helpers, including cold and
+already-running requests, external launcher symlinks, document focus, recovery
+dialogs, nonblocking acceptance, and blocking completion on close. This GUI
 check requires Accessibility permission for the invoking terminal/runtime and
 uses an isolated copy of the app with temporary settings and documents.
 
