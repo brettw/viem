@@ -13,7 +13,11 @@ namespace Viem.Windows.Diagnostics;
 internal static class VimRuntimeTests
 {
     private static void Check(bool condition, string name)
-    { if (!condition) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+    {
+        if (!condition) throw new InvalidOperationException(name);
+        FrontendSmokeTests.UiChecks.Add(name);
+        FrontendSmokeTests.WriteProgress("VimRuntimeTests: " + name);
+    }
 
     internal static async Task Run(CanvasDevice device, DispatcherQueue dispatcher, string profile)
     {
@@ -45,6 +49,7 @@ internal static class VimRuntimeTests
 
         async Task Paint(string filename, string text, ulong tokenLength)
         {
+            FrontendSmokeTests.WriteProgress("VimRuntimeTests.Paint: " + filename);
             byte[] source = Encoding.UTF8.GetBytes(text);
             using var document = new CoreDocument(source, Path.Combine(directory, filename));
             var preferences = new Preferences(directory);
@@ -105,13 +110,17 @@ internal static class VimRuntimeTests
 
         async Task ScrollPaint(string filename, Func<int, string> line)
         {
+            FrontendSmokeTests.WriteProgress("VimRuntimeTests.ScrollPaint: " + filename);
             byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 1_024).Select(line)));
             var document = new CoreDocument(source, Path.Combine(directory, filename));
+            FrontendSmokeTests.WriteProgress("VimRuntimeTests.ScrollPaint: construct window for " + filename);
             var window = new EditorWindow(new Preferences(directory), document);
+            FrontendSmokeTests.WriteProgress("VimRuntimeTests.ScrollPaint: activate window for " + filename);
             App.Instance.Windows.Add(window); window.Activate();
+            FrontendSmokeTests.WriteProgress("VimRuntimeTests.ScrollPaint: await canvas for " + filename);
             try
             {
-                var pane = window.ActivePane!; var view = await pane.Ready;
+                var pane = window.ActivePane!; var view = await pane.Ready.WaitAsync(TimeSpan.FromSeconds(10));
                 bool ColoredVisible()
                 {
                     var layout = view.Layout(); var viewport = view.Viewport;

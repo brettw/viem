@@ -25,7 +25,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let insertImage = NSButton()
   private(set) var tablePicker: EVTablePickerController?
   private var pickerSelection: ViemLogicalSelectionIdentityV1?
-  private let scroll = NSScrollView()
+  private let controlsViewport = NSView()
   private let row = NSStackView()
   private let characterGroup = NSStackView()
   private let scriptGroup = NSStackView()
@@ -104,13 +104,9 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     configure(insertTable, title: "Insert Table", toggle: false)
     insertTable.image = Self.tableImage()
     insertTable.openPicker = { [weak self] event in self?.openTablePicker(event: event) }
-    scroll.drawsBackground = false
-    scroll.borderType = .noBorder
-    scroll.hasHorizontalScroller = true
-    scroll.autohidesScrollers = true
-    scroll.scrollerStyle = .overlay
-    scroll.documentView = row
-    addSubview(scroll)
+    controlsViewport.clipsToBounds = true
+    controlsViewport.addSubview(row)
+    addSubview(controlsViewport)
     configure(formattedView, title: "Formatted view", toggle: true)
     formattedView.image = Self.formattedViewImage()
     formattedView.allowsMixedState = false
@@ -158,8 +154,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     super.layout()
     formattedView.frame = NSRect(x: max(0, bounds.width - 37), y: (bounds.height - 26) / 2,
                                  width: 27, height: 26)
-    // Keep the view toggle accessible while the formatting controls scroll.
-    scroll.frame = NSRect(x: 0, y: 0, width: max(0, formattedView.frame.minX - 12), height: bounds.height)
+    // Keep natural-width controls fixed and clipped before the view toggle.
+    controlsViewport.frame = NSRect(x: 0, y: 0, width: max(0, formattedView.frame.minX - 12), height: bounds.height)
     row.frame = NSRect(x: 0, y: 0, width: row.fittingSize.width, height: bounds.height)
   }
 

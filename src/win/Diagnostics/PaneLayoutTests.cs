@@ -83,7 +83,20 @@ internal static class PaneLayoutTests
             await InputRoutingTests.Drag(window, first.LocationToggleControl,
                 (global::Windows.Foundation.Point[])[new(.5, .5), new(.5, .5 + 40 / first.LocationToggleControl.ActualHeight)], _ => { });
             Check(view.CurrentLineMode == mode && Math.Abs(Bars()[0] - start - 40) < 2,
-                "dragging the eye resizes panes and consumes its click");
+                $"dragging the eye resizes panes and consumes its click (mode={mode}->{view.CurrentLineMode}, bar={start}->{Bars()[0]}, focusFirst={window.ActivePane == first}, status={first.StatusBarHeight}, canDrag={window.PaneStack.CanDragBar(first)})");
+            window.FocusPane(third);
+            var backgroundPoint = new Point(first.LocationToggleControl.TransformToVisual(first.StatusControl).TransformPoint(new Point()).X - 2,
+                first.StatusControl.ActualHeight / 2);
+            Check(first.StatusResizeHoverAt(backgroundPoint), "the movable status drag fixture targets empty background");
+            double backgroundStart = Bars()[0];
+            double backgroundX = backgroundPoint.X / first.StatusControl.ActualWidth;
+            await InputRoutingTests.Drag(window, first.StatusControl,
+                (global::Windows.Foundation.Point[])[new(backgroundX, .5), new(backgroundX, .5 + 40 / first.StatusControl.ActualHeight)], _ => { }, focusTarget: false);
+            Check(Math.Abs(Bars()[0] - backgroundStart - 40) < 2 && window.ActivePane == third,
+                $"dragging movable status background resizes without changing focus (bar={backgroundStart}->{Bars()[0]}, focusThird={window.ActivePane == third})");
+            await InputRoutingTests.Drag(window, first.StatusControl,
+                (global::Windows.Foundation.Point[])[new(backgroundX, .5)], _ => { }, focusTarget: false);
+            Check(window.ActivePane == first, "a plain movable-status background click focuses its buffer");
             double fixedBottom = Bars()[2];
             await InputRoutingTests.Drag(window, third.StatusControl, (global::Windows.Foundation.Point[])[new(.3, .5), new(.3, -.5)], _ => { });
             Check(Bars()[2] == fixedBottom, "native pointer dragging cannot move the bottom status bar");
@@ -99,13 +112,17 @@ internal static class PaneLayoutTests
                 "indexed vertical resize uses the target pane's default font and zoom");
             window.FocusPane(first);
             var splitter = window.PaneStack.Splitters.Single();
-            Check(Math.Abs(splitter.ActualWidth - 5) < .01, "vertical splitter occupies five DIPs");
+            // The portable frame reserves exactly five DIPs. WinUI rounds the
+            // arranged control to a physical pixel at fractional DPI.
+            double halfPixel = .5 / first.XamlRoot.RasterizationScale + .01;
+            Check(window.PaneStack.SplitterWidthForTesting(splitter) == 5 && Math.Abs(splitter.ActualWidth - 5) <= halfPixel,
+                $"vertical splitter occupies five DIPs rounded to native pixels (width={splitter.ActualWidth}, scale={first.XamlRoot.RasterizationScale})");
             Check(splitter.HidesTopBorder && splitter.HidesBottomBorder,
                 "a full-height vertical splitter clips only its outer top and bottom borders");
             double width = first.ActualWidth;
             await InputRoutingTests.Drag(window, splitter, (global::Windows.Foundation.Point[])[new(.5, .5), new(.5 + 40 / splitter.ActualWidth, .5)], _ => { });
             Check(Math.Abs(first.ActualWidth - width - 40) < 2 && window.ActivePane == first,
-                "native vertical dragging moves the divider and preserves pane focus");
+                $"native vertical dragging moves the divider and preserves pane focus (width={width}->{first.ActualWidth}, right={right.ActualWidth}, focusFirst={window.ActivePane == first})");
             window.PaneStack.ResizeWidth(right, 1);
             Check(Math.Abs(right.ActualWidth - 100) < .01, "width commands cannot shrink below 100 DIPs");
             rejected = false;

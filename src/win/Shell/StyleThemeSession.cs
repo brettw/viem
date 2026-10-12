@@ -15,23 +15,35 @@ internal sealed partial class StyleWindow
     private string? sessionThemeName, sessionThemePath;
     private byte[] sessionThemeStyles = Array.Empty<byte>();
     private byte[] sessionThemeContext = Array.Empty<byte>();
+    private bool themeSessionNeedsRefresh;
     private void CreateThemeSession(uint? requestedFormat = null)
     {
+        themeSessionNeedsRefresh = true;
         uint sourceFormat = requestedFormat ?? styleDocument.State.format;
         uint format = sourceFormat == VIEM_FORMAT_MARKDOWN_SOURCE ? VIEM_FORMAT_MARKDOWN : sourceFormat;
         var document = new CoreDocument([], format: format);
+        CoreView? next = null;
         try
         {
             if (format != VIEM_FORMAT_CODE) document.InitializeStyleDefaults(preferences.ThemeStyleContext(format));
-            var next = new CoreView(document, CanvasDevice.GetSharedDevice(), DispatcherQueue, 640, 200);
-            var oldView = view; var oldDocument = styleDocument;
+#if DEBUG
+            ThemeSessionCreationForTesting?.Invoke();
+#endif
+            next = new CoreView(document, CanvasDevice.GetSharedDevice(), DispatcherQueue, 640, 200);
+            // Complete fallible configuration queries before publishing the
+            // candidate. A failed preview must leave the existing view usable.
+            byte[] styles = preferences.ThemeStyleDefaults(format);
+            byte[] context = preferences.ThemeStyleContext(format);
             string nextFamily = Preferences.StyleFamily(format);
             if (sessionFamily != nextFamily) SwitchThemeHistory(nextFamily, format);
+            var oldView = view; var oldDocument = styleDocument;
             view = next; styleDocument = document; sessionFamily = nextFamily;
-            RememberThemeSession();
+            sessionThemeName = preferences.SelectedTheme; sessionThemePath = preferences.SelectedThemePath;
+            sessionThemeStyles = styles; sessionThemeContext = context;
+            next = null; themeSessionNeedsRefresh = false;
             oldView?.Dispose(); oldDocument?.Dispose();
         }
-        catch { document.Dispose(); throw; }
+        catch { next?.Dispose(); if (!ReferenceEquals(styleDocument, document)) document.Dispose(); throw; }
     }
     private void RememberThemeSession()
     {
@@ -46,13 +58,36 @@ internal sealed partial class StyleWindow
         // current so a later palette or other-family edit retains this history.
         if (updating) { RememberThemeSession(); return; }
         bool sameTarget = sessionThemeName == preferences.SelectedTheme && sessionThemePath == preferences.SelectedThemePath;
-        if (sameTarget && sessionThemeContext.AsSpan().SequenceEqual(preferences.ThemeStyleContext(styleDocument.State.format))) return;
+        if (!themeSessionNeedsRefresh && sameTarget && sessionThemeContext.AsSpan().SequenceEqual(preferences.ThemeStyleContext(styleDocument.State.format))) return;
         DismissColorPickers(commit: false);
         if (!sameTarget || !sessionThemeStyles.AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(styleDocument.State.format))) ClearThemeHistory();
         var key = selected?.Key;
-        CreateThemeSession(); Load(key);
+        try { CreateThemeSession(); Load(key); }
+        catch (Exception exception) { themeSessionNeedsRefresh = true; ShowStyleFailure(exception); }
+    }
+    private bool PrepareThemeEdit()
+    {
+        if (!themeSessionNeedsRefresh) return true;
+        // The action was formed from controls belonging to the old session.
+        // Refresh them, then discard that action rather than replaying it onto
+        // a newer configuration or overwriting another editor's saved changes.
+        DismissColorPickers(commit: false);
+        try {
+            CreateThemeSession(); Load(selected?.Key);
+            error.Text = "Theme styles were refreshed. Review the current values and repeat the edit.";
+            error.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
+        }
+        catch (Exception exception) { themeSessionNeedsRefresh = true; ShowStyleFailure(exception); }
+        return false;
+    }
+    private void ShowStyleFailure(Exception exception, Exception? recovery = null)
+    {
+        static string Bounded(string text) => text.Length <= 600 ? text : text[..600] + "…";
+        error.Text = Bounded(exception.Message) + (recovery == null ? "" : "\nStyle preview: " + Bounded(recovery.Message));
+        error.Visibility = Microsoft.UI.Xaml.Visibility.Visible;
     }
 #if DEBUG
+    internal Action? ThemeSessionCreationForTesting { get; set; }
     internal Microsoft.UI.Xaml.Controls.ComboBox DocumentPicker => documentPicker;
     internal CoreView ThemeView => view;
     internal void CommitThemeForTesting() => preferences.SaveThemeStyles(view.Document.State.format, view.ExportStyleDefaults());

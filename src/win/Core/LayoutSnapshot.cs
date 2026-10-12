@@ -51,14 +51,14 @@ internal sealed unsafe partial class CoreView
         defaultPaint.identity = identity; defaultPaint.flags = VIEM_LAYOUT_PAINT_DEFAULT_CANVAS;
         defaultPaint.default_paint.flags = VIEM_TEXT_PAINT_DEFAULT_FOREGROUND;
         var paintResult = Optional("paint", (Info: defaultPaint, Runs: Array.Empty<ViemPaintStyleRunV1>()), () => {
-            if (cached != null) return (cached.Paint, cached.PaintRuns);
+            if (cached != null) return (Info: cached.Paint, Runs: cached.PaintRuns);
             var paint = New<ViemLayoutPaintInfoV1>();
             Check(viem_core_view_layout_paint_info(Document.Handle, Id, &paint), "Read paint");
             if (!SameLayout(paint.identity, identity)) throw new CoreException(VIEM_STATUS_STALE_REVISION, "Paint geometry changed.");
             var runs = new ViemPaintStyleRunV1[checked((int)paint.paint_run_count)];
             var expected = identity;
             fixed (ViemPaintStyleRunV1* p = runs) Check(viem_core_view_copy_layout_paint(Document.Handle, Id, &expected, p, (ulong)runs.Length, &paint), "Copy paint");
-            return (paint, runs);
+            return (Info: paint, Runs: runs);
         });
         var selection = Optional("selection", (Segments: Array.Empty<ViemVisualSelectionSegmentV1>(), Rectangles: Array.Empty<ViemVisualSelectionRectangleV1>()), () => {
             var selected = Selection();
@@ -66,14 +66,14 @@ internal sealed unsafe partial class CoreView
             return (selected.Segments, selected.Rectangles);
         });
         var furnitureResult = Optional("paragraph decorations", (Decorations: Array.Empty<ViemLayoutDecorationV1>(), Labels: Array.Empty<byte>()), () => {
-            if (cached != null) return (cached.Decorations, cached.DecorationLabels);
+            if (cached != null) return (Decorations: cached.Decorations, Labels: cached.DecorationLabels);
             var furniture = New<ViemLayoutDecorationsInfoV1>(); var expected = identity;
             uint status = viem_core_view_copy_layout_decorations(Document.Handle, Id, &expected, null, 0, null, 0, &furniture);
             if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Check(status, "Read decorations");
             var decorations = new ViemLayoutDecorationV1[checked((int)furniture.decoration_count)]; var labels = new byte[checked((int)furniture.label_bytes)];
             fixed (ViemLayoutDecorationV1* d = decorations) fixed (byte* l = labels)
                 Check(viem_core_view_copy_layout_decorations(Document.Handle, Id, &expected, d, (ulong)decorations.Length, l, (ulong)labels.Length, &furniture), "Copy decorations");
-            return (decorations, labels);
+            return (Decorations: decorations, Labels: labels);
         });
         var cells = Optional("table controls", Array.Empty<ViemTableCellV1>(), () => cached?.TableCells ?? TableCells(identity));
         string diagnostics = cached?.Diagnostics ?? "";

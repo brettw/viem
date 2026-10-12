@@ -33,10 +33,11 @@ internal static class FormatMenuTests
             {
                 var literal = window.AddPane(new CoreDocument("text"u8.ToArray(), format: format)); await literal.Ready;
                 Check(!literal.CanUseFormattingCommands, "literal formats disable rich formatting commands");
-                stylesPeer.Expand(); await Task.Delay(40);
-                Check(styles.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…").IsEnabled,
+                var editStyles = styles.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…");
+                await MenuTestHelpers.Transition(true, () => { stylesPeer.Expand(); return Task.CompletedTask; }, editStyles);
+                Check(editStyles.IsEnabled,
                     "independent style editing remains available for literal formats");
-                stylesPeer.Collapse();
+                await MenuTestHelpers.Transition(false, () => { stylesPeer.Collapse(); return Task.CompletedTask; }, editStyles);
             }
         }
         finally { App.Instance.Windows.Remove(window); window.Close(); }

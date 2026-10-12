@@ -1,4 +1,4 @@
-param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable)
+param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $optimizedOutput = Join-Path $projectRoot $(if ($NativeAot) { 'target/windows-native-tests' } else { 'target/windows-profile' })
@@ -46,8 +46,21 @@ try {
             $Executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
             if ($Optimized -or $NativeAot) { $Executable = Join-Path $optimizedOutput 'Viem.exe' }
         }
+        $testTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $process = Start-Process -FilePath $executable -ArgumentList @('--self-test', ('"' + $reportPath + '"')) -PassThru -WindowStyle Hidden
-        if (!$process.WaitForExit(120000)) { $process.Kill(); throw 'Windows integration tests timed out.' }
+        if (!$process.WaitForExit($TimeoutSeconds * 1000)) {
+            $process.Kill()
+            if (!$process.WaitForExit(5000)) { throw 'Timed-out Windows test process did not exit after termination.' }
+            $progressDetails = ''
+            $progressPath = $reportPath + '.progress.json'
+            if (Test-Path -LiteralPath $progressPath) {
+                try {
+                    $progress = Get-Content -LiteralPath $progressPath -Raw | ConvertFrom-Json
+                    $progressDetails = " Last suite: $($progress.stage); $($progress.completedChecks) checks completed before it."
+                } catch { $progressDetails = ' Progress sidecar could not be read.' }
+            }
+            throw "Windows integration tests timed out after $TimeoutSeconds seconds.$progressDetails Report: $reportPath"
+        }
         if (!(Test-Path -LiteralPath $reportPath)) { throw "Windows app exited $($process.ExitCode) before writing a test report." }
         $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
         if (!$report.passed) { throw $report.error }
@@ -55,7 +68,7 @@ try {
             throw 'The requested native UI checks ran in a managed executable.'
         }
         if ($ProfileDocument) { Write-Output "$ProfileScenario CPU benchmark completed. Report: $reportPath" }
-        else { Write-Output "$($report.count) Windows integration checks passed. Report: $reportPath" }
+        else { Write-Output "$($report.count) Windows integration checks passed in $([Math]::Round($testTimer.Elapsed.TotalSeconds, 1)) seconds. Report: $reportPath" }
     }
     finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval }
 }

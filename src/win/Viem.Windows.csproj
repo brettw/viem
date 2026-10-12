@@ -46,11 +46,19 @@
              Link="Resources/Licenses/nvim-treesitter/%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- WinUI's NativeAOT reference-tracker GC callback requires preinitialized
+       runtime statics. Enable the native optimizer after the managed build so
+       ordinary Debug builds retain their managed debugging settings. -->
+  <Target Name="OptimizeNativePublish" BeforeTargets="PrepareForPublish" Condition="'$(PublishAot)' == 'true'">
+    <PropertyGroup>
+      <Optimize>true</Optimize>
+    </PropertyGroup>
+  </Target>
   <Target Name="CheckRustLibrary" BeforeTargets="BeforeBuild">
     <Error Condition="!Exists('../../target/$(RustProfile)/viem_core.dll')" Text="Build the Rust core first with scripts/build-win.ps1." />
   </Target>
   <!-- Replace the owned font subtree, including licenses and attribution.
-       Publishing without a build also copies directly from the checkout. -->
+       Publishing copies directly from the checkout. -->
   <Target Name="PackageBundledFonts" AfterTargets="Build">
     <RemoveDir Directories="$(TargetDir)Resources/fonts" />
     <Copy SourceFiles="@(BundledFontResource)" DestinationFiles="@(BundledFontResource->'$(TargetDir)Resources/fonts/%(RecursiveDir)%(Filename)%(Extension)')" />
@@ -76,7 +84,7 @@
       </ResolvedFileToPublish>
     </ItemGroup>
   </Target>
-  <!-- Run for direct MSBuild/Visual Studio builds and publishing without a build.
+  <!-- Run for direct MSBuild/Visual Studio builds and publishing.
        The packager replaces only Resources/vim and verifies both inventories. -->
   <Target Name="PackageBundledVimRuntime" AfterTargets="Build">
     <Exec Command="&quot;$(VimRuntimePython)&quot; &quot;$(VimRuntimeScript)&quot; package &quot;$(TargetDir)/.&quot;" />

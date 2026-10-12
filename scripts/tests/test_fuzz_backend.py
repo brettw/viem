@@ -1,6 +1,7 @@
 """Watchdog and artifact regressions; no Rust build or third-party packages needed."""
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,8 @@ SCRIPT = Path(__file__).resolve().parents[1] / "fuzz-backend.py"
 SPEC = importlib.util.spec_from_file_location("fuzz_backend_supervisor", SCRIPT)
 fuzz = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fuzz)
+requires_supervisor = unittest.skipUnless(
+    fuzz.supervisor_support_error() is None, "macOS/Linux process supervisor regression")
 
 
 class SupervisorTests(unittest.TestCase):
@@ -33,6 +36,7 @@ class SupervisorTests(unittest.TestCase):
                                   rss_limit_bytes=limits.get("rss_limit_bytes", 512 * fuzz.MIB),
                                   sample_interval=0.02)
 
+    @requires_supervisor
     def test_completion_preserves_output_and_per_child_peak(self):
         result = self.run_child("import sys; data=bytearray(12*1024*1024); print('hello'); print('diagnostic',file=sys.stderr)")
         self.assertEqual(result["status"], "passed")
@@ -55,6 +59,7 @@ class SupervisorTests(unittest.TestCase):
             child.terminate()
             child.wait(timeout=5)
 
+    @requires_supervisor
     def test_nonzero_and_signal_are_distinct(self):
         result = self.run_child("raise SystemExit(7)")
         self.assertEqual(result["status"], "failed")
@@ -64,6 +69,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(result["signal_name"], "SIGTERM")
         self.assertIsNone(result["exit_code"])
 
+    @requires_supervisor
     def test_timeout_stops_descendant_but_not_unrelated_process(self):
         marker = self.directory / "escaped-child"
         descendant = "import time,pathlib; time.sleep(.8); pathlib.Path({!r}).write_text('escaped')".format(str(marker))
@@ -80,18 +86,21 @@ class SupervisorTests(unittest.TestCase):
             unrelated.terminate()
             unrelated.wait(timeout=5)
 
+    @requires_supervisor
     def test_rss_ceiling_is_reported(self):
         result = self.run_child("import time; data=bytearray(16*1024*1024); time.sleep(5)", rss_limit_bytes=fuzz.MIB)
         self.assertEqual(result["status"], "rss_limit")
         self.assertGreater(result["memory"]["observed_peak_rss_bytes"], fuzz.MIB)
         self.assertLess(result["elapsed_seconds"], 2)
 
+    @requires_supervisor
     def test_unresponsive_child_is_force_killed(self):
         result = self.run_child("import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); time.sleep(5)", timeout=0.2)
         self.assertEqual(result["status"], "timeout")
         self.assertEqual(result["signal"], signal.SIGKILL)
         self.assertLess(result["elapsed_seconds"], 2)
 
+    @requires_supervisor
     def test_requested_memory_ceiling_fails_closed_without_live_sampling(self):
         with mock.patch.object(fuzz, "sample_rss", return_value=None):
             result = self.run_child("import time; time.sleep(5)")
@@ -130,6 +139,7 @@ class SupervisorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "line 2"):
             fuzz.prepare_replay(trace, self.directory)
 
+    @requires_supervisor
     def test_campaign_and_replay_artifacts_without_cargo_build(self):
         binary = self.directory / "fake-runner"
         binary.write_text("#!{}\n".format(sys.executable) + """
@@ -170,12 +180,33 @@ print(json.dumps(records[-1]))
         repeated = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
         self.assertEqual(repeated.returncode, 2)
 
-    def test_missing_trace_is_reportable_after_launch_failure(self):
+    @requires_supervisor
+    def test_launch_failure_is_reported(self):
         result = fuzz.run_monitored([str(self.directory / "missing")], self.directory, 1, fuzz.MIB, .02)
         self.assertEqual(result["status"], "launch_error")
+
+    def test_missing_trace_is_reportable(self):
         summary = fuzz.summarize_trace(self.directory / "trace.jsonl")
         self.assertTrue(summary["missing"])
         self.assertIsNone(summary["session_end_live_growth_bytes"])
+
+    def test_unsupported_supervisor_stops_before_launch_or_artifact_creation(self):
+        with mock.patch.object(fuzz.sys, "platform", "win32"), \
+                mock.patch.object(fuzz.subprocess, "Popen") as launch:
+            with self.assertRaisesRegex(RuntimeError, "requires macOS or Linux"):
+                self.run_child("raise SystemExit(0)")
+            launch.assert_not_called()
+        self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_unsupported_cli_stops_before_build_or_output_creation(self):
+        output = self.directory / "campaign"
+        with mock.patch.object(fuzz.sys, "platform", "win32"), \
+                mock.patch.object(fuzz.subprocess, "call") as build, \
+                mock.patch.object(fuzz.sys, "stderr", io.StringIO()) as errors:
+            self.assertEqual(fuzz.main(["--output", str(output)]), 2)
+            build.assert_not_called()
+            self.assertIn("portable fuzz_backend Cargo example", errors.getvalue())
+        self.assertFalse(output.exists())
 
 
 if __name__ == "__main__":

@@ -148,7 +148,11 @@ internal sealed partial class StyleWindow
         Color? pending = null;
         CoreView? owner = null;
         StyleDefinition? target = null;
+        object? gesture = null;
         ViemStyleEditGroupV1? group = null;
+#if DEBUG
+        int received = 0, ignored = 0, flushed = 0, rejected = 0, transferred = 0;
+#endif
         // A fixed cadence, not an inactivity debounce: sustained drags must
         // repaint the document too. Idle pickers never schedule work.
         var timer = DispatcherQueue.CreateTimer();
@@ -161,10 +165,32 @@ internal sealed partial class StyleWindow
             timer.Stop();
             var color = pending; pending = null;
             if (!IsCurrent() || color == null || color.Value == committed) return;
+            var activeGesture = gesture;
+            var sourceView = documentView;
+            string family = sessionFamily;
+            string? themeName = sessionThemeName, themePath = sessionThemePath;
             bool success = Try(() => {
                 group ??= view.BeginStyleEditGroup();
                 SetColor(property, color.Value, group);
             }, reload: false);
+            if (success && open && !closed && ReferenceEquals(gesture, activeGesture)
+                && ReferenceEquals(documentView, sourceView) && family == sessionFamily
+                && themeName == sessionThemeName && themePath == sessionThemePath
+                && target?.Key == selected.Key && !themeSessionNeedsRefresh && view.Id != 0
+                && !ReferenceEquals(owner, view)) {
+                // Saving this gesture can rebuild its disposable specimen to
+                // include normalized cross-family theme context. Only this
+                // successful edit may transfer ownership; the native group
+                // belonged to the old specimen, while settings Undo still
+                // groups the entire popup gesture.
+                EndGroup(); owner = view; target = selected;
+#if DEBUG
+                transferred++;
+#endif
+            }
+#if DEBUG
+            if (success) flushed++; else rejected++;
+#endif
             didChange |= success;
             committed = StyleColor(selected, property);
             well.Background = new SolidColorBrush(committed);
@@ -184,7 +210,7 @@ internal sealed partial class StyleWindow
             if (commit) Flush();
             timer.Stop(); pending = null;
             EndGroup();
-            open = false;
+            open = false; gesture = null;
             EndThemeHistoryGroup();
             openColorPickers.Remove(property);
         }
@@ -201,7 +227,15 @@ internal sealed partial class StyleWindow
         }
         refreshFields.Add(Refresh); refreshColors.Add(Refresh);
         picker.ColorChanged += (_, args) => {
-            if (assigning || !IsCurrent()) return;
+#if DEBUG
+            received++;
+#endif
+            if (assigning || !IsCurrent()) {
+#if DEBUG
+                ignored++;
+#endif
+                return;
+            }
             pending = args.NewColor;
             if (pending == committed) { pending = null; timer.Stop(); }
             else if (!timer.IsRunning) timer.Start();
@@ -211,7 +245,7 @@ internal sealed partial class StyleWindow
             // caret follow must not retarget or rebuild the inspector mid-drag.
             refreshAfterColorPopup |= refreshAfterFollowing;
             CancelCaretFollow();
-            Refresh(); committed = picker.Color; owner = view; target = selected; didChange = false; open = true;
+            Refresh(); committed = picker.Color; owner = view; target = selected; didChange = false; gesture = new(); open = true;
             BeginThemeHistoryGroup();
             openColorPickers.Add(property);
             visibleColorPickers.Add(property);
@@ -230,10 +264,15 @@ internal sealed partial class StyleWindow
         dismissColorPickers.Add(commit => { if (!open) return; Finish(commit); flyout.Hide(); });
 #if DEBUG
         colorUpdateScheduled.Add(() => timer.IsRunning);
+        colorStatesForTesting[property] = () => $"open={open}, assigning={assigning}, ownerView={owner?.Id}, currentView={view.Id}, sameOwner={ReferenceEquals(owner, view)}, "
+            + $"target={target?.Key}, selected={selected.Key}, current={IsCurrent()}, pending={pending}, committed={committed}, timer={timer.IsRunning}, "
+            + $"received={received}, ignored={ignored}, flushed={flushed}, rejected={rejected}, transferred={transferred}, error={Error}";
 #endif
     }
 #if DEBUG
     private readonly List<Func<bool>> colorUpdateScheduled = [];
+    private readonly Dictionary<uint, Func<string>> colorStatesForTesting = [];
+    internal string ColorStateForTesting(uint property) => colorStatesForTesting.TryGetValue(property, out var state) ? state() : "no color control";
     internal bool ColorUpdateScheduled => colorUpdateScheduled.Any(scheduled => scheduled());
     internal Color PreviewForeground => PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND);
     internal Color PreviewBackground => PreviewColor(VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND);

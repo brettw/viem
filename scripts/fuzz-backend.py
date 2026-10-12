@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run deterministic backend fuzz campaigns with replay artifacts and memory limits."""
+"""Run backend fuzz campaigns with replay artifacts and memory limits on macOS/Linux."""
 
 from __future__ import annotations
 
@@ -27,6 +27,16 @@ from typing import Any, Dict, List, Optional
 REPO = Path(__file__).resolve().parents[1]
 MIB = 1024 * 1024
 U64_MAX = (1 << 64) - 1
+
+
+def supervisor_support_error() -> Optional[str]:
+    if not (sys.platform == "darwin" or sys.platform.startswith("linux")) or not all(
+            hasattr(os, name) for name in ("wait4", "waitstatus_to_exitcode", "killpg", "WNOHANG")) \
+            or not hasattr(signal, "SIGKILL"):
+        return ("The fuzz supervisor requires macOS or Linux with POSIX process groups, "
+                "wait4 and per-child RSS monitoring. On Windows, run the portable "
+                "fuzz_backend Cargo example directly; see docs/fuzzing.md.")
+    return None
 
 
 class DarwinProcTaskInfo(ctypes.Structure):
@@ -178,6 +188,9 @@ def run_monitored(command: List[str], directory: Path, timeout: float,
                   rss_limit_bytes: int, sample_interval: float,
                   cwd: Path = REPO) -> Dict[str, Any]:
     """Reap with wait4 so even a between-samples crash retains per-child peak RSS."""
+    unsupported = supervisor_support_error()
+    if unsupported is not None:
+        raise RuntimeError(unsupported)
     result = {"command": command, "started_at": utc_now(), "status": "launch_error"}  # type: Dict[str, Any]
     samples = Samples()
     began = time.monotonic()
@@ -388,6 +401,10 @@ def options(argv: Optional[List[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = options(argv)
+    unsupported = supervisor_support_error()
+    if unsupported is not None:
+        print(unsupported, file=sys.stderr)
+        return 2
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     output = (args.output or REPO / "target" / "fuzz-campaigns" / "{}-{}".format(stamp, os.getpid())).resolve()
     if output.exists() and (not output.is_dir() or any(output.iterdir())):

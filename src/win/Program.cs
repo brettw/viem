@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Viem.Windows.Diagnostics;
@@ -9,6 +10,9 @@ namespace Viem.Windows;
 // boundaries before Application construction (including its field initializers).
 internal static class Program
 {
+    // AppWindow returns a base presenter. C#/WinRT discovers its native subtype
+    // by runtime class name; retain this projection and its RCW factory metadata.
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(Microsoft.UI.Windowing.OverlappedPresenter))]
     [STAThread]
     private static void Main(string[] args)
     {

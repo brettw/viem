@@ -67,6 +67,14 @@ internal static class MarkdownViewPreferenceTests
                 Check(reopened.State.format == VIEM_FORMAT_MARKDOWN,
                     "a new preferences instance restores formatted Markdown opening");
 
+            // These opening cases are complete. Keep only the views needed by
+            // the following independent cases, rather than repeatedly dividing
+            // one native pane below its minimum height.
+            Check(empty.LastError == null && second.LastError == null,
+                "completed Markdown opening cases have no native presentation errors");
+            await window.ClosePane(empty, force: true);
+            await window.ClosePane(second, force: true);
+
             var snapshot = new RecoverySnapshot(source, "markdownSource", 1, 1, 1, 1);
             var recovered = window.AddPane(new CoreDocument(snapshot.source, format: snapshot.Format,
                 encoding: snapshot.encoding, fileFormat: snapshot.fileFormat, markdownFormattedView: preferences.MarkdownFormattedView));
@@ -79,6 +87,8 @@ internal static class MarkdownViewPreferenceTests
                 var view = await literal.Ready; view.Command("i"); view.Text("literal"); view.Key(VIEM_KEY_ESCAPE);
                 Check(literal.Document.State.format == format && preferences.MarkdownFormattedView,
                     "literal document changes do not replace the remembered Markdown view: " + format);
+                Check(literal.LastError == null, "literal preference fixture has no native presentation error: " + format);
+                await window.ClosePane(literal, force: true);
             }
             string config = Path.Combine(directory, "config.json");
             var external = JsonNode.Parse(File.ReadAllText(config))!;

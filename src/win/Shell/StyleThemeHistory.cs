@@ -83,17 +83,18 @@ internal sealed partial class StyleWindow
         if (closed || updating) return;
         DismissColorPickers(commit: false);
         if (preferences.EnsureCurrentThemeExists()) return;
+        if (!PrepareThemeEdit()) return;
         var edit = redo ? themeRedo.FirstOrDefault() : themeUndo.LastOrDefault();
         if (edit == null) return;
         updating = true;
         try {
             preferences.SaveThemeStyles(view.Document.State.format, redo ? edit.After : edit.Before);
-            CreateThemeSession(); Load(edit.Selection);
             if (redo) { themeRedo.Pop(); PushThemeUndo(edit); }
             else { themeUndo.RemoveAt(themeUndo.Count - 1); themeRedo.Push(edit); }
+            CreateThemeSession(); Load(edit.Selection);
             error.Text = ""; error.Visibility = Visibility.Collapsed;
         }
-        catch (Exception exception) { error.Text = exception.Message; error.Visibility = Visibility.Visible; }
+        catch (Exception exception) { themeSessionNeedsRefresh = true; ShowStyleFailure(exception); }
         finally { updating = false; RefreshThemeHistory(); }
     }
 #if DEBUG

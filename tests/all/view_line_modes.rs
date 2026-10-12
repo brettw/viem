@@ -1,4 +1,4 @@
-use viem_core::command::{CommandStatus, InputEvent, Key, LineMode};
+use viem_core::command::{CommandStatus, InputEvent, Key, LineMode, Mode, NavigationKey};
 use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
 use viem_core::document::{Encoding, Format};
 use viem_core::layout::MockTextMeasurementProvider;
@@ -22,6 +22,93 @@ fn key(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
 fn keys(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, input: &str) {
     for c in input.chars() {
         key(core, view, Key::Char(c));
+    }
+}
+
+#[test]
+fn geometry_line_selection_honors_command_selectmode_counts_and_shape_changes() {
+    let source = "abcdef ghi jkl mno\nsecond line\nthird line";
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        for count in [1, 2] {
+            let (mut core, view) = editor(Document::new(source), 55.);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            keys(&mut core, view, ":set noautoselect selectmode=cmd keymodel=stopsel");
+            key(&mut core, view, Key::Enter);
+            let end = if mode == LineMode::Visual {
+                core.layout(view).unwrap().snapshot().unwrap().rows[count - 1].text_range.end
+            } else {
+                source.match_indices('\n').nth(count - 1).unwrap().0 + 1
+            };
+            keys(&mut core, view, if count == 1 { "V" } else { "2V" });
+            let state = core.command_state(view).unwrap();
+            assert_eq!(state.mode(), Mode::VisualLine);
+            assert!(state.is_select_mode(), "{mode:?}, count {count}");
+            assert!(!state.is_native_selection());
+            assert_eq!(core.list_selection_identity(view).unwrap().range(), 0..end);
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+
+            // Switching to Visual and back must retain the checked line range;
+            // character shape then uses inclusive Vim boundaries.
+            key(&mut core, view, Key::Ctrl('g'));
+            assert!(!core.command_state(view).unwrap().is_text_selection());
+            key(&mut core, view, Key::Char('v'));
+            let active = core.command_state(view).unwrap().cursor();
+            assert_eq!(core.list_selection_identity(view).unwrap().range(), 0..active + 1);
+            key(&mut core, view, Key::Char('V'));
+            key(&mut core, view, Key::Ctrl('g'));
+            assert!(core.command_state(view).unwrap().is_select_mode());
+            assert_eq!(core.list_selection_identity(view).unwrap().range(), 0..end);
+            core.handle(view, CoreEvent::Input(InputEvent::Text("X".into()))).unwrap();
+            assert_eq!(core.document().text(), format!("X{}", &source[end..]));
+            key(&mut core, view, Key::Escape);
+            keys(&mut core, view, "u");
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().text(), format!("X{}", &source[end..]));
+        }
+    }
+}
+
+#[test]
+fn command_line_selection_retires_prior_native_return_mode() {
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        for insert in ['i', 'R'] {
+            let (mut core, view) = editor(Document::new("abcdef ghi jkl\nsecond"), 55.);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            keys(&mut core, view, ":set autoselect selectmode=cmd keymodel=stopsel");
+            key(&mut core, view, Key::Enter);
+            key(&mut core, view, Key::Char(insert));
+            key(&mut core, view, Key::ModifiedNavigation { key: NavigationKey::Right, modifiers: 1 });
+            assert!(core.command_state(view).unwrap().is_native_selection());
+            let cancelled = core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+            assert_eq!(cancelled.command.unwrap().status, CommandStatus::Cancelled);
+            key(&mut core, view, Key::Char('V'));
+            assert!(core.command_state(view).unwrap().is_select_mode(), "{mode:?}, {insert}");
+            key(&mut core, view, Key::Right);
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal,
+                "new command selection must not resume the previous {insert} session");
+            assert!(!core.command_state(view).unwrap().is_text_selection());
+            assert_eq!(core.document().text(), "abcdef ghi jkl\nsecond");
+        }
+    }
+}
+
+#[test]
+fn command_selectmode_keeps_unsupported_operator_line_forcing_atomic() {
+    for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let source = "abcdef ghi jkl\nsecond\nthird";
+        let (mut core, view) = editor(Document::new(source), 55.);
+        core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+        keys(&mut core, view, ":set noautoselect selectmode=cmd");
+        key(&mut core, view, Key::Enter);
+        keys(&mut core, view, "\"ad");
+        let rejected = core.handle(view, CoreEvent::Input(InputEvent::key('V'))).unwrap();
+        assert!(matches!(rejected.command.unwrap().status, CommandStatus::Unsupported(_)));
+        let state = core.command_state(view).unwrap();
+        assert_eq!(state.mode(), Mode::Normal);
+        assert!(!state.is_text_selection());
+        assert!(state.register('a').is_none());
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 }
 #[test]

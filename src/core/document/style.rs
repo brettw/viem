@@ -2103,15 +2103,21 @@ impl StyleSheet {
         let next_revision = self.next_revision()?;
 
         let old = self.block_styles.insert(style.id.clone(), style.clone());
+        // Theme-variant traversal resolves definitions by both ID and metadata.
+        let old_metadata = self.block_metadata.insert(style.id.clone(), metadata);
         if let Err(error) = self.validate_block_cycles() {
             if let Some(old) = old {
                 self.block_styles.insert(old.id.clone(), old);
             } else {
                 self.block_styles.remove(&style.id);
             }
+            if let Some(old_metadata) = old_metadata {
+                self.block_metadata.insert(style.id.clone(), old_metadata);
+            } else {
+                self.block_metadata.remove(&style.id);
+            }
             return Err(error);
         }
-        self.block_metadata.insert(style.id.clone(), metadata);
         self.revision = next_revision;
         Ok(())
     }
@@ -2132,15 +2138,20 @@ impl StyleSheet {
         let old = self
             .character_styles
             .insert(style.id.clone(), style.clone());
+        let old_metadata = self.character_metadata.insert(style.id.clone(), metadata);
         if let Err(error) = self.validate_character_cycles() {
             if let Some(old) = old {
                 self.character_styles.insert(old.id.clone(), old);
             } else {
                 self.character_styles.remove(&style.id);
             }
+            if let Some(old_metadata) = old_metadata {
+                self.character_metadata.insert(style.id.clone(), old_metadata);
+            } else {
+                self.character_metadata.remove(&style.id);
+            }
             return Err(error);
         }
-        self.character_metadata.insert(style.id.clone(), metadata);
         self.revision = next_revision;
         Ok(())
     }
@@ -4010,10 +4021,11 @@ mod tests {
         let second_id = second.id.clone();
         sheet.insert_block_style(second, generated()).unwrap();
         let revision = sheet.revision;
+        let before = sheet.clone();
 
         let cyclic = paragraph_style("First", &second_id);
         assert_eq!(
-            sheet.insert_block_style(cyclic, generated()),
+            sheet.insert_block_style(cyclic, StyleDefinitionMetadata::generated("Rejected block rename")),
             Err(StyleError::InheritanceCycle(first_id.clone()))
         );
         assert_eq!(sheet.revision, revision);
@@ -4021,6 +4033,17 @@ mod tests {
             sheet.block_styles[&first_id].based_on.as_ref(),
             Some(&sheet.base_paragraph)
         );
+        assert_eq!(sheet, before, "failed replacement restores metadata as well as the definition and revision");
+
+        let parent_id = StyleId::from("Character parent");
+        let child_id = StyleId::from("Character child");
+        sheet.insert_character_style(character_style(&parent_id.0, &"".into(), Default::default()), generated()).unwrap();
+        sheet.insert_character_style(character_style(&child_id.0, &parent_id, Default::default()), generated()).unwrap();
+        let before = sheet.clone();
+        assert!(matches!(sheet.insert_character_style(
+            character_style(&parent_id.0, &child_id, Default::default()),
+            StyleDefinitionMetadata::generated("Rejected character rename")), Err(StyleError::InheritanceCycle(_))));
+        assert_eq!(sheet, before, "failed character replacement restores metadata and revision");
     }
 
     #[test]

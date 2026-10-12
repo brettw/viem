@@ -27,8 +27,8 @@ final class EVFormattingToolbarTests: XCTestCase {
   func testCharacterAndTableGroupsHaveRequestedOrderAndStandardGaps() throws {
     let (_, surface) = try surface("Words")
     let toolbar = surface.formattingToolbar
-    let scroll = try XCTUnwrap(toolbar.subviews.first as? NSScrollView)
-    let row = try XCTUnwrap(scroll.documentView as? NSStackView)
+    let viewport = try XCTUnwrap(toolbar.subviews.first)
+    let row = try XCTUnwrap(viewport.subviews.first as? NSStackView)
     let bold = try XCTUnwrap(toolbar.commandButtons[.bold])
     let character = try XCTUnwrap(bold.superview as? NSStackView)
     XCTAssertEqual(character.arrangedSubviews.compactMap { ($0 as? NSButton)?.title },
@@ -766,26 +766,34 @@ final class EVFormattingToolbarTests: XCTestCase {
         try png.write(to: URL(fileURLWithPath: directory).appendingPathComponent("toolbar-\(appearance.rawValue).png"))
       }
     }
-    let scroll = try XCTUnwrap(toolbar.subviews.first as? NSScrollView)
+    let viewport = try XCTUnwrap(toolbar.subviews.first)
+    let row = try XCTUnwrap(viewport.subviews.first as? NSStackView)
     window.setContentSize(NSSize(width: 650, height: 300))
     window.contentView?.superview?.layoutSubtreeIfNeeded()
     let indent = try XCTUnwrap(toolbar.commandButtons[.decreaseIndent])
-    let indentFrame = indent.convert(indent.bounds, to: scroll.contentView)
-    let paragraphFrame = toolbar.paragraphStyle.convert(toolbar.paragraphStyle.bounds, to: scroll.contentView)
-    let characterFrame = toolbar.characterStyle.convert(toolbar.characterStyle.bounds, to: scroll.contentView)
-    XCTAssertGreaterThanOrEqual(indentFrame.minX, scroll.contentView.bounds.minX)
-    XCTAssertLessThanOrEqual(indentFrame.maxX, scroll.contentView.bounds.maxX)
-    XCTAssertGreaterThan(paragraphFrame.maxX, scroll.contentView.bounds.maxX)
-    XCTAssertGreaterThan(characterFrame.minX, scroll.contentView.bounds.maxX)
+    let indentFrame = indent.convert(indent.bounds, to: viewport)
+    let paragraphFrame = toolbar.paragraphStyle.convert(toolbar.paragraphStyle.bounds, to: viewport)
+    let characterFrame = toolbar.characterStyle.convert(toolbar.characterStyle.bounds, to: viewport)
+    XCTAssertGreaterThanOrEqual(indentFrame.minX, viewport.bounds.minX)
+    XCTAssertLessThanOrEqual(indentFrame.maxX, viewport.bounds.maxX)
+    XCTAssertGreaterThan(paragraphFrame.maxX, viewport.bounds.maxX)
+    XCTAssertGreaterThan(characterFrame.minX, viewport.bounds.maxX)
     XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
-    XCTAssertGreaterThanOrEqual(button.frame.minX - scroll.frame.maxX, 12)
+    XCTAssertGreaterThanOrEqual(button.frame.minX - viewport.frame.maxX, 12)
     window.setContentSize(NSSize(width: 480, height: 300))
     window.contentView?.superview?.layoutSubtreeIfNeeded()
     XCTAssertLessThanOrEqual(toolbar.frame.width, window.frame.width)
-    XCTAssertGreaterThan(try XCTUnwrap(scroll.documentView).frame.width, scroll.contentSize.width)
-    XCTAssertTrue(scroll.hasHorizontalScroller)
+    XCTAssertGreaterThan(row.frame.width, viewport.bounds.width)
+    XCTAssertTrue(viewport.clipsToBounds)
+    XCTAssertFalse(toolbar.subviews.contains { $0 is NSScrollView })
+    let rowOrigin = row.frame.origin
+    let viewportOrigin = viewport.bounds.origin
+    toolbar.characterStyle.scrollToVisible(toolbar.characterStyle.bounds)
+    window.contentView?.superview?.layoutSubtreeIfNeeded()
+    XCTAssertEqual(row.frame.origin, rowOrigin)
+    XCTAssertEqual(viewport.bounds.origin, viewportOrigin)
     XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
-    XCTAssertGreaterThanOrEqual(button.frame.minX - scroll.frame.maxX, 12)
+    XCTAssertGreaterThanOrEqual(button.frame.minX - viewport.frame.maxX, 12)
     XCTAssertFalse(button.isHidden)
   }
 }

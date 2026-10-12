@@ -26,7 +26,7 @@ internal sealed partial class EditorPane
     private void EnsureDrawingCache()
     {
         if (snapshot == null || View == null) return;
-        var size = (Canvas.ActualWidth, Canvas.ActualHeight, Canvas.Dpi);
+        var size = (PaintViewportWidth, Canvas.ActualHeight, Canvas.Dpi);
         string? whitespaceStyle = whitespace?.Style.GetRawText();
         if (cachedText != null && drawnLayout != null
             && CoreView.SameLayout(drawnLayout.Info.identity, snapshot.Info.identity)
@@ -99,7 +99,7 @@ internal sealed partial class EditorPane
             {
                 var cluster = snapshot.Clusters[checked((int)index)];
                 if (View.Provider.IsInlineImage(cluster.render_run)) { glyphs.Flush(); continue; }
-                if (cluster.ink_bounds.x + cluster.ink_bounds.width < viewport.left - 4 || cluster.ink_bounds.x > viewport.left + Canvas.ActualWidth + 4) continue;
+                if (cluster.ink_bounds.x + cluster.ink_bounds.width < viewport.left - 4 || cluster.ink_bounds.x > viewport.left + PaintViewportWidth + 4) continue;
                 var paint = PaintFor(cluster.text_start);
                 var bounds = OffsetRect(cluster.typographic_bounds, viewport);
                 Color foreground = (paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(paint.foreground);

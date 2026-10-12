@@ -2086,7 +2086,7 @@ fn random_act(rng: &mut Rng, h: &H) -> Vec<Act> {
         96 => vec![Act::SwitchView { index: rng.below(2) }],
         97 => {
             let mut acts = vec![Act::Key { key: "Esc".into() }];
-            acts.extend(keys(rng.pick(&[
+            acts.extend(keys(*rng.pick(&[
                 "/a<CR>", "/b<CR>n", "?x<CR>", "*", "#", "nN", "qaxq@a", "qbA!<Esc>q2@b", "Rxy<BS><BS><Esc>",
                 "i<C-n><C-n><Esc>", "A <C-p><Esc>", "i<C-v>u00e9<Esc>", "i<C-v><Tab><Esc>", "ma`a", "u<C-r>u",
                 "gv", "vipy", "yiwviwp", "ggVGd", "ggVGyP", ":%s/a/A/g<CR>", ":g/^$/d<CR>", "gg=G",
@@ -2108,7 +2108,7 @@ fn random_act(rng: &mut Rng, h: &H) -> Vec<Act> {
         _ => {
             // Visual mode operations.
             let mut acts = vec![Act::Key { key: "Esc".into() }];
-            acts.extend(keys(rng.pick(&["vjd", "vjjc", "Vjd", "Vd", "<C-v>jjd", "<C-v>jIx<Esc>", "vwd", "v$y", "Vjy", "vipd", "vjx", "Vj>", "Vj<", "vjJ", "vj~", "vjU", "<C-v>j$Ax<Esc>", "vlS", "vjo<Esc>"])));
+            acts.extend(keys(*rng.pick(&["vjd", "vjjc", "Vjd", "Vd", "<C-v>jjd", "<C-v>jIx<Esc>", "vwd", "v$y", "Vjy", "vipd", "vjx", "Vj>", "Vj<", "vjJ", "vj~", "vjU", "<C-v>j$Ax<Esc>", "vlS", "vjo<Esc>"])));
             acts
         }
     }

@@ -36,6 +36,7 @@ internal static class HorizontalScrollTests
         view.BackgroundLayout.Enabled = false;
         Step("setting view margins", () => view.Padding(17, 10, 29, 10));
         Step("disabling whitespace markers", () => view.VisibleWhitespace(false));
+        await ScrollbarOverlayTests.Run(pane);
         using var surface = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
         byte[] Draw() { using (var drawing = surface.CreateDrawingSession()) pane.Draw(drawing); CheckPane("drawing the editor"); return surface.GetPixelBytes(); }
 
@@ -96,6 +97,16 @@ internal static class HorizontalScrollTests
         Step("deleting the overflowing test line", () => view.Command("ggdd"));
         Check(view.Viewport.maximum_left == 0 && pane.HorizontalScrollControl.Visibility == Visibility.Collapsed,
             "the horizontal scrollbar disappears when the wrapped overflow is removed");
+        pane.InvalidateDrawingCache();
+        int cacheBuilds = pane.DrawingCacheBuilds;
+        var band = pane.VerticalScrollbarPaintBounds;
+        using (var strip = new CanvasRenderTarget(pane.Canvas.Device, (float)band.Width, (float)band.Height, pane.Canvas.Dpi)) {
+            using (var drawing = strip.CreateDrawingSession()) pane.DrawScrollbarPaint(drawing);
+            byte[] pixels = strip.GetPixelBytes();
+            Check(pane.DrawingCacheBuilds == cacheBuilds
+                && Enumerable.Range(0, pixels.Length / 4).All(pixel => pixels.AsSpan(pixel * 4, 4).SequenceEqual(pixels.AsSpan(0, 4))),
+                "a scrollbar strip without horizontal overflow clears its background without recording document paint");
+        }
         Step("undoing the test deletion", () => view.Undo());
         Check(pane.Document.Source(pane.Document.State.document_revision).AsSpan().SequenceEqual(Fixture),
             "horizontal scrolling diagnostics restore the original source");

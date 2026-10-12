@@ -64,8 +64,10 @@ Release uses `dotnet publish` and NativeAOT compilation, including Viem's
 WinUI/Win2D projections, to eliminate startup JIT compilation. The script
 preserves the executable path below. A direct `dotnet build -c Release` still
 produces a managed build; use the build script for startup measurements.
-Ordinary Debug editor builds remain managed and debuggable. The blocking launcher
-is published with NativeAOT in both configurations. The first online restore
+Ordinary Debug editor builds remain managed and debuggable. Native publishing,
+including Debug, enables optimization for the WinUI runtime's reference-tracker
+static initialization. The blocking launcher is published with NativeAOT in both
+configurations. The first online restore
 also fetches the SDK's native compiler/runtime packs; later `-Offline` builds
 reuse them. The pinned Windows SDK .NET projection supplies the C#/WinRT
 runtime support required for Win2D's non-blittable font and line-metric arrays.
@@ -81,8 +83,9 @@ The executable is under
 (replace `Debug` with `Release` for that build). Keep its adjacent files together:
 the output includes `viem_core.dll`, WinUI and Win2D dependencies, and
 `Resources/vim` with the shared pinned syntax snapshot, license and provenance.
-Both `dotnet build` and `dotnet publish` verify and replace that runtime subtree;
-publishing with `--no-build` also packages it. No installed Vim is required.
+Both `dotnet build` and `dotnet publish` verify and replace that runtime subtree.
+Publish must run the WinUI XAML preparation targets even after a managed build;
+omit `--no-build`. No installed Vim is required.
 Resource lookup uses the executable directory, so the app can be relocated or
 launched from another working directory. Windows App SDK
 is self-contained. The published Release editor and blocking launcher need no
@@ -176,6 +179,14 @@ fullscreen bounds do not replace the saved normal frame.
 - Other vi control bindings remain available. Use the menus for native actions
   whose usual Windows shortcuts conflict with vi, including bold, italic,
   find and select all. AltGr and IME text go through native input.
+- Edit > Select includes Visual Row. Edit > Find can use the current selection
+  as a literal search pattern or jump back to an offscreen selection without
+  changing its extent or the document.
+
+Triple-click selects a line using the view's Visual or Physical Source line
+policy. Horizontal scrollbars overlay the canvas without changing its height;
+overflowing text continues beneath the vertical scrollbar while wrapping and
+hit testing retain the document viewport.
 
 Ex file-opening commands such as `:e`, `:sp`, and `:E` accept a directory: the
 Open dialog starts there, and the selected file replaces the originating pane,
@@ -195,7 +206,10 @@ invalid settings are not overwritten. Recovery uses separate owned swap files,
 never autosaves over the original source, and retains crash leftovers for review.
 
 The main Settings window has no Code category. From a Code view, F8 or Style > Edit Styles… opens the shared Code stylesheet in the ordinary modeless
-style inspector. Filename associations remain supported through
+style inspector. The Style > Paragraph and Character menus also open the
+selected Code definition for editing, including names from accepted syntax
+highlighting; they do not apply manual formatting to Code text.
+Filename associations remain supported through
 `code.filenameAssociations` in `config.json`, and syntax load/compiler messages
 remain available through the existing diagnostics mechanisms. Vim syntax always
 uses application resources. Retired `code.vimSyntaxDirectory` values are
@@ -223,8 +237,8 @@ controls, which honor family, face stretch, size, weight, slant and tracking;
 custom variable axes and OpenType features are not applied to that output.
 `VIEM_TEST_CHROME_ONLY=1` selects the native gutter and status-style diagnostics.
 
-The normative list of known Mac differences is in the **Windows frontend
-requirements** section of [`AGENTS.md`](../../AGENTS.md). In particular,
+The normative list of known Mac differences is in the **Windows**
+section of [`AGENTS.md`](../../AGENTS.md). In particular,
 printing, AppKit text services and Versions, full document accessibility,
 per-font OpenType discovery are not claimed as implemented.
 
@@ -246,10 +260,16 @@ per-font OpenType discovery are not claimed as implemented.
   core or test compiler is involved.
 
 `scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
+The complete UI suite has a ten-minute process timeout; use `-TimeoutSeconds`
+to override it. Individual operation and performance checks have separate limits.
 Set `VIEM_TEST_ZOOM_ONLY=1` to run just native zoom shortcut checks.
 Set `VIEM_TEST_MENU_KEYS_ONLY=1` to run just native menu access-key checks.
 Set `VIEM_TEST_POINTER_ONLY=1` to run just native click mode preservation, click
 jitter, subsequent keyboard input, and drag-selection checks.
+Set `VIEM_TEST_SELECTION_ONLY=1` for native keyboard selection, line/block modes,
+clipboard preservation, and block-IME rejection checks.
+Set `VIEM_TEST_SCROLL_ONLY=horizontal` for scrollbar overlay geometry and
+cached-versus-fresh overflow painting.
 Set `VIEM_TEST_TOOLBAR_ONLY=1` to run just the formatting-toolbar native controls,
 visibility, selection/undo, formatted-view switching, overflow, and large-document latency checks.
 The toolbar uses the active pane's core selection, the shared style catalogue,
@@ -257,7 +277,8 @@ and the same commands as the menus. Refreshes reuse exact-revision style exports
 and native selector items; visibility uses the shared per-format
 `formattingToolbar` configuration keys.
 The formatted-view toggle stays pinned at the right edge while the formatting
-controls scroll on narrow windows.
+controls remain fixed and clip on narrow windows. The toolbar has no scrolling
+or scrollbars, including during keyboard focus or accessibility navigation.
 `scripts/test-win-vim-runtime.ps1` additionally checks build/publish inventories,
 stale-file removal, native syntax paint after relocation into a path containing
 spaces and non-ASCII characters, and editing/Tree-sitter with missing resources.
@@ -276,6 +297,12 @@ inspector and Settings. It does not overwrite the system clipboard or use the
 normal application profile. Atomic file replacement must be permitted by the
 host: the Codex workspace sandbox on this machine blocks `File.Replace`, so the
 native integration harness was run outside that sandbox against isolated test data.
+
+Self-tests retain native `DataPackage` and stream representations in a test-owned
+clipboard and publish local content-change events. UTF-8 and WinRT UTF-16 string
+serialization are covered without reading or replacing the user's clipboard.
+These checks do not establish OS clipboard ownership or cross-process `Flush`
+behavior.
 
 To profile selection with a local document, run
 `scripts/test-win.ps1 -ProfileDocument AGENTS.md` (add `-NoBuild` to reuse the

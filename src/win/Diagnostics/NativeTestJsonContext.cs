@@ -7,6 +7,7 @@ namespace Viem.Windows.Diagnostics;
 // Keep report schemas explicit rather than relying on runtime reflection.
 internal sealed record NativeTestSuccess(bool passed, int count, List<string> checks, bool nativeAot);
 internal sealed record NativeTestFailure(bool passed, string error);
+internal sealed record NativeTestProgress(string stage, int completedChecks, double elapsedSeconds);
 internal sealed record InputPerformanceStep(int index, string phase, double milliseconds,
     double gcPauseMilliseconds, long allocatedBytes, long shapedCharacters, int drawingBuilds, float top, ulong revision);
 internal sealed record InputPerformanceStatistics(int count, double mean, double p50, double p95, double max);
@@ -20,6 +21,7 @@ internal sealed record InputPerformanceReport(bool passed, string scenario, int 
 [JsonSourceGenerationOptions(WriteIndented = true)]
 [JsonSerializable(typeof(NativeTestSuccess))]
 [JsonSerializable(typeof(NativeTestFailure))]
+[JsonSerializable(typeof(NativeTestProgress))]
 [JsonSerializable(typeof(InputPerformanceReport))]
 internal partial class NativeTestJsonContext : JsonSerializerContext;
 #endif

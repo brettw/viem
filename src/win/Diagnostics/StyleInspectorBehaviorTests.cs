@@ -23,7 +23,8 @@ internal static class StyleInspectorBehaviorTests
         FrontendSmokeTests.UiChecks.Add(message);
         File.AppendAllText(FrontendSmokeTests.ReportPath + ".styles.log", message + Environment.NewLine);
     }
-    private static StyleDefinition Selected(StyleWindow inspector) => (StyleDefinition)inspector.StylePicker.SelectedItem;
+    private static StyleDefinition Selected(StyleWindow inspector) => inspector.ThemeView.Styles().Styles.Single(style =>
+        style.Key == ((StyleDefinition)inspector.StylePicker.SelectedItem).Key);
     private static Color SwatchColor(Button button)
     {
         var colorLayer = ((Grid)button.Content).Children.OfType<Border>()
@@ -68,6 +69,7 @@ internal static class StyleInspectorBehaviorTests
         await CodeBlockBackground(pane, preferences);
         DocumentPicker(pane, preferences);
         VariantParents(pane, preferences);
+        StyleSessionRecoveryTests.Run(pane, preferences);
         await Following(pane, preferences);
         await Colors(pane, preferences);
         await CodeColors(preferences);
@@ -464,6 +466,9 @@ internal static class StyleInspectorBehaviorTests
                 var chosen = Color.FromArgb(alpha, 255, 0, 0);
                 picker.Color = chosen; await Task.Delay(100);
                 await Close(flyout);
+                // Refresh reads state only. EditorPane materializes invalidated
+                // layout with Resize; this standalone fixture does the same.
+                view.Resize(700, 400);
                 var fills = view.Layout().Decorations.Where(d => (d.flags & VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0).ToArray();
                 Check(inspector.Error.Length == 0 && fills.Length > 0 && fills.All(d => Math.Abs(d.paint.foreground.alpha - alpha / 255f) < .001f),
                     $"Code Block background commits and exports opacity {alpha}");
@@ -476,7 +481,7 @@ internal static class StyleInspectorBehaviorTests
         finally { inspector.Close(); }
     }
 
-    private static async Task Following(EditorPane pane, Preferences preferences)
+    internal static async Task Following(EditorPane pane, Preferences preferences)
     {
         using var document = new CoreDocument("# Title `code` tail\n\nBody"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
@@ -497,13 +502,27 @@ internal static class StyleInspectorBehaviorTests
             Check(!inspector.CaretFollowScheduled, "opening Styles does not schedule an idle timer");
             byte[] source = document.Source(document.State.document_revision);
             int queries = inspector.CaretStyleQueries, loads = inspector.StyleLoads;
+            var moveTimings = new List<string>();
+            long previousMove = Environment.TickCount64;
             Move(view, 0);
-            for (int i = 0; i < 30; i++) { Move(view, (ulong)(1 + i % 18), true); await Task.Delay(40); }
+            for (int i = 0; i < 30; i++) {
+                long started = Environment.TickCount64, gap = started - previousMove;
+                previousMove = started;
+                int priorQueries = inspector.CaretStyleQueries, priorLoads = inspector.StyleLoads;
+                Move(view, (ulong)(1 + i % 18), true);
+                moveTimings.Add($"{i}: gap={gap}, moveMs={Environment.TickCount64 - started}, queries={priorQueries}->{inspector.CaretStyleQueries}, loads={priorLoads}->{inspector.StyleLoads}");
+                await Task.Delay(40);
+            }
+            long settledAt = Environment.TickCount64;
+            moveTimings.Add($"final: gap={settledAt - previousMove}, queries={inspector.CaretStyleQueries}, loads={inspector.StyleLoads}");
             Move(view, 1);
             Check(inspector.CaretStyleQueries == queries && inspector.StyleLoads == loads && Selected(inspector).Id == "Code",
-                "rapid caret/selection dragging performs no style queries or dialog reloads");
+                "rapid caret/selection dragging performs no style queries or dialog reloads"
+                + $" (expected queries/loads={queries}/{loads}, selected={Selected(inspector).Key}, {inspector.FollowingStateForTesting}, error={inspector.Error},"
+                + $" moves=[{string.Join("; ", moveTimings)}], events=[{inspector.CaretFollowEventsForTesting}])");
             await Task.Delay(250);
-            Check(inspector.CaretStyleQueries == queries && inspector.CaretFollowScheduled, "caret following waits for half a second of inactivity");
+            Check(inspector.CaretStyleQueries == queries && inspector.CaretFollowScheduled,
+                $"caret following waits for half a second of inactivity (quietMs={Environment.TickCount64 - settledAt}, {inspector.FollowingStateForTesting})");
             await Task.Delay(450);
             Check(Selected(inspector).Id == "Heading1" && inspector.CaretStyleQueries == queries + 1 && !inspector.CaretFollowScheduled,
                 "a drag burst produces one settled paragraph-style update");
@@ -649,7 +668,7 @@ internal static class StyleInspectorBehaviorTests
             finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, originalStyles); }
         }
     }
-    private static async Task MarkdownCodeFollowing(EditorPane pane, Preferences preferences)
+    internal static async Task MarkdownCodeFollowing(EditorPane pane, Preferences preferences)
     {
         foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
         foreach (bool explicitChoice in new[] { false, true })
@@ -658,10 +677,16 @@ internal static class StyleInspectorBehaviorTests
             using var document = new CoreDocument(source, "tracking.md", format: format);
             using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
             var inspector = new StyleWindow(view, preferences);
+            int documentChanges = 0, syntaxChanges = 0, viewChanges = 0;
+            void DocumentChanged() => documentChanges++;
+            void SyntaxChanged() => syntaxChanges++;
+            void ViewChanged() => viewChanges++;
+            document.Changed += DocumentChanged; document.SyntaxChanged += SyntaxChanged; view.Changed += ViewChanged;
             try
             {
                 view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "markdown", false, DocumentModes.Read(document));
                 Check(inspector.DocumentPicker.SelectedIndex == 2, "a Markdown-to-Code menu transition retargets the open inspector");
+                string switched = inspector.FollowingStateForTesting;
                 StyleKey? manual = null;
                 if (explicitChoice)
                 {
@@ -677,15 +702,26 @@ internal static class StyleInspectorBehaviorTests
                 }
                 var heading = view.CurrentStyleEditorKey(view.Styles());
                 Check(heading is { Namespace: 2 }, "Markdown Code syntax publishes the stationary caret's heading capture");
-                await Task.Delay(650);
+                string accepted = inspector.FollowingStateForTesting;
+                // Keep the explicit-choice observation interval, then wait for
+                // any real queued follow instead of guessing UI dispatch time.
+                if (explicitChoice) await Task.Delay(650);
+                await inspector.WaitForCaretFollowForTesting();
                 Check(Selected(inspector).Key == (manual ?? heading),
-                    "delayed syntax completes mode-switch following while preserving an intervening explicit style choice");
-                Move(view, 4); await Task.Delay(650);
+                    "delayed syntax completes mode-switch following while preserving an intervening explicit style choice"
+                    + $" (format={format}, explicit={explicitChoice}, manual={manual}, heading={heading}, selected={Selected(inspector).Key},"
+                    + $" switched=[{switched}], accepted=[{accepted}], final=[{inspector.FollowingStateForTesting}],"
+                    + $" events document/syntax/view={documentChanges}/{syntaxChanges}/{viewChanges},"
+                    + $" syntaxNames=[{string.Join(",", document.SyntaxStyleNames().Take(12))}], error={inspector.Error})");
+                Move(view, 4); await inspector.WaitForCaretFollowForTesting();
                 Check(Selected(inspector).Key == heading, "caret following continues after a Markdown-to-Code transition");
                 Check(source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty,
                     "mode-switch style following preserves source and clean state");
             }
-            finally { inspector.Close(); }
+            finally {
+                document.Changed -= DocumentChanged; document.SyntaxChanged -= SyntaxChanged; view.Changed -= ViewChanged;
+                inspector.Close();
+            }
         }
     }
     private static async Task ColorDragging(StyleWindow inspector, ColorPicker picker)
@@ -755,7 +791,7 @@ internal static class StyleInspectorBehaviorTests
             editor.Close(); App.Instance.Windows.Remove(editor);
         }
     }
-    private static async Task Colors(EditorPane pane, Preferences preferences)
+    internal static async Task Colors(EditorPane pane, Preferences preferences)
     {
         using var document = new CoreDocument("Color sample."u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
         byte[] originalTheme = preferences.ThemeStyleDefaults(VIEM_FORMAT_PLAIN_TEXT);
@@ -810,12 +846,16 @@ internal static class StyleInspectorBehaviorTests
             int loads = inspector.StyleLoads;
             byte[] firstPixels = Pixels(renderedPane), mirrorPixels = Pixels(mirrorPane);
             int firstBuilds = renderedPane.DrawingCacheBuilds, mirrorBuilds = mirrorPane.DrawingCacheBuilds;
+            string beforeDrag = inspector.ColorStateForTesting(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND);
             if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_INPUT") == "1")
                 await ColorDragging(inspector, picker);
+            string beforeBurst = inspector.ColorStateForTesting(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND);
             ulong revision = document.State.document_revision;
             for (int i = 0; i < 100; i++) picker.Color = Color.FromArgb(255, (byte)i, 64, 128);
             var custom = Color.FromArgb(255, 31, 64, 128); picker.Color = custom;
-            Check(inspector.ColorUpdateScheduled && document.State.document_revision == revision, "rapid color input queues one coalesced edit");
+            Check(inspector.ColorUpdateScheduled && document.State.document_revision == revision,
+                "rapid color input queues one coalesced edit "
+                + $"(revision={revision}->{document.State.document_revision}, beforeDrag=[{beforeDrag}], beforeBurst=[{beforeBurst}], afterBurst=[{inspector.ColorStateForTesting(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND)}])");
             await Task.Delay(150);
             Check(inspector.PreviewForeground == custom && SwatchColor(button) == custom
                 && inspector.StyleLoads == loads && !document.IsDirty && original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
@@ -863,10 +903,12 @@ internal static class StyleInspectorBehaviorTests
             Check(inspector.Title == "Theme styles — Plain Text — " + preferences.ThemeDisplayName, "retargeting identifies the Plain Text stylesheet");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Close(flyout);
+            other.Resize(700, 400); // Standalone view has no EditorPane to materialize the changed theme.
             Check(!second.IsDirty && !document.IsDirty && HasColor(other, Microsoft.UI.Colors.Red) && HasColor(view, Microsoft.UI.Colors.Red),
                 "a retargeted inspector edits the shared theme across documents without dirtying either source");
             await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Green;
             await Close(flyout, () => inspector.Retarget(view));
+            other.Resize(700, 400);
             Check(HasColor(other, Microsoft.UI.Colors.Green) && HasColor(view, Microsoft.UI.Colors.Green) && !inspector.ColorUpdateScheduled,
                 "retargeting flushes pending theme color once and cancels the timer");
             await Open(flyout, button); picker.Color = custom;

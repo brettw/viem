@@ -108,8 +108,8 @@ internal sealed partial class SettingsWindow : Window
         var row = Row(page);
         foreach (var (key, title, fallback, min) in new[] { ("tabstop", "Tab stop", 2, 1), ("shiftwidth", "Shift width", 2, 0), ("softtabstop", "Soft tab stop", 2, -1) })
             Number(row, title, indentation[key]?.GetValue<int>() ?? fallback, min, 1024, n => Indent(key, n));
-        foreach (var (key, title) in new[] { ("autoindent", "Auto indent"), ("expandtab", "Insert spaces for tabs"), ("smarttab", "Smart tabs"), ("continueCommentsOnEnter", "Continue comments with Enter"), ("continueCommentsOnOpenLine", "Continue comments with o / O") })
-            Check(page, title, indentation[key]?.GetValue<bool>() ?? true, value => Indent(key, value));
+        foreach (var (key, title, fallback) in new[] { ("autoindent", "Auto indent", true), ("expandtab", "Insert spaces for tabs", true), ("smarttab", "Smart tabs", true), ("continueCommentsOnEnter", "Continue comments with Enter", false), ("continueCommentsOnOpenLine", "Continue comments with o / O", false) })
+            Check(page, title, indentation[key]?.GetValue<bool>() ?? fallback, value => Indent(key, value));
         var whitespace = editing["whitespacePresentation"] as JsonObject ?? new JsonObject(); var visible = whitespace["visibleWhitespace"] as JsonObject ?? new JsonObject();
         void Whitespace(string key, JsonNode? value) => preferences.Set("editing", "whitespacePresentation", new JsonObject { [key] = value });
         page.Children.Add(new TextBlock { Text = "Whitespace", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });

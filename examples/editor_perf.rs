@@ -27,11 +27,12 @@ struct Series {
     cpu_samples: Vec<f64>,
 }
 
-fn thread_cpu_seconds() -> f64 {
+#[cfg(target_os = "linux")]
+fn thread_cpu_seconds() -> Option<f64> {
     #[repr(C)]
     struct Timespec {
-        seconds: i64,
-        nanoseconds: i64,
+        seconds: std::os::raw::c_long,
+        nanoseconds: std::os::raw::c_long,
     }
     extern "C" {
         fn clock_gettime(clock: i32, out: *mut Timespec) -> i32;
@@ -40,17 +41,24 @@ fn thread_cpu_seconds() -> f64 {
     let mut now = Timespec { seconds: 0, nanoseconds: 0 };
     // SAFETY: a valid out-pointer for a supported POSIX clock.
     if unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut now) } != 0 {
-        return 0.;
+        return None;
     }
-    now.seconds as f64 + now.nanoseconds as f64 * 1e-9
+    Some(now.seconds as f64 + now.nanoseconds as f64 * 1e-9)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn thread_cpu_seconds() -> Option<f64> {
+    None
 }
 
 impl Series {
     fn record(&mut self, elapsed: Duration) {
         self.samples.push(elapsed.as_secs_f64() * 1000.);
     }
-    fn record_cpu(&mut self, cpu_seconds: f64) {
-        self.cpu_samples.push(cpu_seconds * 1000.);
+    fn record_cpu(&mut self, cpu_seconds: Option<f64>) {
+        if let Some(seconds) = cpu_seconds {
+            self.cpu_samples.push(seconds * 1000.);
+        }
     }
     fn percentile(&self, fraction: f64) -> f64 {
         if self.samples.is_empty() {
@@ -62,7 +70,8 @@ impl Series {
         sorted[index]
     }
     fn summary(&self) -> Value {
-        let cpu_total: f64 = self.cpu_samples.iter().sum();
+        let cpu_total = (!self.samples.is_empty() && self.cpu_samples.len() == self.samples.len())
+            .then(|| self.cpu_samples.iter().sum::<f64>());
         json!({
             "samples": self.samples.len(),
             "p50_ms": self.percentile(0.5),
@@ -79,7 +88,9 @@ fn time<T>(series: &mut Series, operation: impl FnOnce() -> T) -> T {
     let cpu_started = thread_cpu_seconds();
     let result = operation();
     let elapsed = started.elapsed();
-    series.record_cpu(thread_cpu_seconds() - cpu_started);
+    let cpu_elapsed = thread_cpu_seconds().zip(cpu_started)
+        .and_then(|(end, start)| (end >= start).then_some(end - start));
+    series.record_cpu(cpu_elapsed);
     if elapsed.as_millis() >= 100 && std::env::var_os("VIEM_PERF_TRACE").is_some() {
         eprintln!("slow op #{} in series: {:.1} ms", series.samples.len(), elapsed.as_secs_f64() * 1000.);
     }

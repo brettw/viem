@@ -167,8 +167,11 @@ only its frozen input, grammar, old tree and included ranges.
 An initial parse covers the full host region. A viewport request queries the
 completed tree. Declared included ranges preserve parent coordinates for child
 parsers. Combined injection patterns run separately from regional patterns with
-one shared work/range budget. Combined HTML groups still require document-wide
-discovery to preserve their shared parse context; unrelated Markdown inline
+one shared work/range budget. A bounded viewport probe evaluates the original
+combined patterns and predicates; when a candidate reaches the viewport, the
+complete group still requires document-wide discovery to preserve its shared
+parse context. Queries with offsets retain full discovery because an offscreen
+capture can be moved into the viewport. Unrelated Markdown inline
 paragraphs and fenced blocks are discovered only for the requested region.
 Combined discovery joins same-pattern, same-language members only after complete
 discovery. Incomplete combined discovery gives missing coverage. As in

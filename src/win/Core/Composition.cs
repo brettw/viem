@@ -11,12 +11,12 @@ internal sealed unsafe partial class CoreView
     public void BeginComposition()
     {
         var p = Presentation;
+        if (p.mode is VIEM_MODE_VISUAL_BLOCK or VIEM_MODE_SELECT_BLOCK or VIEM_MODE_SELECTION_BLOCK)
+            throw new InvalidOperationException("IME composition requires a character or line selection.");
         ulong start = p.cursor_utf8_offset, end = start;
         if (IsTextSelectionMode(p.mode))
         {
             var selection = LogicalSelection();
-            if (selection.kind == VIEM_LOGICAL_SELECTION_KIND_BLOCK)
-                throw new InvalidOperationException("IME composition requires a character or line selection.");
             start = selection.text_start; end = selection.text_end;
         }
         Composing = true;

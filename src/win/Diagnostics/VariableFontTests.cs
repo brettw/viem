@@ -525,13 +525,32 @@ internal static class VariableFontTests
             if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_INPUT") == "1") {
                 inspector.AppWindow.Show(true); inspector.Activate();
                 await Task.Delay(200);
+                int sliderIndex = 0;
                 foreach (var slider in sliders) {
+                    string SliderState() {
+                        var ancestors = new List<string>();
+                        for (var current = (Microsoft.UI.Xaml.DependencyObject?)slider; current != null;
+                            current = Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(current)) {
+                            if (current is Microsoft.UI.Xaml.FrameworkElement element)
+                                ancestors.Add($"{element.GetType().Name}[loaded={element.IsLoaded}, visible={element.Visibility}, hit={element.IsHitTestVisible}, size={element.ActualWidth}x{element.ActualHeight}"
+                                    + (element is Control control ? $", enabled={control.IsEnabled}" : "")
+                                    + (element is ScrollViewer scroll ? $", scroll={scroll.HorizontalOffset},{scroll.VerticalOffset}, viewport={scroll.ViewportWidth}x{scroll.ViewportHeight}" : "") + "]");
+                        }
+                        return $"format={format}, axis={Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(slider)}, current={Descendants<Slider>(inspector.RootControl).Contains(slider)}, sameRoot={slider.XamlRoot == inspector.RootControl.XamlRoot}, familyOpen={inspector.FontFamilyControl.IsDropDownOpen}, variantOpen={inspector.FontVariantControl.IsDropDownOpen}, styleOpen={inspector.StylePicker.IsDropDownOpen}, ancestors={string.Join(" / ", ancestors)}";
+                    }
+                    Check(slider.IsLoaded && slider.IsEnabled && Descendants<Slider>(inspector.RootControl).Contains(slider)
+                        && slider.XamlRoot == inspector.RootControl.XamlRoot,
+                        "native axis drag targets a live enabled inspector control (" + SliderState() + ")");
+                    await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device,
+                        FrontendSmokeTests.ReportPath + $".variable-slider-{format}-{sliderIndex++}.png");
                     var points = Enumerable.Range(0, 20).Select(i => new global::Windows.Foundation.Point(.15 + i * .03, .5)).ToArray();
-                    await InputRoutingTests.Drag(inspector, slider, points, step => {
-                        Check(inspector.Error.Length == 0 && rendered.LastError == null, $"native variable-axis dragging keeps the document healthy ({rendered.LastError})");
-                        PanePixels();
-                        VisiblePixels(Pixels(view), $"native variable-axis dragging keeps glyphs visible at step {step}, value {slider.Value}");
-                    });
+                    try {
+                        await InputRoutingTests.Drag(inspector, slider, points, step => {
+                            Check(inspector.Error.Length == 0 && rendered.LastError == null, $"native variable-axis dragging keeps the document healthy ({rendered.LastError})");
+                            PanePixels();
+                            VisiblePixels(Pixels(view), $"native variable-axis dragging keeps glyphs visible at step {step}, value {slider.Value}");
+                        });
+                    } catch (Exception exception) { throw new InvalidOperationException("Native axis drag failed: " + SliderState(), exception); }
                 }
             }
             inspector.UndoThemeForTesting();

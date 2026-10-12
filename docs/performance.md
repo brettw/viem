@@ -47,7 +47,9 @@ cargo build --release --offline --example editor_perf
 
 The available scenarios are defined by the probe. Its `html` fixture opens as
 literal Code, not a removed HTML editing format. Results are core operation
-samples, not native frame/compositor latency; thread CPU timing is Linux-specific.
+samples, not native frame/compositor latency. Thread CPU timing is Linux-specific;
+`thread_cpu_total_ms` is `null` on other platforms or when a complete set of CPU
+samples is unavailable. Wall-time measurements remain available on every platform.
 The Markdown fixture uses the current `AGENTS.md`, so preserve identical input
 bytes when comparing builds. Syntax-provider performance commands and supported
 profiles live beside the [Vim](../src/core/document/syntax/vim/PROFILE.md) and

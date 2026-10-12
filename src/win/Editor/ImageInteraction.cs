@@ -152,7 +152,14 @@ internal sealed partial class EditorPane
         }
         imagePopup.UpdateLayout();
         var focus = imageDestination;
-        focus.Focus(FocusState.Programmatic); focus.SelectAll();
+        var draft = imageEditDraft;
+        FocusPopupField(imagePopup,
+            () => ImageEditorVisible && ReferenceEquals(imageEditDraft, draft) && ReferenceEquals(View, view),
+            () => {
+                bool accepted = focus.Focus(FocusState.Programmatic);
+                TracePopupFieldFocus("Image location", accepted);
+                focus.SelectAll();
+            });
     }
 
     internal async Task BrowseImageLocation()
@@ -223,6 +230,7 @@ internal sealed partial class EditorPane
 
     internal void DismissImagePopup(bool suppress = true)
     {
+        CancelPopupFocus(imagePopup);
         if (suppress) dismissedImage = shownImage;
         editingImage = false; insertingImageAtCaret = false; shownImage = null; imageEditDraft = null;
         if (imagePopup != null) imagePopup.Visibility = Visibility.Collapsed;
@@ -286,6 +294,7 @@ internal sealed partial class EditorPane
     {
         if (PickingImageLocation) return true;
         if (XamlRoot == null) return false;
+        if (HasPendingPopupFocus(imagePopup)) return true;
         for (var element = FocusManager.GetFocusedElement(XamlRoot) as DependencyObject; element != null; element = VisualTreeHelper.GetParent(element))
             if (element == input || element == imagePopup) return true;
         return false;
@@ -324,7 +333,7 @@ internal sealed partial class EditorPane
     {
         if (View is not { } view || shownImage is not { Image: { } image } context) return;
         view.ValidateImageContext(context);
-        var data = new DataPackage(); data.SetText(image.Destination); Clipboard.SetContent(data);
+        Viem.Windows.Input.ClipboardFormats.Write(image.Destination, "");
         DismissImagePopup(); FocusEditor();
     }
     private void RemoveShownImage()

@@ -180,6 +180,17 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Undo() => Apply(o => viem_core_view_undo(Document.Handle, Id, o));
     public void Redo() => Apply(o => viem_core_view_redo(Document.Handle, Id, o));
     public void SelectAll() => Apply(o => { var s = Document.State; return viem_core_view_select_all(Document.Handle, Id, s.document_id, s.document_revision, o); });
+    public void UseSelectionForFind()
+    {
+        var info = New<ViemVisualSelectionInfoV1>();
+        Check(viem_core_view_visual_selection_info(Document.Handle, Id, &info), "Read find selection");
+        UseSelectionForFind(info.identity);
+    }
+    internal void UseSelectionForFind(ViemVisualSelectionIdentityV1 selection) => Apply(o => {
+        var expected = selection;
+        return viem_core_view_use_selection_for_find(Document.Handle, Id, &expected, o);
+    });
+    public void RevealSelection() => Apply(o => viem_core_view_reveal_selection(Document.Handle, Id, o));
     public void Wrap(bool value) => Apply(o => viem_core_view_set_wrap(Document.Handle, Id, value ? 1u : 0u, o));
     public void ParagraphFlow(bool value) => Apply(o => viem_core_view_set_paragraph_flow(Document.Handle, Id, value ? 1u : 0u, o));
     public bool ParagraphFlowEnabled { get { uint value = 0; Check(viem_core_view_paragraph_flow(Document.Handle, Id, &value), "Read paragraph flow"); return value != 0; } }

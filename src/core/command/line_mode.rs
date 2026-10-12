@@ -1646,9 +1646,10 @@ impl CommandInterpreter {
     ) -> Option<CommandOutput> {
         let origin = self.cursor;
         let mut source_target = None;
+        let mut source_anchor = None;
         let active = if self.line_mode == LineMode::PhysicalSource {
             let line = self.physical_line(document).ok()?;
-            self.visual_source_anchor = document
+            source_anchor = document
                 .source_point(self.physical_source_cursor(document).ok()?)
                 .ok();
             let target = document
@@ -1680,6 +1681,10 @@ impl CommandInterpreter {
             }
         };
         self.mode = Mode::VisualLine;
+        self.set_selection_origin(SelectionOrigin::Command);
+        self.selection_exclusive = false;
+        self.selection_return_mode = Mode::Normal;
+        self.visual_source_anchor = source_anchor;
         self.visual_anchor = Some(origin);
         self.cursor = active;
         self.visual_to_line_end = false;

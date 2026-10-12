@@ -23,6 +23,8 @@ internal static class InputRoutingTests
     [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X, Y; }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(NativePoint point);
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(nint hwnd, System.Text.StringBuilder name, int count);
     [DllImport("user32.dll")] private static extern bool GetCursorPos(out NativePoint point);
     [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
@@ -32,8 +34,10 @@ internal static class InputRoutingTests
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, NativeInput[] inputs, int size);
 
     [DllImport("user32.dll")] internal static extern uint GetDoubleClickTime();
+    internal static nint ForegroundWindowForTesting => GetForegroundWindow();
+    internal static nint KeyboardFocusForTesting => GetFocus();
 
-    internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect, bool focusTarget = true, bool doubleClick = false)
+    internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect, bool focusTarget = true, bool doubleClick = false, int clickCount = 1)
     {
         if (focusTarget) element.Focus(FocusState.Programmatic);
         await Task.Delay(150);
@@ -66,31 +70,90 @@ internal static class InputRoutingTests
             } }];
             if (SendInput(1, input, Marshal.SizeOf<NativeInput>()) != 1) throw new InvalidOperationException("Cannot position the test pointer.");
         }
+        bool buttonDown = false;
         void Button(uint flags)
         {
             NativeInput[] input = [new() { Mouse = new() { Flags = flags } }];
             if (SendInput(1, input, Marshal.SizeOf<NativeInput>()) != 1) throw new InvalidOperationException("Cannot send the test pointer button.");
+            buttonDown = flags == 0x0002;
         }
         if (!GetCursorPos(out var original)) throw new InvalidOperationException("Cannot save the pointer position.");
         var position = Position(fractions[0]);
-        Move(position);
-        if (doubleClick)
+        TaskCompletionSource? routedPointer = null;
+        NativePoint expectedScreenPoint = default;
+        global::Windows.Foundation.Point observedPoint = default;
+        int observedEvents = 0;
+        bool expectingPress = false;
+        void Observed(PointerRoutedEventArgs args, bool press)
         {
-            Button(0x0002); await Task.Delay(8);
-            Button(0x0004); await Task.Delay(8);
+            if (routedPointer is not { } pending || press != expectingPress) return;
+            // Status controls and splitters move in their own handlers. Match
+            // the event in screen space, independent of the target's new frame.
+            var point = args.GetCurrentPoint(owner.Content).Position;
+            var clientOrigin = new NativePoint();
+            if (!ClientToScreen(WinRT.Interop.WindowNative.GetWindowHandle(owner), ref clientOrigin)) return;
+            double currentScale = element.XamlRoot.RasterizationScale;
+            observedPoint = new(clientOrigin.X + point.X * currentScale, clientOrigin.Y + point.Y * currentScale);
+            observedEvents++;
+            double pixelTolerance = 1 + .01 * currentScale; // Absolute input and XAML both round physical pixels.
+            if (Math.Abs(observedPoint.X - expectedScreenPoint.X) > pixelTolerance
+                || Math.Abs(observedPoint.Y - expectedScreenPoint.Y) > pixelTolerance) return;
+            // Complete after all routed handlers have published their selection.
+            element.DispatcherQueue.TryEnqueue(() => pending.TrySetResult());
         }
-        Button(0x0002);
+        PointerEventHandler pressed = (_, args) => Observed(args, true);
+        PointerEventHandler moved = (_, args) => Observed(args, false);
+        owner.Content.AddHandler(UIElement.PointerPressedEvent, pressed, true);
+        owner.Content.AddHandler(UIElement.PointerMovedEvent, moved, true);
+        // Windowed flyouts have their own routed tree; retain direct observation
+        // there while the window root covers capture transfers to parent bars.
+        if (!ReferenceEquals(element, owner.Content)) {
+            element.AddHandler(UIElement.PointerPressedEvent, pressed, true);
+            element.AddHandler(UIElement.PointerMovedEvent, moved, true);
+        }
+        async Task SendObserved(bool press, Action send)
+        {
+            expectedScreenPoint = position;
+            expectingPress = press;
+            var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            routedPointer = pending;
+            observedEvents = 0;
+            try { send(); await pending.Task.WaitAsync(TimeSpan.FromSeconds(5)); owner.Content.UpdateLayout(); }
+            catch (TimeoutException error) {
+                var hit = WindowFromPoint(expectedScreenPoint);
+                var windowClass = new System.Text.StringBuilder(128); GetClassName(hit, windowClass, windowClass.Capacity);
+                throw new InvalidOperationException($"Native pointer {(press ? "press" : "move")} was not observed at {expectedScreenPoint.X},{expectedScreenPoint.Y}; last={observedPoint}, events={observedEvents}, scale={scale}, owner={WinRT.Interop.WindowNative.GetWindowHandle(owner):X}, hitRoot={GetAncestor(hit, 2):X}, foreground={GetForegroundWindow():X}, hitClass={windowClass}.", error);
+            }
+            finally { routedPointer = null; }
+        }
         try
         {
+            Move(position);
+            for (int click = 1; click < Math.Max(clickCount, doubleClick ? 2 : 1); click++)
+            {
+                await SendObserved(true, () => Button(0x0002));
+                Button(0x0004); await Task.Delay(8);
+            }
+            await SendObserved(true, () => Button(0x0002));
             for (int i = 0; i < fractions.Count; i++)
             {
-                position = Position(fractions[i]); Move(position);
-                await Task.Delay(8); inspect(i);
+                position = Position(fractions[i]);
+                if (i == 0) { Move(position); await Task.Yield(); }
+                else await SendObserved(false, () => Move(position));
+                inspect(i);
             }
         }
         finally
         {
-            Button(0x0004);
+            owner.Content.RemoveHandler(UIElement.PointerPressedEvent, pressed);
+            owner.Content.RemoveHandler(UIElement.PointerMovedEvent, moved);
+            if (!ReferenceEquals(element, owner.Content)) {
+                element.RemoveHandler(UIElement.PointerPressedEvent, pressed);
+                element.RemoveHandler(UIElement.PointerMovedEvent, moved);
+            }
+            // Refusing an initial move must not send any input to another app.
+            // An outstanding press still needs releasing if focus changed later.
+            if (buttonDown) Button(0x0004);
             if (Owned(GetForegroundWindow()) && GetCursorPos(out var current) && Math.Abs(current.X - position.X) <= 1 && Math.Abs(current.Y - position.Y) <= 1)
                 SetCursorPos(original.X, original.Y);
         }
@@ -182,7 +245,13 @@ internal static class InputRoutingTests
         await Key(VirtualKey.Back);
         Check(pane.Document.FormattedText() == "Native café 日本語 ", "native Backspace deletes one grapheme through vi");
         await Key(VirtualKey.Enter); await Text("next"); await Key(VirtualKey.Escape);
-        Check(pane.Document.FormattedText() == "Native café 日本語 \nnext" && pane.View.Presentation.mode == VIEM_MODE_NORMAL, "native Enter and Escape retain editor command behavior");
+        // Enter at an unterminated literal EOF creates the new line's own
+        // supporting delimiter. Subsequent typing retains that physical byte.
+        const string entered = "Native café 日本語 \nnext\n";
+        Check(pane.Document.FormattedText() == entered && pane.View.Presentation.mode == VIEM_MODE_NORMAL,
+            $"native Enter and Escape retain editor command behavior (text={pane.Document.FormattedText().Replace("\n", "\\n").Replace("\r", "\\r")}, mode={pane.View.Presentation.mode}, error={pane.LastError})");
+        Check(pane.Document.Source(pane.Document.State.document_revision).AsSpan().SequenceEqual("Native café 日本語 \nnext\n"u8),
+            "native EOF Enter preserves the supporting final source delimiter after typing and Escape");
         await Text(":set nowrap");
         Check(pane.View.Prompt().Text == "set nowrap", "native characters enter the command prompt");
         await Key(VirtualKey.Back); await Text("p"); await Key(VirtualKey.Enter);
@@ -190,23 +259,23 @@ internal static class InputRoutingTests
         await Text("ggiX"); await Key(VirtualKey.Escape);
         Check(pane.Document.FormattedText().StartsWith("XNative"), "queued characters observe preceding vi mode changes");
         await Text("u");
-        Check(pane.Document.FormattedText() == "Native café 日本語 \nnext", "native vi undo after Insert mode");
+        Check(pane.Document.FormattedText() == entered, "native vi undo after Insert mode");
         await Key(VirtualKey.Z, control: true, shift: true);
         Check(pane.Document.FormattedText().StartsWith("XNative"), "native Ctrl+Shift+Z redoes the core edit");
         await Key(VirtualKey.Z, control: true);
-        Check(pane.Document.FormattedText() == "Native café 日本語 \nnext", "native Ctrl+Z undoes the core edit");
+        Check(pane.Document.FormattedText() == entered, "native Ctrl+Z undoes the core edit");
         await Text("ggiUndo café 👩‍💻");
         await Key(VirtualKey.Z, control: true);
-        Check(pane.Document.FormattedText() == "Native café 日本語 \nnext" && pane.View.Presentation.mode == VIEM_MODE_NORMAL,
+        Check(pane.Document.FormattedText() == entered && pane.View.Presentation.mode == VIEM_MODE_NORMAL,
             "Ctrl+Z finalizes and undoes the active Insert group");
         await Key(VirtualKey.Z, control: true, shift: true);
-        Check(pane.Document.FormattedText() == "Undo café 👩‍💻Native café 日本語 \nnext", "Ctrl+Shift+Z restores the entire Unicode Insert group");
+        Check(pane.Document.FormattedText() == "Undo café 👩‍💻" + entered, "Ctrl+Shift+Z restores the entire Unicode Insert group");
         await Key(VirtualKey.Z, control: true);
         await Key(VirtualKey.R, control: true);
         Check(pane.Document.FormattedText().StartsWith("Undo café 👩‍💻"), "vi Ctrl+R remains available for redo");
         await Text("u");
         await Text("ggi"); await Key(VirtualKey.Q, control: true); await Key(VirtualKey.Z, control: true);
-        Check(pane.Document.FormattedText() == "\u001aNative café 日本語 \nnext", "literal-next Ctrl+Z inserts its control character instead of undoing");
+        Check(pane.Document.FormattedText() == "\u001a" + entered, "literal-next Ctrl+Z inserts its control character instead of undoing");
         await Key(VirtualKey.Escape); await Key(VirtualKey.Z, control: true);
         await Text(":%d"); await Key(VirtualKey.Enter);
         Check(pane.Document.FormattedText() == "" && pane.LastError == null, "native input test leaves an empty document without routing errors");

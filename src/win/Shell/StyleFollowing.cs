@@ -69,6 +69,9 @@ internal sealed partial class StyleWindow
         DismissColorPickers(commit: false);
         followsSyntaxStyle = true;
         caretFollowTimer ??= MakeCaretFollowTimer();
+#if DEBUG
+        TraceCaretFollow("schedule");
+#endif
         caretFollowTimer.Stop();
         caretFollowTimer.Start();
     }
@@ -87,6 +90,9 @@ internal sealed partial class StyleWindow
         timer.Interval = TimeSpan.FromMilliseconds(500);
         timer.IsRepeating = false;
         timer.Tick += (_, _) => {
+#if DEBUG
+            TraceCaretFollow("tick");
+#endif
             if (closed || !followsCaret || documentView.Id == 0) return;
             try
             {
@@ -153,6 +159,28 @@ internal sealed partial class StyleWindow
             && (previous.visual_block_left_x != next.visual_block_left_x || previous.visual_block_right_x != next.visual_block_right_x);
     }
 #if DEBUG
+    private readonly Queue<string> caretFollowEvents = new();
+    private long lastCaretFollowSchedule;
+    private void TraceCaretFollow(string kind)
+    {
+        long now = Environment.TickCount64;
+        if (kind == "schedule") lastCaretFollowSchedule = now;
+        if (caretFollowEvents.Count == 64) caretFollowEvents.Dequeue();
+        caretFollowEvents.Enqueue($"{kind}@{now}: sinceSchedule={now - lastCaretFollowSchedule}, queries={CaretStyleQueries}, loads={StyleLoads}, scheduled={CaretFollowScheduled}");
+    }
+    internal string CaretFollowEventsForTesting => string.Join("; ", caretFollowEvents);
+    internal async Task WaitForCaretFollowForTesting()
+    {
+        if (caretFollowTimer is not { IsRunning: true } timer) return;
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Followed(DispatcherQueueTimer sender, object args) => DispatcherQueue.TryEnqueue(() => completed.TrySetResult());
+        timer.Tick += Followed;
+        try { await completed.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
+        finally { timer.Tick -= Followed; }
+    }
+    internal string FollowingStateForTesting => $"document={documentView.Document.State.document_id}, view={documentView.Id}, "
+        + $"caret={followsCaret}, syntax={followsSyntaxStyle}, family={sessionFamily}, format={documentView.Document.State.format}, "
+        + $"scheduled={CaretFollowScheduled}, queries={CaretStyleQueries}, loads={StyleLoads}";
     internal int CaretStyleQueries { get; private set; }
     internal int StyleLoads { get; private set; }
     internal bool CaretFollowScheduled => caretFollowTimer?.IsRunning == true;

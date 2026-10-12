@@ -205,7 +205,7 @@ internal sealed partial class EditorPane
             string? destination = View.Provider.ImageDestination(cluster.render_run);
             if (destination == null) continue;
             var bounds = OffsetRect(cluster.typographic_bounds, viewport);
-            if (bounds.Bottom < 0 || bounds.Top > Canvas.ActualHeight || bounds.Right < 0 || bounds.Left > Canvas.ActualWidth) continue;
+            if (bounds.Bottom < 0 || bounds.Top > Canvas.ActualHeight || bounds.Right < 0 || bounds.Left > PaintViewportWidth) continue;
             if (imagePreviews.TryGetValue(destination, out var image) && image.Preview is { } preview)
                 drawing.DrawImage(preview.Bitmap, bounds, new Rect(0, 0, preview.Bitmap.Size.Width, preview.Bitmap.Size.Height));
             else
