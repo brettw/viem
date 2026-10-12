@@ -1800,12 +1800,15 @@ impl CommandInterpreter {
         let mut cursor = joined.len();
         let mut previous = joined.clone();
         let profile = (document.format().is_code() && self.reflow_options.has('j')).then(|| self.reflow_options.profile());
+        let snapshot = document.hard_line_snapshot();
+        let mut comment_join = profile.as_ref().map(|profile|
+            crate::document::CommentJoinContext::new(&snapshot, profile, self.reflow_options.language()));
         for index in first.index + 1..=last_index {
             let line = document.physical_line(index)?;
             let content = document.physical_source_text(line.content_range)?;
             cursor = joined.len();
             let value = if insert_space {
-                if let Some(profile) = &profile { &content[crate::document::comment_join_prefix(&document.hard_line_snapshot(), index - 1, &previous, &content, profile)..] }
+                if let Some(comment_join) = &mut comment_join { &content[comment_join.prefix(index - 1, &previous, &content)..] }
                 else { content.trim_start_matches([' ', '\t']) }
             } else {
                 content.as_str()

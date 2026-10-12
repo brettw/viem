@@ -73,6 +73,8 @@ mod style;
 mod percentage_styles_tests;
 mod reflow;
 mod format_options;
+mod comment_context;
+pub use comment_context::{CommentContextStatus, CommentLineContext, NativeCommentKind, NativeCommentSpan, has_comment_context_provider, supports_native_block, supports_native_line};
 mod indentation;
 pub use indentation::{IndentationOptions, IndentationOverrides, IndentationSetting};
 pub(crate) use indentation::{leading_whitespace_len, end_column as indentation_end_column};
@@ -124,7 +126,7 @@ pub use projection::{
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
 pub use format_options::{ReflowOptions, normalize_format_options};
-pub(crate) use reflow::{comment_continuation_prefix, comment_join_prefix};
+pub(crate) use reflow::{comment_continuation_prefix, CommentJoinContext};
 pub use reflow::{
     reflow_edits, ReflowError,
     ReflowRequest, TextWidthSetting,

@@ -662,6 +662,7 @@ pub struct HardLineSnapshot {
     text_tree: FormattedTextTree,
     hard_lines: OrderedRangeStore<HardLine>,
     inline_images: IntervalRangeStore<InlineImage>,
+    pub(super) comment_context_cache: super::comment_context::SharedCommentContextCache,
 }
 
 impl fmt::Debug for HardLineSnapshot {
@@ -685,6 +686,7 @@ impl HardLineSnapshot {
             text_tree: projection.text.clone(),
             hard_lines: projection.hard_lines.clone(),
             inline_images: projection.inline_images.clone(),
+            comment_context_cache: projection.comment_context_cache.clone(),
         }
     }
 
@@ -1495,6 +1497,7 @@ pub struct FormattedDocument {
     /// Lazily materialized compatibility view. Regional candidates can remain
     /// wholly tree-backed until a legacy caller explicitly requests `text()`.
     flat_text: Arc<OnceLock<Arc<str>>>,
+    comment_context_cache: super::comment_context::SharedCommentContextCache,
     blocks: OrderedRangeStore<Block>,
     /// Authoritative hard-line structure. This is intentionally distinct from
     /// both the block tree and the text tree's lexical U+000A aggregates. The
@@ -1928,6 +1931,7 @@ impl FormattedDocument {
             revision,
             text,
             flat_text: compatibility_text,
+            comment_context_cache: super::comment_context::fresh_cache(),
             tables: Arc::from([]),
             table_lines: None,
             blocks: OrderedRangeStore::new(blocks),
@@ -2344,6 +2348,9 @@ impl FormattedDocument {
         if persistent.flatten() != self.text() {
             return Err(FormattedTextError::ResultTextMismatch);
         }
+        let first_change = edits.iter().map(|(range, _)| range.start).min();
+        let before = first_change.and_then(|at| previous.hard_lines.index_touching_point(at)).unwrap_or(0);
+        self.comment_context_cache = super::comment_context::prefix_cache(&previous.comment_context_cache, before);
         self.text = persistent;
         Ok(())
     }
@@ -2452,6 +2459,9 @@ impl FormattedDocument {
         }
         self.text = previous.text.clone();
         self.flat_text = previous.flat_text.clone();
+        if self.hard_lines == previous.hard_lines {
+            self.comment_context_cache = super::comment_context::prefix_cache(&previous.comment_context_cache, usize::MAX);
+        }
         Ok(())
     }
 
@@ -2475,6 +2485,7 @@ impl FormattedDocument {
     }
 
     pub(crate) fn install_hard_line_partition(&mut self, ranges: Vec<Range<usize>>) {
+        self.comment_context_cache = super::comment_context::fresh_cache();
         let line_blocks = blocks_for_hard_line_ranges(&ranges);
         self.hard_lines = OrderedRangeStore::new(
             seed_hard_lines_from_current_blocks(&line_blocks, self.text())
@@ -3705,6 +3716,7 @@ impl FormattedDocument {
         style_sheet: StyleSheet,
         document_style: DocumentStyleAssignment,
     ) {
+        self.comment_context_cache = super::comment_context::prefix_cache(&self.comment_context_cache, usize::MAX);
         self.revision = revision;
         self.style_sheet = Arc::new(style_sheet);
         self.document_style = document_style;
@@ -4763,6 +4775,7 @@ pub(crate) fn splice_line_local_projection(
         return Err(BlockIdentityError::InvalidProjection);
     }
 
+    let comment_prefix_end = old_hard_lines.start;
     let row_map = RegionalRowMap::new(previous, &old_hard_lines, &regional, edits, source_paragraphs)?;
     let first_block = previous
         .blocks
@@ -5487,6 +5500,7 @@ pub(crate) fn splice_line_local_projection(
         revision,
         text: target_text,
         flat_text: Arc::new(OnceLock::new()),
+        comment_context_cache: super::comment_context::prefix_cache(&previous.comment_context_cache, comment_prefix_end),
         tables: Arc::from([]),
         table_lines: None,
         blocks,
@@ -8007,6 +8021,7 @@ mod tests {
                 value.set(Arc::from(text.clone())).unwrap();
                 value
             },
+            comment_context_cache: crate::document::comment_context::fresh_cache(),
             text_tree: FormattedTextTree::try_from_text(text).unwrap(),
             hard_lines: OrderedRangeStore::new(hard_lines),
             inline_images: IntervalRangeStore::new(Vec::new()),
