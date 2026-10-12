@@ -151,21 +151,21 @@ impl RangedItem for ProvenanceRun {
     }
 }
 
-/// Reverse lookup keyed by source position. A point records one contributor
-/// edge; a divisible run records every scalar edge it contains, with both
-/// sides at interior edges.
+/// Reverse lookup keyed by source range. An indivisible contributor records
+/// its start and end edges; a divisible run records every scalar edge it
+/// contains, with both sides at interior edges. Either item covers its whole
+/// source range, so positions inside a contributor are found by the index.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BoundaryItem {
-    source: Range<usize>,
-    formatted: Range<usize>,
-    /// `None` for a divisible run.
-    side: Option<Side>,
+    pub(super) source: Range<usize>,
+    pub(super) formatted: Range<usize>,
+    /// Divisible-run width rules; zero for an indivisible contributor.
     rules: u8,
 }
 
 impl BoundaryItem {
-    fn order(&self) -> (usize, usize, bool) {
-        (self.source.start, self.formatted.start, !matches!(self.side, Some(Side::Upstream)))
+    fn order(&self) -> (usize, usize, usize, usize) {
+        (self.source.start, self.formatted.start, self.source.end, self.formatted.end)
     }
 
     fn run(&self) -> ProvenanceRun {
@@ -175,41 +175,53 @@ impl BoundaryItem {
     /// Every boundary whose source position satisfies `keep`.
     fn expand(&self, text: &FormattedTextTree, keep: &impl Fn(usize) -> bool,
         output: &mut Vec<SourceTextBoundary>) {
-        let Some(side) = self.side else {
-            let end = self.source.end;
-            self.run().scalars(text, |formatted, source| {
-                if keep(source.start) {
-                    output.push(SourceTextBoundary { source: source.start..source.start,
-                        formatted: formatted.start, side: Side::Downstream });
-                }
-                if keep(source.end) {
-                    output.push(SourceTextBoundary { source: source.end..source.end,
-                        formatted: formatted.end, side: Side::Upstream });
-                }
-                source.end < end
-            });
-            return;
-        };
-        if keep(self.source.start) {
-            output.push(SourceTextBoundary { source: self.source.clone(),
-                formatted: self.formatted.start, side });
-        }
+        self.edges(text, |source, formatted, side| {
+            if keep(source) {
+                output.push(SourceTextBoundary { source: source..source, formatted, side });
+            }
+            true
+        });
     }
 
-    /// Scalar edges of a run in source order, as `(source, formatted)`.
-    fn edges(&self, text: &FormattedTextTree, mut visit: impl FnMut(usize, usize) -> bool) {
-        if self.side.is_some() {
-            visit(self.source.start, self.formatted.start);
+    /// Edges in source order as `(source, formatted, side)`, until `visit`
+    /// returns false. A divisible run's interior edges have both sides.
+    fn edges(&self, text: &FormattedTextTree, mut visit: impl FnMut(usize, usize, Side) -> bool) {
+        if self.rules == 0 {
+            if visit(self.source.start, self.formatted.start, Side::Downstream) {
+                visit(self.source.end, self.formatted.end, Side::Upstream);
+            }
             return;
         }
-        if !visit(self.source.start, self.formatted.start) {
-            return;
+        let end = self.source.end;
+        self.run().scalars(text, |formatted, source| {
+            visit(source.start, formatted.start, Side::Downstream)
+                && visit(source.end, formatted.end, Side::Upstream)
+                && source.end < end
+        });
+    }
+
+    /// The contributor whose source strictly contains `source`: the whole
+    /// item, or the scalar of a divisible run.
+    fn containing(&self, source: usize, text: &FormattedTextTree) -> Option<ProvenanceSpan> {
+        if !(self.source.start < source && source < self.source.end) {
+            return None;
         }
-        self.run().scalars(text, |formatted, source| visit(source.end, formatted.end));
+        if self.rules == 0 {
+            return Some(ProvenanceSpan { formatted: self.formatted.clone(), source: self.source.clone() });
+        }
+        let mut found = None;
+        self.run().scalars(text, |formatted, scalar| {
+            let before = scalar.end < source;
+            if scalar.start < source && source < scalar.end {
+                found = Some(ProvenanceSpan { formatted, source: scalar });
+            }
+            found.is_none() && before
+        });
+        found
     }
 
     pub(super) fn transformed_eq(&self, other: &Self, source_shift: i128, formatted_shift: i128) -> bool {
-        self.side == other.side && self.rules == other.rules
+        self.rules == other.rules
             && super::shift_range_i128(&self.source, source_shift).as_ref() == Some(&other.source)
             && super::shift_range_i128(&self.formatted, formatted_shift).as_ref() == Some(&other.formatted)
     }
@@ -227,23 +239,15 @@ impl RangedItem for BoundaryItem {
     fn with_transform(&self, range: Range<usize>, auxiliary_shift: i128, _revision: Option<u64>)
         -> Option<Self> {
         Some(Self { source: range, formatted: super::shift_range_i128(&self.formatted, auxiliary_shift)?,
-            side: self.side, rules: self.rules })
+            rules: self.rules })
     }
 }
 
 /// Boundary items for stored contributors, in canonical order.
 pub(super) fn boundary_items(runs: impl IntoIterator<Item = ProvenanceRun>) -> Vec<BoundaryItem> {
-    let mut items = Vec::new();
-    for run in runs {
-        if run.is_divisible() {
-            items.push(BoundaryItem { source: run.source, formatted: run.formatted, side: None, rules: run.rules });
-        } else {
-            items.push(BoundaryItem { source: run.source.start..run.source.start,
-                formatted: run.formatted.start..run.formatted.start, side: Some(Side::Downstream), rules: 0 });
-            items.push(BoundaryItem { source: run.source.end..run.source.end,
-                formatted: run.formatted.end..run.formatted.end, side: Some(Side::Upstream), rules: 0 });
-        }
-    }
+    let mut items: Vec<_> = runs.into_iter()
+        .map(|run| BoundaryItem { source: run.source, formatted: run.formatted, rules: run.rules })
+        .collect();
     normalize_boundary_items(&mut items);
     items
 }
@@ -258,9 +262,63 @@ pub(super) fn normalize_boundary_items(items: &mut Vec<BoundaryItem>) {
 /// expansion reproduces them exactly. No other contributor may start inside
 /// a run, which keeps start-ordered query output identical.
 pub(super) fn compress(spans: Vec<ProvenanceSpan>, text: &str) -> Vec<ProvenanceRun> {
-    let mut runs: Vec<ProvenanceRun> = Vec::with_capacity(spans.len() / 8 + 1);
-    let mut starts = Vec::new();
+    let mut runs = RunBuilder::default();
+    runs.runs.reserve(spans.len() / 8 + 1);
     for span in spans {
+        runs.push(span, text);
+    }
+    runs.finish(text).0
+}
+
+/// Incremental `compress` for adapters that emit contributors in text order.
+/// The most recent contributor stays separate until the next one arrives, so
+/// an adapter can still take it back.
+#[derive(Default)]
+pub(super) struct RunBuilder {
+    runs: Vec<ProvenanceRun>,
+    pending: Option<ProvenanceSpan>,
+    starts: Vec<usize>,
+    previous_source: Option<usize>,
+    source_unordered: bool,
+}
+
+impl RunBuilder {
+    /// Append a contributor. `text` must contain the previously pushed one.
+    pub(super) fn push(&mut self, span: ProvenanceSpan, text: &str) {
+        self.flush(text);
+        self.pending = Some(span);
+    }
+
+    /// Remove the most recently pushed contributor.
+    pub(super) fn pop(&mut self) {
+        if self.pending.take().is_none() && self.runs.last().is_some_and(|run| !run.is_divisible()) {
+            self.runs.pop();
+        }
+    }
+
+    /// Store the pending contributor and return a position after which
+    /// `indivisible_since` reports newly stored indivisible contributors.
+    pub(super) fn mark(&mut self, text: &str) -> usize {
+        self.flush(text);
+        self.runs.len()
+    }
+
+    /// Indivisible contributors pushed since `mark`. Every contributor that
+    /// is not one non-newline scalar mapping onto its own encoding is one.
+    pub(super) fn indivisible_since(&self, mark: usize) -> impl Iterator<Item = ProvenanceSpan> + '_ {
+        self.runs[mark.min(self.runs.len())..].iter().filter(|run| !run.is_divisible()).map(ProvenanceRun::hull)
+            .chain(self.pending.iter().cloned())
+    }
+
+
+    fn flush(&mut self, text: &str) {
+        let Some(span) = self.pending.take() else { return; };
+        if !span.formatted.is_empty() || !span.source.is_empty() {
+            // A caret seed contributes no character or source bytes. Its
+            // point can lie inside the following break's contributor.
+            self.source_unordered |= self.previous_source.is_some_and(|before| before > span.source.start);
+            self.previous_source = Some(span.source.start);
+        }
         let rules = text.get(span.formatted.clone()).and_then(|value| {
             let mut chars = value.chars();
             let ch = chars.next()?;
@@ -270,7 +328,7 @@ pub(super) fn compress(spans: Vec<ProvenanceSpan>, text: &str) -> Vec<Provenance
             })
         }).unwrap_or(0);
         if rules != 0 {
-            if let Some(run) = runs.last_mut().filter(|run| run.is_divisible()
+            if let Some(run) = self.runs.last_mut().filter(|run| run.is_divisible()
                 && run.formatted.end == span.formatted.start && run.source.end == span.source.start
                 && run.rules & rules & WIDTHS != 0
                 && run.formatted.len() + span.formatted.len() <= RUN_BYTES)
@@ -281,39 +339,52 @@ pub(super) fn compress(spans: Vec<ProvenanceSpan>, text: &str) -> Vec<Provenance
                 if rules & ASCII == 0 {
                     run.rules &= WIDTHS;
                 }
-                continue;
+                return;
             }
-            runs.push(ProvenanceRun { formatted: span.formatted, source: span.source, rules });
+            self.runs.push(ProvenanceRun { formatted: span.formatted, source: span.source, rules });
         } else {
-            starts.push(span.formatted.start);
-            runs.push(ProvenanceRun::indivisible(span));
+            self.starts.push(span.formatted.start);
+            self.runs.push(ProvenanceRun::indivisible(span));
         }
     }
-    // Out-of-order construction can place another contributor's start inside
-    // a run; split there so stable start ordering is unchanged.
-    starts.sort_unstable();
-    starts.dedup();
-    if starts.is_empty() || !runs.iter().any(|run| run.is_divisible()
-        && starts.binary_search_by(|at| if *at <= run.formatted.start { std::cmp::Ordering::Less }
-            else if *at < run.formatted.end { std::cmp::Ordering::Equal } else { std::cmp::Ordering::Greater }).is_ok())
-    {
-        return runs;
+
+    /// The stored runs, and whether contributor source starts never
+    /// decrease (ignoring caret seeds).
+    pub(super) fn finish(mut self, text: &str) -> (Vec<ProvenanceRun>, bool) {
+        self.flush(text);
+        let ordered = !self.source_unordered;
+        (self.split_runs(text), ordered)
     }
-    let tree = FormattedTextTree::try_from_text(text).expect("projected text is valid");
-    let mut result = Vec::with_capacity(runs.len());
-    for mut run in runs {
-        if run.is_divisible() {
-            let first = starts.partition_point(|at| *at <= run.formatted.start);
-            for &at in starts[first..].iter().take_while(|at| **at < run.formatted.end) {
-                if let Some((left, right)) = run.split_at(at, &tree) {
-                    result.push(left);
-                    run = right;
+
+    fn split_runs(self, text: &str) -> Vec<ProvenanceRun> {
+        let (runs, mut starts) = (self.runs, self.starts);
+        // Out-of-order construction can place another contributor's start
+        // inside a run; split there so stable start ordering is unchanged.
+        starts.sort_unstable();
+        starts.dedup();
+        if starts.is_empty() || !runs.iter().any(|run| run.is_divisible()
+            && starts.binary_search_by(|at| if *at <= run.formatted.start { std::cmp::Ordering::Less }
+                else if *at < run.formatted.end { std::cmp::Ordering::Equal } else { std::cmp::Ordering::Greater }).is_ok())
+        {
+            return runs;
+        }
+        let tree = FormattedTextTree::try_from_text(text).expect("projected text is valid");
+        let mut result = Vec::with_capacity(runs.len());
+        for mut run in runs {
+            if run.is_divisible() {
+                let first = starts.partition_point(|at| *at <= run.formatted.start);
+                let end = run.formatted.end;
+                for &at in starts[first..].iter().take_while(|at| **at < end) {
+                    if let Some((left, right)) = run.split_at(at, &tree) {
+                        result.push(left);
+                        run = right;
+                    }
                 }
             }
+            result.push(run);
         }
-        result.push(run);
+        result
     }
-    result
 }
 
 /// Contributors for a projection, in formatted order, with a source-keyed
@@ -371,7 +442,7 @@ impl ProvenanceIndex {
 
     /// Every contributor in formatted order, expanded lazily.
     pub(super) fn spans<'a>(&'a self, text: &'a FormattedTextTree) -> impl Iterator<Item = ProvenanceSpan> + 'a {
-        let mut runs = self.runs.as_slice().iter();
+        let mut runs = self.runs.items();
         let mut pending = std::collections::VecDeque::new();
         std::iter::from_fn(move || loop {
             if let Some(span) = pending.pop_front() {
@@ -388,8 +459,8 @@ impl ProvenanceIndex {
     }
 
     /// Stored contributors in formatted order; divisible runs appear whole.
-    pub(super) fn stored(&self) -> &[ProvenanceRun] {
-        self.runs.as_slice()
+    pub(super) fn stored(&self) -> impl Iterator<Item = ProvenanceRun> + '_ {
+        self.runs.items()
     }
 
     /// Source boundaries touching `query`, in canonical order.
@@ -403,12 +474,38 @@ impl ProvenanceIndex {
         output
     }
 
+    /// The first contributor, in formatted order, whose source strictly
+    /// contains `source`.
+    pub(super) fn containing_source(&self, source: usize, text: &FormattedTextTree) -> Option<ProvenanceSpan> {
+        self.boundaries.query_touching(&(source..source)).into_iter()
+            .filter_map(|item| item.containing(source, text))
+            .min_by_key(|span| (span.formatted.start, span.formatted.end))
+    }
+
+    /// For a source position that no contributor contains or bounds, the
+    /// nearest contributor end before it and start after it, as `(source,
+    /// formatted)`. Exact for projections whose contributor sources are in
+    /// formatted order.
+    pub(super) fn uncovered_neighbors(&self, source: usize) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
+        let index = self.boundaries.partition_point_start(source);
+        let following = self.boundaries.get(index).map(|item| (item.source.start, item.formatted.start));
+        let preceding = index.checked_sub(1).and_then(|last| self.boundaries.get(last)).and_then(|last| {
+            // An earlier, longer contributor can end after the last start.
+            std::iter::once(last.clone())
+                .chain(self.boundaries.query_touching(&(last.source.start..source)))
+                .filter(|item| item.source.start < source && item.source.end <= source)
+                .map(|item| (item.source.end, item.formatted.end))
+                .min_by_key(|&(end, formatted)| (std::cmp::Reverse(end), formatted))
+        });
+        (preceding, following)
+    }
+
     /// The least boundary source position at or after `source`.
     pub(super) fn following_boundary(&self, source: usize, text: &FormattedTextTree) -> Option<usize> {
         let mut best = self.boundaries.get(self.boundaries.partition_point_start(source))
             .map(|item| item.source.start);
         for item in self.boundaries.query_touching(&(source..source)) {
-            item.edges(text, |at, _| {
+            item.edges(text, |at, _, _| {
                 if at >= source {
                     best = Some(best.map_or(at, |best| best.min(at)));
                     return false;
@@ -425,7 +522,7 @@ impl ProvenanceIndex {
         let last_item = self.boundaries.get(last)?;
         let mut best: Option<usize> = None;
         let mut consider = |item: &BoundaryItem| {
-            item.edges(text, |at, _| {
+            item.edges(text, |at, _, _| {
                 if at < source {
                     best = Some(best.map_or(at, |best| best.max(at)));
                     true
@@ -522,7 +619,7 @@ mod tests {
         let text = format!("{}\n{}", "a".repeat(RUN_BYTES * 2 + 3), "b".repeat(10));
         let spans = scalar_spans(&text, |ch| ch.len_utf8());
         let index = ProvenanceIndex::new(spans, &text, true);
-        let runs = index.stored();
+        let runs: Vec<_> = index.stored().collect();
         assert!(runs.iter().all(|run| run.formatted.len() <= RUN_BYTES));
         assert!(runs.iter().all(|run| !run.is_divisible() || !run.formatted.contains(&(RUN_BYTES * 2 + 3))));
         assert_eq!(runs.len(), 5);

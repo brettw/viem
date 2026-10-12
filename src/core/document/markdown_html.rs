@@ -65,16 +65,11 @@ pub(super) fn contains_table(source: &str) -> bool {
 }
 
 pub(super) fn quote_prefix_ranges(
-    source_text: &str, units: &[LogicalUnit], range: &Range<usize>, quotes: &[super::super::markdown_quotes::QuoteLine],
+    input: &NormalizedText, range: &Range<usize>, quotes: &[super::super::markdown_quotes::QuoteLine],
 ) -> Vec<Range<usize>> {
     if range.is_empty() { return Vec::new(); }
-    let first = units.partition_point(|unit| unit.normalized.end <= range.start);
-    let last = units.partition_point(|unit| unit.normalized.start < range.end);
-    if first == last { return Vec::new(); }
-    let source_start = units[first].source.start;
-    let source_end = units[last - 1].source.end;
-    let normalized_at = |at| units.get(units.partition_point(|unit| unit.source.start < at))
-        .map_or(source_text.len(), |unit| unit.normalized.start);
+    let Some(Range { start: source_start, end: source_end }) = input.source_hull(range) else { return Vec::new(); };
+    let normalized_at = |at| input.normalized_at(at);
     quotes[quotes.partition_point(|quote| quote.range.end < source_start)..].iter()
         .take_while(|quote| quote.range.start < source_end)
         .filter_map(|quote| {
@@ -97,10 +92,9 @@ impl MarkdownBuilder<'_> {
             let source_start = self.unit_at(first)?.source.start;
             let Ok(index) = self.source_syntax.inline_html.binary_search_by_key(&source_start, |range| range.start) else { continue; };
             let source = self.source_syntax.inline_html[index].clone();
-            let last = self.units.get(self.units.partition_point(|unit| unit.source.start < source.end))
-                .map_or(self.source_text.len(), |unit| unit.normalized.start);
+            let last = self.input.normalized_at(source.end);
             if last <= end || last > limit { continue; }
-            let excluded = quote_prefix_ranges(self.source_text, self.units, &(first..last), quotes);
+            let excluded = quote_prefix_ranges(self.input, &(first..last), quotes);
             let removed = html::without_ranges(&self.source_text[first..last], &excluded);
             let tokens = html::tokenize(&removed.text);
             let Some(html::Token { kind: TokenKind::Tag(tag), .. }) = tokens.first() else { continue; };
@@ -135,7 +129,7 @@ impl MarkdownBuilder<'_> {
             .filter(|_| self.source_syntax.recognizes_inline_html(&source)) {
             if self.preserve_markers { self.emit_range(range.start, range.end); } else {
                 self.output.push('\u{fffc}');
-                self.provenance.push(ProvenanceSpan { formatted: output..self.output.len(), source });
+                self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source });
             }
             image.range.end = self.output.len();
             self.inline_images.push(image);
@@ -152,15 +146,15 @@ impl MarkdownBuilder<'_> {
                 let at = self.output.len();
                 self.inline_hard_breaks.push(at);
                 self.output.push('\n');
-                self.provenance.push(ProvenanceSpan { formatted: at..at + 1, source: source.start..source.start });
+                self.push_provenance(ProvenanceSpan { formatted: at..at + 1, source: source.start..source.start });
             }
             let at = self.output.len();
             self.inline_rules.push(at);
-            self.provenance.push(ProvenanceSpan { formatted: at..at, source: source.clone() });
-            self.provenance.push(ProvenanceSpan { formatted: at..at, source: source.end..source.end });
+            self.push_provenance(ProvenanceSpan { formatted: at..at, source: source.clone() });
+            self.push_provenance(ProvenanceSpan { formatted: at..at, source: source.end..source.end });
             self.inline_hard_breaks.push(at);
             self.output.push('\n');
-            self.provenance.push(ProvenanceSpan { formatted: at..at + 1, source: source.end..source.end });
+            self.push_provenance(ProvenanceSpan { formatted: at..at + 1, source: source.end..source.end });
             self.inline_paragraph_start = self.output.len();
             return;
         }
@@ -217,7 +211,7 @@ impl MarkdownBuilder<'_> {
     /// HTML blocks remain literal in Source, including physical newlines,
     /// while image actions and style queries use the complete tag interval.
     pub(super) fn source_html_images(&mut self, range: Range<usize>, output: usize, quotes: &[super::super::markdown_quotes::QuoteLine]) {
-        let excluded = quote_prefix_ranges(self.source_text, self.units, &range, quotes);
+        let excluded = quote_prefix_ranges(self.input, &range, quotes);
         for token in html::tokenize_without_ranges(&self.source_text[range.clone()], &excluded) {
             let TokenKind::Tag(tag) = token.kind else { continue; };
             let start = range.start + token.range.start;
@@ -237,7 +231,7 @@ impl MarkdownBuilder<'_> {
         quotes: &[super::super::markdown_quotes::QuoteLine],
     ) -> Vec<Block> {
         let text = &self.source_text[range.clone()];
-        let excluded = quote_prefix_ranges(self.source_text, self.units, &range, quotes);
+        let excluded = quote_prefix_ranges(self.input, &range, quotes);
         let owners = pre_owners(text, &excluded);
         let endings: Vec<_> = text.match_indices('\n').map(|(at, _)| at).collect();
         let rows: Vec<_> = owners.iter().map(|owner| {
@@ -280,9 +274,11 @@ impl MarkdownBuilder<'_> {
 }
 
 pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revision) -> FormattedDocument {
-    let mut fragment = NormalizedText { text: input.text[range.clone()].to_owned(), units: Vec::new(), endings: Vec::new(), encoding: input.encoding };
-    for unit in &input.units[input.units.partition_point(|u| u.normalized.start < range.start)..input.units.partition_point(|u| u.normalized.start < range.end)] {
-        let mut unit = unit.clone(); unit.normalized = unit.normalized.start - range.start..unit.normalized.end - range.start; fragment.units.push(unit);
+    let mut fragment = NormalizedText::new(input.encoding);
+    fragment.text = input.text[range.clone()].to_owned();
+    for mut unit in input.units_from(input.unit_partition_point(|u| u.normalized.start < range.start))
+        .take_while(|u| u.normalized.start < range.end) {
+        unit.normalized = unit.normalized.start - range.start..unit.normalized.end - range.start; fragment.push_unit(unit);
     }
     for ending in input.endings.iter().filter(|ending| range.start <= ending.normalized.start && ending.normalized.end <= range.end) {
         let mut ending = ending.clone(); ending.normalized = ending.normalized.start - range.start..ending.normalized.end - range.start; fragment.endings.push(ending);
@@ -322,16 +318,16 @@ pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revis
         }
         vec![token]
     }).collect();
-    let start = fragment.units.first().map_or(0, |unit| unit.source.start);
-    let end = fragment.units.last().map_or(start, |unit| unit.source.end);
+    let start = fragment.first_unit().map_or(0, |unit| unit.source.start);
+    let end = fragment.last_unit().map_or(start, |unit| unit.source.end);
     let mut result = html::project_markdown_tokens(&fragment, revision, start, end, tokens);
     let mut styles = Vec::new();
     for (ranges, name) in [(comments, "Comment"), (references, "Markdown reference")] {
         for range in ranges {
-            let first = fragment.units.partition_point(|u| u.normalized.start < range.start);
-            let last = fragment.units.partition_point(|u| u.normalized.start < range.end);
+            let first = fragment.unit_partition_point(|u| u.normalized.start < range.start);
+            let last = fragment.unit_partition_point(|u| u.normalized.start < range.end);
             if first == last { continue; }
-            let source = fragment.units[first].source.start..fragment.units[last - 1].source.end;
+            let source = fragment.unit(first).unwrap().source.start..fragment.unit(last - 1).unwrap().source.end;
             for span in result.provenance().iter().filter(|span| source.start <= span.source.start && span.source.end <= source.end && !span.formatted.is_empty()) {
                 styles.push(StyleSpan { range: span.formatted.clone(), application: StyleApplication::Automatic(name.into()) });
             }

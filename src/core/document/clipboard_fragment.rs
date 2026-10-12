@@ -1227,9 +1227,7 @@ fn selected_source(
             return Some(input.text.len());
         }
         input
-            .units
-            .iter()
-            .find(|unit| unit.source.start == at)
+            .unit_with_source_start(at)
             .map(|unit| unit.normalized.start)
     };
     let start = normalized(hull.start).ok_or(DocumentError::AmbiguousProjection)?;

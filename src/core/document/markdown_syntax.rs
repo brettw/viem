@@ -352,8 +352,7 @@ impl Blocks {
         result
     }
     pub fn to_source(mut self, input: &super::line_endings::NormalizedText) -> Self {
-        let at = |at| input.units.get(input.units.partition_point(|unit| unit.normalized.start < at))
-            .map_or_else(|| input.units.last().map_or(0, |unit| unit.source.end), |unit| unit.source.start);
+        let at = |at| input.source_at(at);
         self.tables = self.tables.into_iter().map(|table| table.to_source(input)).collect();
         for block in &mut self.blocks { block.range = at(block.range.start)..at(block.range.end); block.content = at(block.content.start)..at(block.content.end); }
         for owner in &mut self.owners { owner.range = at(owner.range.start)..at(owner.range.end); }

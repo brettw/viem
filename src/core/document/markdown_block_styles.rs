@@ -134,12 +134,13 @@ pub(super) fn preserve_retained_literals_in_regions(
         else {
             continue;
         };
-        let projected = crate::document::projection::project_region(
+        let projected = crate::document::projection::project_band(
             &candidate.normalized,
             super::Format::Markdown,
             document.revision(),
             0,
             candidate.source_len,
+            candidate.source_start == document.projection().source_content_start(),
         );
         for span in spans {
             let visible = text
@@ -389,12 +390,13 @@ pub(super) fn preserve_deleted_boundary_spaces(
             else {
                 continue;
             };
-            let projected = super::super::projection::project_region(
+            let projected = super::super::projection::project_band(
                 &candidate.normalized,
                 super::Format::Markdown,
                 document.revision(),
                 0,
                 candidate.source_len,
+                candidate.source_start == document.projection().source_content_start(),
             );
             let delta = candidate
                 .patches
@@ -528,7 +530,8 @@ pub(super) fn remove_empty_continuation_prefixes(
 
 /// An emptied continuation paragraph joins its two physical separators into
 /// one run. Preserve both retained logical boundaries: Markdown represents two
-/// paragraph boundaries with four physical endings, not three.
+/// paragraph boundaries with four physical endings, not three. An emptied
+/// first or last paragraph similarly needs a pair of endings on its inner side.
 pub(super) fn preserve_empty_continuation_paragraphs(
     document: &Document,
     edits: &[TextEdit],
@@ -554,7 +557,6 @@ pub(super) fn preserve_empty_continuation_paragraphs(
                     }
                 )
                 || block.range.start != edit.range.start
-                || block.range.start == 0
                 || !seen.insert(block.id)
             {
                 continue;
@@ -568,9 +570,19 @@ pub(super) fn preserve_empty_continuation_paragraphs(
             if deleted_end != block.range.end {
                 continue;
             }
+            let first = block.range.start == 0;
             let terminal = block.range.end == projection.text_tree().byte_len();
-            let required_endings = if terminal { 2 } else { 4 };
-            let mut boundaries = vec![block.range.start - 1..block.range.start];
+            if first && terminal {
+                continue;
+            }
+            // Separator endings pair up wherever they occur, including at the
+            // document's edges: a boundary on each side needs four, a paragraph
+            // at either edge only its inner two.
+            let required_endings = if first || terminal { 2 } else { 4 };
+            let mut boundaries = Vec::new();
+            if !first {
+                boundaries.push(block.range.start - 1..block.range.start);
+            }
             if !terminal {
                 boundaries.push(block.range.end..block.range.end + 1);
             }
@@ -872,8 +884,9 @@ fn preserve_split_heading_closings(
             let mapped_start = (closing.start - candidate.source_start).checked_add_signed(delta)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let mapped = mapped_start..mapped_start + closing.len();
-            let projected = crate::document::projection::project_region(&candidate.normalized,
-                super::Format::Markdown, document.revision(), 0, candidate.source_len);
+            let projected = crate::document::projection::project_band(&candidate.normalized,
+                super::Format::Markdown, document.revision(), 0, candidate.source_len,
+                candidate.source_start == document.projection().source_content_start());
             if projected.provenance_contained_in_source(&mapped).iter().any(|span| !span.formatted.is_empty()) {
                 support.push(SourcePatch::primary(closing, Vec::new()));
             }
@@ -1116,10 +1129,7 @@ impl LocalCandidate<'_> {
         let end = start + boundary.len();
         Ok(self
             .flowed
-            .units
-            .binary_search_by_key(&start, |unit| unit.source.start)
-            .ok()
-            .and_then(|index| self.flowed.units.get(index))
+            .unit_with_source_start(start)
             .is_some_and(|unit| {
                 end <= unit.source.end && &self.flowed.text[unit.normalized.clone()] == expected
             }))
@@ -1343,12 +1353,13 @@ pub(super) fn preserve_edited_paragraph_boundaries(
             .checked_add_signed(delta)
             .ok_or(DocumentError::AmbiguousProjection)?;
         let mapped = start..start + boundary.len();
-        let projected = crate::document::projection::project_region(
+        let projected = crate::document::projection::project_band(
             &candidate.normalized,
             super::Format::Markdown,
             document.revision(),
             0,
             candidate.source_len,
+            candidate.source_start == document.projection().source_content_start(),
         );
         if !projected
             .provenance()

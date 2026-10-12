@@ -210,12 +210,7 @@ fn export_links(
     }
     let normalized_at = |source: usize| {
         input
-            .units
-            .get(
-                input
-                    .units
-                    .partition_point(|unit| unit.source.end <= source),
-            )
+            .unit(input.unit_partition_point(|unit| unit.source.end <= source))
             .map(|unit| unit.normalized.start)
     };
     for span in &spans {

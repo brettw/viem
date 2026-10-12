@@ -46,19 +46,7 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
     let lines = super::paragraph_flow::source_lines(&body);
     let lists = super::markdown_blocks::classify_with_syntax(&body, &syntax);
     let original = super::paragraph_flow::source_lines(input);
-    let source_at = |input: &NormalizedText, at: usize| {
-        input
-            .units
-            .get(
-                input
-                    .units
-                    .partition_point(|unit| unit.normalized.start < at),
-            )
-            .map_or_else(
-                || input.units.last().map_or(0, |unit| unit.source.end),
-                |unit| unit.source.start,
-            )
-    };
+    let source_at = |input: &NormalizedText, at: usize| input.source_at(at);
     let mut result = Vec::new();
     let mut index = 0;
     while index < lines.len() {

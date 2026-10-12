@@ -1,6 +1,9 @@
 //! Isolated large-file memory probe. See docs/performance.md.
-//! Arguments: plain|code lines|short|long SOURCE_BYTES [open|document|views|flat|exercise|search] [utf8|utf16le|utf16be|latin1].
-//! Supplemental shapes include crlf and invalid (all invalid UTF-8 bytes).
+//! Arguments: plain|code|markdown|source lines|short|long|markdown SOURCE_BYTES
+//! [open|document|views|switch|flat|exercise|search] [utf8|utf16le|utf16be|latin1].
+//! Supplemental shapes include crlf and invalid (all invalid UTF-8 bytes). The
+//! markdown shape repeats rich blocks; `source` opens it in Markdown Source and
+//! `switch` toggles a view between Source and formatted presentation.
 //! Run each case in a fresh release process; syntax providers are disabled.
 use serde_json::{json, Value};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -119,16 +122,19 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     assert!(
         args.len() >= 4,
-        "plain|code lines|short|long SOURCE_BYTES [open|document|views|flat]"
+        "plain|code|markdown|source lines|short|long|markdown SOURCE_BYTES [open|document|views|switch|flat]"
     );
     let format = match args[1].as_str() {
         "plain" => Format::PlainText,
         "code" => Format::Code,
+        "markdown" => Format::Markdown,
+        "source" => Format::MarkdownSource,
         _ => panic!("unknown format"),
     };
     let size: usize = args[3].parse().unwrap();
     let operation = args.get(4).map(String::as_str).unwrap_or("document");
-    assert!(size > 0 && matches!(operation, "open" | "document" | "views" | "flat" | "exercise" | "search"));
+    assert!(size > 0 && matches!(operation, "open" | "document" | "views" | "switch" | "flat" | "exercise" | "search"));
+    assert!(operation != "switch" || format.is_markdown());
     let encoding_name = args.get(5).map(String::as_str).unwrap_or("utf8");
     let encoding = match encoding_name {
         "utf8" => Encoding::Utf8, "latin1" => Encoding::Latin1,
@@ -182,6 +188,21 @@ fn main() {
             }
         }
         "long" => (),
+        "markdown" => {
+            assert_eq!(encoding, Encoding::Utf8);
+            let mut text = String::with_capacity(bytes.len() + 1024);
+            let mut block = 0usize;
+            while text.len() < bytes.len() {
+                block += 1;
+                text.push_str(&format!(
+                    "# Heading {block}\n\nProse with **strong**, _emphasis_, `code`, a [link](https://example.com/{block}) \
+                     and &amp; entities\ncontinuing on a soft line with plain words.\n\n- item one\n- item *two*\n  \
+                     continued\n1. first\n2. second\n\n> quoted text\n> more of the quote\n\n| a | b |\n| - | - |\n\
+                     | {block} | x |\n\n```rust\nfn main() {{}}\n```\n\n"));
+            }
+            text.truncate(bytes.len());
+            bytes = text.into_bytes();
+        }
         "longword" => {
             assert!(bytes.len() >= 16);
             bytes[..7].copy_from_slice(b"before ");
@@ -239,7 +260,19 @@ fn main() {
         document.set_history_retention_policy(HistoryRetentionPolicy::new(1, usize::MAX));
         sample("large_delete_history_pruned", started, Some(&document));
     }
-    if operation == "views" {
+    if operation == "switch" {
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 800., 600.);
+        sample("first_view", started, Some(core.document()));
+        for phase in ["switched", "switched_back"] {
+            let document = core.document();
+            let source = !document.format().is_source_view();
+            core.handle(view, CoreEvent::SetMarkdownSource { document: document.id(), revision: document.revision(), source })
+                .unwrap();
+            sample(phase, started, Some(core.document()));
+        }
+        drop(core);
+    } else if operation == "views" {
         let mut core = Core::new(document);
         core.set_code_language(LanguageSelection::None);
         let first = core.add_view(MockTextMeasurementProvider::new(), 800., 600.);

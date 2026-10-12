@@ -337,13 +337,7 @@ pub(super) fn style_html_links(
     let ranges = html_links_from_tokens(input.text.len(), tokens)
         .into_iter()
         .filter_map(|link| {
-            let begin = input
-                .units
-                .partition_point(|u| u.normalized.end <= link.range.start);
-            let end = input
-                .units
-                .partition_point(|u| u.normalized.start < link.range.end);
-            (begin < end).then(|| input.units[begin].source.start..input.units[end - 1].source.end)
+            input.source_hull(&link.range)
         })
         .collect::<Vec<_>>();
     if ranges.is_empty() {
@@ -503,25 +497,13 @@ impl Document {
         let decoded = self.encoding().decode_region(&bytes, start)?;
         let input = super::line_endings::normalize(&decoded, self.file_format());
         let source_range = |range: &Range<usize>| -> Option<Range<usize>> {
-            let begin = input
-                .units
-                .partition_point(|unit| unit.normalized.end <= range.start);
-            let end = input
-                .units
-                .partition_point(|unit| unit.normalized.start < range.end);
-            if begin < end {
-                Some(input.units[begin].source.start..input.units[end - 1].source.end)
+            if let Some(hull) = input.source_hull(range) {
+                Some(hull)
             } else if range.is_empty() {
                 input
-                    .units
-                    .get(begin)
+                    .unit(input.unit_partition_point(|unit| unit.normalized.end <= range.start))
                     .map(|unit| unit.source.start..unit.source.start)
-                    .or_else(|| {
-                        input
-                            .units
-                            .last()
-                            .map(|unit| unit.source.end..unit.source.end)
-                    })
+                    .or_else(|| input.last_unit().map(|unit| unit.source.end..unit.source.end))
             } else {
                 None
             }
@@ -575,8 +557,7 @@ impl Document {
             return Ok(None);
         };
         let Some(unit) = input
-            .units
-            .get(input.units.partition_point(|unit| unit.source.end <= raw))
+            .unit(input.unit_partition_point(|unit| unit.source.end <= raw))
         else {
             return Ok(None);
         };
@@ -1630,14 +1611,18 @@ impl Document {
         };
         // The shared authored-syntax path verifies a persistent text splice and
         // reparses the affected region, preserving unrelated document storage.
+        let authored = source_range.start == link_source_start;
         let prepared = self.prepare_text_edits_with_patch_policy(
             vec![TextEdit::new(range.clone(), expected_replacement.clone())],
             Some(vec![SourcePatch::primary(
                 source_range.clone(),
-                replacement,
+                replacement.clone(),
             )]),
             true,
         )?;
+        if authored {
+            link_source_start = prepared.summary().authored_source_start(&source_range, &replacement);
+        }
         let candidate = self.prepared_candidate_document(&prepared)?;
         if candidate
             .projection()

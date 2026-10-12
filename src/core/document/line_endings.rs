@@ -3,6 +3,10 @@ use super::Encoding;
 use std::fmt;
 use std::ops::Range;
 
+#[path = "logical_units.rs"]
+mod logical_units;
+pub(crate) use logical_units::LogicalUnits;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileFormat {
     Unix,
@@ -125,15 +129,25 @@ pub struct LineEndingEvidence {
     pub bare_cr: usize,
 }
 
+/// Normalized text with one logical unit per scalar (fewer where a unit
+/// folds several source scalars, as CRLF does). Units are stored as runs;
+/// address them through the accessors in `logical_units`.
 #[derive(Clone, Debug)]
 pub(crate) struct NormalizedText {
     pub(crate) text: String,
-    pub(crate) units: Vec<LogicalUnit>,
+    units: LogicalUnits,
     pub(crate) endings: Vec<LineEnding>,
     pub(crate) encoding: Encoding,
 }
 
-#[derive(Clone, Debug)]
+impl NormalizedText {
+    /// Empty rich-parser input, built with `push_unit`.
+    pub(crate) fn new(encoding: Encoding) -> Self {
+        Self { text: String::new(), units: LogicalUnits::default(), endings: Vec::new(), encoding }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LogicalUnit {
     pub(crate) normalized: Range<usize>,
     pub(crate) source: Range<usize>,
@@ -269,11 +283,13 @@ pub(crate) fn normalize_literal(decoded: &DecodedText, format: FileFormat) -> No
 }
 
 fn normalize_with_mapping(decoded: &DecodedText, format: FileFormat, compact: bool) -> NormalizedText {
-    let mut text = String::with_capacity(decoded.text.len());
-    let mut units: Vec<LogicalUnit> = Vec::with_capacity(decoded.spans.len());
-    let mut endings = Vec::new();
+    let mut result = NormalizedText {
+        text: String::with_capacity(decoded.text.len()),
+        units: if compact { LogicalUnits::literal() } else { LogicalUnits::default() },
+        endings: Vec::new(),
+        encoding: decoded.encoding,
+    };
     let mut spans = decoded.scalar_spans();
-    let mut previous_regular = false;
 
     while let Some(span) = spans.next() {
         let offset = span.decoded.start;
@@ -289,29 +305,20 @@ fn normalize_with_mapping(decoded: &DecodedText, format: FileFormat, compact: bo
             FileFormat::Mac => ch == '\r',
         };
 
+        let normalized_start = result.text.len();
         if is_ending {
             let source_start = span.source.start;
             let source_end = if is_crlf && format == FileFormat::Dos {
                 spans.next().expect("CRLF has a following scalar").source.end
             } else { span.source.end };
-            let normalized_start = text.len();
-            text.push('\n');
-            let normalized = normalized_start..text.len();
-            let regular = source_end - source_start == decoded.encoding.scalar_source_width('\n');
-            if let Some(previous) = units.last_mut().filter(|previous| {
-                compact && previous_regular && regular
-                    && text.len() - previous.normalized.start <= super::encoding::MAPPING_CHUNK_BYTES
-            }) {
-                previous.normalized.end = text.len();
-                previous.source.end = source_end;
-            } else {
-                units.push(LogicalUnit {
-                    normalized: normalized.clone(),
-                    source: source_start..source_end,
-                    decoding_diagnostic: None,
-                });
-            }
-            endings.push(LineEnding {
+            result.text.push('\n');
+            let normalized = normalized_start..result.text.len();
+            result.push_unit(LogicalUnit {
+                normalized: normalized.clone(),
+                source: source_start..source_end,
+                decoding_diagnostic: None,
+            });
+            result.endings.push(LineEnding {
                 normalized,
                 source: source_start..source_end,
                 original: if is_crlf {
@@ -322,35 +329,17 @@ fn normalize_with_mapping(decoded: &DecodedText, format: FileFormat, compact: bo
                     FileFormat::Unix
                 },
             });
-            previous_regular = regular;
             continue;
         }
 
-        let normalized_start = text.len();
-        text.push(ch);
-        let regular = span.diagnostic.is_none();
-        if let Some(previous) = units.last_mut().filter(|previous| {
-            compact && previous_regular && regular
-                && text.len() - previous.normalized.start <= super::encoding::MAPPING_CHUNK_BYTES
-        }) {
-            previous.normalized.end = text.len();
-            previous.source.end = span.source.end;
-        } else {
-            units.push(LogicalUnit {
-                normalized: normalized_start..text.len(),
-                source: span.source,
-                decoding_diagnostic: span.diagnostic,
-            });
-        }
-        previous_regular = regular;
+        result.text.push(ch);
+        result.push_unit(LogicalUnit {
+            normalized: normalized_start..result.text.len(),
+            source: span.source,
+            decoding_diagnostic: span.diagnostic,
+        });
     }
-
-    NormalizedText {
-        text,
-        units,
-        endings,
-        encoding: decoded.encoding,
-    }
+    result
 }
 
 #[cfg(test)]
@@ -368,14 +357,14 @@ mod tests {
                 let dense = normalize(&decoded, format);
                 let compact = normalize_literal(&decoded, format);
                 assert_eq!(compact.text, dense.text);
-                assert!(compact.units.len() < 32);
+                assert!(compact.unit_run_count() < 32);
                 assert_eq!(compact.endings.iter().map(|e| (&e.normalized, &e.source)).collect::<Vec<_>>(),
                     dense.endings.iter().map(|e| (&e.normalized, &e.source)).collect::<Vec<_>>());
-                for run in &compact.units {
-                    let start = dense.units.partition_point(|unit| unit.normalized.start < run.normalized.start);
-                    let end = dense.units.partition_point(|unit| unit.normalized.end <= run.normalized.end);
-                    assert_eq!(dense.units[start].source.start, run.source.start);
-                    assert_eq!(dense.units[end - 1].source.end, run.source.end);
+                for run in compact.unit_runs() {
+                    let start = dense.unit_partition_point(|unit| unit.normalized.start < run.normalized.start);
+                    let end = dense.unit_partition_point(|unit| unit.normalized.end <= run.normalized.end);
+                    assert_eq!(dense.unit(start).unwrap().source.start, run.source.start);
+                    assert_eq!(dense.unit(end - 1).unwrap().source.end, run.source.end);
                 }
             }
         }
@@ -472,8 +461,8 @@ mod tests {
         assert_eq!(normalized.endings.len(), 1);
         assert_eq!(normalized.endings[0].normalized, 1..2);
         assert_eq!(normalized.endings[0].source, 1..2);
-        assert_eq!(normalized.units[3].normalized, 3..4);
-        assert_eq!(normalized.units[3].source, 3..4);
+        assert_eq!(normalized.unit(3).unwrap().normalized, 3..4);
+        assert_eq!(normalized.unit(3).unwrap().source, 3..4);
     }
 
     #[test]
@@ -484,7 +473,7 @@ mod tests {
         let normalized = normalize(&decoded, FileFormat::Dos);
         assert_eq!(normalized.text.len(), LINES * 2);
         assert_eq!(normalized.endings.len(), LINES);
-        assert_eq!(normalized.units.len(), LINES * 2);
+        assert_eq!(normalized.unit_count(), LINES * 2);
         assert_eq!(
             normalized.endings.last().unwrap().source,
             source.len() - 2..source.len()

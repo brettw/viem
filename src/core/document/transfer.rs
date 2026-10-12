@@ -278,12 +278,7 @@ pub(super) fn preserve_source_blank_rows(
             visible.projection().source_insertion_point(at, true)
                 .ok_or(DocumentError::AmbiguousProjection)?
         } else { cooked
-            .units
-            .get(
-                cooked
-                    .units
-                    .partition_point(|unit| unit.normalized.end <= at),
-            )
+            .unit(cooked.unit_partition_point(|unit| unit.normalized.end <= at))
             .filter(|unit| unit.normalized.start == at)
             .map_or(bytes.len(), |unit| unit.source.start) };
         let mut end = source_at;

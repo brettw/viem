@@ -92,7 +92,8 @@ impl Document {
             // paragraph separator remains outside the regional parser input.
             let trailing_end = rebase_source_boundary(trailing.end, patches, Association::AfterInsertion)?;
             rows.push(cursor..trailing_end.max(range.end));
-            let projection = super::super::projection::project_region(&normalized, self.format(), revision, range.start, range.end);
+            let projection = super::super::projection::project_band(&normalized, self.format(), revision, range.start, range.end,
+                range.start == self.projection().source_content_start());
             Ok((projection, rows, bytes.len()))
         };
         let (old_local, _, old_bytes) = parse(&self.state().source, old_source.clone())?;

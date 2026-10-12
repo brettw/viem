@@ -321,19 +321,7 @@ pub(super) fn parse(text: &str) -> Vec<TableSyntax> {
 }
 impl TableSyntax {
     pub(super) fn to_source(mut self, input: &NormalizedText) -> Self {
-        let at = |offset: usize| {
-            input
-                .units
-                .get(
-                    input
-                        .units
-                        .partition_point(|unit| unit.normalized.start < offset),
-                )
-                .map_or_else(
-                    || input.units.last().map_or(0, |unit| unit.source.end),
-                    |unit| unit.source.start,
-                )
-        };
+        let at = |offset: usize| input.source_at(offset);
         self.range = at(self.range.start)..at(self.range.end);
         for row in &mut self.rows {
             row.range = at(row.range.start)..at(row.range.end);

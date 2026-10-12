@@ -291,20 +291,17 @@ pub(super) fn insertion(
             .decode_region(&bytes, source_line.start)?;
         let normalized = normalize(&decoded, document.file_format());
         let local_at = normalized
-            .units
-            .iter()
-            .find(|unit| unit.source.start == source_at)
+            .unit_with_source_start(source_at)
             .map(|unit| unit.normalized.start)
             .or_else(|| {
                 normalized
-                    .units
-                    .last()
+                    .last_unit()
                     .filter(|unit| unit.source.end == source_at)
                     .map(|unit| unit.normalized.end)
             })
             // A final empty physical row has no scalar units, but its body
             // start is still an exact caret location with no inline scopes.
-            .or_else(|| (normalized.units.is_empty() && source_at == source_line.start).then_some(0))
+            .or_else(|| (!normalized.has_units() && source_at == source_line.start).then_some(0))
             .ok_or(DocumentError::AmbiguousProjection)?;
         local = project(
             &normalized,

@@ -146,12 +146,7 @@ impl Document {
         let decoded = self.encoding().decode(&self.source_bytes())?;
         let input = normalize(&decoded, self.file_format());
         let normalized_at = input
-            .units
-            .get(
-                input
-                    .units
-                    .partition_point(|unit| unit.source.end <= source_at),
-            )
+            .unit(input.unit_partition_point(|unit| unit.source.end <= source_at))
             .map_or(input.text.len(), |unit| unit.normalized.start);
         let syntax = markdown_syntax::Blocks::parse(&markdown_syntax::grammar_text(&input));
         let region = syntax

@@ -646,9 +646,9 @@ fn visit_document_state_memory(
     if std::env::var_os("VIEM_HISTORY_MEMORY_FRESH").is_some() {
         let measure = |visit: &mut dyn FnMut(&mut history_memory::MemoryVisitor<'_>)| {
             let mut memory = history_memory::RetainedMemory::default();
-            let roots = memory.capture(|visitor| visit(visitor));
-            let result = (memory.bytes(), memory.allocation_count());
-            memory.release(roots);
+            let roots = memory.capture(history_memory::Domain::History, |visitor| visit(visitor));
+            let result = (memory.bytes(history_memory::Domain::History), memory.allocation_count());
+            memory.release(history_memory::Domain::History, roots);
             result
         };
         let source = measure(&mut |visitor| state.source.visit_retained_memory(visitor));

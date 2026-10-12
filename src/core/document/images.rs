@@ -223,7 +223,7 @@ impl Document {
                 // object. Use the ordinary verified deletion repair path.
                 None
             } else {
-                Some(vec![SourcePatch::primary(source.clone(), replacement)])
+                Some(vec![SourcePatch::primary(source.clone(), replacement.clone())])
             },
             true,
         )?;
@@ -234,7 +234,7 @@ impl Document {
                 .ok_or(DocumentError::VerificationFailed)?;
             if image.text != text
                 || image.destination != destination
-                || image.source.start != source.start
+                || image.source.start != prepared.summary().authored_source_start(&source, &replacement)
             {
                 return Err(DocumentError::VerificationFailed.into());
             }

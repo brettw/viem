@@ -16,19 +16,7 @@ pub(super) struct ListLine {
 
 pub(super) fn source_context(input: &NormalizedText) -> Vec<(Range<usize>, ListLine)> {
     let lines = super::paragraph_flow::source_lines(input);
-    let source_at = |at: usize| {
-        input
-            .units
-            .get(
-                input
-                    .units
-                    .partition_point(|unit| unit.normalized.start < at),
-            )
-            .map_or_else(
-                || input.units.last().map_or(0, |unit| unit.source.end),
-                |unit| unit.source.start,
-            )
-    };
+    let source_at = |at: usize| input.source_at(at);
     classify(input)
         .into_iter()
         .enumerate()
@@ -191,25 +179,8 @@ pub(super) fn classify_with_syntax(
     input: &NormalizedText,
     syntax: &super::markdown_syntax::Blocks,
 ) -> Vec<Option<ListLine>> {
-    let source_at = |at| {
-        input
-            .units
-            .get(
-                input
-                    .units
-                    .partition_point(|unit| unit.normalized.start < at),
-            )
-            .map_or_else(
-                || input.units.last().map_or(0, |unit| unit.source.end),
-                |unit| unit.source.start,
-            )
-    };
-    let normalized_at = |at| {
-        input
-            .units
-            .get(input.units.partition_point(|unit| unit.source.start < at))
-            .map_or(input.text.len(), |unit| unit.normalized.start)
-    };
+    let source_at = |at| input.source_at(at);
+    let normalized_at = |at| input.normalized_at(at);
     let lines = super::paragraph_flow::source_lines(input);
     let quotes = super::markdown_quotes::classify(input);
     // Containers arrive in source order. Successive containers on one row

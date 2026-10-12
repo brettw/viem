@@ -53,23 +53,14 @@ impl<'a> Builder<'a> {
         }
     }
     pub fn source_range(&self, range: Range<usize>) -> Range<usize> {
-        let first = self
-            .input
-            .units
-            .partition_point(|u| u.normalized.end <= range.start);
-        let last = self
-            .input
-            .units
-            .partition_point(|u| u.normalized.start < range.end);
-        if first < last {
-            self.input.units[first].source.start..self.input.units[last - 1].source.end
+        if let Some(hull) = self.input.source_hull(&range) {
+            hull
         } else {
             let at = self
                 .input
-                .units
-                .get(first)
+                .unit(self.input.unit_partition_point(|u| u.normalized.end <= range.start))
                 .map(|u| u.source.start)
-                .or_else(|| self.input.units.last().map(|u| u.source.end))
+                .or_else(|| self.input.last_unit().map(|u| u.source.end))
                 .unwrap_or(0);
             at..at
         }
@@ -134,10 +125,8 @@ impl<'a> Builder<'a> {
         }
         let first = self
             .input
-            .units
-            .partition_point(|u| u.normalized.end <= input_range.start);
-        for unit in self.input.units[first..]
-            .iter()
+            .unit_partition_point(|u| u.normalized.end <= input_range.start);
+        for unit in self.input.units_from(first)
             .take_while(|u| u.normalized.start < input_range.end)
         {
             if let Some(kind) = unit.decoding_diagnostic {
