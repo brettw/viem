@@ -1056,7 +1056,7 @@ fn rich_linewise_put_preserves_markdown_owners_and_exact_undo() {
         ("# Heading #", "yyp"),
         ("# Heading #", "ddP"),
         ("``code with ` tick``", "yyp"),
-        ("\na", "yyp"),
+        ("\n\na", "yyp"),
         ("`**not bold**`", "yyp"),
     ] {
         let (mut core, view) = editor(source, Format::Markdown);
@@ -1064,7 +1064,7 @@ fn rich_linewise_put_preserves_markdown_owners_and_exact_undo() {
         keys(&mut core, view, operation);
         let expected = if operation.starts_with("dd") {
             original.clone()
-        } else if source == "\na" {
+        } else if source == "\n\na" {
             "\n\na".to_owned()
         } else {
             format!("{original}\n{original}")

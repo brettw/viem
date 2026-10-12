@@ -1,6 +1,9 @@
 use super::encoding::DecodingDiagnostic;
 #[path = "markdown_html.rs"]
 mod markdown_html;
+#[path = "provenance_runs.rs"]
+mod provenance_runs;
+use provenance_runs::{ProvenanceIndex, ProvenanceRun};
 
 use super::formatted_text::{
     FormattedTextError, FormattedTextTree, LeafBoundarySide, LogicalGraphemeSnapshot,
@@ -1507,11 +1510,12 @@ pub struct FormattedDocument {
     flow_blocks: Option<OrderedRangeStore<Block>>,
     styles: IntervalRangeStore<StyleSpan>,
     inline_images: IntervalRangeStore<InlineImage>,
-    provenance: IntervalRangeStore<ProvenanceSpan>,
+    /// Contributors and their source-keyed boundary index. Rich projections
+    /// store one-to-one scalar text as runs that queries expand exactly.
+    provenance: ProvenanceIndex,
     /// Literal runs are divisible encoding mappings; rich contributors retain
     /// their existing indivisible/relational meaning.
     literal_encoding: Option<super::Encoding>,
-    source_boundaries: IntervalRangeStore<SourceTextBoundary>,
     source_ordered: bool,
     decoding_diagnostics: IntervalRangeStore<DecodingDiagnostic>,
     style_sheet: Arc<StyleSheet>,
@@ -1645,7 +1649,7 @@ impl FormattedDocument {
         for block in &mut blocks {block.range=shift_range_i128(&block.range,-(range.start as i128))?;}
         let mut styles=self.styles.query_touching(&range);styles.retain(|span|range.start<=span.range.start && span.range.end<=range.end);
         for span in &mut styles {span.range=shift_range_i128(&span.range,-(range.start as i128))?;}
-        let mut provenance=self.provenance.query_touching(&range);provenance.retain(|span|range.start<=span.formatted.start && span.formatted.end<=range.end);
+        let mut provenance=self.provenance.query_touching(&range,&self.text);provenance.retain(|span|range.start<=span.formatted.start && span.formatted.end<=range.end);
         for span in &mut provenance {span.formatted=shift_range_i128(&span.formatted,-(range.start as i128))?;span.source=shift_range_i128(&span.source,source_delta)?;}
         let diagnostics=self.decoding_diagnostics.query_touching(&range).into_iter()
             .filter(|item|range.start<=item.formatted_range.start && item.formatted_range.end<=range.end)
@@ -1771,8 +1775,6 @@ impl FormattedDocument {
         if trace { eprintln!("  styles {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.provenance.visit_retained_memory(visitor);
         if trace { eprintln!("  provenance {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
-        self.source_boundaries.visit_retained_memory(visitor);
-        if trace { eprintln!("  boundaries {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.decoding_diagnostics.visit_retained_memory(visitor);
 
         visitor.arc(&self.style_sheet, |visitor| {
@@ -1807,6 +1809,25 @@ impl FormattedDocument {
         source_content_start: usize,
         source_content_end: usize,
     ) -> Self {
+        Self::from_parts_with(revision, flat_text, blocks, styles, provenance, decoding_diagnostics,
+            style_sheet, source_content_start, source_content_end, true)
+    }
+
+    /// `divisible` stores one-to-one scalar contributors as runs. Literal
+    /// projections pass false: their contributors are already encoding runs.
+    #[allow(clippy::too_many_arguments)]
+    fn from_parts_with(
+        revision: Revision,
+        flat_text: String,
+        blocks: Vec<Block>,
+        styles: Vec<StyleSpan>,
+        provenance: Vec<ProvenanceSpan>,
+        decoding_diagnostics: Vec<DecodingDiagnostic>,
+        style_sheet: StyleSheet,
+        source_content_start: usize,
+        source_content_end: usize,
+        divisible: bool,
+    ) -> Self {
         let document_style = DocumentStyleAssignment::new(style_sheet.base_paragraph.clone());
         let flat_text: Arc<str> = flat_text.into();
         let text = FormattedTextTree::try_from_shared(flat_text.clone())
@@ -1818,9 +1839,6 @@ impl FormattedDocument {
         let hard_lines = seed_hard_lines_from_current_blocks(&blocks, flat_text.as_ref())
             .expect("private projectors emit a valid current-adapter hard-line partition");
         let compatibility_text = Arc::new(OnceLock::new());
-        compatibility_text
-            .set(flat_text)
-            .expect("a fresh compatibility cell is empty");
         // A caret seed contributes no character or source bytes. Its point
         // can lie inside the following break's contributor (an empty list
         // item's padding, for example) without reordering visible content.
@@ -1832,8 +1850,10 @@ impl FormattedDocument {
                 previous_source = Some(span.source.start);
                 ordered
             });
-        let source_boundaries =
-            IntervalRangeStore::new(source_text_boundaries(provenance.iter().cloned()));
+        let provenance = ProvenanceIndex::new(provenance, &flat_text, divisible);
+        compatibility_text
+            .set(flat_text)
+            .expect("a fresh compatibility cell is empty");
         Self {
             revision,
             text,
@@ -1846,9 +1866,8 @@ impl FormattedDocument {
             flow_blocks: None,
             styles: IntervalRangeStore::new(styles),
             inline_images: IntervalRangeStore::new(Vec::new()),
-            provenance: IntervalRangeStore::new(provenance),
+            provenance,
             literal_encoding: None,
-            source_boundaries,
             source_ordered,
             decoding_diagnostics: IntervalRangeStore::new(decoding_diagnostics),
             style_sheet: Arc::new(style_sheet),
@@ -2973,7 +2992,7 @@ impl FormattedDocument {
         // an exact boundary is found without scanning the document's provenance.
         let mut upstream = Vec::new();
         let mut downstream = Vec::new();
-        for boundary in self.source_boundaries.query_touching(&(source_offset..source_offset)) {
+        for boundary in self.provenance.boundaries_touching(&(source_offset..source_offset), &self.text) {
             if boundary.source.start != source_offset {
                 continue;
             }
@@ -3006,7 +3025,7 @@ impl FormattedDocument {
         // point with no exact contributor boundary is an interior source unit.
         if let Some(span) = self
             .provenance
-            .iter()
+            .spans(&self.text)
             .find(|span| span.source.start < source_offset && source_offset < span.source.end)
         {
             let opaque = self.decoding_diagnostics.iter().any(|diagnostic| {
@@ -3081,7 +3100,8 @@ impl FormattedDocument {
     ) -> Option<(Range<usize>, Option<usize>, Option<usize>)> {
         let mut source_start = self.source_content_start;
         let mut upstream = None;
-        for span in self.provenance.as_slice() {
+        // A divisible run is gap-free, so its hull has the same edges.
+        for span in self.provenance.stored() {
             if source_start < span.source.start
                 && source_start <= source_offset
                 && source_offset <= span.source.start
@@ -3274,17 +3294,19 @@ impl FormattedDocument {
         self.styles = IntervalRangeStore::new(styles);
     }
 
-    pub fn provenance(&self) -> &[ProvenanceSpan] {
-        self.provenance.as_slice()
+    /// Every contributor in formatted order. This materializes the whole
+    /// list; prefer region queries.
+    pub fn provenance(&self) -> Vec<ProvenanceSpan> {
+        self.provenance.spans(&self.text).collect()
     }
 
     pub(crate) fn provenance_for_region(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
-        self.provenance.query_overlapping(range).into_iter()
+        self.provenance.query_overlapping(range, &self.text).into_iter()
             .map(|span| self.clip_literal_span(span, range)).collect()
     }
 
     pub(crate) fn provenance_touching(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
-        self.provenance.query_touching(range).into_iter()
+        self.provenance.query_touching(range, &self.text).into_iter()
             .map(|span| self.clip_literal_span(span, range)).collect()
     }
 
@@ -3333,10 +3355,13 @@ impl FormattedDocument {
 
     fn literal_span_for_source(&self, source: usize) -> Option<ProvenanceSpan> {
         self.literal_encoding?;
-        let index = self.source_boundaries.partition_point_start(source);
-        let boundary = self.source_boundaries.get(index).filter(|at| at.source.start == source)
-            .or_else(|| index.checked_sub(1).and_then(|at| self.source_boundaries.get(at)))?;
-        self.provenance.query_touching(&(boundary.formatted..boundary.formatted)).into_iter()
+        // Literal contributors are stored whole, so boundary items are points.
+        let boundaries = &self.provenance.boundaries;
+        let index = boundaries.partition_point_start(source);
+        let boundary = boundaries.get(index).filter(|at| at.source.start == source)
+            .or_else(|| index.checked_sub(1).and_then(|at| boundaries.get(at)))?;
+        let at = boundary.formatted.start;
+        self.provenance.query_touching(&(at..at), &self.text).into_iter()
             .find(|span| span.source.start <= source && source <= span.source.end)
     }
 
@@ -3366,8 +3391,8 @@ impl FormattedDocument {
         if self.text.byte_len() == 0 {
             return Some((0..0, self.source_content_start..self.source_content_start));
         }
-        let first = self.provenance.query_touching(&(range.start..range.start)).into_iter().next()?;
-        let last = self.provenance.query_touching(&(range.end..range.end)).into_iter().last()?;
+        let first = self.provenance.query_touching(&(range.start..range.start), &self.text).into_iter().next()?;
+        let last = self.provenance.query_touching(&(range.end..range.end), &self.text).into_iter().last()?;
         Some((first.formatted.start..last.formatted.end, first.source.start..last.source.end))
     }
 
@@ -3414,7 +3439,7 @@ impl FormattedDocument {
     pub(crate) fn provenance_contained_in_source(&self, range: &Range<usize>) -> Vec<ProvenanceSpan> {
         let mut result = Vec::new();
         let mut seen = std::collections::BTreeSet::new();
-        for boundary in self.source_boundaries.query_touching(range) {
+        for boundary in self.provenance.boundaries_touching(range, &self.text) {
             for span in self.provenance_touching(&(boundary.formatted..boundary.formatted)) {
                 if !span.formatted.is_empty() && !span.source.is_empty()
                     && range.start <= span.source.start && span.source.end <= range.end
@@ -3453,13 +3478,9 @@ impl FormattedDocument {
                 return Some(if downstream { span.formatted.end } else { span.formatted.start });
             }
         }
-        let index = self.source_boundaries.partition_point_start(source);
-        let following = self.source_boundaries.get(index);
-        if following
-            .as_ref()
-            .is_some_and(|boundary| boundary.source.start == source)
-        {
-            let exact = self.source_boundaries.query_touching(&(source..source));
+        let following = self.provenance.following_boundary(source, &self.text);
+        if following == Some(source) {
+            let exact = self.provenance.boundaries_touching(&(source..source), &self.text);
             let side = if downstream {
                 Side::Downstream
             } else {
@@ -3472,16 +3493,13 @@ impl FormattedDocument {
                 .or_else(|| exact.iter().min_by_key(|boundary| boundary.formatted))
                 .map(|boundary| boundary.formatted);
         }
-        let preceding = index
-            .checked_sub(1)
-            .and_then(|index| self.source_boundaries.get(index));
-        let selected = if downstream {
-            following.as_ref().or(preceding.as_ref())
+        let preceding = self.provenance.preceding_boundary(source, &self.text);
+        let at = if downstream {
+            following.or(preceding)
         } else {
-            preceding.as_ref().or(following.as_ref())
+            preceding.or(following)
         }?;
-        let at = selected.source.start;
-        let adjacent = self.source_boundaries.query_touching(&(at..at));
+        let adjacent = self.provenance.boundaries_touching(&(at..at), &self.text);
         if at < source {
             adjacent.iter().map(|boundary| boundary.formatted).max()
         } else {
@@ -4456,6 +4474,31 @@ pub(crate) fn project(
     source_content_start: usize,
     source_content_end: usize,
 ) -> FormattedDocument {
+    project_with_start(normalized, format, revision, source_content_start, source_content_end, true)
+}
+
+/// Project a band of complete source lines from inside a document. Unlike a
+/// document, a band's first line can follow earlier blocks, so leading blank
+/// lines are not treated as surplus document-start separators. Callers still
+/// verify the band against the document's own projection.
+pub(crate) fn project_region(
+    normalized: &NormalizedText,
+    format: Format,
+    revision: Revision,
+    source_content_start: usize,
+    source_content_end: usize,
+) -> FormattedDocument {
+    project_with_start(normalized, format, revision, source_content_start, source_content_end, false)
+}
+
+fn project_with_start(
+    normalized: &NormalizedText,
+    format: Format,
+    revision: Revision,
+    source_content_start: usize,
+    source_content_end: usize,
+    document_start: bool,
+) -> FormattedDocument {
     match format {
         Format::PlainText => project_plain(
             normalized,
@@ -4474,6 +4517,7 @@ pub(crate) fn project(
             source_content_start,
             source_content_end,
             false,
+            document_start,
         ),
         Format::MarkdownSource => project_markdown(
             normalized,
@@ -4481,6 +4525,7 @@ pub(crate) fn project(
             source_content_start,
             source_content_end,
             true,
+            document_start,
         ),
 
     }
@@ -5741,6 +5786,7 @@ fn project_markdown(
     source_content_start: usize,
     source_content_end: usize,
     preserve_markers: bool,
+    document_start: bool,
 ) -> FormattedDocument {
     let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(normalized)).to_source(normalized);
     let definitions = super::markdown_syntax::definitions(&normalized.text).0;
@@ -5893,7 +5939,11 @@ fn project_markdown(
         projected.assign_image_paragraph_styles();
         return projected;
     }
-    let (cooked, explicit) = super::paragraph_flow::markdown(normalized);
+    let (cooked, explicit) = if document_start {
+        super::paragraph_flow::markdown(normalized)
+    } else {
+        super::paragraph_flow::markdown_region(normalized)
+    };
     let mut projected = project_markdown_lines(
         &cooked,
         revision,

@@ -134,7 +134,7 @@ pub(super) fn preserve_retained_literals_in_regions(
         else {
             continue;
         };
-        let projected = crate::document::projection::project(
+        let projected = crate::document::projection::project_region(
             &candidate.normalized,
             super::Format::Markdown,
             document.revision(),
@@ -389,7 +389,7 @@ pub(super) fn preserve_deleted_boundary_spaces(
             else {
                 continue;
             };
-            let projected = super::super::projection::project(
+            let projected = super::super::projection::project_region(
                 &candidate.normalized,
                 super::Format::Markdown,
                 document.revision(),
@@ -872,7 +872,7 @@ fn preserve_split_heading_closings(
             let mapped_start = (closing.start - candidate.source_start).checked_add_signed(delta)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let mapped = mapped_start..mapped_start + closing.len();
-            let projected = crate::document::projection::project(&candidate.normalized,
+            let projected = crate::document::projection::project_region(&candidate.normalized,
                 super::Format::Markdown, document.revision(), 0, candidate.source_len);
             if projected.provenance_contained_in_source(&mapped).iter().any(|span| !span.formatted.is_empty()) {
                 support.push(SourcePatch::primary(closing, Vec::new()));
@@ -1232,7 +1232,7 @@ fn project_local_candidate_with_limit<'a>(
     }
     let decoded = document.encoding().decode_region(&bytes, 0)?;
     let normalized = line_endings::normalize(&decoded, document.file_format());
-    let (flowed, _) = paragraph_flow::markdown(&normalized);
+    let (flowed, _) = paragraph_flow::markdown_region(&normalized);
     Ok(Some(LocalCandidate {
         source_start: band.start,
         patches: local,
@@ -1343,7 +1343,7 @@ pub(super) fn preserve_edited_paragraph_boundaries(
             .checked_add_signed(delta)
             .ok_or(DocumentError::AmbiguousProjection)?;
         let mapped = start..start + boundary.len();
-        let projected = crate::document::projection::project(
+        let projected = crate::document::projection::project_region(
             &candidate.normalized,
             super::Format::Markdown,
             document.revision(),
@@ -1759,4 +1759,61 @@ fn support_patches_impl(
         }
     }
     Ok(patches)
+}
+
+/// Whitespace on a blank line is trivia in WYSIWYG, so an empty top-level
+/// paragraph shows none of it. Text typed there replaces that whitespace:
+/// left in place it would become a visible trailing space or, at four
+/// columns, an indented code block once the line has content. Container
+/// lines keep their whitespace, which can be required indentation.
+pub(super) fn absorb_blank_line_trivia(
+    document: &Document,
+    patches: &mut [SourcePatch],
+) -> Result<(), DocumentError> {
+    if document.format() != super::Format::Markdown {
+        return Ok(());
+    }
+    let projection = document.projection();
+    for index in 0..patches.len() {
+        let patch = &patches[index];
+        if !patch.range.is_empty() || patch.part != super::SourcePartId::PRIMARY {
+            continue;
+        }
+        let inserted = document.encoding().decode_region(&patch.replacement, 0)?;
+        if inserted.text.bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+            continue;
+        }
+        let at = patch.range.start;
+        let Ok(line) = document.physical_line_index_at_source(at) else {
+            continue;
+        };
+        let (_, content) = document.physical_line_ranges(line)?;
+        if content.is_empty() || at < content.start || content.end < at {
+            continue;
+        }
+        let Some(bytes) = document.state().source.bytes_in(content.clone()) else {
+            continue;
+        };
+        let decoded = document.encoding().decode_region(&bytes, content.start)?;
+        if !decoded.text.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+            || projection.provenance_contained_in_source(&content).iter().any(|span| !span.formatted.is_empty())
+            || patches.iter().enumerate().any(|(other, patch)| other != index
+                && patch.range.start <= content.end && content.start <= patch.range.end)
+        {
+            continue;
+        }
+        // A document of blank lines has no visible contributor to map from.
+        let empty_document = projection.text_tree().byte_len() == 0;
+        let empty_top_level = [true, false].into_iter()
+            .filter_map(|downstream| projection.nearest_text_boundary_for_source(at, downstream))
+            .chain(empty_document.then_some(0))
+            .any(|offset| projection.blocks_for_region(&(offset..offset)).iter().any(|block|
+                block.range.is_empty() && block.range.start == offset
+                    && block.kind == BlockKind::Paragraph && block.quote_depth == 0
+                    && block.containers.is_empty() && !block.markdown_html));
+        if empty_top_level {
+            patches[index].range = content;
+        }
+    }
+    Ok(())
 }

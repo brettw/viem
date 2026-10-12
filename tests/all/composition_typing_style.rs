@@ -169,7 +169,7 @@ fn press_and_hold_replacement_keeps_inline_context_and_exact_history() {
     use viem_core::document::HistoryNavigationRequest;
     let mut failures = Vec::new();
     for (source, at) in [("**`code in bold`**", 2), ("<ins>unclosed", 2),
-        ("<mailto:a@b.c>", 2), ("[a]: b\n[c]: d", 0), ("   ", 1)] {
+        ("<mailto:a@b.c>", 2), ("[a]: b\n[c]: d", 0), ("   ", 0)] {
         let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300., 160.);
         let original = core.document().text().to_owned();

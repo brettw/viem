@@ -75,6 +75,7 @@ mod manual_completion;
 mod manual_completion_anchor;
 mod manual_completion_lifecycle;
 mod markdown_authoring;
+mod markdown_blank_line_runs;
 mod markdown_gfm;
 mod markdown_block_quotes;
 mod markdown_fence_ownership;

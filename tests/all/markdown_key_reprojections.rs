@@ -122,7 +122,7 @@ fn check(source: &str, format: Format, at: usize, action: InputEvent, expected: 
 #[test]
 fn typing_before_a_setext_like_paragraph_keeps_its_text_and_structure() {
     check(
-        "\n====\n",
+        "\n\n====\n",
         Format::Markdown,
         0,
         InputEvent::text("x"),
@@ -144,7 +144,8 @@ fn typing_before_a_thematic_rule_keeps_its_interrupting_boundary() {
 #[test]
 fn empty_paragraph_typing_keeps_separator_patches_and_neighbor_work_bounded() {
     for neighbor_len in [16, 40_000, 100_000] {
-        for endings in [1, 2, 3] {
+        // One leading ending is trivia; a pair retains the empty paragraph.
+        for endings in [2, 3] {
             let neighbor = "a".repeat(neighbor_len);
             let source = format!("{}{neighbor}\n", "\n".repeat(endings));
             let mut document =
@@ -164,13 +165,8 @@ fn empty_paragraph_typing_keeps_separator_patches_and_neighbor_work_bounded() {
                 .iter()
                 .map(|patch| (patch.range(), patch.replacement().to_vec()))
                 .collect::<Vec<_>>();
-            let expected = if endings == 1 {
-                vec![(0..0, b"x".to_vec()), (1..1, b"\n".to_vec())]
-            } else {
-                vec![(0..0, b"x".to_vec())]
-            };
-            assert_eq!(patches, expected);
-            let saved = format!("x{}{neighbor}\n", "\n".repeat(endings.max(2)));
+            assert_eq!(patches, vec![(0..0, b"x".to_vec())]);
+            let saved = format!("x{}{neighbor}\n", "\n".repeat(endings));
             assert_eq!(document.source_bytes(), saved.as_bytes());
             assert_eq!(document.text(), format!("x\n{neighbor}"));
             assert_eq!(document.projection().blocks()[1].id, neighbor_id);
@@ -193,10 +189,10 @@ fn empty_paragraph_typing_keeps_separator_patches_and_neighbor_work_bounded() {
 fn typing_into_a_blank_separator_keeps_the_following_paragraph_separate() {
     for (source, at, expected) in [
         ("> ```\n> aaa\n\nbbb\n", 4, "aaa\nx\nbbb"),
-        ("\n<foo>\n", 0, "x\n<foo>"),
-        ("\n <foo>\n", 0, "x\n<foo>"),
-        ("\n   <foo>\n", 0, "x\n<foo>"),
-        (">\n> foo\n>  \n", 0, "x\nfoo\n"),
+        ("\n\n<foo>\n", 0, "x\n<foo>"),
+        ("\n\n <foo>\n", 0, "x\n<foo>"),
+        ("\n\n   <foo>\n", 0, "x\n<foo>"),
+        (">\n>\n> foo\n>  \n", 0, "x\nfoo\n"),
     ] {
         check(
             source,
