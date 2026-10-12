@@ -100,3 +100,78 @@ fn typing_into_empty_paragraphs_reopens_as_displayed() {
         }
     }
 }
+
+fn reopens_as_displayed(core: &Core<MockTextMeasurementProvider>, context: &str) {
+    let saved = core.document().source_bytes();
+    let fresh = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+    assert_eq!(shape(core.document()), shape(&fresh), "{context}: saved {:?}", String::from_utf8_lossy(&saved));
+}
+
+#[test]
+fn emptying_the_first_paragraph_keeps_its_boundary_like_any_other() {
+    // The emptied paragraph's boundary needs a pair of endings at the start
+    // of the document, as it does between two blocks.
+    for (source, keys) in [
+        ("text before\n| a | b |\n| - | - |\n| 1 | 2 |", "dip"),
+        ("text\n1. list after text", "dip"),
+        ("text\n- list right after text", "vipd"),
+        ("text\n```\ncode\n```\ntext", "D"),
+        ("a\n***\nb", "x"),
+        ("X\n\nb", "dip"),
+        ("a\n\ntext\n| a | b |\n| - | - |\n| 1 | 2 |", "jjdip"),
+    ] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+        for key in keys.chars() {
+            core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+        }
+        assert_ne!(core.document().source_bytes(), source.as_bytes(), "{source:?} {keys}");
+        reopens_as_displayed(&core, &format!("{source:?} {keys}"));
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{source:?} {keys}");
+    }
+}
+
+#[test]
+fn authored_syntax_in_blank_line_paragraphs_reopens_as_displayed() {
+    for source in [" \n \nb", "   \n  \n", "a\n\n  \n  \n\nb"] {
+        let at = {
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            document.projection().blocks().iter().find(|block| block.range.is_empty()).unwrap().range.start
+        };
+        for action in ["`", "~", "- ", "link", "image"] {
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+            core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: at,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            let expected = core.list_selection_identity(view).unwrap();
+            let range = expected.range();
+            match action {
+                "link" => {
+                    core.edit_link(view, expected, viem_core::document::LinkEditIntent::Insert {
+                        range, text: "t".into(), destination: "https://e.com".into(),
+                    }).unwrap_or_else(|error| panic!("{source:?} {action}: {error:?}"));
+                }
+                "image" => {
+                    core.edit_image(view, expected, viem_core::document::ImageEditIntent::Insert {
+                        range, text: "alt".into(), destination: "pic.png".into(),
+                    }).unwrap_or_else(|error| panic!("{source:?} {action}: {error:?}"));
+                }
+                text => {
+                    core.handle(view, CoreEvent::Input(InputEvent::text(text)))
+                        .unwrap_or_else(|error| panic!("{source:?} {action}: {error:?}"));
+                }
+            }
+            assert_ne!(core.document().source_bytes(), source.as_bytes(), "{source:?} {action}");
+            reopens_as_displayed(&core, &format!("{source:?} {action}"));
+            core.handle(view, CoreEvent::Input(InputEvent::Key(viem_core::command::Key::Escape))).unwrap();
+            core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes(), "{source:?} {action}");
+        }
+    }
+}

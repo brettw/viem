@@ -235,15 +235,11 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
 }
 
 pub(super) fn strip(input: &NormalizedText, lines: &[QuoteLine]) -> NormalizedText {
-    let mut result = NormalizedText {
-        text: String::new(),
-        units: Vec::with_capacity(input.units.len()),
-        endings: Vec::with_capacity(input.endings.len()),
-        encoding: input.encoding,
-    };
+    let mut result = NormalizedText::new(input.encoding);
+    result.endings.reserve(input.endings.len());
     let mut line = 0;
     let mut ending = 0;
-    for unit in &input.units {
+    for unit in input.units() {
         while line + 1 < lines.len() && lines[line].range.end < unit.normalized.start {
             line += 1;
         }
@@ -268,25 +264,13 @@ pub(super) fn strip(input: &NormalizedText, lines: &[QuoteLine]) -> NormalizedTe
             next_ending.normalized = next.normalized.clone();
             result.endings.push(next_ending);
         }
-        result.units.push(next);
+        result.push_unit(next);
     }
     result
 }
 
 pub(super) fn source_context(input: &NormalizedText) -> Vec<QuoteLine> {
-    let source_at = |at| {
-        input
-            .units
-            .get(
-                input
-                    .units
-                    .partition_point(|unit| unit.normalized.start < at),
-            )
-            .map_or_else(
-                || input.units.last().map_or(0, |unit| unit.source.end),
-                |unit| unit.source.start,
-            )
-    };
+    let source_at = |at| input.source_at(at);
     classify(input)
         .into_iter()
         .map(|line| QuoteLine {

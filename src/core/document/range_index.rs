@@ -294,6 +294,16 @@ impl<T: Clone + RangedItem> IntervalRangeStore<T> {
         self.inner.as_slice()
     }
 
+    /// Items in order, read in bounded chunks. Unlike `as_slice`, this keeps
+    /// no flat copy alive after a whole-store pass.
+    pub(super) fn items(&self) -> impl Iterator<Item = T> + '_ {
+        const CHUNK: usize = 256;
+        let len = self.len();
+        (0..len).step_by(CHUNK).flat_map(move |start| {
+            self.get_range(&(start..(start + CHUNK).min(len))).expect("chunk lies inside the store")
+        })
+    }
+
     pub(super) fn len(&self) -> usize {
         self.inner.item_count
     }
@@ -459,16 +469,18 @@ pub(super) struct RangeSpliceStats {
 impl<T: Clone + RangedItem> PersistentRangeStore<T> {
     fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         fn visit<T: RangedItem>(node: &Arc<RangeNode<T>>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-            visitor.arc(node, |visitor| match &node.kind {
-                RangeNodeKind::Leaf(items) => {
-                    visitor.vector(items, items.iter().map(RangedItem::owned_heap_bytes).sum());
-                    for item in items { item.visit_shared_memory(visitor); }
-                },
-                RangeNodeKind::Branch { left, right, .. } => {
+            match &node.kind {
+                // Nodes are immutable and alone own their item vectors.
+                RangeNodeKind::Leaf(items) => visitor.arc_owning(
+                    node,
+                    super::history_memory::vector_bytes(items, items.iter().map(RangedItem::owned_heap_bytes).sum()),
+                    |visitor| for item in items { item.visit_shared_memory(visitor); },
+                ),
+                RangeNodeKind::Branch { left, right, .. } => visitor.arc(node, |visitor| {
                     visit(left, visitor);
                     visit(right, visitor);
-                }
-            });
+                }),
+            }
         }
         if let Some(root) = &self.root { visit(root, visitor); }
         // The compatibility cache may be populated after a snapshot was first

@@ -211,15 +211,12 @@ pub(super) fn patches(
     } else { input };
     let builder = super::rich_text::Builder::new(&input, Revision(0));
     let start = input
-        .units
-        .iter()
-        .find(|unit| unit.source.start == source_content.start)
+        .unit_with_source_start(source_content.start)
         .map(|unit| unit.normalized.start)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let end = input
-        .units
-        .iter()
-        .find(|unit| unit.source.end == source_content.end)
+        .unit(input.unit_partition_point(|unit| unit.source.end < source_content.end))
+        .filter(|unit| unit.source.end == source_content.end)
         .map(|unit| unit.normalized.end)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let mut body = document.text()[content.clone()].to_owned();
@@ -506,7 +503,7 @@ fn empty_body_patches(
         super::markdown_quotes::strip(&original, &super::markdown_quotes::classify(&original))
     } else { original.clone() };
     let mapper = super::rich_text::Builder::new(&input, document.revision());
-    let position = input.units.iter().find(|unit| unit.source.start == at)
+    let position = input.unit_with_source_start(at)
         .map_or(input.text.len(), |unit| unit.normalized.start);
     let mut opening = None;
     let mut closing = None;

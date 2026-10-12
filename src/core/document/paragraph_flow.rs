@@ -49,8 +49,7 @@ fn push_blank_run(
 }
 
 fn source_at(input: &NormalizedText, at: usize) -> usize {
-    input.units.get(input.units.partition_point(|unit| unit.normalized.start < at))
-        .map_or_else(|| input.units.last().map_or(0, |unit| unit.source.end), |unit| unit.source.start)
+    input.source_at(at)
 }
 
 pub(super) fn source_lines(input: &NormalizedText) -> Vec<Range<usize>> {
@@ -178,7 +177,7 @@ fn markdown_projection_with_soft_breaks(
             .is_some_and(|block| {
                 if !matches!(block.role, super::markdown_syntax::BlockRole::Html) || block.range.start > ending.source.start { return false; }
                 if ending.source.end < block.range.end { return true; }
-                let start = input.units.get(input.units.partition_point(|unit| unit.source.start < block.range.start))
+                let start = input.unit_at_or_after_source(block.range.start)
                     .map_or(ending.normalized.start, |unit| unit.normalized.start);
                 super::projection::markdown_html_open_pre(&input.text[start..ending.normalized.start])
             });
@@ -320,30 +319,23 @@ fn markdown_projection_with_soft_breaks(
         }
     }
     replacements.sort_by_key(|(range, _, _)| range.start);
-    let mut result = NormalizedText {
-        text: String::new(),
-        units: Vec::new(),
-        endings: Vec::new(),
-        encoding: input.encoding,
-    };
+    let mut result = NormalizedText::new(input.encoding);
     let mut replacement_index = 0;
-    let mut unit_index = 0;
-    while unit_index < input.units.len() {
-        let unit = &input.units[unit_index];
+    let mut units = input.units().peekable();
+    while let Some(unit) = units.next() {
         if let Some((range, value, hard)) = replacements
             .get(replacement_index)
             .filter(|(range, _, _)| range.start == unit.normalized.start)
         {
-            let mut last = unit_index;
-            while last + 1 < input.units.len() && input.units[last + 1].normalized.start < range.end
-            {
-                last += 1;
+            let mut source_end = unit.source.end;
+            while let Some(next) = units.next_if(|next| next.normalized.start < range.end) {
+                source_end = next.source.end;
             }
-            let source = unit.source.start..input.units[last].source.end;
+            let source = unit.source.start..source_end;
             let normalized = result.text.len()..result.text.len() + value.len();
             result.text.push_str(value);
             if !value.is_empty() {
-                result.units.push(LogicalUnit {
+                result.push_unit(LogicalUnit {
                     normalized: normalized.clone(),
                     source: source.clone(),
                     decoding_diagnostic: None,
@@ -363,15 +355,11 @@ fn markdown_projection_with_soft_breaks(
                         .map_or(super::FileFormat::Unix, |ending| ending.original),
                 });
             }
-            unit_index = last + 1;
             replacement_index += 1;
         } else {
             let value = &input.text[unit.normalized.clone()];
             let normalized = result.text.len()..result.text.len() + value.len();
             result.text.push_str(value);
-            let mut next = unit.clone();
-            next.normalized = normalized.clone();
-            result.units.push(next);
             let at = input
                 .endings
                 .partition_point(|ending| ending.normalized.start < unit.normalized.start);
@@ -381,10 +369,12 @@ fn markdown_projection_with_soft_breaks(
                 .filter(|ending| ending.normalized == unit.normalized)
             {
                 let mut ending = ending.clone();
-                ending.normalized = normalized;
+                ending.normalized = normalized.clone();
                 result.endings.push(ending);
             }
-            unit_index += 1;
+            let mut next = unit;
+            next.normalized = normalized;
+            result.push_unit(next);
         }
     }
     (result, explicit)

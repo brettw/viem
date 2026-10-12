@@ -193,10 +193,10 @@ fn markdown_empty_and_adjacent_code_paragraphs_merge_at_visible_boundaries() {
                             document
                                 .projection()
                                 .provenance()
-                                .iter()
+                                .into_iter()
                                 .filter(|p| p.formatted.start >= b.range.start
                                     && p.formatted.end <= b.range.end)
-                                .map(|p| (&p.formatted, &p.source))
+                                .map(|p| (p.formatted, p.source))
                                 .collect::<Vec<_>>()
                         ))
                         .collect::<Vec<_>>()

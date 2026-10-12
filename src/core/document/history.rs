@@ -1,4 +1,4 @@
-use super::history_memory::{AllocationId, MemoryVisitor, RetainedMemory};
+use super::history_memory::{AllocationId, Domain, MemoryVisitor, RetainedMemory};
 use super::source::{SourceArtifactDigest, SourceSnapshotIdentity};
 use super::{PositionError, PositionMap, Revision, SourcePartId, Splice, TextAnchor};
 use std::collections::{BTreeMap, HashMap};
@@ -402,8 +402,9 @@ pub(crate) struct History<T, M = ()> {
     retention: HistoryRetentionPolicy,
     retained_source_bytes: usize,
     accounting: Option<HistoryAccounting<T>>,
+    /// Allocations of every retained state, with the live state's own
+    /// references counted separately in the same table.
     memory: RetainedMemory,
-    live_memory: RetainedMemory,
     live_memory_roots: Vec<AllocationId>,
     singleton_index_bytes: usize,
     memory_metadata_bytes: usize,
@@ -635,7 +636,6 @@ impl<T, M> History<T, M> {
             retained_source_bytes,
             accounting,
             memory: RetainedMemory::default(),
-            live_memory: RetainedMemory::default(),
             live_memory_roots: Vec::new(),
             singleton_index_bytes,
             memory_metadata_bytes: 0,
@@ -662,7 +662,7 @@ impl<T, M> History<T, M> {
         }
         let Some(visit_state) = self.visit_state_memory else { return; };
         let node = &self.nodes[index];
-        let roots = self.memory.capture(|visitor| {
+        let roots = self.memory.capture(Domain::History, |visitor| {
             // The state's lazy caches are separate roots. Revisiting these
             // top-level handles discovers newly materialized compatibility
             // views without traversing unchanged immutable tree nodes.
@@ -674,7 +674,7 @@ impl<T, M> History<T, M> {
         });
         let node = &mut self.nodes[index];
         let previous = std::mem::replace(&mut node.memory_roots, roots);
-        self.memory.release(previous);
+        self.memory.release(Domain::History, previous);
         self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_sub(node.memory_metadata_bytes);
         node.memory_metadata_bytes = node.children.capacity() * std::mem::size_of::<usize>()
             + node.retained_buffers.capacity() * std::mem::size_of::<RetainedBuffer>()
@@ -690,25 +690,24 @@ impl<T, M> History<T, M> {
         if !self.command_checkpoints.is_empty() { return; }
         let Some(visit_state) = self.visit_state_memory else { return; };
         let state = &self.nodes[self.current].state;
-        let roots = self.live_memory.capture(|visitor| {
+        let roots = self.memory.capture(Domain::Live, |visitor| {
             visitor.arc(state, |_| {});
             visit_state(state, visitor);
         });
         let previous = std::mem::replace(&mut self.live_memory_roots, roots);
-        self.live_memory.release(previous);
+        self.memory.release(Domain::Live, previous);
     }
 
     fn live_state_memory_bytes(&self) -> usize {
         if self.visit_state_memory.is_none() {
             return self.nodes[self.current].retained_buffers.iter().map(|buffer| buffer.bytes).sum();
         }
-        // A current-only document still needs both allocation ledgers, their
+        // A current-only document still needs its allocation ledger, both
         // root vectors, one history node and its source-buffer index. Charging
         // that baseline to undo would consume the allowance in proportion to
         // file size before there was any old state to retain.
         let state_roots = self.live_memory_roots.capacity() * std::mem::size_of::<AllocationId>();
-        self.live_memory.bytes()
-            .saturating_add(self.live_memory.bookkeeping_bytes())
+        self.memory.bytes(Domain::Live)
             .saturating_add(state_roots.saturating_mul(2))
             .saturating_add(std::mem::size_of::<Node<T, M>>())
             .saturating_add(self.nodes[self.current].retained_buffers.capacity() * std::mem::size_of::<RetainedBuffer>())
@@ -716,7 +715,7 @@ impl<T, M> History<T, M> {
     }
 
     fn release_node_memory(&mut self, index: usize) {
-        self.memory.release(std::mem::take(&mut self.nodes[index].memory_roots));
+        self.memory.release(Domain::History, std::mem::take(&mut self.nodes[index].memory_roots));
         self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_sub(self.nodes[index].memory_metadata_bytes);
         self.nodes[index].memory_metadata_bytes = 0;
     }
@@ -726,8 +725,7 @@ impl<T, M> History<T, M> {
         if std::env::var_os("VIEM_HISTORY_MEMORY_BREAKDOWN").is_some() {
             eprintln!("  ledger allocations {}", self.memory.allocation_count());
         }
-        self.memory.bytes()
-            .saturating_add(self.live_memory.bookkeeping_bytes())
+        self.memory.bytes(Domain::History)
             .saturating_add(self.live_memory_roots.capacity() * std::mem::size_of::<AllocationId>())
             .saturating_add(self.nodes.capacity() * std::mem::size_of::<Node<T, M>>())
             .saturating_add(self.node_indexes.capacity() * 48)
@@ -745,7 +743,7 @@ impl<T, M> History<T, M> {
     pub(super) fn assert_memory_matches_full_recount_without_refresh(&self) {
         let mut fresh = RetainedMemory::default();
         for node in &self.nodes {
-            fresh.capture(|visitor| {
+            fresh.capture(Domain::History, |visitor| {
                 visitor.arc(&node.state, |_| {});
                 self.visit_state_memory.unwrap()(&node.state, visitor);
                 if let Some(edge) = &node.incoming {
@@ -753,14 +751,12 @@ impl<T, M> History<T, M> {
                 }
             });
         }
-        self.memory.assert_same_allocations(&fresh);
-        let mut live = RetainedMemory::default();
         let state = &self.nodes[self.current].state;
-        live.capture(|visitor| {
+        fresh.capture(Domain::Live, |visitor| {
             visitor.arc(state, |_| {});
             self.visit_state_memory.unwrap()(state, visitor);
         });
-        self.live_memory.assert_same_allocations(&live);
+        self.memory.assert_same_allocations(&fresh);
     }
 
     #[cfg(test)]
@@ -768,13 +764,7 @@ impl<T, M> History<T, M> {
         assert_eq!(self.nodes.len(), 1);
         let node = &self.nodes[0];
         assert!(node.incoming.is_none());
-        self.memory.assert_same_allocations(&self.live_memory);
-        // Independent hash tables can have different usable capacities after
-        // replacement, even with identical allocation graphs. The live-state
-        // allowance estimates a second table with the live ledger's capacity;
-        // this is the only variable ledger difference in a current-only tree.
-        let capacity_difference = self.memory.bookkeeping_bytes() as i128
-            - self.live_memory.bookkeeping_bytes() as i128;
+        self.memory.assert_domains_agree();
         let metadata_difference = (self.nodes.capacity() - 1) * std::mem::size_of::<Node<T, M>>()
             + (self.node_indexes.capacity() + self.change_indexes.capacity()) * 48
             - self.singleton_index_bytes
@@ -783,7 +773,7 @@ impl<T, M> History<T, M> {
             - self.live_memory_roots.capacity() as i128) * std::mem::size_of::<AllocationId>() as i128;
         assert_eq!(
             self.retained_memory_bytes() as i128 - self.live_state_memory_bytes() as i128,
-            capacity_difference + metadata_difference as i128 + root_difference,
+            metadata_difference as i128 + root_difference,
         );
     }
 

@@ -82,11 +82,7 @@ impl Document {
                 .filter(|ending| ending.source.end == range.end)
                 .cloned();
             if let Some(ending) = &terminal {
-                normalized.text.truncate(ending.normalized.start);
-                normalized
-                    .units
-                    .retain(|unit| unit.normalized.start < ending.normalized.start);
-                normalized.endings.pop();
+                normalized.truncate(ending.normalized.start);
             }
             let parsed_source = range.start
                 ..terminal

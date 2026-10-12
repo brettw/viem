@@ -818,12 +818,7 @@ fn repair_flanking_pass(
             .ok_or(DocumentError::AmbiguousProjection)?;
         let decoded = document.encoding().decode_region(&bytes, start)?;
         let input = normalize(&decoded, document.file_format());
-        let normalized_at = |at| {
-            input
-                .units
-                .get(input.units.partition_point(|unit| unit.source.start < at))
-                .map_or(input.text.len(), |unit| unit.normalized.start)
-        };
+        let normalized_at = |at| input.normalized_at(at);
         let extent = normalized_at(opening.start)..normalized_at(closing.end);
         let recognized =
             super::super::markdown_syntax::inlines(&input.text, 0..input.text.len(), "");

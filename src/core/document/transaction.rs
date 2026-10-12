@@ -84,7 +84,7 @@ pub(crate) use replacement::RecordedReplacement;
 use super::formatted_text::{FormattedTextSpliceStats, LogicalGraphemeSnapshot};
 use super::line_endings::{detect, normalize, normalize_literal};
 use super::projection::{
-    escape_markdown_insert, escape_markdown_insert_in_encoding, project, project_region,
+    escape_markdown_insert, escape_markdown_insert_in_encoding, project, project_band,
     splice_line_local_projection,
 };
 use super::source_line_index::SourceHardLineSpliceStats;
@@ -770,6 +770,16 @@ impl ModelChangeSummary {
 
     pub fn kind(&self) -> ModelChangeKind {
         self.kind
+    }
+
+    /// Where an authored replacement for `source` actually begins. An
+    /// insertion that absorbed hidden blank-line whitespace begins at that
+    /// line instead.
+    pub(crate) fn authored_source_start(&self, source: &Range<usize>, replacement: &[u8]) -> usize {
+        self.source_patches.iter()
+            .find(|patch| source.is_empty() && patch.replacement == replacement
+                && patch.range.start <= source.start && source.start <= patch.range.end)
+            .map_or(source.start, |patch| patch.range.start)
     }
 
     pub fn source_patches(&self) -> &[SourcePatch] {
@@ -2185,8 +2195,9 @@ impl Document {
             )?;
         }
         markdown_list_structure::retire_supporting_separator(self, &edits, &mut source_patches)?;
+        // Hidden blank-line whitespace is trivia for authored syntax too.
+        markdown_block_styles::absorb_blank_line_trivia(self, &mut source_patches)?;
         if !authored_syntax {
-            markdown_block_styles::absorb_blank_line_trivia(self, &mut source_patches)?;
             self.repair_markdown_reference_dependents(&edits, &mut source_patches)?;
             self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
         }
@@ -4297,8 +4308,9 @@ impl Document {
         // References and passive HTML need surrounding definition/ownership
         // context; this proof deliberately covers ordinary prose only.
         if old_decoded.text.contains(['[', '<']) { return Ok(None); }
-        let old_local = project_region(&normalize(&old_decoded, self.file_format()), Format::Markdown,
-            self.revision(), body.start, body.end);
+        let at_start = body.start == self.projection().source_content_start();
+        let old_local = project_band(&normalize(&old_decoded, self.file_format()), Format::Markdown,
+            self.revision(), body.start, body.end, at_start);
         let old = projection.text_tree().slice(owner.range.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
         if old_local.text() != old || old_local.blocks().len() != 1
@@ -4311,8 +4323,8 @@ impl Document {
         let Some(new_bytes) = source.bytes_in(body.start..new_end) else { return Ok(None); };
         let new_decoded = self.encoding().decode_region(&new_bytes, body.start)?;
         if new_decoded.text.contains(['[', '<']) { return Ok(None); }
-        let new_local = project_region(&normalize(&new_decoded, self.file_format()), Format::Markdown,
-            Revision(self.next_revision), body.start, new_end);
+        let new_local = project_band(&normalize(&new_decoded, self.file_format()), Format::Markdown,
+            Revision(self.next_revision), body.start, new_end, at_start);
         let new = new_local.text();
         if new.is_empty() || new.contains(['\n', '\r']) || new_local.blocks().len() != 1
             || new_local.blocks()[0].attributes != owner.attributes {
@@ -5263,11 +5275,8 @@ impl Document {
                 }).transpose()?;
                 let mut parser_input = normalized.clone();
                 if let Some((_, separator)) = &retained_separator {
-                    let end = parser_input.units.iter().find(|unit| unit.source.start >= separator.start)
-                        .map_or(parser_input.text.len(), |unit| unit.normalized.start);
-                    parser_input.text.truncate(end);
-                    parser_input.units.retain(|unit| unit.normalized.start < end);
-                    parser_input.endings.retain(|ending| ending.normalized.start < end);
+                    let end = parser_input.normalized_at(separator.start);
+                    parser_input.truncate(end);
                 }
                 if self.can_inherit_markdown_list_context(edits, source_patches) {
                     parser_input = self.markdown_list_region_body_input(
@@ -5883,15 +5892,14 @@ impl Document {
                     .encoding
                     .decode_region(&patch.replacement, patch.range.start)?;
                 let normalized = normalize(&decoded, self.state().file_format);
-                let parsed = super::projection::project_plain(
-                    &normalized, revision, patch.range.start,
-                    patch.range.start + patch.replacement.len(),
-                );
-                if parsed.text() != edit.replacement {
+                if normalized.text != edit.replacement {
                     return Ok(None);
                 }
-
-                (parsed.provenance().to_vec(), patch.replacement.len())
+                // One contributor per replacement scalar, like the parser's.
+                let spans = normalized.units()
+                    .map(|unit| super::ProvenanceSpan { formatted: unit.normalized, source: unit.source })
+                    .collect::<Vec<_>>();
+                (spans, patch.replacement.len())
             };
             provenance = Vec::new();
             for mut span in old_provenance {
@@ -6222,7 +6230,7 @@ impl Document {
         old_source_start: usize,
         patches: &[SourcePatch],
     ) -> Result<super::line_endings::NormalizedText, ModelTransactionError> {
-        let Some(first_source) = input.units.first().map(|unit| unit.source.start) else {
+        let Some(first_source) = input.first_unit().map(|unit| unit.source.start) else {
             return Ok(input.clone());
         };
         let Ok(capture_start) = self.projection().map_source_boundary(
@@ -6297,14 +6305,15 @@ impl Document {
         for (start, visible) in prefixes {
             let start = rebase_source_boundary(start, patches, Association::BeforeInsertion)?;
             let visible = rebase_source_boundary(visible, patches, Association::BeforeInsertion)?;
-            let first = input.units.partition_point(|unit| unit.source.start < start);
-            let end = input.units.partition_point(|unit| unit.source.end <= visible);
+            let first = input.unit_partition_point(|unit| unit.source.start < start);
+            let end = input.unit_partition_point(|unit| unit.source.end <= visible);
             if first >= end { continue; }
-            let prefix = &input.text[input.units[first].normalized.start..input.units[end - 1].normalized.end];
+            let first = input.unit(first).unwrap().normalized.start;
+            let prefix = &input.text[first..input.unit(end - 1).unwrap().normalized.end];
             let quote = super::markdown_quotes::prefix(prefix);
             let white = prefix[quote..].bytes().take_while(|byte| matches!(byte, b' ' | b'\t')).count();
             if white > 0 {
-                let at = input.units[first].normalized.start + quote;
+                let at = first + quote;
                 removed.push(at..at + white);
             }
         }
@@ -6316,13 +6325,11 @@ impl Document {
             } else { merged.push(range); }
         }
         let removed = merged;
-        let mut result = super::line_endings::NormalizedText {
-            text: String::new(), units: Vec::with_capacity(input.units.len()),
-            endings: Vec::with_capacity(input.endings.len()), encoding: input.encoding,
-        };
+        let mut result = super::line_endings::NormalizedText::new(input.encoding);
+        result.endings.reserve(input.endings.len());
         let mut ending = 0;
         let mut hidden = 0;
-        for unit in &input.units {
+        for unit in input.units() {
             while hidden < removed.len() && removed[hidden].end <= unit.normalized.start { hidden += 1; }
             if removed.get(hidden).is_some_and(|range| range.contains(&unit.normalized.start)) { continue; }
             let start = result.text.len();
@@ -6337,7 +6344,7 @@ impl Document {
                 original.normalized = next.normalized.clone();
                 result.endings.push(original);
             }
-            result.units.push(next);
+            result.push_unit(next);
         }
         Ok(result)
     }

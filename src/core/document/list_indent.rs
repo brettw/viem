@@ -413,10 +413,7 @@ fn markdown_patches(
         let source = converter
             .source_range(context.content_start..context.content_start)
             .start;
-        let at = original
-            .units
-            .get(original.units.partition_point(|unit| unit.source.start < source))
-            .map_or(original.text.len(), |unit| unit.normalized.start);
+        let at = original.normalized_at(source);
         let physical_columns = |range: Range<usize>| {
             original.text[range].bytes().fold(0usize, |column, byte| {
                 column + if byte == b'\t' { 4 - column % 4 } else { 1 }

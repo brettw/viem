@@ -15,6 +15,7 @@ use super::{Association, BoundaryAffinity, DocumentId, Revision, TextPoint};
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::Range;
+use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Identifies one named part of a source artifact.
@@ -990,7 +991,9 @@ struct PositionMapStep {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CompiledTransition {
-    ordinal: [CompiledOrdinalMap; 6],
+    /// One map per anchor policy. Policies that agree share one map: a
+    /// transition that only inserts or only deletes needs two or three.
+    ordinal: [Arc<CompiledOrdinalMap>; 6],
     surviving_content: Vec<SurvivingContent>,
 }
 
@@ -1043,8 +1046,9 @@ pub struct PositionMap {
     target_revision: Revision,
     source_len: usize,
     target_len: usize,
-    forward: CompiledTransition,
-    reverse: CompiledTransition,
+    // Shared: clones, inversion and history edges reuse one compiled copy.
+    forward: Arc<CompiledTransition>,
+    reverse: Arc<CompiledTransition>,
     source_transition: Option<Box<PositionMap>>,
 }
 
@@ -1053,15 +1057,21 @@ impl PositionMap {
     /// any history chain. Optional presentation caches use this for eviction.
     pub(crate) fn owned_heap_bytes(&self) -> usize {
         [&self.forward, &self.reverse].into_iter().map(|transition| {
-            transition.ordinal.iter().map(|map| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>()).sum::<usize>()
+            transition.ordinal.iter().enumerate()
+                .filter(|(index, map)| !transition.ordinal[..*index].iter().any(|other| Arc::ptr_eq(other, map)))
+                .map(|(_, map)| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>()).sum::<usize>()
                 + transition.surviving_content.capacity() * std::mem::size_of::<SurvivingContent>()
         }).sum::<usize>() + self.source_transition.as_ref().map_or(0, |map| std::mem::size_of::<PositionMap>() + map.owned_heap_bytes())
     }
 
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         for transition in [&self.forward, &self.reverse] {
-            for ordinal in &transition.ordinal { visitor.vector(&ordinal.pieces, 0); }
-            visitor.vector(&transition.surviving_content, 0);
+            visitor.arc(transition, |visitor| {
+                for ordinal in &transition.ordinal {
+                    visitor.arc_once(ordinal, |visitor| visitor.vector(&ordinal.pieces, 0));
+                }
+                visitor.vector(&transition.surviving_content, 0);
+            });
         }
         if let Some(map) = &self.source_transition { map.visit_retained_memory(visitor); }
     }
@@ -1079,8 +1089,8 @@ impl PositionMap {
             target_revision: revision,
             source_len: length,
             target_len: length,
-            forward: CompiledTransition::identity(length),
-            reverse: CompiledTransition::identity(length),
+            forward: Arc::new(CompiledTransition::identity(length)),
+            reverse: Arc::new(CompiledTransition::identity(length)),
             source_transition: None,
         }
     }
@@ -1270,8 +1280,8 @@ impl PositionMap {
             target_revision,
             source_len,
             target_len,
-            forward: CompiledTransition::from_step(&step)?,
-            reverse: CompiledTransition::from_step(&reverse_step)?,
+            forward: Arc::new(CompiledTransition::from_step(&step)?),
+            reverse: Arc::new(CompiledTransition::from_step(&reverse_step)?),
             source_transition: None,
         })
     }
@@ -1326,8 +1336,8 @@ impl PositionMap {
                 });
             }
         }
-        self.forward.relocate_content(&relocations)?;
-        self.reverse.relocate_content(&reverse)?;
+        Arc::make_mut(&mut self.forward).relocate_content(&relocations)?;
+        Arc::make_mut(&mut self.reverse).relocate_content(&reverse)?;
         Ok(self)
     }
 
@@ -1419,8 +1429,8 @@ impl PositionMap {
             target_revision: next.target_revision,
             source_len: self.source_len,
             target_len: next.target_len,
-            forward: self.forward.then(&next.forward)?,
-            reverse: next.reverse.then(&self.reverse)?,
+            forward: Arc::new(self.forward.then(&next.forward)?),
+            reverse: Arc::new(next.reverse.then(&self.reverse)?),
             source_transition: match (&self.source_transition, &next.source_transition) {
                 (Some(first), Some(second)) => Some(Box::new(first.then(second)?)),
                 (None, Some(second)) if self.source_revision == self.target_revision => Some(second.clone()),
@@ -1571,9 +1581,13 @@ impl PositionMap {
 
 impl CompiledTransition {
     fn relocate_content(&mut self, relocations: &[(Range<usize>, usize)]) -> Result<(), PositionError> {
-        for (index, ordinal) in self.ordinal.iter_mut().enumerate() {
-            ordinal.relocate_content(relocations, ordinal_policy(index).0)?;
+        let mut ordinal = Vec::with_capacity(self.ordinal.len());
+        for (index, map) in self.ordinal.iter().enumerate() {
+            let mut map = CompiledOrdinalMap::clone(map);
+            map.relocate_content(relocations, ordinal_policy(index).0)?;
+            ordinal.push(map);
         }
+        self.ordinal = shared_policy_maps(ordinal);
         let mut content = Vec::new();
         let mut first = 0;
         for piece in &self.surviving_content {
@@ -1615,7 +1629,7 @@ impl CompiledTransition {
 
     fn identity(length: usize) -> Self {
         Self {
-            ordinal: std::array::from_fn(|_| CompiledOrdinalMap::identity(length)),
+            ordinal: shared_policy_maps(vec![CompiledOrdinalMap::identity(length)]),
             surviving_content: (!matches!(length, 0))
                 .then_some(SurvivingContent {
                     source: 0..length,
@@ -1627,28 +1641,29 @@ impl CompiledTransition {
     }
 
     fn from_step(step: &PositionMapStep) -> Result<Self, PositionError> {
-        let ordinal = std::array::from_fn(|index| {
+        let ordinal = (0..6).map(|index| {
             let (association, recovery) = ordinal_policy(index);
             CompiledOrdinalMap::from_step(step, association, recovery)
                 .expect("validated splice arithmetic compiles for every anchor policy")
-        });
+        }).collect();
         Ok(Self {
-            ordinal,
+            ordinal: shared_policy_maps(ordinal),
             surviving_content: surviving_content_for_step(step)?,
         })
     }
 
     fn then(&self, next: &Self) -> Result<Self, PositionError> {
-        let ordinal = [
-            self.ordinal[0].then(&next.ordinal[0])?,
-            self.ordinal[1].then(&next.ordinal[1])?,
-            self.ordinal[2].then(&next.ordinal[2])?,
-            self.ordinal[3].then(&next.ordinal[3])?,
-            self.ordinal[4].then(&next.ordinal[4])?,
-            self.ordinal[5].then(&next.ordinal[5])?,
-        ];
+        let mut ordinal: Vec<CompiledOrdinalMap> = Vec::with_capacity(6);
+        for index in 0..6 {
+            let same = (0..index).find(|&other| Arc::ptr_eq(&self.ordinal[other], &self.ordinal[index])
+                && Arc::ptr_eq(&next.ordinal[other], &next.ordinal[index]));
+            ordinal.push(match same {
+                Some(other) => ordinal[other].clone(),
+                None => self.ordinal[index].then(&next.ordinal[index])?,
+            });
+        }
         Ok(Self {
-            ordinal,
+            ordinal: shared_policy_maps(ordinal),
             surviving_content: compose_surviving_content(
                 &self.surviving_content,
                 &next.surviving_content,
@@ -2119,6 +2134,19 @@ fn mapping_outcome_at(
     })
 }
 
+/// Share equal policy maps. One map stands for all six policies.
+fn shared_policy_maps(maps: Vec<CompiledOrdinalMap>) -> [Arc<CompiledOrdinalMap>; 6] {
+    let mut shared: Vec<Arc<CompiledOrdinalMap>> = Vec::with_capacity(6);
+    for map in maps {
+        let existing = shared.iter().find(|candidate| ***candidate == map).cloned();
+        shared.push(existing.unwrap_or_else(|| Arc::new(map)));
+    }
+    while shared.len() < 6 {
+        shared.push(shared[0].clone());
+    }
+    shared.try_into().expect("six anchor policies")
+}
+
 fn normalize_ordinal_pieces(pieces: Vec<OrdinalPiece>) -> Result<Vec<OrdinalPiece>, PositionError> {
     let mut normalized: Vec<OrdinalPiece> = Vec::with_capacity(pieces.len());
     for mut piece in pieces {
@@ -2147,6 +2175,7 @@ fn normalize_ordinal_pieces(pieces: Vec<OrdinalPiece>) -> Result<Vec<OrdinalPiec
         }
         normalized.push(piece);
     }
+    normalized.shrink_to_fit();
     Ok(normalized)
 }
 
