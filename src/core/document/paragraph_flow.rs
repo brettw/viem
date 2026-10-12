@@ -5,6 +5,49 @@ use super::line_endings::{LineEnding, LogicalUnit, NormalizedText};
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+/// CommonMark's blank line: only spaces and tabs. Other Unicode spaces, such
+/// as NBSP, are paragraph content.
+fn blank(text: &str) -> bool {
+    text.bytes().all(|byte| matches!(byte, b' ' | b'\t'))
+}
+
+/// Separator endings `first..=last` that precede blank lines: each pair is
+/// one paragraph boundary and an unpaired ending is trivia, as at the end of
+/// a document. In WYSIWYG, whitespace on the blank lines is never paragraph
+/// text, including the lines left between pairs as editable empty paragraphs;
+/// Source shows those lines literally. `start` begins the first boundary, so
+/// a leading run also hides line 0.
+fn push_blank_run(
+    input: &NormalizedText,
+    lines: &[Range<usize>],
+    replacements: &mut Vec<(Range<usize>, &'static str, bool)>,
+    hide_blank_text: bool,
+    start: usize,
+    first: usize,
+    last: usize,
+) {
+    let pairs = (last - first + 1) / 2;
+    if pairs == 0 {
+        replacements.push((start..input.endings[last].normalized.end, "", false));
+    }
+    for pair in 0..pairs {
+        let from = first + pair * 2;
+        let to = if pair + 1 == pairs { last } else { from + 1 };
+        let begin = if pair == 0 { start } else { input.endings[from].normalized.start };
+        replacements.push((begin..input.endings[to].normalized.end, "\n", true));
+        if hide_blank_text && pair + 1 < pairs {
+            let empty = lines[to + 1].clone();
+            if !empty.is_empty() {
+                replacements.push((empty, "", false));
+            }
+        }
+    }
+    // A final blank line after the run is the last (empty) paragraph's text.
+    if hide_blank_text && last + 1 == input.endings.len() && !lines[last + 1].is_empty() && blank(&input.text[lines[last + 1].clone()]) {
+        replacements.push((lines[last + 1].clone(), "", false));
+    }
+}
+
 fn source_at(input: &NormalizedText, at: usize) -> usize {
     input.units.get(input.units.partition_point(|unit| unit.normalized.start < at))
         .map_or_else(|| input.units.last().map_or(0, |unit| unit.source.end), |unit| unit.source.start)
@@ -58,36 +101,51 @@ pub(super) fn flow_ranges(input: &NormalizedText, soft: &BTreeSet<usize>) -> Vec
 /// newline; repeated pairs retain authored empty paragraphs. Deleting a
 /// semantic boundary owns its complete physical separator extent.
 pub(super) fn markdown(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
-    markdown_projection(input, false)
+    markdown_projection(input, false, true)
+}
+
+/// A band of lines from inside a document: its first line may follow earlier
+/// blocks, so leading blank lines are not document-start separators.
+pub(super) fn markdown_region(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
+    markdown_projection(input, false, false)
 }
 
 /// Source syntax remains visible, but blank paragraph-separator lines share
 /// the same mapped boundary as WYSIWYG. Ordinary source endings still belong
 /// to the optional per-view flow policy.
 pub(super) fn markdown_source(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
-    markdown_projection(input, true)
+    markdown_projection(input, true, true)
 }
 
 fn markdown_projection(
     input: &NormalizedText,
     preserve_markers: bool,
+    document_start: bool,
 ) -> (NormalizedText, BTreeSet<usize>) {
     let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
     let soft = markdown_soft_breaks_with_syntax(input, &syntax);
     let quotes = super::markdown_quotes::classify(input);
+    // Count blank physical lines before any block. Quote stripping can empty
+    // a line that still owns container markers, so judge the original text.
+    let leading_blank = if document_start && !preserve_markers {
+        source_lines(input).iter().take_while(|line| blank(&input.text[(*line).clone()])).count()
+    } else {
+        0
+    };
     if !preserve_markers && quotes.iter().any(|line| line.depth > 0) {
         let body = super::markdown_quotes::strip(input, &quotes);
         let body_soft = input.endings.iter().zip(&body.endings)
             .filter_map(|(before, after)| soft.contains(&before.normalized.start)
                 .then_some(after.normalized.start)).collect();
-        return markdown_projection_with_soft_breaks(&body, false, body_soft, &syntax);
+        return markdown_projection_with_soft_breaks(&body, false, leading_blank, body_soft, &syntax);
     }
-    markdown_projection_with_soft_breaks(input, preserve_markers, soft, &syntax)
+    markdown_projection_with_soft_breaks(input, preserve_markers, leading_blank, soft, &syntax)
 }
 
 fn markdown_projection_with_soft_breaks(
     input: &NormalizedText,
     preserve_markers: bool,
+    leading_blank: usize,
     soft: BTreeSet<usize>,
     syntax: &super::markdown_syntax::Blocks,
 ) -> (NormalizedText, BTreeSet<usize>) {
@@ -97,6 +155,22 @@ fn markdown_projection_with_soft_breaks(
     let mut replacements: Vec<(Range<usize>, &'static str, bool)> = Vec::new();
     let mut explicit = BTreeSet::new();
     let mut i = 0;
+    // Blank lines before the first block separate nothing, so all of their
+    // endings are surplus: pairs retain empty paragraphs, exactly as they do
+    // after the last block, and a single leading blank line is trivia. Like
+    // an unpaired terminal ending, Source keeps it as an ordinary line, and a
+    // band from inside a document has no leading run.
+    if leading_blank > 0 {
+        if input.endings.is_empty() {
+            if !lines[0].is_empty() {
+                replacements.push((lines[0].clone(), "", false));
+            }
+        } else {
+            let last = leading_blank.min(input.endings.len()) - 1;
+            push_blank_run(input, &lines, &mut replacements, true, 0, 0, last);
+            i = last + 1;
+        }
+    }
     while i < input.endings.len() {
         let text = &input.text[quotes[i].content_start..lines[i].end];
         let ending = &input.endings[i];
@@ -158,26 +232,17 @@ fn markdown_projection_with_soft_breaks(
             replacements.push((start..end, " ", false));
         } else if lines
             .get(i + 1)
-            .is_some_and(|line| input.text[line.clone()].trim().is_empty())
+            .is_some_and(|line| blank(&input.text[line.clone()]))
         {
             let mut last = i;
             while last + 1 < input.endings.len()
-                && input.text[lines[last + 1].clone()].trim().is_empty()
+                && blank(&input.text[lines[last + 1].clone()])
             {
                 last += 1;
             }
             if last > i {
-                let count = last - i + 1;
-                let pairs = count / 2;
-                for pair in 0..pairs {
-                    let first = i + pair * 2;
-                    let end = if pair + 1 == pairs { last } else { first + 1 };
-                    replacements.push((
-                        input.endings[first].normalized.start..input.endings[end].normalized.end,
-                        "\n",
-                        true,
-                    ));
-                }
+                push_blank_run(input, &lines, &mut replacements, !preserve_markers,
+                    input.endings[i].normalized.start, i, last);
                 i = last;
             } else if preserve_markers {
                 // An ordinary terminal source ending remains editable.
@@ -185,7 +250,7 @@ fn markdown_projection_with_soft_breaks(
                     explicit.insert(ending.source.end);
                 }
             } else if !hard {
-                replacements.push((ending.normalized.clone(), "", false));
+                push_blank_run(input, &lines, &mut replacements, true, ending.normalized.start, i, i);
             } else {
                 let count = if text.ends_with('\\') {
                     1

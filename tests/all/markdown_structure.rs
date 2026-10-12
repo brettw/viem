@@ -186,7 +186,8 @@ fn list_prose_remains_visible_before_indented_block_starts() {
 fn parser_setext_headings_keep_ownership_of_list_like_underlines() {
     for (source, rendered, source_text) in [
         ("bbb\n- ", "bbb", "bbb\n- "),
-        ("\nbbb\n- ", "\nbbb", "\nbbb\n- "),
+        ("\nbbb\n- ", "bbb", "\nbbb\n- "),
+        ("\n\nbbb\n- ", "\nbbb", "\nbbb\n- "),
         ("aaa\n\nbbb\n- ", "aaa\nbbb", "aaa\nbbb\n- "),
         ("> aaa\n\nbbb\n- ", "aaa\nbbb", "> aaa\nbbb\n- "),
         (

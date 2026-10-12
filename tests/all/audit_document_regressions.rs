@@ -609,7 +609,8 @@ fn whitespace_before_visible_comments_stays_visible() {
 
 #[test]
 fn splitting_after_a_leading_empty_paragraph_preserves_both_boundaries() {
-    for source in ["\na", "\nab", "\n\na"] {
+    // A leading empty paragraph needs a pair of endings; one is trivia.
+    for source in ["\n\na", "\n\nab", "\n\n\na", " \n \na"] {
         let (mut core, view) = open(source, Format::Markdown);
         let original = core.document().text().to_owned();
         input(&mut core, view, InputEvent::key('i'));
@@ -626,12 +627,14 @@ fn splitting_after_a_leading_empty_paragraph_preserves_both_boundaries() {
 
 #[test]
 fn typing_at_the_start_of_a_retained_trailing_whitespace_row_has_no_extra_fold() {
+    // The whitespace row is retained trivia, never visible paragraph text.
     let source = "abc\n\nend\n  ";
     let (mut core, view) = open(source, Format::Markdown);
+    assert_eq!(core.document().text(), "abc\nend");
     input(&mut core, view, InputEvent::key('i'));
     place(&mut core, view, 7);
     input(&mut core, view, InputEvent::text("x"));
-    assert_eq!(core.document().text(), "abc\nendx  ");
+    assert_eq!(core.document().text(), "abc\nendx");
     verify_history(&mut core, view, source);
 }
 
@@ -1165,11 +1168,11 @@ fn visible_multiline_comments_keep_literal_internal_breaks() {
 #[test]
 fn native_selection_typeover_and_enter_preserve_special_boundaries() {
     for (source, range) in [
-        ("\na", 1..2),
+        ("\n\na", 1..2),
+        (" \n \na", 1..2),
         ("# Heading #", 0..3),
         ("Title\n-----", 0..3),
         ("[ref]: /url \"title\"\n[other]: <x y>", 0..3),
-        ("   ", 0..2),
     ] {
         for event in [
             InputEvent::text("x"),

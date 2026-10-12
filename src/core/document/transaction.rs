@@ -84,7 +84,7 @@ pub(crate) use replacement::RecordedReplacement;
 use super::formatted_text::{FormattedTextSpliceStats, LogicalGraphemeSnapshot};
 use super::line_endings::{detect, normalize, normalize_literal};
 use super::projection::{
-    escape_markdown_insert, escape_markdown_insert_in_encoding, project,
+    escape_markdown_insert, escape_markdown_insert_in_encoding, project, project_region,
     splice_line_local_projection,
 };
 use super::source_line_index::SourceHardLineSpliceStats;
@@ -2186,6 +2186,7 @@ impl Document {
         }
         markdown_list_structure::retire_supporting_separator(self, &edits, &mut source_patches)?;
         if !authored_syntax {
+            markdown_block_styles::absorb_blank_line_trivia(self, &mut source_patches)?;
             self.repair_markdown_reference_dependents(&edits, &mut source_patches)?;
             self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
         }
@@ -4296,7 +4297,7 @@ impl Document {
         // References and passive HTML need surrounding definition/ownership
         // context; this proof deliberately covers ordinary prose only.
         if old_decoded.text.contains(['[', '<']) { return Ok(None); }
-        let old_local = project(&normalize(&old_decoded, self.file_format()), Format::Markdown,
+        let old_local = project_region(&normalize(&old_decoded, self.file_format()), Format::Markdown,
             self.revision(), body.start, body.end);
         let old = projection.text_tree().slice(owner.range.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
@@ -4310,7 +4311,7 @@ impl Document {
         let Some(new_bytes) = source.bytes_in(body.start..new_end) else { return Ok(None); };
         let new_decoded = self.encoding().decode_region(&new_bytes, body.start)?;
         if new_decoded.text.contains(['[', '<']) { return Ok(None); }
-        let new_local = project(&normalize(&new_decoded, self.file_format()), Format::Markdown,
+        let new_local = project_region(&normalize(&new_decoded, self.file_format()), Format::Markdown,
             Revision(self.next_revision), body.start, new_end);
         let new = new_local.text();
         if new.is_empty() || new.contains(['\n', '\r']) || new_local.blocks().len() != 1

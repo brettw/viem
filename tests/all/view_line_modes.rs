@@ -904,11 +904,12 @@ fn hidden_physical_change_breaks_backspace_and_explicit_movement_are_bounded() {
     key(&mut core, view, Key::Backspace);
     assert_eq!(core.document().source_bytes(), b"\nthird");
     assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+    // The single leading ending is trivia, so the cursor moves within "third".
     key(&mut core, view, Key::Right);
     assert_eq!(core.command_state(view).unwrap().cursor(), 1);
     keys(&mut core, view, "X");
     key(&mut core, view, Key::Escape);
-    assert_eq!(core.document().source_bytes(), b"\nXthird");
+    assert_eq!(core.document().source_bytes(), b"\ntXhird");
 }
 
 #[test]

@@ -728,7 +728,7 @@ fn markdown_alternate_structures_copy_complete_visible_lines() {
     let mut failures = Vec::new();
     for source in [
         "\n",
-        "\na",
+        "\n\na",
         "a<br>b",
         "Setext\n===",
         "a\n=\n\nb",
@@ -766,7 +766,7 @@ fn markdown_alternate_structures_copy_complete_visible_lines() {
 
 #[test]
 fn markdown_alternate_structures_move_complete_visible_lines() {
-    for source in ["\na", "a<br>b", "a\n=\n\nb", "1) a\n2) b"] {
+    for source in ["\n\na", "a<br>b", "a\n=\n\nb", "1) a\n2) b"] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
                 .unwrap();
