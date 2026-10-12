@@ -31,16 +31,20 @@ internal static class DocumentModeMenuTests
             var obscure = (MenuFlyoutSubItem)code.Items[1];
             Check(code.Items.Count == 3 && obscure.Items.Count == 0,
                 "startup retains Code Auto and the obscure flyout without constructing language menu controls");
-            async Task Open() { peer.Expand(); await Task.Delay(40); }
+            Task Open() => MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, plain, code);
+            Task Close(Func<Task>? action = null) => MenuTestHelpers.Transition(false, async () => {
+                if (action != null) await action();
+                peer.Collapse();
+            }, plain, code, auto, obscure, obscure.Items.FirstOrDefault() ?? obscure);
             async Task OpenCode()
             {
                 await Open(); Check(code.Focus(FocusState.Programmatic), "Code flyout takes native keyboard focus");
-                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Right); await Task.Delay(40);
+                await MenuTestHelpers.Transition(true, () => InputRoutingTests.Key(global::Windows.System.VirtualKey.Right), auto, obscure);
             }
             async Task OpenObscure()
             {
                 await OpenCode(); Check(obscure.Focus(FocusState.Programmatic), "Obscure languages flyout takes native keyboard focus");
-                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Right); await Task.Delay(40);
+                await MenuTestHelpers.Transition(true, () => InputRoutingTests.Key(global::Windows.System.VirtualKey.Right), obscure.Items.First());
             }
             async Task Choose(ToggleMenuFlyoutItem item)
             {
@@ -48,8 +52,8 @@ internal static class DocumentModeMenuTests
                 else if (code.Items.Contains(item)) await OpenCode();
                 else await Open();
                 Check(item.Focus(FocusState.Programmatic), "view-mode choice takes native keyboard focus");
-                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
-                peer.Collapse(); await Open();
+                await Close(() => InputRoutingTests.Key(global::Windows.System.VirtualKey.Space));
+                await Open();
             }
             await Open();
             var python = code.Items.OfType<ToggleMenuFlyoutItem>().Single(i => i.Text == "Python");
@@ -66,7 +70,7 @@ internal static class DocumentModeMenuTests
             await Choose(plain);
             Check(document.State.format == VIEM_FORMAT_PLAIN_TEXT && plain.IsChecked && !auto.IsChecked
                 && ((FontIcon)code.Icon).Glyph == "", "Plain text menu action overrides a code filename");
-            peer.Collapse();
+            await Close();
             view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "python", false, DocumentModes.Read(document));
             await Open();
             Check(python.IsChecked && !plain.IsChecked && !auto.IsChecked && auto.Text == "Auto (Rust)",
@@ -78,18 +82,18 @@ internal static class DocumentModeMenuTests
                 "opening Code exposes every remaining shared language in the sorted obscure flyout");
             var obscureLanguage = DocumentModes.Languages.First(l => !l.Primary);
             var obscureChoice = obscureItems.Single(i => i.Text == obscureLanguage.Name);
-            peer.Collapse();
+            await Close();
             await Choose(obscureChoice);
             Check(obscureChoice.IsChecked && !python.IsChecked && !auto.IsChecked
                 && DocumentModes.Read(document).Language == obscureLanguage.Id && ((FontIcon)obscure.Icon).Glyph == "\uE73E",
                 "native obscure language selection updates its check and the document mode");
-            peer.Collapse();
+            await Close();
             await Choose(markdown);
             Check(markdown.IsChecked && document.State.format == (preferences.MarkdownFormattedView ? VIEM_FORMAT_MARKDOWN : VIEM_FORMAT_MARKDOWN_SOURCE),
                 "Markdown choice uses the remembered formatted view");
             Check(!document.IsDirty && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "mode changes retain exact source bytes and clean state");
-            peer.Collapse();
+            await Close();
 
             foreach (var (filename, expectedFormat, label) in new[] {
                 ("notes.md", VIEM_FORMAT_CODE, "Auto (Markdown)"),
@@ -103,7 +107,7 @@ internal static class DocumentModeMenuTests
                     "Auto uses Code Markdown highlighting or Plain text fallback: " + filename);
                 Check(!python.IsChecked && !obscureChoice.IsChecked,
                     "changing active document refreshes both primary and obscure forced-language checks");
-                peer.Collapse();
+                await Close();
             }
             Check(languageItems.SequenceEqual(code.Items.Skip(3)) && obscureItems.SequenceEqual(obscure.Items),
                 "reopening View retains both populated language groups without duplicates");

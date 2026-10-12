@@ -93,6 +93,7 @@ internal static class StyleAndSettingsTests
         await FontChecks(pane, preferences);
         await StyleFontSizeTests.Run(pane, preferences);
         await FormatMenuTests.Run(preferences);
+        await SelectionFindTests.Run(preferences);
         await DocumentModeMenuTests.Run(preferences);
         await ListInteractionTests.Run(preferences);
         await CodeStyleChecks(pane, preferences);
@@ -114,9 +115,10 @@ internal static class StyleAndSettingsTests
             await LineSpacingChecks(pane, styles, sourceBeforeInspector);
         }
         finally { styles.Close(); }
+        StyleSessionRecoveryTests.Run(pane, preferences);
     }
 
-    private static async Task DocumentSwitchingChecks(Preferences preferences)
+    internal static async Task DocumentSwitchingChecks(Preferences preferences)
     {
         using var markdown = new CoreDocument("# Title `code` tail\n\nBody"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, markdown);
@@ -127,6 +129,9 @@ internal static class StyleAndSettingsTests
         window.ShowStyles();
         var inspector = window.StyleInspector!;
         StyleDefinition Selected() => (StyleDefinition)inspector.StylePicker.SelectedItem;
+        static bool HasInputFocus(EditorPane pane) => ReferenceEquals(
+            Microsoft.UI.Xaml.Input.FocusManager.GetFocusedElement(pane.XamlRoot),
+            Children<TextBox>(pane).Single(control => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(control) == "Viem document input"));
         try
         {
             Check(Selected().Id == "Code", "document-switch inspector starts at the Markdown caret's character style");
@@ -134,8 +139,13 @@ internal static class StyleAndSettingsTests
             var text = new CoreDocument("Another document"u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
             var second = window.SplitPane(first, text);
             await second.Ready; await Task.Delay(150);
-            Check(window.StyleInspector == inspector && Selected().Key == second.View!.CurrentStyleEditorKey(second.View.Styles())
-                && inspector.Title.Contains("Plain Text"), "switching panes immediately retargets the existing inspector's family and current style");
+            var expected = second.View!.CurrentStyleEditorKey(second.View.Styles());
+            Check(window.StyleInspector == inspector && Selected().Key == expected
+                && inspector.Title.Contains("Plain Text"), "switching panes immediately retargets the existing inspector's family and current style"
+                + $" (sameInspector={window.StyleInspector == inspector}, selected={Selected().Key}, expected={expected}, title={inspector.Title},"
+                + $" activePaneIsSecond={window.ActivePane == second}, activeWindow={window.IsWindowActive}, foregroundIsWindow={GetForegroundWindow() == window.Hwnd},"
+                + $" followed={inspector.FollowingStateForTesting}, secondView={second.View.Id})");
+            Check(HasInputFocus(second), "splitting into another document gives its input native focus");
             Check(GetForegroundWindow() == window.Hwnd, "retargeting the inspector leaves keyboard focus in the document window");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().First(s => s.Id != Selected().Id);
             var explicitChoice = Selected().Key;
@@ -147,6 +157,14 @@ internal static class StyleAndSettingsTests
             await window.ClosePane(second, force: true); await Task.Delay(150);
             Check(window.StyleInspector == inspector && Selected().Id == "Code",
                 "closing the followed pane keeps the inspector open and follows the remaining document");
+            foreach (string command in new[] { "split", "new" }) {
+                first.View!.Ex(command); await window.PendingEffectsForTesting;
+                var added = window.Panes.Single(pane => pane != first);
+                await added.Ready; await Task.Delay(80);
+                Check(window.ActivePane == added && HasInputFocus(added),
+                    $":{command} selects the new pane and completes its native input focus");
+                await window.ClosePane(added, force: true);
+            }
             var otherWindow = new EditorWindow(preferences, new CoreDocument("A separate window"u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT));
             App.Instance.Windows.Add(otherWindow); otherWindow.Activate();
             try
@@ -170,6 +188,10 @@ internal static class StyleAndSettingsTests
 
     private static async Task LineSpacingChecks(EditorPane pane, StyleWindow styles, byte[] sourceBeforeInspector)
     {
+        // Picker rows retain their identity while editing. Their immutable
+        // records are labels; inspect current declarations through the core.
+        StyleDefinition SelectedStyle() => styles.ThemeView.Styles().Styles.Single(style =>
+            style.Key == ((StyleDefinition)styles.StylePicker.SelectedItem).Key);
         // The line-spacing interaction starts from a declared Normal value;
         // bundled themes are free to choose a different multiplier.
         styles.ThemeView.EditStyle((StyleDefinition)styles.StylePicker.SelectedItem, VIEM_STYLE_EDIT_SET_DECLARATION,
@@ -180,25 +202,29 @@ internal static class StyleAndSettingsTests
         var lineSpacing = Children<ComboBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing");
         var lineSpacingAmount = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing amount");
         var lineSpacingUnits = Children<TextBlock>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing units");
-        var spaceBefore = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Space before");
-        var spaceAfter = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Space after");
         var firstLineIndent = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "First line");
-        Check(!Children<NumberBox>(styles.ParagraphPanel).Any(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) is "Start indent" or "End indent"),
-            "paragraph settings retain first-line indent and omit start/end indent controls");
-        var paragraphStyle = (StyleDefinition)styles.StylePicker.SelectedItem;
+        Check(!Children<NumberBox>(styles.ParagraphPanel).Any(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c)
+                is "Start indent" or "End indent" or "Space before" or "Space after"),
+            "paragraph settings retain first-line indent while block geometry uses the Block tab");
+        var paragraphStyle = SelectedStyle();
         styles.ThemeView.EditStyle(paragraphStyle, VIEM_STYLE_EDIT_SET_DECLARATION,
             VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT, CoreView.Number(23));
         styles.ThemeView.EditStyle(paragraphStyle, VIEM_STYLE_EDIT_SET_DECLARATION,
             VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT, CoreView.Number(17));
         styles.CommitThemeForTesting(); styles.RefreshForTesting();
+        paragraphStyle = SelectedStyle();
+        Check(paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT).number == 23
+            && paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number == 17,
+            $"configured side indents survive theme reload (leading: {paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT).number}, "
+                + $"trailing: {paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number}, style: {paragraphStyle.Id})");
         firstLineIndent.Value = 9; await Task.Delay(100);
-        paragraphStyle = (StyleDefinition)styles.StylePicker.SelectedItem;
+        paragraphStyle = SelectedStyle();
         Check(paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT).number == 23
             && paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number == 17
             && paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT).number == 9,
-            "editing the retained first-line control preserves configured side indents");
-        Check(spaceBefore.Width < firstLineIndent.Width && spaceAfter.Width < firstLineIndent.Width,
-            "paragraph spacing fields are narrower to preserve the fixed inspector width");
+            $"editing the retained first-line control preserves configured side indents (leading: {paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT).number}, "
+                + $"trailing: {paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number}, first: {paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT).number}, "
+                + $"control: {firstLineIndent.Value}, enabled: {firstLineIndent.IsEnabled}, declared: {paragraphStyle.Declares(VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT)}, style: {paragraphStyle.Id})");
         Check(sourceBeforeInspector.AsSpan().SequenceEqual(pane.Document.Source(pane.Document.State.document_revision)),
             "opening and displaying style controls does not rewrite document source");
         Check(lineSpacing.SelectedIndex == 0 && lineSpacingAmount.IsEnabled && Math.Abs(lineSpacingAmount.Minimum - .1) < .0001
@@ -303,6 +329,14 @@ internal static class StyleAndSettingsTests
             }
             var markdownTyping = Children<CheckBox>(settings.CurrentPage).Single(c => c.Content as string == "Automatically format typed Markdown");
             Check(markdownTyping.IsChecked == preferences.MarkdownAutodetect, "Editing reflects the Markdown typing preference");
+            var indentation = preferences.Editing["indentation"] as System.Text.Json.Nodes.JsonObject;
+            foreach (var (key, label, fallback) in new[] {
+                ("autoindent", "Auto indent", true), ("expandtab", "Insert spaces for tabs", true), ("smarttab", "Smart tabs", true),
+                ("continueCommentsOnEnter", "Continue comments with Enter", false), ("continueCommentsOnOpenLine", "Continue comments with o / O", false) }) {
+                var checkbox = Children<CheckBox>(settings.CurrentPage).Single(c => c.Content as string == label);
+                Check(checkbox.IsChecked == (indentation?[key]?.GetValue<bool>() ?? fallback),
+                    $"Editing reflects the portable default or explicit setting for {key}");
+            }
             markdownTyping.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(100);
             Check(preferences.MarkdownAutodetect != priorMarkdownAutodetect
                 && new Preferences(preferences.DirectoryPath).MarkdownAutodetect == preferences.MarkdownAutodetect,
@@ -402,7 +436,8 @@ internal static class StyleAndSettingsTests
             byte[] related = doc.Source(doc.State.document_revision);
             new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await Task.Delay(100);
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
-                && !((object[])inspector.ParentPicker.ItemsSource).OfType<StyleDefinition>().Any(s => s.Id == childId), "parent arrow selects the referenced style and parent choices exclude descendants");
+                && inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
+                "parent navigation selects the referenced style while inheritance choices retain descendants for apply-time cycle validation");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);
             new ButtonAutomationPeer(inspector.VisitNext).Invoke(); await Task.Delay(100);
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId && related.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "next paragraph arrow navigates without editing styles");
@@ -451,7 +486,7 @@ internal static class StyleAndSettingsTests
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase),
             "saved font styles contain portable names rather than resource URIs");
     }
-    private static async Task CodeStyleChecks(EditorPane pane, Preferences preferences)
+    internal static async Task CodeStyleChecks(EditorPane pane, Preferences preferences)
     {
         using var doc = new CoreDocument("A Code style sample."u8.ToArray(), format: VIEM_FORMAT_CODE);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
@@ -461,14 +496,27 @@ internal static class StyleAndSettingsTests
             var restore = Children<Button>(inspector.RootControl).Single(b => b.Content as string == "Restore Defaults");
             Check(restore.Visibility == Visibility.Visible, "Code theme styles expose Restore Defaults");
             Check(Children<CheckBox>(inspector.CharacterPanel).All(c => c.IsChecked == true && !c.IsEnabled), "base paragraph overrides are checked and fixed while values remain editable");
-            string parentId = view.CreateCodeStyle("Parent"), childId = view.CreateCodeStyle("Child");
+            string CreateStyle(string name)
+            {
+                var sheet = view.Styles();
+                try { return view.CreateCodeStyle(name); }
+                catch (Exception error)
+                {
+                    string snapshot = FrontendSmokeTests.ReportPath + ".code-style-before.json";
+                    File.WriteAllBytes(snapshot, view.ExportStyleDefaults());
+                    var matches = sheet.Styles.Where(s => s.Name == name || s.Id == name).Select(s => $"{s.Namespace}:{s.Id}:{s.Name}");
+                    throw new InvalidOperationException($"Create Code style '{name}', sheet revision {sheet.Identity.style_sheet_revision}, existing matches [{string.Join(", ", matches)}], snapshot {snapshot}", error);
+                }
+            }
+            string parentId = CreateStyle("Parent"), childId = CreateStyle("Child");
             var child = view.Styles().Styles.Single(s => s.Id == childId);
             view.EditStyleString(child, VIEM_STYLE_EDIT_SET_PARENT, 0, parentId); inspector.RefreshForTesting();
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);
             byte[] related = view.ExportStyleDefaults();
             new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await Task.Delay(100);
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
-                && !((object[])inspector.ParentPicker.ItemsSource).OfType<StyleDefinition>().Any(s => s.Id == childId), "parent arrow selects the referenced style and parent choices exclude descendants");
+                && inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
+                "Code parent navigation selects the referenced style while inheritance choices retain descendants for apply-time cycle validation");
             Check(related.AsSpan().SequenceEqual(view.ExportStyleDefaults()), "Code parent navigation does not edit shared styles");
             new ButtonAutomationPeer(restore).Invoke(); await Task.Delay(100);
             Check(inspector.Error.Length == 0 && !view.Styles().Styles.Any(style => style.Id == childId || style.Id == parentId),

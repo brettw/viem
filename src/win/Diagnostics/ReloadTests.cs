@@ -17,12 +17,27 @@ internal sealed partial class EditorWindow
     }
     private async Task TestReloadPositions()
     {
+        // Full diagnostics already have split views. Use two fixture panes so
+        // the empty row and padding fit, making a zero scroll origin meaningful.
+        var window = NewWindow(null);
+        try
+        {
+            await window.ActivePane!.Ready;
+            await window.RunReloadPositionChecks();
+        }
+        finally { window.closing = true; window.Close(); Activate(); ActivePane?.FocusEditor(); }
+    }
+    private async Task RunReloadPositionChecks()
+    {
         string path = Path.Combine(preferences.DirectoryPath, "reload-positions.txt");
         string source = string.Join("\n", Enumerable.Range(0, 140).Select(i => $"line {i:000} has some content"));
         await File.WriteAllTextAsync(path, source);
         var document = NewDocument(Encoding.UTF8.GetBytes(source), path, VIEM_FORMAT_PLAIN_TEXT);
+        var blank = ActivePane!;
         var first = AddPane(document); await first.Ready;
+        RemovePane(blank);
         var second = AddPane(document); await second.Ready;
+        paneGrid.UpdateLayout();
         first.View!.GoToLine(100); first.View.Command("llll");
         second.View!.GoToLine(110); second.View.Command("llllll");
         first.View.Scroll(0, 307); second.View.Scroll(0, 609);
@@ -55,9 +70,17 @@ internal sealed partial class EditorWindow
         await File.WriteAllTextAsync(path, "");
         await Reload(first, true);
         foreach (var pane in new[] { first, second })
+        {
+            var layout = pane.View!.LayoutInfo();
+            if (layout.total_height > layout.viewport_height)
+                throw new InvalidOperationException($"Reload fixture must fit its empty row and padding: content={layout.total_height:R}, viewport={layout.viewport_height:R}.");
             if (pane.View!.Presentation.cursor_utf8_offset != 0 || pane.View.Viewport.top != 0)
-                throw new InvalidOperationException("Empty reload did not clamp cursor/scroll positions.");
-        RemovePane(second); RemovePane(first);
+            {
+                var viewport = pane.View.Viewport;
+                var restored = CaptureReloadPosition(pane);
+                throw new InvalidOperationException($"Empty reload did not clamp cursor/scroll positions: pane={(pane == first ? "first" : "second")}, cursor={pane.View.Presentation.cursor_utf8_offset}, top={viewport.top:R}, maximumTop={viewport.maximum_top:R}, canvasHeight={pane.Canvas.ActualHeight:R}, viewportHeight={layout.viewport_height:R}, totalHeight={layout.total_height:R}, insets={layout.content_insets.top:R}/{layout.content_insets.bottom:R}, restoredLine={restored.viewport_line}, rowFraction={restored.row_fraction:R}, sourceBytes={pane.Document.State.source_byte_count}, error={pane.LastError}.");
+            }
+        }
         Diagnostics.FrontendSmokeTests.UiChecks.Add("file reload preserves each pane's cursor and scroll and clamps shortened/empty content");
     }
 }

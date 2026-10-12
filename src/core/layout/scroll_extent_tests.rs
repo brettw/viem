@@ -49,7 +49,8 @@ fn terminal_document_extent_matches_full_regional_and_streamed_long_rows() {
 
     // A short exact advance must retain overflowing ink; a long one must
     // retain its blank leading. Both must add trailing spacing and padding once.
-    for advance in [8.0, 48.0] {
+    for advance in [0.0, 8.0, 48.0] {
+        styles.default_line_spacing = LineSpacing::Exact(advance);
         styles.paragraphs[1].line_spacing = LineSpacing::Exact(advance);
         let mut engine = LayoutEngine::new(OverhangingInkProvider::default());
         let mut view = ViewLayout::new(400.0, 80.0);
@@ -62,11 +63,12 @@ fn terminal_document_extent_matches_full_regional_and_streamed_long_rows() {
                 document.id(), document.revision(), text, styles.clone(), &mut view,
             ).unwrap();
             let full = view.snapshot().unwrap();
+            assert!(full.default_row_advance.is_finite() && full.default_row_advance > 0.0);
             let last = full.rows.last().unwrap();
             let ink_bottom = last.ink_bounds().unwrap().y + last.ink_bounds().unwrap().height;
             assert!(ink_bottom > last.y + last.natural_height());
-            assert_eq!(last.line_advance, advance);
-            let trailing_space = full.total_height - (last.y + advance).max(ink_bottom);
+            assert_eq!(last.line_advance, if advance == 0.0 { last.natural_height() } else { advance });
+            let trailing_space = full.total_height - (last.y + last.line_advance).max(ink_bottom);
             assert!((trailing_space - (17.0 + 11.0 + margin)).abs() < 0.001);
             let expected = full.total_height;
             let captured = view.capture_for_regional_layout_job(0..text.len());
@@ -83,6 +85,7 @@ fn terminal_document_extent_matches_full_regional_and_streamed_long_rows() {
             assert!(streamed.lines.last().unwrap().rows[0].clusters.len() < 1_000,
                 "matching the scroll extent must not retain the entire giant row");
             for (path, region) in [("regional", regional), ("streamed", streamed)] {
+                assert!((region.default_row_advance - full.default_row_advance).abs() < 0.001);
                 assert!(region.lines.iter().all(|line| line.height_is_exact));
                 let height = region.lines.iter().map(|line| line.height).sum::<f64>() as f32;
                 assert!((height - expected).abs() < 0.001,

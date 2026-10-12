@@ -8,6 +8,11 @@ with Python 3.9+ on macOS or Linux:
 python3 scripts/fuzz-backend.py --suite all --seed 1 --cases 100 --steps 1000
 ```
 
+The Python supervisor depends on POSIX process groups, `wait4`, and per-child
+RSS monitoring. It exits with a clear unsupported-platform error on Windows
+before building or starting children. The Rust suites and direct replay remain
+portable; use the direct Cargo commands below on Windows with a local trace path.
+
 The supervisor builds the release example once and starts a fresh process for
 each suite/seed. `--cases` is **per suite**: this command runs 300 children.
 Use `--help` for current options and defaults. Useful variations:
@@ -107,4 +112,6 @@ python3 -m unittest discover -s scripts/tests -p 'test_fuzz_backend.py' -v
 ```
 
 These use temporary children to check exit capture, limits, owned-process
-cleanup, replay and artifacts. They require no Rust build.
+cleanup, replay and artifacts. They require no Rust build. Process-supervision
+checks are skipped on Windows; portable trace, replay preparation, and
+unsupported-platform checks still run there.

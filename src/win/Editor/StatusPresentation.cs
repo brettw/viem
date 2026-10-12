@@ -25,6 +25,7 @@ internal sealed partial class EditorPane
     private readonly Button locationToggle = new() { MinWidth = 0, MinHeight = 0, Padding = new(2, 0, 2, 0), BorderThickness = new(0), VerticalAlignment = VerticalAlignment.Stretch };
     private readonly FontIcon lineModeIcon = new() { FontSize = 14 };
     private uint? statusPointer;
+    private DependencyObject? statusPointerSource;
     private global::Windows.Foundation.Point statusPress, statusLastPoint;
     private bool statusDragging;
     private bool statusSelectingOutput;
@@ -94,6 +95,22 @@ internal sealed partial class EditorPane
         AutomationProperties.SetName(locationToggle, "Physical source position: " + locationText);
     }
 
+    private bool CaptureStatusDragPointer(PointerRoutedEventArgs args)
+    {
+        // Buttons and other native status controls own the press until it
+        // becomes a pane drag. WinUI will not transfer their existing capture
+        // implicitly; release this pointer only after crossing the threshold.
+        for (var element = statusPointerSource ?? args.OriginalSource as DependencyObject; element != null && element != status;
+            element = VisualTreeHelper.GetParent(element))
+        {
+            // Native controls can capture internally without populating the
+            // public PointerCaptures list. Releasing this exact pointer is a
+            // no-op for descendants that do not own it.
+            if (element is UIElement owner) owner.ReleasePointerCapture(args.Pointer);
+        }
+        return status.CapturePointer(args.Pointer);
+    }
+
     private void BuildStatus()
     {
         status.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
@@ -141,24 +158,33 @@ internal sealed partial class EditorPane
             Run(() => View.LineMode(View.CurrentLineMode == VIEM_LINE_MODE_VISUAL ? VIEM_LINE_MODE_PHYSICAL_SOURCE : VIEM_LINE_MODE_VISUAL));
             FocusEditor();
         };
-        // Listen even when a child control handles the press. Capture only once
-        // movement crosses the drag threshold, retaining ordinary native clicks.
+        // Listen even when a child control handles the press. Native controls
+        // retain their clicks until movement becomes a pane drag.
         status.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) => {
             var point = e.GetCurrentPoint(window.PaneStack);
             if (!point.Properties.IsLeftButtonPressed) return;
             statusPointer = e.Pointer.PointerId; statusPress = statusLastPoint = point.Position; statusDragging = false; statusSelectingOutput = !outputScroll.Visibility.Equals(Visibility.Collapsed) && e.OriginalSource is DependencyObject source && IsOutputDescendant(source);
+            statusPointerSource = e.OriginalSource as DependencyObject;
+            // Empty background has no child control to retain pointer events.
+            // Capture immediately so a first move beyond the bar still reaches
+            // the threshold handler, without taking focus or starting a drag.
+            // Text selection and native buttons keep their original press.
+            if (!statusSelectingOutput && StatusResizeHoverAt(e.GetCurrentPoint(status).Position)) status.CapturePointer(e.Pointer);
         }), true);
         status.AddHandler(PointerMovedEvent, new PointerEventHandler((_, e) => {
             status.SetResizeHover(StatusResizeHoverAt(e.GetCurrentPoint(status).Position));
             if (statusPointer != e.Pointer.PointerId) return;
             var point = e.GetCurrentPoint(window.PaneStack);
-            if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusDragging = false; status.SetDragging(false); return; }
+            if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false); return; }
             if (!statusDragging)
             {
                 if (Math.Abs(point.Position.Y - statusPress.Y) < 4 && Math.Abs(point.Position.X - statusPress.X) < 4) return;
                 statusDragging = true;
                 if (window.PaneStack.CanDragBar(this)) status.SetDragging(true);
-                if (!statusSelectingOutput && !status.CapturePointer(e.Pointer)) { statusPointer = null; statusDragging = false; status.SetDragging(false); return; }
+                if (!statusSelectingOutput) {
+                    bool captured = CaptureStatusDragPointer(e);
+                    if (!captured) { statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false); return; }
+                }
             }
             double delta = point.Position.Y - statusLastPoint.Y;
             statusLastPoint = point.Position; // No blocked overshoot survives a reversal.
@@ -167,12 +193,12 @@ internal sealed partial class EditorPane
         status.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, e) => {
             if (statusPointer != e.Pointer.PointerId) return;
             bool dragged = statusDragging;
-            statusPointer = null; statusDragging = false; status.SetDragging(false);
+            statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false);
             if (!dragged) window.FocusPane(this, keepStatusFocus: statusSelectingOutput);
-            if (dragged && !statusSelectingOutput) { status.ReleasePointerCapture(e.Pointer); e.Handled = true; }
+            if (!statusSelectingOutput) { status.ReleasePointerCapture(e.Pointer); if (dragged) e.Handled = true; }
         }), true);
         status.PointerCaptureLost += (_, e) => {
-            if (ReferenceEquals(e.OriginalSource, status)) { statusPointer = null; statusDragging = false; status.SetDragging(false); }
+            if (ReferenceEquals(e.OriginalSource, status)) { statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false); }
         };
         status.PointerExited += (_, e) => { if (ReferenceEquals(e.OriginalSource, status)) status.SetResizeHover(false); };
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });

@@ -69,15 +69,15 @@ internal sealed partial class StyleWindow
         number.Loaded += (_, _) => {
             // The Paragraph and Block tabs start collapsed, delaying templates.
             number.ApplyTemplate();
-            ConfigureNumberEditor(number);
+            ConfigureNumberEditor(number, number);
         };
         return number;
     }
-    private static void ConfigureNumberEditor(DependencyObject root)
+    private static void ConfigureNumberEditor(DependencyObject root, NumberBox owner)
     {
         if (root is TextBox { Name: "InputBox" } input) {
             input.TextAlignment = TextAlignment.Right;
-            MeasurementTextSelection.Attach(input);
+            MeasurementTextSelection.Attach(input, owner);
             input.ApplyTemplate();
         }
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++) {
@@ -86,7 +86,7 @@ internal sealed partial class StyleWindow
                 // WinUI animates Visibility on focus and sets Width to Height.
                 // Constrain its footprint so compact fields retain room for digits.
                 clear.MinWidth = 0; clear.MaxWidth = 0; clear.IsHitTestVisible = false;
-            } else ConfigureNumberEditor(child);
+            } else ConfigureNumberEditor(child, owner);
         }
     }
     private void Number(Panel row, string label, uint property, float min = -1000, float max = 1000, bool caption = true,

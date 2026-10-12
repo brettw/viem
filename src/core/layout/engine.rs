@@ -536,7 +536,8 @@ pub struct LayoutSnapshot {
     /// Unstyled default Paragraph whitespace unit in scaled layout points.
     pub whitespace_unit: f32,
     /// Default paragraph row advance in scaled layout points. This is stable
-    /// across visible headings, images and table cells.
+    /// across visible headings, images and table cells. Zero exact spacing
+    /// uses the natural font height here, preserving a usable navigation unit.
     pub default_row_advance: f32,
     pub(super) default_font_metrics: Option<DefaultFontMetrics>,
     // Only installed hard lines are represented. These relative flow distances
@@ -6842,6 +6843,11 @@ fn line_advance(natural_height: f32, spacing: LineSpacing) -> f32 {
         LineSpacing::Normal => natural_height,
         LineSpacing::Multiplier(multiplier) => natural_height * multiplier,
         LineSpacing::AtLeast(minimum) => natural_height.max(minimum),
+        // Zero is an authored value accepted by both native style inspectors.
+        // As in the AppKit paragraph preview's zero min/max line heights, it
+        // leaves the font's natural height unconstrained. Preserve the saved
+        // declaration while keeping row indexing, carets and navigation usable.
+        LineSpacing::Exact(0.0) => natural_height,
         LineSpacing::Exact(exact) => exact,
     }
 }
@@ -7673,6 +7679,41 @@ mod tests {
             styles, &mut view).unwrap();
         assert_eq!(view.snapshot().unwrap().measurement_environment_id, MeasurementEnvironmentId(2));
         assert_eq!(engine.provider().request_calls(), requests + 2);
+    }
+
+    #[test]
+    fn zero_exact_spacing_preserves_rows_and_a_cached_navigation_unit() {
+        for text in ["", "first\nsecond"] {
+            let document = Document::new(text);
+            let mut styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
+            styles.whitespace_shaping_style.size = 17.0;
+            for paragraph in &mut styles.paragraphs {
+                paragraph.line_spacing = LineSpacing::Exact(0.0);
+            }
+            let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
+            let mut view = ViewLayout::new(300.0, 100.0);
+            let mut requests = None;
+            for (spacing, expected) in [
+                (LineSpacing::Exact(0.0), 17.0 * 1.12),
+                (LineSpacing::Exact(9.0), 9.0),
+                (LineSpacing::AtLeast(0.0), 17.0 * 1.12),
+                (LineSpacing::Exact(0.0), 17.0 * 1.12),
+            ] {
+                styles.default_line_spacing = spacing;
+                engine.relayout_styled_text(document.id(), document.revision(), document.text(),
+                    styles.clone(), &mut view).unwrap();
+                let snapshot = view.snapshot().unwrap();
+                assert!((snapshot.default_row_advance - expected).abs() < 0.001);
+                assert!(!snapshot.rows.is_empty());
+                assert!(snapshot.rows.iter().all(|row| row.line_advance == row.natural_height()));
+                assert!(styles.paragraphs.iter().all(|paragraph| paragraph.line_spacing == LineSpacing::Exact(0.0)),
+                    "the display fallback must not rewrite authored zero spacing");
+                assert!(snapshot.total_height.is_finite() && snapshot.total_height > 0.0);
+                let calls = engine.provider().request_calls();
+                assert_eq!(*requests.get_or_insert(calls), calls,
+                    "spacing changes must reuse the measured default font");
+            }
+        }
     }
 
     #[test]

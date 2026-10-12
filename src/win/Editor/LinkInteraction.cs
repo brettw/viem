@@ -9,6 +9,7 @@ using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
+using Viem.Windows.Input;
 using Viem.Windows.Shell;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
@@ -33,6 +34,9 @@ internal sealed partial class EditorPane
     internal bool LinkPopupVisible => linkPopup?.Visibility == Visibility.Visible;
     internal bool LinkEditorVisible => LinkPopupVisible && editingLink;
     internal ComboBox? LinkDestinationControl => linkDestination;
+#if DEBUG
+    internal string LinkEditorErrorForTesting => linkError?.Text ?? "";
+#endif
     internal double LinkPopupWidth => linkPopup?.Width ?? 0;
     internal string LinkSummary => (linkDestinationButton?.Content as TextBlock)?.Text ?? "";
     internal string LinkTextValue { get => linkText?.Text ?? ""; set { EnsureLinkPopup(); linkText!.Text = value; } }
@@ -58,7 +62,7 @@ internal sealed partial class EditorPane
         var remove = Action("Remove link", "", RemoveShownLink);
         remove.Content = UnlinkIcon(remove);
         linkText = new TextBox { Header = "Text", MinWidth = 0, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
-        linkDestination = new ComboBox { Header = "Destination", PlaceholderText = "https://…, file.md, or #heading", MinWidth = 0,
+        linkDestination = new LinkDestinationComboBox { Header = "Destination", PlaceholderText = "https://…, file.md, or #heading", MinWidth = 0,
             IsEditable = true, IsTextSearchEnabled = false, HorizontalAlignment = HorizontalAlignment.Stretch,
             ItemTemplate = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><TextBlock Text='{Binding Text}'/></DataTemplate>") };
         AutomationProperties.SetName(linkText, "Link text"); AutomationProperties.SetName(linkDestination, "Link destination");
@@ -80,7 +84,9 @@ internal sealed partial class EditorPane
             if (View is not { } view || shownLink is not { } context) return;
             try {
                 var choices = view.LinkHeadings(context);
-                linkDestination.ItemsSource = choices.Headings;
+                // WinUI expects an inspectable collection. A strongly typed
+                // record array is rejected by the C#/WinRT collection bridge.
+                linkDestination.ItemsSource = choices.Headings.Cast<object>().ToArray();
                 if (choices.Truncated) { linkError.Text = "Some headings are omitted from this list. You can also enter any #heading destination."; linkError.Visibility = Visibility.Visible; }
             } catch (Exception error) { linkDestination.ItemsSource = null; linkError.Text = error.Message; linkError.Visibility = Visibility.Visible; }
         };
@@ -166,8 +172,18 @@ internal sealed partial class EditorPane
             visual.StartAnimation("Opacity", opacity);
         }
         linkPopup.UpdateLayout();
-        if (linkText.Text.Length == 0) { linkText.Focus(FocusState.Programmatic); linkText.SelectAll(); }
-        else linkDestination.Focus(FocusState.Programmatic);
+        FocusPopupField(linkPopup,
+            () => LinkEditorVisible && ReferenceEquals(shownLink, context) && ReferenceEquals(View, view),
+            () => {
+                if (linkText.Text.Length == 0) {
+                    bool accepted = linkText.Focus(FocusState.Programmatic);
+                    TracePopupFieldFocus("Link text", accepted);
+                    linkText.SelectAll();
+                } else {
+                    bool accepted = linkDestination.Focus(FocusState.Programmatic);
+                    TracePopupFieldFocus("Link destination", accepted);
+                }
+            });
     }
 
     internal void ApplyLinkEditor()
@@ -195,6 +211,7 @@ internal sealed partial class EditorPane
 
     internal void DismissLinkPopup(bool suppress = true)
     {
+        CancelPopupFocus(linkPopup);
         if (suppress) dismissedLink = shownLink;
         editingLink = false; insertingLink = false; shownLink = null;
         if (linkDestination != null) {
@@ -267,6 +284,7 @@ internal sealed partial class EditorPane
     {
         if (LinkEditorVisible && linkDestination?.IsDropDownOpen == true) return true;
         if (XamlRoot == null) return false;
+        if (HasPendingPopupFocus(linkPopup)) return true;
         for (var element = FocusManager.GetFocusedElement(XamlRoot) as DependencyObject; element != null; element = VisualTreeHelper.GetParent(element))
             if (element == input || element == linkPopup) return true;
         return false;
@@ -303,7 +321,7 @@ internal sealed partial class EditorPane
     {
         if (View is not { } view || shownLink is not { Link: { } link } context) return;
         view.ValidateLinkContext(context);
-        var data = new DataPackage(); data.SetText(link.Destination); Clipboard.SetContent(data);
+        ClipboardFormats.Write(link.Destination, "");
         DismissLinkPopup(); FocusEditor();
     }
     private void RemoveShownLink()

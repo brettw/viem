@@ -16,7 +16,7 @@ internal enum ToolbarAction { Bold, Italic, Underline, Strikethrough, Superscrip
 /// <summary>Native controls over the active core view's selection and transactions.</summary>
 internal sealed partial class FormattingToolbar : UserControl
 {
-    internal readonly ScrollViewer Scroll = new() { MinWidth = 0, HorizontalScrollMode = ScrollMode.Enabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollMode = ScrollMode.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
+    internal readonly FormattingToolbarViewport Viewport = new() { MinWidth = 0 };
     private EditorPane? pane;
     private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
@@ -36,6 +36,9 @@ internal sealed partial class FormattingToolbar : UserControl
     internal event Action? PopupsClosed;
     internal bool HasOpenPopup => tracking > 0 || tablePicker.IsOpen;
     private CoreView? View => pane?.View;
+#if DEBUG
+    internal ulong BoundViewIdForTesting => View?.Id ?? 0;
+#endif
 
     internal FormattingToolbar()
     {
@@ -50,14 +53,11 @@ internal sealed partial class FormattingToolbar : UserControl
             tablePicker.Open(e, (columns, rows) => { if (View == view) Run(() => view.InsertTable(columns, rows, context.selection)); });
         };
         Height = 42; Visibility = Visibility.Collapsed;
-        Scroll.Content = row;
-        // Groups retain their measured widths. Clip the scrolling viewport
-        // before the fixed right-hand view toggle.
-        Scroll.SizeChanged += (_, e) => Scroll.Clip = new RectangleGeometry { Rect = new global::Windows.Foundation.Rect(0, 0, e.NewSize.Width, e.NewSize.Height) };
+        Viewport.Children.Add(row);
         var layout = new Grid { ColumnSpacing = 12, Padding = new(0, 0, 10, 0) };
         layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star), MinWidth = 0 });
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        layout.Children.Add(Scroll); layout.Children.Add(FormattedView); Grid.SetColumn(FormattedView, 1);
+        layout.Children.Add(Viewport); layout.Children.Add(FormattedView); Grid.SetColumn(FormattedView, 1);
         FormattedView.Content = FormattedViewIcon(FormattedView);
         AutomationProperties.SetName(FormattedView, "Formatted view");
         ToolTipService.SetToolTip(FormattedView, "Formatted view (WYSIWYG)");

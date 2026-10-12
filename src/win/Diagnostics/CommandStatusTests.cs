@@ -37,8 +37,17 @@ internal static class CommandStatusTests
                 await InputRoutingTests.Text(character.ToString());
                 Check(pane.PromptControl.LastDrawnText == ":" + view.Prompt().Text, $"native Ex typing paints the {character} update");
             }
-            Check(pane.PromptControl.ActualWidth > 0 && pane.PromptControl.ActualHeight == height
-                && pane.LocationControl.ActualWidth > 0, "command entry occupies the status row and retains the location widget");
+            var promptBounds = pane.PromptControl.TransformToVisual(pane.StatusControl).TransformBounds(
+                new(0, 0, pane.PromptControl.ActualWidth, pane.PromptControl.ActualHeight));
+            // WinUI snaps border margins to physical pixel edges. At 150% a
+            // one-DIP top border occupies 1 1/3 DIPs in the arranged controls.
+            double halfPixel = .5 / pane.XamlRoot.RasterizationScale + .01;
+            Check(pane.PromptControl.ActualWidth > 0
+                && pane.StatusControl.ActualHeight == height
+                && Math.Abs(promptBounds.Top - pane.PromptControl.Margin.Top) <= halfPixel
+                && Math.Abs(promptBounds.Bottom - (height - pane.PromptControl.Margin.Bottom)) <= halfPixel
+                && pane.LocationControl.ActualWidth > 0,
+                $"command entry occupies the status row and retains the location widget (prompt={pane.PromptControl.ActualWidth}x{pane.PromptControl.ActualHeight}, margins={pane.PromptControl.Margin}, status={pane.StatusControl.ActualHeight}, prior={height}, location={pane.LocationControl.ActualWidth}, error={pane.LastError})");
             await Screenshot(".command-pwd");
             await InputRoutingTests.Key(VirtualKey.Enter);
             Check(pane.CommandOutputText == Environment.CurrentDirectory && pane.OutputTextControl.Text == Environment.CurrentDirectory
@@ -56,7 +65,7 @@ internal static class CommandStatusTests
             editPeer.Expand(); await Task.Delay(100);
             Check(edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Copy").IsEnabled
                 && !edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Cut").IsEnabled,
-                "Edit menu commands retain the read-only output selection as their target");
+                $"Edit menu commands retain the read-only output selection as their target (copy={pane.CanCopy}/{edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Copy").IsEnabled}, cut={pane.CanCut}/{edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Cut").IsEnabled}, selected={pane.OutputTextControl.SelectedText}, focus={FocusManager.GetFocusedElement(pane.XamlRoot)?.GetType().Name}, active={window.IsWindowActive})");
             editPeer.Collapse(); await Task.Delay(80);
             pane.OutputTextControl.Focus(FocusState.Programmatic);
             new ButtonAutomationPeer(pane.OutputCloseControl).Invoke(); await Task.Delay(80);
@@ -98,7 +107,7 @@ internal static class CommandStatusTests
             Check(pane.Document.State.document_revision == revision, "prompt and output interaction never edits document text");
         }
         finally { preferences.Set("appearance", "showStatusBar", showStatus); pane.DismissCommandOutput(); }
-        if (pane.LastError != null) throw pane.LastError;
+        if (pane.LastError != null) throw new InvalidOperationException("Command status fixture has a presentation error.", pane.LastError);
     }
 
     private static void CheckRejectedPhysicalAddress(EditorPane pane, Action<bool, string> check)
@@ -146,7 +155,7 @@ internal static class CommandStatusTests
         ulong cursor = view.Presentation.cursor_utf8_offset;
         if (layout.Rows.Any(row => row.text_start <= cursor && cursor <= row.text_end))
             throw new InvalidOperationException("The large-document fixture did not scroll the cursor outside regional geometry.");
-        if (pane.LastError != null) throw pane.LastError;
+        if (pane.LastError != null) throw new InvalidOperationException("Scrolled status fixture has a presentation error before Ex input.", pane.LastError);
         await InputRoutingTests.Text(":pwd");
         if (pane.PromptControl.LastDrawnText != ":pwd") throw new InvalidOperationException("The scrolled document hid Ex typing.");
         await InputRoutingTests.Key(VirtualKey.Enter);

@@ -12,8 +12,11 @@ namespace Viem.Windows.Shell;
 internal sealed partial class EditorWindow
 {
     private readonly List<(MenuFlyoutItemBase Item, Func<bool> Enabled)> validation = [];
+    private readonly List<(MenuFlyoutItemBase Item, Func<bool> Enabled)> inputTargetValidation = [];
     private readonly List<(ToggleMenuFlyoutItem Item, Func<bool> Checked)> checks = [];
     private bool menusDirty = true;
+    private bool styleMenuRefreshQueued;
+    private bool inputTargetRefreshQueued;
     private MenuFlyoutSubItem recentMenu = null!;
     private MenuFlyoutSubItem paragraphMenu = null!, characterMenu = null!, themeMenu = null!;
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
@@ -21,16 +24,17 @@ internal sealed partial class EditorWindow
     private CoreView? View => ActivePane?.View;
     private bool Rich => View != null && CoreDocument.IsMarkdown(ActivePane!.Document.State.format);
     private bool CanFormatBlocks => ActivePane?.CanUseFormattingCommands == true && !View!.SelectedNamedStyles().HasTable;
-    private MenuFlyoutItem Item(string text, string accessKey, Func<Task> action, string shortcut = "", Func<bool>? enabled = null)
+    private MenuFlyoutItem Item(string text, string accessKey, Func<Task> action, string shortcut = "", Func<bool>? enabled = null, bool inputTarget = false)
     {
         var item = new MenuFlyoutItem { Text = text, AccessKey = accessKey, KeyboardAcceleratorTextOverride = shortcut };
-        item.Loaded += (_, _) => ValidateMenus();
+        item.Loaded += (_, _) => { ValidateMenus(); QueueInputTargetRefresh(); };
+        item.GotFocus += (_, _) => QueueInputTargetRefresh();
         item.Click += (_, _) => Safe(action);
-        if (enabled != null) validation.Add((item, enabled));
+        if (enabled != null) (inputTarget ? inputTargetValidation : validation).Add((item, enabled));
         return item;
     }
-    private MenuFlyoutItem ActionItem(string text, string accessKey, Action action, string shortcut = "", Func<bool>? enabled = null)
-        => Item(text, accessKey, () => { action(); ActivePane?.FocusEditor(); return Task.CompletedTask; }, shortcut, enabled);
+    private MenuFlyoutItem ActionItem(string text, string accessKey, Action action, string shortcut = "", Func<bool>? enabled = null, bool inputTarget = false)
+        => Item(text, accessKey, () => { action(); ActivePane?.FocusEditor(); return Task.CompletedTask; }, shortcut, enabled, inputTarget);
     private ToggleMenuFlyoutItem Toggle(string text, string accessKey, Action<bool> action, Func<bool>? state = null, bool validateOnLoad = true)
     {
         var item = new ToggleMenuFlyoutItem { Text = text, AccessKey = accessKey };
@@ -75,9 +79,9 @@ internal sealed partial class EditorWindow
         undoItem = ActionItem("Undo", "U", () => View?.Undo(), "Ctrl+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
         redoItem = ActionItem("Redo", "R", () => View?.Redo(), "Ctrl+Shift+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
         Top("Edit", "E", undoItem, redoItem, Separator(),
-            Item("Cut", "T", () => ActivePane?.Copy(true) ?? Task.CompletedTask, "Ctrl+X", () => ActivePane?.CanCut == true),
-            Item("Copy", "C", () => ActivePane?.Copy(false) ?? Task.CompletedTask, "Ctrl+C", () => ActivePane?.CanCopy == true),
-            Item("Copy Source", "O", () => ActivePane?.CopySource() ?? Task.CompletedTask, enabled: () => ActivePane?.CanCopy == true),
+            Item("Cut", "T", () => ActivePane?.Copy(true) ?? Task.CompletedTask, "Ctrl+X", () => ActivePane?.CanCut == true, inputTarget: true),
+            Item("Copy", "C", () => ActivePane?.Copy(false) ?? Task.CompletedTask, "Ctrl+C", () => ActivePane?.CanCopy == true, inputTarget: true),
+            Item("Copy Source", "O", () => ActivePane?.CopySource() ?? Task.CompletedTask, enabled: () => ActivePane?.CanCopy == true, inputTarget: true),
             Item("Paste", "P", () => ActivePane?.Paste() ?? Task.CompletedTask, "Ctrl+V"),
             Item("Paste and Match Style", "M", () => ActivePane?.Paste(true) ?? Task.CompletedTask, "Ctrl+Shift+V"),
             ActionItem("Delete", "D", () =>
@@ -85,16 +89,18 @@ internal sealed partial class EditorWindow
                 if (View is not { } view) return;
                 if (view.IsTextSelection) view.Key(VIEM_KEY_DELETE);
                 else view.SelectionCommand("d");
-            }, enabled: () => View?.HasSelection == true && ActivePane?.CanCut == true), Separator(),
+            }, enabled: () => View?.HasSelection == true && ActivePane?.CanCut == true, inputTarget: true), Separator(),
             Item("Select All", "A", () => { ActivePane?.SelectAll(); return Task.CompletedTask; }),
-            Sub("Select", "S", ActionItem("Word", "W", () => Select("viw")), ActionItem("Sentence", "S", () => Select("vis")), ActionItem("Paragraph", "P", () => Select("vip")), ActionItem("Hard Line", "L", () => Select("V")), ActionItem("Visual Block", "B", () => { uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL; View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); View?.SetSelectionOrigin(VIEM_SELECTION_ORIGIN_KEY, returnMode); }, "Ctrl+Q")),
-            Separator(), Sub("Find", "F", ActionItem("Find…", "F", () => Select("/")), ActionItem("Find and Replace…", "R", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", "N", () => Select("n")), ActionItem("Find Previous", "P", () => Select("N"))),
+            Sub("Select", "S", ActionItem("Word", "W", () => Select("viw")), ActionItem("Sentence", "S", () => Select("vis")), ActionItem("Paragraph", "P", () => Select("vip")), ActionItem("Hard Line", "L", () => Select("V")), ActionItem("Visual Row", "R", () => Select("g0vg$")), ActionItem("Visual Block", "B", () => { uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL; View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); View?.SetSelectionOrigin(VIEM_SELECTION_ORIGIN_KEY, returnMode); }, "Ctrl+Q")),
+            Separator(), Sub("Find", "F", ActionItem("Find…", "F", () => Select("/")), ActionItem("Find and Replace…", "R", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", "N", () => Select("n")), ActionItem("Find Previous", "P", () => Select("N")),
+                ActionItem("Use Selection for Find", "U", () => View?.UseSelectionForFind(), enabled: HasFindSelection),
+                ActionItem("Jump to Selection", "J", () => View?.RevealSelection(), enabled: () => View?.HasSelection == true)),
             Sub("Transformations", "N", ActionItem("Make Uppercase", "U", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", "L", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", "T", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
         paragraphMenu = Sub("Paragraph", "P", ActionItem("Bulleted List", "B", () => ExecuteFormattingAction(ToolbarAction.Bullets), KeyPolicy.FormattingShortcut(NativeAction.Bullets), enabled: () => CanFormatBlocks), ActionItem("Numbered List", "N", () => ExecuteFormattingAction(ToolbarAction.Numbers), KeyPolicy.FormattingShortcut(NativeAction.Numbers), enabled: () => CanFormatBlocks), ActionItem("Remove List", "R", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => CanFormatBlocks),
-            ActionItem("Indent", "I", () => View?.IndentList(false), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", "U", () => View?.IndentList(true), enabled: () => CanFormatBlocks && (View.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
+            ActionItem("Indent", "I", () => View?.IndentList(false), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", "U", () => View?.IndentList(true), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
         characterMenu = Sub("Character", "C");
-        validation.Add((paragraphMenu, () => Rich));
-        validation.Add((characterMenu, () => Rich));
+        validation.Add((paragraphMenu, () => Rich || View?.UsesGlobalStyles == true));
+        validation.Add((characterMenu, () => Rich || View?.UsesGlobalStyles == true));
         themeMenu = Sub("Theme", "T"); themeMenu.Loaded += (_, _) => RefreshThemeMenu();
         RefreshThemeMenu();
         Top("Style", "S", themeMenu, Separator(), paragraphMenu, characterMenu, Separator(), StyleEditorItem());
@@ -113,9 +119,37 @@ internal sealed partial class EditorWindow
             Item("About Viem", "A", () => Dialog("Viem", "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1")));
     }
     private void Select(string command) => View?.SelectFromCommand(command);
+    private bool HasFindSelection()
+    {
+        if (View is not { HasSelection: true } view) return false;
+        if (view.Presentation.mode is VIEM_MODE_VISUAL_BLOCK or VIEM_MODE_SELECT_BLOCK or VIEM_MODE_SELECTION_BLOCK)
+            return view.Selection().Segments.Any(segment => segment.text_start < segment.text_end);
+        var selection = view.LogicalSelection();
+        return selection.text_start < selection.text_end;
+    }
     private static string HistoryCategory(uint value) => value switch { 1 => "Typing", 2 => "Style", 3 => "Line Endings", 4 => "Move Lines", 6 => "Document Format", _ => "Edit" };
+    private void RefreshInputTargetMenus()
+    {
+        foreach (var (item, enabled) in inputTargetValidation) { try { item.IsEnabled = enabled(); } catch { item.IsEnabled = false; } }
+    }
+    private void QueueInputTargetRefresh()
+    {
+        if (closed || inputTargetRefreshQueued) return;
+        inputTargetRefreshQueued = true;
+        if (!DispatcherQueue.TryEnqueue(() => {
+            inputTargetRefreshQueued = false;
+            // Windowed popup focus does not route through its MenuBarItem.
+            // Recheck the target after native focus/selection handlers settle,
+            // without replacing rows or rebinding snapshot-owned actions.
+            if (!closed && openMenus.Count > 0) RefreshInputTargetMenus();
+        })) inputTargetRefreshQueued = false;
+    }
     private void ValidateMenus()
     {
+        // Native focus can pass through an intermediate control while a menu
+        // opens. Recheck its edit target on each load/focus event, even when
+        // the document and retained style catalogues have not changed.
+        RefreshInputTargetMenus();
         if (!menusDirty) return;
         menusDirty = false;
         using var measurement = Diagnostics.InputPerformance.Measure("menus");
@@ -139,11 +173,21 @@ internal sealed partial class EditorWindow
     private void RefreshStyleMenus()
     {
         if (View == null || paragraphMenu == null) return;
+        // Keep tracked native rows and their original action identities intact.
+        // Syntax publication or another active view can change the catalogue;
+        // rebuild it after unload, before the next submenu opens.
+        if (paragraphMenu.Items.Concat(characterMenu.Items).Any(item => item.IsLoaded && (item.Tag is StyleKey or CodeSyntaxStyle))) {
+            menusDirty = true;
+            return;
+        }
         var selected = View.SelectedNamedStyles();
         var snapshot = View.Styles(selected.Identity);
+        if (View.UsesGlobalStyles) { RefreshCodeStyleMenus(View, selected, snapshot); TrackStyleMenuRows(); return; }
         var entries = CoreView.StyleChoices(snapshot, selected, View.Document.IsReadOnly);
         foreach (var menu in new[] { paragraphMenu, characterMenu })
         {
+            foreach (var syntax in menu.Items.OfType<ToggleMenuFlyoutItem>().Where(item => item.Tag is CodeSyntaxStyle).ToArray())
+                menu.Items.Remove(syntax);
             uint space = menu == paragraphMenu ? 1u : 2u;
             var choices = entries.Where(e => e.Key.Namespace == space).ToArray();
             var old = menu.Items.OfType<ToggleMenuFlyoutItem>().Where(i => i.Tag is StyleKey).ToArray();
@@ -154,6 +198,7 @@ internal sealed partial class EditorWindow
                 {
                     var item = new ToggleMenuFlyoutItem { Tag = choice.Key };
                     item.Click += (_, _) => Safe(() => {
+                        if (item.CommandParameter is CodeStyleAction code) { OpenCodeStyle(code); return Task.CompletedTask; }
                         if (item.CommandParameter is Viem.Windows.Interop.ViemStyleSheetIdentityV1 identity)
                             View?.ChooseStyle((StyleKey)item.Tag, identity);
                         RestoreEditorFocusAfterControl(); return Task.CompletedTask;
@@ -169,6 +214,25 @@ internal sealed partial class EditorWindow
                 items[i].KeyboardAcceleratorTextOverride = CoreView.HeadingLevel(choices[i].Key) is { } level && level < 6 ? $"Ctrl+{level}" : "";
             }
         }
+        TrackStyleMenuRows();
+    }
+    private void TrackStyleMenuRows()
+    {
+        foreach (var item in paragraphMenu.Items.Concat(characterMenu.Items).Where(item => item.Tag is StyleKey or CodeSyntaxStyle)) {
+            item.Unloaded -= StyleMenuRowUnloaded;
+            item.Unloaded += StyleMenuRowUnloaded;
+        }
+    }
+    private void StyleMenuRowUnloaded(object sender, RoutedEventArgs args)
+    {
+        // A child submenu can close while its top-level menu remains open.
+        // Wait for the complete unload before replacing any retained rows.
+        if (closed || !menusDirty || styleMenuRefreshQueued) return;
+        styleMenuRefreshQueued = true;
+        if (!DispatcherQueue.TryEnqueue(() => {
+            styleMenuRefreshQueued = false;
+            if (!closed && menusDirty) ValidateMenus();
+        })) styleMenuRefreshQueued = false;
     }
     private static StyleWindow? styleInspector;
     private MenuFlyoutItem StyleEditorItem() => Item("Edit Styles…", "E", () => { ShowStyles(); return Task.CompletedTask; }, "F8");
@@ -181,6 +245,7 @@ internal sealed partial class EditorWindow
     }
 #if DEBUG
     internal StyleWindow? StyleInspector => styleInspector;
+    internal void ValidateMenusForTesting() => ValidateMenus();
 #endif
     private void RefreshThemeMenu()
     {

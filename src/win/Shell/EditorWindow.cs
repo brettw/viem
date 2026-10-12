@@ -217,7 +217,13 @@ internal sealed partial class EditorWindow : Window
             if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); App.Instance.BlockingEdits.Released(replacing.Document); replacing.Document.Dispose(); }
         }
         else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical); }
-        SetActive(pane); return pane;
+        SetActive(pane);
+        // Attaching can finish PaneReady before the new pane becomes active.
+        // Complete native focus after layout so an old input host cannot
+        // restore the previous action target when the window is activated.
+        paneGrid.UpdateLayout();
+        FocusPane(pane);
+        return pane;
     }
     internal void FocusPane(EditorPane pane, bool keepStatusFocus = false) { SetActive(pane); if (!keepStatusFocus) pane.FocusEditor(); }
     private void SetActive(EditorPane pane)
@@ -254,6 +260,10 @@ internal sealed partial class EditorWindow : Window
         paneGrid.UpdateLayout();
         added.InitialHeightLines = lines; added.InitialVerticalSplit = vertical;
         ApplyInitialPaneHeight(added);
+        // Adding the visual can initialize its core before SetActive runs.
+        // Complete the split's existing activation after layout, so native
+        // focus cannot remain in the old pane and restore it on activation.
+        FocusPane(added);
         return added;
     }
 
@@ -271,6 +281,7 @@ internal sealed partial class EditorWindow : Window
         string value = ActivePane.Document.Name + (ActivePane.Document.IsDirty ? " •" : "") + (Panes.Count > 1 ? $" · {Panes.Count} panes" : "");
         if (titleText.Text != value) { Title = value + " — Viem"; titleText.Text = value; }
         menusDirty = true;
+        if (openMenus.Count > 0) QueueInputTargetRefresh();
         SynchronizeFormattingToolbar();
     }
     private void Safe(Func<Task> action) { async void Execute() { try { await action(); } catch (OperationCanceledException) { } catch (Exception e) { ActivePane?.Report(e); } } Execute(); }

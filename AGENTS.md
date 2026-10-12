@@ -1636,6 +1636,9 @@ The toolbar is absent in Text/Code and remembers visibility per Markdown format.
 Toolbar groups use the standard extra gap, without divider lines. Paragraph and
 character style selectors follow the indent controls so they clip first in a
 narrow window; earlier formatting controls retain precedence on both platforms.
+The toolbar never scrolls or shows scrollbars. Keep controls at their natural
+widths and clip excess controls; focus, wheel, touch and accessibility requests
+must not pan the row.
 Its Formatted view toggle uses source-preserving Markdown switching, stays
 reachable in narrow windows, and follows shared changes/history. Remember the
 last successful Markdown view choice across launches, including undo/redo of a

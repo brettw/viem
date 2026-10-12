@@ -1,4 +1,5 @@
 using System.Text;
+using Viem.Windows.Interop;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Core;

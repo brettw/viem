@@ -215,6 +215,17 @@ internal sealed unsafe partial class CoreView
         var info = New<ViemStyleSheetInfoV1>(); Check(viem_code_create_style(&r, &info), "Create style"); Document.NotifyChanged(); Refresh();
         return id;
     }
+    public void MaterializeCodeStyle(string name)
+    {
+        if (!UsesGlobalStyles) throw new InvalidOperationException("Only Code styles support syntax definitions.");
+        byte[] bytes = System.Text.Encoding.UTF8.GetBytes(name);
+        var info = New<ViemStyleSheetInfoV1>();
+        fixed (byte* value = bytes)
+            Check(viem_code_materialize_style(value, (ulong)bytes.Length, &info), "Open syntax style");
+        // This creates only a disposable implicit definition, with no theme
+        // write, document transaction, settings undo or source-dirty change.
+        cachedStyles = null;
+    }
     public void DeleteStyle(StyleDefinition style)
     {
         using var arena = new NativeArena(); var r = New<ViemDeleteStyleV1>(); r.@namespace = style.Namespace; r.style_id = arena.Utf8(style.Id); r.identity = Styles().Identity;

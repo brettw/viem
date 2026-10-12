@@ -55,18 +55,25 @@ internal static class StatusFilePathTests
             pane.FilePathHost.HorizontalAlignment = HorizontalAlignment.Left;
             pane.Refresh();
             await Task.Delay(80);
-            double x = pane.FilePathControl.TransformToVisual(pane.StatusControl).TransformPoint(new(0, 0)).X;
             check(pane.FilePathControl.Text == "café-notes.md" && pane.ModeControl.Visibility == Visibility.Collapsed,
                 "narrow native status removes mode first, then whole path components while retaining the filename");
             await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".status-file-path.png");
             await CheckCopyMenu(pane, check);
+            // The directory action reports its result through command output.
+            // Restore the ordinary visible status before measuring mode layout.
+            pane.DismissCommandOutput();
+            pane.UpdateLayout();
+            check(pane.CommandOutputText == null && pane.FilePathControl.ActualWidth > 0,
+                "filename alignment fixture restores the ordinary status after directory actions");
+            double x = pane.FilePathControl.TransformToVisual(pane.StatusControl).TransformPoint(new(0, 0)).X;
             foreach (string command in new[] { "v", "V", "i", "R" })
             {
                 view.Command(command);
                 await Task.Delay(30);
                 pane.StatusControl.UpdateLayout();
                 double changedX = pane.FilePathControl.TransformToVisual(pane.StatusControl).TransformPoint(new(0, 0)).X;
-                check(Math.Abs(x - changedX) < 0.5, $"status filename stays aligned in {pane.ModeControl.Text} mode");
+                check(Math.Abs(x - changedX) < 0.5,
+                    $"status filename stays aligned in {pane.ModeControl.Text} mode (before={x}, after={changedX})");
                 check(pane.ModeControl.Visibility == Visibility.Collapsed && pane.ModeSlotWidth < 1,
                     "a hidden mode leaves no blank slot before the filename");
                 view.Key(VIEM_KEY_ESCAPE);

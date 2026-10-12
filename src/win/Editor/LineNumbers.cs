@@ -69,6 +69,7 @@ internal sealed partial class EditorPane
     private void BeginGutterSelection(UIElement owner, PointerRoutedEventArgs args)
     {
         if (View == null) return;
+        pointerClickCount = 0;
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); DismissCommandOutput(false);
         caretHoverLocation = null; SetCaretHover(null); MoveCodeBlockLanguageHover(null);
         if (composing) { compositionRejected = true; ClearInput(); }
@@ -256,14 +257,17 @@ internal sealed partial class EditorPane
 
     internal static Rect NumberPaintBounds(Rect raw, float dpi, double? canvasWidth = null, double? canvasHeight = null)
     {
-        double left = NumberPaintEdge(raw.Left, dpi), top = NumberPaintEdge(raw.Top, dpi);
+        // Every side sharing an outer canvas edge uses its enclosing pixel.
+        // Rounding only a preceding box's bottom/right upward would overlap a
+        // following box whose top/left names that very same boundary.
+        double Edge(double value, double? extent) => extent == value
+            ? Math.Ceiling(value * dpi / 96) * 96 / dpi : NumberPaintEdge(value, dpi);
+        double left = Edge(raw.Left, canvasWidth), top = Edge(raw.Top, canvasHeight);
         if (raw.Width <= 0 || raw.Height <= 0) return new(left, top, 0, 0);
-        double right = NumberPaintEdge(raw.Right, dpi), bottom = NumberPaintEdge(raw.Bottom, dpi);
+        double right = Edge(raw.Right, canvasWidth), bottom = Edge(raw.Bottom, canvasHeight);
         // The control may end partway through its last physical pixel. Include
         // that pixel at the outer canvas edge, while authored margin edges keep
         // the ordinary nearest-pixel policy used by the interior partition.
-        if (canvasWidth == raw.Right) right = Math.Ceiling(raw.Right * dpi / 96) * 96 / dpi;
-        if (canvasHeight == raw.Bottom) bottom = Math.Ceiling(raw.Bottom * dpi / 96) * 96 / dpi;
         return new(left, top, Math.Max(0, right - left), Math.Max(0, bottom - top));
     }
 

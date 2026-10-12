@@ -26,6 +26,12 @@ internal static class ChromeStyleTests
 
     private static void CheckGutterPixels(CanvasDevice device)
     {
+        // CanvasRenderTarget rounds its requested dimensions to the nearest
+        // pixel. Allocate through the outer fractional pixel so these fixtures
+        // exercise the gutter painter's complete canvas-edge coverage.
+        CanvasRenderTarget Target(double width, double height, float dpi) => new(device,
+            (float)(Math.Ceiling(width * dpi / 96) * 96 / dpi),
+            (float)(Math.Ceiling(height * dpi / 96) * 96 / dpi), dpi);
         var normal = ChromeStyle.Fallback(Microsoft.UI.Colors.Black, Microsoft.UI.Colors.White) with {
             Background = global::Windows.UI.Color.FromArgb(128, 0, 0, 0), Margin = default,
             Padding = default, Border = new(0, 0, 1, 0), RightBorder = Microsoft.UI.Colors.Red
@@ -42,7 +48,7 @@ internal static class ChromeStyleTests
                         source_line = (ulong)index + 1, top = index * 10.125f * zoom, bottom = (index + 1) * 10.125f * zoom,
                         flags = index == 2 ? VIEM_LINE_NUMBER_REGION_CURRENT : 0
                     }).ToArray();
-                    using var target = new CanvasRenderTarget(device, (float)width, (float)height, dpi);
+                    using var target = Target(width, height, dpi);
                     using (var drawing = target.CreateDrawingSession()) {
                         var priorAntialiasing = drawing.Antialiasing;
                         EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions, normal.Scaled(zoom), current.Scaled(zoom));
@@ -51,17 +57,18 @@ internal static class ChromeStyleTests
                     int pixelsWide = (int)target.SizeInPixels.Width, pixelsHigh = (int)target.SizeInPixels.Height;
                     byte[] background = target.GetPixelBytes(1, 0, 1, pixelsHigh);
                     byte[] border = target.GetPixelBytes(pixelsWide - 1, 0, 1, pixelsHigh);
-                    Require(Enumerable.Range(0, pixelsHigh).All(y => background[y * 4 + 3] == 128)
-                        && Enumerable.Range(0, pixelsHigh).All(y => border[y * 4 + 3] == 255
-                            && (border[y * 4] == 255 || border[y * 4 + 2] == 255)),
-                        "adjacent backgrounds paint once and the right border covers every pixel");
+                    int badBackground = Enumerable.Range(0, pixelsHigh).FirstOrDefault(y => background[y * 4 + 3] != 128, -1);
+                    int badBorder = Enumerable.Range(0, pixelsHigh).FirstOrDefault(y => border[y * 4 + 3] != 255
+                        || border[y * 4] != 255 && border[y * 4 + 2] != 255, -1);
+                    Require(badBackground < 0 && badBorder < 0,
+                        $"adjacent backgrounds paint once and the right border covers every pixel (surface={target.Size}, pixels={pixelsWide}x{pixelsHigh}, background row={badBackground}, border row={badBorder}, border={(badBorder < 0 ? "ok" : Convert.ToHexString(border.AsSpan(badBorder * 4, 4)))})");
                     int currentY = (int)((25.3125 * zoom - scroll) * dpi / 96);
                     byte[] currentBackground = target.GetPixelBytes(1, currentY, 1, 1);
                     byte[] currentBorder = target.GetPixelBytes(pixelsWide - 1, currentY, 1, 1);
                     Require(currentBackground[1] > 0 && currentBackground[3] == 128 && currentBorder[0] == 255,
                         "current region flags select the current background and border overrides");
 
-                    using var gapTarget = new CanvasRenderTarget(device, (float)width, (float)height, dpi);
+                    using var gapTarget = Target(width, height, dpi);
                     using (var drawing = gapTarget.CreateDrawingSession())
                         EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions.Take(5).ToArray(), normal.Scaled(zoom), current.Scaled(zoom));
                     byte[] gapBackground = gapTarget.GetPixelBytes(1, 0, 1, pixelsHigh);
@@ -70,7 +77,7 @@ internal static class ChromeStyleTests
                         "the column gap after the last line covers its final canvas pixel without alpha seams");
 
                     var transparent = current with { Background = Microsoft.UI.Colors.Transparent, Margin = new(2.125f, .375f, 3.125f, .375f) };
-                    using var transparentTarget = new CanvasRenderTarget(device, (float)width, (float)height, dpi);
+                    using var transparentTarget = Target(width, height, dpi);
                     using (var drawing = transparentTarget.CreateDrawingSession())
                         EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions, normal.Scaled(zoom), transparent.Scaled(zoom));
                     int currentX = (int)(10 * zoom * dpi / 96);
@@ -89,7 +96,7 @@ internal static class ChromeStyleTests
                 TopBorder = global::Windows.UI.Color.FromArgb(128, 0, 0, 255), BottomBorder = global::Windows.UI.Color.FromArgb(128, 0, 0, 255)
             };
             foreach (float boxHeight in new[] { 24f, 1.25f }) {
-                using var target = new CanvasRenderTarget(device, 24, boxHeight, dpi);
+                using var target = Target(24, boxHeight, dpi);
                 using (var drawing = target.CreateDrawingSession())
                     EditorPane.DrawLineNumberBoxesForTesting(drawing, 24, boxHeight, 0,
                         new[] { new ViemLineNumberRegionV1 { source_line = 1, top = 0, bottom = boxHeight } }, edges, edges);
@@ -101,7 +108,7 @@ internal static class ChromeStyleTests
                     "translucent border corners and too-short gutter boxes paint once, with vertical edges owning their corners");
             }
             var overlapping = normal with { Margin = new(0, -.75f, 0, -.75f) };
-            using (var target = new CanvasRenderTarget(device, 24, 20, dpi)) {
+            using (var target = Target(24, 20, dpi)) {
                 using (var drawing = target.CreateDrawingSession())
                     EditorPane.DrawLineNumberBoxesForTesting(drawing, 24, 20, 0, new[] {
                         new ViemLineNumberRegionV1 { source_line = 1, top = 0, bottom = 10 },
@@ -113,10 +120,17 @@ internal static class ChromeStyleTests
                     "explicit negative gutter margins retain their intentional overlap without adding an ordinary-column underpaint");
             }
             foreach (double edge in new[] { .125, 10.375, 20.625 }) {
+                // Projected Rect stores native floats; compare the actual pixel
+                // edge rather than cancellation error in Top + Height.
+                long Pixel(double value) => (long)Math.Round(value * dpi / 96);
                 var before = EditorPane.NumberPaintBounds(new(0, edge - 10, 30, 10), dpi);
                 var after = EditorPane.NumberPaintBounds(new(0, edge, 30, 10), dpi);
-                Check(Math.Abs(before.Bottom - after.Top) < 1e-9,
+                Check(Pixel(before.Bottom) == Pixel(after.Top),
                     "adjacent gutter boxes reuse the identical device-pixel edge");
+                before = EditorPane.NumberPaintBounds(new(0, edge - 10, 30, 10), dpi, canvasHeight: edge);
+                after = EditorPane.NumberPaintBounds(new(0, edge, 30, 10), dpi, canvasHeight: edge);
+                Check(Pixel(before.Bottom) == Pixel(after.Top),
+                    $"adjacent gutter boxes share the enclosing pixel edge at the bottom of a fractional canvas (dpi={dpi}, edge={edge}, before={before.Bottom:R}, after={after.Top:R})");
             }
         }
     }
@@ -186,22 +200,33 @@ internal static class ChromeStyleTests
             var viewMenu = window.Menu.Items.Single(menu => menu.Title == "View");
             var menuPeer = new MenuBarItemAutomationPeer(viewMenu);
             var numberItem = viewMenu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Show line numbers");
+            async Task SetViewMenuOpen(bool open)
+            {
+                if (numberItem.IsLoaded == open) { if (!open) menuPeer.Collapse(); return; }
+                var changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                void Changed(object sender, RoutedEventArgs args) => pane.DispatcherQueue.TryEnqueue(() => changed.TrySetResult());
+                if (open) numberItem.Loaded += Changed; else numberItem.Unloaded += Changed;
+                try {
+                    if (open) menuPeer.Expand(); else menuPeer.Collapse();
+                    await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                } finally { if (open) numberItem.Loaded -= Changed; else numberItem.Unloaded -= Changed; }
+            }
             var invisibleItem = viewMenu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Show Invisible Characters");
             Check(viewMenu.Items.IndexOf(numberItem) + 1 == viewMenu.Items.IndexOf(invisibleItem),
                 "Show line numbers appears immediately before Show Invisible Characters in the View menu");
-            menuPeer.Expand(); await Task.Delay(60);
+            await SetViewMenuOpen(true);
             Check(!numberItem.IsChecked && numberItem.IsEnabled && numberItem.Focus(FocusState.Programmatic),
                 "the line-number menu check reflects the active view's initially disabled number option");
             var beforeMenu = document.State;
             double beforeMenuStatusHeight = pane.StatusBarHeight;
-            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(100); menuPeer.Collapse();
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await SetViewMenuOpen(false);
             Check(view.NumberEnabled && pane.GutterWidth > 0 && document.State.document_revision == beforeMenu.document_revision
                 && document.State.flags == beforeMenu.flags && pane.StatusBarHeight == beforeMenuStatusHeight
                 && document.Source(document.State.document_revision).AsSpan().SequenceEqual(source),
                 "the native line-number menu enables the active gutter without changing source, history, or status presentation");
-            view.Ex("set nonumber"); menuPeer.Expand(); await Task.Delay(60);
+            view.Ex("set nonumber"); await SetViewMenuOpen(true);
             Check(!numberItem.IsChecked, "reopening View refreshes the line-number check after an Ex option change");
-            menuPeer.Collapse();
+            await SetViewMenuOpen(false);
             view.Ex("set number"); await Task.Delay(150); pane.UpdateLayout();
             var pointerRows = view.Layout().Rows;
             float RowY(int index) => pointerRows[index].y + pointerRows[index].ascent * .5f - view.Viewport.top;
@@ -401,31 +426,33 @@ internal static class ChromeStyleTests
             Check(extra.GutterWidth == twoDigits && extra.NumeralMeasurements == retainedMeasurements,
                 "returning to ninety-nine lines removes a digit while reusing the same metrics");
             await window.ClosePane(extra); window.FocusPane(pane); await Task.Delay(100);
+            Check(window.AppWindow.Presenter is OverlappedPresenter,
+                $"restored native editor has an overlapped presenter (kind={window.AppWindow.Presenter.Kind}, projectedType={window.AppWindow.Presenter.GetType().FullName})");
             ((OverlappedPresenter)window.AppWindow.Presenter).Maximize(); await Task.Delay(150);
             var maximized = WindowFrame.From(window.AppWindow);
             view.Ex("set number"); await Task.Delay(150);
             Check(WindowFrame.From(window.AppWindow) == maximized, "maximized windows take gutter width from the content viewport");
             view.Ex("set nonumber");
             ((OverlappedPresenter)window.AppWindow.Presenter).Restore(); await Task.Delay(150);
-            var second = window.SplitPane(pane, document, vertical: true); await second.Ready; await Task.Delay(150);
+            var second = window.SplitPane(pane, document, vertical: true); var secondView = await second.Ready; await Task.Delay(150);
             var splitFrame = WindowFrame.From(window.AppWindow);
             view.Ex("set number"); await Task.Delay(150);
-            Check(WindowFrame.From(window.AppWindow) == splitFrame && !second.View!.NumberEnabled,
+            Check(WindowFrame.From(window.AppWindow) == splitFrame && !secondView.NumberEnabled,
                 "vertical splits reserve independent gutters without resizing the window or another view's option");
-            window.FocusPane(pane); menuPeer.Expand(); await Task.Delay(60);
+            window.FocusPane(pane); await SetViewMenuOpen(true);
             Check(numberItem.IsChecked, "the line-number menu checks the enabled view when it becomes active");
-            menuPeer.Collapse(); window.FocusPane(second); menuPeer.Expand(); await Task.Delay(60);
+            await SetViewMenuOpen(false); window.FocusPane(second); await SetViewMenuOpen(true);
             Check(!numberItem.IsChecked && numberItem.Focus(FocusState.Programmatic),
                 "switching panes refreshes the line-number menu check from that view's own option");
-            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(100); menuPeer.Collapse();
-            Check(second.View.NumberEnabled && view.NumberEnabled && WindowFrame.From(window.AppWindow) == splitFrame,
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await SetViewMenuOpen(false);
+            Check(secondView.NumberEnabled && view.NumberEnabled && WindowFrame.From(window.AppWindow) == splitFrame,
                 "the native menu toggles only the active split's number option and keeps split window geometry stable");
-            menuPeer.Expand(); await Task.Delay(60);
+            await SetViewMenuOpen(true);
             Check(numberItem.IsChecked && numberItem.Focus(FocusState.Programmatic),
                 "the line-number menu remains checked after enabling the active split");
             var beforeSplitToggle = document.State;
-            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(100); menuPeer.Collapse();
-            Check(!second.View.NumberEnabled && view.NumberEnabled
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await SetViewMenuOpen(false);
+            Check(!secondView.NumberEnabled && view.NumberEnabled
                 && document.State.document_revision == beforeSplitToggle.document_revision && document.State.flags == beforeSplitToggle.flags,
                 "disabling line numbers through the menu preserves the other view's option and document history");
         }
@@ -433,6 +460,7 @@ internal static class ChromeStyleTests
             window.Close(); App.Instance.Windows.Remove(window); owner.Activate(); owner.ActivePane?.FocusEditor();
             CoreThemes.ReplaceCodeStyles(ownerPreferences.ThemeStyleDefaults(VIEM_FORMAT_CODE));
         }
+        await CaretGeometryTests.Run(owner, ownerPreferences);
     }
 }
 #endif

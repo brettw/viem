@@ -15,6 +15,49 @@ namespace Viem.Windows.Input;
 internal static class ClipboardFormats
 {
     public const string PrivateFormat = "com.viem.clipboard.fragment.v1";
+    private const int MaximumFragmentBytes = 64 * 1024 * 1024;
+    private static readonly Encoding StrictUtf8 = new UTF8Encoding(false, true);
+    private static readonly Encoding StrictUtf16 = new System.Text.UnicodeEncoding(false, false, true);
+#if DEBUG
+    private sealed class TestPublication(DataPackage data, IRandomAccessStream? stream) : IDisposable
+    {
+        public DataPackage Data { get; } = data;
+        public int Readers;
+        private bool retired;
+        public void Release() { if (--Readers == 0 && retired) Dispose(); }
+        public void Retire() { retired = true; if (Readers == 0) Dispose(); }
+        public void Dispose() => stream?.Dispose();
+    }
+    private static bool Isolated => Diagnostics.FrontendSmokeTests.ReportPath != null;
+    private static TestPublication? isolatedClipboard;
+    private static event EventHandler<object>? isolatedChanged;
+    internal static string PrivateReadDiagnosticForTesting { get; private set; } = "";
+    internal static void SetPackageForTesting(DataPackage data, IRandomAccessStream? ownedStream = null)
+    {
+        if (!Isolated) throw new InvalidOperationException("The test clipboard requires a self-test session.");
+        PublishIsolated(new(data, ownedStream));
+    }
+    private static void PublishIsolated(TestPublication next)
+    {
+        var old = isolatedClipboard; isolatedClipboard = next; old?.Retire();
+        isolatedChanged?.Invoke(null, EventArgs.Empty);
+    }
+#endif
+    public static event EventHandler<object> ContentChanged
+    {
+        add {
+#if DEBUG
+            if (Isolated) { isolatedChanged += value; return; }
+#endif
+            Clipboard.ContentChanged += value;
+        }
+        remove {
+#if DEBUG
+            if (Isolated) { isolatedChanged -= value; return; }
+#endif
+            Clipboard.ContentChanged -= value;
+        }
+    }
     public static async Task<(string Text, string Fragment)> Read()
     {
         Exception? failure = null;
@@ -31,7 +74,18 @@ internal static class ClipboardFormats
     }
     private static async Task<(string Text, string Fragment)> ReadOnce()
     {
-        var data = Clipboard.GetContent();
+#if DEBUG
+        if (Isolated) {
+            if (isolatedClipboard is not { } captured) return ("", "");
+            captured.Readers++;
+            try { return await ReadPackage(captured.Data.GetView()); }
+            finally { captured.Release(); }
+        }
+#endif
+        return await ReadPackage(Clipboard.GetContent());
+    }
+    private static async Task<(string Text, string Fragment)> ReadPackage(DataPackageView data)
+    {
         string text = data.Contains(StandardDataFormats.Text) ? await data.GetTextAsync() : "";
         // Rich representations are optional enhancements. A malformed or
         // unavailable private/HTML representation must not make ordinary
@@ -40,10 +94,19 @@ internal static class ClipboardFormats
             try
             {
                 string fragment = await PrivateFragment(data);
-                if (fragment.Length > 0)
+                if (fragment.Length > 0) {
+                    if (StrictUtf8.GetByteCount(fragment) > MaximumFragmentBytes) throw new InvalidDataException("Clipboard fragment is too large.");
+                    using var json = JsonDocument.Parse(fragment);
+                    if (json.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Clipboard fragment must be an object.");
                     return (text, fragment);
+                }
             }
-            catch (Exception error) when (!Transient(error)) { }
+            catch (Exception error) when (!Transient(error)) {
+#if DEBUG
+                string diagnostic = PrivateReadDiagnosticForTesting + " " + error.GetType().Name + ": " + error.Message;
+                PrivateReadDiagnosticForTesting = diagnostic.Length <= 1024 ? diagnostic : diagnostic[..1024];
+#endif
+            }
         if (data.Contains(StandardDataFormats.Html))
             try
             {
@@ -56,6 +119,9 @@ internal static class ClipboardFormats
     private static async Task<string> PrivateFragment(DataPackageView data)
     {
         object value = await data.GetDataAsync(PrivateFormat);
+#if DEBUG
+        PrivateReadDiagnosticForTesting = value.GetType().FullName ?? "unknown native value";
+#endif
         if (value is string text) return text;
         if (value is IRandomAccessStreamReference reference)
         {
@@ -65,21 +131,43 @@ internal static class ClipboardFormats
         if (value is IRandomAccessStream stream) return await StreamText(stream);
         if (value is Stream managed)
         {
-            using var copy = new MemoryStream();
-            await managed.CopyToAsync(copy);
-            return Encoding.UTF8.GetString(copy.ToArray());
+            if (!managed.CanSeek) return "";
+            long length = managed.Length;
+            if (length > MaximumFragmentBytes * 2L + 2) return "";
+            managed.Position = 0;
+            var bytes = new byte[checked((int)length)];
+            await managed.ReadExactlyAsync(bytes);
+            return DecodePrivateFragment(bytes);
         }
         return "";
     }
     private static async Task<string> StreamText(IRandomAccessStream stream)
     {
-        if (stream.Size > int.MaxValue) return "";
-        stream.Seek(0);
-        using var reader = new DataReader(stream.GetInputStreamAt(0));
-        uint length = checked((uint)stream.Size);
+        ulong size = stream.Size;
+        if (size > (ulong)MaximumFragmentBytes * 2 + 2) return "";
+        // This independent input view belongs to this read; the publication's
+        // random-access stream remains borrowed and available to other readers.
+        using var input = stream.GetInputStreamAt(0);
+        using var reader = new DataReader(input);
+        uint length = checked((uint)size);
         uint loaded = await reader.LoadAsync(length);
         var bytes = new byte[loaded]; reader.ReadBytes(bytes);
-        return Encoding.UTF8.GetString(bytes);
+        if (loaded != length) throw new InvalidDataException("Clipboard fragment was truncated.");
+        return DecodePrivateFragment(bytes);
+    }
+    internal static string DecodePrivateFragment(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length > MaximumFragmentBytes * 2L + 2) throw new InvalidDataException("Clipboard fragment is too large.");
+        // WinRT renders SetData(string) as UTF-16LE with a terminal code unit.
+        // Only its BOM or the unambiguous compact JSON object prefix selects
+        // this legacy form; other streams are strict UTF-8, never guessed text.
+        bool bom = bytes.Length >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe;
+        if (bom || bytes.Length >= 2 && bytes[0] == (byte)'{' && bytes[1] == 0) {
+            if (bom) bytes = bytes[2..];
+            if (bytes.Length >= 2 && bytes[^1] == 0 && bytes[^2] == 0) bytes = bytes[..^2];
+            return StrictUtf16.GetString(bytes);
+        }
+        return StrictUtf8.GetString(bytes);
     }
     internal static unsafe (string Text, string Fragment) Import(string source, uint format, string plain = "")
     {
@@ -101,6 +189,9 @@ internal static class ClipboardFormats
             data.SetData(PrivateFormat, fragment);
             data.SetHtmlFormat(HtmlFormatHelper.CreateHtmlFormat(Html(fragment)));
         }
+#if DEBUG
+        if (Isolated) { PublishIsolated(new(data, null)); return; }
+#endif
         for (int attempt = 0; ; attempt++)
             try { Clipboard.SetContent(data); Clipboard.Flush(); return; }
             catch (Exception error) when (Transient(error) && attempt < 4)

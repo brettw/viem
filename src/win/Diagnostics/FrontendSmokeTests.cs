@@ -18,13 +18,35 @@ internal static class FrontendSmokeTests
     internal static readonly List<string> UiChecks = [];
     internal static bool Started;
     internal static System.Diagnostics.Process? ChildProcess;
+    private static readonly System.Diagnostics.Stopwatch runTime = System.Diagnostics.Stopwatch.StartNew();
     internal static string? ReportPath { get; } = FindReportPath();
     private static string? FindReportPath()
     { var args = Environment.GetCommandLineArgs(); int i = Array.IndexOf(args, "--self-test"); return i >= 0 && i + 1 < args.Length ? Path.GetFullPath(args[i + 1]) : null; }
+    internal static void WriteProgress(string stage, int? completedChecks = null)
+    {
+        if (ReportPath == null) return;
+        string path = ReportPath + ".progress.json", temporary = path + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(
+            new NativeTestProgress(stage, completedChecks ?? UiChecks.Count, runTime.Elapsed.TotalSeconds),
+            NativeTestJsonContext.Default.NativeTestProgress));
+        File.Move(temporary, path, overwrite: true);
+    }
     public static void WriteFailure(Exception error)
-    { try { if (ChildProcess is { HasExited: false }) ChildProcess.Kill(); } catch { } if (ReportPath != null) File.WriteAllText(ReportPath, JsonSerializer.Serialize(new NativeTestFailure(false, error.ToString()), NativeTestJsonContext.Default.NativeTestFailure)); }
-    internal static void WriteSuccess(List<string> checks) => File.WriteAllText(ReportPath!,
-        JsonSerializer.Serialize(new NativeTestSuccess(true, checks.Count, checks, !System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported), NativeTestJsonContext.Default.NativeTestSuccess));
+    {
+        try { if (ChildProcess is { HasExited: false }) ChildProcess.Kill(); } catch { }
+        if (ReportPath != null)
+        {
+            string context = $"Completed {UiChecks.Count} native checks; last successful check: {UiChecks.LastOrDefault() ?? "(none)"}.\n";
+            File.WriteAllText(ReportPath, JsonSerializer.Serialize(new NativeTestFailure(false, context + error), NativeTestJsonContext.Default.NativeTestFailure));
+        }
+    }
+    internal static void WriteSuccess(List<string> checks)
+    {
+        WriteProgress("complete", checks.Count);
+        File.WriteAllText(ReportPath!, JsonSerializer.Serialize(
+            new NativeTestSuccess(true, checks.Count, checks, !System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported),
+            NativeTestJsonContext.Default.NativeTestSuccess));
+    }
     public static async Task FileChecks(CanvasDevice device, Microsoft.UI.Dispatching.DispatcherQueue dispatcher, string profile)
     {
         void Check(bool value, string name) { if (!value) throw new InvalidOperationException(name); UiChecks.Add(name); }

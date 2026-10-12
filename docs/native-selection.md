@@ -48,6 +48,10 @@ Put `set` commands in `startup.viem` to retain them across launches.
   classes as word selection. Reversing direction retains the original word;
   autoscrolling retains this granularity until mouse-up. A subsequent ordinary
   click or drag uses character boundaries again.
+- Triple-click selects a complete line according to the view's active Visual or
+  Physical Source line policy on both platforms. Windows recognizes consecutive
+  mouse presses using the system double-click time and distance; collapsing a
+  native triple-click selection restores its originating editing mode.
 - Option-Up on macOS and Ctrl-Up on Windows move to the current paragraph's
   start, or the preceding paragraph's start when already there. Option-Down
   moves to the current paragraph's end, then successive paragraph ends;
@@ -89,7 +93,6 @@ policy and matching native input tests.
 | Area | Current behavior | Follow-up |
 | --- | --- | --- |
 | Word movement | macOS Option-Left/Right and Windows Ctrl-Left/Right use Vim word boundaries. | Decide whether native navigation should distinguish word ends from next-word starts. |
-| Windows triple-click | No dedicated line/paragraph selection gesture. | Add a gesture matching the macOS active line-policy behavior. |
 | Native Cut mode | Native Cut uses Vim operators and can finish in Normal. | Decide whether native Cut should resume Insert. |
 | Block clipboard edge cases | Replacing wrapped character selections with block data and multiline Paste during deferred block insertion are unavailable. | Prepare the changed geometry and a portable multiline block insertion contract. |
 | Windows Ctrl-A | Routed to the Vim interpreter rather than native Select All; Select All is in the menu. | Any native Select All shortcut requires an explicit preference/product decision. |

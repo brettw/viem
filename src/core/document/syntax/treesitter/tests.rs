@@ -1196,7 +1196,8 @@ fn combined_and_regional_injections_keep_separate_scopes_and_share_limits() {
         Some(concat!(
             "((comment) @injection.content (#set! injection.language \"python\")",
             " (#set! injection.combined) (#set! injection.include-children))\n",
-            "((identifier) @injection.content (#set! injection.language \"rust\"))\n",
+            "((identifier) @injection.content (#set! injection.language \"rust\")",
+            " (#offset! @injection.content 0 0 0 0))\n",
         )),
         QueryProfile::Upstream, &generous(), None,
     ).unwrap();
@@ -1205,7 +1206,7 @@ fn combined_and_regional_injections_keep_separate_scopes_and_share_limits() {
         let text = format!("// head\n{}// tail\n", "int value;\n".repeat(lines));
         let mut session = TreeSitterSession::new(package.clone()).unwrap();
         let (snapshot, _) = parsed(&mut session, input(&text, 0), &[]);
-        let output = highlight(&snapshot, 8..18, &generous(), &AtomicBool::new(false));
+        let output = highlight(&snapshot, 0..18, &generous(), &AtomicBool::new(false));
         assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
         assert_eq!(output.injections.len(), 2);
         assert_eq!(output.injections[0].ranges, vec![12..17]);
@@ -1213,13 +1214,75 @@ fn combined_and_regional_injections_keep_separate_scopes_and_share_limits() {
         assert_eq!(output.injections[1].ranges, vec![0..7, text.len() - 8..text.len() - 1]);
         assert!(output.injections[1].combined);
         costs.push(output.work.query_matches);
-        let limited = highlight(&snapshot, 8..18, &TreeSitterBudget {
+        let limited = highlight(&snapshot, 0..18, &TreeSitterBudget {
             max_injections: 2, ..generous()
         }, &AtomicBool::new(false));
         assert_eq!(limited.coverage, Coverage::Exact, "{:?}", limited.diagnostic);
         assert!(limited.injections_truncated);
         assert_eq!(limited.injections.len(), 1);
         assert!(limited.injections[0].combined);
+        let regional = highlight(&snapshot, 8..18, &TreeSitterBudget {
+            max_injections: 1, ..generous()
+        }, &AtomicBool::new(false));
+        assert_eq!(regional.coverage, Coverage::Exact, "{:?}", regional.diagnostic);
+        assert!(!regional.injections_truncated);
+        assert_eq!(regional.injections.len(), 1);
+        assert_eq!(regional.injections[0].ranges, vec![12..17]);
+        assert!(!regional.injections[0].combined);
     }
     assert_eq!(costs[0], costs[1], "offscreen regional matches must not consume query work");
+}
+
+#[test]
+fn combined_probe_preserves_ancestor_predicates_and_offscreen_members_after_edits() {
+    let package = TreeSitterPackage::compile(
+        "combined-ancestor", 1, tree_sitter_c::LANGUAGE.into(), "",
+        Some(r#"((function_definition type: (primitive_type) @_type
+            body: (compound_statement) @injection.content)
+            (#eq? @_type "void") (#set! injection.language "c")
+            (#set! injection.combined) (#set! injection.include-children))"#),
+        QueryProfile::Upstream, &generous(), None,
+    ).unwrap();
+    let text = "void first() { int alpha; }\nvoid second() { int beta; }\n";
+    let mut session = TreeSitterSession::new(package.clone()).unwrap();
+    let (snapshot, _) = parsed(&mut session, input(text, 0), &[]);
+    let visible = text.find("alpha").unwrap()..text.find("alpha").unwrap() + 5;
+    let output = highlight(&snapshot, visible.clone(), &generous(), &AtomicBool::new(false));
+    assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
+    let first = text.find('{').unwrap()..text.find('}').unwrap() + 1;
+    let second = text.rfind('{').unwrap()..text.rfind('}').unwrap() + 1;
+    assert_eq!(output.injections.len(), 1);
+    assert_eq!(output.injections[0].ranges, vec![first.clone(), second]);
+
+    // The queried viewport is unchanged, but the complete group's offscreen
+    // predicate has changed. No probe or group result survives that identity.
+    let at = text.find("void second").unwrap();
+    let mut changed = text.to_owned();
+    changed.replace_range(at..at + 4, "int ");
+    let next = input(&changed, 1);
+    let edit = SyntaxInputEdit::new(snapshot.input(), &next, at..at + 4, at..at + 4).unwrap();
+    let (incremental, _) = parsed(&mut session, next.clone(), &[edit]);
+    let (fresh, _) = parsed(&mut TreeSitterSession::new(package).unwrap(), next, &[]);
+    let updated = highlight(&incremental, visible.clone(), &generous(), &AtomicBool::new(false));
+    assert_eq!(updated.coverage, Coverage::Exact, "{:?}", updated.diagnostic);
+    assert_eq!(updated.injections[0].ranges, vec![first]);
+    assert_eq!(updated.injections, highlight(&fresh, visible, &generous(), &AtomicBool::new(false)).injections);
+}
+
+#[test]
+fn combined_offset_queries_keep_offscreen_captures_that_reach_the_viewport() {
+    let package = TreeSitterPackage::compile(
+        "combined-offset", 1, tree_sitter_c::LANGUAGE.into(), "",
+        Some(r#"((comment) @injection.content (#set! injection.language "c")
+            (#set! injection.combined) (#set! injection.include-children)
+            (#offset! @injection.content 1 0 1 4))"#),
+        QueryProfile::Upstream, &generous(), None,
+    ).unwrap();
+    let text = "// tag\nint hidden;\n// tag\nint shown;\n";
+    let (snapshot, _) = parsed(&mut TreeSitterSession::new(package).unwrap(), input(text, 0), &[]);
+    let visible = text.find("int shown").unwrap();
+    let output = highlight(&snapshot, visible..visible + 10, &generous(), &AtomicBool::new(false));
+    assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
+    assert_eq!(output.injections.len(), 1);
+    assert_eq!(output.injections[0].ranges, vec![7..17, visible..visible + 10]);
 }

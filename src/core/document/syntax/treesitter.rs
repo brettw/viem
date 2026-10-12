@@ -1296,6 +1296,7 @@ pub fn highlight_injecting(
             &range,
             &control,
             None,
+            QueryScope::Complete,
         )?;
         let runs = coalesce(captures.0, &snapshot.package.id, &control)?;
         let output_bytes = runs
@@ -1305,12 +1306,23 @@ pub fn highlight_injecting(
         if output_bytes > budget.max_output_bytes {
             return Err(TreeSitterError::Limit("query output bytes"));
         }
-        // Complete combined groups first, under the same aggregate budget as
-        // the visible regional injections. A partial combined group is invalid.
+        // A combined group only matters when one of its input regions reaches
+        // this viewport. Probe with the original query and predicates, then
+        // discover every member before publishing any part of a visible group.
         let combined = if let Some(query) = &snapshot.package.combined_injections {
-            execute_query(
-                snapshot, query, &(0..snapshot.input.byte_len()), &control, Some(injectable),
-            )?.1
+            let full_range = 0..snapshot.input.byte_len();
+            // Offsets can move an offscreen capture into the viewport. Retain
+            // full discovery for those queries rather than guessing a halo.
+            let required = range == full_range
+                || query.patterns.iter().any(|pattern| pattern.combined && !pattern.offsets.is_empty())
+                || !execute_query(snapshot, query, &range, &control, Some(injectable),
+                    QueryScope::ProbeVisibleCombined)?.1.is_empty();
+            if required {
+                execute_query(snapshot, query, &full_range, &control, Some(injectable),
+                    QueryScope::Complete)?.1
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -1318,7 +1330,7 @@ pub fn highlight_injecting(
         let mut truncated = false;
         if let Some(query) = &snapshot.package.injections {
             let (_, regional, limited) =
-                execute_query(snapshot, query, &range, &control, Some(injectable))?;
+                execute_query(snapshot, query, &range, &control, Some(injectable), QueryScope::Complete)?;
             injections.extend(regional);
             truncated = limited;
         }
@@ -1345,12 +1357,21 @@ pub fn highlight_injecting(
     output
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum QueryScope {
+    Complete,
+    /// Returns at most one unpublished candidate, without charging injection
+    /// ranges. The caller must discover its complete group before using it.
+    ProbeVisibleCombined,
+}
+
 fn execute_query<'a>(
     snapshot: &ParseSnapshot,
     compiled: &'a CompiledQuery,
     range: &Range<usize>,
     control: &Control<'_>,
     mut injectable: Option<&mut dyn FnMut(&str) -> bool>,
+    scope: QueryScope,
 ) -> Result<(Vec<RankedRun<'a>>, Vec<InjectionRegion>, bool), TreeSitterError> {
     let injection = injectable.is_some();
     if range.is_empty() {
@@ -1358,6 +1379,7 @@ fn execute_query<'a>(
     }
     if injection
         && compiled.combined
+        && scope == QueryScope::Complete
         && (range.start != 0 || range.end != snapshot.input.byte_len())
     {
         return Err(TreeSitterError::Limit(
@@ -1412,6 +1434,12 @@ fn execute_query<'a>(
             if let Some(region) = injection_region(snapshot, compiled, pattern, found, control)?
                 .filter(|region| injectable(&region.language))
             {
+                if scope == QueryScope::ProbeVisibleCombined {
+                    if region.ranges.iter().any(|input| input.start < range.end && range.start < input.end) {
+                        return Ok((Vec::new(), vec![region], false));
+                    }
+                    continue;
+                }
                 let injection_ranges = control.injection_ranges.get()
                     .saturating_add(region.ranges.len());
                 if injection_ranges > control.budget.max_injections {

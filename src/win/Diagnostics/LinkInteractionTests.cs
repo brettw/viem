@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Shell;
@@ -119,15 +120,39 @@ internal static class LinkInteractionTests
             pane.LinkDestinationValue = "other.md#part"; pane.ApplyLinkEditor();
             Check(Source().EndsWith("[plain](<other.md#part>)", StringComparison.Ordinal), "selected text becomes a local-document link");
             view.Undo();
-            view.Key(VIEM_KEY_ESCAPE); view.Command("G0"); pane.ShowInsertLink();
+            view.Key(VIEM_KEY_ESCAPE); view.Command("G0");
+            Check(window.Toolbar.InsertLink.Focus(FocusState.Programmatic), "empty link insertion accepts native keyboard focus");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
             Check(pane.LinkEditorVisible && pane.LinkTextValue == "" && pane.LinkDestinationValue == "",
-                "a caret without a link or selection starts an empty link draft");
+                $"a caret without a link or selection starts an empty link draft after native Space activation (visible={pane.LinkEditorVisible}, text='{pane.LinkTextValue}', location='{pane.LinkDestinationValue}', error={pane.LastError})");
+            await InputRoutingTests.Text(" leading");
+            Check(pane.LinkTextValue == " leading",
+                $"link keyboard activation preserves subsequent native typing including a genuine leading space "
+                + $"(visible={pane.LinkEditorVisible}, text='{pane.LinkTextValue}', location='{pane.LinkDestinationValue}', "
+                + $"focus={FocusManager.GetFocusedElement(pane.XamlRoot)?.GetType().Name}, "
+                + $"focusName={(FocusManager.GetFocusedElement(pane.XamlRoot) is DependencyObject focused ? AutomationProperties.GetName(focused) : "none")}, "
+                + $"foregroundOwnsWindow={InputRoutingTests.ForegroundWindowForTesting == window.Hwnd}, "
+                + $"transition={pane.PopupFocusDiagnosticForTesting}, error={pane.LastError})");
+            pane.LinkTextValue = "";
             var destinationControl = pane.LinkDestinationControl!;
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Tab);
+            Check(Children<DependencyObject>(destinationControl).Any(element => ReferenceEquals(element, FocusManager.GetFocusedElement(pane.XamlRoot))),
+                "explicit native Tab still transfers focus into the editable link destination");
             Check(destinationControl.IsEditable, "the destination field is an editable native combobox");
+            var headings = view.LinkHeadings(view.LinkContext()).Headings;
+            Check(headings.Count == 1 && headings[0] is { Text: "Destination", Destination: "#destination" },
+                "the link draft exports the current document heading before native dropdown expansion");
+            bool dropdownOpened = false;
+            destinationControl.DropDownOpened += (_, _) => dropdownOpened = true;
             destinationControl.IsDropDownOpen = true;
             await Task.Delay(30);
+            int sourceCount = destinationControl.ItemsSource is System.Collections.IEnumerable headingSource
+                ? headingSource.Cast<object>().Count() : -1;
             Check(destinationControl.Items.Count == 1 && destinationControl.Items[0] is LinkHeading { Text: "Destination", Destination: "#destination" },
-                "expanding the destination combobox lists the document headings");
+                $"expanding the destination combobox lists the document headings (opened event: {dropdownOpened}, "
+                    + $"open: {destinationControl.IsDropDownOpen}, items: {destinationControl.Items.Count}, editor: {pane.LinkEditorVisible}; "
+                    + $"source: {destinationControl.ItemsSource?.GetType().FullName}, source count: {sourceCount}, error: {pane.LinkEditorErrorForTesting}; "
+                    + $"visible labels: {string.Join(" | ", Children<TextBlock>(pane).Where(label => label.Visibility == Visibility.Visible).Select(label => label.Text))})");
             Check(destinationControl.DisplayMemberPath.Length == 0 && destinationControl.ItemTemplate != null
                 && destinationControl.Items[0].ToString() == "#destination",
                 "heading rows display their labels while native editable text uses the destination value");

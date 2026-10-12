@@ -25,7 +25,7 @@ internal sealed partial class StyleWindow : Window
     private StyleDefinition selected = null!;
     private bool loading, updating, closed;
     private uint? lastStyleFailureStatus;
-    internal Action<string>? InheritanceCyclePresenter;
+    internal Action<string>? InheritanceCyclePresenter { get; set; }
     private readonly Dictionary<uint, StyleSheet> variantCatalogues = [];
     private byte[][] variantCatalogueInputs = [];
     private const int ClientWidth = 680;
@@ -154,8 +154,12 @@ internal sealed partial class StyleWindow : Window
     internal void Retarget(CoreView nextView)
     {
         DismissColorPickers();
+        // Keep the current source attachment until the replacement specimen
+        // exists. A failed optional preview must leave following and a later
+        // retry bound to the original, still-live target.
+        CreateThemeSession(nextView.Document.State.format);
         DetachView();
-        documentView = nextView; CreateThemeSession(nextView.Document.State.format); AttachView(true);
+        documentView = nextView; AttachView(true);
         Load(followCaret: true);
     }
     internal void FollowActiveView(CoreView nextView)
@@ -200,6 +204,7 @@ internal sealed partial class StyleWindow : Window
         CancelCaretFollow();
         if (key != selected.Key) Load(key);
     }
+    internal void SelectStyle(StyleKey key) => Navigate(key);
     private void UpdateNavigation(Button button, StyleKey key, string relationship)
     {
         var destination = sheet.Styles.FirstOrDefault(s => s.Key == key && s.Key != selected.Key);
@@ -365,8 +370,9 @@ internal sealed partial class StyleWindow : Window
     private bool Try(Action action, bool reload = true)
     {
         lastStyleFailureStatus = null;
-        if (loading || closed) return false;
+        if (loading || updating || closed) return false;
         if (preferences.EnsureCurrentThemeExists()) return false;
+        if (!PrepareThemeEdit()) return false;
         if (reload) DismissColorPickers();
         updating = true;
         byte[]? before = null;
@@ -377,17 +383,29 @@ internal sealed partial class StyleWindow : Window
             byte[] after = view.ExportStyleDefaults();
             byte[] context = preferences.ThemeStyleContext(view.Document.State.format, after);
             preferences.SaveThemeStyles(view.Document.State.format, after);
+            RecordThemeEdit(before, after, key);
             if (!view.UsesGlobalStyles && !context.AsSpan().SequenceEqual(preferences.ThemeStyleContext(view.Document.State.format)))
                 CreateThemeSession();
-            RecordThemeEdit(before, after, key);
             if (reload) Load(key); else RefreshCommittedColors();
             return true;
         }
         catch (Exception e) {
             lastStyleFailureStatus = (e as CoreException)?.Status;
-            if (before != null) { if (view.UsesGlobalStyles) view.ReplaceCodeStyles(preferences.ThemeStyleContext(VIEM_FORMAT_CODE, before)); else CreateThemeSession(); }
-            error.Text = e.Message; error.Visibility = Visibility.Visible;
-            if (reload) Load(selected.Key); else RefreshCommittedColors();
+            Exception? recoveryFailure = null;
+            try {
+                if (before != null && !themeSessionNeedsRefresh) {
+                    // Preferences are authoritative whether saving failed or
+                    // completed before a disposable preview failed. Never undo
+                    // a published setting or repeat its external write here.
+                    if (view.UsesGlobalStyles) view.ReplaceCodeStyles(preferences.ThemeStyleContext(VIEM_FORMAT_CODE));
+                    else CreateThemeSession();
+                }
+                if (!themeSessionNeedsRefresh) {
+                    if (reload) Load(selected.Key); else RefreshCommittedColors();
+                }
+            }
+            catch (Exception recovery) { themeSessionNeedsRefresh = true; recoveryFailure = recovery; }
+            ShowStyleFailure(e, recoveryFailure);
             return false;
         }
         finally { updating = false; }

@@ -69,17 +69,17 @@ internal static class ListInteractionTests
         async Task OpenParagraphMenu()
         {
             window.Activate();
-            stylesPeer.Expand();
-            await Task.Delay(40);
+            await MenuTestHelpers.Transition(true, () => { stylesPeer.Expand(); return Task.CompletedTask; }, paragraph);
             Check(paragraph.Focus(FocusState.Programmatic), "Style Paragraph submenu receives keyboard focus");
-            await InputRoutingTests.Key(VirtualKey.Right);
-            await Task.Delay(80);
+            await MenuTestHelpers.Transition(true, () => InputRoutingTests.Key(VirtualKey.Right), indent);
         }
+        Task CloseParagraphMenu(Action? action = null) => MenuTestHelpers.Transition(false, () => {
+            action?.Invoke(); stylesPeer.Collapse(); return Task.CompletedTask;
+        }, paragraph, indent);
         async Task Invoke(MenuFlyoutItem item)
         {
             await OpenParagraphMenu();
-            new MenuFlyoutItemAutomationPeer(item).Invoke();
-            await Task.Delay(100);
+            await CloseParagraphMenu(() => new MenuFlyoutItemAutomationPeer(item).Invoke());
         }
         void CheckNested(string name)
         {
@@ -108,7 +108,7 @@ internal static class ListInteractionTests
             await OpenParagraphMenu();
             Check((view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0 && indent.IsEnabled && !unindent.IsEnabled,
                 "Paragraph Indent enables for the second list item at a mid-item caret");
-            stylesPeer.Collapse();
+            await CloseParagraphMenu();
             await Invoke(indent);
             CheckNested("Paragraph Indent dispatches the verified structural list action");
             Check(DecorationLabels(view).Contains("a."),
@@ -116,7 +116,7 @@ internal static class ListInteractionTests
             await OpenParagraphMenu();
             Check(!indent.IsEnabled && unindent.IsEnabled,
                 "Paragraph menu refreshes Indent and Unindent after nesting changes");
-            stylesPeer.Collapse();
+            await CloseParagraphMenu();
             await Invoke(unindent);
             CheckTopLevel("Paragraph Unindent restores the item to the top-level list");
 
@@ -154,7 +154,7 @@ internal static class ListInteractionTests
         }
         finally
         {
-            stylesPeer.Collapse();
+            await CloseParagraphMenu();
             App.Instance.Windows.Remove(window);
             window.Close();
         }

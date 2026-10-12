@@ -19,6 +19,12 @@ internal static class FormattingToolbarTests
 {
     private static void Check(bool condition, string name, string? details = null)
     { if (!condition) throw new InvalidOperationException(details == null ? name : $"{name} ({details})"); FrontendSmokeTests.UiChecks.Add(name); }
+    private static IEnumerable<T> Descendants<T>(DependencyObject root) where T : DependencyObject
+    {
+        if (root is T match) yield return match;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            foreach (var child in Descendants<T>(VisualTreeHelper.GetChild(root, i))) yield return child;
+    }
     private static ToggleMenuFlyoutItem Entry(DropDownButton selector, string id) => ((MenuFlyout)selector.Flyout).Items
         .OfType<ToggleMenuFlyoutItem>().Single(i => i.Tag is StyleKey key && key.Id == id);
     private static async Task Choose(DropDownButton selector, string id)
@@ -47,6 +53,17 @@ internal static class FormattingToolbarTests
     internal static async Task RunStartup(Preferences preferences)
     {
         await LazyConstruction(preferences);
+        foreach (var kind in Enum.GetValues<StyleIconKind>())
+        {
+            var icon = StyleIcons.Icon(kind);
+            // Do not construct the expected subtype here: that would retain
+            // metadata in diagnostics that the shipping native build needs.
+            string expectedType = kind == StyleIconKind.Block ? "PathIcon"
+                : kind == StyleIconKind.Document ? "SymbolIcon" : "FontIcon";
+            Check(icon.GetType().FullName == "Microsoft.UI.Xaml.Controls." + expectedType
+                && AutomationProperties.GetName(icon) == StyleIcons.TypeName(kind),
+                "native style icons retain their concrete projection and accessible type name: " + kind);
+        }
         await CharacterCaretContext(preferences);
         await KeyboardShortcuts(preferences);
         TablePickerTests.Run();
@@ -173,9 +190,9 @@ internal static class FormattingToolbarTests
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }
 
-    internal static async Task Run(Preferences preferences)
+    internal static async Task Run(Preferences preferences, bool startup = true)
     {
-        await RunStartup(preferences);
+        if (startup) await RunStartup(preferences);
         const string source = "# Heading\n\nplain `code`";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
@@ -195,7 +212,7 @@ internal static class FormattingToolbarTests
             Check(((StackPanel)toolbar.Paragraph.Content).Children.First() is IconElement
                 && ((MenuFlyout)toolbar.Paragraph.Flyout).Items.OfType<ToggleMenuFlyoutItem>().All(i => i.Icon != null),
                 "toolbar style selectors annotate every style with its type icon");
-            var toolbarRow = (StackPanel)toolbar.Scroll.Content;
+            var toolbarRow = (StackPanel)toolbar.Viewport.Children.Single();
             var characterGroup = (StackPanel)toolbar.Buttons[ToolbarAction.Bold].Parent;
             Check(characterGroup.Children.OfType<ButtonBase>().Select(b => AutomationProperties.GetName(b))
                 .SequenceEqual(new[] { "Bold", "Italic", "Underline", "Strikethrough" }), "toolbar emphasis order includes underline between italic and strikeout");
@@ -337,41 +354,46 @@ internal static class FormattingToolbarTests
             Resize(1100, 450); await Task.Delay(120);
             double toggleX = toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X;
             Check(Math.Abs(toggleX + toolbar.FormattedView.ActualWidth - (toolbar.ActualWidth - 10)) < 1
-                && toolbar.Scroll.ScrollableWidth == 0,
+                && toolbarRow.ActualWidth <= toolbar.Viewport.ActualWidth + 1,
                 "wide toolbar aligns the formatted-view toggle at the right edge across a flexible gap",
-                $"toggleX={toggleX}, toggleWidth={toolbar.FormattedView.ActualWidth}, toolbarWidth={toolbar.ActualWidth}, scrollable={toolbar.Scroll.ScrollableWidth}, scale={scale}");
+                $"toggleX={toggleX}, toggleWidth={toolbar.FormattedView.ActualWidth}, toolbarWidth={toolbar.ActualWidth}, viewport={toolbar.Viewport.ActualWidth}, scale={scale}");
             Resize(700, 450); await Task.Delay(120);
-            toolbar.Scroll.ChangeView(0, null, null, true); await Task.Delay(50);
-            double unindentX = toolbar.Buttons[ToolbarAction.Unindent].TransformToVisual(toolbar.Scroll).TransformPoint(new()).X;
-            double paragraphX = toolbar.Paragraph.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X;
-            double characterX = toolbar.Character.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X;
-            Check(unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth <= toolbar.Scroll.ActualWidth
-                && paragraphX < toolbar.Scroll.ActualWidth && paragraphX + toolbar.Paragraph.ActualWidth > toolbar.Scroll.ActualWidth
-                && characterX >= toolbar.Scroll.ActualWidth,
+            double unindentX = toolbar.Buttons[ToolbarAction.Unindent].TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
+            double paragraphX = toolbar.Paragraph.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
+            double characterX = toolbar.Character.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
+            Check(unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth <= toolbar.Viewport.ActualWidth
+                && paragraphX < toolbar.Viewport.ActualWidth && paragraphX + toolbar.Paragraph.ActualWidth > toolbar.Viewport.ActualWidth
+                && characterX >= toolbar.Viewport.ActualWidth,
                 "shrinking the toolbar clips Paragraph then Character while every earlier command remains visible",
-                $"unindentRight={unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth}, paragraphX={paragraphX}, characterX={characterX}, viewport={toolbar.Scroll.ActualWidth}");
+                $"unindentRight={unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth}, paragraphX={paragraphX}, characterX={characterX}, viewport={toolbar.Viewport.ActualWidth}");
             Resize(540, 450); await Task.Delay(120);
-            toolbar.Scroll.ChangeView(0, null, null, true); await Task.Delay(50);
-            Check(toolbar.Scroll.ScrollableWidth > 0, "narrow Windows toolbar keeps all groups accessible by scrolling");
+            Check(toolbarRow.ActualWidth > toolbar.Viewport.ActualWidth
+                && !Descendants<ScrollViewer>(toolbar).Any() && !Descendants<ScrollBar>(toolbar).Any(),
+                "narrow toolbar clips its natural-width controls without a scroll container or scrollbar");
             toggleX = toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X;
             Check(toggleX >= 0 && toggleX + toolbar.FormattedView.ActualWidth <= toolbar.ActualWidth,
                 "formatted-view toggle stays visible beside narrow toolbar overflow");
-            double scrollX = toolbar.Scroll.TransformToVisual(toolbar).TransformPoint(new()).X;
-            Check(scrollX + toolbar.Scroll.ActualWidth <= toggleX && toolbar.Scroll.Clip is RectangleGeometry clip
-                && Math.Abs(clip.Rect.Width - toolbar.Scroll.ActualWidth) < 1 && Math.Abs(clip.Rect.Height - toolbar.Scroll.ActualHeight) < 1,
-                "the scroll viewport clips later controls before the fixed formatted-view toggle");
-            Check(toolbar.Paragraph.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X >= toolbar.Scroll.ActualWidth
+            double viewportX = toolbar.Viewport.TransformToVisual(toolbar).TransformPoint(new()).X;
+            Check(viewportX + toolbar.Viewport.ActualWidth <= toggleX && toolbar.Viewport.Clip is RectangleGeometry clip
+                && Math.Abs(clip.Rect.Width - toolbar.Viewport.ActualWidth) < 1 && Math.Abs(clip.Rect.Height - toolbar.Viewport.ActualHeight) < 1,
+                "the toolbar clips later controls before the fixed formatted-view toggle");
+            Check(toolbar.Paragraph.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X >= toolbar.Viewport.ActualWidth
                 && Left(toolbar.Paragraph) >= Left((FrameworkElement)toolbar.Buttons[ToolbarAction.Unindent].Parent)
                     + ((FrameworkElement)toolbar.Buttons[ToolbarAction.Unindent].Parent).ActualWidth,
                 "narrow windows clip the trailing style selectors after the earlier command buttons");
             Check(toolbarRow.Children.OfType<FrameworkElement>().Zip(toolbarRow.Children.OfType<FrameworkElement>().Skip(1))
                 .All(pair => Gap(pair.First, pair.Second) >= standardGap - 1),
                 "narrow toolbar layout never lets later controls overlap earlier groups");
-            toolbar.Scroll.ChangeView(toolbar.Scroll.ScrollableWidth, null, null, true); await Task.Delay(50);
-            Check(toolbar.Scroll.HorizontalOffset > 0 && toolbar.Character.TransformToVisual(toolbar.Scroll).TransformPoint(new()).X + toolbar.Character.ActualWidth <= toolbar.Scroll.ActualWidth + 1,
-                "toolbar overflow scrolls to its trailing style selectors");
-            Check(Math.Abs(toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X - toggleX) < 1,
-                "scrolling formatting controls leaves the formatted-view toggle fixed");
+            double rowX = toolbarRow.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
+            toolbar.Character.Focus(FocusState.Programmatic);
+            toolbar.Character.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
+            await Task.Delay(50); toolbar.UpdateLayout();
+            Check(Math.Abs(toolbarRow.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X - rowX) < .01
+                && toolbar.Character.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X >= toolbar.Viewport.ActualWidth
+                && Math.Abs(toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X - toggleX) < 1,
+                "focus and bring-into-view requests cannot scroll the toolbar or displace its fixed toggle");
+            Check(toolbar.FormattedView.Focus(FocusState.Programmatic), "the formatted-view toggle remains keyboard reachable beside clipped controls");
+            pane.FocusEditor();
             window.AppWindow.Resize(size);
 
             bool showMenu = preferences.ShowMenu;
@@ -415,17 +437,25 @@ internal static class FormattingToolbarTests
                 const string inner = "# Heading";
                 var quotedPane = window.AddPane(new CoreDocument(Encoding.UTF8.GetBytes(inner), format: format));
                 var quotedView = await quotedPane.Ready;
+                string quoteTargetBefore = $"active={ReferenceEquals(window.ActivePane, quotedPane)}, activeView={window.ActivePane?.View?.Id}, toolbarView={toolbar.BoundViewIdForTesting}, expectedView={quotedView.Id}";
+                Check(ReferenceEquals(window.ActivePane, quotedPane) && quotedPane.IsActive,
+                    "adding a pane makes its document the native toolbar action target", quoteTargetBefore);
                 await Click(toolbar, ToolbarAction.BlockQuote);
                 Check(State(toolbar, ToolbarAction.BlockQuote) == true && quotedPane.Document.FormattedText().Contains("Heading"), "quote toggle adds an enclosing container");
                 Check(Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)) == "> # Heading", "quote toggle preserves heading syntax",
-                    $"format={format}, source={Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)).Replace("\n", "\\n")}, mode={quotedView.Presentation.mode}, error={quotedPane.LastError}");
+                    $"format={format}, source={Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)).Replace("\n", "\\n")}, mode={quotedView.Presentation.mode}, "
+                    + $"before: {quoteTargetBefore}; after active={ReferenceEquals(window.ActivePane, quotedPane)}, activeView={window.ActivePane?.View?.Id}, toolbarView={toolbar.BoundViewIdForTesting}, "
+                    + $"coreQuote={quotedView.SelectedNamedStyles().QuoteState}, toolbarQuote={State(toolbar, ToolbarAction.BlockQuote)}, "
+                    + $"foregroundOwnsWindow={InputRoutingTests.ForegroundWindowForTesting == window.Hwnd}, error={quotedPane.LastError}");
                 await Click(toolbar, ToolbarAction.BlockQuote);
                 Check(State(toolbar, ToolbarAction.BlockQuote) == false && Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)) == inner, "quote toggle removes only quote treatment");
                 quotedView.Undo();
                 Check(State(toolbar, ToolbarAction.BlockQuote) == true, "quote toggle follows shared history");
                 await CloseFixture(quotedPane);
 
-                const string code = "Before\n\n```mermaid\ngraph LR\n    Writing --> Editing\n```\n\nAfter";
+                // None uses document-owned rich code styling. An annotated
+                // fence instead uses the shared application Code stylesheet.
+                const string code = "Before\n\n```\ngraph LR\n    Writing --> Editing\n```\n\nAfter";
                 var codePane = window.AddPane(new CoreDocument(Encoding.UTF8.GetBytes(code), format: format));
                 var codeView = await codePane.Ready;
                 var codeText = codePane.Document.FormattedText();
@@ -436,12 +466,21 @@ internal static class FormattingToolbarTests
                 toolbar.Execute(ToolbarAction.BlockQuote);
                 Check(Encoding.UTF8.GetString(codePane.Document.Source(codePane.Document.State.document_revision)) == code,
                     "unavailable quote action preserves code source");
-                var codeStyle = codeView.Styles().Styles.Single(style => style.Key == new StyleKey(1, "Code Block"));
-                codeView.EditStyle(codeStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
+                // Declare the expected body appearance explicitly; bundled
+                // theme values are not this fixture's baseline.
+                var bodyStyle = codeView.Styles().Styles.Single(style => style.Key == new StyleKey(1, "Paragraph"));
+                codeView.EditStyle(bodyStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
                     CoreView.Enum(VIEM_STYLE_VALUE_BOOLEAN, 1));
                 toolbar.Refresh();
+                var literalStyles = codeView.SelectedNamedStyles();
+                var literalSheet = codeView.Styles();
                 Check(State(toolbar, ToolbarAction.Strikethrough) == true && !toolbar.Buttons[ToolbarAction.Strikethrough].IsEnabled,
-                    "literal code keeps resolved strikethrough appearance visible while disabling document formatting: " + format);
+                    "literal code keeps resolved strikethrough appearance visible while disabling document formatting: " + format,
+                    $"toggle={State(toolbar, ToolbarAction.Strikethrough)}, enabled={toolbar.Buttons[ToolbarAction.Strikethrough].IsEnabled}, "
+                    + $"coreState={codeView.StrikethroughState()}, canFormat={codeView.CanFormatStrikethrough}, "
+                    + $"selected={literalStyles.Paragraph}/{literalStyles.Character}, flags={literalStyles.Flags}, "
+                    + $"styles={string.Join(", ", literalSheet.Styles.Where(style => style.Id is "Paragraph" or "Code Block" or "Code").Select(style => $"{style.Namespace}:{style.Id} declared={style.Declares(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH)} effective={style.Value(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH).enum_value}"))}, "
+                    + $"mode={codeView.Presentation.mode}, cursor={codeView.Presentation.cursor_utf8_offset}, error={codePane.LastError}");
                 Check(toolbar.Buttons[ToolbarAction.CharacterCode].Visibility == Visibility.Visible
                     && !toolbar.Buttons[ToolbarAction.CharacterCode].IsEnabled && !toolbar.Character.IsEnabled,
                     "literal code retains its character toolbar controls and disables unsupported assignments: " + format);

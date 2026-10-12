@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Input;
@@ -20,6 +21,7 @@ internal static class ImageInteractionTests
 
     internal static async Task Run(Preferences preferences)
     {
+        await ClipboardSerializationTests.Run();
         Check(ImageLocation.LocalPreviewPath("https://example.invalid/a.png", null) == null
             && ImageLocation.LocalPreviewPath("file://server/share/a.png", null) == null,
             "image preview resolution rejects web and network file resources before opening them");
@@ -282,6 +284,13 @@ internal static class ImageInteractionTests
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window); window.Activate();
         var pane = window.ActivePane!; var view = await pane.Ready;
+        string FocusDetails() => $"editor={pane.ImageEditorVisible}, text='{pane.ImageTextValue}', location='{pane.ImageDestinationValue}', "
+            + $"focus={FocusManager.GetFocusedElement(pane.XamlRoot)?.GetType().Name}, "
+            + $"focusName={(FocusManager.GetFocusedElement(pane.XamlRoot) is DependencyObject focused ? AutomationProperties.GetName(focused) : "none")}, "
+            + $"windowActive={window.IsWindowActive}, formatted='{document.FormattedText()}', "
+            + $"foregroundOwnsWindow={InputRoutingTests.ForegroundWindowForTesting == window.Hwnd}, "
+            + $"foreground={InputRoutingTests.ForegroundWindowForTesting:x}, owner={window.Hwnd:x}, nativeFocus={InputRoutingTests.KeyboardFocusForTesting:x}, "
+            + $"transition={pane.PopupFocusDiagnosticForTesting}, error={pane.LastError}";
         try
         {
             await Task.Delay(100);
@@ -305,15 +314,59 @@ internal static class ImageInteractionTests
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "undo restores the image's original source after keyboard replacement");
             view.Key(VIEM_KEY_ESCAPE); view.Command("gg0i"); view.Key(VIEM_KEY_RIGHT); view.Key(VIEM_KEY_RIGHT);
+            var beforeInsert = view.Presentation;
+            var insertionContext = view.ImageContext();
+            var imageButtonOrigin = window.Toolbar.InsertImage.TransformToVisual(window.Toolbar.Viewport).TransformPoint(new Point());
+            bool imageClick = false;
+            RoutedEventHandler clicked = (_, _) => imageClick = true;
+            window.Toolbar.InsertImage.Click += clicked;
             Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "the image insertion button accepts native keyboard focus");
-            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
+            var initialFocus = FocusManager.GetFocusedElement(pane.XamlRoot);
+            try { await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40); }
+            finally { window.Toolbar.InsertImage.Click -= clicked; }
             Check(pane.ImageEditorVisible && pane.ImageTextValue == "" && pane.ImageDestinationValue == "",
-                "Insert image opens an empty insertion form beside an existing image");
-            pane.ImageDestinationValue = "new.png"; pane.ApplyImageEditor();
+                "Insert image opens an empty insertion form beside an existing image "
+                + $"(before mode={beforeInsert.mode}, offset={beforeInsert.cursor_utf8_offset}, "
+                + $"selection={insertionContext.Selection.text_start}..{insertionContext.Selection.text_end}, canInsert={insertionContext.CanInsert}; "
+                + $"click={imageClick}, initialFocus={initialFocus?.GetType().Name}, focus={FocusManager.GetFocusedElement(pane.XamlRoot)?.GetType().Name}, "
+                + $"buttonX={imageButtonOrigin.X}, buttonWidth={window.Toolbar.InsertImage.ActualWidth}, viewportWidth={window.Toolbar.Viewport.ActualWidth}, "
+                + $"windowActive={window.IsWindowActive}, enabled={window.Toolbar.InsertImage.IsEnabled}, checked={window.Toolbar.InsertImage.IsChecked}, "
+                + $"mode={view.Presentation.mode}, offset={view.Presentation.cursor_utf8_offset}, caret={pane.CaretRectangle}, "
+                + $"popup={pane.ImagePopupVisible}, editor={pane.ImageEditorVisible}, text='{pane.ImageTextValue}', location='{pane.ImageDestinationValue}', "
+                + $"formatted='{document.FormattedText()}', transition={pane.PopupFocusDiagnosticForTesting}, error={pane.LastError})");
+            string beforeSpaceTyping = FocusDetails();
+            await InputRoutingTests.Text(" new.png");
+            string afterSpaceTyping = FocusDetails();
+            Check(pane.ImageDestinationValue == " new.png",
+                "image keyboard activation preserves subsequent native typing including a genuine leading space (before: " + beforeSpaceTyping + "; after: " + afterSpaceTyping + ")");
+            pane.ApplyImageEditor();
             Check(document.FormattedText() == "A\uFFFC\uFFFCB", "Insert image creates a new object at the caret without editing the adjacent image");
             view.Key(VIEM_KEY_ESCAPE); view.Undo();
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "inserting beside an image restores exact original source on undo");
+            view.Key(VIEM_KEY_ESCAPE); view.Command("gg0i"); view.Key(VIEM_KEY_RIGHT); view.Key(VIEM_KEY_RIGHT);
+            Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "image insertion accepts focus for Enter activation");
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Enter);
+            Check(pane.ImageEditorVisible && pane.ImageDestinationValue == "",
+                "Enter opens the image form without submitting or populating it (" + FocusDetails() + ")");
+            string beforeEnterTyping = FocusDetails();
+            await InputRoutingTests.Text(" another.png");
+            Check(pane.ImageDestinationValue == " another.png", "Enter image activation preserves subsequent native leading-space input (before: " + beforeEnterTyping + "; after: " + FocusDetails()
+                + "; earlier Space before: " + beforeSpaceTyping + "; earlier Space after: " + afterSpaceTyping + ")");
+            pane.DismissImagePopup(suppress: false); pane.FocusEditor();
+            await InputRoutingTests.Drag(window, window.Toolbar.InsertImage, new Point[] { new(.5, .5) }, _ => { }, focusTarget: false);
+            Check(pane.ImageEditorVisible && pane.ImageDestinationValue == "", "a direct image toolbar click opens an empty form (" + FocusDetails() + ")");
+            string beforePointerTyping = FocusDetails();
+            await InputRoutingTests.Text(" clicked.png");
+            Check(pane.ImageDestinationValue == " clicked.png", "direct image toolbar clicks preserve subsequent native leading-space input (before: " + beforePointerTyping + "; after: " + FocusDetails() + ")");
+            pane.DismissImagePopup(suppress: false); pane.FocusEditor();
+            Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "image insertion accepts focus for cancellation before deferred field focus");
+            pane.ShowInsertImage(); pane.DismissImagePopup(suppress: false); pane.FocusEditor();
+            var focusAfterDismissal = FocusManager.GetFocusedElement(pane.XamlRoot);
+            await Task.Delay(30);
+            Check(!pane.ImageEditorVisible && ReferenceEquals(FocusManager.GetFocusedElement(pane.XamlRoot), focusAfterDismissal)
+                && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                "dismissing a pending image form cancels deferred focus without source changes or later focus theft");
         }
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }

@@ -22,6 +22,13 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     internal Size MinimumSize { get; private set; } = new(100, 0);
     internal IReadOnlyList<EditorPane> OrderedPanes => frames.Where(f => f.kind == 0).Select(f => ids.First(p => p.Value == f.id).Key).ToArray();
     internal IReadOnlyList<VerticalSplitter> Splitters => splitters.Values.ToArray();
+#if DEBUG
+    internal double SplitterWidthForTesting(VerticalSplitter splitter)
+    {
+        ulong id = splitters.Single(entry => ReferenceEquals(entry.Value, splitter)).Key;
+        return frames.Single(frame => frame.kind == 1 && frame.id == id).width;
+    }
+#endif
     internal PaneStackPanel() { ulong id = 0; Check(viem_pane_layout_create(&id)); handle = id; }
     internal void Configure(Preferences value) { preferences = value; value.Changed += ApplyTheme; }
     internal static Brush SeparatorBrush(Preferences value) => new SolidColorBrush(value.Theme.StatusForeground) { Opacity = .25 };
@@ -134,7 +141,7 @@ internal sealed partial class DragCursorGrid : Grid, IDisposable
     internal void SetDragging(bool value) { dragging = value; UpdateCursor(); }
     internal void SetResizeHover(bool value) { hovering = value; UpdateCursor(); }
     private void UpdateCursor() => ProtectedCursor = dragging || hovering ? cursor : null;
-    public void Dispose() { ProtectedCursor = null; cursor.Dispose(); }
+    public void Dispose() { dragging = hovering = false; ReleasePointerCaptures(); ProtectedCursor = null; cursor.Dispose(); }
 }
 
 internal sealed partial class VerticalSplitter : Grid, IDisposable
@@ -157,15 +164,28 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
             if (style != null) DrawBorders(args.DrawingSession, style, new(decoration.ActualWidth, decoration.ActualHeight));
         };
         AutomationProperties.SetName(this, "Resize views horizontally");
-        PointerPressed += (_, e) => { var p = e.GetCurrentPoint(root); if (p.Properties.IsLeftButtonPressed) { pointer = e.Pointer.PointerId; press = last = p.Position; } };
+        PointerPressed += (_, e) => {
+            var p = e.GetCurrentPoint(root);
+            if (!p.Properties.IsLeftButtonPressed || pointer != null) return;
+            // A divider is narrower than a normal drag. Capture the press so
+            // its first movement outside the strip still reaches this owner;
+            // the threshold below continues to distinguish clicks from drags.
+            bool captured = CapturePointer(e.Pointer);
+            if (!captured) return;
+            pointer = e.Pointer.PointerId; press = last = p.Position;
+        };
         PointerMoved += (_, e) => {
             if (pointer != e.Pointer.PointerId) return;
             var p = e.GetCurrentPoint(root);
             if (!p.Properties.IsLeftButtonPressed) return;
-            if (!dragging) { if (Math.Abs(p.Position.X - press.X) < 4 && Math.Abs(p.Position.Y - press.Y) < 4) return; if (!CapturePointer(e.Pointer)) { pointer = null; return; } dragging = true; }
+            if (!dragging) { if (Math.Abs(p.Position.X - press.X) < 4 && Math.Abs(p.Position.Y - press.Y) < 4) return; dragging = true; }
             double delta = p.Position.X - last.X; last = p.Position; move(delta); e.Handled = true;
         };
-        PointerReleased += (_, e) => { if (pointer != e.Pointer.PointerId) return; pointer = null; if (dragging) { dragging = false; ReleasePointerCapture(e.Pointer); e.Handled = true; } };
+        PointerReleased += (_, e) => {
+            if (pointer != e.Pointer.PointerId) return;
+            bool dragged = dragging; pointer = null; dragging = false;
+            ReleasePointerCapture(e.Pointer); if (dragged) e.Handled = true;
+        };
         PointerCaptureLost += (_, _) => { pointer = null; dragging = false; };
     }
     internal void UpdateBorderVisibility(ViemPaneFrame frame, double containerHeight)
@@ -189,5 +209,5 @@ internal sealed partial class VerticalSplitter : Grid, IDisposable
         if (bottom > 0 && middle > 0) drawing.FillRectangle(new Rect(left, size.Height - bottom, middle, bottom), paint.BottomBorder);
     }
     internal void ApplyTheme(Preferences preferences) { style = preferences.StatusStyles.Status; decoration.Invalidate(); }
-    public void Dispose() { ProtectedCursor = null; cursor.Dispose(); decoration.RemoveFromVisualTree(); }
+    public void Dispose() { pointer = null; dragging = false; ReleasePointerCaptures(); ProtectedCursor = null; cursor.Dispose(); decoration.RemoveFromVisualTree(); }
 }

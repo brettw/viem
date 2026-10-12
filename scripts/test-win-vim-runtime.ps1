@@ -34,7 +34,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Direct Windows build failed.' }
     Verify-Output $build
     Seed-StaleRuntime $publish
-    & dotnet publish src/win/Viem.Windows.csproj -c Debug --no-build --no-restore --nologo -o $publish
+    # Run WinUI's XAML preparation and isolate NativeAOT's build cleanup from
+    # the managed executable that is also tested below.
+    & dotnet publish src/win/Viem.Windows.csproj -c Debug --nologo -o $publish `
+        -p:RestoreLockedMode=true "-p:BaseIntermediateOutputPath=$testRoot/publish-obj/" `
+        "-p:BaseOutputPath=$testRoot/publish-build/"
     if ($LASTEXITCODE -ne 0) { throw 'Windows publish failed.' }
     Verify-Output $publish
 
@@ -49,7 +53,11 @@ try {
         $report = Join-Path $testRoot "$Name.json"
         $process = Start-Process -FilePath (Join-Path $OutputDirectory 'Viem.exe') -WorkingDirectory $testRoot `
             -ArgumentList @('--self-test', ('"' + $report + '"')) -PassThru -WindowStyle Hidden
-        if (!$process.WaitForExit(60000)) { $process.Kill(); throw 'Vim syntax checks timed out.' }
+        if (!$process.WaitForExit(60000)) {
+            $process.Kill()
+            if (!$process.WaitForExit(5000)) { throw 'Timed-out syntax test process did not exit after termination.' }
+            throw "Vim syntax checks timed out. Progress: $report.progress.json"
+        }
         if (!(Test-Path -LiteralPath $report)) { throw "App exited $($process.ExitCode) without a syntax report." }
         $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
         if (!$result.passed -or $process.ExitCode -ne 0) { throw $result.error }

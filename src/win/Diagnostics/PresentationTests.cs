@@ -19,13 +19,14 @@ internal static class PresentationTests
         var view = pane.View!;
         var edit = menu.Items.Single(m => m.Title == "Edit");
         var peer = new MenuBarItemAutomationPeer(edit);
+        var copy = edit.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Copy");
         for (int pass = 0; pass < 2; pass++)
         {
             if (pass == 0) view.SelectAll(); else view.Key(VIEM_KEY_ESCAPE);
-            peer.Expand(); await Task.Delay(80);
-            Check(edit.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Copy").IsEnabled == (pass == 0),
+            await MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, copy);
+            Check(copy.IsEnabled == (pass == 0),
                 pass == 0 ? "opening native menus validates the current selection" : "reopening native menus discards stale selection state");
-            peer.Collapse(); await Task.Delay(80);
+            await MenuTestHelpers.Transition(false, () => { peer.Collapse(); return Task.CompletedTask; }, copy);
             await InputRoutingTests.Key(global::Windows.System.VirtualKey.Escape);
         }
         pane.FocusEditor();

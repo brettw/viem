@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
@@ -15,7 +16,7 @@ internal sealed record StyleVariantParent(uint Format, string Name)
 }
 
 /// <summary>One style-type vocabulary for inspector pickers and toolbar selectors.</summary>
-internal static class StyleIcons
+internal static partial class StyleIcons
 {
     private const string Corners = "M2 2H6V3.3H3.3V6H2Z M10 2H14V6H12.7V3.3H10Z M2 10H3.3V12.7H6V14H2Z M12.7 10H14V14H10V12.7H12.7Z";
 
@@ -43,6 +44,9 @@ internal static class StyleIcons
 
     internal static string TypeName(StyleIconKind kind) => kind switch { StyleIconKind.Paragraph => "Paragraph style", StyleIconKind.Character => "Character style", StyleIconKind.Block => "Block style", StyleIconKind.Document => "Document stylesheet", _ => "Built-in style" };
 
+    // Runtime XAML creates this subtype without a managed constructor call.
+    // Preserve its projection so C#/WinRT does not wrap it as IconElement.
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(PathIcon))]
     internal static IconElement Icon(StyleIconKind kind)
     {
         IconElement icon = kind switch {
@@ -64,7 +68,7 @@ internal static class StyleIcons
         return row;
     }
 
-    internal sealed class PickerTemplates : DataTemplateSelector
+    internal sealed partial class PickerTemplates : DataTemplateSelector
     {
         private readonly Dictionary<StyleIconKind, DataTemplate> templates = Enum.GetValues<StyleIconKind>().ToDictionary(kind => kind, Template);
         private readonly DataTemplate plain = (DataTemplate)XamlReader.Load("<DataTemplate xmlns='http://schemas.microsoft.com/winfx/2006/xaml/presentation'><TextBlock Text='{Binding}'/></DataTemplate>");

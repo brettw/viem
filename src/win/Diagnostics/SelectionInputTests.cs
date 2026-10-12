@@ -36,7 +36,7 @@ internal static class SelectionInputTests
                     Check(pane.PointerCursorForTesting == "row", "margin row drag keeps the mirrored cursor over text");
                     var range = view.LogicalSelection();
                     Check(range.text_start == 0 && range.text_end == (step == 1 ? 22ul : 11ul),
-                        "margin drag retains its original complete row when extending and reversing");
+                        $"margin drag retains its original complete row when extending and reversing (step={step}, range={range.text_start}..{range.text_end}, rows={rows[0].text_start}..{rows[0].text_end}/{rows[1].text_start}..{rows[1].text_end}, viewport={view.Viewport.top}, text={pane.Document.FormattedText().Replace("\n", "\\n")})");
                 });
             view.Key(VIEM_KEY_ESCAPE); view.Command("gg");
             await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
@@ -65,8 +65,12 @@ internal static class SelectionInputTests
         var view = pane.View!;
         var window = App.Instance.Windows.Single(w => w.Panes.Contains(pane));
         const string original = "alpha beta\nsecond line";
+        Check(pane.Document.Source(pane.Document.State.document_revision).Length == 0,
+            "pointer fixture begins with an empty source artifact");
         view.Ex("set autoselect keymodel= selectmode=");
         view.Command("i"); view.Text(original); view.Key(VIEM_KEY_ESCAPE);
+        Check(pane.Document.Source(pane.Document.State.document_revision).AsSpan().SequenceEqual("alpha beta\nsecond line"u8),
+            "pointer fixture batch insertion retains its exact unterminated source");
         window.Activate(); pane.FocusEditor();
         try
         {
@@ -177,13 +181,14 @@ internal static class SelectionInputTests
             }
         }
         finally { view.Key(VIEM_KEY_ESCAPE); view.Ex("%d"); pane.FocusEditor(); }
+        await TripleClickSelectionTests.Run(pane);
     }
-    internal static async Task Run(EditorPane pane)
+    internal static async Task Run(EditorPane pane, bool pointerPlacement = true)
     {
-        await RunPointerPlacement(pane);
+        if (pointerPlacement) await RunPointerPlacement(pane);
         var view = pane.View!;
         var window = App.Instance.Windows.Single(w => w.Panes.Contains(pane));
-        const string original = "alpha beta\nsecond line\nthird";
+        const string original = "alpha beta\nsecond line\nthird\n";
         async Task Start(uint offset = 0)
         {
             await InputRoutingTests.Key(VirtualKey.Escape);
@@ -204,6 +209,8 @@ internal static class SelectionInputTests
             await InputRoutingTests.Text("second line"); await InputRoutingTests.Key(VirtualKey.Enter);
             await InputRoutingTests.Text("third");
             await Start();
+            Check(pane.Document.Source(pane.Document.State.document_revision).AsSpan().SequenceEqual("alpha beta\nsecond line\nthird\n"u8),
+                "native selection fixture retains the EOF Enter supporting terminator");
             await SelectTwo();
             var selection = view.LogicalSelection();
             Check(view.Presentation.mode == VIEM_MODE_SELECTION_CHARACTER && selection.text_start == 0 && selection.text_end == 2,
@@ -212,7 +219,7 @@ internal static class SelectionInputTests
                 && pane.CanCopy && pane.CanCut && view.Selection().Rectangles.Length > 0,
                 "Select mode has a native status label, thin caret, selection paint and clipboard actions");
             await InputRoutingTests.Text("Q👩‍💻");
-            Check(pane.Document.FormattedText() == "Q👩‍💻pha beta\nsecond line\nthird" && view.Presentation.mode == VIEM_MODE_INSERT,
+            Check(pane.Document.FormattedText() == "Q👩‍💻pha beta\nsecond line\nthird\n" && view.Presentation.mode == VIEM_MODE_INSERT,
                 "native Unicode text replaces Select mode as one committed text input");
             await InputRoutingTests.Key(VirtualKey.Z, control: true);
             Check(pane.Document.FormattedText() == original, "one native undo restores selection replacement and subsequent text");
@@ -263,36 +270,36 @@ internal static class SelectionInputTests
             var linewiseCopy = await ClipboardFormats.Read();
             Check(linewiseCopy.Text == "alpha beta\n", "linewise Vim yank exposes its terminating newline on the Windows clipboard");
             view.Command("p");
-            Check(pane.Document.FormattedText() == "alpha beta\nalpha beta\nsecond line\nthird",
+            Check(pane.Document.FormattedText() == "alpha beta\nalpha beta\nsecond line\nthird\n",
                 "bare put after a Windows clipboard yank retains the unnamed linewise register");
             view.Undo(); await Start();
             view.ClipboardText = linewiseCopy.Text; view.ClipboardFragment = linewiseCopy.Fragment; view.ClipboardGeneration++;
             view.Command("j\"*p");
-            Check(pane.Document.FormattedText() == "alpha beta\nsecond line\nalpha beta\nthird",
+            Check(pane.Document.FormattedText() == "alpha beta\nsecond line\nalpha beta\nthird\n",
                 "Windows clipboard round trip retains linewise Vim put semantics");
             view.Undo();
             await SelectTwo(); await InputRoutingTests.Key(VirtualKey.X, control: true);
-            Check(pane.Document.FormattedText() == "pha beta\nsecond line\nthird", "native Cut deletes a Select selection");
+            Check(pane.Document.FormattedText() == "pha beta\nsecond line\nthird\n", "native Cut deletes a Select selection");
             view.Undo(); await SelectTwo(); ClipboardFormats.Write("PASTE", "");
             await InputRoutingTests.Key(VirtualKey.V, control: true);
-            Check(pane.Document.FormattedText() == "PASTEpha beta\nsecond line\nthird", "native Paste replaces a Select selection");
+            Check(pane.Document.FormattedText() == "PASTEpha beta\nsecond line\nthird\n", "native Paste replaces a Select selection");
             view.Undo(); await SelectTwo();
             var edit = window.Menu.Items.Single(item => item.Title == "Edit");
             var peer = new MenuBarItemAutomationPeer(edit); peer.Expand(); await Task.Delay(60);
             var delete = edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Delete");
             Check(delete.IsEnabled, "Edit Delete is enabled for Select mode");
             new MenuFlyoutItemAutomationPeer(delete).Invoke(); await Task.Delay(80);
-            Check(pane.Document.FormattedText() == "pha beta\nsecond line\nthird" && view.Presentation.mode == VIEM_MODE_INSERT,
+            Check(pane.Document.FormattedText() == "pha beta\nsecond line\nthird\n" && view.Presentation.mode == VIEM_MODE_INSERT,
                 "Edit Delete removes Select text and enters Insert like the physical Delete key");
             pane.FocusEditor(); await InputRoutingTests.Text("Q");
-            Check(pane.Document.FormattedText() == "Qpha beta\nsecond line\nthird", "typing continues after Edit Delete");
+            Check(pane.Document.FormattedText() == "Qpha beta\nsecond line\nthird\n", "typing continues after Edit Delete");
             view.Undo();
             Check(pane.Document.FormattedText() == original, "one undo restores Edit Delete and subsequent typing");
 
             await Start(); await InputRoutingTests.Text("vl");
             peer.Expand(); await Task.Delay(60);
             new MenuFlyoutItemAutomationPeer(delete).Invoke(); await Task.Delay(80);
-            Check(pane.Document.FormattedText() == "pha beta\nsecond line\nthird" && view.Presentation.mode == VIEM_MODE_NORMAL,
+            Check(pane.Document.FormattedText() == "pha beta\nsecond line\nthird\n" && view.Presentation.mode == VIEM_MODE_NORMAL,
                 "Edit Delete retains Visual mode's delete command behavior");
             view.Undo();
 
@@ -324,19 +331,27 @@ internal static class SelectionInputTests
             Check(view.IsTextSelection, "Ctrl+G switches Visual mode back to Select mode");
             await Start(); await InputRoutingTests.Text("V");
             Check(view.Presentation.mode == VIEM_MODE_SELECT_LINE && pane.ModeControl.Text == "S-LINE" && pane.CanCopy,
-                "Select Line mode exposes its selection and status to the Windows frontend");
+                $"Select Line mode exposes its selection and status to the Windows frontend (mode={view.Presentation.mode}, status={pane.ModeControl.Text}, copy={pane.CanCopy}, cursor={view.Presentation.cursor_utf8_offset}, error={pane.LastError})");
             var lineSelection = view.LogicalSelection(); await InputRoutingTests.Key(VirtualKey.C, control: true);
             Check(view.Presentation.mode == VIEM_MODE_SELECT_LINE && view.LogicalSelection().Equals(lineSelection),
                 "native Copy retains Select Line extent and mode");
             await Start(); await InputRoutingTests.Key(VirtualKey.Q, control: true);
             Check(view.Presentation.mode == VIEM_MODE_SELECT_BLOCK && pane.ModeControl.Text == "S-BLOCK" && pane.CanCopy,
-                "Select Block mode keeps the Windows Ctrl+Q entry and clipboard availability");
-            var blockSelection = view.LogicalSelection(); await InputRoutingTests.Key(VirtualKey.C, control: true);
-            Check(view.Presentation.mode == VIEM_MODE_SELECT_BLOCK && view.LogicalSelection().Equals(blockSelection),
+                $"Select Block mode keeps the Windows Ctrl+Q entry and clipboard availability (mode={view.Presentation.mode}, status={pane.ModeControl.Text}, copy={pane.CanCopy}, cursor={view.Presentation.cursor_utf8_offset}, error={pane.LastError})");
+            var blockSelection = view.Selection(); await InputRoutingTests.Key(VirtualKey.C, control: true);
+            var copiedBlock = view.Selection();
+            Check(view.Presentation.mode == VIEM_MODE_SELECT_BLOCK
+                && copiedBlock.Info.identity.Equals(blockSelection.Info.identity)
+                && copiedBlock.Segments.SequenceEqual(blockSelection.Segments)
+                && copiedBlock.Rectangles.SequenceEqual(blockSelection.Rectangles),
                 "native Copy retains the exact Select Block geometry and mode");
             bool compositionRejected = false;
             try { view.BeginComposition(); } catch (InvalidOperationException) { compositionRejected = true; }
-            Check(compositionRejected && !view.Composing && pane.Document.FormattedText() == original,
+            var rejectedBlock = view.Selection();
+            Check(compositionRejected && !view.Composing && pane.Document.FormattedText() == original
+                && rejectedBlock.Info.identity.Equals(copiedBlock.Info.identity)
+                && rejectedBlock.Segments.SequenceEqual(copiedBlock.Segments)
+                && rejectedBlock.Rectangles.SequenceEqual(copiedBlock.Rectangles),
                 "unsupported rectangular IME composition cannot delete the selection's bounding text");
             Check(pane.Document.FormattedText() == original && pane.LastError == null, "selection options and native navigation preserve source bytes");
         }

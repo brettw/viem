@@ -184,6 +184,21 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         finally { IsPublishingSyntaxChange = false; }
     }
     public string SyntaxDiagnostics => Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_copy_syntax_diagnostics(Handle, p, n, r)));
+    public string[] SyntaxStyleNames()
+    {
+        // Menus use only already accepted syntax output. Bound this optional
+        // presentation export before allocating; never wait for highlighting.
+        ulong required = 0;
+        uint status = viem_core_copy_syntax_style_names(Handle, null, 0, &required);
+        if (status != VIEM_STATUS_BUFFER_TOO_SMALL) Check(status, "Read syntax styles");
+        if (required > 4 * 1024 * 1024) throw new InvalidDataException("The syntax style catalogue exceeds its display limit.");
+        byte[] bytes = new byte[checked((int)required)];
+        fixed (byte* output = bytes)
+            Check(viem_core_copy_syntax_style_names(Handle, output, (ulong)bytes.Length, &required), "Copy syntax styles");
+        if (required > (ulong)bytes.Length) throw new InvalidDataException("The syntax style catalogue changed while being copied.");
+        using var json = System.Text.Json.JsonDocument.Parse(bytes.AsMemory(0, checked((int)required)));
+        return json.RootElement.EnumerateArray().Select(value => value.GetString()!).ToArray();
+    }
     public void Dispose()
     {
         if (Handle == 0) return;

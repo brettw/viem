@@ -576,6 +576,64 @@ mod tests {
     }
 
     #[test]
+    fn theme_context_allows_new_code_character_definitions() {
+        let mut sheet = load(
+            ThemeVariant::Code,
+            serde_json::json!({"code":base(ThemeVariant::Code),"markdown":base(ThemeVariant::Markdown),"text":base(ThemeVariant::Text)}),
+        );
+        let revision = sheet.revision;
+        let parent_id = StyleId::from("custom-parent");
+        let child_id = StyleId::from("custom-child");
+        for (id, name, based_on, bold) in [
+            (parent_id.clone(), "Parent", None, Some(true)),
+            (child_id.clone(), "Child", Some(parent_id.clone()), None),
+        ] {
+            let edit = StyleDefinitionEdit::InsertCharacter {
+                style: CharacterStyle {
+                    id: id.clone(), based_on,
+                    properties: CharacterProperties { bold, ..Default::default() },
+                },
+                metadata: StyleDefinitionMetadata::generated(name),
+            };
+            assert!(sheet.apply_configuration_edit(&edit, StyleSheetRevision(sheet.revision.0 + 1), false).unwrap());
+            assert_eq!(sheet.character_style_metadata(&id).unwrap().display_name, name);
+        }
+        assert_eq!(sheet.revision, StyleSheetRevision(revision.0 + 2));
+        assert!(sheet.resolve_paragraph_style(&sheet.base_paragraph, &sheet.base_paragraph,
+            Some(&child_id), &Default::default(), &Default::default()).unwrap().character.bold);
+        let before = sheet.clone();
+        assert!(matches!(parent(&mut sheet, StyleNamespace::Character, &parent_id.0,
+            StyleDefinitionFieldEdit::SetParent(Some(child_id.clone()))), Err(StyleError::InheritanceCycle(_))));
+        assert_eq!(sheet, before, "rejected relationships retain metadata and revision");
+        let reopened = load(ThemeVariant::Code, serde_json::json!({"code":exported(&sheet)}));
+        assert_eq!(reopened.character_style(&child_id).unwrap().based_on.as_ref(), Some(&parent_id));
+        assert_eq!(reopened.character_style_metadata(&child_id), sheet.character_style_metadata(&child_id));
+    }
+
+    #[test]
+    fn theme_context_allows_new_paragraph_definitions() {
+        let mut sheet = load(ThemeVariant::Markdown, serde_json::json!({"markdown":base(ThemeVariant::Markdown)}));
+        let revision = sheet.revision;
+        let id = StyleId::from("custom-paragraph");
+        let edit = StyleDefinitionEdit::InsertBlock {
+            style: BlockStyle {
+                id: id.clone(), based_on: Some(sheet.base_paragraph.clone()), next_paragraph_style: None,
+                role: BlockRole::Paragraph,
+                character: CharacterProperties { size: Some(FontSize::Points(28.0)), ..Default::default() },
+                block: Default::default(),
+            },
+            metadata: StyleDefinitionMetadata::generated("Custom paragraph"),
+        };
+        assert!(sheet.apply_configuration_edit(&edit, StyleSheetRevision(revision.0 + 1), false).unwrap());
+        assert_eq!(sheet.revision, StyleSheetRevision(revision.0 + 1));
+        assert_eq!(sheet.block_style_metadata(&id).unwrap().display_name, "Custom paragraph");
+        assert_eq!(size(&sheet, &id.0), 28.0);
+        let reopened = load(ThemeVariant::Markdown, serde_json::json!({"markdown":exported(&sheet)}));
+        assert_eq!(reopened.block_style(&id), sheet.block_style(&id));
+        assert_eq!(reopened.block_style_metadata(&id), sheet.block_style_metadata(&id));
+    }
+
+    #[test]
     fn foreign_base_inherits_sparse_values_and_roundtrips_without_context() {
         let mut text = base(ThemeVariant::Text);
         let mut markdown = base(ThemeVariant::Markdown);
