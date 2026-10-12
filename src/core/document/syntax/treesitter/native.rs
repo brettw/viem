@@ -88,6 +88,15 @@ struct Header {
 fn layout(bytes: usize) -> Option<Layout> {
     Layout::from_size_align(bytes.checked_add(std::mem::size_of::<Header>())?, 16).ok()
 }
+/// Tree-sitter, its grammars and scanners never check for NULL: its own
+/// default allocator aborts on failure. Returning NULL would turn exhaustion
+/// or an oversized request into writes through a null-based pointer.
+fn allocation_failed(layout: Option<Layout>) -> ! {
+    match layout {
+        Some(layout) => std::alloc::handle_alloc_error(layout),
+        None => std::process::abort(),
+    }
+}
 unsafe fn charge(owner: *const Account, bytes: usize) {
     let live = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
     PEAK.fetch_max(live, Ordering::Relaxed);
@@ -104,11 +113,11 @@ unsafe fn uncharge(owner: *const Account, bytes: usize) {
 }
 unsafe extern "C" fn malloc(bytes: usize) -> *mut c_void {
     let Some(layout) = layout(bytes) else {
-        return std::ptr::null_mut();
+        allocation_failed(None);
     };
     let header = alloc(layout).cast::<Header>();
     if header.is_null() {
-        return std::ptr::null_mut();
+        allocation_failed(Some(layout));
     }
     let owner = CURRENT.with(Cell::get);
     if !owner.is_null() {
@@ -120,12 +129,10 @@ unsafe extern "C" fn malloc(bytes: usize) -> *mut c_void {
 }
 unsafe extern "C" fn calloc(count: usize, bytes: usize) -> *mut c_void {
     let Some(bytes) = count.checked_mul(bytes) else {
-        return std::ptr::null_mut();
+        allocation_failed(None);
     };
     let pointer = malloc(bytes);
-    if !pointer.is_null() {
-        pointer.cast::<u8>().write_bytes(0, bytes);
-    }
+    pointer.cast::<u8>().write_bytes(0, bytes);
     pointer
 }
 unsafe extern "C" fn resize(pointer: *mut c_void, bytes: usize) -> *mut c_void {
@@ -138,13 +145,13 @@ unsafe extern "C" fn resize(pointer: *mut c_void, bytes: usize) -> *mut c_void {
     }
     let old = pointer.cast::<Header>().sub(1);
     let Some(new_layout) = layout(bytes) else {
-        return std::ptr::null_mut();
+        allocation_failed(None);
     };
     let old_layout = layout((*old).bytes).expect("existing native allocation");
     let owner = (*old).owner;
     let next = realloc(old.cast(), old_layout, new_layout.size()).cast::<Header>();
     if next.is_null() {
-        return std::ptr::null_mut();
+        allocation_failed(Some(new_layout));
     }
     uncharge(owner, old_layout.size());
     (*next).bytes = bytes;

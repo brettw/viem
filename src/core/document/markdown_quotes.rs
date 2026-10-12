@@ -207,19 +207,23 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
             }
             // A quote may begin after a list marker on the same physical row.
             // Its parser-owned start supplies the prefix that a row-only scan misses.
-            for container in active.iter().filter(|container| {
+            // Quotes opened on one row are nested, and the innermost one's
+            // walk reaches every marker that an ancestor's shorter-limited
+            // walk could, so only it can extend the prefix. Rescanning each
+            // ancestor made a row of N nested quote markers quadratic.
+            if let Some(container) = active.iter().rev().find(|container| {
                 container.list.is_none()
                     && range.start <= container.range.start
                     && container.range.start <= range.end
             }) {
-                content_start = content_start.max(
-                    container.range.start
-                        + prefix_with_limit(
-                            &input.text[container.range.start..range.end],
-                            container.quote_depth,
-                        )
-                        .0,
+                let (prefix, _) = prefix_with_limit(
+                    &input.text[container.range.start..range.end],
+                    container.quote_depth,
                 );
+                super::work_statistics::record(|stats| {
+                    stats.markdown_container_prefix_bytes += prefix;
+                });
+                content_start = content_start.max(container.range.start + prefix);
             }
             QuoteLine {
                 range,

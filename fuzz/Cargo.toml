@@ -1,0 +1,71 @@
+[package]
+name = "viem-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "=1.0.140"
+viem-core = { path = ".." }
+
+# Keep the fuzzer out of the product build graph.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+[[bin]]
+name = "open_document"
+path = "fuzz_targets/open_document.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "markdown_edit"
+path = "fuzz_targets/markdown_edit.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "clipboard_html"
+path = "fuzz_targets/clipboard_html.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "detect_language"
+path = "fuzz_targets/detect_language.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "treesitter"
+path = "fuzz_targets/treesitter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "syntax_highlight"
+path = "fuzz_targets/syntax_highlight.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vim_highlight"
+path = "fuzz_targets/vim_highlight.rs"
+test = false
+doc = false
+bench = false

@@ -35,6 +35,9 @@ pub struct DocumentWorkStatistics {
     pub formatted_full_materialized_bytes: usize,
     /// Complete logical contributors inspected while retaining moved identities.
     pub source_relocation_graphemes_visited: usize,
+    /// Bytes examined to measure Markdown container prefixes: columns before
+    /// list markers, thematic-break checks after them, and quote markers.
+    pub markdown_container_prefix_bytes: usize,
 }
 
 impl DocumentWorkStatistics {
@@ -66,7 +69,8 @@ impl DocumentWorkStatistics {
             projection_persistent_nodes_visited,
             projection_persistent_nodes_copied,
             formatted_full_materialized_bytes,
-            source_relocation_graphemes_visited
+            source_relocation_graphemes_visited,
+            markdown_container_prefix_bytes
         );
 
     }

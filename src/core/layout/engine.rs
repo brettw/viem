@@ -4675,9 +4675,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     }
                 }
             }
+            let plan = BlockDecorationPlan::new(&paragraph.style, content_insets.left, usable_width,
+                view.scale, right_to_left);
             for row in &mut rows {
-                decorate_block_row(row, &paragraph.style, resolved_gap,
-                    content_insets.left, usable_width, view.scale, right_to_left);
+                decorate_block_row_with(row, &paragraph.style, &plan, resolved_gap);
             }
             if !extends_past_work && next_paragraph.is_none() {
                 y = document_end_extent(y, rows.last(), block_box::after(&paragraph.style) * view.scale, content_insets.bottom);
@@ -5272,14 +5273,19 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         }
         let mut decorated_table_line = None;
         let mut hard_line_text_insets = BTreeMap::new();
+        let mut plan: Option<(usize, BlockDecorationPlan)> = None;
         for row in &mut rows {
             if document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()).is_some_and(|context| context.contains_line(&row.hard_line_range)) {
                 if row.table_cell.is_none() || decorated_table_line == Some(row.hard_line_index) { continue; }
                 decorated_table_line = Some(row.hard_line_index);
             }
             let paragraph = &line_paragraphs[row.hard_line_index];
-            decorate_block_row(row, &paragraph.style, resolved_gaps[row.hard_line_index],
-                content_insets.left, usable_width, view.scale, line_directions[row.hard_line_index]);
+            if plan.as_ref().is_none_or(|(line, _)| *line != row.hard_line_index) {
+                plan = Some((row.hard_line_index, BlockDecorationPlan::new(&paragraph.style,
+                    content_insets.left, usable_width, view.scale, line_directions[row.hard_line_index])));
+            }
+            let (_, paragraph_plan) = plan.as_ref().expect("current paragraph plan");
+            decorate_block_row_with(row, &paragraph.style, paragraph_plan, resolved_gaps[row.hard_line_index]);
         }
         y = document_end_extent(
             y,
@@ -6640,6 +6646,50 @@ fn decorate_quote_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle, sca
 /// let a bounded viewport draw its portion without laying out distant children.
 fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
     resolved_gap: f32, canvas_left: f32, canvas_width: f32, scale: f32, right_to_left: bool) {
+    let plan = BlockDecorationPlan::new(paragraph, canvas_left, canvas_width, scale, right_to_left);
+    decorate_block_row_with(row, paragraph, &plan, resolved_gap);
+}
+
+/// Row-independent decoration geometry for one paragraph: its vertical box
+/// extents and the horizontal edges of each box that can paint. Boxes that
+/// paint nothing only move those edges, so the wrapped rows of a deeply
+/// nested paragraph (one row per grapheme once indentation exhausts the
+/// width) do not each walk every enclosing container.
+struct BlockDecorationPlan {
+    top: Vec<f32>,
+    bottom: Vec<f32>,
+    scale: f32,
+    /// Box index with its left and right edges after margin and indent.
+    painting: Vec<(usize, f32, f32)>,
+}
+
+impl BlockDecorationPlan {
+    fn new(paragraph: &ParagraphLayoutStyle, canvas_left: f32, canvas_width: f32, scale: f32,
+        right_to_left: bool) -> Self {
+        let (top, bottom) = block_box::vertical_extents(paragraph);
+        let mut painting = Vec::new();
+        let mut left = canvas_left;
+        let mut right = canvas_left + canvas_width;
+        for index in 0..=paragraph.containers.len() {
+            let style = paragraph.containers.get(index).map_or(&paragraph.block_box, |container| &container.style);
+            left += (style.margin.left + if right_to_left { style.inline_end } else { style.inline_start }) * scale;
+            right -= (style.margin.right + if right_to_left { style.inline_start } else { style.inline_end }) * scale;
+            let border = [style.border.top, style.border.right, style.border.bottom, style.border.left];
+            if style.language_label.is_some() || style.background.is_some()
+                || border.iter().any(|weight| !(*weight <= 0.)) {
+                painting.push((index, left, right));
+            }
+            left += (style.border.left + style.padding.left) * scale;
+            right -= (style.border.right + style.padding.right) * scale;
+        }
+        Self { top, bottom, scale, painting }
+    }
+}
+
+fn decorate_block_row_with(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
+    plan: &BlockDecorationPlan, resolved_gap: f32) {
+    let BlockDecorationPlan { top, bottom, scale, .. } = plan;
+    let scale = *scale;
     // A table row is one normal-flow slice, including its cell and table
     // padding/borders. Individual cell text rows never own enclosing boxes.
     let (first, last, start_y, end_y) = if let Some(cell) = &row.table_cell {
@@ -6652,17 +6702,13 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
     // Parent owners must precede table/cell owners in paint order, so a quote
     // background cannot paint over the table's own background or borders.
     let mut child_decorations = if row.table_cell.is_some() { std::mem::take(&mut row.decorations) } else { Vec::new() };
-    let (top, bottom) = block_box::vertical_extents(paragraph);
     let gap = if last { resolved_gap } else { 0. };
-    let mut left = canvas_left;
-    let mut right = canvas_left + canvas_width;
-    for index in 0..=paragraph.containers.len() {
+    let default_paint = ResolvedTextPaint::default();
+    for &(index, left, right) in &plan.painting {
         let (style, starts, ends, quote) = if let Some(container) = paragraph.containers.get(index) {
             (&container.style, container.starts_here, container.ends_here,
                 matches!(container.kind, crate::document::ContainerKind::Quote))
         } else { (&paragraph.block_box, true, true, false) };
-        left += (style.margin.left + if right_to_left { style.inline_end } else { style.inline_start }) * scale;
-        right -= (style.margin.right + if right_to_left { style.inline_start } else { style.inline_end }) * scale;
         let is_top = first && starts;
         let is_bottom = last && ends;
         let y = start_y - if is_top { top[index] * scale } else { 0. };
@@ -6670,7 +6716,7 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
         let rect = LayoutRect { x: left, y, width: (right - left).max(0.), height: (end - y).max(0.) };
         let owner = paragraph.containers.get(index).map_or(DecorationOwner::Paragraph(paragraph.block_id),
             |container| DecorationOwner::Container(container.id));
-        let mut paint = ResolvedTextPaint::default();
+        let mut paint = default_paint.clone();
         // Background covers content and padding, stopping at the inner border
         // edge. Only the first/last slice owns a horizontal border. Partition
         // the four border strips too, so translucent corners paint just once.
@@ -6720,8 +6766,6 @@ fn decorate_block_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
             let kind = if quote && side == 3 { DecorationKind::BlockQuoteBorder } else { DecorationKind::BlockBorder };
             push_box_rectangle(row, owner, kind, bounds, paint.clone());
         }
-        left += (style.border.left + style.padding.left) * scale;
-        right -= (style.border.right + style.padding.right) * scale;
     }
     row.decorations.append(&mut child_decorations);
 }

@@ -49,6 +49,21 @@ fn custom(source: &str, profile: QueryProfile) -> Arc<TreeSitterPackage> {
 }
 
 #[test]
+fn scanners_receive_nul_as_a_nonterminating_byte() {
+    // tree-sitter-swift's directive matcher treats lookahead 0 as its string
+    // terminator and then reads past it while input matches (found by fuzz/
+    // under AddressSanitizer). NUL is supplied as U+0001 at the same offset.
+    assert_eq!(scanner_safe(b"#if\0x").as_ref(), b"#if\x01x");
+    assert!(matches!(scanner_safe(b"plain"), std::borrow::Cow::Borrowed(_)));
+    let mut session = TreeSitterSession::new(package_for_language("swift").unwrap()).unwrap();
+    let text = "let a = 1\n#if\0\0elseif\0\0\0#else\0x";
+    let (snapshot, _) = parsed(&mut session, input(text, 1), &[]);
+    assert_eq!(snapshot.input().byte_len(), text.len());
+    let result = highlight(&snapshot, 0..text.len(), &generous(), &AtomicBool::new(false));
+    assert!(result.runs.iter().all(|run| run.range.end <= text.len()));
+}
+
+#[test]
 fn all_bundled_nvim_queries_compile() {
     let failures: Vec<_> = BUNDLED_LANGUAGES
         .iter()

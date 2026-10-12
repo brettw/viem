@@ -7,7 +7,7 @@ use html5ever::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeBuilder,
 use html5ever::{Attribute, ExpandedName, QualName};
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
 use std::rc::{Rc, Weak};
 
@@ -95,12 +95,37 @@ impl Context {
             .collect()
     }
 }
+/// Elements' names and attributes with the count of each distinct opening
+/// source among them.
+type SourceIndex = BTreeMap<(QualName, Vec<Attribute>), BTreeMap<(usize, usize), usize>>;
 struct Sink {
     document: Handle,
     context: Rc<RefCell<Context>>,
     elements: RefCell<Vec<Handle>>,
+    /// Lets an adoption-agency clone find its original opening token without
+    /// rescanning every element: formatting reconstruction clones into each
+    /// new paragraph, which made that scan quadratic.
+    sources: RefCell<SourceIndex>,
 }
 impl Sink {
+    fn index(&self, name: &QualName, attrs: &[Attribute], source: &Range<usize>, added: bool) {
+        let mut sources = self.sources.borrow_mut();
+        let key = (name.clone(), attrs.to_vec());
+        let span = (source.start, source.end);
+        if added {
+            *sources.entry(key).or_default().entry(span).or_default() += 1;
+        } else if let Some(spans) = sources.get_mut(&key) {
+            if let Some(count) = spans.get_mut(&span) {
+                *count -= 1;
+                if *count == 0 {
+                    spans.remove(&span);
+                }
+            }
+            if spans.is_empty() {
+                sources.remove(&key);
+            }
+        }
+    }
     fn detach(node: &Handle) {
         if let Some(parent) = std::mem::take(&mut *node.parent.borrow_mut()).upgrade() {
             parent
@@ -161,10 +186,16 @@ impl TreeSink for Sink {
     fn create_element(&self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> Handle {
         let context = self.context.borrow();
         let source=context.tag.as_ref().filter(|(tag,_)|tag.kind==tokenizer::StartTag&&tag.name==name.local).map(|(_,range)|range.clone()).or_else(|| {
-            // Adoption-agency clones inherit their original opening token.
-            let candidates=self.elements.borrow().iter().filter(|node|matches!(&node.data,Data::Element{name:old,attrs:old_attrs,..}if old==&name&&*old_attrs.borrow()==attrs)).filter_map(|node|node.source.clone()).collect::<Vec<_>>();
-            candidates.first().filter(|first|candidates.iter().all(|range|range==*first)).cloned()
+            // Adoption-agency clones inherit their original opening token
+            // when every same-named element with these attributes shares it.
+            let sources = self.sources.borrow();
+            let spans = sources.get(&(name.clone(), attrs.clone()))?;
+            let (&(start, end), _) = spans.iter().next().filter(|_| spans.len() == 1)?;
+            Some(start..end)
         });
+        if let Some(source) = &source {
+            self.index(&name, &attrs, source, true);
+        }
         let node = Node::new(
             Data::Element {
                 name,
@@ -228,12 +259,18 @@ impl TreeSink for Sink {
     }
     fn set_quirks_mode(&self, _: QuirksMode) {}
     fn add_attrs_if_missing(&self, node: &Handle, attrs: Vec<Attribute>) {
-        if let Data::Element { attrs: old, .. } = &node.data {
+        if let Data::Element { name, attrs: old, .. } = &node.data {
             let mut old = old.borrow_mut();
+            if let Some(source) = &node.source {
+                self.index(name, &old, source, false);
+            }
             for attr in attrs {
                 if !old.iter().any(|item| item.name == attr.name) {
                     old.push(attr)
                 }
+            }
+            if let Some(source) = &node.source {
+                self.index(name, &old, source, true);
             }
         }
     }
@@ -465,6 +502,7 @@ pub(super) fn tokens(input: &str) -> Vec<Token> {
         document: document.clone(),
         context,
         elements: RefCell::new(Vec::new()),
+        sources: RefCell::new(BTreeMap::new()),
     };
     let queue = Rc::new(BufferQueue::default());
     queue.push_back(StrTendril::from(input));

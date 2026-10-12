@@ -182,7 +182,7 @@ impl Document {
                 let Some(last) = lines.get((last_line + 1).min(lines.len() - 1)) else {
                     continue;
                 };
-                if last.end - first.start <= MAX_CONTEXT_BYTES {
+                if last.end.checked_sub(first.start).is_some_and(|len| len <= MAX_CONTEXT_BYTES) {
                     bands.push(first.start..last.end);
                 }
             }

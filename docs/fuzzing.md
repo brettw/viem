@@ -115,3 +115,47 @@ These use temporary children to check exit capture, limits, owned-process
 cleanup, replay and artifacts. They require no Rust build. Process-supervision
 checks are skipped on Windows; portable trace, replay preparation, and
 unsupported-platform checks still run there.
+
+## Coverage-guided parser fuzzing
+
+`fuzz/` is a separate crate of libFuzzer targets for input that Viem does not
+control: opened files, pasted clipboard data and syntax-highlighted text. It is
+outside the product build graph and runs on the stable toolchain.
+`fuzz/build.sh` enables SanitizerCoverage, debug assertions, overflow checks
+and AddressSanitizer for both Rust and the native Tree-sitter C code
+(`RUSTC_BOOTSTRAP` only unlocks `-Zsanitizer`). AddressSanitizer needs an
+upstream clang for C; the script uses Homebrew LLVM when `CC` is unset, because
+Apple clang's ASan ABI check does not match Rust's runtime.
+
+| Target | Input | Exercises |
+| --- | --- | --- |
+| `open_document` | any bytes | every format/encoding/line-ending policy, byte identity, view switch, HTML export |
+| `markdown_edit` | bytes + Vim keys | opening with a laid-out view and replaying editing input through commands |
+| `clipboard_html` | HTML or private JSON | html5ever tree building, CSS import, payload validation, paste |
+| `detect_language` | filename + bytes | modelines, shebangs, filename rules, content signatures |
+| `treesitter` | grammar + text | native parsers/scanners, highlight queries, one incremental reparse |
+| `syntax_highlight` | language + text | worker provider, injections, Vim fallback and buffer-dependent setup |
+| `vim_highlight` | language + text | bundled Vim programs (compiled once) and an incremental edit |
+
+```sh
+fuzz/build.sh                         # instrumented binaries in fuzz/target
+fuzz/run.sh treesitter 4 3600         # fork mode: workers, seconds
+CARGO_TARGET_DIR=fuzz/target-plain fuzz/build.sh --plain
+fuzz/target-plain/aarch64-apple-darwin/release/open_document INPUT
+```
+
+`run.sh` keeps going after failures and writes them to `fuzz/artifacts/`;
+corpora grow in `fuzz/corpus/<target>` (both ignored). Replay an artifact with
+the instrumented binary for a sanitizer report, or the `--plain` build to time
+it: ASan and coverage are roughly ten times slower, so many campaign timeouts
+are not slow without them. Set `VIEM_FUZZ_CONSISTENCY=1` to make
+`markdown_edit` also require that saved bytes reproduce the edited projection.
+Seed corpora come from repository documents, test fixtures and sources; the
+targets document their input layouts. Minimize a failure with
+`-minimize_crash=1 -exact_artifact_path=...` and add the result as a test.
+
+Known upstream issue: tree-sitter-swift (through 0.7.4) reads past a directive
+string literal when lookahead is 0. The core supplies NUL bytes to parsers as
+U+0001, which removes the input-controlled read; a document ending exactly in
+`#if`, `#else`, `#elseif` or `#endif` still reads a few bytes of the scanner's
+read-only data. `treesitter` skips that case; drop the skip after an upgrade.
