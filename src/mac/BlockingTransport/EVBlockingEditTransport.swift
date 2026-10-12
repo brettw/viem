@@ -1,8 +1,8 @@
 import Darwin
 import Foundation
 
-/// One invocation owns one endpoint in a random, user-private directory. Only
-/// the GUI that actually opens the document connects; EOF is always failure.
+/// One invocation owns one endpoint in a random, user-private directory. The
+/// owning GUI connects to acknowledge launch or document closure; EOF is failure.
 public final class EVBlockingEditListener: @unchecked Sendable {
     public let endpoint: String
     private let directory: String
@@ -42,12 +42,17 @@ public final class EVBlockingEditListener: @unchecked Sendable {
         rmdir(directory)
     }
 
-    /// Only startup is bounded. Once connected, the user may edit for any length
-    /// of time. A GUI crash closes the connection instead of reporting success.
+    /// Blocking editing leaves completionTimeout unset so users can edit for
+    /// any length of time. Launch acknowledgments bound the receive phase too.
+    /// A GUI crash closes the connection instead of reporting success.
     public func waitForCompletion(startupTimeout: TimeInterval = 30,
+                                  completionTimeout: TimeInterval? = nil,
                                   launchFailure: () -> String? = { nil }) throws -> Int32 {
         guard startupTimeout.isFinite, startupTimeout > 0 else {
             throw EVBlockingFailure("The editor startup timeout must be positive.")
+        }
+        if let completionTimeout, !completionTimeout.isFinite || completionTimeout <= 0 {
+            throw EVBlockingFailure("The editor completion timeout must be positive.")
         }
         let started = ProcessInfo.processInfo.systemUptime
         var client: Int32 = -1
@@ -76,12 +81,36 @@ public final class EVBlockingEditListener: @unchecked Sendable {
         // and closed. This side only reads, so it never needs that write option.
         try EVBlockingSocket.configure(client, suppressSIGPIPE: false)
         try EVBlockingSocket.requireCurrentUser(client)
+        let completionStarted = ProcessInfo.processInfo.systemUptime
+        if completionTimeout != nil {
+            // Poll against a total deadline, including partial responses, rather
+            // than letting a silent or trickling peer keep this launcher alive.
+            let flags = fcntl(client, F_GETFL)
+            guard flags >= 0, fcntl(client, F_SETFL, flags | O_NONBLOCK) == 0 else {
+                throw EVBlockingSocket.failure("Prepare completion timeout")
+            }
+        }
         var result = [UInt8](repeating: 0, count: 4)
         try result.withUnsafeMutableBytes { bytes in
             var offset = 0
             while offset < bytes.count {
+                if let completionTimeout {
+                    let remaining = completionTimeout - (ProcessInfo.processInfo.systemUptime - completionStarted)
+                    guard remaining > 0 else {
+                        throw EVBlockingFailure("Viem did not report completion before the launch timeout.")
+                    }
+                    var descriptor = pollfd(fd: client, events: Int16(POLLIN), revents: 0)
+                    let ready = Darwin.poll(&descriptor, 1, Int32(min(100, (remaining * 1_000).rounded(.up))))
+                    if ready < 0, errno == EINTR { continue }
+                    guard ready >= 0 else { throw EVBlockingSocket.failure("Wait for Viem completion") }
+                    if ready == 0 {
+                        if let failure = launchFailure() { throw EVBlockingFailure(failure) }
+                        continue
+                    }
+                }
                 let count = Darwin.recv(client, bytes.baseAddress!.advanced(by: offset), bytes.count - offset, 0)
                 if count < 0, errno == EINTR { continue }
+                if count < 0, completionTimeout != nil, errno == EAGAIN || errno == EWOULDBLOCK { continue }
                 guard count > 0 else {
                     if count == 0 { throw EVBlockingFailure("Viem closed before reporting editor completion.") }
                     throw EVBlockingSocket.failure("Read editor completion")
@@ -94,8 +123,8 @@ public final class EVBlockingEditListener: @unchecked Sendable {
     }
 }
 
-/// Owned by the GUI for the lifetime of the requested shared document. Dropping
-/// an unaccepted request reports failure; normal release explicitly finishes 0.
+/// Owned by the GUI until it accepts a launch or closes a requested document.
+/// Dropping an unaccepted request reports failure; success explicitly finishes 0.
 public final class EVBlockingEditCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var descriptor: Int32

@@ -40,6 +40,8 @@ final class EVBlockingEditTransportTests: XCTestCase {
         }
         XCTAssertThrowsError(try listener.waitForCompletion(startupTimeout: .infinity))
         XCTAssertThrowsError(try listener.waitForCompletion(startupTimeout: 0))
+        XCTAssertThrowsError(try listener.waitForCompletion(completionTimeout: .infinity))
+        XCTAssertThrowsError(try listener.waitForCompletion(completionTimeout: 0))
     }
 
     func testCrashAndPartialStatusNeverReportSuccessfulEditing() throws {

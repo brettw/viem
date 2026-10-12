@@ -1425,6 +1425,9 @@ pane, preserving edits; never fork buffers for aliases.
 
 Shell launch helpers preserve the caller's working directory for the started
 process. Make run targets may use make's selected working directory.
+The macOS nonblocking command-line launcher forwards ordinary GUI arguments,
+brings the editor forward on cold and existing-process launches, and returns
+when the GUI accepts the request; later file-open errors remain GUI errors.
 Development run targets build first, then fail if Viem is already running for
 the current user; successful launches open `docs/markdown_demo.md` in the new build.
 

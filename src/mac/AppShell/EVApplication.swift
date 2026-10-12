@@ -16,6 +16,7 @@ public enum EVApplication {
         let instance: EVSingleInstance
         let launchArguments: EVLaunchArguments
         let blockingCompletion: EVBlockingEditCompletion?
+        let launchCompletion: EVBlockingEditCompletion?
         do {
             // Development subprocess tests isolate their IPC endpoint just as
             // VIEM_CONFIG_DIR isolates settings; normal launches share one.
@@ -35,6 +36,7 @@ public enum EVApplication {
             let parsed = try parse(request)
             launchArguments = parsed.arguments
             blockingCompletion = parsed.completion
+            launchCompletion = parsed.launchCompletion
         } catch {
             FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8))
             exit(EXIT_FAILURE)
@@ -44,7 +46,7 @@ public enum EVApplication {
         EVStartupPerformance.mark("application.created")
         let delegate = EVApplicationDelegate(launchArguments: launchArguments,
             launchDirectory: URL(fileURLWithPath: request.workingDirectory, isDirectory: true),
-            blockingCompletion: blockingCompletion)
+            blockingCompletion: blockingCompletion, launchCompletion: launchCompletion)
 
         EVStartupPerformance.mark("configuration.loaded")
         application.setActivationPolicy(.regular)
@@ -62,7 +64,8 @@ public enum EVApplication {
                     // errors can enter a modal event loop in the editor.
                     delegate.processLaunchArguments(parsed.arguments, workingDirectory:
                         URL(fileURLWithPath: request.workingDirectory, isDirectory: true),
-                        blockingCompletion: parsed.completion, deferOpening: true)
+                        blockingCompletion: parsed.completion, launchCompletion: parsed.launchCompletion,
+                        deferOpening: true)
                     return nil
                 } catch { return error.localizedDescription }
             }
@@ -71,10 +74,10 @@ public enum EVApplication {
         }
     }
 
-    static func activateForBlockingEdit() {
+    static func activateForCommandLineLaunch() {
         // Sonoma and later ignore ignoringOtherApps. Ask Launch Services to
         // hand activation to the actual document owner, not the short-lived
-        // process that forwarded --blocking-edit to this instance. Unwind
+        // process that forwarded the command-line request to this instance. Unwind
         // finishLaunching first so a cold launch is registered with AppKit.
         // Include modal panels: a forwarded request can open a recovery alert
         // before returning from its current main-dispatch block.
@@ -104,17 +107,27 @@ public enum EVApplication {
         }
     }
 
-    private static func parse(_ request: EVInstanceLaunchRequest) throws
-        -> (arguments: EVLaunchArguments, completion: EVBlockingEditCompletion?) {
+    static func parse(_ request: EVInstanceLaunchRequest) throws
+        -> (arguments: EVLaunchArguments, completion: EVBlockingEditCompletion?,
+            launchCompletion: EVBlockingEditCompletion?) {
         // Older Launch Services versions add native process metadata to argv.
         var arguments = request.arguments
         if arguments.first?.hasPrefix("-psn_") == true { arguments.removeFirst() }
         if arguments.first == "--blocking-edit" {
             guard arguments.count == 3 else { throw EVLaunchArgumentError("Invalid blocking editor launch request.") }
             let parsed = try EVLaunchArguments.parse(["--", arguments[2]])
-            return (parsed, try EVBlockingEditCompletion.connect(endpoint: arguments[1]))
+            return (parsed, try EVBlockingEditCompletion.connect(endpoint: arguments[1]), nil)
         }
-        do { return (try EVLaunchArguments.parse(arguments), nil) }
+        let launchEndpoint: String?
+        if arguments.first == "--cli-launch" {
+            guard arguments.count >= 2 else { throw EVLaunchArgumentError("Invalid command-line launch request.") }
+            launchEndpoint = arguments[1]
+            arguments.removeFirst(2)
+        } else { launchEndpoint = nil }
+        do {
+            let parsed = try EVLaunchArguments.parse(arguments)
+            return (parsed, nil, try launchEndpoint.map { try EVBlockingEditCompletion.connect(endpoint: $0) })
+        }
         catch {
             throw EVLaunchArgumentError("\(error.localizedDescription)\nUsage: Viem [-o[count]] [+line] [--] [file ...]")
         }
@@ -134,25 +147,28 @@ final class EVApplicationDelegate: NSObject,
     private let launchArguments: EVLaunchArguments
     private let launchDirectory: URL
     private var initialBlockingCompletion: EVBlockingEditCompletion?
+    private var initialLaunchCompletion: EVBlockingEditCompletion?
     private var hasProcessedLaunchArguments = false
-    private var pendingLaunches: [(EVLaunchArguments, URL, UUID?)] = []
+    private var pendingLaunches: [(EVLaunchArguments, URL, UUID?, Bool)] = []
     private var isProcessingLaunch = false
     var documentFactory: () -> EVDocument = { EVDocument() }
     var mainWindow: () -> NSWindow? = { NSApplication.shared.mainWindow }
     var applicationWindows: () -> [NSWindow] = { NSApplication.shared.windows }
     var hasOpenDocumentWindows: () -> Bool = { EVDocumentWindowController.hasOpenDocumentWindows }
     var terminateApplication: () -> Void = { NSApplication.shared.terminate(nil) }
-    var activateForBlockingEdit: () -> Void = { EVApplication.activateForBlockingEdit() }
+    var activateForCommandLineLaunch: () -> Void = { EVApplication.activateForCommandLineLaunch() }
     var recordRecentDocument: (URL) -> Void
 
     init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments(),
          launchDirectory: URL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true),
-         blockingCompletion: EVBlockingEditCompletion? = nil) {
+         blockingCompletion: EVBlockingEditCompletion? = nil,
+         launchCompletion: EVBlockingEditCompletion? = nil) {
         let configuration = configuration ?? .shared
         self.configuration = configuration
         self.launchArguments = launchArguments
         self.launchDirectory = launchDirectory
         self.initialBlockingCompletion = blockingCompletion
+        self.initialLaunchCompletion = launchCompletion
         recordRecentDocument = { try? configuration.recordRecentDocument($0) }
         super.init()
     }
@@ -289,8 +305,9 @@ final class EVApplicationDelegate: NSObject,
         guard !hasProcessedLaunchArguments else { return hasLaunchOptions }
         hasProcessedLaunchArguments = true
         processLaunchArguments(launchArguments, workingDirectory: launchDirectory,
-            blockingCompletion: initialBlockingCompletion)
+            blockingCompletion: initialBlockingCompletion, launchCompletion: initialLaunchCompletion)
         initialBlockingCompletion = nil
+        initialLaunchCompletion = nil
         return hasLaunchOptions
     }
 
@@ -299,15 +316,21 @@ final class EVApplicationDelegate: NSObject,
     /// the same file twice before the first request has installed its window.
     func processLaunchArguments(_ arguments: EVLaunchArguments, workingDirectory: URL,
                                blockingCompletion: EVBlockingEditCompletion? = nil,
+                               launchCompletion: EVBlockingEditCompletion? = nil,
                                deferOpening: Bool = false) {
         let token: UUID?
         do { token = try blockingCompletion.map { try EVBlockingEditSessions.shared.begin($0) } }
         catch {
             blockingCompletion?.finish(exitCode: 1)
+            launchCompletion?.finish(exitCode: 1)
             FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8))
             return
         }
-        pendingLaunches.append((arguments, workingDirectory, token))
+        pendingLaunches.append((arguments, workingDirectory, token, token != nil || launchCompletion != nil))
+        // A normal CLI caller waits only for acceptance, including on a cold
+        // launch. Recovery dialogs and file-open errors belong to the GUI and
+        // must not keep the terminal waiting for user interaction.
+        launchCompletion?.finish(exitCode: 0)
         if deferOpening { DispatchQueue.main.async { [self] in processNextLaunch() } }
         else { processNextLaunch() }
     }
@@ -315,10 +338,10 @@ final class EVApplicationDelegate: NSObject,
     private func processNextLaunch() {
         guard !isProcessingLaunch, !pendingLaunches.isEmpty else { return }
         isProcessingLaunch = true
-        let (arguments, workingDirectory, blockingToken) = pendingLaunches.removeFirst()
+        let (arguments, workingDirectory, blockingToken, activates) = pendingLaunches.removeFirst()
         // Recovery/open panels must receive the same handoff as the eventual
         // editor window. The completion socket still owns the caller's wait.
-        if blockingToken != nil { activateForBlockingEdit() }
+        if activates { activateForCommandLineLaunch() }
         guard !arguments.isEmpty else {
             if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
             if hasNoOpenWindows {

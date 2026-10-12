@@ -17,12 +17,18 @@ let package = Package(
     ],
     products: [
         .executable(name: "Viem", targets: ["Viem"]),
+        .executable(name: "viem-cli", targets: ["ViemCLI"]),
         .executable(name: "blocking-viem", targets: ["BlockingViem"]),
         .library(name: "ViemAppShell", targets: ["ViemAppShell"]),
         .library(name: "ViemCoreTextProvider", targets: ["ViemCoreTextProvider"]),
     ],
     targets: [
         .target(name: "ViemBlockingTransport", path: "src/mac/BlockingTransport"),
+        .executableTarget(
+            name: "ViemCLI",
+            dependencies: ["ViemBlockingTransport"],
+            path: "src/mac/CLI"
+        ),
         .executableTarget(
             name: "BlockingViem",
             dependencies: ["ViemBlockingTransport"],

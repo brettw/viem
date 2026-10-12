@@ -155,7 +155,7 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
         defer { f.close() }
         let url = try f.write("COMMIT_EDITMSG")
         var activationRequests = 0
-        f.delegate.activateForBlockingEdit = { activationRequests += 1 }
+        f.delegate.activateForCommandLineLaunch = { activationRequests += 1 }
 
         XCTAssertTrue(f.delegate.openLaunchArguments())
         XCTAssertTrue(f.delegate.openLaunchArguments())
@@ -178,7 +178,7 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: url)
         try FileManager.default.linkItem(at: url, to: hardlink)
         var activationRequests = 0
-        f.delegate.activateForBlockingEdit = { activationRequests += 1 }
+        f.delegate.activateForCommandLineLaunch = { activationRequests += 1 }
         f.process(url.path)
         XCTAssertEqual(activationRequests, 0)
         let document = try f.document(url)
@@ -309,7 +309,7 @@ final class EVBlockingEditIntegrationTests: XCTestCase {
         store.drainForTesting()
         let makeDocument = f.delegate.documentFactory
         var requestedActivation = false
-        f.delegate.activateForBlockingEdit = { requestedActivation = true }
+        f.delegate.activateForCommandLineLaunch = { requestedActivation = true }
         f.delegate.documentFactory = {
             let document = makeDocument()
             document.recoveryDecisionHandler = { _ in
