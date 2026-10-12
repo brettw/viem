@@ -64,6 +64,7 @@ internal sealed partial class EditorWindow
     private static MenuFlyoutSeparator Separator() => new();
     private void BuildMenus()
     {
+        BuildDocumentModeMenu();
         recentMenu = Sub("Open Recent", "R");
         Top("File", "F",
             Item("New", "N", () => { NewWindow(null); return Task.CompletedTask; }), Item("Open…", "O", OpenDialog), recentMenu, Separator(),
@@ -73,9 +74,10 @@ internal sealed partial class EditorWindow
             Item("Export…", "E", () => ActivePane == null ? Task.CompletedTask : Export(ActivePane), enabled: () => View != null),
             Item("Duplicate", "D", () => { if (ActivePane != null) NewWindow(NewDocument(ActivePane.Document.Source(ActivePane.Document.State.document_revision), format: ActivePane.Document.State.format)); return Task.CompletedTask; }),
             Item("Revert to Last Saved…", "V", () => ActivePane == null ? Task.CompletedTask : Reload(ActivePane), enabled: () => ActivePane?.Document.FilePath != null), Separator(),
+            codeLanguageMenu,
             Sub("Text Encoding", "T", new[] { (Name: "UTF-8", Key: "8"), (Name: "Latin-1", Key: "1"), (Name: "UTF-16 LE", Key: "L"), (Name: "UTF-16 BE", Key: "B") }.Select((s, i) => ActionItem(s.Name, s.Key, () => View?.SetEncoding((uint)i + 1))).ToArray()),
             Sub("Line Endings", "L", ActionItem("Unix (LF)", "U", () => View?.FileFormat(1)), ActionItem("Windows (CRLF)", "W", () => View?.FileFormat(2)), ActionItem("Classic Mac (CR)", "M", () => View?.FileFormat(3))),
-            Separator(), Item("Settings…", "G", ShowSettings), Separator(), Item("Exit", "X", RequestClose));
+            Separator(), Item("Settings…", "I", ShowSettings), Separator(), Item("Exit", "X", RequestClose));
         undoItem = ActionItem("Undo", "U", () => View?.Undo(), "Ctrl+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
         redoItem = ActionItem("Redo", "R", () => View?.Redo(), "Ctrl+Shift+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
         Top("Edit", "E", undoItem, redoItem, Separator(),
@@ -96,6 +98,9 @@ internal sealed partial class EditorWindow
                 ActionItem("Use Selection for Find", "U", () => View?.UseSelectionForFind(), enabled: HasFindSelection),
                 ActionItem("Jump to Selection", "J", () => View?.RevealSelection(), enabled: () => View?.HasSelection == true)),
             Sub("Transformations", "N", ActionItem("Make Uppercase", "U", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", "L", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", "T", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
+        wrapItem = Toggle("Word wrap", "W", b => View?.Wrap(b));
+        Top("Format", "O", plainMode, markdownMode, codeMode, Separator(), wrapItem,
+            Toggle("Flow source paragraphs", "F", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true));
         paragraphMenu = Sub("Paragraph", "P", ActionItem("Bulleted List", "B", () => ExecuteFormattingAction(ToolbarAction.Bullets), KeyPolicy.FormattingShortcut(NativeAction.Bullets), enabled: () => CanFormatBlocks), ActionItem("Numbered List", "N", () => ExecuteFormattingAction(ToolbarAction.Numbers), KeyPolicy.FormattingShortcut(NativeAction.Numbers), enabled: () => CanFormatBlocks), ActionItem("Remove List", "R", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => CanFormatBlocks),
             ActionItem("Indent", "I", () => View?.IndentList(false), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", "U", () => View?.IndentList(true), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
         characterMenu = Sub("Character", "C");
@@ -104,12 +109,10 @@ internal sealed partial class EditorWindow
         themeMenu = Sub("Theme", "T"); themeMenu.Loaded += (_, _) => RefreshThemeMenu();
         RefreshThemeMenu();
         Top("Style", "S", themeMenu, Separator(), paragraphMenu, characterMenu, Separator(), StyleEditorItem());
-        wrapItem = Toggle("Word Wrap", "W", b => View?.Wrap(b));
         var lineNumbersItem = Toggle("Show line numbers", "N", b => View?.Number(b), () => View?.NumberEnabled == true);
         validation.Add((lineNumbersItem, () => View != null));
-        BuildDocumentModeMenu();
-        Top("View", "V", plainMode, markdownMode, codeMode, Separator(), Toggle("Show Status Bar", "S", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", "B", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(), wrapItem,
-            Toggle("Flow Source Paragraphs", "F", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true), Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), lineNumbersItem, Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
+        Top("View", "V", Toggle("Show Status Bar", "S", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", "B", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(),
+            Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), lineNumbersItem, Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
             Separator(), ActionItem("Zoom In", "Z", () => View?.StepZoom(true), "Ctrl+="), ActionItem("Zoom Out", "O", () => View?.StepZoom(false), "Ctrl+-"), ActionItem("Actual Size", "A", () => View?.Zoom(1)),
             Separator(), ActionItem("Full Screen", "U", () => AppWindow.SetPresenter(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? AppWindowPresenterKind.Overlapped : AppWindowPresenterKind.FullScreen)));
         Top("Window", "W", ActionItem("Split Vertically", "V", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document, vertical: true); }), ActionItem("Split View", "S", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document); }), ActionItem("New Empty Pane", "E", () => { RequireSplitRoom(); SplitPane(ActivePane!, NewDocument()); }),

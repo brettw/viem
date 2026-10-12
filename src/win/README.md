@@ -142,7 +142,7 @@ fullscreen bounds do not replace the saved normal frame.
 - F8 opens or raises the style inspector outside literal-next input. Font
   pickers list sorted families and installed/bundled variants such as Light or Bold.
 - The formatting toolbar provides Bold, Italic, and Strikethrough for Markdown;
-  there is no Format menu. Fonts, colors, and paragraph properties remain
+  fonts, colors, and paragraph properties remain
   available in the independent theme style inspector. Its title identifies the
   Code, Markdown, or Plain Text stylesheet and the selected theme.
 - Markdown's right-aligned **Formatted view** toolbar toggle switches between
@@ -156,7 +156,10 @@ fullscreen bounds do not replace the saved normal frame.
   directory unless that would traverse the root or cross drives; narrow panes
   trim paths from the left while keeping the mode column a fixed width. Right-click
   the filename to copy its full path or its path relative to the working directory.
-- View starts with Plain text, Markdown, and Code mode overrides. Code lists Auto,
+- Format sits between Edit and Style, with checked Plain text, Markdown, and Code
+  document types, then Word wrap and Flow source paragraphs after a divider.
+  Choosing Code retains the current automatic or explicit language choice.
+  File > Code language sits immediately before Text Encoding and lists Auto,
   an Obscure languages flyout, a divider, and the primary languages. Each language
   group follows the shared catalogue in case-insensitive alphabetical order;
   every bundled choice remains available. Markdown code-block language pickers use
@@ -336,8 +339,8 @@ Normal launches do not collect traces. Font discovery uses cached, indexed
 lookups for requested families/faces; complete family lists load on picker use.
 Font indexing overlaps WinUI initialization. Hidden formatting toolbars are
 created only when shown; visible Markdown reserves their space before the first
-editor layout. Primary Code language controls are created when View first opens;
-Obscure languages controls are deferred until Code first opens. Both paths use
+editor layout. Primary Code language controls are created when File first opens;
+Obscure languages controls are deferred until Code language first opens. Both paths use
 native row loading, including keyboard, access-key and UI Automation entry.
 `VIEM_TEST_TOOLBAR_ONLY=startup` selects the focused native startup/toolbar checks;
 use `VIEM_TEST_MENU_KEYS_ONLY=1` for access-key and window-focus coverage.

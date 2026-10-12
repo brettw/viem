@@ -33,7 +33,7 @@ internal static class MenuAccessKeyTests
         {
             "Open Recent" => Label(item) == "Clear Menu",
             "Theme" => Label(item) is "Default" or "New theme…" or "Theme Settings…",
-            "Code" => Label(item).StartsWith("Auto (", StringComparison.Ordinal) || item is MenuFlyoutSubItem,
+            "Code language" => Label(item).StartsWith("Auto (", StringComparison.Ordinal) || item is MenuFlyoutSubItem,
             "Obscure languages" => false,
             _ => item.Tag is not (StyleKey or CodeSyntaxStyle)
         };
@@ -55,8 +55,19 @@ internal static class MenuAccessKeyTests
         try
         {
             preferences.Set("windows", "showMenu", true);
+            Check(window.Menu.Items.Select(menu => menu.AccessKey).Distinct(StringComparer.OrdinalIgnoreCase).Count() == window.Menu.Items.Count,
+                "top-level menu access keys are unique");
             foreach (var menu in window.Menu.Items) CheckScope(menu.Title, menu.Items);
             var file = window.Menu.Items.Single(menu => menu.Title == "File");
+            var format = window.Menu.Items.Single(menu => menu.Title == "Format");
+            var plain = (ToggleMenuFlyoutItem)format.Items[0];
+            var code = file.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Code language");
+            var obscure = (MenuFlyoutSubItem)code.Items[1];
+            pane.FocusEditor(); await Task.Delay(80);
+            await InputRoutingTests.Key((VirtualKey)format.AccessKey[0], alt: true);
+            Check(plain.IsLoaded && code.Items.Count == 3 && obscure.Items.Count == 0,
+                "native Alt+O opens Format without constructing Code language controls");
+            await InputRoutingTests.Key(VirtualKey.Escape);
             var open = file.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Open…");
             bool fileKeytipShown = false;
             file.AccessKeyDisplayRequested += (_, _) => fileKeytipShown = true;
@@ -74,20 +85,17 @@ internal static class MenuAccessKeyTests
             Check(document.State.document_revision == revision && document.FormattedText() == "alpha\nbeta",
                 "menu access keys do not enter document text or change its revision");
 
-            var viewMenu = window.Menu.Items.Single(menu => menu.Title == "View");
-            var code = viewMenu.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Code");
-            var obscure = (MenuFlyoutSubItem)code.Items[1];
-            Check(code.Items.Count == 3 && obscure.Items.Count == 0,
-                "opening File leaves both deferred Code language groups unconstructed");
+            Check(code.Items.Count == DocumentModes.Languages.Count(language => language.Primary) + 3 && obscure.Items.Count == 0,
+                "opening File constructs primary Code languages and leaves obscure languages deferred");
             pane.FocusEditor(); await Task.Delay(80);
-            await InputRoutingTests.Key(VirtualKey.V, alt: true);
-            await InputRoutingTests.Key(VirtualKey.C);
+            await InputRoutingTests.Key(VirtualKey.F, alt: true);
+            await InputRoutingTests.Key((VirtualKey)code.AccessKey[0]);
             Check(code.Items.Count == DocumentModes.Languages.Count(language => language.Primary) + 3
                 && obscure.Items.Count == DocumentModes.Languages.Count(language => !language.Primary) && code.Items[0].IsLoaded,
-                "first native Alt+V then C populates the shared primary and obscure language groups");
-            CheckScope("Code", code.Items);
+                "native Alt+F then G opens Code language and populates its obscure language group");
+            CheckScope("Code language", code.Items);
             await InputRoutingTests.Key(VirtualKey.O);
-            Check(obscure.Items[0].IsLoaded, "native O access key opens Obscure languages within the Code submenu");
+            Check(obscure.Items[0].IsLoaded, "native O access key opens Obscure languages within the Code language submenu");
             await InputRoutingTests.Key(VirtualKey.Escape);
             await InputRoutingTests.Key(VirtualKey.Escape);
             await InputRoutingTests.Key(VirtualKey.Escape);

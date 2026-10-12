@@ -19,6 +19,7 @@ fn all_view_formats_preserve_bytes_dirty_state_shared_cursors_and_history() {
     for from in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
         for (mode, target, formatted) in [
             (DocumentMode::PlainText, Format::PlainText, false),
+            (DocumentMode::CodeFormat, Format::Code, false),
             (DocumentMode::Code("rust".into()), Format::Code, false),
             (DocumentMode::Markdown, Format::MarkdownSource, false),
             (DocumentMode::Markdown, Format::Markdown, true),
@@ -70,6 +71,47 @@ fn overrides_preserve_detection_and_auto_falls_back_to_plain_text() {
 }
 
 #[test]
+fn code_format_without_a_detected_language_stays_code_and_retains_automatic_selection() {
+    let bytes = b"\xef\xbb\xbf**text**\r\n";
+    let (mut core, view) = editor(bytes, Format::PlainText, "notes.unknown");
+    select(&mut core, view, DocumentMode::CodeFormat, false);
+    assert_eq!(core.document().format(), Format::Code);
+    assert!(core.document_mode_state().automatic);
+    assert!(core.document_mode_state().language.is_none());
+    assert!(core.code_language_detection().unwrap().language.is_none());
+    assert_eq!(core.document().source_bytes(), bytes);
+    assert!(!core.document().is_dirty());
+
+    let revision = core.document().revision();
+    select(&mut core, view, DocumentMode::CodeFormat, false);
+    assert_eq!(core.document().revision(), revision);
+    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+    assert_eq!(core.document().format(), Format::PlainText);
+    assert_eq!(core.document().source_bytes(), bytes);
+}
+
+#[test]
+fn code_format_retains_language_policy_after_selecting_other_formats() {
+    for language in [None, Some("python")] {
+        for other in [DocumentMode::PlainText, DocumentMode::Markdown] {
+            let bytes = b"**text**\r\n";
+            let (mut core, view) = editor(bytes, Format::Code, "notes.rs");
+            if let Some(language) = language {
+                select(&mut core, view, DocumentMode::Code(language.into()), false);
+            }
+            select(&mut core, view, other, true);
+            select(&mut core, view, DocumentMode::CodeFormat, false);
+            assert_eq!(core.document().format(), Format::Code);
+            assert_eq!(core.document_mode_state().automatic, language.is_none());
+            assert_eq!(core.document_mode_state().language.as_deref(), language);
+            assert_eq!(core.code_language_detection().unwrap().language.as_deref(), Some(language.unwrap_or("rust")));
+            assert_eq!(core.document().source_bytes(), bytes);
+            assert!(!core.document().is_dirty());
+        }
+    }
+}
+
+#[test]
 fn code_auto_on_markdown_remains_code_and_top_level_markdown_uses_preference() {
     let (mut core, view) = editor(b"# heading", Format::Markdown, "notes.md");
     select(&mut core, view, DocumentMode::Automatic, true);
@@ -93,9 +135,12 @@ fn rejected_modes_and_stale_requests_leave_document_and_override_unchanged() {
     assert_eq!(serde_json::to_value(core.document_mode_state()).unwrap(), before);
     select(&mut core, view, DocumentMode::Markdown, false);
     let before = serde_json::to_value(core.document_mode_state()).unwrap();
-    assert!(core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision,
-        mode: DocumentMode::Code("rust".into()), formatted_markdown: false }).is_err());
-    assert_eq!(serde_json::to_value(core.document_mode_state()).unwrap(), before);
+    for mode in [DocumentMode::Code("rust".into()), DocumentMode::CodeFormat] {
+        assert!(core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision,
+            mode, formatted_markdown: false }).is_err());
+        assert_eq!(serde_json::to_value(core.document_mode_state()).unwrap(), before);
+        assert_eq!(core.document().source_bytes(), b"text");
+    }
 }
 
 #[test]

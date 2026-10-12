@@ -54,8 +54,26 @@ final class EVMenuBuilderTests: XCTestCase {
         application.mainMenu = menu
 
         XCTAssertEqual(menu.items.map(\.title), [
-            "Viem", "File", "Edit", "Style", "View", "Window", "Help",
+            "Viem", "File", "Edit", "Format", "Style", "View", "Window", "Help",
         ])
+        let format = try submenu("Format", of: menu)
+        XCTAssertEqual(tokens(in: format), [
+            "Plain text", "Markdown", "Code", "-", "Word wrap", "Flow source paragraphs",
+        ])
+        XCTAssertTrue(format.showsStateColumn)
+        XCTAssertNil(format.item(withTitle: "Code")?.submenu)
+        XCTAssertEqual(format.item(withTitle: "Word wrap")?.tag, EVMenuCommand.wordWrap.rawValue)
+        XCTAssertEqual(format.item(withTitle: "Flow source paragraphs")?.tag, EVMenuCommand.flowParagraphs.rawValue)
+        let view = try submenu("View", of: menu)
+        XCTAssertEqual(tokens(in: view), [
+            "Show Status Bar", "-", "Show line numbers", "Show Invisible Characters", "-",
+            "Zoom In", "Zoom Out", "Actual Size", "-", "Enter Full Screen",
+        ])
+        let file = try submenu("File", of: menu)
+        let languageIndex = try XCTUnwrap(file.items.firstIndex(where: { $0.title == "Code language" }))
+        XCTAssertTrue(file.items[languageIndex - 1].isSeparatorItem)
+        XCTAssertEqual(file.items[languageIndex + 1].title, "Text Encoding")
+        XCTAssertNotNil(file.items[languageIndex].submenu)
         let style = try submenu("Style", of: menu)
         XCTAssertEqual(style.items.filter { !$0.isHidden }.map { $0.isSeparatorItem ? "-" : $0.title },
                        ["Theme", "-", "Paragraph", "Character", "-", "Edit Styles…", "-", "Reload style sheet"])

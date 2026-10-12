@@ -22,23 +22,27 @@ internal static class DocumentModeMenuTests
         try
         {
             var pane = window.ActivePane!; var view = await pane.Ready;
-            var menu = window.Menu.Items.Single(m => m.Title == "View");
+            var menu = window.Menu.Items.Single(m => m.Title == "Format");
             var peer = new MenuBarItemAutomationPeer(menu);
+            var file = window.Menu.Items.Single(m => m.Title == "File");
+            var filePeer = new MenuBarItemAutomationPeer(file);
             var plain = (ToggleMenuFlyoutItem)menu.Items[0];
             var markdown = (ToggleMenuFlyoutItem)menu.Items[1];
-            var code = (MenuFlyoutSubItem)menu.Items[2];
+            var codeMode = (ToggleMenuFlyoutItem)menu.Items[2];
+            var code = file.Items.OfType<MenuFlyoutSubItem>().Single(i => i.Text == "Code language");
             var auto = (ToggleMenuFlyoutItem)code.Items[0];
             var obscure = (MenuFlyoutSubItem)code.Items[1];
             Check(code.Items.Count == 3 && obscure.Items.Count == 0,
                 "startup retains Code Auto and the obscure flyout without constructing language menu controls");
-            Task Open() => MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, plain, code);
+            Task Open() => MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, plain, codeMode);
+            Task OpenFile() => MenuTestHelpers.Transition(true, () => { filePeer.Expand(); return Task.CompletedTask; }, code);
             Task Close(Func<Task>? action = null) => MenuTestHelpers.Transition(false, async () => {
                 if (action != null) await action();
-                peer.Collapse();
-            }, plain, code, auto, obscure, obscure.Items.FirstOrDefault() ?? obscure);
+                peer.Collapse(); filePeer.Collapse();
+            }, plain, codeMode, code, auto, obscure, obscure.Items.FirstOrDefault() ?? obscure);
             async Task OpenCode()
             {
-                await Open(); Check(code.Focus(FocusState.Programmatic), "Code flyout takes native keyboard focus");
+                await OpenFile(); Check(code.Focus(FocusState.Programmatic), "Code language flyout takes native keyboard focus");
                 await MenuTestHelpers.Transition(true, () => InputRoutingTests.Key(global::Windows.System.VirtualKey.Right), auto, obscure);
             }
             async Task OpenObscure()
@@ -56,20 +60,28 @@ internal static class DocumentModeMenuTests
                 await Open();
             }
             await Open();
+            Check(code.Items.Count == 3 && obscure.Items.Count == 0,
+                "opening Format leaves both Code language groups deferred");
+            await Close(); await OpenFile();
             var python = code.Items.OfType<ToggleMenuFlyoutItem>().Single(i => i.Text == "Python");
             var languageItems = code.Items.Skip(3).ToArray();
-            Check(plain.Text == "Plain text" && markdown.Text == "Markdown" && code.Text == "Code"
+            Check(plain.Text == "Plain text" && markdown.Text == "Markdown" && codeMode.Text == "Code"
                 && menu.Items[3] is MenuFlyoutSeparator && obscure.Text == "Obscure languages" && code.Items[2] is MenuFlyoutSeparator,
-                "Code places Obscure languages immediately after Auto and before its divider");
+                "Format starts with document types and Code language places Obscure languages after Auto");
+            int codeIndex = file.Items.IndexOf(code);
+            Check(file.Items[codeIndex - 1] is MenuFlyoutSeparator
+                && file.Items[codeIndex + 1] is MenuFlyoutSubItem { Text: "Text Encoding" },
+                "File places Code language after its divider and immediately before Text Encoding");
             Check(code.Items.Skip(3).Cast<ToggleMenuFlyoutItem>().Select(i => i.Text)
                     .SequenceEqual(DocumentModes.Languages.Where(l => l.Primary).Select(l => l.Name))
                 && code.Items.OfType<ToggleMenuFlyoutItem>().Any(i => i.Text == "Objective-C") && obscure.Items.Count == 0,
-                "opening View constructs the shared primary languages including Objective-C and leaves obscure controls deferred");
+                "opening File constructs the shared primary languages including Objective-C and leaves obscure controls deferred");
+            await Close(); await Open();
             Check(!plain.IsChecked && !markdown.IsChecked && auto.IsChecked && auto.Text == "Auto (Rust)"
-                && ((FontIcon)code.Icon).Glyph == "\uE73E", "initial Code Auto checks and Rust detection label");
+                && codeMode.IsChecked && ((FontIcon)code.Icon).Glyph == "\uE73E", "initial Code Auto checks and Rust detection label");
             await Choose(plain);
             Check(document.State.format == VIEM_FORMAT_PLAIN_TEXT && plain.IsChecked && !auto.IsChecked
-                && ((FontIcon)code.Icon).Glyph == "", "Plain text menu action overrides a code filename");
+                && !codeMode.IsChecked && ((FontIcon)code.Icon).Glyph == "", "Plain text menu action overrides a code filename");
             await Close();
             view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "python", false, DocumentModes.Read(document));
             await Open();
@@ -91,6 +103,11 @@ internal static class DocumentModeMenuTests
             await Choose(markdown);
             Check(markdown.IsChecked && document.State.format == (preferences.MarkdownFormattedView ? VIEM_FORMAT_MARKDOWN : VIEM_FORMAT_MARKDOWN_SOURCE),
                 "Markdown choice uses the remembered formatted view");
+            await Choose(codeMode);
+            Check(codeMode.IsChecked && !markdown.IsChecked && document.State.format == VIEM_FORMAT_CODE
+                && DocumentModes.Read(document).Language == obscureLanguage.Id && obscureChoice.IsChecked
+                && ((FontIcon)code.Icon).Glyph == "\uE73E",
+                "Code document type restores Code while retaining the chosen language");
             Check(!document.IsDirty && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "mode changes retain exact source bytes and clean state");
             await Close();
@@ -107,10 +124,13 @@ internal static class DocumentModeMenuTests
                     "Auto uses Code Markdown highlighting or Plain text fallback: " + filename);
                 Check(!python.IsChecked && !obscureChoice.IsChecked,
                     "changing active document refreshes both primary and obscure forced-language checks");
+                await Choose(codeMode);
+                Check(next.Document.State.format == VIEM_FORMAT_CODE && codeMode.IsChecked && !plain.IsChecked && !markdown.IsChecked,
+                    "Code document type stays Code independently of filename detection: " + filename);
                 await Close();
             }
             Check(languageItems.SequenceEqual(code.Items.Skip(3)) && obscureItems.SequenceEqual(obscure.Items),
-                "reopening View retains both populated language groups without duplicates");
+                "reopening Format and File retains both populated language groups without duplicates");
             Check(window.Panes.All(p => p.LastError == null), "view-mode scenarios leave no presentation errors");
         }
         finally { App.Instance.Windows.Remove(window); window.Close(); }

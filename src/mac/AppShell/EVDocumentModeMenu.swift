@@ -23,13 +23,13 @@ public struct EVDocumentModeState: Decodable, Sendable {
 }
 
 public enum EVDocumentModeChoice: Equatable, Sendable {
-    case automatic, plainText, markdown, code(String)
+    case automatic, plainText, markdown, codeFormat, code(String)
     public var code: UInt32 {
         switch self {
         case .automatic: UInt32(VIEM_DOCUMENT_MODE_AUTO)
         case .plainText: UInt32(VIEM_DOCUMENT_MODE_PLAIN_TEXT)
         case .markdown: UInt32(VIEM_DOCUMENT_MODE_MARKDOWN)
-        case .code: UInt32(VIEM_DOCUMENT_MODE_CODE)
+        case .codeFormat, .code: UInt32(VIEM_DOCUMENT_MODE_CODE)
         }
     }
     public var language: String { if case let .code(id) = self { id } else { "" } }

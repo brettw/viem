@@ -5087,7 +5087,6 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
         ViemSetDocumentModeV1 { formatted_markdown: 2, ..request },
         ViemSetDocumentModeV1 { reserved: 1, ..request },
         ViemSetDocumentModeV1 { mode: 99, ..request },
-        ViemSetDocumentModeV1 { mode: VIEM_DOCUMENT_MODE_CODE, ..request },
         ViemSetDocumentModeV1 { struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE - 1, ..request },
     ] {
         assert_eq!(call(&invalid, b""), ViemStatus::InvalidArgument);
@@ -5108,6 +5107,13 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
     assert_eq!(after.format, VIEM_FORMAT_MARKDOWN);
     assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, after.document_revision), original);
     assert_eq!(call(&request, b""), ViemStatus::StaleRevision);
+    assert_eq!(call(&code_request, b""), ViemStatus::StaleRevision);
+    assert_eq!(document_state(&core), after);
+    let code_request = ViemSetDocumentModeV1 { document_revision: after.document_revision, ..code_request };
+    assert_eq!(call(&code_request, b""), ViemStatus::Ok);
+    let code = document_state(&core);
+    assert_eq!(code.format, VIEM_FORMAT_CODE);
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, code.document_revision), original);
 }
 
 #[test]

@@ -2949,7 +2949,9 @@ typedef struct ViemSetDocumentModeV1 {
     uint32_t reserved;
 } ViemSetDocumentModeV1;
 #define VIEM_SET_DOCUMENT_MODE_V1_SIZE ((uint32_t)sizeof(ViemSetDocumentModeV1))
-/* Only Code accepts a nonempty language ID. All input/output regions disjoint. */
+/* Code with an empty language retains the current language selection and always
+   selects Code format. Only Code accepts a nonempty language ID, which selects
+   that language explicitly. All input/output regions must be disjoint. */
 ViemStatus viem_core_view_set_document_mode_with_effects(ViemCoreHandle core, ViemViewId view,
     const ViemSetDocumentModeV1 *request, const uint8_t *language, uint64_t length,
     ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);

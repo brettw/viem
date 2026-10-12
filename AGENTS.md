@@ -624,17 +624,20 @@ deliberately omitted. Vim `.vim` syntax programs and Tree-sitter grammars plus
 rules. Do not infer extensions from syntax filenames or limit detection to
 Tree-sitter's smaller package set. Preserve ambiguous-name and Text fallbacks.
 
-View offers per-document Plain text, Markdown, and Code overrides above its
-other controls. Code contains Auto, an Obscure languages flyout, a separator,
-and the curated main language choices. Markdown code-block pickers use None,
-the same flyout, a separator, and the same main choices. Keep every supported
+Format offers per-document Plain text, Markdown, and Code overrides independently
+of the language picker. Selecting Code retains the language choice and stays in
+Code even when no language is detected. File's Code language submenu contains
+Auto, an Obscure languages flyout, a separator, and the curated main language
+choices. Markdown code-block pickers use None, the same flyout, a separator,
+and the same main choices. Keep every supported
 language available in exactly one tier, sorted case-insensitively by display
 name within each tier. Both frontends and both pickers consume the shared core
 classification. Check the actual top-level mode and
 the chosen Auto/language entry; reserve check space in unchecked rows. Check the
-Code submenu itself where native controls support it. Auto includes its detected
-language in the label, independent of any forced language. Code > Auto keeps
-detected Markdown in literal Code with Markdown highlighting. Without a detected
+Code language submenu itself where native controls support it. Auto includes its
+detected language in the label, independent of any forced language. Choosing
+Code language > Auto keeps detected Markdown in literal Code with Markdown
+highlighting. Without a detected
 language it uses Plain text and reads Auto (Plain Text). Opening still uses the
 existing format detection; choosing Markdown uses the remembered formatted view.
 Detection uses physical source, including when the current view hides markup.
@@ -1618,8 +1621,10 @@ Preserve AppKit Home/End bindings with Viem's line policy and distinct document-
 edge selectors. Consume preference-adjusted wheel direction once. Provide native
 contextual clipboard access; never make bare Vim keys global menu equivalents.
 
-There is no Format menu. Supported inline formatting lives in the toolbar;
-Style retains named styles, lists, and independent definition editing.
+Format sits between Edit and Style and groups document type, Word wrap, and
+Flow source paragraphs. Code language is in File before Text Encoding.
+Supported inline formatting lives in the toolbar; Style retains named styles,
+lists, and independent definition editing.
 Document-formatting actions are capability-limited, not an arbitrary property-
 editing API. Menus and toolbar describe the focused document's actual
 named/structural/inline state, including mixed values; Code style inspection
