@@ -300,6 +300,19 @@ fn point(input: &SyntaxInputSnapshot, offset: usize) -> Result<Point, TreeSitter
     Ok(Point::new(row, offset - start))
 }
 
+/// External scanners see a NUL byte as lookahead 0, which they also use for
+/// end of input and C-string terminators. tree-sitter-swift 0.7.3/0.7.4's
+/// directive matcher then reads past its string literals for as long as the
+/// input keeps matching. NUL is never meaningful in supported grammars, so
+/// parsers receive U+0001 in its place; offsets and lengths are unchanged.
+fn scanner_safe(bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if bytes.contains(&0) {
+        std::borrow::Cow::Owned(bytes.iter().map(|&byte| if byte == 0 { 1 } else { byte }).collect())
+    } else {
+        std::borrow::Cow::Borrowed(bytes)
+    }
+}
+
 pub fn check_coordinate_size(bytes: usize) -> Result<(), TreeSitterError> {
     if bytes > u32::MAX as usize {
         Err(TreeSitterError::Limit("32-bit coordinates"))
@@ -1020,9 +1033,9 @@ impl TreeSitterSession {
         let mut read = |byte: usize, _: Point| {
             let bytes = pending.input.chunk_at(byte);
             if control.read(bytes.len()) {
-                bytes
+                scanner_safe(bytes)
             } else {
-                &[]
+                std::borrow::Cow::Borrowed(&[][..])
             }
         };
         let parsed = self.parser.parse_with_options(

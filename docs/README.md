@@ -15,7 +15,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 - [C ABI validation](abi-validation.md): matching the Rust core and native headers.
 - [Error recovery](error-recovery.md): safe presentation defaults, optional
   resources, diagnostic handling, and failures that must remain strict.
-- [Backend fuzzing](fuzzing.md): campaigns, replay, watchdogs and history probes.
+- [Backend fuzzing](fuzzing.md): campaigns, replay, watchdogs and history probes,
+  plus coverage-guided parser fuzzing of untrusted documents and clipboard data.
 - [Performance measurement](performance.md): current tools, regression limits
   and measurement scope; no historical results.
 - [Native selection](native-selection.md): native/Vim interaction differences

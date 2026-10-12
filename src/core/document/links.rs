@@ -939,7 +939,13 @@ impl Document {
             candidate.splice(selected.start - link.source.start..selected.end - link.source.start,
                 self.encoding().encode_fragment(&syntax)?);
             let mut expected = link.text.clone();
-            expected.replace_range(edit.range.start - link.range.start..edit.range.end - link.range.start, &edit.replacement);
+            let local = edit.range.start - link.range.start..edit.range.end - link.range.start;
+            // A label whose text does not span its displayed range cannot be
+            // simulated in place; fail the edit rather than index past it.
+            if expected.get(local.clone()).is_none() {
+                return Err(DocumentError::AmbiguousProjection.into());
+            }
+            expected.replace_range(local, &edit.replacement);
             let candidate = Document::from_bytes_with_file_format(candidate, self.encoding(), Format::Markdown, self.file_format())?;
             if candidate.text() == expected { continue; }
             let (canonical, _) = self.prepare_canonical_autolink(edit.range.clone(), BoundaryAffinity::Downstream)?;

@@ -813,17 +813,33 @@ fn resolve_block_runs(
     let mut match_index = 0;
     let mut event_index = 0;
     let mut active = BTreeSet::new();
+    // Cascade state after each active span, in span order, and the lowest
+    // span index changed since that state was last brought up to date.
+    let mut cascades: Vec<(usize, SpanCascade<'_>)> = Vec::new();
+    let mut changed_from = 0;
     for pair in boundaries.windows(2) {
         let range = pair[0]..pair[1];
         while event_index < events.len() && events[event_index].0 <= range.start {
             let (_, opening, index) = events[event_index];
             if opening { active.insert(index); } else { active.remove(&index); }
+            changed_from = changed_from.min(index);
             event_index += 1;
         }
         // Original span order is the cascade order. A sweep avoids rescanning
-        // every unrelated decoration for each segment of a long source line.
-        let mut character = resolve_character_spans_at(input, block, range.clone(),
-            active.iter().map(|&index| &input.style_spans[index]))?;
+        // every unrelated decoration for each segment of a long source line,
+        // and resumes the fold below the first span that changed.
+        let mut character = if let Some(image) = inline_image_character(input, &range)? {
+            image
+        } else {
+            cascades.truncate(cascades.partition_point(|(index, _)| *index < changed_from));
+            let mut cascade = cascades.last().map(|(_, cascade)| cascade.clone()).unwrap_or_default();
+            for &index in active.range(changed_from..) {
+                cascade.apply(input.style_sheet, &input.style_spans[index], &range)?;
+                cascades.push((index, cascade.clone()));
+            }
+            changed_from = usize::MAX;
+            cascade.resolve(input, block)?
+        };
         while match_index < search_matches.len() && search_matches[match_index].end <= range.start {
             match_index += 1;
         }
@@ -861,30 +877,57 @@ fn resolve_character_spans_at<'a>(
     range: Range<usize>,
     active: impl Iterator<Item = &'a StyleSpan>,
 ) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
+    if let Some(image) = inline_image_character(input, &range)? {
+        return Ok(image);
+    }
+    let mut cascade = SpanCascade::default();
+    for span in active {
+        cascade.apply(input.style_sheet, span, &range)?;
+    }
+    cascade.resolve(input, block)
+}
+
+/// The Image paragraph definition also owns labels on inline image objects
+/// and their complete Source notation. It is presentation, not a character
+/// assignment inherited by surrounding typed prose.
+fn inline_image_character(
+    input: StyleCascadeInput<'_>,
+    range: &Range<usize>,
+) -> Result<Option<ResolvedCharacterStyle>, DocumentStyleError> {
     let sheet = input.style_sheet;
     let image_index = input.inline_images.partition_point(|image| image.range.end <= range.start);
-    if input.inline_images.get(image_index).is_some_and(|image|
+    if !input.inline_images.get(image_index).is_some_and(|image|
         image.range.start <= range.start && range.end <= image.range.end) {
-        // The Image paragraph definition also owns labels on inline image
-        // objects and their complete Source notation. It is presentation,
-        // not a character assignment inherited by surrounding typed prose.
-        let id = StyleId::from("Image");
-        let style = if sheet.block_style(&id).is_some() { &id } else { &sheet.base_paragraph };
-        return sheet.resolve_assigned_paragraph_style(input.document_style, style,
-            &Default::default(), &Default::default(), None, &Default::default())
-            .map(|paragraph| paragraph.character).map_err(Into::into);
+        return Ok(None);
     }
-    let mut named: Option<&StyleId> = None;
-    let mut semantic = CharacterProperties::default();
-    let mut direct = CharacterProperties::default();
-    let mut automatic = CharacterProperties::default();
-    let mut link_defaults = CharacterProperties::default();
-    let mut source_block = block.clone();
-    for span in active {
+    let id = StyleId::from("Image");
+    let style = if sheet.block_style(&id).is_some() { &id } else { &sheet.base_paragraph };
+    sheet.resolve_assigned_paragraph_style(input.document_style, style,
+        &Default::default(), &Default::default(), None, &Default::default())
+        .map(|paragraph| Some(paragraph.character)).map_err(Into::into)
+}
+
+/// Character spans folded in their original (cascade) order into sparse
+/// buckets. Folding is pure, so a sweep can resume from the state before the
+/// first span that changed instead of refolding every span that is active
+/// over each segment; nested spans would otherwise make a long source line
+/// quadratic.
+#[derive(Clone, Default)]
+struct SpanCascade<'a> {
+    named: Option<&'a StyleId>,
+    semantic: CharacterProperties,
+    direct: CharacterProperties,
+    automatic: CharacterProperties,
+    link_defaults: CharacterProperties,
+}
+
+impl<'a> SpanCascade<'a> {
+    fn apply(&mut self, sheet: &StyleSheet, span: &'a StyleSpan, range: &Range<usize>)
+        -> Result<(), DocumentStyleError> {
         match &span.application {
             StyleApplication::Automatic(id) => {
                 if id.0 == "Link" {
-                    merge_character_properties(&mut link_defaults, &sheet.automatic_character_properties(id)?);
+                    merge_character_properties(&mut self.link_defaults, &sheet.automatic_character_properties(id)?);
                 } else {
                     let mut chain = Vec::new();
                     let mut current = Some(id);
@@ -895,58 +938,66 @@ fn resolve_character_spans_at<'a>(
                         current = style.based_on.as_ref();
                     }
                     for properties in chain.into_iter().rev() {
-                        merge_character_properties(&mut automatic, properties);
+                        merge_character_properties(&mut self.automatic, properties);
                     }
                 }
             }
             StyleApplication::Named(id) => {
-                if named.is_some_and(|existing| existing != id) {
+                if self.named.is_some_and(|existing| existing != id) {
                     return Err(DocumentStyleError::MultipleNamedCharacterStyles {
                         range_start: range.start,
                     });
                 }
-                named = Some(id);
+                self.named = Some(id);
             }
             StyleApplication::Semantic(value) => {
-                merge_character_properties(&mut semantic, &semantic_properties(*value));
+                merge_character_properties(&mut self.semantic, &semantic_properties(*value));
             }
             StyleApplication::Direct(properties) => {
-                merge_character_properties(&mut direct, properties);
+                merge_character_properties(&mut self.direct, properties);
             }
         }
-    }
-    // Semantic markup is a sparse convenience layer. Explicit direct
-    // formatting wins property-by-property, independent of source-span order.
-    merge_character_properties(&mut semantic, &direct);
-    merge_character_properties(&mut semantic, &automatic);
-    // Link is a content-derived default. Authored character styles and direct
-    // formatting still win; source/code syntax overlays retain their existing
-    // priority. Keep it out of the authored typing-style cascade.
-    if link_defaults != CharacterProperties::default() {
-        merge_character_properties(&mut source_block.direct_default_character, &link_defaults);
+        Ok(())
     }
 
-    let mut container_character = CharacterProperties::default();
-    let mut container_font_size = sheet.resolve_document_assignment(input.document_style)?.character.size;
-    for member in source_block.containers.iter() {
-        let character = member.container.direct_formatting.as_deref().map(|direct| &direct.direct_default_character).cloned().unwrap_or_default();
-        merge_container_character_properties(&mut container_character, &mut container_font_size,
-            sheet.container_character_declarations(&member.container.style, &character)?);
+    fn resolve(self, input: StyleCascadeInput<'_>, block: &Block)
+        -> Result<ResolvedCharacterStyle, DocumentStyleError> {
+        let sheet = input.style_sheet;
+        let Self { named, mut semantic, direct, automatic, link_defaults } = self;
+        // Semantic markup is a sparse convenience layer. Explicit direct
+        // formatting wins property-by-property, independent of source-span order.
+        merge_character_properties(&mut semantic, &direct);
+        merge_character_properties(&mut semantic, &automatic);
+        // Link is a content-derived default. Authored character styles and direct
+        // formatting still win; source/code syntax overlays retain their existing
+        // priority. Keep it out of the authored typing-style cascade.
+        let mut direct_default_character = block.direct_default_character.clone();
+        if link_defaults != CharacterProperties::default() {
+            merge_character_properties(&mut direct_default_character, &link_defaults);
+        }
+
+        let mut container_character = CharacterProperties::default();
+        let mut container_font_size = sheet.resolve_document_assignment(input.document_style)?.character.size;
+        for member in block.containers.iter() {
+            let character = member.container.direct_formatting.as_deref().map(|direct| &direct.direct_default_character).cloned().unwrap_or_default();
+            merge_container_character_properties(&mut container_character, &mut container_font_size,
+                sheet.container_character_declarations(&member.container.style, &character)?);
+        }
+        let container_body = block.containers.iter().any(|member| member.container.style == block.style)
+            && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
+        sheet
+            .resolve_assigned_paragraph_style_in_container(
+                input.document_style,
+                if container_body { &sheet.base_paragraph } else { &block.style },
+                &block.direct_paragraph,
+                &container_character,
+                &direct_default_character,
+                named,
+                &semantic,
+            )
+            .map(|paragraph| paragraph.character)
+            .map_err(Into::into)
     }
-    let container_body = source_block.containers.iter().any(|member| member.container.style == source_block.style)
-        && sheet.block_style(&source_block.style).is_some_and(|style| style.role.is_container());
-    sheet
-        .resolve_assigned_paragraph_style_in_container(
-            input.document_style,
-            if container_body { &sheet.base_paragraph } else { &source_block.style },
-            &source_block.direct_paragraph,
-            &container_character,
-            &source_block.direct_default_character,
-            named,
-            &semantic,
-        )
-        .map(|paragraph| paragraph.character)
-        .map_err(Into::into)
 }
 
 fn merge_container_character_properties(target: &mut CharacterProperties, inherited_size: &mut f32,
@@ -1130,6 +1181,43 @@ mod tests {
         let mut shapes = Vec::new();
         let mut paints = Vec::new();
         for at in 0..257 {
+            let range = at..at + 1;
+            let character = resolve_character_at(input, &projection.blocks()[0], range.clone()).unwrap();
+            let shape = shaping_style(&character).unwrap();
+            let paint = paint_style(&character);
+            if shape != actual.default_shaping_style { push_shape_run(&mut shapes, range.clone(), shape); }
+            if paint != actual.default_paint { push_paint_run(&mut paints, range, paint); }
+        }
+        assert_eq!(actual.shaping_runs, shapes);
+        assert_eq!(actual.paint_runs, paints);
+    }
+
+    #[test]
+    fn span_sweep_resumes_deeply_nested_and_crossing_cascades() {
+        let document = Document::new("x".repeat(400));
+        let projection = document.projection();
+        // Nested spans close in reverse order; crossing spans remove entries
+        // from the middle of the active cascade, so resumption must refold.
+        let mut spans = (0..150).map(|index| StyleSpan { range: index..400 - index,
+            application: if index % 3 == 0 {
+                StyleApplication::Semantic(if index % 2 == 0 { SemanticInlineStyle::Strong } else { SemanticInlineStyle::Emphasis })
+            } else {
+                StyleApplication::Direct(CharacterProperties {
+                    bold: Some(index % 4 == 1),
+                    size: Some((10.0 + (index % 7) as f32).into()),
+                    underline: (index % 5 == 0).then_some(index % 10 == 0),
+                    ..Default::default()
+                })
+            } }).collect::<Vec<_>>();
+        spans.extend((0..40).map(|index| StyleSpan { range: index * 7..index * 7 + 90,
+            application: StyleApplication::Direct(CharacterProperties {
+                strikethrough: Some(index % 2 == 0), ..Default::default() }) }));
+        let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans, inline_images: &[],
+            style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
+        let actual = DocumentLayoutStyles::resolve_validated(input).unwrap();
+        let mut shapes = Vec::new();
+        let mut paints = Vec::new();
+        for at in 0..400 {
             let range = at..at + 1;
             let character = resolve_character_at(input, &projection.blocks()[0], range.clone()).unwrap();
             let shape = shaping_style(&character).unwrap();

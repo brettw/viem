@@ -488,6 +488,16 @@ public final class EVDocument: NSDocument {
         return super.fileNameExtension(forType: typeName, saveOperation: saveOperation)
     }
 
+    public override func prepareSavePanel(_ savePanel: NSSavePanel) -> Bool {
+        guard super.prepareSavePanel(savePanel) else { return false }
+        if fileURL == nil, editorBackend.sourceFormat.isMarkdown {
+            // Supply the full name so NSSavePanel doesn't append the system's
+            // preferred .markdown extension.
+            savePanel.nameFieldStringValue = displayName + ".md"
+        }
+        return true
+    }
+
     public override func move(to url: URL, completionHandler: ((Error?) -> Void)? = nil) {
         // AppKit's titlebar and document actions can reach this independently
         // of our menu. Adopt a newly written copy, retaining the original file.

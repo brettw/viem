@@ -158,6 +158,7 @@ mod transaction_atomicity;
 mod transformation_coverage;
 mod typography;
 mod undo_restoration;
+mod untrusted_input_regressions;
 mod user_style_defaults;
 mod utf16_input_repair;
 mod view_line_modes;

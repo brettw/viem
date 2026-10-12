@@ -431,6 +431,12 @@ fn render_projection(
                 .take_while(|(a, b)| a.id == b.id)
                 .count();
             close_containers(&mut output, &previous[common..]);
+            // Counted incrementally: recounting ancestors for each opened
+            // container made one deeply nested paragraph quadratic.
+            let mut list_ancestors = path[..common]
+                .iter()
+                .filter(|ancestor| matches!(ancestor.kind, ContainerKind::List { .. }))
+                .count();
             for (depth, container) in path.iter().enumerate().skip(common) {
                 let mut extra = String::new();
                 if let ContainerKind::List { ordered: true } = container.kind {
@@ -447,11 +453,8 @@ fn render_projection(
                 }
                 let mut css = super::html_styles::block_css(&box_properties(&container.style));
                 if let ContainerKind::List { ordered } = container.kind {
-                    let level = path[..depth]
-                        .iter()
-                        .filter(|ancestor| matches!(ancestor.kind, ContainerKind::List { .. }))
-                        .count()
-                        .min(3) as u8;
+                    let level = list_ancestors.min(3) as u8;
+                    list_ancestors += 1;
                     css.push_str(&format!(
                         "list-style-type:{}; ",
                         ParagraphLayoutStyle::list_marker_type(ordered, level)

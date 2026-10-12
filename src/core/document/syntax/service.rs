@@ -15,6 +15,9 @@ use std::{
 mod providers;
 mod retention;
 mod runs;
+/// Fuzz targets drive the worker-side provider synchronously.
+#[cfg(fuzzing)]
+pub use providers::BackendProvider;
 pub use runs::{PublicationDelta, RunStore};
 pub const MAX_REGION_BYTES: usize = 256 * 1024;
 pub const MAX_CACHED_REGIONS: usize = 16;

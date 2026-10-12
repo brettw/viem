@@ -1342,7 +1342,8 @@ frontends only choose the destination and write the portable core's bytes.
 Save As writes a separate destination and adopts it only after success; it
 must preserve the previous file's name and bytes. No format switch or native
 rename/move action may rename/delete the original. Ordinary Save preserves its
-filename/extension. View mode changes preserve physical source and do not require
+filename/extension. New Markdown documents default to the `.md` extension.
+View mode changes preserve physical source and do not require
 Save As; subsequent edits save to the same bound file.
 
 Reject symbolic-link and case-only destination aliases that would overwrite

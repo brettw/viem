@@ -7,6 +7,10 @@ edition = "2021"
 path = "src/core/lib.rs"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
+# `fuzz/` builds with --cfg fuzzing to reach worker-only syntax providers.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 # Clipboard style verification requires exact floating-point round trips.

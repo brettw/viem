@@ -1213,6 +1213,11 @@ fn project_local_candidate_with_limit<'a>(
         return Ok(None);
     }
     local.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    // Commit rejects overlapping patches (`validate_source_patches`); reject
+    // them before splicing too, where they would index past the band.
+    if local.windows(2).any(|pair| pair[0].range.end > pair[1].range.start) {
+        return Err(DocumentError::AmbiguousProjection);
+    }
     let mut bytes = source
         .bytes_in(band.clone())
         .ok_or(DocumentError::AmbiguousProjection)?;

@@ -69,6 +69,66 @@ fn indentation(text: &str) -> (usize, usize) {
 }
 
 fn marker(text: &str, origin: usize) -> Option<Marker> {
+    marker_with_break(text, origin, |delimiter| {
+        text.bytes()
+            .filter(|byte| !matches!(byte, b' ' | b'\t'))
+            .all(|byte| byte == delimiter)
+            && text.bytes().filter(|byte| *byte == delimiter).count() >= 3
+    })
+}
+
+/// Thematic-break facts for the end of one row. Each of many list markers on
+/// a row (`- - - … a`) then answers in O(1) instead of rescanning the row.
+struct RowBreaks {
+    start: usize,
+    /// Bytes examined from the end of the row.
+    scanned: usize,
+    /// The last nonblank byte that differs from each of `-`, `+` and `*`.
+    other: [Option<usize>; 3],
+    /// The third-last nonblank byte.
+    third_last: Option<usize>,
+}
+
+impl RowBreaks {
+    fn new(text: &str, start: usize) -> Self {
+        let mut other = [None; 3];
+        let mut third_last = None;
+        let mut nonblank = 0;
+        let mut scanned = 0;
+        for (at, byte) in text.bytes().enumerate().rev() {
+            scanned += 1;
+            if matches!(byte, b' ' | b'\t') {
+                continue;
+            }
+            nonblank += 1;
+            if nonblank == 3 {
+                third_last = Some(start + at);
+            }
+            for (slot, delimiter) in other.iter_mut().zip(*b"-+*") {
+                if slot.is_none() && byte != delimiter {
+                    *slot = Some(start + at);
+                }
+            }
+            if third_last.is_some() && other.iter().all(Option::is_some) {
+                break;
+            }
+        }
+        Self { start, scanned, other, third_last }
+    }
+
+    /// Whether the row from `at` is a thematic break spelled with `delimiter`.
+    fn thematic(&self, at: usize, delimiter: u8) -> bool {
+        let slot = b"-+*".iter().position(|candidate| *candidate == delimiter);
+        slot.is_some_and(|slot| self.other[slot].is_none_or(|other| other < at))
+            && self.third_last.is_some_and(|third| at <= third)
+    }
+}
+
+fn marker_with_break(
+    text: &str,
+    origin: usize,
+    thematic_break: impl FnOnce(u8) -> bool,
+) -> Option<Marker> {
     let (indent_bytes, indent) = indentation(text);
     let body = &text.as_bytes()[indent_bytes..];
     let digits = body.iter().take_while(|byte| byte.is_ascii_digit()).count();
@@ -85,13 +145,7 @@ fn marker(text: &str, origin: usize) -> Option<Marker> {
     {
         return None;
     }
-    if !ordered
-        && text
-            .bytes()
-            .filter(|byte| !matches!(byte, b' ' | b'\t'))
-            .all(|byte| byte == delimiter)
-        && body.iter().filter(|byte| **byte == delimiter).count() >= 3
-    {
+    if !ordered && thematic_break(delimiter) {
         return None;
     }
     let mut content = indent_bytes + width;
@@ -158,6 +212,11 @@ pub(super) fn classify_with_syntax(
     };
     let lines = super::paragraph_flow::source_lines(input);
     let quotes = super::markdown_quotes::classify(input);
+    // Containers arrive in source order. Successive containers on one row
+    // continue from the previous column and share the row's break facts, so
+    // N nested markers on a row cost O(row) rather than O(N × row).
+    let mut column_from: Option<(usize, usize, usize, usize)> = None;
+    let mut breaks: Option<(usize, RowBreaks)> = None;
     let content_indents: Vec<_> = syntax
         .containers
         .iter()
@@ -167,12 +226,37 @@ pub(super) fn classify_with_syntax(
                 .partition_point(|line| line.end < at)
                 .min(lines.len() - 1);
             let origin = quotes[index].content_start.min(at);
-            let mut column = 0;
-            for byte in input.text[origin..at].bytes() {
+            let (from, mut column) = match column_from {
+                Some((row, previous_origin, previous, column))
+                    if row == index && previous_origin == origin && previous <= at =>
+                {
+                    (previous, column)
+                }
+                _ => (origin, 0),
+            };
+            for byte in input.text[from..at].bytes() {
                 column += if byte == b'\t' { 4 - column % 4 } else { 1 };
             }
-            marker(&input.text[at..lines[index].end], at)
-                .map_or(0, |marker| column + marker.content_indent)
+            column_from = Some((index, origin, at, column));
+            let end = lines[index].end;
+            let mut scanned = at - from;
+            if !breaks
+                .as_ref()
+                .is_some_and(|(row, breaks)| *row == index && breaks.start <= at)
+            {
+                let start = lines[index].start.min(at);
+                let row = RowBreaks::new(&input.text[start..end], start);
+                scanned += row.scanned;
+                breaks = Some((index, row));
+            }
+            super::work_statistics::record(|stats| {
+                stats.markdown_container_prefix_bytes += scanned;
+            });
+            let (_, breaks) = breaks.as_ref().expect("current row breaks");
+            marker_with_break(&input.text[at..end], at, |delimiter| {
+                breaks.thematic(at, delimiter)
+            })
+            .map_or(0, |marker| column + marker.content_indent)
         })
         .collect();
     let mut active = Vec::new();

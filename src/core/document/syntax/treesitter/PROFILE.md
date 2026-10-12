@@ -160,7 +160,11 @@ their old package. Changing only the Vim directory reloads fallback programs.
 A worker owns each mutable parser. Completed snapshots own separate cloned
 native tree handles; raw nodes never cross into persistent editor coordinates.
 The parser reads borrowed rope leaves of at most 4 KiB. UTF-8 byte and point
-limits are checked before native calls. An edit applies to a private old-tree
+limits are checked before native calls. Parsers receive each NUL byte as
+U+0001 at the same offset: external scanners treat lookahead 0 as end of input
+or a C-string terminator, and tree-sitter-swift's directive matcher otherwise
+reads past its literals (see the fuzzing guide). Query predicates and highlight
+ranges still use the original text. An edit applies to a private old-tree
 copy and carries an exact chain of input identities. Interrupted parsing resumes
 only its frozen input, grammar, old tree and included ranges.
 
