@@ -1049,14 +1049,28 @@ indentation/comment assistance; the shared batch smart-quote policy still applie
 Code editing and reflow share Vim `formatoptions`, `comments` and
 `formatlistpat`, with `formatoptions=qj` by default. Enter and `o`/`O` comment
 continuation require their respective flags. Language-derived defaults preserve
-explicit buffer overrides; an explicitly empty `comments` disables recognition.
-Comment rules use full-line context independently of syntax highlighting.
-Preserve distinct line leaders and established starred or
-unstarred block bodies. A new conventional block generates ` * `; typing `/`
-immediately after that generated prefix closes it as ` */`. After a closer,
-resume opener indentation. A bare leading `*` or delimiter inside code/string
-is not a comment context. Context lookup is bounded to 512 preceding hard lines;
-outside that bound continuation uses ordinary indentation and `=` uses zero.
+explicit buffer replacements, including empty and equal-to-default assignments;
+modifiers store the complete effective result, while reset resumes inheritance.
+An empty profile disables comment assistance, not lexical knowledge.
+
+Comment editing separates native language context from formatting leaders and
+works independently of highlighting. Native strings and comment boundaries win
+conflicts with custom leaders; nonnative formatting regions may begin in code.
+Preserve distinct leaders during reflow and established starred/unstarred bodies.
+Generated closing retains the originating block, and source/language/profile
+changes retire pending closing. Enter may continue trailing comments; uppercase
+`O` never repeats a trailing line comment above code. `formatoptions=/` suppresses
+lowercase `o` continuation for every trailing line-comment kind, deliberately
+extending Vim's `//` behavior without suppressing Enter or full-line comments.
+
+Context queries use bounded, revision-checked incremental state. Unknown context
+uses ordinary indentation/joining without comment assistance; comment-aware
+reflow rejects atomically. Never infer ordinary code from exhausted lookback or
+silently downgrade a provider to literal matching. Languages without providers
+may use explicitly documented literal-leader compatibility. Language/form
+coverage, budgets, and exclusions belong in `docs/code-formatting.md` and its
+linked inventory. The independent `=` indentation lookback remains bounded and
+uses zero when no preceding indentation is found.
 
 Leading ASCII spaces/tabs may use actual space advances or half the default
 Paragraph font size per logical column (paragraph en), excluding character
@@ -1122,7 +1136,8 @@ Preserve `//`, `///`,
 delimiter and blank comment lines remain separate. Comment-kind/leader changes
 separate paragraphs. Lists inside comments retain hanging indent after repeated
 prefixes. Mixed code plus trailing-comment lines remain byte-identical boundaries.
-Nested block comments remain unsupported and end at their first closer.
+Native nesting follows the selected language provider; distinct block owners
+remain separate. Literal-leader compatibility does not promise nested syntax.
 Language defaults supply comment and list conventions; explicit buffer values
 take precedence, including when the selected language changes.
 Comment context and reflow cannot depend on asynchronous highlighting or styles.

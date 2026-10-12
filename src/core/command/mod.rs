@@ -1665,6 +1665,9 @@ impl CommandInterpreter {
         self.recording.clone_from(&state.recording);
         self.last_macro = state.last_macro;
         self.text_width = state.text_width;
+        if self.reflow_options.comments() != state.reflow_options.comments() {
+            self.generated_indent = None;
+        }
         self.reflow_options = state.reflow_options.clone();
         self.reflow_options.set_language(self.reflow_language.as_deref());
         let defaults = state.indentation.defaults();
@@ -11993,11 +11996,11 @@ impl CommandInterpreter {
                         self.cursor = cursor;
                     }
                     if line_start(&document.hard_line_snapshot(), self.cursor) != self.cursor {
-                        prefix.clear();
+                        prefix = indentation::GeneratedPrefix::default();
                     }
-                    if !prefix.is_empty() {
-                        document.insert(self.cursor, &prefix)?;
-                        self.cursor += prefix.len();
+                    if !prefix.text.is_empty() {
+                        document.insert(self.cursor, &prefix.text)?;
+                        self.cursor += prefix.text.len();
                     }
                     self.capture_generated_indent(document, prefix);
                     output.merge(CommandOutput {
@@ -12044,7 +12047,15 @@ impl CommandInterpreter {
                         EditSessionStep::Tab => self.insert_tab(document)?,
                         EditSessionStep::ShiftIndent { outdent } => self.insert_shift(document, *outdent)?,
                         EditSessionStep::ResetIndent { restore } => self.reset_insert_indent(document, *restore)?,
-                        EditSessionStep::CloseComment(character) => self.close_generated_comment(document, *character)?.unwrap_or(CommandOutput::complete()),
+                        EditSessionStep::CloseComment(character) => {
+                            if let Some(output) = self.close_generated_comment(document, *character)? {
+                                output
+                            } else if self.mode == Mode::Replace {
+                                self.replace_text(document, &character.to_string())?
+                            } else {
+                                self.insert_text(document, &character.to_string())?
+                            }
+                        }
                         EditSessionStep::HardBreak => {
                             self.handle_edit_mode_key(document, Key::ShiftEnter)?
                         }
@@ -12159,7 +12170,7 @@ impl CommandInterpreter {
             self.open_physical_line(document, above)?;
         } else {
             let (prepared, cursor) = prepare_open_line_with_cursor(document, position, self.cursor, !above)?;
-            let terminal_source = (document.format().is_source_view() && !above && prefix.is_empty()
+            let terminal_source = (document.format().is_source_view() && !above && prefix.text.is_empty()
                 && position == document.projection().text_tree().byte_len()
                 && document.projection().source_insertion_point(position, true) == Some(document.source_byte_len()))
                 .then(|| document.source_point(document.source_byte_len()))
@@ -12180,10 +12191,10 @@ impl CommandInterpreter {
         // Visual O may split an interior wrapped row while its caret stays
         // at the preceding fragment's end. That is not a leading-whitespace
         // location and must not acquire indentation in its text body.
-        if line_start(&document.hard_line_snapshot(), self.cursor) != self.cursor { prefix.clear(); }
-        if !prefix.is_empty() {
-            document.insert(self.cursor, &prefix)?;
-            self.cursor += prefix.len();
+        if line_start(&document.hard_line_snapshot(), self.cursor) != self.cursor { prefix = indentation::GeneratedPrefix::default(); }
+        if !prefix.text.is_empty() {
+            document.insert(self.cursor, &prefix.text)?;
+            self.cursor += prefix.text.len();
         }
         self.capture_generated_indent(document, prefix);
         // The newly opened line supplies the first insertion's context. An
@@ -12661,6 +12672,8 @@ impl CommandInterpreter {
         let mut last_join_offset = joined_len;
         let mut edits = Vec::with_capacity(joins);
         let profile = (document.format().is_code() && self.reflow_options.has('j')).then(|| self.reflow_options.profile());
+        let mut comment_join = profile.as_ref().map(|profile|
+            crate::document::CommentJoinContext::new(&lines, profile, self.reflow_options.language()));
         let mut actual = 0;
         for index in current.index() + 1..current.index() + 1 + joins {
             let Some(next_line) = lines.line(index) else {
@@ -12675,11 +12688,11 @@ impl CommandInterpreter {
             if insert_space {
                 // Vim removes line indentation, not arbitrary Unicode white
                 // space. In particular, NBSP remains document content.
-                let trimmed_start = if let Some(profile) = &profile {
+                let trimmed_start = if let Some(comment_join) = &mut comment_join {
                     let previous = lines.line(index - 1).unwrap().content_range();
                     let previous = lines.slice_utf8(previous).map_err(DocumentError::FormattedTextStorage)?;
                     let next = lines.slice_utf8(next_range.clone()).map_err(DocumentError::FormattedTextStorage)?;
-                    next_range.start + crate::document::comment_join_prefix(&lines, index - 1, &previous, &next, profile)
+                    next_range.start + comment_join.prefix(index - 1, &previous, &next)
                 } else { document_prefix_end(document,next_range.clone(),|c|matches!(c,' '| '\t')) };
                 let trimmed_len=next_range.end-trimmed_start;
                 let insert_separator = joined_len>0
@@ -14018,7 +14031,12 @@ impl CommandInterpreter {
                 (ExOptionName::AutoSelect, ExOptionValue::Boolean(value)) => self.selection_options.autoselect = *value,
                 (ExOptionName::KeyModel, ExOptionValue::String(value)) => self.selection_options.keymodel = value.clone(),
                 (ExOptionName::SelectMode, ExOptionValue::String(value)) => self.selection_options.selectmode = value.clone(),
-                (_, ExOptionValue::Reflow(value)) => self.reflow_options = value.clone(),
+                (_, ExOptionValue::Reflow(value)) => {
+                    if self.reflow_options.comments() != value.comments() || self.reflow_options.language() != value.language() {
+                        self.generated_indent = None;
+                    }
+                    self.reflow_options = value.clone();
+                }
                 (_, ExOptionValue::Indentation(value)) => self.indentation = *value,
                 (_, ExOptionValue::VisibleWhitespace(value)) => self.visible_whitespace = value.clone(),
                 (ExOptionName::HlSearch, ExOptionValue::Boolean(value)) => {

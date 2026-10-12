@@ -19,6 +19,9 @@ impl CommandInterpreter {
     /// Canonical language name used to select a declarative comment profile.
     /// Independent of syntax coverage, styles, and highlighter availability.
     pub fn set_reflow_language(&mut self, language: Option<String>) {
+        if self.reflow_language != language {
+            self.generated_indent = None;
+        }
         self.reflow_options.set_language(language.as_deref());
         self.reflow_language = language;
     }
@@ -175,6 +178,25 @@ mod tests {
         commands.set_reflow_language(Some("cpp".into()));
         let middle = document.line_start(600_000).unwrap();
         assert!(commands.set_cursor(&document, middle));
+        // A cold distant edit cannot prove lexical context by looking back a
+        // fixed number of rows. Reject without changing the command's state.
+        let revision = document.revision();
+        keys(&mut commands, &mut document, "2gq");
+        let rejected = commands.handle(&mut document, InputEvent::Key(Key::Char('q'))).unwrap();
+        assert!(matches!(rejected.status, CommandStatus::Error(_)));
+        assert_eq!(document.revision(), revision);
+        assert_eq!(commands.cursor(), middle);
+        // Each query performs one bounded slice and retains verified lexical
+        // checkpoints. Simulate optional offscreen warming before local edits.
+        let snapshot = document.hard_line_snapshot();
+        let mut warm = false;
+        for _ in 0..256 {
+            if !snapshot.comment_context(Some("cpp"), 600_000).is_unknown() {
+                warm = true;
+                break;
+            }
+        }
+        assert!(warm, "bounded slices eventually establish distant context");
         let started = Instant::now();
         keys(&mut commands, &mut document, "2gqq");
         // Plain vertical motions are shared machinery; only reflow is asserted

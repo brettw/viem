@@ -474,10 +474,10 @@ fn code_uses_the_language_comment_profile_and_keeps_code_boundaries() {
     let (mut c, mut d) = code("/* a\n * b\n */\n", "c");
     keys(&mut c, &mut d, "gqG");
     assert_eq!(d.text(), "/* a b\n */\n");
-    // A language without a profile formats comments as plain text.
+    // Python now inherits its native hash-comment profile.
     let (mut c, mut d) = code("# a\n# b\n", "python");
     keys(&mut c, &mut d, "gqG");
-    assert_eq!(d.text(), "# a # b\n");
+    assert_eq!(d.text(), "# a b\n");
 }
 
 #[test]
@@ -993,11 +993,11 @@ fn deliberate_differences_from_vim_are_fixtured() {
     keys(&mut c, &mut d, "gqip");
     assert_eq!(d.text(), "- alpha\n  beta\n  gamma\n");
 
-    // 5. Comment leaders come from the language's declarative profile, not the
-    //    `comments` option, so an unprofiled language reflows them as prose.
+    // 5. Per-language comment profiles now cover Haskell as well as C-style
+    //    languages; explicit `comments` assignments still replace the profile.
     let (mut c, mut d) = code("-- alpha\n-- beta\n", "haskell");
     keys(&mut c, &mut d, "gqip");
-    assert_eq!(d.text(), "-- alpha -- beta\n");
+    assert_eq!(d.text(), "-- alpha beta\n");
 
     // 6. `gq`/`gw` count hard lines even where this view's other line commands
     //    count visual rows.

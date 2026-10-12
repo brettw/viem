@@ -10,7 +10,33 @@ pub(super) struct GeneratedIndent {
     start: TextAnchor,
     end: TextAnchor,
     text: String,
+    comment: Option<GeneratedComment>,
 }
+
+/// The closing spelling is resolved at the originating comment, before the
+/// edit. A shared middle marker never has to identify a block afterwards.
+#[derive(Clone, Debug)]
+struct GeneratedComment {
+    block: usize,
+    closing: String,
+    revision: crate::document::Revision,
+    language: Option<String>,
+    profile: String,
+}
+
+#[derive(Default)]
+pub(super) struct GeneratedPrefix {
+    pub text: String,
+    block: Option<usize>,
+    closing: Option<String>,
+}
+
+impl From<String> for GeneratedPrefix {
+    fn from(text: String) -> Self {
+        Self { text, block: None, closing: None }
+    }
+}
+
 impl GeneratedIndent {
     fn capture(document: &Document, start: usize, text: String) -> Option<Self> {
         let anchor = |at| {
@@ -27,6 +53,7 @@ impl GeneratedIndent {
             start: anchor(start)?,
             end: anchor(start + text.len())?,
             text,
+            comment: None,
         })
     }
     fn range(&self, document: &Document) -> Option<Range<usize>> {
@@ -109,14 +136,14 @@ impl CommandInterpreter {
         at: usize,
         open: bool,
         above: bool,
-    ) -> String {
+    ) -> GeneratedPrefix {
         if !self.literal_indentation(document) {
-            return String::new();
+            return GeneratedPrefix::default();
         }
         let options = self.indentation_options();
         let snapshot = document.hard_line_snapshot();
         let Ok(line) = snapshot.line_at_offset(at) else {
-            return String::new();
+            return GeneratedPrefix::default();
         };
         let range = line.content_range();
         let text = snapshot
@@ -129,37 +156,48 @@ impl CommandInterpreter {
         };
         if comments && document.format().is_code() {
             let profile = self.reflow_options.profile();
-            {
-                // Vim's / flag suppresses o/O continuation of trailing comments.
-                let trailing = open && !self.reflow_options.has('/') && !above;
-                let comment_text = if trailing && profile.line_prefix(text.trim_start_matches([' ', '\t'])).is_none() {
-                    profile.trailing_line_leader(&text).filter(|(_, leader)| leader.text.starts_with("//")).map(|(at, _)| format!("{}{}", " ".repeat(options.columns(&text[..at])), &text[at..]))
-                } else { None };
-                if let Some(prefix) =
-                    comment_continuation_prefix(&snapshot, line.index(), comment_text.as_deref().unwrap_or(&text), &profile, above, options.tabstop as usize)
-                {
-                    let leading = leading_whitespace_len(&prefix);
-                    return format!(
-                        "{}{}",
-                        options.whitespace(0, options.columns(&prefix[..leading])),
-                        &prefix[leading..]
-                    );
+            if let Some(continuation) = comment_continuation_prefix(
+                &snapshot, line.index(), &text, &profile,
+                self.reflow_options.language(), above, options.tabstop as usize,
+            ) {
+                // `/` applies only to lowercase o after trailing line comments.
+                // Enter still continues them; O never copies one above its code.
+                if !continuation.trailing || (!above && !(open && self.reflow_options.has('/'))) {
+                    let normalize = |prefix: &str| {
+                        let leading = leading_whitespace_len(prefix);
+                        format!("{}{}", options.whitespace(0, options.columns(&prefix[..leading])), &prefix[leading..])
+                    };
+                    return GeneratedPrefix {
+                        text: normalize(&continuation.prefix),
+                        block: continuation.block,
+                        closing: continuation.closing_prefix.as_deref().map(normalize),
+                    };
                 }
             }
         }
         if options.autoindent {
             let prefix = &text[..leading_whitespace_len(&text)];
-            options.whitespace(0, options.columns(prefix))
+            options.whitespace(0, options.columns(prefix)).into()
         } else {
-            String::new()
+            GeneratedPrefix::default()
         }
     }
 
-    pub(super) fn capture_generated_indent(&mut self, document: &Document, prefix: String) {
-        self.generated_indent = if prefix.is_empty() {
+    pub(super) fn capture_generated_indent(&mut self, document: &Document, prefix: impl Into<GeneratedPrefix>) {
+        let prefix = prefix.into();
+        self.generated_indent = if prefix.text.is_empty() {
             None
         } else {
-            GeneratedIndent::capture(document, self.cursor - prefix.len(), prefix)
+            GeneratedIndent::capture(document, self.cursor - prefix.text.len(), prefix.text).map(|mut generated| {
+                generated.comment = prefix.block.zip(prefix.closing).map(|(block, closing)| GeneratedComment {
+                    block,
+                    closing,
+                    revision: document.revision(),
+                    language: self.reflow_options.language().map(str::to_owned),
+                    profile: self.reflow_options.comments().to_owned(),
+                });
+                generated
+            })
         };
     }
 
@@ -273,15 +311,15 @@ impl CommandInterpreter {
         let prefix = self
             .restored_indent
             .take()
-            .map(|columns| self.indentation_options().whitespace(0, columns))
+            .map(|columns| self.indentation_options().whitespace(0, columns).into())
             .unwrap_or_else(|| self.continuation_indent(document, self.cursor, false, false));
         self.cleanup_generated_indent(document)?;
         let start = self.cursor;
-        if let Some((prepared, cursor)) = document.prepare_literal_terminal_break(start, &prefix)
+        if let Some((prepared, cursor)) = document.prepare_literal_terminal_break(start, &prefix.text)
             .map_err(command_document_error)?
         {
-            let inserted = format!("\n{prefix}");
-            let record = if prefix.is_empty() || self.mode == Mode::Replace {
+            let inserted = format!("\n{}", prefix.text);
+            let record = if prefix.text.is_empty() || self.mode == Mode::Replace {
                 Some(document.recorded_source_replacement(&prepared, start, cursor, inserted.clone(), None)
                     .map_err(command_document_error)?)
             } else { None };
@@ -306,7 +344,7 @@ impl CommandInterpreter {
             let removed_len = if self.indentation_options().autoindent && self.literal_indentation(document) {
                 leading_whitespace_len(&suffix)
             } else { 0 };
-            let inserted = format!("\n{prefix}");
+            let inserted = format!("\n{}", prefix.text);
             let payload = FormattedTextPayload::new(&snapshot, inserted.clone(), vec![0])
                 .expect("Enter contains one semantic break");
             let edit = FormattedPayloadEdit::new(start..start + removed_len, payload)
@@ -314,7 +352,7 @@ impl CommandInterpreter {
             let use_markdown_typing = document.format().is_wysiwyg() && !self.typing_style.link_disabled
                 && self.markdown_autodetect();
             let mut exit_source = None;
-            let heading_enter = document.format().is_wysiwyg() && prefix.is_empty()
+            let heading_enter = document.format().is_wysiwyg() && prefix.text.is_empty()
                 && document.projection().blocks_for_region(&(start..start)).iter()
                     .any(|block| matches!(block.kind, crate::document::BlockKind::Heading(_))
                         && block.range.start <= start && start <= block.range.end);
@@ -356,6 +394,7 @@ impl CommandInterpreter {
                 });
                 session.record_inserted(&RegisterValue::characterwise(inserted), Some(EditSessionStep::IndentedEnter));
             }
+            self.capture_generated_indent(document, prefix);
             return Ok(CommandOutput { document_changed: changed, cursor_moved: true, ..CommandOutput::complete() });
         }
         let mut removed_whitespace = String::new();
@@ -385,7 +424,7 @@ impl CommandInterpreter {
         }
         let output = self.record_semantic_insert(
             document,
-            &format!("\n{prefix}"),
+            &format!("\n{}", prefix.text),
             EditSessionStep::IndentedEnter,
         )?;
         if self.mode == Mode::Replace {
@@ -398,11 +437,11 @@ impl CommandInterpreter {
                     original: Some(removed_whitespace),
                     source_record: None,
                 });
-                if !prefix.is_empty() {
+                if !prefix.text.is_empty() {
                     session.replace_journal.push(ReplaceJournalEntry {
-                        autoindent: leading_whitespace_len(&prefix) == prefix.len(),
+                        autoindent: leading_whitespace_len(&prefix.text) == prefix.text.len(),
                         start: start + 1,
-                        inserted: prefix.clone(),
+                        inserted: prefix.text.clone(),
                         original: None,
                         source_record: None,
                     });
@@ -620,19 +659,32 @@ impl CommandInterpreter {
         let Some(generated) = &self.generated_indent else {
             return Ok(None);
         };
-        if !document.format().is_code() { return Ok(None); }
+        let Some(comment) = &generated.comment else { return Ok(None); };
+        if !document.format().is_code()
+            || comment.revision != document.revision()
+            || comment.language.as_deref() != self.reflow_options.language()
+            || comment.profile != self.reflow_options.comments()
+        {
+            self.generated_indent = None;
+            return Ok(None);
+        }
         let profile = self.reflow_options.profile();
-        let Some(block) = profile.blocks.iter().find(|block| block.automatic_end && block.close.ends_with(character) && generated.text.trim_start_matches([' ', '\t']).trim_end_matches([' ', '\t']) == block.middle) else { return Ok(None); };
+        let Some(block) = profile.blocks.get(comment.block) else { return Ok(None); };
+        if !block.automatic_end || !block.close.ends_with(character) { return Ok(None); }
         let Some(range) = generated.range(document).filter(|r| r.end == self.cursor) else {
             return Ok(None);
         };
-        let indent = &generated.text[..leading_whitespace_len(&generated.text)];
-        let replacement = format!("{indent}{}", block.close);
+        let replacement = comment.closing.clone();
+        let generated_text = generated.text.clone();
         document.replace(range.clone(), &replacement)?;
         self.cursor = range.start + replacement.len();
         self.generated_indent = None;
         if let Some(session) = self.insert_session.as_mut() {
-            session.record_step(EditSessionStep::CloseComment(character));
+            session.record_edit(|program, inserted| {
+                if let Some(program) = program { program.push(EditSessionStep::CloseComment(character)); }
+                remove_inserted_suffix(inserted, &generated_text);
+                inserted.append_inserted_payload(&RegisterValue::characterwise(replacement));
+            });
         }
         Ok(Some(CommandOutput {
             document_changed: true,
@@ -764,6 +816,23 @@ mod tests {
         keys(&mut c, &mut d, "u");
         assert_eq!(d.text(), "  a\n    b");
     }
+
+    #[test]
+    fn shared_profile_refresh_retires_a_generated_closer_even_after_reset() {
+        let mut d = Document::from_bytes(b"/*".to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        let mut c = CommandInterpreter::new();
+        c.set_reflow_language(Some("cpp".into()));
+        c.reflow_options.format_options = Some("qjr".into());
+        keys(&mut c, &mut d, "A");
+        key(&mut c, &mut d, Key::Enter);
+        let initial = c.export_buffer_state();
+        let mut changed = initial.clone();
+        changed.reflow_options.comments = Some("s1:/*,mb:*,ex:*/".into());
+        c.install_buffer_state(&changed);
+        c.install_buffer_state(&initial);
+        keys(&mut c, &mut d, "/");
+        assert_eq!(d.text(), "/*\n * /\n");
+    }
     #[test]
     fn shifts_tabs_registers_and_visual_counts() {
         let mut d = Document::new("\ta\n b");
@@ -850,8 +919,12 @@ mod tests {
     }
 
     #[test]
-    fn quoted_and_midline_openers_do_not_create_comment_context() {
-        for source in ["const char *s = \"/*\";", "code(); /* text", "// /* text"] {
+    fn continuation_uses_the_lexical_owner_of_midline_openers() {
+        for (source, prefix) in [
+            ("const char *s = \"/*\";", ""),
+            ("code(); /* text", "         * "),
+            ("// /* text", "// "),
+        ] {
             let mut d =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code)
                     .unwrap();
@@ -860,11 +933,7 @@ mod tests {
             c.set_reflow_language(Some("cpp".into()));
             keys(&mut c, &mut d, "A");
             key(&mut c, &mut d, Key::Enter);
-            let expected = if source.starts_with("//") {
-                format!("{source}\n// \n")
-            } else {
-                format!("{source}\n\n")
-            };
+            let expected = format!("{source}\n{prefix}\n");
             assert_eq!(d.text(), expected);
         }
         let mut d = Document::from_bytes(

@@ -463,6 +463,9 @@ fn prepare_join(
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
     let profile = (document.format().is_code() && context.reflow_options.has('j')).then(|| context.reflow_options.profile());
+    let snapshot = document.hard_line_snapshot();
+    let mut comment_join = profile.as_ref().map(|profile|
+        crate::document::CommentJoinContext::new(&snapshot, profile, context.reflow_options.language()));
     if let Some(source) = source_range(document, range)? {
         let units = source_units(document, source.clone())?;
         let mut patches = Vec::new();
@@ -473,8 +476,8 @@ fn prepare_join(
             let following = &pair[1];
             let leading = if bang {
                 0
-            } else if let Some(profile) = &profile {
-                crate::document::comment_join_prefix(&document.hard_line_snapshot(), range.start.index + pair_index, &pair[0].text, &following.text, profile)
+            } else if let Some(comment_join) = &mut comment_join {
+                comment_join.prefix(range.start.index + pair_index, &pair[0].text, &following.text)
             } else {
                 following.text.len() - following.text.trim_start_matches(char::is_whitespace).len()
             };
@@ -501,7 +504,6 @@ fn prepare_join(
         plan.outcome.navigation = Some(ExNavigation::PhysicalSourceOffset(cursor));
     } else {
         let units = formatted_units(document, range)?;
-        let snapshot = document.hard_line_snapshot();
         let mut edits = Vec::new();
         for pair in units.windows(2) {
             if pair[0].content.end == pair[0].text.end {
@@ -514,7 +516,7 @@ fn prepare_join(
                 .slice_utf8(pair[0].content.clone())
                 .map_err(|_| ExExecuteError::AddressOverflow)?;
             let leading = if bang { 0 }
-                else if let Some(profile) = &profile { crate::document::comment_join_prefix(&snapshot, snapshot.line_at_offset(pair[0].content.start).map_err(|_| ExExecuteError::AddressOverflow)?.index(), &before, &following, profile) }
+                else if let Some(comment_join) = &mut comment_join { comment_join.prefix(snapshot.line_at_offset(pair[0].content.start).map_err(|_| ExExecuteError::AddressOverflow)?.index(), &before, &following) }
                 else { following.len() - following.trim_start_matches(char::is_whitespace).len() };
             let separator = if bang
                 || before.chars().last().is_none_or(char::is_whitespace)
