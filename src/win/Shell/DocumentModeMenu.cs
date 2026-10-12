@@ -7,32 +7,33 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class EditorWindow
 {
-    private ToggleMenuFlyoutItem plainMode = null!, markdownMode = null!, autoMode = null!;
-    private MenuFlyoutSubItem codeMode = null!, obscureLanguageModes = null!;
+    private ToggleMenuFlyoutItem plainMode = null!, markdownMode = null!, codeMode = null!, autoMode = null!;
+    private MenuFlyoutSubItem codeLanguageMenu = null!, obscureLanguageModes = null!;
     private readonly List<(ToggleMenuFlyoutItem Item, string Language)> languageModes = new();
     private bool languageModesLoaded, obscureLanguageModesLoaded;
     private DocumentModeState? menuModeState;
-    private FontIcon codeModeCheck = null!, obscureModeCheck = null!;
+    private FontIcon codeLanguageCheck = null!, obscureModeCheck = null!;
 
     private void BuildDocumentModeMenu()
     {
         plainMode = DocumentModeChoice("Plain text", "P", VIEM_DOCUMENT_MODE_PLAIN_TEXT);
-        // Only opening the top-level View flyout captures a document revision.
+        // Only opening a top-level Format or File flyout captures a document revision.
         // Loading nested language rows must retain that snapshot for validation.
         plainMode.Loaded += (_, _) => ValidateMenus();
         markdownMode = DocumentModeChoice("Markdown", "M", VIEM_DOCUMENT_MODE_MARKDOWN);
+        codeMode = DocumentModeChoice("Code", "C", VIEM_DOCUMENT_MODE_CODE);
         autoMode = DocumentModeChoice("Auto (Plain Text)", "A", VIEM_DOCUMENT_MODE_AUTO);
         obscureLanguageModes = Sub("Obscure languages", "O");
         obscureModeCheck = new FontIcon { FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons"), Glyph = "", FontSize = 12, Width = 16 };
         obscureLanguageModes.Icon = obscureModeCheck;
         obscureLanguageModes.Loaded += (_, _) => EnsureObscureDocumentLanguages();
-        codeMode = Sub("Code", "C", autoMode, obscureLanguageModes, Separator());
-        codeModeCheck = new FontIcon { FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons"), Glyph = "", FontSize = 12, Width = 16 };
-        codeMode.Icon = codeModeCheck;
-        // Loading the Code row means its View flyout is actually opening,
+        codeLanguageMenu = Sub("Code language", "G", autoMode, obscureLanguageModes, Separator());
+        codeLanguageCheck = new FontIcon { FontFamily = new Microsoft.UI.Xaml.Media.FontFamily("Segoe Fluent Icons"), Glyph = "", FontSize = 12, Width = 16 };
+        codeLanguageMenu.Icon = codeLanguageCheck;
+        // Loading the Code language row means its File flyout is actually opening,
         // including pointer, access-key and UI Automation entry. Populate now
-        // so a subsequent C key can open the complete submenu immediately.
-        codeMode.Loaded += (_, _) => EnsureDocumentLanguages();
+        // so a subsequent access key can open the complete submenu immediately.
+        codeLanguageMenu.Loaded += (_, _) => EnsureDocumentLanguages();
     }
 
     private ToggleMenuFlyoutItem DocumentModeChoice(string name, string accessKey, uint mode, string language = "")
@@ -49,7 +50,7 @@ internal sealed partial class EditorWindow
         foreach (var language in DocumentModes.Languages.Where(language => language.Primary))
         {
             var item = DocumentModeChoice(language.Name, "", VIEM_DOCUMENT_MODE_CODE, language.Id);
-            languageModes.Add((item, language.Id)); codeMode.Items.Add(item);
+            languageModes.Add((item, language.Id)); codeLanguageMenu.Items.Add(item);
         }
         languageModesLoaded = true;
         RefreshDocumentLanguageChecks();
@@ -73,10 +74,11 @@ internal sealed partial class EditorWindow
         if (plainMode == null) return;
         menuModeState = View == null ? null : DocumentModes.Read(ActivePane!.Document);
         var state = menuModeState;
-        plainMode.IsEnabled = markdownMode.IsEnabled = codeMode.IsEnabled = state != null;
+        plainMode.IsEnabled = markdownMode.IsEnabled = codeMode.IsEnabled = codeLanguageMenu.IsEnabled = state != null;
         plainMode.IsChecked = state?.Format == "plainText";
         markdownMode.IsChecked = state?.Format == "markdown";
-        codeModeCheck.Glyph = state?.Format == "code" ? "\uE73E" : "";
+        codeMode.IsChecked = state?.Format == "code";
+        codeLanguageCheck.Glyph = codeMode.IsChecked ? "\uE73E" : "";
         autoMode.Text = "Auto (" + (state?.DetectedName ?? "Plain Text") + ")";
         autoMode.IsChecked = state?.Automatic == true;
         RefreshDocumentLanguageChecks();

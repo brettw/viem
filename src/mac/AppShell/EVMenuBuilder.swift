@@ -20,7 +20,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private var styleMenuRoles: [ObjectIdentifier: EVStyleMenuRole] = [:]
     private var styleMenuCatalogues: [ObjectIdentifier: EVStyleMenuCatalogue] = [:]
     private let documentModeProvider: @MainActor () -> (any EVDocumentModeMenuProviding)?
-    private var viewMenu: NSMenu?
+    private var fileMenu: NSMenu?
+    private var formatMenu: NSMenu?
     private var codeModeMenu: NSMenu?
     private var codeModeItem: NSMenuItem?
     private var obscureCodeModeMenu: NSMenu?
@@ -56,10 +57,12 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     }
 
     public func buildMainMenu(for application: NSApplication) -> NSMenu {
+        modeItems.removeAll()
         let mainMenu = NSMenu(title: "Main Menu")
         mainMenu.addItem(topLevelItem("Viem", submenu: makeApplicationMenu(for: application)))
         mainMenu.addItem(topLevelItem("File", submenu: makeFileMenu()))
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
+        mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
         mainMenu.addItem(topLevelItem("Style", submenu: makeStyleMenu()))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
@@ -71,6 +74,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         mainMenu.addItem(topLevelItem("Help", submenu: helpMenu))
         application.helpMenu = helpMenu
 
+        updateDocumentModes()
         return mainMenu
     }
 
@@ -87,10 +91,10 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         // AppKit may request validation again while a mouse is held down.
         // Keep the tracked NSMenuItem objects and their geometry stable.
         guard !trackingMenus.contains(ObjectIdentifier(menu)) else { return }
-        if menu === viewMenu || menu === codeModeMenu || menu === obscureCodeModeMenu {
+        if menu === fileMenu || menu === formatMenu || menu === codeModeMenu || menu === obscureCodeModeMenu {
             // Descending into a flyout retains the state captured when its
             // parent opened, including the revision verified by its actions.
-            guard ![viewMenu, codeModeMenu, obscureCodeModeMenu].compactMap({ $0 }).contains(where: {
+            guard ![fileMenu, formatMenu, codeModeMenu, obscureCodeModeMenu].compactMap({ $0 }).contains(where: {
                 trackingMenus.contains(ObjectIdentifier($0))
             }) else { return }
             updateDocumentModes()
@@ -186,6 +190,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
 
     private func makeFileMenu() -> NSMenu {
         let menu = NSMenu(title: "File")
+        fileMenu = menu
+        menu.delegate = self
         menu.addItem(applicationItem(
             "New",
             action: #selector(EVApplicationCommandRouting.newDocument(_:)),
@@ -242,6 +248,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(revertItem)
 
         menu.addItem(.separator())
+        menu.addItem(makeCodeLanguageMenu())
         let encodings = NSMenu(title: "Text Encoding")
         encodings.showsStateColumn = true
         encodings.addItem(coreItem("UTF-8", command: .encodingUTF8))
@@ -335,15 +342,22 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         return menu
     }
 
-    private func makeViewMenu() -> NSMenu {
-        let menu = NSMenu(title: "View")
-        modeItems.removeAll()
-        viewMenu = menu
+    private func makeFormatMenu() -> NSMenu {
+        let menu = NSMenu(title: "Format")
+        formatMenu = menu
         menu.delegate = self
         menu.showsStateColumn = true
         menu.addItem(documentModeItem("Plain text", choice: .plainText))
         menu.addItem(documentModeItem("Markdown", choice: .markdown))
-        let code = NSMenu(title: "Code")
+        menu.addItem(documentModeItem("Code", choice: .codeFormat))
+        menu.addItem(.separator())
+        menu.addItem(coreItem("Word wrap", command: .wordWrap))
+        menu.addItem(coreItem("Flow source paragraphs", command: .flowParagraphs))
+        return menu
+    }
+
+    private func makeCodeLanguageMenu() -> NSMenuItem {
+        let code = NSMenu(title: "Code language")
         code.delegate = self
         code.showsStateColumn = true
         codeModeMenu = code
@@ -362,18 +376,19 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         for language in EVCodeLanguage.primaryLanguages {
             code.addItem(documentModeItem(language.name, choice: .code(language.id)))
         }
-        let codeItem = submenuItem("Code", submenu: code)
+        let codeItem = submenuItem("Code language", submenu: code)
         codeModeItem = codeItem
-        menu.addItem(codeItem)
-        menu.addItem(.separator())
-        updateDocumentModes()
+        return codeItem
+    }
+
+    private func makeViewMenu() -> NSMenu {
+        let menu = NSMenu(title: "View")
+        menu.showsStateColumn = true
         menu.addItem(responderItem(
             "Show Status Bar",
             action: #selector(EVDocumentContentViewController.toggleStatusBar(_:))
         ))
         menu.addItem(.separator())
-        menu.addItem(coreItem("Word Wrap", command: .wordWrap))
-        menu.addItem(coreItem("Flow Source Paragraphs", command: .flowParagraphs))
         menu.addItem(coreItem("Show line numbers", command: .showLineNumbers))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
         menu.addItem(.separator())
@@ -412,6 +427,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             switch action.choice {
             case .plainText: selected = state?.format == "plainText"
             case .markdown: selected = state?.format == "markdown"
+            case .codeFormat: selected = state?.format == "code"
             case .automatic:
                 selected = state?.automatic == true
                 item.title = "Auto (\(state?.detectedName ?? "Plain Text"))"

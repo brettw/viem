@@ -14,10 +14,11 @@ It has several presentation modes.
 - Code (for source code)
 - Markdown source and WYSIWYG
 
-The View menu overrides the current document's mode with Plain text, Markdown,
-or Code and a language. Code > Auto shows the detected language and falls back to
-Plain text when none is detected. On Markdown files, Code > Auto shows literal
-source with Markdown syntax highlighting. Mode changes preserve the file's bytes.
+The Format menu selects Plain text, Markdown, or Code and offers Word wrap and
+Flow source paragraphs. Selecting Code retains the language choice. File > Code
+language > Auto shows the detected language and falls back to Plain text when
+none is detected. On Markdown files, Auto shows literal source with Markdown
+syntax highlighting. Mode changes preserve the file's bytes.
 
 ### Code editing
 

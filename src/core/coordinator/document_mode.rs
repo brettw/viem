@@ -7,6 +7,8 @@ pub enum DocumentMode {
     Automatic,
     PlainText,
     Markdown,
+    /// Select literal Code presentation while retaining its language policy.
+    CodeFormat,
     Code(String),
 }
 
@@ -43,6 +45,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let target = match &mode {
             DocumentMode::PlainText => Format::PlainText,
             DocumentMode::Markdown => markdown,
+            DocumentMode::CodeFormat => Format::Code,
             DocumentMode::Code(id) => {
                 if !languages::supported_languages().iter().any(|language| &language.id == id) {
                     return Err(DocumentError::UnsupportedFormatting.into());
@@ -59,6 +62,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.automatic_detection = Some(automatic);
         self.syntax.automatic_mode = mode == DocumentMode::Automatic;
         match mode {
+            DocumentMode::CodeFormat => self.set_code_language(self.syntax.selection.clone()),
             DocumentMode::Code(id) => self.set_code_language(LanguageSelection::Language(id)),
             DocumentMode::Automatic => self.set_code_language(LanguageSelection::Automatic),
             _ => {}

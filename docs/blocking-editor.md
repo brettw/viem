@@ -71,7 +71,7 @@ mode, and cancelling a close dialog do not end the operation. Concurrent callers
 for the same document all complete when its last view closes.
 
 Git's commit, merge, squash, tag, notes, and branch-description message filenames
-automatically select Git Commit syntax. View > Code > Auto shows the detected
+automatically select Git Commit syntax. File > Code language > Auto shows the detected
 language; explicit format or language choices take precedence.
 
 Use `:cq` or `:cquit` to cancel a Git commit. This abandons **all open documents**

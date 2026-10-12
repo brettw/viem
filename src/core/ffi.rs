@@ -14713,7 +14713,8 @@ pub unsafe extern "C" fn viem_core_view_set_document_mode_with_effects(
             VIEM_DOCUMENT_MODE_AUTO if language.is_empty() => crate::DocumentMode::Automatic,
             VIEM_DOCUMENT_MODE_PLAIN_TEXT if language.is_empty() => crate::DocumentMode::PlainText,
             VIEM_DOCUMENT_MODE_MARKDOWN if language.is_empty() => crate::DocumentMode::Markdown,
-            VIEM_DOCUMENT_MODE_CODE if !language.is_empty() => crate::DocumentMode::Code(language.into()),
+            VIEM_DOCUMENT_MODE_CODE if language.is_empty() => crate::DocumentMode::CodeFormat,
+            VIEM_DOCUMENT_MODE_CODE => crate::DocumentMode::Code(language.into()),
             _ => return Err(ViemStatus::InvalidArgument),
         };
         let reservation = reserve_effect_batch()?;
