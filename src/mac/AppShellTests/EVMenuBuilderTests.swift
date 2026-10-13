@@ -142,6 +142,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Style/Link…": ("k", [.command]),
             "Style/Paragraph/Bulleted List": ("8", [.shift, .command]),
             "Style/Paragraph/Numbered List": ("7", [.shift, .command]),
+            "Style/Paragraph/Insert Paragraph in List Item": ("\r", [.option]),
             "Style/Paragraph/Base Paragraph": ("0", [.command]),
             "Style/Paragraph/Heading 1": ("1", [.command]),
             "Style/Paragraph/Heading 2": ("2", [.command]),
@@ -206,7 +207,7 @@ final class EVMenuBuilderTests: XCTestCase {
                 XCTAssertEqual(item.action, styleSelector, "\(command) must use the typed style route")
             } else if command.formattingShortcut != nil {
                 XCTAssertEqual(item.action, formattingSelector, "\(command) must belong to the focused document editor")
-                let isInline = command != .bulletedList && command != .numberedList
+                let isInline = ![.bulletedList, .numberedList, .insertListParagraph].contains(command)
                 XCTAssertEqual(item.isHidden, isInline, "Inline controls stay in the toolbar; list menu items remain visible")
                 if isInline { XCTAssertTrue(item.allowsKeyEquivalentWhenHidden) }
             } else {
@@ -579,7 +580,7 @@ final class EVMenuBuilderTests: XCTestCase {
         builder.menuNeedsUpdate(paragraph)
 
         XCTAssertEqual(tokens(in: paragraph), [
-            "Bulleted List", "Numbered List", "Indent", "Unindent", "-",
+            "Bulleted List", "Numbered List", "Indent", "Unindent", "Insert Paragraph in List Item", "-",
             "Base Paragraph", "Heading", "Heading",
         ])
         XCTAssertTrue(paragraph.autoenablesItems)
@@ -640,7 +641,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let main = builder.buildMainMenu(for: NSApplication.shared)
         let paragraph = try submenu("Paragraph", of: submenu("Style", of: main))
         builder.menuNeedsUpdate(paragraph)
-        XCTAssertEqual(titles(in: paragraph), ["Bulleted List", "Numbered List", "Indent", "Unindent", "Base Paragraph", "Old Name"])
+        XCTAssertEqual(titles(in: paragraph), ["Bulleted List", "Numbered List", "Indent", "Unindent", "Insert Paragraph in List Item", "Base Paragraph", "Old Name"])
 
         provider.catalogue = styleCatalogue(
             documentRevision: 2,
@@ -652,7 +653,7 @@ final class EVMenuBuilderTests: XCTestCase {
         )
         builder.menuNeedsUpdate(paragraph)
 
-        XCTAssertEqual(titles(in: paragraph), ["Bulleted List", "Numbered List", "Indent", "Unindent", "Renamed Base", "New Name"])
+        XCTAssertEqual(titles(in: paragraph), ["Bulleted List", "Numbered List", "Indent", "Unindent", "Insert Paragraph in List Item", "Renamed Base", "New Name"])
         let actions = paragraph.items.compactMap(styleAction)
         XCTAssertEqual(actions.map(\.stableID), ["Paragraph", "Heading7"])
         XCTAssertTrue(actions.allSatisfy { $0.documentRevision == 2 })

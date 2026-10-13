@@ -107,6 +107,14 @@ internal sealed unsafe partial class CoreView
     public void SetBlockQuote(bool enabled) => Apply(o => { var r = New<ViemSetBlockQuoteV1>(); r.enabled = enabled ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_set_block_quote(Document.Handle, Id, &r, o); });
     public void SetList(uint style) => Apply(o => { var r = New<ViemSetListStyleV1>(); r.style = style; r.expected_selection = LogicalSelection(); return viem_core_view_set_list_style(Document.Handle, Id, &r, o); });
     public void IndentList(bool unindent) => Apply(o => { var r = New<ViemListIndentV1>(); r.unindent = unindent ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_indent_list(Document.Handle, Id, &r, o); });
+    public void InsertListParagraph()
+    {
+        // Native actions accept the preview before capturing a revision-bound target.
+        var completion = Completion();
+        if ((completion.Info.flags & VIEM_COMPLETION_ACTIVE) != 0)
+            AcceptCompletion(completion, (int)completion.Info.selected_index);
+        Apply(o => { var selection = LogicalSelection(); return viem_core_view_insert_list_paragraph(Document.Handle, Id, &selection, o); });
+    }
     public uint ListCapabilities() { var selection = LogicalSelection(); uint caps = 0; Check(viem_core_view_list_indent_capabilities(Document.Handle, Id, &selection, &caps), "Read list actions"); return caps; }
     public void SetMarkdownSource(bool source) => Send((c, o, e) => { var state = Document.State; var r = New<ViemSetMarkdownSourceV1>(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.source = source ? 1u : 0u; return viem_core_view_set_markdown_source_with_effects(Document.Handle, Id, &r, o, e); });
     public void SetEncoding(uint encoding) => Send((c, o, e) => { var state = Document.State; var r = New<ViemSetEncodingV1>(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.encoding = encoding; return viem_core_view_set_encoding_with_effects(Document.Handle, Id, &r, o, e); });

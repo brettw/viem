@@ -89,6 +89,10 @@ number stays visible as continuation text:
   4. This is a numbered child after a blank separator.
   5. Its sibling continues the run.
 
+In WYSIWYG, use Option-Enter on macOS or Alt-Enter on Windows to add a paragraph
+within a list item. The same action is available in Style > Paragraph. Enter
+starts the next item; Shift-Enter adds a line break within the paragraph.
+
 - This is a loose list.
 
 - Its items have paragraph spacing.

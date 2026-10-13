@@ -640,6 +640,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(coreItem("Numbered List", command: .numberedList))
         menu.addItem(coreItem("Indent", command: .increaseIndent))
         menu.addItem(coreItem("Unindent", command: .decreaseIndent))
+        menu.addItem(coreItem("Insert Paragraph in List Item", command: .insertListParagraph))
         menu.addItem(.separator())
     }
 

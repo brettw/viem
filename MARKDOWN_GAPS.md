@@ -84,7 +84,12 @@ separately in [BUGS.md](BUGS.md).
 - **Prose continuation whitespace:** indentation and trailing whitespace at a
   soft source break fold to one space. Explicit hard breaks remain distinct.
 - **Loose lists:** items receive paragraph spacing; tight lists retain their
-  compact presentation. Tightness is structure, not direct formatting.
+  compact presentation. Tightness is structure, not direct formatting. WYSIWYG
+  Option-Enter (macOS) / Alt-Enter (Windows), also available in Style > Paragraph,
+  creates another prose paragraph within the same list item. Empty continuation
+  paragraphs retain their ownership on reopen. The action requires a collapsed
+  caret; code bodies, table cells, and passive HTML blocks retain their own editing
+  rules. Native Windows validation remains pending on a Windows host.
 - **GFM pipe tables:** header/body structure, alignment, optional pipes,
   short and excess rows, inline formatting and explicit cell breaks. WYSIWYG
   uses content-sized cells; Source aligns the original syntax through geometry

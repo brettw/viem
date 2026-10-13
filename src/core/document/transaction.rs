@@ -316,6 +316,13 @@ pub enum ModelRequest {
         revision: Revision,
         at: usize,
     },
+    /// Split a paragraph while retaining its Markdown list-item owner.
+    InsertListParagraph {
+        document: DocumentId,
+        revision: Revision,
+        at: usize,
+        affinity: BoundaryAffinity,
+    },
     InsertHardBreak {
         document: DocumentId,
         revision: Revision,
@@ -397,6 +404,7 @@ impl ModelRequest {
             | Self::SetParagraphStyle { document, .. }
             | Self::AssignNamedStyle { document, .. }
             | Self::ContinueList { document, .. }
+            | Self::InsertListParagraph { document, .. }
             | Self::InsertHardBreak { document, .. }
             | Self::OpenLine { document, .. }
             | Self::SetFileFormat { document, .. }
@@ -424,6 +432,7 @@ impl ModelRequest {
             | Self::SetParagraphStyle { revision, .. }
             | Self::AssignNamedStyle { revision, .. }
             | Self::ContinueList { revision, .. }
+            | Self::InsertListParagraph { revision, .. }
             | Self::InsertHardBreak { revision, .. }
             | Self::OpenLine { revision, .. }
             | Self::SetFileFormat { revision, .. }
@@ -1229,6 +1238,9 @@ impl Document {
                 self.prepare_persisted_style_intent(intent)
             }
             ModelRequest::ContinueList { at, .. } => self.prepare_structural_list_enter(at),
+            ModelRequest::InsertListParagraph { at, affinity, .. } => {
+                self.prepare_list_paragraph(at, affinity)
+            }
             ModelRequest::InsertHardBreak { at, affinity, .. } => {
                 self.prepare_intra_paragraph_break(at, affinity)
             }
@@ -5562,9 +5574,16 @@ impl Document {
             }
         }
 
-        if let Ok(Some((prepared, old_region, new_region))) =
-            self.prepare_independent_paragraph_reprojection(source_patches)
-        {
+        // A list split can change loose spacing throughout its bounded
+        // owner, while all unrelated paragraphs retain their shared trees.
+        let regional = if edits.len() == 1 && edits[0].replacement == "\n" {
+            self.prepare_list_paragraph_reprojection(source_patches)
+        } else { Ok(None) };
+        let regional = match regional {
+            Ok(Some(prepared)) => Ok(Some(prepared)),
+            _ => self.prepare_independent_paragraph_reprojection(source_patches),
+        };
+        if let Ok(Some((prepared, old_region, new_region))) = regional {
             let PreparedPublication::State(state) = prepared.publication else { unreachable!() };
             if edits.iter().all(|edit| old_region.start <= edit.range.start && edit.range.end <= old_region.end)
                 && state.projection.text_tree().byte_len() == target_text.byte_len()
@@ -6115,7 +6134,15 @@ impl Document {
 
     fn markdown_edits_fill_empty_list_item(&self, edits: &[TextEdit]) -> bool {
         self.format() == Format::Markdown && edits.iter().any(|edit| {
-            markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
+            // A structural break in an empty first body can split its item
+            // while moving retained continuation ownership to the new marker.
+            // The former paragraph-local classifier cannot prove that change.
+            edit.replacement.contains('\n') && edit.range.is_empty()
+                && self.projection().blocks_for_region(&edit.range).iter().any(|block| {
+                    block.range == edit.range
+                        && matches!(block.kind, super::BlockKind::ListItem { item_start: true, .. })
+                })
+                || markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
                 .is_ok_and(|patches| patches.is_some())
                 || edit.range.is_empty() && !edit.replacement.is_empty()
                     && self.projection().blocks_for_region(&edit.range).iter().any(|block| {

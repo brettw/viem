@@ -340,8 +340,13 @@ fn inline_scopes(
         let decoded = document.encoding().decode_region(&bytes, first.start)?;
         let input = normalize(&decoded, document.file_format());
         let mapper = super::super::rich_text::Builder::new(&input, document.revision());
-        for inline in
-            super::super::markdown_syntax::inlines(&input.text, 0..input.text.len(), "").values()
+        // A paragraph-body parse suppresses an owner's opening marker, but
+        // cannot carry emphasis across a raw quote continuation prefix. Also
+        // recognize exact pairs in the physical source's container grammar.
+        // The semantic span and exact source delimiters below must still
+        // agree, so neither parse can invent an unrelated inline scope.
+        for inline in super::super::markdown_syntax::inlines(&input.text, 0..input.text.len(), "").into_values()
+            .chain(super::super::markdown_syntax::source_inlines(&input.text).into_values())
         {
             use super::super::markdown_syntax::InlineKind;
             let style = match inline.kind {
