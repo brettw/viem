@@ -585,7 +585,7 @@ impl PartialEq for ProvenanceIndex {
 
 impl std::fmt::Debug for ProvenanceIndex {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_list().entries(self.runs.as_slice()).finish()
+        formatter.debug_list().entries(self.runs.to_vec()).finish()
     }
 }
 

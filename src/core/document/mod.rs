@@ -149,6 +149,8 @@ pub(crate) use style::{
 };
 pub(crate) use transaction::RecordedReplacement;
 pub use transaction::{
+    trace_candidate_strategies, verify_regional_candidates, CandidateEvent, CandidateOutcome,
+    CandidateStrategy, ShadowMismatch,
     ClipboardFragment, TableClipboardCell, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
     ModelChangeSummary, ModelRequest, ModelTransactionError, PersistedStyleIntent,
     PreparedModelTransaction, ProjectionWorkScope, ProjectionWorkStatistics, ReplacementFragment,

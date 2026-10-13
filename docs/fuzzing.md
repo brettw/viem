@@ -87,6 +87,52 @@ process group, escalating to SIGKILL if needed, while retaining artifacts.
 A SIGKILL alone is not proof of an out-of-memory kill. If live sampling is
 unavailable, the run fails explicitly instead of silently disabling its ceiling.
 
+## Consistency probe
+
+`fuzz_consistency` checks user-visible editing behavior across a corpus of
+small Markdown, Code and Text seeds. Every action runs through the real core with
+layout. After each case it reopens the saved bytes and requires the same text,
+blocks and styles as the edited projection, checks exact undo/redo, and treats
+core errors and unexpected statuses as findings. The baseline already contains
+known findings, so a run is evaluated by comparison, not by a clean result.
+
+Every core action also runs with shadow verification: each regionally verified
+candidate is rebuilt with complete reprojection, and a difference is a
+`shadow_mismatch` finding naming the responsible candidate strategy. Every
+finding also records, in its `strategy` field, the strategy that verified the
+case's most recent edit. `--no-shadow` disables the extra work.
+
+```sh
+cargo build --release --example fuzz_consistency
+target/release/examples/fuzz_consistency probe --quick --out target/consistency/quick
+target/release/examples/fuzz_consistency probe --probes insert,normal,selection,copypaste --out target/consistency/full
+target/release/examples/fuzz_consistency compare BASE_DIR NEW_DIR
+target/release/examples/fuzz_consistency replay FINDING.json
+```
+
+Each probe case has an identity built only from its inputs: format, a hash of
+the seed, the probe, its positions and the operation label. A run writes every
+failing case to `<probe>-cases.jsonl`, grouped examples to `<probe>-findings.jsonl`
+and `<probe>-summary.txt`, and timings to `manifest.json`. Compare cases, not
+signature counts: a newly failing case can share a signature with a repaired
+one. `compare` groups cases by kind and signature as newly failing (the case
+did not fail in the baseline), changed (it fails in both, differently) or
+repaired, and exits 1 only when a case newly fails. `--baseline DIR` on a probe run also keeps
+complete, replayable findings for newly failing cases in `<probe>-new.jsonl`.
+
+`--quick` uses eight positions per seed and the insert, normal, selection and
+copy/paste probes. It takes roughly a quarter of a full run and is the feedback
+pass after changing shared transaction or projection code. Narrow further with
+`--filter TEXT` (seed source), `--fmt wysiwyg|source|code|plain`,
+`--op-filter LABEL` and `--probes`. Workers default to all available cores and
+start with the largest seeds. Per-case cost is dominated by real editing and
+layout, so more threads than cores do not help.
+
+Both sides of a comparison must use the same harness source; case identities
+are not comparable across harness changes. `scripts/validate.py consistency
+--baseline REV` builds REV in a cached worktree with the current harness and
+reuses its results while the revision, harness and options are unchanged.
+
 ## Retained-history benchmark
 
 `history_memory` isolates undo retention from the fuzz oracle. Run each policy

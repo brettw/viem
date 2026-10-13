@@ -120,7 +120,7 @@ impl Document {
     ) -> Result<Option<(PreparedModelTransaction, Range<usize>, Range<usize>)>, ModelTransactionError> {
         if !self.format().is_markdown() || patches.is_empty()
             || !guarded && self.format() != Format::Markdown {
-            return Ok(None);
+            return candidate::decline(Strategy::IndependentParagraph, "not formatted Markdown or no patches");
         }
         // The edited paragraphs: one for edits inside a body, two adjacent
         // ones when an edit joins them across their separator.
@@ -132,16 +132,16 @@ impl Document {
             .filter(|block| block.range.start <= end_point && point <= block.range.end)
             .collect::<Vec<_>>();
         let (run, guards) = if guarded {
-            let Some(band) = self.guarded_markdown_paragraphs(run)? else { return Ok(None); };
+            let Some(band) = self.guarded_markdown_paragraphs(run)? else { return candidate::decline(Strategy::IndependentParagraph, "no guarded paragraph band"); };
             band
         } else { (run, Vec::new()) };
-        let (Some(first_block), Some(last_block)) = (run.first(), run.last()) else { return Ok(None); };
+        let (Some(first_block), Some(last_block)) = (run.first(), run.last()) else { return candidate::decline(Strategy::IndependentParagraph, "no edited paragraphs"); };
         let block_range = first_block.range.start..last_block.range.end;
         if (!guarded && (run.len() > 2 || !run.iter().all(|block| self.independent_markdown_paragraph(block))))
             || run.iter().any(|block| self.projection().table_at(block.range.start).is_some())
             || !(first_block.range.start <= point && end_point <= last_block.range.end)
             || self.markdown_edit_needs_reference_context(&[TextEdit::new(block_range.clone(), "")])
-        { return Ok(None); }
+        { return candidate::decline(Strategy::IndependentParagraph, "edited blocks are not independent prose"); }
         // Blank rows beside a list can still belong to its final item; an
         // unclosed HTML block can consume all later source. Neither neighbor
         // can be retained independently merely because two endings remain.
@@ -163,7 +163,7 @@ impl Document {
                     member.container.kind == super::super::ContainerKind::Quote)
         }) || markdown_html_edit::edit_changes_literal_html_grammar(
                 self, &[TextEdit::new(block_range.clone(), "")])?)
-        { return Ok(None); }
+        { return candidate::decline(Strategy::IndependentParagraph, "a neighbor can absorb or own the edited paragraphs"); }
         // Both outer separators must be explicit paragraph boundaries before
         // and after the edit. Endings inserted into a single ending (after a
         // heading interrupting a paragraph) pair with that ending, which the
@@ -172,11 +172,11 @@ impl Document {
             (block_range.end < self.projection().text_tree().byte_len()).then_some(block_range.end)]
             .into_iter().flatten()
         {
-            let Some(source) = self.projection().source_range(boundary..boundary + 1) else { return Ok(None); };
+            let Some(source) = self.projection().source_range(boundary..boundary + 1) else { return candidate::decline(Strategy::IndependentParagraph, "separator source not found"); };
             if !markdown_block_styles::explicit_paragraph_separator(self, &source, &[])?
                 || !markdown_block_styles::explicit_paragraph_separator(self, &source, patches)?
             {
-                return Ok(None);
+                return candidate::decline(Strategy::IndependentParagraph, "an outer separator is not explicit before and after the edit");
             }
         }
         let content = self.projection().source_range(block_range.clone())
@@ -200,10 +200,10 @@ impl Document {
         let old_source = start..end;
         if old_source.len() > 32768 || patches.iter().any(|patch|
             patch.part != SourcePartId::PRIMARY || patch.range.start < start || patch.range.end > end)
-        { return Ok(None); }
+        { return candidate::decline(Strategy::IndependentParagraph, "owner source exceeds the regional limit or the patches"); }
         let source = apply_source_patches(&self.state().source, patches)?;
         let new_source = start..rebase_source_boundary(end, patches, Association::AfterInsertion)?;
-        if new_source.len() > 65536 { return Ok(None); }
+        if new_source.len() > 65536 { return candidate::decline(Strategy::IndependentParagraph, "new owner source exceeds the regional limit"); }
         let revision = Revision(self.next_revision);
         let parse = |source: &super::super::source::SourceSnapshot, range: Range<usize>|
             -> Result<(FormattedDocument, Vec<Range<usize>>, usize), ModelTransactionError> {
@@ -258,11 +258,11 @@ impl Document {
         // endpoint caret. If a structural owner becomes wholly empty, that
         // old caret can conflict with the new owner's insertion boundary.
         // Let the complete owner projection replace those empty identities.
-        if guarded && regional.text_tree().byte_len() == 0 { return Ok(None); }
+        if guarded && regional.text_tree().byte_len() == 0 { return candidate::decline(Strategy::IndependentParagraph, "a structural owner becomes empty"); }
         let inherited_styles = self.projection().style_spans_for_region(&block_range);
         if inherited_styles.iter().any(|span|
             span.range.start < block_range.start || block_range.end < span.range.end)
-        { return Ok(None); }
+        { return candidate::decline(Strategy::IndependentParagraph, "an inherited style crosses the band"); }
         let local_styles = inherited_styles.into_iter().map(|mut span| {
             span.range = span.range.start - block_range.start..span.range.end - block_range.start;
             span
@@ -271,32 +271,32 @@ impl Document {
         // semantics. New list/code/HTML owners require their broader grammar.
         if old_local.text() != self.projection().text_tree().slice(block_range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?
-            || old_local.style_spans() != local_styles
-            || old_local.blocks().len() != run.len()
-            || old_local.blocks().iter().zip(&run).any(|(local, block)|
+            || old_local.style_span_records() != local_styles
+            || old_local.block_records().len() != run.len()
+            || old_local.block_records().iter().zip(&run).any(|(local, block)|
                 local.kind != block.kind || local.style != block.style)
-            || !guarded && regional.blocks().iter().any(|block| block.markdown_html
+            || !guarded && regional.block_records().iter().any(|block| block.markdown_html
                 || !block.containers.is_empty() || matches!(block.kind, super::super::BlockKind::ListItem { .. })
                 || block.style.0 == "Code Block")
-        { return Ok(None); }
+        { return candidate::decline(Strategy::IndependentParagraph, "standalone parse differs from the document or creates structure"); }
         if guarded {
             // Matching the original standalone parse establishes the captured
             // owners' full context, including HTML scopes and list looseness.
             if markdown_source_region_signature(self.projection(), &block_range)
                 != markdown_source_region_signature(&old_local, &(0..old_local.text_tree().byte_len())) {
-                return Ok(None);
+                return candidate::decline(Strategy::IndependentParagraph, "guarded owner context differs");
             }
             for guard in guards {
                 let old = guard.start - block_range.start..guard.end - block_range.start;
                 let new = if guard.start == block_range.start { old.clone() } else {
-                    let Some(start) = regional.text_tree().byte_len().checked_sub(guard.len()) else { return Ok(None); };
+                    let Some(start) = regional.text_tree().byte_len().checked_sub(guard.len()) else { return candidate::decline(Strategy::IndependentParagraph, "a guard paragraph changed"); };
                     start..regional.text_tree().byte_len()
                 };
                 if old_local.text_tree().slice(old.clone()).map_err(DocumentError::FormattedTextStorage)?
                     != regional.text_tree().slice(new.clone()).map_err(DocumentError::FormattedTextStorage)?
                     || markdown_source_region_signature(&old_local, &old)
                         != markdown_source_region_signature(&regional, &new) {
-                    return Ok(None);
+                    return candidate::decline(Strategy::IndependentParagraph, "a guard paragraph changed");
                 }
             }
         }
@@ -355,17 +355,17 @@ impl Document {
         expected_edits: &[TextEdit],
     ) -> Result<Option<ListParagraphReprojection>, ModelTransactionError> {
         if self.format() != Format::Markdown || patches.is_empty() {
-            return Ok(None);
+            return candidate::decline(Strategy::ListParagraph, "not formatted Markdown or no patches");
         }
         let point = self.visible_point_for_source(patches[0].range.start, true)?;
         let blocks = self.projection().list_indentation_blocks(false);
-        let Some(index) = blocks.index_touching_point(point) else { return Ok(None); };
-        let Some(block) = blocks.get(index) else { return Ok(None); };
+        let Some(index) = blocks.index_touching_point(point) else { return candidate::decline(Strategy::ListParagraph, "edit is not in a list"); };
+        let Some(block) = blocks.get(index) else { return candidate::decline(Strategy::ListParagraph, "edit is not in a list"); };
         // Enclosing quotes and HTML may extend beyond the list. They require
         // their own complete restart, rather than borrowing an outside owner.
         let Some(root) = block.containers.first().filter(|member|
             matches!(member.container.kind, super::super::ContainerKind::List { .. }))
-        else { return Ok(None); };
+        else { return candidate::decline(Strategy::ListParagraph, "edit block has no enclosing list root"); };
         let owner = root.container.id;
         let owned = |block: &super::super::Block| block.containers.first()
             .is_some_and(|member| member.container.id == owner);
@@ -389,7 +389,7 @@ impl Document {
         };
         if run.iter().any(|block| !supported_body(block)
             || self.projection().table_at(block.range.start).is_some())
-        { return Ok(None); }
+        { return candidate::decline(Strategy::ListParagraph, "list contains unsupported bodies or tables"); }
         // A bounded list must begin/end at its own container edges. An
         // adjacent unclosed HTML/quote owner cannot be retained independently.
         if !run.first().unwrap().containers[0].starts_here
@@ -397,15 +397,15 @@ impl Document {
             || first.checked_sub(1).and_then(|i| blocks.get(i)).is_some_and(|block|
                 block.markdown_html || block.quote_depth != 0)
             || blocks.get(end_index).is_some_and(|block| block.markdown_html || block.quote_depth != 0)
-        { return Ok(None); }
+        { return candidate::decline(Strategy::ListParagraph, "list owner bounds are not independent"); }
         for boundary in [block_range.start.checked_sub(1),
             (block_range.end < self.projection().text_tree().byte_len()).then_some(block_range.end)]
             .into_iter().flatten()
         {
-            let Some(source) = self.projection().source_range(boundary..boundary + 1) else { return Ok(None); };
+            let Some(source) = self.projection().source_range(boundary..boundary + 1) else { return candidate::decline(Strategy::ListParagraph, "separator source not found"); };
             if !markdown_block_styles::explicit_paragraph_separator(self, &source, &[])?
                 || !markdown_block_styles::explicit_paragraph_separator(self, &source, patches)?
-            { return Ok(None); }
+            { return candidate::decline(Strategy::ListParagraph, "an outer separator is not explicit before and after the edit"); }
         }
         let content = self.projection().source_range(block_range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
@@ -425,7 +425,7 @@ impl Document {
         if patches.iter().any(|patch|
             patch.part != SourcePartId::PRIMARY || patch.range.start < start || patch.range.end > end)
             || self.markdown_edit_needs_reference_context(&[TextEdit::new(block_range.clone(), "")])
-        { return Ok(None); }
+        { return candidate::decline(Strategy::ListParagraph, "patches extend beyond the list or need references"); }
         let source = apply_source_patches(&self.state().source, patches)?;
         let new_source = start..rebase_source_boundary(end, patches, Association::AfterInsertion)?;
         let revision = Revision(self.next_revision);
@@ -460,28 +460,28 @@ impl Document {
         let inherited_styles = self.projection().style_spans_for_region(&block_range);
         if inherited_styles.iter().any(|span|
             span.range.start < block_range.start || block_range.end < span.range.end)
-        { return Ok(None); }
+        { return candidate::decline(Strategy::ListParagraph, "an inherited style crosses the list"); }
         let local_styles = inherited_styles.into_iter().map(|mut span| {
             span.range = span.range.start - block_range.start..span.range.end - block_range.start;
             span
         }).collect::<Vec<_>>();
         if old_local.text() != self.projection().text_tree().slice(block_range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?
-            || old_local.style_spans() != local_styles
-            || old_local.blocks().len() != run.len()
-            || old_local.blocks().iter().zip(&run).any(|(local, block)|
+            || old_local.style_span_records() != local_styles
+            || old_local.block_records().len() != run.len()
+            || old_local.block_records().iter().zip(&run).any(|(local, block)|
                 local.kind != block.kind || local.style != block.style
                 || local.list_loose != block.list_loose || local.quote_depth != block.quote_depth
                 || local.containers.len() != block.containers.len()
                 || local.containers.iter().zip(block.containers.iter()).any(|(a, b)|
                     a.container.kind != b.container.kind || a.container.style != b.container.style
                     || a.starts_here != b.starts_here || a.ends_here != b.ends_here))
-            || regional.blocks().iter().any(|block| !supported_body(block)
+            || regional.block_records().iter().any(|block| !supported_body(block)
                 && !(block.kind == super::super::BlockKind::Paragraph
                     && block.containers.is_empty() && block.quote_depth == 0
                     && !block.markdown_html && !block.thematic_break
                     && block.style.0 != "Code Block"))
-        { return Ok(None); }
+        { return candidate::decline(Strategy::ListParagraph, "standalone list parse differs or creates structure"); }
         // Pasted paragraphs may divide this complete owner into several
         // lists. Container starts follow that parsed partition; the authored
         // item kinds, nesting and numbering must otherwise remain unchanged.
@@ -520,11 +520,11 @@ impl Document {
         // A changed outer marker could merge with a neighboring list despite
         // its blank separator. Keep the existing boundary syntax for both a
         // successful splice and a definitive speculative rejection.
-        if !outer_markers_unchanged()? { return Ok(None); }
+        if !outer_markers_unchanged()? { return candidate::decline(Strategy::ListParagraph, "an outer list marker changed"); }
         if expected_edits.iter().all(|edit|
             block_range.start <= edit.range.start && edit.range.end <= block_range.end)
-            && regional.blocks().first().is_some_and(|block| item_kind(block) == item_kind(run.first().unwrap()))
-            && regional.blocks().last().is_some_and(|block| item_kind(block) == item_kind(run.last().unwrap()))
+            && regional.block_records().first().is_some_and(|block| item_kind(block) == item_kind(run.first().unwrap()))
+            && regional.block_records().last().is_some_and(|block| item_kind(block) == item_kind(run.last().unwrap()))
         {
             let retained_suffix = self.projection().text_tree().byte_len() - block_range.end;
             let expected_end = target_text.byte_len().checked_sub(retained_suffix)
@@ -538,10 +538,10 @@ impl Document {
                 return Ok(Some(ListParagraphReprojection::TextMismatch));
             }
         }
-        let item_kinds = |projection: &FormattedDocument| projection.blocks().iter()
+        let item_kinds = |projection: &FormattedDocument| projection.block_records().iter()
             .filter(|block| matches!(block.kind, super::super::BlockKind::ListItem { item_start: true, .. }))
             .map(item_kind).collect::<Vec<_>>();
-        if item_kinds(&old_local) != item_kinds(&regional) { return Ok(None); }
+        if item_kinds(&old_local) != item_kinds(&regional) { return candidate::decline(Strategy::ListParagraph, "list item kinds changed"); }
         let edits = source_backed_reprojection_edits_with_patches(&old_local, &regional, patches)
             .into_iter().map(|edit| TextEdit::new(
                 edit.range.start + block_range.start..edit.range.end + block_range.start,

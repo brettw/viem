@@ -8,6 +8,9 @@ summaries and completed validation reports do not need separate documents.
 Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 [Markdown compatibility gaps](../MARKDOWN_GAPS.md) track the GFM work.
 
+- [Development workflow](development-workflow.md): staged validation, shadow
+  verification, candidate tracing, explicit materialization and measurement
+  discipline for changes to shared editing code.
 - [macOS development](macos-development.md): build, run, test and startup setup.
 - [Blocking editor](blocking-editor.md): Git integration and document completion.
 - [Split views](window-panes.md): window commands, resize units, and mouse dragging.
@@ -15,8 +18,9 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 - [C ABI validation](abi-validation.md): matching the Rust core and native headers.
 - [Error recovery](error-recovery.md): safe presentation defaults, optional
   resources, diagnostic handling, and failures that must remain strict.
-- [Backend fuzzing](fuzzing.md): campaigns, replay, watchdogs and history probes,
-  plus coverage-guided parser fuzzing of untrusted documents and clipboard data.
+- [Backend fuzzing](fuzzing.md): campaigns, replay, watchdogs, history probes,
+  the case-by-case consistency probe, and coverage-guided parser fuzzing of
+  untrusted documents and clipboard data.
 - [Performance measurement](performance.md): current tools, regression limits
   and measurement scope; no historical results.
 - [Native selection](native-selection.md): native/Vim interaction differences

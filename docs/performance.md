@@ -20,11 +20,13 @@ regression inputs, not recorded results; do not relax them to make a change pass
 Rich projections must not keep per-scalar records. Parser input stores runs of
 scalars that map onto their own encoded bytes, and provenance stores bounded
 divisible runs plus explicit contributors; both expand exactly on query. Range
-stores dereference to a cached flat slice for compatibility: `iter()`, indexing
-or other slice methods on a whole store retain a full copy with that snapshot,
-including in history, so editing paths use tree queries, `partition_point`,
-`get_range` or a one-off `to_vec`. `Document::text()` likewise retains the
-flattened text with the state that materialized it.
+stores have no implicit slice view. Their explicit `compatibility_slice`, and
+the projection's `blocks()` and `style_spans()` built on it, retain a full copy
+with that snapshot, including in history, so editing paths use tree queries,
+`items`, `partition_point`, `get_range` or a one-off `to_vec`.
+`Document::text()` likewise retains the flattened text with the state that
+materialized it. Work statistics count each new compatibility copy of records
+and text, so locality tests can assert that an edit made none.
 
 When contributor source starts are monotonic, source-boundary queries use source
 extent aggregates on the existing formatted-order tree. Reordered contributors

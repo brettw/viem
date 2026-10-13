@@ -438,7 +438,22 @@ fn markdown_patches(
         target.previous.unwrap()
     };
     let reference_line = line_for(&blocks[reference])?;
-    let original_indent = columns(&input.text[lines[start].clone()]);
+    // An item can share its first line with an empty parent's marker
+    // (`- - b`). Lifting it removes that outer marker rather than whitespace,
+    // so its indentation runs through every column before its own marker.
+    let own_marker = contexts[start].as_ref().and_then(|context| context.marker.clone())
+        .filter(|marker| lines[start].start <= marker.start && marker.start <= lines[start].end)
+        .map(|marker| marker.start - lines[start].start);
+    let start_text = &input.text[lines[start].clone()];
+    let start_leading = start_text.len() - start_text.trim_start_matches([' ', '\t']).len();
+    let shared_marker_prefix = own_marker.filter(|at| unindent && *at > start_leading
+        && super::super::markdown_blocks::marker_prefix_length(&start_text[start_leading..]).is_some());
+    let original_indent = match shared_marker_prefix {
+        Some(at) => start_text[..at].bytes().fold(0usize, |column, byte| {
+            column + if byte == b'\t' { 4 - column % 4 } else { 1 }
+        }),
+        None => columns(start_text),
+    };
     let desired_indent = if unindent {
         columns(&input.text[lines[reference_line].clone()])
     } else {
@@ -537,8 +552,10 @@ fn markdown_patches(
         if text.trim().is_empty() {
             continue;
         }
-        let prefix = text.len() - text.trim_start_matches([' ', '\t']).len();
-        let current = columns(text);
+        let (prefix, current) = match shared_marker_prefix.filter(|_| line_index == start) {
+            Some(at) => (at, original_indent),
+            None => (text.len() - text.trim_start_matches([' ', '\t']).len(), columns(text)),
+        };
         let next = if unindent {
             current.saturating_sub(delta)
         } else {

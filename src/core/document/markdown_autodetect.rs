@@ -88,7 +88,7 @@ impl Document {
             && !edit
                 .payload
                 .text()
-                .contains(['*', '_', '~', '`', ')', '-', '>', '#', '[', ']', '+'])
+                .contains(['*', '_', '~', '`', ')', '.', '-', '>', '#', '[', ']', '+'])
             && !edit.payload.text().starts_with(' ')
         {
             return self
@@ -333,6 +333,17 @@ impl Document {
                 ) {
                     continue;
                 }
+                // `-`, `+` and `#` form syntax only at the start of a hard line
+                // (markers, rules, setext underlines) or, for `#`, as a
+                // heading's closing sequence. After other content on the line
+                // they are literal, as in `path-specific`.
+                if matches!(ch, '-' | '+' | '#')
+                    && scratch.line_has_content_before(start + index)?
+                    && !(ch == '#' && super::super::edit_boundary::paragraph_at(&scratch, start + index)?
+                        .is_some_and(|block| matches!(block.kind, super::super::BlockKind::Heading(_))))
+                {
+                    continue;
+                }
                 if let Some(mut patch) =
                     scratch.markdown_literal_syntax(start + index..start + index + ch.len_utf8())?
                 {
@@ -467,6 +478,28 @@ impl Document {
         )))
     }
 
+    /// Whether the hard line containing `at` has visible content before it
+    /// that no block marker, rule or setext underline can contain.
+    fn line_has_content_before(&self, at: usize) -> Result<bool, DocumentError> {
+        let lines = self.hard_line_snapshot();
+        let line = lines
+            .line_at_offset(at)
+            .map_err(|_| DocumentError::AmbiguousProjection)?
+            .content_range();
+        if at.saturating_sub(line.start) > CONTEXT_BYTES {
+            return Ok(true);
+        }
+        let before = self
+            .projection()
+            .text_tree()
+            .slice(line.start..at)
+            .map_err(DocumentError::FormattedTextStorage)?;
+        Ok(before.chars().any(|ch| {
+            !ch.is_ascii_digit()
+                && !matches!(ch, ' ' | '\t' | '-' | '*' | '_' | '+' | '=' | '#' | '>' | ':' | '|' | '.' | ')')
+        }))
+    }
+
     fn recognize_markdown(
         &self,
         caret: usize,
@@ -519,6 +552,30 @@ impl Document {
             });
             let rule =
                 (prefix == "---" || matches!(marker, Some("___" | "***"))) && caret == line.end;
+            // A marker typed (or pasted) as the whole body of an empty list
+            // item's first paragraph, or of an empty quoted paragraph, repeats
+            // the structure that Enter already continued. It continues that
+            // item or quote instead of nesting a new list or quote; Tab nests.
+            if bullet || ordered || quote {
+                if let Some(block) = super::super::edit_boundary::paragraph_at(self, start)? {
+                    let whole = block.range.start == start && block.range.end == caret;
+                    let same_list = matches!(block.kind,
+                        super::super::BlockKind::ListItem { ordered: item_ordered, item_start: true, .. }
+                            if item_ordered == ordered);
+                    let quoted = quote && block.quote_depth > 0;
+                    if whole && ((bullet || ordered) && same_list || quoted) {
+                        if let Some(mut patch) = self.markdown_literal_syntax(start..caret)? {
+                            patch.replacement.clear();
+                            return Ok(Some(Recognition {
+                                patches: vec![patch],
+                                edits: vec![TextEdit::new(start..caret, "")],
+                                caret: start,
+                                exit_source: None,
+                            }));
+                        }
+                    }
+                }
+            }
             if heading || bullet || quote || ordered || rule {
                 if let Some(patch) = self.markdown_literal_syntax(start..caret)? {
                     return Ok(Some(Recognition {

@@ -35,6 +35,10 @@ pub struct DocumentWorkStatistics {
     pub formatted_full_materialized_bytes: usize,
     /// Bytes copied into compatibility flat text caches, including read-only commands.
     pub formatted_compatibility_materialized_bytes: usize,
+    /// Whole range stores (blocks, styles, provenance and other records)
+    /// copied into retained compatibility slices, and their record counts.
+    pub compatibility_record_materializations: usize,
+    pub compatibility_records_materialized: usize,
     /// Paragraph records inspected while capturing or verifying clipboard styles.
     pub clipboard_style_blocks_visited: usize,
     /// Paragraph text copied for clipboard style direction resolution.
@@ -79,6 +83,8 @@ impl DocumentWorkStatistics {
             projection_persistent_nodes_copied,
             formatted_full_materialized_bytes,
             formatted_compatibility_materialized_bytes,
+            compatibility_record_materializations,
+            compatibility_records_materialized,
             clipboard_style_blocks_visited,
             clipboard_style_text_bytes,
             source_relocation_graphemes_visited,
@@ -118,6 +124,19 @@ pub fn measure_document_work<T>(operation: impl FnOnce() -> T) -> (T, DocumentWo
     let measured = ACTIVE.with(|active| active.get().unwrap_or_default());
     drop(scope);
     (result, measured)
+}
+
+/// Run `operation` without recording its work in any enclosing measurement,
+/// for diagnostics that must not distort locality assertions.
+pub(super) fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(Option<DocumentWorkStatistics>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ACTIVE.with(|active| active.set(self.0));
+        }
+    }
+    let _restore = Restore(ACTIVE.with(|active| active.replace(None)));
+    operation()
 }
 
 #[inline]

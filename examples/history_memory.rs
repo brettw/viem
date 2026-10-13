@@ -11,6 +11,9 @@ use serde_json::json;
 static ALLOCATOR: support::TrackingAllocator = support::TrackingAllocator;
 
 fn main() {
+    // Measurements exclude the shadow verification that Cargo-run processes
+    // enable by default (see .cargo/config.toml).
+    std::env::set_var("VIEM_SHADOW_PROJECTION", "off");
     let mut policy_name = "default".to_string();
     let mut seed = 20_260_966_u64;
     let mut steps = 1000_usize;

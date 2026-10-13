@@ -135,7 +135,7 @@ impl RunStore {
     /// Every current run in start order. Flattens the store; tests and
     /// unbounded publications only.
     pub fn runs(&self) -> Vec<SyntaxRun> {
-        self.store.as_slice().to_vec()
+        self.store.to_vec()
     }
 
     /// The runs strictly overlapping `range`, in start order.
