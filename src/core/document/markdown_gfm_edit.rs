@@ -249,8 +249,12 @@ impl Document {
         let mut patches = self.markdown_autolink_support(edits)?;
         patches.extend(self.unclosed_comment_boundary_support(edits)?);
         let mut seen = std::collections::BTreeSet::new();
+        // Bounded reads: the flat document text would be materialized and
+        // then retained by this state for as long as history keeps it.
+        let text = self.projection().text_tree();
         for edit in edits {
-            if !edit.replacement.contains('\n') && !self.text()[edit.range.clone()].contains('\n')
+            if !edit.replacement.contains('\n')
+                && !text.slice(edit.range.clone()).map_err(DocumentError::FormattedTextStorage)?.contains('\n')
                 && !self.projection().blocks_for_region(&edit.range).iter().any(|block|
                     matches!(block.kind, super::super::BlockKind::Heading(_))
                         && !block.range.is_empty() && edit.range.start <= block.range.start
@@ -259,7 +263,7 @@ impl Document {
                 continue;
             }
             let range =
-                edit.range.start.saturating_sub(2)..(edit.range.end + 1).min(self.text().len());
+                edit.range.start.saturating_sub(2)..(edit.range.end + 1).min(text.byte_len());
             for block in self.projection().blocks_for_region(&range) {
                 if !seen.insert(block.id) {
                     continue;

@@ -112,6 +112,12 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         self.inner.partition_point_start(offset)
     }
 
+    /// `slice::partition_point` by ordinal search. Unlike the slice method
+    /// reached through `Deref`, this keeps no flat copy of the store.
+    pub(super) fn partition_point(&self, pred: impl FnMut(&T) -> bool) -> usize {
+        self.inner.partition_point(pred)
+    }
+
     /// Persistently replace an ordinal region. Replacement records use final
     /// absolute coordinates; the untouched suffix is translated lazily by the
     /// change between `old_coordinate_end` and `new_coordinate_end`.
@@ -512,6 +518,22 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
             item_count,
             compatibility_flat: OnceLock::new(),
         }
+    }
+
+    fn partition_point(&self, mut pred: impl FnMut(&T) -> bool) -> usize {
+        if let Some(flat) = self.compatibility_flat.get() {
+            return flat.partition_point(pred);
+        }
+        let (mut low, mut high) = (0, self.item_count);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            if pred(&self.get(middle).expect("ordinal inside the store")) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        low
     }
 
     fn as_slice(&self) -> &[T] {

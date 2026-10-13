@@ -422,30 +422,24 @@ impl Document {
         &self,
         range: Range<usize>,
     ) -> Result<ClipboardFragment, DocumentError> {
-        self.clipboard_fragment_with_source(range, &self.source_bytes())
-    }
-
-    fn clipboard_fragment_with_source(
-        &self,
-        range: Range<usize>,
-        source: &[u8],
-    ) -> Result<ClipboardFragment, DocumentError> {
         self.validate_range(&range)?;
         let captured = self
             .hard_line_snapshot()
             .capture(range.clone())
             .map_err(|_| DocumentError::AmbiguousProjection)?;
         let is_rich = self.format().is_wysiwyg();
-        let source_bytes = if range == (0..self.text().len()) {
-            source.to_vec()
+        // Only a whole-document selection copies the whole source; a part
+        // reads and interprets just the source lines around it.
+        let source_bytes = if range == (0..self.projection().text_tree().byte_len()) {
+            self.source_bytes()
         } else if range.is_empty() {
             Vec::new()
         } else {
-            selected_source(self, &range, true, source).unwrap_or_default()
+            selected_source(self, &range, true).unwrap_or_default()
         };
         let source_text = self.encoding().decode(&source_bytes)?.text;
         let inline_source_bytes = if is_rich && !captured.text().contains('\n') {
-            selected_source(self, &range, false, source).unwrap_or_default()
+            selected_source(self, &range, false).unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -481,7 +475,7 @@ impl Document {
             requires_source_semantics: source_spans.iter().any(|span|
                 !matches!(span.application, StyleApplication::Semantic(_))
                     && span.application != StyleApplication::Automatic("Link".into())
-                    && !matches!(&span.application, StyleApplication::Direct(properties) if *properties == CharacterProperties {
+                    && !matches!(&span.application, StyleApplication::Direct(properties) if **properties == CharacterProperties {
                         bold: properties.bold, slant: properties.slant,
                         underline: properties.underline, strikethrough: properties.strikethrough,
                         superscript: properties.superscript, subscript: properties.subscript,
@@ -515,7 +509,7 @@ impl Document {
             },
             inline_source_bytes,
             embedded_source_bytes: if is_rich {
-                selected_source(self, &range, true, source).unwrap_or_default()
+                selected_source(self, &range, true).unwrap_or_default()
             } else {
                 Vec::new()
             },
@@ -538,9 +532,8 @@ impl Document {
         &self,
         rows: &[Vec<Range<usize>>],
     ) -> Result<ClipboardFragment, DocumentError> {
-        let source = self.source_bytes();
         let mut export: Export =
-            serde_json::from_str(self.clipboard_fragment_with_source(0..0, &source)?.json())
+            serde_json::from_str(self.clipboard_fragment(0..0)?.json())
                 .map_err(|_| DocumentError::UnsupportedFormatting)?;
         export.register_kind = 3;
         export.plain_text.clear();
@@ -564,7 +557,7 @@ impl Document {
                     continue;
                 }
                 let fragment: Export = serde_json::from_str(
-                    self.clipboard_fragment_with_source(range.clone(), &source)?
+                    self.clipboard_fragment(range.clone())?
                         .json(),
                 )
                 .map_err(|_| DocumentError::UnsupportedFormatting)?;
@@ -1195,17 +1188,50 @@ fn selected_source(
     document: &Document,
     range: &Range<usize>,
     blocks: bool,
-    source: &[u8],
 ) -> Result<Vec<u8>, DocumentError> {
     if range.is_empty() {
         return Ok(Vec::new());
     }
     let hull = source_hull(document, range)?;
+    let bytes = |range: Range<usize>| document.state().source.bytes_in(range)
+        .ok_or(DocumentError::AmbiguousProjection);
 
     if document.format() != Format::Markdown {
-        return Ok(source[hull].to_vec());
+        return bytes(hull);
     }
-    let decoded = document.encoding().decode(&source)?;
+    let band = selected_source_band(document, range, &hull)?;
+    selected_markdown_source(document, range, blocks, hull, band)
+}
+
+/// The selected blocks' whole source lines, and the next line for a setext
+/// underline, supply every prefix, delimiter run and heading a Markdown
+/// export inspects. Interpreting only them keeps a copy local.
+fn selected_source_band(document: &Document, range: &Range<usize>, hull: &Range<usize>)
+    -> Result<Range<usize>, DocumentError> {
+    let mut band = hull.clone();
+    for block in document.projection().blocks_for_region(range) {
+        if let Some(source) = document.projection().source_range(block.range.clone()) {
+            band.start = band.start.min(source.start);
+            band.end = band.end.max(source.end);
+        }
+    }
+    let lines = &document.state().source_hard_lines;
+    let first = lines.line_at_offset(band.start).ok_or(DocumentError::AmbiguousProjection)?;
+    let last = lines.line_at_offset(band.end.saturating_sub(1).max(band.start)).ok_or(DocumentError::AmbiguousProjection)?;
+    Ok(lines.get(first).ok_or(DocumentError::AmbiguousProjection)?.start
+        ..lines.get(last + 1).or_else(|| lines.get(last)).ok_or(DocumentError::AmbiguousProjection)?.end)
+}
+
+fn selected_markdown_source(
+    document: &Document,
+    range: &Range<usize>,
+    blocks: bool,
+    hull: Range<usize>,
+    band: Range<usize>,
+) -> Result<Vec<u8>, DocumentError> {
+    let bytes = |range: Range<usize>| document.state().source.bytes_in(range)
+        .ok_or(DocumentError::AmbiguousProjection);
+    let decoded = document.encoding().decode_region(&bytes(band.clone())?, band.start)?;
     let input = super::super::line_endings::normalize(&decoded, document.file_format());
     let builder = super::super::rich_text::Builder::new(&input, Revision(0));
     if blocks {
@@ -1218,12 +1244,12 @@ fn selected_source(
                     && heading.content.start <= hull.start && hull.end <= heading.content.end) {
                 let _ = owner;
                 let end = document.physical_line_at_source(heading.range.end.saturating_sub(1))?.content_range.end;
-                return Ok(source[heading.range.start..end].to_vec());
+                return bytes(heading.range.start..end);
             }
         }
     }
     let normalized = |at: usize| -> Option<usize> {
-        if at == source.len() {
+        if at == band.end {
             return Some(input.text.len());
         }
         input
@@ -1291,11 +1317,11 @@ fn selected_source(
             // definition is outside the selection. HTML tags already contain
             // it, and their authored dimensions and other attributes are source.
             for image in images.iter().filter(|image|!image.inline && !image.html && piece.start<=image.source.start && image.source.end<=piece.end) {
-                result.extend_from_slice(&source[cursor..image.source.start]);
+                result.extend(bytes(cursor..image.source.start)?);
                 result.extend(document.encoding().encode_fragment(&format!("![{}](<{}>)",super::super::links::escape_label(&image.text),super::super::links::escape_destination(&image.destination)))?);
                 cursor=image.source.end;
             }
-            result.extend_from_slice(&source[cursor..piece.end]);
+            result.extend(bytes(cursor..piece.end)?);
             previous_end = piece.end;
         }
     }
@@ -1442,13 +1468,19 @@ fn style_runs_in_context(
 }
 
 fn styles_match(expected: &[Value], actual: &[Value]) -> bool {
+    let bounds = |run: &Value| (run["start"].as_u64().unwrap_or(0), run["end"].as_u64().unwrap_or(0));
+    // Runs are emitted in order without overlap, so the runs overlapping an
+    // expected run are found by search rather than by scanning every run.
+    let ordered = actual.windows(2).all(|pair| bounds(&pair[0]).1 <= bounds(&pair[1]).0);
     expected.iter().all(|expected| {
-        let start = expected["start"].as_u64().unwrap_or(0);
-        let end = expected["end"].as_u64().unwrap_or(0);
-        let relevant = actual
+        let (start, end) = bounds(expected);
+        let first = if ordered { actual.partition_point(|run| bounds(run).1 <= start) } else { 0 };
+        let relevant = actual[first..]
             .iter()
+            .take_while(|run| !ordered || bounds(run).0 < end)
             .filter(|run| {
-                run["start"].as_u64().unwrap_or(0) < end && run["end"].as_u64().unwrap_or(0) > start
+                let (run_start, run_end) = bounds(run);
+                run_start < end && run_end > start
             })
             .collect::<Vec<_>>();
         (start == end || !relevant.is_empty())
@@ -1549,6 +1581,34 @@ mod tests {
         )
         .unwrap()
     }
+    #[test]
+    fn local_source_bands_export_the_same_bytes_as_the_whole_document() {
+        let sources = [
+            "# Title\n\nPara **bold** and _it_ with `code` and [link](u).\nMore *text* here.\n\n- a **b**\n- c\n  continued\n\n> quote **q**\n> more\n\nSetext\n===\n\n1. one\n2. *two*\n",
+            "intro\n\n```\ncode\n```\n\n***x*** and __y__ ~~z~~\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n![img](p.png) after\n",
+        ];
+        let mut compared = 0;
+        for source in sources {
+            let document = open(source.as_bytes(), Format::Markdown);
+            let text = document.text().to_owned();
+            let whole = 0..document.source_byte_len();
+            let boundaries: Vec<usize> = (0..=text.len()).filter(|at| text.is_char_boundary(*at)).collect();
+            for (index, &start) in boundaries.iter().enumerate() {
+                for &end in boundaries[index + 1..].iter().step_by(3) {
+                    let range = start..end;
+                    let Ok(hull) = source_hull(&document, &range) else { continue; };
+                    for blocks in [true, false] {
+                        let local = selected_source(&document, &range, blocks);
+                        let expected = selected_markdown_source(&document, &range, blocks, hull.clone(), whole.clone());
+                        assert_eq!(local.ok(), expected.ok(), "{source:?} {range:?} blocks={blocks}");
+                        compared += 1;
+                    }
+                }
+            }
+        }
+        assert!(compared > 1000, "{compared}");
+    }
+
     fn export(document: &Document, text: &str) -> (ClipboardFragment, Export) {
         let start = document.text().find(text).unwrap();
         let fragment = document

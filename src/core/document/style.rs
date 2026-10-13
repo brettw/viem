@@ -3617,16 +3617,22 @@ pub enum StyleApplication {
     Named(StyleId),
     /// Adapter-owned syntax decoration; never a user character assignment.
     Automatic(StyleId),
-    Direct(CharacterProperties),
+    /// Boxed: most spans name a style, and an inline property set would make
+    /// every span as large as this rare one.
+    Direct(Box<CharacterProperties>),
     Semantic(SemanticInlineStyle),
 }
 
 impl StyleApplication {
+    pub fn direct(properties: CharacterProperties) -> Self {
+        Self::Direct(Box::new(properties))
+    }
+
     pub(super) fn owned_heap_bytes(&self) -> usize {
         match self {
             Self::Named(id) | Self::Automatic(id) => id.0.capacity() + 16,
 
-            Self::Direct(properties) => properties.owned_heap_bytes(),
+            Self::Direct(properties) => std::mem::size_of::<CharacterProperties>() + 16 + properties.owned_heap_bytes(),
             _ => 0,
         }
     }

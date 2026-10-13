@@ -696,12 +696,14 @@ pub(super) fn preserve_split_literals(
             .filter(|character| matches!(character, '`' | '*' | '_'))
             .collect::<BTreeSet<_>>()
         {
+            // Bounded reads; the flat text would be retained by this state.
+            let byte_at = |at: usize| projection.text_tree().byte_chunk_at(at).first().copied();
             let mut start = edit.range.start;
-            while document.text()[..start].ends_with(character) {
+            while start > 0 && byte_at(start - 1) == Some(character as u8) {
                 start -= character.len_utf8();
             }
             let mut end = edit.range.end;
-            while document.text()[end..].starts_with(character) {
+            while byte_at(end) == Some(character as u8) {
                 end += character.len_utf8();
             }
             for at in (start..edit.range.start).chain(edit.range.end..end) {
@@ -736,7 +738,7 @@ pub(super) fn preserve_split_literals(
         for span in projection.provenance_for_region(&band) {
             if span.formatted.len() != 1
                 || span.source.is_empty()
-                || document.text().as_bytes().get(span.formatted.start) != Some(&b' ')
+                || projection.text_tree().byte_chunk_at(span.formatted.start).first() != Some(&b' ')
                 || edits.iter().any(|edit| {
                     edit.range.start < span.formatted.end && span.formatted.start < edit.range.end
                 })
@@ -779,9 +781,12 @@ pub(super) fn preserve_split_literals(
         if !edit.replacement.ends_with('\n') {
             continue;
         }
-        let tail = &document.text()[edit.range.end..];
-        let end = tail.find('\n').unwrap_or(tail.len());
-        let line = &tail[..end];
+        let line_end = projection.hard_line_at_offset(edit.range.end)
+            .and_then(|line| projection.hard_line_range(line))
+            .map_or(edit.range.end, |line| line.end.max(edit.range.end));
+        let line = projection.text_tree().slice(edit.range.end..line_end)
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let line = line.as_str();
         let whitespace = line
             .bytes()
             .take_while(|byte| matches!(byte, b' ' | b'\t'))

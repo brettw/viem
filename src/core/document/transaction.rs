@@ -7833,7 +7833,7 @@ fn semantic_style_edit_was_exactly_projected(
                     SemanticInlineStyle::Emphasis if properties.slant == Some(super::FontSlant::Italic) => properties.slant = None,
                     _ => {}
                 }
-                if *properties == CharacterProperties::default() { continue; }
+                if **properties == CharacterProperties::default() { continue; }
             }
             if let Some(previous) = retained.iter_mut().find(|previous|
                 previous.application == span.application && previous.range.end == span.range.start) {

@@ -1022,7 +1022,8 @@ enum OrdinalMapping {
         target: usize,
         status: ResolvedStatus,
     },
-    Unresolvable(UnresolvableAnchor),
+    /// Boxed: a deletion's anchor would otherwise double every piece's size.
+    Unresolvable(Box<UnresolvableAnchor>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1059,7 +1060,7 @@ impl PositionMap {
         [&self.forward, &self.reverse].into_iter().map(|transition| {
             transition.ordinal.iter().enumerate()
                 .filter(|(index, map)| !transition.ordinal[..*index].iter().any(|other| Arc::ptr_eq(other, map)))
-                .map(|(_, map)| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>()).sum::<usize>()
+                .map(|(_, map)| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>() + map.boxed_bytes()).sum::<usize>()
                 + transition.surviving_content.capacity() * std::mem::size_of::<SurvivingContent>()
         }).sum::<usize>() + self.source_transition.as_ref().map_or(0, |map| std::mem::size_of::<PositionMap>() + map.owned_heap_bytes())
     }
@@ -1068,7 +1069,7 @@ impl PositionMap {
         for transition in [&self.forward, &self.reverse] {
             visitor.arc(transition, |visitor| {
                 for ordinal in &transition.ordinal {
-                    visitor.arc_once(ordinal, |visitor| visitor.vector(&ordinal.pieces, 0));
+                    visitor.arc_once(ordinal, |visitor| visitor.vector(&ordinal.pieces, ordinal.boxed_bytes()));
                 }
                 visitor.vector(&transition.surviving_content, 0);
             });
@@ -1411,6 +1412,24 @@ impl PositionMap {
             + self.forward.surviving_content.len()
     }
 
+    /// Whether `next` can follow `self`: the checks `then` makes before
+    /// composing, without building the composed map.
+    pub(crate) fn check_then(&self, next: &Self) -> Result<(), PositionError> {
+        validate_document(self.document, next.document)?;
+        validate_domain(self.domain, next.domain)?;
+        validate_revision(self.target_revision, next.source_revision)?;
+        if self.target_len != next.source_len {
+            return Err(PositionError::MapChainLengthMismatch {
+                expected: self.target_len,
+                actual: next.source_len,
+            });
+        }
+        if let (Some(first), Some(second)) = (&self.source_transition, &next.source_transition) {
+            first.check_then(second)?;
+        }
+        Ok(())
+    }
+
     /// Compose `self` followed by `next`.
     pub fn then(&self, next: &Self) -> Result<Self, PositionError> {
         validate_document(self.document, next.document)?;
@@ -1727,6 +1746,12 @@ impl CompiledTransition {
 }
 
 impl CompiledOrdinalMap {
+    /// Heap owned by boxed unresolvable anchors.
+    fn boxed_bytes(&self) -> usize {
+        self.pieces.iter().filter(|piece| matches!(piece.mapping, OrdinalMapping::Unresolvable(_))).count()
+            * (std::mem::size_of::<UnresolvableAnchor>() + 16)
+    }
+
     fn relocate_content(&mut self, relocations: &[(Range<usize>, usize)], association: Association)
         -> Result<(), PositionError> {
         let mut overlays = Vec::with_capacity(relocations.len());
@@ -2036,7 +2061,7 @@ fn mapping_for_interval(
         (MappingOutcome::Unresolvable(first), MappingOutcome::Unresolvable(last))
             if first == last =>
         {
-            Ok(OrdinalMapping::Unresolvable(first.clone()))
+            Ok(OrdinalMapping::Unresolvable(Box::new(first.clone())))
         }
         _ => {
             let (first, first_status) =
@@ -2123,7 +2148,7 @@ fn mapping_outcome_at(
         OrdinalMapping::Linear { delta, status } => (add_signed(source, *delta)?, *status),
         OrdinalMapping::Constant { target, status } => (*target, *status),
         OrdinalMapping::Unresolvable(reason) => {
-            return Ok(MappingOutcome::Unresolvable(reason.clone()));
+            return Ok(MappingOutcome::Unresolvable(UnresolvableAnchor::clone(reason)));
         }
     };
     Ok(match status {
