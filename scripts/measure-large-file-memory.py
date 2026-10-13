@@ -39,7 +39,10 @@ def main():
     parser.add_argument('--output', required=True, type=pathlib.Path)
     parser.add_argument('--binary', type=pathlib.Path,
                         default=ROOT / 'target/release/examples/large_file_memory')
-    parser.add_argument('--supplemental', action='store_true')
+    sets = parser.add_mutually_exclusive_group()
+    sets.add_argument('--supplemental', action='store_true')
+    sets.add_argument('--rich-paste', action='store_true',
+                      help='cold whitespace-rich paste into dense Markdown')
     parser.add_argument('--limits', type=pathlib.Path)
     args = parser.parse_args()
     protected_inputs = {pathlib.Path(__file__).resolve(), PINNED_LIMITS.resolve()}
@@ -60,6 +63,13 @@ def main():
             ['plain', 'crlf', 16777216, 'document'],
             ['plain', 'invalid', 1048576, 'open'],
         ]
+    elif args.rich_paste:
+        cases = [
+            ['markdown', shape, size, 'richpaste', encoding]
+            for shape in ('richpaste', 'richpaste-list')
+            for size in (1048576, 4194304)
+            for encoding in ('utf8', 'utf16le')
+        ]
     # Include new source files as well as tracked edits; HEAD alone does not
     # identify an implementation being measured before its eventual commit.
     source_hash = hashlib.sha256()
@@ -78,6 +88,7 @@ def main():
         'os': platform.platform(),
         'method': METHOD,
         'supplemental': args.supplemental,
+        'rich_paste': args.rich_paste,
         'results': [],
     }
     limits = json.loads(args.limits.read_text()) if args.limits else None
@@ -104,7 +115,26 @@ def main():
                 observed = {sample.get('phase') for sample in samples}
                 for phase in matched['phases'].keys() - observed:
                     failures.append(f'{case}: required phase {phase} is missing')
+                observed_operations = {sample.get('operation_measurement') for sample in samples}
+                for operation in matched.get('operations', {}).keys() - observed_operations:
+                    failures.append(f'{case}: required operation {operation} is missing')
         for sample in samples:
+            operation = sample.get('operation_measurement')
+            if operation:
+                print(' ', operation,
+                      f"elapsed={sample['elapsed_ms']:.3f}ms",
+                      f"additional_peak={sample['peak_requested_heap_delta_bytes']/1048576:.3f}MiB",
+                      f"allocations={sample['allocations_and_reallocations']}", flush=True)
+                ceiling = matched.get('operations', {}).get(operation) if matched else None
+                if ceiling:
+                    for metric, limit in ceiling.items():
+                        if metric == 'work':
+                            for counter, count in limit.items():
+                                observed = sample.get('work', {}).get(counter)
+                                if observed is None or observed > count:
+                                    failures.append(f'{case}/{operation}: work.{counter} exceeds {count} or is missing')
+                        elif metric not in sample or sample[metric] > limit:
+                            failures.append(f'{case}/{operation}: {metric} exceeds {limit} or is missing')
             if 'phase' not in sample:
                 continue
             print(' ', sample['phase'],

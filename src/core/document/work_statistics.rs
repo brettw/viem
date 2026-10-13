@@ -35,6 +35,10 @@ pub struct DocumentWorkStatistics {
     pub formatted_full_materialized_bytes: usize,
     /// Bytes copied into compatibility flat text caches, including read-only commands.
     pub formatted_compatibility_materialized_bytes: usize,
+    /// Paragraph records inspected while capturing or verifying clipboard styles.
+    pub clipboard_style_blocks_visited: usize,
+    /// Paragraph text copied for clipboard style direction resolution.
+    pub clipboard_style_text_bytes: usize,
     /// Complete logical contributors inspected while retaining moved identities.
     pub source_relocation_graphemes_visited: usize,
     /// Bytes examined to measure Markdown container prefixes: columns before
@@ -75,6 +79,8 @@ impl DocumentWorkStatistics {
             projection_persistent_nodes_copied,
             formatted_full_materialized_bytes,
             formatted_compatibility_materialized_bytes,
+            clipboard_style_blocks_visited,
+            clipboard_style_text_bytes,
             source_relocation_graphemes_visited,
             markdown_container_prefix_bytes,
             markdown_block_parse_calls,

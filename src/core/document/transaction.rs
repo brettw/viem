@@ -874,6 +874,7 @@ struct LineLocalProjectionRegion {
 struct TextEditCandidate {
     state: DocumentState,
     work: ProjectionWorkStatistics,
+    reprojected_region: Option<(Range<usize>, Range<usize>)>,
     block_ids_already_reconciled: bool,
     next_projected_block_id: u64,
 }
@@ -897,6 +898,10 @@ pub struct PreparedModelTransaction {
     /// Exact presentation dependency of a verified source-only mutation whose
     /// visible text and paragraph topology are unchanged.
     layout_invalidation: Option<Range<usize>>,
+    /// Exact old/new projection windows; outside these windows the regional
+    /// splice retains the original semantic records with rebased coordinates.
+    /// Absent for complete reparses and candidates without that proof.
+    reprojected_region: Option<(Range<usize>, Range<usize>)>,
     planned_history_navigation: Option<HistoryNavigation>,
     publication: PreparedPublication,
 }
@@ -1750,6 +1755,7 @@ impl Document {
             summary,
             text_position_map,
             layout_invalidation: None,
+            reprojected_region: None,
             planned_history_navigation,
             publication,
         }
@@ -2260,10 +2266,12 @@ impl Document {
             &edits,
             &source_patches,
             authored_syntax,
+            None,
         ) };
         let TextEditCandidate {
             state: mut candidate,
             work: projection_work,
+            reprojected_region,
             block_ids_already_reconciled,
             next_projected_block_id: reconciled_next_projected_block_id,
         } = built?;
@@ -2301,7 +2309,7 @@ impl Document {
                 )
                 .map_err(super::block_identity_document_error)?
         };
-        Ok(self.prepared(
+        let mut prepared = self.prepared(
             after_revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::TextEdits,
@@ -2319,7 +2327,9 @@ impl Document {
             None,
             next_projected_block_id,
             PreparedPublication::State(candidate),
-        ))
+        );
+        prepared.reprojected_region = reprojected_region;
+        Ok(prepared)
     }
 
     /// Preserve existing hard-break syntax when a multiline replacement keeps
@@ -2845,17 +2855,12 @@ impl Document {
         }
 
         let text_edits = logical_edits;
-        let old_text = self.text().to_owned();
-        let mut expected_text = old_text.clone();
-        for edit in edits.iter().rev() {
-            expected_text.replace_range(edit.range.clone(), edit.payload.text());
-        }
-        let expected_hard_breaks = apply_payload_break_edits(
-            &self.projection().hard_break_offsets(),
-            &edits,
-            old_text.len(),
-            expected_text.len(),
-        )?;
+        let persistent_edits = text_edits.iter()
+            .map(|edit| (edit.range.clone(), edit.replacement.as_str()))
+            .collect::<Vec<_>>();
+        let (target_text, text_work) = self.projection().text_tree()
+            .splice_prevalidated_batch_with_stats(&persistent_edits)
+            .map_err(DocumentError::FormattedTextStorage)?;
 
         let mut source_patches = self.translate_source_edits(
             text_edits
@@ -2893,18 +2898,40 @@ impl Document {
 
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
-        let mut candidate = self.build_verified_candidate(
+        let built = self.build_verified_text_edit_candidate(
             source,
-            self.state().file_format,
-            self.state().file_format_origin,
             after_revision,
-            CandidateVerification {
-                expected_text: expected_text.clone(),
-                expected_hard_breaks: Some(&expected_hard_breaks),
-                mismatch_error: DocumentError::FormattedPayloadCannotReproject,
-            },
-        )?;
-        if old_text != expected_text {
+            &target_text,
+            text_work,
+            &text_edits,
+            &source_patches,
+            false,
+            Some(&edits),
+        ).map_err(|error| match error {
+            ModelTransactionError::Document(DocumentError::VerificationFailed) =>
+                ModelTransactionError::Document(DocumentError::FormattedPayloadCannotReproject),
+            error => error,
+        })?;
+        // Text equality alone cannot distinguish literal LF from logical
+        // hard-line boundaries. Verify the payload's break intention within
+        // the proven parser window, including all retained breaks there.
+        // A candidate without a contiguous window still needs the complete
+        // check, including a batch of separately verified literal regions.
+        {
+            let (old_region, new_region) = built.reprojected_region.clone().unwrap_or_else(||
+                (0..self.projection().text_tree().byte_len(), 0..target_text.byte_len()));
+            let expected_hard_breaks = apply_payload_break_edits(
+                &self.projection().hard_breaks_for_region(&old_region),
+                &edits,
+                &old_region,
+                &new_region,
+            )?;
+            if built.state.projection.hard_breaks_for_region(&new_region) != expected_hard_breaks {
+                return Err(DocumentError::FormattedPayloadCannotReproject.into());
+            }
+        }
+        let mut candidate = built.state;
+        if !built.block_ids_already_reconciled {
             candidate
                 .projection
                 .install_persistent_text_edits(self.projection(), &text_edits)
@@ -2927,7 +2954,9 @@ impl Document {
             &candidate.projection,
             map_splices,
         )?;
-        let next_projected_block_id = candidate
+        let next_projected_block_id = if built.block_ids_already_reconciled {
+            built.next_projected_block_id
+        } else { candidate
             .projection
             .install_reconciled_format_block_ids(
                 self.format(),
@@ -2936,15 +2965,14 @@ impl Document {
                 &text_position_map,
                 self.next_projected_block_id,
             )
-            .map_err(super::block_identity_document_error)?;
-        let projection_work = ProjectionWorkStatistics::full(&candidate);
-        Ok(self.prepared(
+            .map_err(super::block_identity_document_error)? };
+        let mut prepared = self.prepared(
             after_revision,
             ModelChangeSummary {
                 kind: ModelChangeKind::TextEdits,
                 source_patches,
                 formatted_splices,
-                projection_work,
+                projection_work: built.work,
                 style_change: None,
                 conversion_warnings: if repaired_utf16 {
                     vec![super::ConversionWarning::RepairedTruncatedUtf16]
@@ -2956,7 +2984,9 @@ impl Document {
             None,
             next_projected_block_id,
             PreparedPublication::State(candidate),
-        ))
+        );
+        prepared.reprojected_region = built.reprojected_region;
+        Ok(prepared)
     }
 
     fn prepare_hard_line_transfer(
@@ -3814,6 +3844,7 @@ impl Document {
             &edits,
             &source_patches,
             false,
+            None,
         )?;
         let verification_range = if built.work.scope == ProjectionWorkScope::RegionalHardLines {
             self.line_local_projection_region(&edits, &source_patches)?
@@ -5184,6 +5215,7 @@ impl Document {
             work,
             block_ids_already_reconciled: true,
             next_projected_block_id: scratch.next_projected_block_id,
+            reprojected_region: None,
         }))
     }
 
@@ -5196,7 +5228,20 @@ impl Document {
         edits: &[TextEdit],
         source_patches: &[SourcePatch],
         authored_syntax: bool,
+        payload_edits: Option<&[FormattedPayloadEdit]>,
     ) -> Result<TextEditCandidate, ModelTransactionError> {
+        // A literal CR may combine with a retained bare LF outside a local
+        // line body under DOS interpretation. Keep the complete encoding and
+        // hard-break verification until regional captures include that seam.
+        // Single-line payloads have already tried the text-edit fast paths.
+        // Reaching this payload fallback means those regional proofs were
+        // insufficient (for example an empty list body beside literal HTML).
+        if payload_edits.is_some_and(|payloads|
+            payloads.iter().any(|edit| edit.payload.text().contains('\r'))
+                || payloads.iter().all(|edit| !edit.payload.text().contains('\n')
+                    && edit.payload.break_offsets().is_empty())) {
+            return self.build_complete_text_edit_candidate(source, revision, target_text, payload_edits);
+        }
         if let Some(candidate) = self.build_disjoint_literal_edit_candidate(
             &source,
             revision,
@@ -5407,6 +5452,11 @@ impl Document {
                 }
                 let projected_formatted_bytes = regional_projection.text().len();
                 let projected_hard_lines = regional_projection.hard_line_count();
+                let new_formatted_end = target_text.byte_len()
+                    .checked_sub(self.projection().text_tree().byte_len() - region.old_formatted.end)
+                    .ok_or(DocumentError::VerificationFailed)?;
+                let reprojected_region = Some((region.old_formatted.clone(),
+                    region.old_formatted.start..new_formatted_end));
                 let mut next_projected_block_id = self.next_projected_block_id;
                 let (projection, splice_work) = splice_line_local_projection(
                     if self.format().is_code() {
@@ -5560,6 +5610,7 @@ impl Document {
                     ),
                     block_ids_already_reconciled: true,
                     next_projected_block_id,
+                    reprojected_region,
                 }));
             })();
             match regional {
@@ -5572,26 +5623,47 @@ impl Document {
 
         // A list split can change loose spacing throughout its bounded
         // owner, while all unrelated paragraphs retain their shared trees.
-        let regional = if edits.len() == 1 && edits[0].replacement == "\n" {
-            self.prepare_list_paragraph_reprojection(source_patches)
-        } else { Ok(None) };
+        let regional = self.prepare_list_paragraph_reprojection(source_patches, target_text, edits);
         let regional = match regional {
-            Ok(Some(prepared)) => Ok(Some(prepared)),
+            Ok(Some(markdown_paragraph_projection::ListParagraphReprojection::Candidate(prepared, old, new))) =>
+                Ok(Some((prepared, old, new))),
+            Ok(Some(markdown_paragraph_projection::ListParagraphReprojection::TextMismatch)) =>
+                return Err(DocumentError::VerificationFailed.into()),
             _ => self.prepare_independent_paragraph_reprojection(source_patches),
         };
         if let Ok(Some((prepared, old_region, new_region))) = regional {
             let PreparedPublication::State(state) = prepared.publication else { unreachable!() };
             if edits.iter().all(|edit| old_region.start <= edit.range.start && edit.range.end <= old_region.end)
-                && state.projection.text_tree().byte_len() == target_text.byte_len()
-                && state.projection.text_tree().slice(new_region.clone())
-                    .map_err(DocumentError::FormattedTextStorage)?
-                    == target_text.slice(new_region).map_err(DocumentError::FormattedTextStorage)?
             {
+                // This independently parsed owner proves the complete source
+                // change. A covered text mismatch is definitive; parsing the
+                // untouched document again cannot make this candidate valid.
+                if state.projection.text_tree().byte_len() != target_text.byte_len()
+                    || state.projection.text_tree().slice(new_region.clone())
+                        .map_err(DocumentError::FormattedTextStorage)?
+                        != target_text.slice(new_region.clone()).map_err(DocumentError::FormattedTextStorage)? {
+                    return Err(DocumentError::VerificationFailed.into());
+                }
                 return Ok(TextEditCandidate { state, work: prepared.summary.projection_work,
                     block_ids_already_reconciled: true,
+                    reprojected_region: Some((old_region, new_region)),
                     next_projected_block_id: prepared.next_projected_block_id_after });
             }
         }
+        self.build_complete_text_edit_candidate(source, revision, target_text, payload_edits)
+    }
+
+    fn build_complete_text_edit_candidate(
+        &self,
+        source: super::source::SourceSnapshot,
+        revision: Revision,
+        target_text: &FormattedTextTree,
+        payload_edits: Option<&[FormattedPayloadEdit]>,
+    ) -> Result<TextEditCandidate, ModelTransactionError> {
+        let expected_hard_breaks = payload_edits.map(|payloads| apply_payload_break_edits(
+            &self.projection().hard_break_offsets(), payloads,
+            &(0..self.projection().text_tree().byte_len()), &(0..target_text.byte_len()),
+        )).transpose()?;
         let state = self.build_verified_candidate(
             source,
             self.state().file_format,
@@ -5599,7 +5671,7 @@ impl Document {
             revision,
             CandidateVerification {
                 expected_text: target_text.flatten(),
-                expected_hard_breaks: None,
+                expected_hard_breaks: expected_hard_breaks.as_deref(),
                 mismatch_error: DocumentError::VerificationFailed,
             },
         )?;
@@ -5609,6 +5681,7 @@ impl Document {
             work,
             block_ids_already_reconciled: false,
             next_projected_block_id: self.next_projected_block_id,
+            reprojected_region: None,
         })
     }
 
@@ -6065,6 +6138,8 @@ impl Document {
         regional.install_hard_line_partition(hard_line_ranges);
         let projected_bytes = regional.text().len();
         let previous_projection = self.projection();
+        let reprojected_region = Some((old_line.clone(),
+            old_line.start..old_line.end - edit.range.len() + edit.replacement.len()));
         let mut next_projected_block_id = self.next_projected_block_id;
         let (projection, range_work) = match splice_line_local_projection(
             previous_projection,
@@ -6125,6 +6200,7 @@ impl Document {
             work,
             block_ids_already_reconciled: true,
             next_projected_block_id,
+            reprojected_region,
         }))
     }
 
@@ -8083,8 +8159,8 @@ fn rebase_source_boundary(
 fn apply_payload_break_edits(
     current_breaks: &[usize],
     edits: &[FormattedPayloadEdit],
-    old_length: usize,
-    expected_length: usize,
+    old_region: &Range<usize>,
+    new_region: &Range<usize>,
 ) -> Result<Vec<usize>, PositionError> {
     let inserted_breaks = edits.iter().try_fold(0usize, |count, edit| {
         count
@@ -8098,8 +8174,8 @@ fn apply_payload_break_edits(
             .ok_or(PositionError::ArithmeticOverflow)?,
     );
     let mut break_index = 0usize;
-    let mut old_cursor = 0usize;
-    let mut new_cursor = 0usize;
+    let mut old_cursor = old_region.start;
+    let mut new_cursor = new_region.start;
 
     for edit in edits {
         while let Some(&offset) = current_breaks.get(break_index) {
@@ -8154,16 +8230,16 @@ fn apply_payload_break_edits(
         );
         break_index += 1;
     }
-    let trailing = old_length
+    let trailing = old_region.end
         .checked_sub(old_cursor)
         .ok_or(PositionError::ArithmeticOverflow)?;
     let computed_length = new_cursor
         .checked_add(trailing)
         .ok_or(PositionError::ArithmeticOverflow)?;
-    if computed_length != expected_length {
+    if computed_length != new_region.end {
         return Err(PositionError::TargetLengthMismatch {
             computed: computed_length,
-            actual: expected_length,
+            actual: new_region.end,
         });
     }
     Ok(result)

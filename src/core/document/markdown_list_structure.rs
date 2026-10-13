@@ -711,26 +711,28 @@ fn paragraph_insertion_patches(
         return Ok(None);
     };
     let super::super::BlockKind::ListItem {
-        ordered, ordinal, ..
+        ordered, ordinal, level, ..
     } = block.kind
     else {
         return Ok(None);
     };
-    let owner = document
-        .projection()
-        .list_structure()
-        .lists
-        .iter()
-        .flat_map(|list| &list.items)
-        .find(|item| item.paragraph_ids.contains(&block.id))
-        .map(|item| item.paragraph_id)
-        .ok_or(DocumentError::AmbiguousProjection)?;
-    let owner = document
-        .projection()
-        .blocks()
-        .iter()
-        .find(|candidate| candidate.id == owner)
-        .ok_or(DocumentError::AmbiguousProjection)?;
+    let blocks = document.projection().list_indentation_blocks(false);
+    // Keep the first touching block selected above, including empty bodies at
+    // a shared boundary. The usual point lookup instead selects the last one.
+    let index = if at == 0 { 0 } else { blocks.partition_point_end(at - 1) };
+    if blocks.get(index).is_none_or(|candidate| candidate.id != block.id) {
+        return Err(DocumentError::AmbiguousProjection);
+    }
+    let item_owner = block.list_item_owner().ok_or(DocumentError::AmbiguousProjection)?;
+    let key = u16::from(level) + 1;
+    let owner_index = blocks.find_navigation(0..index + 1, true, |summary| {
+        summary.minimum < key || summary.minimum_start <= key
+    }).ok_or(DocumentError::AmbiguousProjection)?;
+    let owner = blocks.get(owner_index).filter(|owner| {
+        matches!(owner.kind, super::super::BlockKind::ListItem {
+            level: owner_level, item_start: true, ..
+        } if owner_level == level) && owner.list_item_owner() == Some(item_owner)
+    }).ok_or(DocumentError::AmbiguousProjection)?;
     let body_at = document
         .projection()
         .source_insertion_point(owner.range.start, true)

@@ -9,8 +9,9 @@ An old benchmark result is not evidence of current performance.
 
 The [allocator probe](../examples/large_file_memory.rs) exercises the real core
 in fresh serial release processes. The [runner](../scripts/measure-large-file-memory.py)
-owns two fixture sets: standard literal and Markdown opening/editing/views and
-supplemental encodings, dense lines, giant words, search/save/history/reclamation.
+owns standard literal and Markdown opening/editing/views, supplemental encodings,
+dense lines, giant words, search/save/history/reclamation, and cold rich-paste
+fixture sets.
 The Markdown cases repeat dense rich blocks (headings, inline markup, lists,
 quotes, tables and fences) in formatted and Source presentation, including a
 switch between them. The checked-in [limits](../scripts/fixtures/large-file-memory-limits.json) are
@@ -67,8 +68,25 @@ context, and emptying an item beside prose adds only its required source separat
 Word navigation queries the immutable hard-line/text snapshot and batches ASCII
 runs while streaming Unicode graphemes across tree leaves, without constructing
 a document-wide grapheme array. Semantic object and hard-break boundaries remain
-authoritative. Rich-paste whole-range
-checks use the text tree's length. Work statistics separately count compatibility
+authoritative. Rich-paste whole-range checks use the text tree's length.
+Multiline payload preparation splices the text tree and verifies both text and
+hard-break intent in a proven parser region. Prepared candidates carry the old
+and new regions so clipboard verification checks pasted styles and every retained
+style inside those regions while sharing the untouched remainder. A mismatch in
+an independently parsed region that covers the edit rejects that candidate
+without reparsing unrelated source. If an edited edge row becomes blank, the
+capture includes neighboring paragraph guards so separator endings pair in their
+original context. Candidates without a locality proof retain
+complete verification, including payloads that change break metadata without
+changing visible text. Literal carriage-return payloads also retain complete
+verification because DOS interpretation can combine them with an adjacent
+retained line feed outside a regional line body. Single-line payloads reaching
+this fallback have already failed the ordinary local path and keep complete
+verification. List paragraph insertion finds its owning item through the block
+tree's navigation summaries instead of enumerating the document's list structure.
+
+Work statistics count clipboard style blocks and paragraph text inspected, as
+well as source decoding and projection work. They separately count compatibility
 text materialization, including read-only commands, so a warm cache cannot hide
 an unbounded first query in locality tests.
 
@@ -83,6 +101,7 @@ changes, resource lifetime and eviction against freshly shaped geometry.
 cargo build --release --offline --example large_file_memory
 python3 scripts/measure-large-file-memory.py --output /tmp/viem-memory.json --limits scripts/fixtures/large-file-memory-limits.json
 python3 scripts/measure-large-file-memory.py --supplemental --output /tmp/viem-memory-extra.json --limits scripts/fixtures/large-file-memory-limits.json
+python3 scripts/measure-large-file-memory.py --rich-paste --output /tmp/viem-memory-paste.json --limits scripts/fixtures/large-file-memory-limits.json
 ```
 
 `--limits` is optional; omitting it collects observations without enforcing
@@ -91,6 +110,13 @@ probe and binary hashes, checks exit status, and with limits checks required
 phases, useful undo and live/cumulative-peak requested heap. The ceilings were
 established for arm64 release builds; a different environment needs an explicit
 comparison, not silent threshold changes.
+
+The rich-paste set uses fresh dense Markdown destinations with DOS endings and
+UTF-8 or UTF-16 source. It pastes a whitespace-prefixed styled fragment into an
+ordinary paragraph or an empty list continuation before measuring undo and redo.
+Its operation samples record additional live and peak heap, allocation calls,
+elapsed time and work counters; separate operation ceilings prevent opening's
+cumulative peak from hiding paste regressions.
 
 Requested Rust allocation sizes exclude allocator overhead and native allocations.
 The probe also reports macOS process RSS/footprint where available. A cumulative
@@ -191,9 +217,7 @@ for other scenarios and build/profile options.
   motion and replay still contain `Document::text()` calls. Full-reprojection
   identity reconciliation also materializes old and new snapshots; traversing
   the complete fallback does not require retaining compatibility copies.
-  Whitespace-rich paste fallback still decodes the whole source and materializes
-  formatted compatibility text despite publishing a regional projection. These
-  paths need separate measurements and local verification before every editing
+  These paths need separate measurements and local verification before every editing
   command can claim a bounded working set.
 - **Cold giant-line work:** bounded retained geometry does not bound first-pass
   metric discovery or a distant cold jump. Current long-line tests include
