@@ -14,6 +14,9 @@ struct Targets {
 fn level(block: &Block) -> Option<u8> {
     block.list_level()
 }
+fn navigation_level(block: &Block) -> Option<u8> {
+    block.list_navigation_level()
+}
 fn item_start(block: &Block) -> bool {
     block.list_editing.item_start
 }
@@ -44,7 +47,11 @@ fn targets(
                             next.range.start == range.start && next.range.start != block.range.start
                         }))
             } else {
-                block.range.start < range.end && range.start < block.range.end
+                block.range.start < range.end
+                    && (range.start < block.range.end || block.range.is_empty() && range.start == block.range.start)
+                    // An unassigned list separator can lie inside a selection,
+                    // but is never itself an item selected for indentation.
+                    && !(level(block).is_none() && navigation_level(block).is_some())
             }
         })
         .map(|(index, _)| index)
@@ -66,7 +73,7 @@ fn targets(
     let last = *selected.last().unwrap();
     if blocks[first..=last]
         .iter()
-        .any(|block| level(block).map_or(true, |level| level < base))
+        .any(|block| navigation_level(block).map_or(true, |level| level < base))
     {
         return Err(DocumentError::UnsupportedFormatting);
     }
@@ -75,7 +82,7 @@ fn targets(
         .collect::<Vec<_>>();
     let end = (last + 1..blocks.len())
         .find(|index| {
-            level(&blocks[*index]).map_or(true, |level| {
+            navigation_level(&blocks[*index]).map_or(true, |level| {
                 level < base || level == base && item_start(&blocks[*index])
             })
         })
@@ -83,7 +90,7 @@ fn targets(
     let previous = (0..first)
         .rev()
         .find(|index| {
-            level(&blocks[*index]).map_or(true, |level| {
+            navigation_level(&blocks[*index]).map_or(true, |level| {
                 level < base || level == base && item_start(&blocks[*index])
             })
         })
@@ -91,7 +98,7 @@ fn targets(
             && same_list_parent(&blocks[*index], &blocks[first]));
     let parent = (0..first)
         .rev()
-        .find(|index| level(&blocks[*index]).map_or(true, |level| level < base))
+        .find(|index| navigation_level(&blocks[*index]).map_or(true, |level| level < base))
         .filter(|index| level(&blocks[*index]) == base.checked_sub(1))
         .and_then(|index| {
             // The nearest parent leaf may be a continuation or an editable
@@ -142,20 +149,31 @@ impl Document {
         if !range.is_empty()
             && blocks
                 .get(selected)
-                .is_some_and(|block| block.range.end == range.start)
+                .is_some_and(|block| !block.range.is_empty() && block.range.end == range.start)
         {
             selected += 1;
         }
-        let Some(current) = blocks.get(selected) else {
-            return (false, false);
-        };
-        let Some(base) = level(&current).map(|level| u16::from(level) + 1) else {
-            return (false, false);
-        };
         let last = if range.is_empty() {
             selected + 1
         } else {
             blocks.partition_point_start(range.end)
+        };
+        let Some(mut current) = blocks.get(selected) else {
+            return (false, false);
+        };
+        if !range.is_empty() && level(&current).is_none() && navigation_level(&current).is_some() {
+            // Skip a leading unassigned separator only when the selection
+            // reaches another item. A caret or separator-only selection is
+            // still ineligible, and a non-list boundary still stops the scan.
+            let Some(next) = blocks.find_navigation(selected + 1..last, false, |summary|
+                summary.minimum == 0 || summary.minimum_start != u16::MAX)
+            else { return (false, false); };
+            selected = next;
+            let Some(next) = blocks.get(selected) else { return (false, false); };
+            current = next;
+        }
+        let Some(base) = level(&current).map(|level| u16::from(level) + 1) else {
+            return (false, false);
         };
         if selected >= last {
             return (false, false);
@@ -269,7 +287,11 @@ impl Document {
         }
         verify_character_styles(self.projection(), after)?;
         for (index, (before, after)) in blocks.iter().zip(after.blocks()).enumerate() {
-            let expected = level(before).map(|level| {
+            // Supporting syntax can bring a retained list-only separator
+            // inside an empty parent whose new child crosses that separator.
+            // Its source-derived depth, text and paragraph boundary must stay
+            // correct, independently of whether it now has an item owner.
+            let expected = navigation_level(before).map(|level| {
                 if (target.first..target.end).contains(&index) {
                     if unindent {
                         level - 1
@@ -285,10 +307,18 @@ impl Document {
                 _ => None,
             };
             let paragraph = before.direct_paragraph.clone();
+            let retained_parent_continuation = !unindent
+                && before.kind == BlockKind::Paragraph && before.range.is_empty()
+                && before.list_item_owner().is_none()
+                && matches!(after.kind, BlockKind::ListItem { item_start: false, .. })
+                && target.previous.is_some_and(|parent| parent < index && index < target.first
+                    && blocks[parent].range.is_empty()
+                    && after.list_item_owner().is_some()
+                    && after.list_item_owner() == candidate.projection.blocks()[parent].list_item_owner());
 
             if before.range != after.range
-                || expected != level(after)
-                || ordered(before) != ordered(after)
+                || expected != navigation_level(after)
+                || ordered(before) != ordered(after) && !retained_parent_continuation
                 || paragraph != after.direct_paragraph
                 || before.direct_default_character != after.direct_default_character
             {
@@ -478,6 +508,30 @@ fn markdown_patches(
         ordered_next = Some(ordinal.saturating_add(1));
     }
     let mut patches = Vec::new();
+    if !unindent && blocks[reference].range.is_empty()
+        && blocks[reference + 1..target.first].iter().any(|block|
+            level(block).is_none() && navigation_level(block).is_some())
+    {
+        // A bare empty marker ends before surplus blank lines, so indentation
+        // alone would leave the moved item at the top level. Give that empty
+        // parent a passive body to retain its new child across the separator.
+        let row = &lines[reference_line];
+        let text = &input.text[row.clone()];
+        let marker = super::super::markdown_blocks::marker_prefix_length(text)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        if text[marker..].trim().is_empty() {
+            let body = if text.ends_with([' ', '\t']) { "<span></span>" } else { " <span></span>" };
+            // Quote stripping removes source contributors at the next row's
+            // boundary. Address this physical row's ending directly rather
+            // than giving an empty cooked range that neighboring ownership.
+            let at = original.endings.get(reference_line).map(|ending| ending.source.start)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            patches.push(SourcePatch::primary(
+                at..at,
+                document.encoding().encode_fragment(body)?,
+            ));
+        }
+    }
     for (line_index, line) in lines.iter().enumerate().take(end).skip(start) {
         let text = &input.text[line.clone()];
         if text.trim().is_empty() {

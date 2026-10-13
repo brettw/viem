@@ -53,8 +53,22 @@ impl Block {
 
     pub(super) fn list_item_owner(&self) -> Option<ContainerIdentity> {
         self.containers.iter().rev()
-            .find(|member| member.container.kind == ContainerKind::ListItem)
+            .find(|member| matches!(member.container.kind, ContainerKind::ListItem | ContainerKind::List { .. }))
+            .filter(|member| member.container.kind == ContainerKind::ListItem)
             .map(|member| member.container.id)
+    }
+
+    /// List-owned separator paragraphs have no item to edit, but sibling
+    /// traversal must cross them at their containing list's depth.
+    pub(super) fn list_navigation_level(&self) -> Option<u8> {
+        self.list_level().or_else(|| {
+            if self.kind != BlockKind::Paragraph || !self.range.is_empty() {
+                return None;
+            }
+            self.containers.iter().filter(|member|
+                matches!(member.container.kind, ContainerKind::List { .. }))
+                .count().checked_sub(1).map(|level| level.min(u8::MAX as usize) as u8)
+        })
     }
 }
 
@@ -102,6 +116,7 @@ impl FormattedDocument {
         let mut lists: Vec<ListNode> = Vec::new();
         let mut stack: Vec<usize> = Vec::new();
         let mut items_by_owner: HashMap<ContainerIdentity, (usize, usize)> = HashMap::new();
+        let mut lists_by_owner: HashMap<ContainerIdentity, usize> = HashMap::new();
         for block in self.blocks() {
             let BlockKind::ListItem {
                 ordered,
@@ -112,6 +127,22 @@ impl FormattedDocument {
                 ..
             } = block.kind
             else {
+                // An empty item can leave separator paragraphs owned by the
+                // list itself, without an item owner. They do not split the
+                // list or become additional paragraphs of either sibling.
+                if let Some(owner) = block.containers.iter().rev().find(|member|
+                    matches!(member.container.kind, ContainerKind::List { .. } | ContainerKind::ListItem))
+                    .filter(|member| matches!(member.container.kind, ContainerKind::List { .. }))
+                {
+                    if let Some(&list) = lists_by_owner.get(&owner.container.id) {
+                        if let Some(depth) = stack.iter().position(|index| *index == list) {
+                            stack.truncate(depth + 1);
+                            continue;
+                        }
+                    }
+                    stack.clear();
+                    continue;
+                }
                 if let Some(&(list, item)) = block.list_item_owner()
                     .and_then(|owner| items_by_owner.get(&owner))
                 {
@@ -175,6 +206,11 @@ impl FormattedDocument {
                 stack.push(index);
                 index
             };
+            if let Some(owner) = block.containers.iter().rev().find(|member|
+                matches!(member.container.kind, ContainerKind::List { .. }))
+            {
+                lists_by_owner.insert(owner.container.id, index);
+            }
             if !item_start {
                 if let Some(item) = lists[index].items.last_mut() {
                     item.paragraph_ids.push(block.id);

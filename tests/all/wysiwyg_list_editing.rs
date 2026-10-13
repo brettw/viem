@@ -366,3 +366,20 @@ fn numbered_items_with_empty_continuations_survive_marker_width_changes() {
         assert_eq!(core.document().source_bytes(), expected.as_bytes());
     }
 }
+
+#[test]
+fn list_owned_separators_after_empty_items_do_not_split_numbered_runs() {
+    use viem_core::document::{BlockKind, ContainerKind};
+    let source = "8. first\n\n   <span></span>\n9. \n\n\n\n10. last\n11. tail";
+    let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let gap = document.projection().blocks().iter().find(|block|
+        block.kind == BlockKind::Paragraph && block.range.is_empty()
+            && block.containers.iter().any(|member| matches!(member.container.kind, ContainerKind::List { .. }))
+            && !block.containers.iter().any(|member| member.container.kind == ContainerKind::ListItem)
+    ).unwrap();
+    let structure = document.projection().list_structure();
+    assert_eq!(structure.lists.len(), 1);
+    assert_eq!(structure.lists[0].items.iter().map(|item| item.ordinal).collect::<Vec<_>>(), [8, 9, 10, 11]);
+    assert!(structure.lists[0].items.iter().all(|item| !item.paragraph_ids.contains(&gap.id)));
+    assert_eq!(document.source_bytes(), source.as_bytes());
+}

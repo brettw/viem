@@ -29,6 +29,13 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     return EVMenuItemPresentation(isEnabled: flags & capability != 0)
   }
 
+  func listParagraphPresentation() -> EVMenuItemPresentation {
+    guard let session, let selection = try? session.listSelection(),
+      let flags = try? session.listIndentCapabilities(expected: selection)
+    else { return .disabled }
+    return EVMenuItemPresentation(isEnabled: flags & UInt32(VIEM_LIST_CAN_INSERT_PARAGRAPH) != 0)
+  }
+
   public func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
     if backend.sourceFormat == .code { return currentCodeStyleMenuCatalogue() }
     guard let snapshot = try? backend.styleSheetSnapshot() else { return nil }

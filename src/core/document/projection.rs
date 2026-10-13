@@ -226,7 +226,7 @@ impl PartialEq for BlockAttributes {
 impl RangedItem for Block {
     fn navigation_summary(&self) -> super::range_index::NavigationSummary {
         // Zero is a non-list boundary; list levels use one through 256.
-        let key = self.list_level().map_or(0, |level| u16::from(level) + 1);
+        let key = self.list_navigation_level().map_or(0, |level| u16::from(level) + 1);
         let owned_paragraph = key != 0 && !matches!(self.kind, BlockKind::ListItem { .. });
         super::range_index::NavigationSummary {
             minimum: key, maximum: key,

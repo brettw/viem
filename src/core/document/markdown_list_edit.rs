@@ -5,6 +5,177 @@ use super::*;
 use crate::document::{edit_boundary, BlockKind};
 
 impl Document {
+    /// Whether the caret can create another paragraph in its existing item.
+    /// Literal views, code bodies and table cells keep their own break actions.
+    pub fn can_insert_list_paragraph(&self, at: usize) -> bool {
+        self.format() == Format::Markdown
+            && self.text_point(at).is_ok()
+            && self.projection().table_cell_at(at).is_none()
+            && edit_boundary::paragraph_at(self, at).ok().flatten().is_some_and(|block| {
+                block.list_level().is_some()
+                    && block.style.0 != "Code Block"
+                    && !block.markdown_html
+                    && !block.thematic_break
+            })
+    }
+
+    pub(super) fn prepare_list_paragraph(
+        &self,
+        at: usize,
+        affinity: BoundaryAffinity,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.text_point(at)?;
+        if !self.can_insert_list_paragraph(at) {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        let folded_source = if self.projection().text_tree().slice(at..at.saturating_add(1)).as_deref() == Ok(" ")
+            && !self.projection().style_spans_for_region(&(at..at + 1)).iter().any(|span|
+                span.application == StyleApplication::Semantic(SemanticInlineStyle::Code))
+        {
+            if let Some(source) = self.projection().source_range(at..at + 1) {
+                let bytes = self.state().source.bytes_in(source.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = self.encoding().decode_region(&bytes, source.start)?;
+                (!normalize(&decoded, self.file_format()).endings.is_empty()).then_some(source)
+            } else { None }
+        } else { None };
+        let folded_prefix_end = if let Some(source) = &folded_source {
+            let next = self.projection().source_insertion_point(at + 1, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let row = self.state().source_hard_lines.line_at_offset(next)
+                .and_then(|index| self.state().source_hard_lines.get(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let bytes = self.state().source.bytes_in(row.start..next)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = self.encoding().decode_region(&bytes, row.start)?;
+            // Folded-space provenance can stop before an inner quote marker.
+            // The new separator already carries that container prefix; consume
+            // only its old structural spelling, leaving inline openers intact.
+            let prefix = crate::document::markdown_quotes::container_prefix(&decoded.text);
+            Some(source.end.max(decoded.source_boundary(prefix)
+                .ok_or(DocumentError::AmbiguousProjection)?))
+        } else { None };
+        let block = edit_boundary::paragraph_at(self, at)?
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let blocks = self.projection().list_indentation_blocks(false);
+        let index = blocks.index_touching_point(at).ok_or(DocumentError::AmbiguousProjection)?;
+        let level = block.list_level().ok_or(DocumentError::UnsupportedFormatting)?;
+        let key = u16::from(level) + 1;
+        let owner_index = blocks.find_navigation(0..index + 1, true, |summary| {
+            summary.minimum < key || summary.minimum_start <= key
+        }).ok_or(DocumentError::AmbiguousProjection)?;
+        let owner = blocks.get(owner_index).filter(|owner| {
+            matches!(owner.kind, BlockKind::ListItem { level: owner_level, item_start: true, .. } if owner_level == level)
+        }).ok_or(DocumentError::AmbiguousProjection)?;
+        let body = self.projection().source_insertion_point(owner.range.start, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let line = self.state().source_hard_lines.line_at_offset(body)
+            .and_then(|index| self.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = self.state().source.bytes_in(line.start..body)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode_region(&bytes, line.start)?;
+        let mut remaining = decoded.text.as_str();
+        let mut continuation = String::new();
+        let mut found_marker = false;
+        // Quote and list containers can interleave in either order on one
+        // physical row. Keep quote syntax in place and replace every owned
+        // marker with its continuation indentation.
+        loop {
+            let quote = crate::document::markdown_quotes::prefix(remaining);
+            if quote > 0 {
+                continuation.push_str(&remaining[..quote]);
+                remaining = &remaining[quote..];
+            } else if let Some((bytes, columns)) = crate::document::markdown_blocks::marker_prefix_geometry(remaining) {
+                continuation.push_str(&" ".repeat(columns));
+                remaining = &remaining[bytes..];
+                found_marker = true;
+            } else {
+                break;
+            }
+        }
+        if !found_marker {
+            return Err(DocumentError::AmbiguousProjection.into());
+        }
+        let mut separator = format!("\n{}\n{continuation}", continuation.trim_end_matches([' ', '\t']));
+        if at == block.range.start {
+            separator.insert_str(0, "<span></span>");
+            if matches!(block.kind, BlockKind::Paragraph) {
+                // Raw separator paragraphs inherit their parsed item owner,
+                // but their physical blank row has no continuation prefix.
+                // The retained empty body now needs that owner's indentation.
+                separator.insert_str(0, &continuation);
+            }
+            if block.range.is_empty() && owner.id == block.id && !decoded.text.ends_with([' ', '\t']) {
+                separator.insert(0, ' ');
+            }
+        }
+        if at == block.range.end {
+            // Blank indented lines alone are trivia, and cannot preserve an
+            // editable continuation on save/reopen. This passive empty inline
+            // body gives the paragraph an exact source-backed owner.
+            separator.push_str("<span></span>");
+        } else if let Some(level) = block.style.0.strip_prefix("Heading")
+            .and_then(|level| level.parse::<usize>().ok()).filter(|level| (1..=6).contains(level))
+        {
+            separator.push_str(&"#".repeat(level));
+            separator.push(' ');
+        }
+        let source_at = self.projection().source_insertion_point(
+            at, at == block.range.start || affinity == BoundaryAffinity::Downstream && at < block.range.end,
+        ).ok_or(DocumentError::AmbiguousProjection)?;
+        // A folded ending contributes one visible space. Replace that exact
+        // source run with the new separator instead of first deleting it in a
+        // scratch document, which would require an unrelated full reprojection.
+        let edit = TextEdit::new(at..at + usize::from(folded_source.is_some()), "\n");
+        let mut patches = markdown_split::patches_with_separator(
+            self, &edit.range, &edit.replacement, &separator, Some(source_at),
+        )?.unwrap_or(vec![SourcePatch::primary(
+            folded_source.clone().unwrap_or(source_at..source_at),
+            self.encoding().encode_fragment(&spell_logical_breaks(&separator, self.file_format()))?,
+        )]);
+        if let (Some(folded), Some(end)) = (&folded_source, folded_prefix_end) {
+            let patch = patches.iter_mut().find(|patch|
+                patch.range.start <= folded.start && folded.end <= patch.range.end)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            patch.range.end = patch.range.end.max(end);
+        }
+        self.preserve_markdown_edit_boundaries(
+            std::slice::from_ref(&edit), std::iter::once(&edit.range), &mut patches,
+        )?;
+        let prepared = self.prepare_text_edits_with_patches(vec![edit], Some(patches))?;
+        let PreparedPublication::State(candidate) = &prepared.publication else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
+        let before = candidate.projection.blocks_for_region(&(at..at)).into_iter()
+            .find(|paragraph| paragraph.range.start <= at && at <= paragraph.range.end)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let after = candidate.projection.blocks_for_region(&(at + 1..at + 1)).into_iter()
+            .find(|paragraph| paragraph.range.start == at + 1)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let BlockKind::ListItem { ordered, ordinal, level, .. } = owner.kind else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
+        let mut retained_kind = block.kind.clone();
+        if matches!(retained_kind, BlockKind::Paragraph) {
+            retained_kind = owner.kind.clone();
+            if let BlockKind::ListItem { item_start, container_start, .. } = &mut retained_kind {
+                *item_start = false;
+                *container_start = false;
+            }
+        }
+        if !matches!(after.kind, BlockKind::ListItem {
+            ordered: next_ordered, ordinal: next_ordinal, level: next_level, item_start: false, ..
+        } if next_ordered == ordered && next_ordinal == ordinal && next_level == level)
+            || before.kind != retained_kind
+            || before.list_item_owner() != after.list_item_owner()
+            || before.quote_depth != block.quote_depth || after.quote_depth != block.quote_depth
+        {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        Ok(prepared)
+    }
+
     /// A source-authoring command specifies exact syntax patches. Parsing can
     /// fold separators or change adjacent blocks, so derive that effective
     /// text change before verifying and publishing the transaction.
@@ -624,7 +795,7 @@ impl Document {
         if self.projection().table_cell_at(at).is_some() {return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);}
         let block =
             edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
-        if matches!(block.kind, BlockKind::ListItem { .. }) {
+        if block.list_level().is_some() {
             self.prepare_markdown_list_split(at, false)
         } else {
             self.prepare_markdown_paragraph_enter(at, &block)
@@ -1066,29 +1237,26 @@ impl Document {
             .into_iter()
             .find(|block| block.range.start <= at && at <= block.range.end)
             .ok_or(DocumentError::VerificationFailed)?;
-        let BlockKind::ListItem {
-            ordered, ordinal, ..
-        } = block.kind
-        else {
-            return Err(DocumentError::UnsupportedFormatting.into());
-        };
-        if block.range.is_empty() && !force_new_item {
+        let lists = self.projection().list_structure();
+        let item = lists.lists.iter().flat_map(|list| &list.items)
+            .find(|item| item.paragraph_ids.contains(&block.id))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        if block.range.is_empty() && !force_new_item
+            && matches!(block.kind, BlockKind::ListItem { item_start: true, .. })
+            && item.paragraph_ids.len() == 1 && item.child_lists.is_empty()
+        {
             return self.prepare_list_style(block.range.clone(), None);
         }
-        let lists = self.projection().list_structure();
-        let first_id = lists
-            .lists
-            .iter()
-            .flat_map(|list| &list.items)
-            .find(|item| item.paragraph_ids.contains(&block.id))
-            .map(|item| item.paragraph_id)
-            .ok_or(DocumentError::AmbiguousProjection)?;
+        let first_id = item.paragraph_id;
         let first_paragraph = self
             .projection()
             .blocks()
             .iter()
             .find(|candidate| candidate.id == first_id)
             .ok_or(DocumentError::AmbiguousProjection)?;
+        let BlockKind::ListItem { ordered, ordinal, .. } = first_paragraph.kind else {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        };
         let body_source = self
             .projection()
             .source_insertion_point(first_paragraph.range.start, true)
@@ -1134,26 +1302,37 @@ impl Document {
         let mut range = source_at..source_at;
         let mut replacement = replacement;
         if at == block.range.start && block.id != first_paragraph.id {
-            let current = self
-                .state()
-                .source_hard_lines
-                .line_at_offset(source_at)
-                .and_then(|line| self.state().source_hard_lines.get(line))
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            range.start = current.start;
-            let label = if ordered {
-                format!("{ordinal}{delimiter} ")
+            if matches!(block.kind, BlockKind::Paragraph) {
+                // An editable raw separator has no source body to retain.
+                // Give that existing paragraph its item's continuation prefix
+                // before appending the new item's marker.
+                let (_, columns) = crate::document::markdown_blocks::marker_prefix_geometry(prefix)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let mut support = self.encoding().encode_fragment(
+                    &format!("{quote_prefix}{}<span></span>", " ".repeat(columns)),
+                )?;
+                support.extend(replacement);
+                replacement = support;
+            } else if block.range.is_empty() {
+                // Keep the existing passive empty body with the old item.
+                // An empty continuation is not an empty labelled item.
+                let current = self.state().source_hard_lines.line_at_offset(source_at)
+                    .and_then(|line| self.state().source_hard_lines.get(line))
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let bytes = self.state().source.bytes_in(current.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let decoded = self.encoding().decode_region(&bytes, current.start)?;
+                let end = decoded.text.trim_end_matches(['\r', '\n']).len();
+                let at = decoded.source_boundary(end).ok_or(DocumentError::AmbiguousProjection)?;
+                range = at..at;
             } else {
-                format!("{delimiter} ")
-            };
-            let mut prefix = self
-                .encoding()
-                .encode_fragment(&format!("{quote_prefix}{indentation}{label}"))?;
-            prefix.extend(replacement);
-            replacement = prefix;
+                let mut support = self.encoding().encode_fragment("<span></span>")?;
+                support.extend(replacement);
+                replacement = support;
+            }
         }
         let mut patches = vec![SourcePatch::primary(range, replacement)];
-        if at == block.range.end {
+        if at == block.range.end && !block.range.is_empty() {
             let next = self.projection().blocks_for_region(&(at + 1..at + 1))
                 .into_iter().find(|next| next.range.start == at + 1);
             if next.is_some_and(|next| matches!(next.kind, BlockKind::ListItem { item_start: false, .. })) {
