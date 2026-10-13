@@ -662,7 +662,7 @@ impl Document {
                 return verify_styles(prepared, &export, range, whole, self).map(Some);
             }
         }
-        if range != (0..self.projection().text_tree().byte_len()) {
+        if !whole {
             if let Some(prepared) =
                 self.prepare_structural_replacement(range.clone(), text, |scratch, at| {
                     scratch
@@ -724,8 +724,7 @@ impl Document {
                 .map(Vec::as_slice)
                 .collect()
         };
-        let mut error = DocumentError::AmbiguousProjection.into();
-        for candidate in candidates {
+        let prepare = |candidate: &[u8]| -> Result<PreparedModelTransaction, ModelTransactionError> {
             let mut replacement = prefix.clone();
             replacement.extend(bytes(candidate)?);
             let mut patches = source_runs
@@ -746,17 +745,39 @@ impl Document {
             if insertion_index.is_none() {
                 patches.push(SourcePatch::primary(insertion..insertion, replacement));
             }
-            let prepared = self
-                .prepare_text_edits_with_patches(
-                    vec![TextEdit::new(range.clone(), text)],
-                    Some(patches),
-                )
-                .and_then(|prepared| {
-                    verify_styles(prepared, &export, range.clone(), whole, self)
-                });
-            match prepared {
+            self.prepare_text_edits_with_patches(
+                vec![TextEdit::new(range.clone(), text)],
+                Some(patches),
+            ).and_then(|prepared| verify_styles(prepared, &export, range.clone(), whole, self))
+        };
+        let leading = text.len() - text.trim_start_matches([' ', '\t']).len();
+        let mut error = DocumentError::AmbiguousProjection.into();
+        for candidate in candidates {
+            match prepare(candidate) {
                 Ok(prepared) => return Ok(Some(prepared)),
                 Err(failed) => error = failed,
+            }
+            if self.format() == Format::Markdown && leading > 0 {
+                let decoded = encoding.decode_region(candidate, 0)?.text;
+                let source_leading = decoded.len() - decoded.trim_start_matches([' ', '\t']).len();
+                if decoded[..source_leading] == text[..leading] {
+                    // A cut through prose can leave a whitespace-only first
+                    // paragraph in the copied source. At a body start those
+                    // bytes become blank syntax. Protect only its visible
+                    // leading whitespace; retain all subsequent rich syntax
+                    // and require the same text/style verification. A differing
+                    // source prefix can be code indentation, not copied text.
+                    let escaped = self.escape_markdown_source_text(insertion, &text[..leading])?;
+                    if escaped != text[..leading] {
+                        let mut protected = encoding.encode_fragment(&escaped)?;
+                        let source_leading = encoding.encoded_text_len(&decoded[..source_leading]);
+                        protected.extend_from_slice(&candidate[source_leading..]);
+                        match prepare(&protected) {
+                            Ok(prepared) => return Ok(Some(prepared)),
+                            Err(failed) => error = failed,
+                        }
+                    }
+                }
             }
         }
         // A copied terminal soft ending no longer folds to a space on its

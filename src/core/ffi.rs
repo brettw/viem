@@ -412,6 +412,7 @@ pub const VIEM_KEY_PARAGRAPH_START: u32 = 24;
 pub const VIEM_KEY_PARAGRAPH_END: u32 = 25;
 pub const VIEM_KEY_NEXT_PARAGRAPH: u32 = 26;
 pub const VIEM_KEY_PASTE_CLIPBOARD: u32 = 27;
+pub const VIEM_KEY_ALT_ENTER: u32 = 28;
 pub const VIEM_KEY_MODIFIER_SHIFT: u32 = 1;
 pub const VIEM_KEY_MODIFIER_CONTROL: u32 = 2;
 pub const VIEM_KEY_MODIFIER_ALT: u32 = 4;
@@ -2244,6 +2245,7 @@ pub const VIEM_SET_LIST_STYLE_V1_SIZE: u32 = size_of::<ViemSetListStyleV1>() as 
 
 pub const VIEM_LIST_CAN_INDENT: u32 = 1;
 pub const VIEM_LIST_CAN_UNINDENT: u32 = 2;
+pub const VIEM_LIST_CAN_INSERT_PARAGRAPH: u32 = 4;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ViemListIndentV1 {
@@ -4444,6 +4446,7 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
         VIEM_KEY_PASTE_CLIPBOARD => special(Key::PasteClipboard),
         VIEM_KEY_ENTER => special(Key::Enter),
         VIEM_KEY_SHIFT_ENTER => special(Key::ShiftEnter),
+        VIEM_KEY_ALT_ENTER => special(Key::AltEnter),
         VIEM_KEY_TAB => special(Key::Tab),
         VIEM_KEY_BACK_TAB => special(Key::BackTab),
         VIEM_KEY_BACKSPACE => special(Key::Backspace),
@@ -10005,9 +10008,33 @@ pub unsafe extern "C" fn viem_core_view_list_indent_capabilities(
             )?;
             let (indent, unindent) = core.document().list_indent_capabilities(current.range());
             Ok(u32::from(indent) * VIEM_LIST_CAN_INDENT
-                | u32::from(unindent) * VIEM_LIST_CAN_UNINDENT)
+                | u32::from(unindent) * VIEM_LIST_CAN_UNINDENT
+                | u32::from(core.can_insert_list_paragraph(ViewId(view)).map_err(core_status)?) * VIEM_LIST_CAN_INSERT_PARAGRAPH)
         })?;
         unsafe { out_flags.write(flags) };
+        Ok(())
+    })
+}
+
+/// Insert a paragraph within the current list item at an exact collapsed caret.
+/// # Safety
+/// Selection and outcome must be distinct aligned readable/writable values.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_insert_list_paragraph(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    expected: *const ViemLogicalSelectionIdentityV1,
+    out_outcome: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        let request = unsafe { read_core_request(expected, out_outcome)? };
+        unsafe { clear_outcome(out_outcome)? };
+        let outcome = with_core_mut(handle, |core| {
+            let expected = core.list_selection_identity(ViewId(view)).map_err(core_status)?;
+            validate_logical_selection_identity(request, logical_selection_identity_to_ffi(&expected)?)?;
+            dispatch_event(core, view, CoreEvent::InsertListParagraph { expected })
+        })?;
+        unsafe { out_outcome.write(outcome) };
         Ok(())
     })
 }

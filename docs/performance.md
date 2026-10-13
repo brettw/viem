@@ -59,6 +59,10 @@ and outer separators must remain explicit paragraph boundaries before and after
 the patches. Lists, quotes, passive HTML, heading-start splits and Source paragraph
 deletions use this guarded path when those proofs succeed. Global references,
 oversized owners and unprovable boundaries retain the verified full fallback.
+List grammar discovery uses block-tree summaries to skip unrelated empty
+paragraph runs. Complete list owners remain dependencies when an edit changes
+their structure or spacing. Empty continuation carets supply the parser's list
+context, and emptying an item beside prose adds only its required source separator.
 
 Word navigation queries the immutable hard-line/text snapshot and batches ASCII
 runs while streaming Unicode graphemes across tree leaves, without constructing
@@ -186,7 +190,9 @@ for other scenarios and build/profile options.
   specialized paragraph keys, link-context typing, layout-dependent command
   motion and replay still contain `Document::text()` calls. Full-reprojection
   identity reconciliation also materializes old and new snapshots; traversing
-  the complete fallback does not require retaining compatibility copies. These
+  the complete fallback does not require retaining compatibility copies.
+  Whitespace-rich paste fallback still decodes the whole source and materializes
+  formatted compatibility text despite publishing a regional projection. These
   paths need separate measurements and local verification before every editing
   command can claim a bounded working set.
 - **Cold giant-line work:** bounded retained geometry does not bound first-pass

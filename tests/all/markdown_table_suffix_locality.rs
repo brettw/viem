@@ -130,6 +130,104 @@ fn source_full_reprojection_retains_all_shifted_table_identities() {
     }
 }
 
+fn encode_fixture(text: &str, encoding: Encoding) -> Vec<u8> {
+    match encoding {
+        Encoding::Utf8 => text.as_bytes().to_vec(),
+        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn list_paragraph_split_keeps_dense_table_suffix_regional_and_identical() {
+    use viem_core::document::{BoundaryAffinity, FileFormat, ModelRequest};
+    let tables = "| first | second |\n| --- | --- |\n| alpha | beta |\n\n".repeat(4096);
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
+        let original = encode_fixture(&format!("- first\n- second\n\n{tables}").replace('\n', "\r\n"), encoding);
+        let expected = encode_fixture(&format!("- fi\n\n  rst\n- second\n\n{tables}").replace('\n', "\r\n"), encoding);
+        let mut document = Document::from_bytes_with_file_format(original.clone(), encoding, Format::Markdown, FileFormat::Dos).unwrap();
+        let identities = table_identities(&document);
+        let request = ModelRequest::InsertListParagraph {
+            document: document.id(), revision: document.revision(), at: 2,
+            affinity: BoundaryAffinity::Downstream,
+        };
+        let (result, work) = measure_document_work(|| document.apply_model_request(request));
+        result.unwrap();
+        assert_eq!(work.full_projection_candidates, 0, "{encoding:?}: {work:?}");
+        assert_eq!(work.source_full_materializations, 0, "{encoding:?}: {work:?}");
+        assert_eq!(work.formatted_full_materialized_bytes, 0, "{encoding:?}: {work:?}");
+        assert!(work.formatted_compatibility_materialized_bytes < 4096, "{encoding:?}: {work:?}");
+        assert!(work.source_decoded_bytes < 8192, "{encoding:?}: {work:?}");
+        assert!(work.projection_persistent_nodes_copied < 1024, "{encoding:?}: {work:?}");
+        assert_eq!(document.source_bytes(), expected);
+        assert_eq!(table_identities(&document), identities);
+        let reopened = Document::from_bytes_with_file_format(expected.clone(), encoding, Format::Markdown, FileFormat::Dos).unwrap();
+        same_table_positions(&document, &reopened);
+        document.try_undo().unwrap();
+        assert_eq!(document.source_bytes(), original);
+        assert_eq!(table_identities(&document), identities);
+        document.try_redo().unwrap();
+        assert_eq!(document.source_bytes(), expected);
+        assert_eq!(table_identities(&document), identities);
+        same_table_positions(&document, &reopened);
+    }
+}
+
+#[test]
+fn whitespace_rich_paste_keeps_encoded_table_suffix_and_history_exact() {
+    use viem_core::command::clipboard::{ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot, ClipboardTarget};
+    use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key, RegisterValue};
+    use viem_core::document::{ClipboardFragment, FileFormat};
+    use viem_core::layout::DocumentLayoutStyles;
+    let donor = Document::from_bytes_with_file_format(
+        encode_fixture("line  \r\n  \r\nafter **double** space", Encoding::Utf16Le),
+        Encoding::Utf16Le, Format::Markdown, FileFormat::Dos,
+    ).unwrap();
+    let copied = "  \nafter double spac";
+    let fragment = donor.clipboard_fragment(4..4 + copied.len()).unwrap();
+    let fragment = ClipboardFragment::from_json(fragment.json(), copied).unwrap();
+    let register = RegisterValue::from_clipboard_fragment(fragment).unwrap();
+    let clipboard = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
+        ClipboardTarget::Clipboard, ClipboardGeneration(1), ClipboardContent::from_register(register),
+    ));
+    let tables = "| first | second |\r\n| --- | --- |\r\n| alpha | beta |\r\n\r\n".repeat(4096);
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
+        let original = encode_fixture(&format!("target\r\n\r\n{tables}"), encoding);
+        let mut document = Document::from_bytes_with_file_format(original.clone(), encoding, Format::Markdown, FileFormat::Dos).unwrap();
+        let identities = table_identities(&document);
+        let mut commands = CommandInterpreter::new();
+        commands.handle(&mut document, InputEvent::key('i')).unwrap();
+        let (result, work) = measure_document_work(|| commands.handle_with_clipboard_context(
+            &mut document, InputEvent::Key(Key::PasteClipboard), &clipboard,
+        ));
+        assert_eq!(result.unwrap().status, CommandStatus::Complete);
+        // Whitespace-rich paste still decodes the whole source during fallback
+        // preparation. This guards the table splice and source/history
+        // semantics without claiming that the entire paste is regional.
+        assert!(work.projection_persistent_nodes_copied < 1024, "{encoding:?}: {work:?}");
+        assert!(work.retained_memory_allocation_visits < 4096, "{encoding:?}: {work:?}");
+        let saved = document.source_bytes();
+        assert!(saved.starts_with(&encode_fixture("&#32;", encoding)));
+        assert!(saved.ends_with(&original));
+        assert_eq!(table_identities(&document), identities);
+        let reopened = Document::from_bytes_with_file_format(saved.clone(), encoding, Format::Markdown, FileFormat::Dos).unwrap();
+        assert_eq!(reopened.source_bytes(), saved);
+        for candidate in [&document, &reopened] {
+            assert!(candidate.text().starts_with(&format!("{copied}target\n")));
+            let style = DocumentLayoutStyles::semantic_character_at(candidate.projection(), copied.find("double").unwrap(), false).unwrap();
+            assert!(style.bold);
+        }
+        same_table_positions(&document, &reopened);
+        commands.handle(&mut document, InputEvent::Key(Key::Escape)).unwrap();
+        commands.handle(&mut document, InputEvent::key('u')).unwrap();
+        assert_eq!(document.source_bytes(), original);
+        assert_eq!(table_identities(&document), identities);
+        commands.handle(&mut document, InputEvent::Key(Key::Ctrl('r'))).unwrap();
+        assert_eq!(document.source_bytes(), saved);
+        assert_eq!(table_identities(&document), identities);
+    }
+}
+
 #[test]
 fn opening_shares_one_block_grammar_pass_across_projection_classifiers() {
     let source = "# Heading\n\n- list one\n- list two\n\n> quoted **text**\n> next line\n\n    indented code\n\n```rust\nlet x = 1;\n```\n\n| a | b |\n| - | - |\n| x | y |\n\n<div>passive</div>\n\n".repeat(256);
