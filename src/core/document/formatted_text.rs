@@ -394,6 +394,9 @@ impl FormattedTextTree {
 
     /// Materialize this immutable snapshot as one flat UTF-8 string.
     pub fn flatten(&self) -> String {
+        super::work_statistics::record(|stats| {
+            stats.formatted_compatibility_materialized_bytes += self.byte_len();
+        });
         let mut output = String::with_capacity(self.byte_len());
         if let Some(root) = &self.root {
             append_text(root, &mut output);
@@ -704,6 +707,14 @@ impl FormattedTextTree {
         if offset >= self.byte_len() { return &[]; }
         let (leaf, start) = leaf_at_or_after(self.root.as_ref().unwrap(), offset, 0);
         &leaf.text().as_bytes()[offset - start..]
+    }
+
+    /// Borrow the prefix of the leaf immediately before an offset. Reverse
+    /// snapshot cursors retain this bounded slice while traversing that leaf.
+    pub(crate) fn byte_chunk_before(&self, offset: usize) -> &[u8] {
+        if offset == 0 || offset > self.byte_len() { return &[]; }
+        let (leaf, start) = leaf_before_or_at(self.root.as_ref().unwrap(), offset, 0);
+        &leaf.text().as_bytes()[..offset - start]
     }
 
     /// Conservative scalar-aligned splice between persistent snapshots. Shared

@@ -41,10 +41,14 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
     let syntax =
         super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input))
             .to_source(input);
-    let quotes = super::markdown_quotes::classify(input);
+    classify_with_syntax(input, &syntax)
+}
+
+pub(super) fn classify_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> Vec<CodeBlock> {
+    let quotes = super::markdown_quotes::classify_with_syntax(input, syntax);
     let body = super::markdown_quotes::strip(input, &quotes);
     let lines = super::paragraph_flow::source_lines(&body);
-    let lists = super::markdown_blocks::classify_with_syntax(&body, &syntax);
+    let lists = super::markdown_blocks::classify_with_syntax(&body, syntax);
     let original = super::paragraph_flow::source_lines(input);
     let source_at = |input: &NormalizedText, at: usize| input.source_at(at);
     let mut result = Vec::new();

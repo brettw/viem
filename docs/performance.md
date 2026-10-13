@@ -25,6 +25,56 @@ including in history, so editing paths use tree queries, `partition_point`,
 `get_range` or a one-off `to_vec`. `Document::text()` likewise retains the
 flattened text with the state that materialized it.
 
+When contributor source starts are monotonic, source-boundary queries use source
+extent aggregates on the existing formatted-order tree. Reordered contributors
+retain a separate source-keyed index. Regional splices shift the shared-tree
+aggregates lazily and verify source ordering across the replacement and both
+seams; a failed ordering proof retains the verified reprojection fallback.
+
+Markdown opening shares one block-syntax parse among quote, list, indented-code,
+paragraph-flow and table recognition. The parser still consumes complete input;
+sharing its result removes repeated construction without making opening
+progressive.
+
+Table metadata uses persistent range storage. Source and formatted offsets on
+unchanged suffixes shift at the tree root; nested row stores share their records
+and apply the same translation when queried. Regional splices rebuild only the
+affected tables and preserve table, row and cell identities.
+Identity reconciliation receives explicit old and new table index ranges, so
+source shifts cannot hide the previous owner of an unchanged row or cell.
+Full reconciliation reads rows through temporary vectors and preserves shared
+paragraph attributes when their values are unchanged.
+
+A Markdown presentation switch stores one shared pair of old/new extents per
+change. Association and deletion-recovery queries derive their result from those
+extents instead of retaining separate policy maps in both directions. Composition
+materializes the existing compiled representation so anchor lookup never follows
+an accumulating chain of transitions. This is still an extent map, rather than a
+direct map through source provenance.
+
+Structural Markdown edits can reproject a bounded band that includes unchanged,
+independent paragraphs around the edited owners. The old standalone parse must
+match the current projection; edge paragraphs must retain their full semantics,
+and outer separators must remain explicit paragraph boundaries before and after
+the patches. Lists, quotes, passive HTML, heading-start splits and Source paragraph
+deletions use this guarded path when those proofs succeed. Global references,
+oversized owners and unprovable boundaries retain the verified full fallback.
+
+Word navigation queries the immutable hard-line/text snapshot and batches ASCII
+runs while streaming Unicode graphemes across tree leaves, without constructing
+a document-wide grapheme array. Semantic object and hard-break boundaries remain
+authoritative. Rich-paste whole-range
+checks use the text tree's length. Work statistics separately count compatibility
+text materialization, including read-only commands, so a warm cache cannot hide
+an unbounded first query in locality tests.
+
+The shape cache stores adjacent clusters with identical geometry and relative
+caret stops as runs when that representation is smaller. Each original native
+render handle retains its own ownership. Cache hits expand the exact public
+cluster records; this reduces retained cache storage without changing the
+provider ABI or visible layout representation. Validate edits, resizing, metrics
+changes, resource lifetime and eviction against freshly shaped geometry.
+
 ```sh
 cargo build --release --offline --example large_file_memory
 python3 scripts/measure-large-file-memory.py --output /tmp/viem-memory.json --limits scripts/fixtures/large-file-memory-limits.json
@@ -132,9 +182,13 @@ for other scenarios and build/profile options.
   progressive. Any incremental/disk-backed design must preserve immutable
   snapshots and stable encoding interpretation after a late invalid byte.
 - **Remaining flat-text consumers:** sentence/pair scans, case replacement and
-  Visual Block range resolution now use snapshot queries. Other command motion,
-  selection and replay paths still call `Document::text()`. Audit those paths
-  before claiming every command has a bounded working set.
+  Visual Block range resolution now use snapshot queries. Structural formatting,
+  specialized paragraph keys, link-context typing, layout-dependent command
+  motion and replay still contain `Document::text()` calls. Full-reprojection
+  identity reconciliation also materializes old and new snapshots; traversing
+  the complete fallback does not require retaining compatibility copies. These
+  paths need separate measurements and local verification before every editing
+  command can claim a bounded working set.
 - **Cold giant-line work:** bounded retained geometry does not bound first-pass
   metric discovery or a distant cold jump. Current long-line tests include
   linear source scanning with bounded shape fragments. Measure adversarial
@@ -144,17 +198,37 @@ for other scenarios and build/profile options.
   live/peak memory through opening, disjoint edits, history branches, multiple
   views, background jobs and release. Dense decoding exceptions need separate
   coverage from ordinary literal runs.
-- **Markdown edits with many tables:** each projection splice still shifts every
-  following table and re-splices its row stores, so editing work and retained
-  history grow with the number of tables rather than with the edit.
-- **View switches:** switching Markdown presentation retains a position map with
-  pieces for every hidden markup run. A provenance-backed map between the two
-  projections of the same source would avoid storing them.
-- **Formatted structural edits:** splitting or joining an ordinary paragraph or
-  ATX heading reprojects only that band. Other structural edits (inside lists,
-  quotes or HTML, or beside a preceding list) still reproject the document.
-- **Layout geometry:** visible-region layout keeps per-cluster caret and glyph
-  records; scripts with one cluster per character use much more than prose.
+- **View switches:** changed extents still scale with hidden syntax. Direct
+  provenance mapping must preserve deleted-content recovery, discontiguous range
+  identity and composed-map behavior before it can replace these extents.
+- **Structural fallback coverage:** guarded bands do not make every Markdown
+  structural edit regional. Measure large contiguous containers, global reference
+  dependencies, table-adjacent structural edits and rejected boundary proofs.
+  Whitespace-only guards cannot prove separator pairing, and emptied structural
+  owners currently use the full fallback to replace their caret contributors.
+  The ATX independence proof can still decode a long hidden prefix before
+  rejecting an oversized band.
+- **Table row searches:** table coordinate lookup descends the tree directly,
+  and regional identity reconciliation visits only affected old and new tables.
+  Some generic row predicates still use ordinal binary search, adding a second
+  logarithmic factor within the affected table.
+- **Lazy table-cache accounting:** borrowed table and row lookups can grow their
+  caches after the immutable allocation ledger first records them. Accounting
+  that growth needs a bounded update mechanism; rescanning every populated
+  cache on each edit would make unrelated queries part of editing cost.
+- **Opening scratch storage:** pulldown-cmark still parses complete input and
+  projections still retain whole-document construction intermediates. A streaming
+  design must preserve global Markdown dependencies and exact source mappings.
+- **Provenance indexing:** source extents currently add metadata to generic
+  range-tree nodes, including stores that do not use reverse lookup. A
+  provenance-specific summary could avoid that cost. Measure lookup arithmetic
+  and cache locality before changing the representation; reordered projections
+  still need their source-keyed index. Run sizing remains unchanged; alternatives
+  trade tree storage against lookup work within a run.
+- **Layout geometry:** cached geometry can share runs, but visible layout still
+  expands per-cluster caret records, and native glyph payloads remain separately
+  owned. Further compression needs native frame and scroll measurements as well
+  as allocation accounting.
 
 Unicode line-breaking data, offline regeneration and the intentional numeric
 conformance tailoring difference are documented with the

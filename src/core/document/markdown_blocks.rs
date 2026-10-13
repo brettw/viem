@@ -14,10 +14,10 @@ pub(super) struct ListLine {
     pub content_indent: usize,
 }
 
-pub(super) fn source_context(input: &NormalizedText) -> Vec<(Range<usize>, ListLine)> {
+pub(super) fn source_context_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> Vec<(Range<usize>, ListLine)> {
     let lines = super::paragraph_flow::source_lines(input);
     let source_at = |at: usize| input.source_at(at);
-    classify(input)
+    classify_with_syntax(input, syntax)
         .into_iter()
         .enumerate()
         .filter_map(|(index, line)| {
@@ -182,7 +182,7 @@ pub(super) fn classify_with_syntax(
     let source_at = |at| input.source_at(at);
     let normalized_at = |at| input.normalized_at(at);
     let lines = super::paragraph_flow::source_lines(input);
-    let quotes = super::markdown_quotes::classify(input);
+    let quotes = super::markdown_quotes::classify_with_syntax(input, syntax);
     // Containers arrive in source order. Successive containers on one row
     // continue from the previous column and share the row's break facts, so
     // N nested markers on a row cost O(row) rather than O(N × row).

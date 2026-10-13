@@ -626,7 +626,7 @@ impl Document {
         if !export.can_insert_rich_source(self.format(), text) {
             return Ok(None);
         }
-        let whole = range == (0..self.text().len());
+        let whole = range == (0..self.projection().text_tree().byte_len());
         // When the destination already supplies exactly the copied inline
         // appearance, plain insertion avoids splitting or respelling its
         // existing delimiters. Source-only semantics need the source path.
@@ -662,7 +662,7 @@ impl Document {
                 return verify_styles(prepared, &export, range, whole, self).map(Some);
             }
         }
-        if range != (0..self.text().len()) {
+        if range != (0..self.projection().text_tree().byte_len()) {
             if let Some(prepared) =
                 self.prepare_structural_replacement(range.clone(), text, |scratch, at| {
                     scratch

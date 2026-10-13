@@ -707,6 +707,11 @@ impl HardLineSnapshot {
         self.text_tree.byte_chunk_at(offset)
     }
 
+    /// Borrow the prefix of one leaf for reverse snapshot traversal.
+    pub(crate) fn byte_chunk_before(&self, offset: usize) -> &[u8] {
+        self.text_tree.byte_chunk_before(offset)
+    }
+
     /// Number of UTF-16 code units in this exact formatted snapshot.
     ///
     /// This is read from the persistent text tree's root aggregate and does
@@ -1490,7 +1495,7 @@ struct MarkdownCodePresentation {
 #[derive(Clone, Debug)]
 pub struct FormattedDocument {
     revision: Revision,
-    tables: Arc<[super::MarkdownTable]>,
+    tables: super::TableRows<super::MarkdownTable>,
     table_lines: Option<OrderedRangeStore<HardLine>>,
     /// Canonical persistent formatted-text representation.
     text: FormattedTextTree,
@@ -1672,7 +1677,7 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
         if let Some(flow) = flow { self.flow_blocks = Some(OrderedRangeStore::new(flow)); }
     }
-    pub fn tables(&self) -> &[super::MarkdownTable] { &self.tables }
+    pub fn tables(&self) -> &super::TableRows<super::MarkdownTable> { &self.tables }
     pub(super) fn extract_table_row(&self,index:usize,source_delta:i128,source:Range<usize>)
         -> Option<(Self,super::MarkdownTableRow,super::MarkdownTableSourceRow)> {
         let table=self.tables.first()?;let row=table.rows.get(index)?;let range=row.range.clone();
@@ -1703,58 +1708,84 @@ impl FormattedDocument {
     }
     pub(super) fn replace_table_row_metadata(&mut self,table_id:u64,index:usize,mut row:super::MarkdownTableRow,
         source_row:super::MarkdownTableSourceRow) -> Option<RangeSpliceStats> {
-        let table=Arc::make_mut(&mut self.tables).iter_mut().find(|table|table.id==table_id)?;
+        let table_index=self.tables.index_touching_point(row.range.start)?;
+        let mut table=self.tables.get(table_index).filter(|table|table.id==table_id)?.clone();
         let old=table.rows.get(index)?;row.id=old.id;
         for (new,old) in row.cells.iter_mut().zip(&old.cells) {new.id=old.id;}
         let mut stats=RangeSpliceStats::default();
         table.rows=table.rows.splice_transformed(index..index+1,vec![row],0,0,0,0,&mut stats)?;
         let source_index=if index==0 {0}else{index+1};
         table.source_rows=table.source_rows.splice_transformed(source_index..source_index+1,vec![source_row],0,0,0,0,&mut stats)?;
+        self.tables=self.tables.splice_transformed(table_index..table_index+1,vec![table],0,0,0,0,&mut stats)?;
         Some(stats)
     }
     pub(super) fn extend_table_terminal_source(&mut self, end:usize) {
-        if let Some(table)=Arc::make_mut(&mut self.tables).last_mut() {
+        if let Some(table)=self.tables.iter_mut().last() {
             table.source_range.end=end;
             if let Some(row)=table.rows.iter_mut().last() {row.source_range.end=end;}
             if let Some(row)=table.source_rows.iter_mut().last() {row.source_range.end=end;}
         }
     }
     pub fn table_at(&self, offset: usize) -> Option<&super::MarkdownTable> {
-        self.tables.get(self.tables.partition_point(|table| table.range.start <= offset).checked_sub(1)?)
-            .filter(|table| offset <= table.range.end)
+        self.tables.get(self.tables.index_touching_point(offset)?)
     }
     pub fn table_cell_at(&self, offset: usize) -> Option<(&super::MarkdownTable, &super::MarkdownTableRow, &super::MarkdownTableCell)> {
         let table = self.table_at(offset)?;
-        let row = table.rows.get(table.rows.partition_point(|row| row.range.start <= offset).checked_sub(1)?)?;
+        let row = table.rows.get(table.rows.index_touching_point(offset)?)?;
         let cell = row.cells.get(row.cells.partition_point(|cell| cell.range.start <= offset).checked_sub(1)?)?;
         (offset <= cell.range.end).then_some((table, row, cell))
     }
     /// Include source-only table syntax such as pipes and the delimiter row.
     pub fn range_intersects_table(&self, range: &Range<usize>) -> bool {
         if range.is_empty() { return self.table_at(range.start).is_some(); }
-        self.tables.get(self.tables.partition_point(|table| table.range.end <= range.start))
+        self.tables.get(self.tables.partition_point_end(range.start))
             .is_some_and(|table| table.range.start < range.end)
     }
     fn rebuild_table_presentation_lines(&mut self) {
         if self.tables.is_empty() {self.table_lines=None;return;}
         let mut presentation=Vec::new();let mut index=0;
-        for table in self.tables.iter() {
+        for ordinal in 0..self.tables.len() {
+            let table = self.tables.get_owned(ordinal).expect("table ordinal");
             while index<self.hard_lines.len() && self.hard_lines.get(index).unwrap().range.start<table.range.start {presentation.push(self.hard_lines.get(index).unwrap());index+=1;}
-            for row in &table.rows {presentation.push(HardLine{id:row.id,range:row.range.clone(),separator_length:1});}
+            // This full scan needs transient records, not a borrowed cache
+            // entry and lookup path for every row in the snapshot.
+            for row in table.rows.get_range(&(0..table.rows.len())).expect("table row range") {
+                presentation.push(HardLine{id:row.id,range:row.range,separator_length:1});
+            }
             while index<self.hard_lines.len() && self.hard_lines.get(index).unwrap().range.start<=table.range.end {index+=1;}
         }
         while index<self.hard_lines.len() {presentation.push(self.hard_lines.get(index).unwrap());index+=1;}
         self.table_lines=Some(OrderedRangeStore::new(presentation));
     }
-    fn install_table_ids(&mut self, mut next_id:u64, previous:Option<&Self>) -> Result<u64,BlockIdentityError> {
+    fn install_table_ids(&mut self, next_id:u64, previous:Option<&Self>) -> Result<u64,BlockIdentityError> {
+        self.install_table_ids_in(next_id, previous.map(|previous|(previous,0..previous.tables.len())), 0..self.tables.len())
+    }
+    fn install_table_ids_in(&mut self, mut next_id:u64, previous:Option<(&Self,Range<usize>)>, indices:Range<usize>) -> Result<u64,BlockIdentityError> {
+        let replacing_all = indices == (0..self.tables.len());
+        let mut tables = if replacing_all { std::mem::take(&mut self.tables).into_vec() }
+            else { self.tables.get_range(&indices).ok_or(BlockIdentityError::InvalidProjection)? };
         let mut previous_cells=std::collections::HashMap::new();let mut previous_rows=std::collections::HashMap::new();
+        let mut previous_table_rows=Vec::new();
         // A structural edit can split one table into several tables whose
         // retained rows all name the same former owner. Only one successor
         // may inherit that table identity.
-        let mut table_ids = self.tables.iter().filter(|table| table.rows.is_frozen())
+        let mut table_ids = tables.iter().filter(|table| table.rows.is_frozen())
             .map(|table| table.id).collect::<std::collections::HashSet<_>>();
-        if let Some(previous)=previous {for table in previous.tables.iter().filter(|old|self.tables.iter().any(|new|!new.rows.is_frozen() && (old.source_range.start==new.source_range.start || old.range==new.range))){for row in &table.rows {previous_rows.insert(row.id,(table.id,row));for cell in &row.cells {previous_cells.insert(cell.id,(table.id,row));}}}}
-        for table in Arc::make_mut(&mut self.tables) {
+        if let Some((previous,previous_indices))=previous {
+            // Source and formatted coordinates can both move during an edit.
+            // The caller supplies the old region; matching new offsets against
+            // old tables would lose untouched row and cell identities.
+            // Keep the borrowed identity maps tied to one-off row vectors so
+            // reconciliation does not populate the previous snapshot's cache.
+            for table in previous.tables.get_range(&previous_indices).ok_or(BlockIdentityError::InvalidProjection)? {
+                let rows=table.rows.get_range(&(0..table.rows.len())).ok_or(BlockIdentityError::InvalidProjection)?;
+                previous_table_rows.push((table.id,rows));
+            }
+            for (table_id,rows) in &previous_table_rows {
+                for row in rows {previous_rows.insert(row.id,(*table_id,row));for cell in &row.cells {previous_cells.insert(cell.id,(*table_id,row));}}
+            }
+        }
+        for table in &mut tables {
             if table.rows.is_frozen() { continue; }
             let mut table_previous=None;
             for row in &mut table.rows {
@@ -1777,6 +1808,13 @@ impl FormattedDocument {
             }
             table.rows.freeze(); table.source_rows.freeze();
         }
+        if replacing_all {
+            self.tables = tables.into();
+            self.tables.freeze();
+        } else {
+            self.tables=self.tables.splice_transformed(indices,tables,0,0,0,0,&mut RangeSpliceStats::default())
+                .ok_or(BlockIdentityError::InvalidProjection)?;
+        }
         Ok(next_id)
     }
 
@@ -1797,11 +1835,7 @@ impl FormattedDocument {
         if trace { eprintln!("  hard_lines {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         if let Some(lines) = &self.flow_lines { lines.visit_retained_memory(visitor); }
         if let Some(lines) = &self.table_lines { lines.visit_retained_memory(visitor); }
-        visitor.arc(&self.tables, |visitor| {
-            for table in self.tables.iter() {
-                visitor.vector(&table.columns,0); table.rows.visit_retained_memory(visitor); table.source_rows.visit_retained_memory(visitor);
-            }
-        });
+        self.tables.visit_retained_memory(visitor);
         if let Some(blocks) = &self.flow_blocks { blocks.visit_retained_memory(visitor); }
         self.inline_images.visit_retained_memory(visitor);
         self.styles.visit_retained_memory(visitor);
@@ -1932,7 +1966,7 @@ impl FormattedDocument {
             text,
             flat_text: compatibility_text,
             comment_context_cache: super::comment_context::fresh_cache(),
-            tables: Arc::from([]),
+            tables: Default::default(),
             table_lines: None,
             blocks: OrderedRangeStore::new(blocks),
             hard_lines: OrderedRangeStore::new(hard_lines),
@@ -2696,7 +2730,9 @@ impl FormattedDocument {
         }
         for (candidate, old) in blocks.iter_mut().zip(&previous_blocks) {
             candidate.id = old.id;
-            candidate.direct_formatting = old.direct_formatting.clone();
+            if candidate.direct_formatting != old.direct_formatting {
+                candidate.direct_formatting = old.direct_formatting.clone();
+            }
             if previous
                 .style_sheet
                 .configuration_deleted(&candidate.style, true)
@@ -2804,7 +2840,9 @@ impl FormattedDocument {
                 // join. Iteration is in document order, so the first ID wins.
                 let target = &mut blocks[target];
                 target.id = old.id;
-                target.direct_formatting = old.direct_formatting.clone();
+                if target.direct_formatting != old.direct_formatting {
+                    target.direct_formatting = old.direct_formatting.clone();
+                }
             }
         }
 
@@ -2853,7 +2891,9 @@ impl FormattedDocument {
         let next_id = self.install_reconciled_block_ids(previous, edits, position_map, next_id)?;
         let mut blocks = self.blocks.to_vec();
         for (block, parsed) in blocks.iter_mut().zip(parsed_blocks) {
-            block.direct_formatting = parsed.direct_formatting.clone();
+            if block.direct_formatting != parsed.direct_formatting {
+                block.direct_formatting = parsed.direct_formatting.clone();
+            }
             if previous
                 .style_sheet
                 .configuration_deleted(&block.style, true)
@@ -3471,10 +3511,9 @@ impl FormattedDocument {
     fn literal_span_for_source(&self, source: usize) -> Option<ProvenanceSpan> {
         self.literal_encoding?;
         // Literal contributors are stored whole, so boundary items are points.
-        let boundaries = &self.provenance.boundaries;
-        let index = boundaries.partition_point_start(source);
-        let boundary = boundaries.get(index).filter(|at| at.source.start == source)
-            .or_else(|| index.checked_sub(1).and_then(|at| boundaries.get(at)))?;
+        let index = self.provenance.boundary_partition_start(source);
+        let boundary = self.provenance.boundary_get(index).filter(|at| at.source.start == source)
+            .or_else(|| index.checked_sub(1).and_then(|at| self.provenance.boundary_get(at)))?;
         let at = boundary.formatted.start;
         self.provenance.query_touching(&(at..at), &self.text).into_iter()
             .find(|span| span.source.start <= source && source <= span.source.end)
@@ -3624,11 +3663,7 @@ impl FormattedDocument {
 
     #[cfg(test)]
     pub(crate) fn source_boundary_query_work(&self, source: usize) -> (usize, usize) {
-        let (_, stats) = self
-            .provenance
-            .boundaries
-            .query_overlapping_with_stats(&(source.saturating_sub(1)..source.saturating_add(1)));
-        (stats.nodes_visited, stats.items_examined)
+        self.provenance.boundary_query_work(&(source.saturating_sub(1)..source.saturating_add(1)))
     }
 
     /// Malformed source ranges represented by visible opaque replacement
@@ -5375,7 +5410,9 @@ pub(crate) fn splice_line_local_projection(
     if !previous.source_ordered || !regional.source_ordered {
         return Err(BlockIdentityError::InvalidProjection);
     }
-    let boundaries = &previous.provenance.boundaries;
+    let formatted_delta = new_formatted_end as i128 - old_formatted.end as i128;
+    let source_delta = new_source.end as i128 - old_source.end as i128;
+    let source_boundaries = if let Some(boundaries) = &previous.provenance.boundaries {
     let boundary_indices = boundaries.partition_point_start(mapping_source.start)
         ..mapping_source
             .end
@@ -5384,8 +5421,6 @@ pub(crate) fn splice_line_local_projection(
     let old_boundaries = boundaries
         .get_range(&boundary_indices)
         .ok_or(BlockIdentityError::InvalidProjection)?;
-    let formatted_delta = new_formatted_end as i128 - old_formatted.end as i128;
-    let source_delta = new_source.end as i128 - old_source.end as i128;
     // Replaced items include other contributors' edges at the region's source
     // endpoints; retain those outside the formatted region.
     let mut regional_boundaries = provenance_runs::boundary_items(regional_provenance.iter().cloned());
@@ -5407,7 +5442,7 @@ pub(crate) fn splice_line_local_projection(
     let narrowed_regional_boundaries = regional_boundaries
         [boundary_prefix..regional_boundaries.len() - boundary_suffix]
         .to_vec();
-    let source_boundaries = boundaries
+    Some(boundaries
         .splice_transformed(
             narrowed_boundary_indices,
             narrowed_regional_boundaries,
@@ -5417,7 +5452,24 @@ pub(crate) fn splice_line_local_projection(
             None,
             &mut range_stats,
         )
-        .ok_or(BlockIdentityError::InvalidProjection)?;
+        .ok_or(BlockIdentityError::InvalidProjection)?)
+    } else {
+        // Reverse queries share the formatted tree only while source starts
+        // stay ordered, including empty caret seeds and both splice seams.
+        let before = provenance_indices.start.checked_sub(1).and_then(|at| runs.get(at));
+        let after = runs.get(provenance_indices.end);
+        let starts = before.as_ref().map(|run| run.source.start as i128)
+            .into_iter().chain(regional_provenance.iter().map(|run| run.source.start as i128))
+            .chain(after.as_ref().map(|run| run.source.start as i128 + source_delta));
+        let mut previous = None;
+        for start in starts {
+            if previous.is_some_and(|previous| previous > start) {
+                return Err(BlockIdentityError::InvalidProjection);
+            }
+            previous = Some(start);
+        }
+        None
+    };
     let (provenance_prefix, provenance_suffix) = shared_transformed_edges(
         &old_provenance,
         &regional_provenance,
@@ -5501,7 +5553,7 @@ pub(crate) fn splice_line_local_projection(
         text: target_text,
         flat_text: Arc::new(OnceLock::new()),
         comment_context_cache: super::comment_context::prefix_cache(&previous.comment_context_cache, comment_prefix_end),
-        tables: Arc::from([]),
+        tables: Default::default(),
         table_lines: None,
         blocks,
         hard_lines,
@@ -5556,8 +5608,11 @@ pub(crate) fn splice_line_local_projection(
     let text_spans=edits.iter().map(|edit|(edit.range.clone(),edit.replacement.len())).collect::<Vec<_>>();
     let source_spans=source_patches.iter().map(|patch|(patch.range(),patch.replacement().len())).collect::<Vec<_>>();
     let map_range=|range:&Range<usize>,spans:&[(Range<usize>,usize)]| map_point(range.start,spans,false)..map_point(range.end,spans,true);
+    let table_start = old_formatted.start.checked_sub(1)
+        .map_or(0, |at| previous.tables.partition_point_end(at));
+    let table_indices = table_start..previous.tables.partition_point_start(old_formatted.end.saturating_add(1));
     let mut tables=Vec::new();
-    for old in previous.tables.iter() {
+    for old in previous.tables.get_range(&table_indices).ok_or(BlockIdentityError::InvalidProjection)? {
         if !regional.tables.is_empty() && old_formatted.start <= old.range.start && old.range.end <= old_formatted.end {continue;}
         let mut table=old.clone(); table.range=map_range(&table.range,&text_spans); table.source_range=map_range(&table.source_range,&source_spans);
         // Only records touching the changed interval are copied. Coordinates
@@ -5596,9 +5651,13 @@ pub(crate) fn splice_line_local_projection(
         for row in &mut table.source_rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {*cell=shift_region_range(cell,old_formatted.start)?;}for marker in &mut row.delimiter_markers {*marker=shift_region_range(marker,old_formatted.start)?;}for pipe in &mut row.pipes {*pipe+=old_formatted.start;}}
         tables.push(table);
     }
-    tables.sort_by_key(|table|table.range.start);candidate.tables=tables.into();
+    tables.sort_by_key(|table|table.range.start);
+    let changed_tables = table_indices.start..table_indices.start + tables.len();
+    candidate.tables=previous.tables.splice_transformed(table_indices.clone(), tables,
+        old_formatted.end,new_formatted_end,previous.source_content_end,new_source_content_end,&mut range_stats)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
     if !regional.tables.is_empty() {
-        *next_projected_block_id=candidate.install_table_ids(*next_projected_block_id,Some(previous))?;
+        *next_projected_block_id=candidate.install_table_ids_in(*next_projected_block_id,Some((previous,table_indices)),changed_tables)?;
     }
     if let Some(previous_lines)=&previous.table_lines {
         let start=previous_lines.partition_point(|line|line.range.end<old_formatted.start);
@@ -5611,7 +5670,7 @@ pub(crate) fn splice_line_local_projection(
         let mut lines=Vec::new();
         while let Some(line)=candidate.hard_lines.get(index).filter(|line|line.range.start<=new_end) {
             if let Some(table)=candidate.table_at(line.range.start).filter(|table|!table.source_view) {
-                let row_index=table.rows.partition_point(|row|row.range.start<=line.range.start).saturating_sub(1);
+                let row_index=table.rows.partition_point_start(line.range.start.saturating_add(1)).saturating_sub(1);
                 if let Some(row)=table.rows.get(row_index).filter(|row|line.range.start<=row.range.end) {
                     lines.push(HardLine{id:row.id,range:row.range.clone(),separator_length:1});
                     index=candidate.hard_lines.partition_point_start(row.range.end.saturating_add(1));continue;
@@ -5871,12 +5930,12 @@ fn project_markdown(
 ) -> FormattedDocument {
     let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(normalized)).to_source(normalized);
     let definitions = super::markdown_syntax::definitions(&normalized.text).0;
-    let quote_context = super::markdown_quotes::source_context(normalized);
-    let indented = super::markdown_indented_code::classify(normalized);
-    let list_context = super::markdown_blocks::source_context(normalized);
+    let quote_context = super::markdown_quotes::source_context_with_syntax(normalized, &syntax);
+    let indented = super::markdown_indented_code::classify_with_syntax(normalized, &syntax);
+    let list_context = super::markdown_blocks::source_context_with_syntax(normalized, &syntax);
     if preserve_markers {
-        let (cooked, explicit) = super::paragraph_flow::markdown_source(normalized);
-        let soft = super::paragraph_flow::markdown_soft_breaks(normalized);
+        let (cooked, explicit) = super::paragraph_flow::markdown_with_syntax(normalized, true, true, &syntax);
+        let soft = super::paragraph_flow::markdown_soft_breaks_with_syntax(normalized, &syntax);
         let soft_sources = normalized
             .endings
             .iter()
@@ -6019,11 +6078,7 @@ fn project_markdown(
         projected.share_block_attributes();
         return projected;
     }
-    let (cooked, explicit) = if document_start {
-        super::paragraph_flow::markdown(normalized)
-    } else {
-        super::paragraph_flow::markdown_region(normalized)
-    };
+    let (cooked, explicit) = super::paragraph_flow::markdown_with_syntax(normalized, false, document_start, &syntax);
     let mut projected = project_markdown_lines(
         &cooked,
         revision,
@@ -6645,6 +6700,10 @@ fn project_markdown_lines(
         while index < projection.hard_lines.len() { presentation.push(projection.hard_lines.get(index).unwrap()); index+=1; }
         projection.table_lines=Some(OrderedRangeStore::new(presentation));
     }
+    // The construction vector can have nearly twice the final table count.
+    // Release that spare storage before later projection passes, as the
+    // previous exact-length table slice did.
+    tables.shrink_to_fit();
     projection.tables=tables.into();
     projection
 }
@@ -7259,7 +7318,7 @@ mod tests {
         let projection = document.projection();
         assert_eq!(projection.hard_line_count(), 100_001);
         assert!(projection.provenance.runs.len() <= source.len().div_ceil(super::super::encoding::MAPPING_CHUNK_BYTES));
-        assert!(projection.provenance.boundaries.len() <= projection.provenance.runs.len() * 2);
+        assert!(projection.provenance.boundaries.as_ref().is_none_or(|boundaries| boundaries.len() <= projection.provenance.runs.len() * 2));
         assert_eq!(projection.source_range(12345..12346), Some(12345..12346));
     }
 

@@ -63,14 +63,9 @@ pub(super) fn source_lines(input: &NormalizedText) -> Vec<Range<usize>> {
     lines
 }
 
-pub(super) fn markdown_soft_breaks(input: &NormalizedText) -> BTreeSet<usize> {
-    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
-    markdown_soft_breaks_with_syntax(input, &syntax)
-}
-
 /// Only grammar-owned prose breaks may fold. Looking at the surrounding
 /// physical lines invents breaks in code, HTML and empty container prefixes.
-fn markdown_soft_breaks_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> BTreeSet<usize> {
+pub(super) fn markdown_soft_breaks_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> BTreeSet<usize> {
     input.endings.iter().filter_map(|ending| {
         let soft = syntax.soft_breaks.get(syntax.soft_breaks.partition_point(|range| range.end <= ending.source.start))
             .is_some_and(|range| range.start <= ending.source.start && ending.source.end <= range.end);
@@ -122,8 +117,17 @@ fn markdown_projection(
     document_start: bool,
 ) -> (NormalizedText, BTreeSet<usize>) {
     let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
-    let soft = markdown_soft_breaks_with_syntax(input, &syntax);
-    let quotes = super::markdown_quotes::classify(input);
+    markdown_with_syntax(input, preserve_markers, document_start, &syntax)
+}
+
+pub(super) fn markdown_with_syntax(
+    input: &NormalizedText,
+    preserve_markers: bool,
+    document_start: bool,
+    syntax: &super::markdown_syntax::Blocks,
+) -> (NormalizedText, BTreeSet<usize>) {
+    let soft = markdown_soft_breaks_with_syntax(input, syntax);
+    let quotes = super::markdown_quotes::classify_with_syntax(input, syntax);
     // Count blank physical lines before any block. Quote stripping can empty
     // a line that still owns container markers, so judge the original text.
     let leading_blank = if document_start && !preserve_markers {
@@ -150,7 +154,7 @@ fn markdown_projection_with_soft_breaks(
 ) -> (NormalizedText, BTreeSet<usize>) {
     let lines = source_lines(input);
     let lists = super::markdown_blocks::classify_with_syntax(input, syntax);
-    let quotes = super::markdown_quotes::classify(input);
+    let quotes = super::markdown_quotes::classify_with_syntax(input, syntax);
     let mut replacements: Vec<(Range<usize>, &'static str, bool)> = Vec::new();
     let mut explicit = BTreeSet::new();
     let mut i = 0;

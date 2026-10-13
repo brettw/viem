@@ -1,4 +1,4 @@
-//! Persistent table metadata with logarithmic borrowed row lookup. A source
+//! Persistent table and row metadata with logarithmic borrowed lookup. A source
 //! edit shifts the untouched suffix in the range tree; the small compatibility
 //! cache only resolves rows actually queried by commands or the viewport.
 use super::range_index::{OrderedRangeStore, RangeSpliceStats, RangedItem};
@@ -49,6 +49,7 @@ impl<T: Clone + RangedItem> RowLookup<T> {
     fn visit(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         if let Some(value) = self.value.get() {
             visitor.owned(value as *const T as usize, 0, value.owned_heap_bytes());
+            value.visit_shared_memory(visitor);
         }
         if let Some((left, right)) = self.children.get() {
             visitor.owned(
@@ -121,6 +122,10 @@ impl<T: Clone + RangedItem> TableRows<T> {
             self.lookup.get(index, &self.store)
         }
     }
+    /// Read a transient record without filling the borrowed compatibility cache.
+    pub(super) fn get_owned(&self, index: usize) -> Option<T> {
+        self.building.as_ref().map_or_else(|| self.store.get(index), |rows| rows.get(index).cloned())
+    }
     pub fn first(&self) -> Option<&T> {
         self.get(0)
     }
@@ -132,6 +137,40 @@ impl<T: Clone + RangedItem> TableRows<T> {
             rows: self,
             range: 0..self.len(),
         }
+    }
+    pub(super) fn into_vec(self) -> Vec<T> {
+        self.building.unwrap_or_else(|| self.store.to_vec())
+    }
+    pub(super) fn get_range(&self, indices: &Range<usize>) -> Option<Vec<T>> {
+        if let Some(rows) = &self.building { rows.get(indices.clone()).map(<[T]>::to_vec) }
+        else { self.store.get_range(indices) }
+    }
+    pub(super) fn shifted(&self, text_delta: i128, source_delta: i128) -> Option<Self> {
+        if text_delta == 0 && source_delta == 0 { return Some(self.clone()); }
+        if let Some(rows) = &self.building {
+            return rows.iter().map(|row| {
+                let range = row.range();
+                row.with_transform(usize::try_from(range.start as i128 + text_delta).ok()?
+                    ..usize::try_from(range.end as i128 + text_delta).ok()?, source_delta, None)
+            }).collect::<Option<Vec<_>>>().map(Self::from);
+        }
+        let store = self.store.shifted(text_delta, source_delta)?;
+        Some(Self { lookup: Arc::new(RowLookup::new(0..store.len())), store, building: None })
+    }
+    /// Coordinate lookup descends the range tree once and does not populate
+    /// compatibility records for the other tables encountered on that path.
+    pub fn partition_point_start(&self, offset: usize) -> usize {
+        self.building.as_ref().map_or_else(|| self.store.partition_point_start(offset),
+            |rows| rows.partition_point(|row| row.range().start < offset))
+    }
+    pub fn partition_point_end(&self, offset: usize) -> usize {
+        self.building.as_ref().map_or_else(|| self.store.partition_point_end(offset),
+            |rows| rows.partition_point(|row| row.range().end <= offset))
+    }
+    pub(super) fn index_touching_point(&self, offset: usize) -> Option<usize> {
+        if self.building.is_none() { return self.store.index_touching_point(offset); }
+        self.partition_point_start(offset.saturating_add(1)).checked_sub(1)
+            .filter(|&index| self.get(index).is_some_and(|item| offset <= item.range().end))
     }
     pub fn partition_point(&self, mut predicate: impl FnMut(&T) -> bool) -> usize {
         let (mut low, mut high) = (0, self.len());
@@ -174,6 +213,7 @@ impl<T: Clone + RangedItem> TableRows<T> {
         visitor.arc(&self.lookup, |visitor| self.lookup.visit(visitor));
         if let Some(rows) = &self.building {
             visitor.vector(rows, rows.iter().map(RangedItem::owned_heap_bytes).sum());
+            for row in rows { row.visit_shared_memory(visitor); }
         }
     }
     pub(super) fn splice_transformed(
@@ -186,6 +226,13 @@ impl<T: Clone + RangedItem> TableRows<T> {
         new_source_end: usize,
         stats: &mut RangeSpliceStats,
     ) -> Option<Self> {
+        if indices == (0..self.len()) {
+            // Nothing is retained from the previous tree. In particular, do
+            // not freeze a discarded building vector merely to replace it.
+            let store = OrderedRangeStore::new(Vec::new()).splice_transformed(
+                0..0, replacement, 0, 0, None, None, stats)?;
+            return Some(Self { lookup: Arc::new(RowLookup::new(0..store.len())), store, building: None });
+        }
         let mut rows = self.clone();
         rows.freeze();
         let store = rows.store.splice_transformed(

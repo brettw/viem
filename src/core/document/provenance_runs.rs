@@ -136,6 +136,8 @@ impl ProvenanceRun {
 }
 
 impl RangedItem for ProvenanceRun {
+    fn auxiliary_range(&self) -> Option<&Range<usize>> { Some(&self.source) }
+
     fn range(&self) -> &Range<usize> {
         &self.formatted
     }
@@ -387,13 +389,13 @@ impl RunBuilder {
     }
 }
 
-/// Contributors for a projection, in formatted order, with a source-keyed
-/// boundary index. Literal projections keep their own encoding runs as
-/// indivisible items.
+/// Contributors for a projection, in formatted order. Monotonic source
+/// projections reverse-query the same tree; reordered contributors retain a
+/// separate source-keyed index. Literal encoding runs remain indivisible.
 #[derive(Clone)]
 pub(super) struct ProvenanceIndex {
     pub(super) runs: IntervalRangeStore<ProvenanceRun>,
-    pub(super) boundaries: IntervalRangeStore<BoundaryItem>,
+    pub(super) boundaries: Option<IntervalRangeStore<BoundaryItem>>,
 }
 
 impl ProvenanceIndex {
@@ -406,9 +408,43 @@ impl ProvenanceIndex {
         Self::from_runs(runs)
     }
 
-    pub(super) fn from_runs(runs: Vec<ProvenanceRun>) -> Self {
-        let boundaries = IntervalRangeStore::new(boundary_items(runs.iter().cloned()));
+    pub(super) fn from_runs(mut runs: Vec<ProvenanceRun>) -> Self {
+        runs.sort_by_key(|run| run.formatted.start);
+        let ordered = runs.windows(2).all(|pair| pair[0].source.start <= pair[1].source.start);
+        let boundaries = (!ordered).then(|| IntervalRangeStore::new(boundary_items(runs.iter().cloned())));
         Self { runs: IntervalRangeStore::new(runs), boundaries }
+    }
+
+    pub(super) fn boundary_partition_start(&self, source: usize) -> usize {
+        self.boundaries.as_ref().map_or_else(|| self.runs.partition_point_auxiliary_start(source),
+            |boundaries| boundaries.partition_point_start(source))
+    }
+
+    pub(super) fn boundary_get(&self, index: usize) -> Option<BoundaryItem> {
+        match &self.boundaries {
+            Some(boundaries) => boundaries.get(index),
+            None => self.runs.get(index).map(|run| BoundaryItem {
+                source: run.source, formatted: run.formatted, rules: run.rules,
+            }),
+        }
+    }
+
+    fn boundary_query(&self, query: &Range<usize>) -> Vec<BoundaryItem> {
+        match &self.boundaries {
+            Some(boundaries) => boundaries.query_touching(query),
+            None => self.runs.query_auxiliary_touching(query).into_iter().map(|run| BoundaryItem {
+                source: run.source, formatted: run.formatted, rules: run.rules,
+            }).collect(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn boundary_query_work(&self, query: &Range<usize>) -> (usize, usize) {
+        let stats = match &self.boundaries {
+            Some(boundaries) => boundaries.query_overlapping_with_stats(query).1,
+            None => self.runs.query_auxiliary_touching_with_stats(query).1,
+        };
+        (stats.nodes_visited, stats.items_examined)
     }
 
     pub(super) fn is_empty(&self) -> bool {
@@ -417,7 +453,7 @@ impl ProvenanceIndex {
 
     pub(super) fn visit_retained_memory(&self, visitor: &mut crate::document::history_memory::MemoryVisitor<'_>) {
         self.runs.visit_retained_memory(visitor);
-        self.boundaries.visit_retained_memory(visitor);
+        if let Some(boundaries) = &self.boundaries { boundaries.visit_retained_memory(visitor); }
     }
 
     /// Contributors with a non-empty intersection with `query`.
@@ -467,7 +503,7 @@ impl ProvenanceIndex {
     pub(super) fn boundaries_touching(&self, query: &Range<usize>, text: &FormattedTextTree) -> Vec<SourceTextBoundary> {
         let keep = |at: usize| query.start <= at && at <= query.end;
         let mut output = Vec::new();
-        for item in self.boundaries.query_touching(query) {
+        for item in self.boundary_query(query) {
             item.expand(text, &keep, &mut output);
         }
         super::normalize_source_boundaries(&mut output);
@@ -477,7 +513,7 @@ impl ProvenanceIndex {
     /// The first contributor, in formatted order, whose source strictly
     /// contains `source`.
     pub(super) fn containing_source(&self, source: usize, text: &FormattedTextTree) -> Option<ProvenanceSpan> {
-        self.boundaries.query_touching(&(source..source)).into_iter()
+        self.boundary_query(&(source..source)).into_iter()
             .filter_map(|item| item.containing(source, text))
             .min_by_key(|span| (span.formatted.start, span.formatted.end))
     }
@@ -487,12 +523,12 @@ impl ProvenanceIndex {
     /// formatted)`. Exact for projections whose contributor sources are in
     /// formatted order.
     pub(super) fn uncovered_neighbors(&self, source: usize) -> (Option<(usize, usize)>, Option<(usize, usize)>) {
-        let index = self.boundaries.partition_point_start(source);
-        let following = self.boundaries.get(index).map(|item| (item.source.start, item.formatted.start));
-        let preceding = index.checked_sub(1).and_then(|last| self.boundaries.get(last)).and_then(|last| {
+        let index = self.boundary_partition_start(source);
+        let following = self.boundary_get(index).map(|item| (item.source.start, item.formatted.start));
+        let preceding = index.checked_sub(1).and_then(|last| self.boundary_get(last)).and_then(|last| {
             // An earlier, longer contributor can end after the last start.
             std::iter::once(last.clone())
-                .chain(self.boundaries.query_touching(&(last.source.start..source)))
+                .chain(self.boundary_query(&(last.source.start..source)))
                 .filter(|item| item.source.start < source && item.source.end <= source)
                 .map(|item| (item.source.end, item.formatted.end))
                 .min_by_key(|&(end, formatted)| (std::cmp::Reverse(end), formatted))
@@ -502,9 +538,9 @@ impl ProvenanceIndex {
 
     /// The least boundary source position at or after `source`.
     pub(super) fn following_boundary(&self, source: usize, text: &FormattedTextTree) -> Option<usize> {
-        let mut best = self.boundaries.get(self.boundaries.partition_point_start(source))
+        let mut best = self.boundary_get(self.boundary_partition_start(source))
             .map(|item| item.source.start);
-        for item in self.boundaries.query_touching(&(source..source)) {
+        for item in self.boundary_query(&(source..source)) {
             item.edges(text, |at, _, _| {
                 if at >= source {
                     best = Some(best.map_or(at, |best| best.min(at)));
@@ -518,8 +554,8 @@ impl ProvenanceIndex {
 
     /// The greatest boundary source position before `source`.
     pub(super) fn preceding_boundary(&self, source: usize, text: &FormattedTextTree) -> Option<usize> {
-        let last = self.boundaries.partition_point_start(source).checked_sub(1)?;
-        let last_item = self.boundaries.get(last)?;
+        let last = self.boundary_partition_start(source).checked_sub(1)?;
+        let last_item = self.boundary_get(last)?;
         let mut best: Option<usize> = None;
         let mut consider = |item: &BoundaryItem| {
             item.edges(text, |at, _, _| {
@@ -532,7 +568,7 @@ impl ProvenanceIndex {
             });
         };
         consider(&last_item);
-        for item in self.boundaries.query_touching(&(last_item.source.start..source)) {
+        for item in self.boundary_query(&(last_item.source.start..source)) {
             if item.source.start < source {
                 consider(&item);
             }

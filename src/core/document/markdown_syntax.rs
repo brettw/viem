@@ -226,10 +226,14 @@ pub(super) struct Blocks {
 }
 impl Blocks {
     pub fn parse(text: &str) -> Self {
+        super::work_statistics::record(|work| {
+            work.markdown_block_parse_calls += 1;
+            work.markdown_block_parsed_bytes += text.len();
+        });
         use pulldown_cmark::TagEnd;
         let parser = Parser::new_ext(text, Options::ENABLE_TABLES);
         let mut result = Self::default();
-        result.tables = super::markdown_tables::parse(text);
+        let mut tables = super::markdown_tables::TableParser::default();
         result.definitions = definitions(text).1;
         let mut quotes = 0;
         let mut lists: Vec<(Range<usize>, Option<u64>, bool, usize)> = Vec::new();
@@ -237,6 +241,7 @@ impl Blocks {
         let mut active = None;
         let mut active_code = None;
         for (event, range) in parser.into_offset_iter() {
+            tables.event(text, &event, &range);
             if matches!(event, Event::InlineHtml(_)) { result.inline_html.push(range.clone()); }
             match &event {
                 Event::Start(Tag::Paragraph) => result.paragraphs.push(range.clone()),
@@ -347,6 +352,7 @@ impl Blocks {
             }
         }
         result.blocks.sort_by_key(|block| block.range.start);
+        result.tables = tables.tables;
         result.containers.sort_by_key(|container| container.range.start);
         result.definitions.sort_by_key(|range| range.start);
         result

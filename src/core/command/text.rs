@@ -5,7 +5,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::document::HardLineSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WordClass {
+pub(super) enum WordClass {
     White,
     Keyword,
     Punctuation,
@@ -327,7 +327,7 @@ fn classify(grapheme: &str) -> WordClass {
     }
 }
 
-fn class_for(big_word: bool, class: WordClass) -> WordClass {
+pub(super) fn class_for(big_word: bool, class: WordClass) -> WordClass {
     if big_word && class != WordClass::White {
         WordClass::Keyword
     } else {
@@ -366,12 +366,6 @@ pub(crate) fn move_word_forward(text: &str, offset: usize, big_word: bool, count
 
 pub(crate) fn move_word_end(text: &str, offset: usize, big_word: bool, count: usize) -> usize {
     word_end(text, offset, big_word, count, false)
-}
-
-/// `cw` counts the current word end as its first destination; `e` advances
-/// before searching, even when the cursor already occupies a word end.
-pub(crate) fn change_word_end(text: &str, offset: usize, big_word: bool, count: usize) -> usize {
-    word_end(text, offset, big_word, count, true)
 }
 
 fn word_end(text: &str, offset: usize, big_word: bool, count: usize, stop: bool) -> usize {
@@ -427,6 +421,7 @@ pub(crate) fn move_word_backward(text: &str, offset: usize, big_word: bool, coun
     items[index].0
 }
 
+#[cfg(test)]
 pub(crate) fn move_word_end_backward(
     text: &str,
     offset: usize,

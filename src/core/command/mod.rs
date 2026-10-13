@@ -62,6 +62,7 @@ pub use line_mode::{LineLocation, LineMode};
 mod text;
 mod snapshot_motion;
 mod motion;
+mod word_snapshot;
 use snapshot_motion::{matching_pair, move_sentence};
 
 use std::collections::{BTreeMap, HashMap};
@@ -99,7 +100,7 @@ use text::{
     advance_graphemes, find_character, first_non_blank, grapheme_column, grapheme_range_at,
     is_grapheme_boundary, last_grapheme_on_line, last_non_blank, line_count, line_end, line_range,
     line_start, linewise_range, move_horizontal, move_vertical,
-    move_word_backward, move_word_end, move_word_end_backward, move_word_forward,
+    move_word_backward, move_word_end, move_word_forward,
     next_grapheme_boundary, next_line_start, normalize_normal_cursor,
     normalize_normal_cursor_snapshot, nth_line_start, position_at_column,
     previous_grapheme_boundary, repeat_find_character,
@@ -9311,7 +9312,7 @@ impl CommandInterpreter {
                     .and_then(|range| document.projection().text_tree().slice(range).ok())
                     .is_some_and(|text| !text.chars().all(char::is_whitespace))
                 {
-                    let end = text::change_word_end(document.text(), self.cursor, big, count);
+                    let end = word_snapshot::end(&lines, self.cursor, big, count, true);
                     return Some(MotionExtent {
                         range: self.cursor..lines.next_grapheme_boundary(end).unwrap_or(end),
                         kind: MotionKind::Characterwise,
@@ -9359,6 +9360,34 @@ impl CommandInterpreter {
                     lines.next_grapheme_boundary(end).unwrap_or(end)
                 } else { end },
                 kind: MotionKind::Characterwise,
+            });
+        }
+        let word_target = match motion {
+            OperatorMotion::WordForward(big) => Some((word_snapshot::forward(&lines, origin, big, count), false)),
+            OperatorMotion::WordBackward(big) => Some((word_snapshot::backward(&lines, origin, big, count), false)),
+            OperatorMotion::WordEndBackward(big) => Some((word_snapshot::end_backward(&lines, origin, big, count), true)),
+            OperatorMotion::WordEnd(big) => {
+                let target = if let Some((_, _, cell)) = document.projection().table_cell_at(origin)
+                    .filter(|(table, _, _)| !table.source_view)
+                {
+                    // A table cell is the operator's semantic boundary. Copy only
+                    // that cell while retaining the existing cell-local rules.
+                    let text = lines.slice_utf8(cell.range.clone()).ok()?;
+                    cell.range.start + move_word_end(&text, origin - cell.range.start, big, count)
+                } else {
+                    word_snapshot::end(&lines, origin, big, count, false)
+                };
+                Some((target, true))
+            }
+            _ => None,
+        };
+        if let Some((destination, inclusive)) = word_target {
+            return Some(if inclusive {
+                let end = origin.max(destination);
+                MotionExtent { range: origin.min(destination)..lines.next_grapheme_boundary(end).unwrap_or(end),
+                    kind: MotionKind::Characterwise }
+            } else {
+                exclusive_motion_extent_snapshot(document, &lines, origin, destination)
             });
         }
         let text = document.text();
@@ -9414,26 +9443,9 @@ impl CommandInterpreter {
                 ),
                 false,
             )),
-            OperatorMotion::WordForward(big) => {
-                let destination = move_word_forward(text, origin, big, count);
-                Some(exclusive_motion_extent(text, &lines, origin, destination))
-            },
-            OperatorMotion::WordEnd(big) => {
-                let end = if let Some((_, _, cell)) = document.projection().table_cell_at(origin)
-                    .filter(|(table, _, _)| !table.source_view)
-                {
-                    cell.range.start + move_word_end(&text[cell.range.clone()], origin - cell.range.start, big, count)
-                } else { move_word_end(text, origin, big, count) };
-                Some(characterwise(end, true))
-            }
-            OperatorMotion::WordBackward(big) => {
-                let destination = move_word_backward(text, origin, big, count);
-                Some(exclusive_motion_extent(text, &lines, origin, destination))
-            },
-            OperatorMotion::WordEndBackward(big) => Some(characterwise(
-                move_word_end_backward(text, origin, big, count),
-                true,
-            )),
+            OperatorMotion::WordForward(_) | OperatorMotion::WordEnd(_) |
+            OperatorMotion::WordBackward(_) | OperatorMotion::WordEndBackward(_) =>
+                unreachable!("snapshot word motions returned before materializing text"),
             OperatorMotion::LastNonBlank => {
                 let mut target = origin;
                 for _ in 1..count {
@@ -15721,6 +15733,29 @@ fn exclusive_motion_extent(
         range: origin.min(destination)..origin.max(destination),
         kind: MotionKind::Characterwise,
     }
+}
+
+fn exclusive_motion_extent_snapshot(
+    document: &Document,
+    lines: &HardLineSnapshot,
+    origin: usize,
+    destination: usize,
+) -> MotionExtent {
+    if destination < origin && origin == line_start(lines, origin) {
+        if destination <= first_nonblank_document(document, lines, destination) {
+            return MotionExtent { range: line_start(lines, destination)..origin, kind: MotionKind::Linewise };
+        }
+        return MotionExtent { range: destination..lines.previous_grapheme_boundary(origin).unwrap_or(origin),
+            kind: MotionKind::Characterwise };
+    }
+    if destination > origin && destination == line_start(lines, destination) {
+        if origin <= first_nonblank_document(document, lines, origin) {
+            return MotionExtent { range: line_start(lines, origin)..destination, kind: MotionKind::Linewise };
+        }
+        return MotionExtent { range: origin..lines.previous_grapheme_boundary(destination).unwrap_or(destination),
+            kind: MotionKind::Characterwise };
+    }
+    MotionExtent { range: origin.min(destination)..origin.max(destination), kind: MotionKind::Characterwise }
 }
 
 fn exclusive_search_extent(document: &Document, origin: usize, destination: usize) -> MotionExtent {

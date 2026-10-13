@@ -167,21 +167,28 @@ pub(super) fn prefix_with_limit(text: &str, limit: usize) -> (usize, usize) {
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
     let syntax =
-        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input));
+        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
+    classify_with_syntax(input, &syntax)
+}
+
+/// Shared grammar ranges are physical source coordinates, including after a
+/// quote prefix has been removed from the normalized stream.
+pub(super) fn classify_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> Vec<QuoteLine> {
     let mut active = Vec::new();
     let mut next = 0;
     super::paragraph_flow::source_lines(input)
         .into_iter()
         .map(|range| {
+            let source = input.source_at(range.start)..input.source_at(range.end);
             active.retain(|container: &&super::markdown_syntax::Container| {
-                range.start < container.range.end
+                source.start < container.range.end
             });
             while let Some(container) = syntax
                 .containers
                 .get(next)
-                .filter(|container| container.range.start <= range.end)
+                .filter(|container| container.range.start <= source.end)
             {
-                if range.start < container.range.end {
+                if source.start < container.range.end {
                     active.push(container);
                 }
                 next += 1;
@@ -213,17 +220,17 @@ pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
             // ancestor made a row of N nested quote markers quadratic.
             if let Some(container) = active.iter().rev().find(|container| {
                 container.list.is_none()
-                    && range.start <= container.range.start
-                    && container.range.start <= range.end
+                    && source.start <= container.range.start
+                    && container.range.start <= source.end
             }) {
                 let (prefix, _) = prefix_with_limit(
-                    &input.text[container.range.start..range.end],
+                    &input.text[input.normalized_at(container.range.start)..range.end],
                     container.quote_depth,
                 );
                 super::work_statistics::record(|stats| {
                     stats.markdown_container_prefix_bytes += prefix;
                 });
-                content_start = content_start.max(container.range.start + prefix);
+                content_start = content_start.max(input.normalized_at(container.range.start) + prefix);
             }
             QuoteLine {
                 range,
@@ -269,9 +276,9 @@ pub(super) fn strip(input: &NormalizedText, lines: &[QuoteLine]) -> NormalizedTe
     result
 }
 
-pub(super) fn source_context(input: &NormalizedText) -> Vec<QuoteLine> {
+pub(super) fn source_context_with_syntax(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks) -> Vec<QuoteLine> {
     let source_at = |at| input.source_at(at);
-    classify(input)
+    classify_with_syntax(input, syntax)
         .into_iter()
         .map(|line| QuoteLine {
             range: source_at(line.range.start)..source_at(line.range.end),

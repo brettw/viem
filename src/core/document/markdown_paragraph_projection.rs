@@ -1,4 +1,4 @@
-//! Bounded reprojection for structural edits inside independent prose.
+//! Bounded reprojection for independent prose and guarded structural owners.
 use super::*;
 
 impl Document {
@@ -6,8 +6,19 @@ impl Document {
         &self,
         patches: &[SourcePatch],
     ) -> Result<Option<(PreparedModelTransaction, Range<usize>, Range<usize>)>, ModelTransactionError> {
-        if self.format() != Format::Markdown || patches.is_empty() {
-            return Ok(None);
+        if let Ok(Some(prepared)) = self.prepare_paragraph_reprojection(patches, false) {
+            return Ok(Some(prepared));
+        }
+        self.prepare_paragraph_reprojection(patches, true)
+    }
+
+    fn independent_markdown_paragraph(&self, block: &super::super::Block) -> bool {
+        // Source exposes whitespace in surplus separator rows. Such a body
+        // does not stop blank-line pairing when a preceding ending is edited,
+        // so it cannot prove that a regional parser is independent.
+        if block.range.len() > 32768 || self.projection().text_tree().slice(block.range.clone())
+            .is_ok_and(|text| text.trim().is_empty()) {
+            return false;
         }
         // An ATX heading is one source line opened by its own marker; a setext
         // heading's underline is a separate line, so it is not independent.
@@ -19,10 +30,93 @@ impl Document {
                     .is_ok_and(|prefix| prefix.text.trim_start_matches(' ').starts_with('#'))
             })
         };
-        let ordinary = |block: &super::super::Block| (block.kind == super::super::BlockKind::Paragraph
+        (block.kind == super::super::BlockKind::Paragraph
                 || matches!(block.kind, super::super::BlockKind::Heading(_)) && atx(block))
             && !block.range.is_empty() && block.containers.is_empty() && block.quote_depth == 0
-            && !block.markdown_html && self.projection().table_at(block.range.start).is_none();
+            && !block.markdown_html && self.projection().table_at(block.range.start).is_none()
+    }
+
+    fn guarded_markdown_paragraphs(
+        &self,
+        mut run: Vec<super::super::Block>,
+    ) -> Result<Option<(Vec<super::super::Block>, Vec<Range<usize>>)>, ModelTransactionError> {
+        // Structural grammars may absorb a separator or a neighboring body.
+        // Capture unchanged, independent paragraphs on both sides and prove
+        // their complete semantics survive the edit. Walk bounded paragraph
+        // records, never the document's full block array or a container index.
+        let mut guards = Vec::new();
+        if run.is_empty() { return Ok(None); }
+        for preceding in [true, false] {
+            loop {
+                if run.len() >= 64 { return Ok(None); }
+                let edge = if preceding { run[0].range.start } else { run.last().unwrap().range.end };
+                let neighbor = if preceding { edge.checked_sub(1) }
+                    else { (edge < self.projection().text_tree().byte_len()).then_some(edge + 1) };
+                let Some(neighbor) = neighbor else { break; };
+                let Some(block) = self.projection().blocks_for_region(&(neighbor..neighbor)).into_iter()
+                    .find(|block| if preceding { block.range.end < edge } else { block.range.start > edge })
+                    else { return Ok(None); };
+                let guard = self.independent_markdown_paragraph(&block);
+                if guard { guards.push(block.range.clone()); }
+                if preceding { run.insert(0, block); } else { run.push(block); }
+                if run.last().unwrap().range.end - run[0].range.start > 32768 { return Ok(None); }
+                if guard { break; }
+            }
+        }
+        Ok(Some((run, guards)))
+    }
+
+    /// Recover a bounded HTML parser input from complete projected owners.
+    /// The independent edge paragraphs and the original parse prove that no
+    /// unobserved HTML or list state enters this band from outside it.
+    pub(super) fn guarded_markdown_input(
+        &self,
+        range: Range<usize>,
+    ) -> Result<Option<super::super::line_endings::NormalizedText>, ModelTransactionError> {
+        let run = self.projection().blocks_for_region(&range);
+        let Some((run, _)) = self.guarded_markdown_paragraphs(run)? else { return Ok(None); };
+        let formatted = run[0].range.start..run.last().unwrap().range.end;
+        if self.markdown_edit_needs_reference_context(&[TextEdit::new(formatted.clone(), "")]) {
+            return Ok(None);
+        }
+        for boundary in [formatted.start.checked_sub(1),
+            (formatted.end < self.projection().text_tree().byte_len()).then_some(formatted.end)]
+            .into_iter().flatten()
+        {
+            let Some(source) = self.projection().source_range(boundary..boundary + 1) else { return Ok(None); };
+            if !markdown_block_styles::explicit_paragraph_separator(self, &source, &[])? { return Ok(None); }
+        }
+        let Some(contributors) = self.projection().source_range(formatted.clone()) else { return Ok(None); };
+        let start = if formatted.start == 0 { self.projection().source_content_start() } else {
+            self.physical_line_at_source(contributors.start)?.source_range.start
+        };
+        let end = if formatted.end == self.projection().text_tree().byte_len() { self.source_byte_len() } else {
+            let Some(separator) = self.projection().source_range(formatted.end..formatted.end + 1) else { return Ok(None); };
+            separator.start
+        };
+        if end - start > 32768 { return Ok(None); }
+        let bytes = self.source_bytes_in(start..end)?;
+        let decoded = self.encoding().decode_region(&bytes, start)?;
+        let input = normalize(&decoded, self.file_format());
+        let local = super::super::projection::project_band(&input, self.format(), self.revision(),
+            start, end, start == self.projection().source_content_start());
+        if local.text() != self.projection().text_tree().slice(formatted.clone()).map_err(DocumentError::FormattedTextStorage)?
+            || markdown_source_region_signature(self.projection(), &formatted)
+                != markdown_source_region_signature(&local, &(0..local.text_tree().byte_len())) {
+            return Ok(None);
+        }
+        Ok(Some(input))
+    }
+
+    fn prepare_paragraph_reprojection(
+        &self,
+        patches: &[SourcePatch],
+        guarded: bool,
+    ) -> Result<Option<(PreparedModelTransaction, Range<usize>, Range<usize>)>, ModelTransactionError> {
+        if !self.format().is_markdown() || patches.is_empty()
+            || !guarded && self.format() != Format::Markdown {
+            return Ok(None);
+        }
         // The edited paragraphs: one for edits inside a body, two adjacent
         // ones when an edit joins them across their separator.
         let first = &patches[0];
@@ -32,9 +126,14 @@ impl Document {
         let run = self.projection().blocks_for_region(&(point..end_point)).into_iter()
             .filter(|block| block.range.start <= end_point && point <= block.range.end)
             .collect::<Vec<_>>();
+        let (run, guards) = if guarded {
+            let Some(band) = self.guarded_markdown_paragraphs(run)? else { return Ok(None); };
+            band
+        } else { (run, Vec::new()) };
         let (Some(first_block), Some(last_block)) = (run.first(), run.last()) else { return Ok(None); };
         let block_range = first_block.range.start..last_block.range.end;
-        if run.len() > 2 || !run.iter().all(ordinary)
+        if (!guarded && (run.len() > 2 || !run.iter().all(|block| self.independent_markdown_paragraph(block))))
+            || run.iter().any(|block| self.projection().table_at(block.range.start).is_some())
             || !(first_block.range.start <= point && end_point <= last_block.range.end)
             || self.markdown_edit_needs_reference_context(&[TextEdit::new(block_range.clone(), "")])
         { return Ok(None); }
@@ -48,7 +147,7 @@ impl Document {
         // into code, a list or HTML.
         let neighbors = block_range.start.saturating_sub(1)
             ..block_range.end.saturating_add(1).min(self.projection().text_tree().byte_len());
-        if self.projection().blocks_for_region(&neighbors).iter().any(|neighbor| {
+        if !guarded && (self.projection().blocks_for_region(&neighbors).iter().any(|neighbor| {
             if run.iter().any(|block| block.id == neighbor.id) { return false; }
             let preceding = neighbor.range.end <= block_range.start;
             neighbor.range.is_empty() || neighbor.markdown_html || neighbor.quote_depth != 0
@@ -58,7 +157,7 @@ impl Document {
                 || neighbor.containers.iter().any(|member|
                     member.container.kind == super::super::ContainerKind::Quote)
         }) || markdown_html_edit::edit_changes_literal_html_grammar(
-                self, &[TextEdit::new(block_range.clone(), "")])?
+                self, &[TextEdit::new(block_range.clone(), "")])?)
         { return Ok(None); }
         // Both outer separators must be explicit paragraph boundaries before
         // and after the edit. Endings inserted into a single ending (after a
@@ -77,12 +176,16 @@ impl Document {
         }
         let content = self.projection().source_range(block_range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let first_line = self.state().source_hard_lines.line_at_offset(content.start)
-            .ok_or(DocumentError::AmbiguousProjection)?;
+        let first_line = if block_range.start == 0 { 0 } else {
+            self.state().source_hard_lines.line_at_offset(content.start)
+                .ok_or(DocumentError::AmbiguousProjection)?
+        };
         let last_line = self.state().source_hard_lines.line_at_offset(content.end.saturating_sub(1))
             .ok_or(DocumentError::AmbiguousProjection)?;
         let trailing = self.state().source_hard_lines.get(last_line).ok_or(DocumentError::AmbiguousProjection)?;
-        let start = self.state().source_hard_lines.get(first_line).ok_or(DocumentError::AmbiguousProjection)?.start;
+        let start = if block_range.start == 0 { self.projection().source_content_start() } else {
+            self.state().source_hard_lines.get(first_line).ok_or(DocumentError::AmbiguousProjection)?.start
+        };
         let end = if block_range.end == self.projection().text_tree().byte_len() {
             self.source_byte_len()
         } else {
@@ -110,13 +213,14 @@ impl Document {
             {
                 return Err(DocumentError::UnsupportedFormatting.into());
             }
-            if normalized.text.contains('<')
+            if !guarded && normalized.text.contains('<')
                 || super::super::markdown_syntax::needs_reference_context(&normalized.text)
             {
                 return Err(DocumentError::UnsupportedFormatting.into());
             }
             let mut rows = Vec::new();
-            let mut cursor = range.start;
+            let mut cursor = self.state().source_hard_lines.get(first_line)
+                .ok_or(DocumentError::VerificationFailed)?.start;
             for ending in &normalized.endings {
                 rows.push(cursor..ending.source.end);
                 cursor = ending.source.end;
@@ -131,6 +235,11 @@ impl Document {
         };
         let (old_local, _, old_bytes) = parse(&self.state().source, old_source.clone())?;
         let (regional, source_rows, new_bytes) = parse(&source, new_source.clone())?;
+        // The splice's half-open contributor range deliberately retains an
+        // endpoint caret. If a structural owner becomes wholly empty, that
+        // old caret can conflict with the new owner's insertion boundary.
+        // Let the complete owner projection replace those empty identities.
+        if guarded && regional.text_tree().byte_len() == 0 { return Ok(None); }
         let inherited_styles = self.projection().style_spans_for_region(&block_range);
         if inherited_styles.iter().any(|span|
             span.range.start < block_range.start || block_range.end < span.range.end)
@@ -147,10 +256,31 @@ impl Document {
             || old_local.blocks().len() != run.len()
             || old_local.blocks().iter().zip(&run).any(|(local, block)|
                 local.kind != block.kind || local.style != block.style)
-            || regional.blocks().iter().any(|block| block.markdown_html
+            || !guarded && regional.blocks().iter().any(|block| block.markdown_html
                 || !block.containers.is_empty() || matches!(block.kind, super::super::BlockKind::ListItem { .. })
                 || block.style.0 == "Code Block")
         { return Ok(None); }
+        if guarded {
+            // Matching the original standalone parse establishes the captured
+            // owners' full context, including HTML scopes and list looseness.
+            if markdown_source_region_signature(self.projection(), &block_range)
+                != markdown_source_region_signature(&old_local, &(0..old_local.text_tree().byte_len())) {
+                return Ok(None);
+            }
+            for guard in guards {
+                let old = guard.start - block_range.start..guard.end - block_range.start;
+                let new = if guard.start == block_range.start { old.clone() } else {
+                    let Some(start) = regional.text_tree().byte_len().checked_sub(guard.len()) else { return Ok(None); };
+                    start..regional.text_tree().byte_len()
+                };
+                if old_local.text_tree().slice(old.clone()).map_err(DocumentError::FormattedTextStorage)?
+                    != regional.text_tree().slice(new.clone()).map_err(DocumentError::FormattedTextStorage)?
+                    || markdown_source_region_signature(&old_local, &old)
+                        != markdown_source_region_signature(&regional, &new) {
+                    return Ok(None);
+                }
+            }
+        }
         let edits = source_backed_reprojection_edits_with_patches(&old_local, &regional, patches)
             .into_iter().map(|edit| TextEdit::new(
                 edit.range.start + block_range.start..edit.range.end + block_range.start,
@@ -166,7 +296,7 @@ impl Document {
         let mut next_id = self.next_projected_block_id;
         let (projection, range_work) = splice_line_local_projection(self.projection(), regional, revision,
             first_hard..last_hard + 1, block_range.clone(), old_source, new_source,
-            target_text, source.len(), false, true, &edits, patches, None, &mut next_id)
+            target_text, source.len(), self.format().is_source_view(), true, &edits, patches, None, &mut next_id)
             .map_err(super::super::block_identity_document_error)?;
         let (source_hard_lines, source_work) = self.state().source_hard_lines
             .replace_ranges_with_stats(first_line..if end == self.source_byte_len() {
