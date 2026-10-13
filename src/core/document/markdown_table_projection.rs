@@ -472,6 +472,8 @@ impl Document {
             ),
             block_ids_already_reconciled: true,
             next_projected_block_id: next_id,
+            reprojected_region: Some((row.range.clone(),
+                row.range.start..row.range.start + projected_bytes)),
         }))
     }
 }

@@ -1,5 +1,5 @@
 {
-  "description": "Pinned arm64 release requested-heap regression ceilings for the standard and supplemental fixtures. Giant-word view phases require <=48 MiB live and <=64 MiB cumulative peak. Post-pruning live heap must be <=1 MiB. OS RSS is reported but not asserted; these are not total-process memory limits.",
+  "description": "Pinned arm64 release requested-heap regression ceilings for the standard, supplemental, and rich-paste fixtures. Rich-paste operations also bound additional heap and regional work independently of opening. Giant-word view phases require <=48 MiB live and <=64 MiB cumulative peak. Post-pruning live heap must be <=1 MiB. OS RSS is reported but not asserted; these are not total-process memory limits.",
   "cases": [
     {
       "arguments": [
@@ -696,6 +696,462 @@
         "switched_back": {
           "live_requested_heap_bytes": 265289728,
           "peak_requested_heap_bytes": 605028352
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste",
+        1048576,
+        "richpaste",
+        "utf8"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 37748736
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 12288,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 2048,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 20,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste",
+        1048576,
+        "richpaste",
+        "utf16le"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 20971520
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 12288,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 2048,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 20,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste",
+        4194304,
+        "richpaste",
+        "utf8"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 150994944
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 12288,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 2048,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 20,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste",
+        4194304,
+        "richpaste",
+        "utf16le"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 79691776
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 12288,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 2048,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 20,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste-list",
+        1048576,
+        "richpaste",
+        "utf8"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 20971520,
+          "peak_requested_heap_bytes": 37748736,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 37748736
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 14336,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 4096,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 24,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste-list",
+        1048576,
+        "richpaste",
+        "utf16le"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 11534336,
+          "peak_requested_heap_bytes": 20971520,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 20971520
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 14336,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 4096,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 24,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste-list",
+        4194304,
+        "richpaste",
+        "utf8"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 75497472,
+          "peak_requested_heap_bytes": 150994944,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 150994944
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 14336,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 4096,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 24,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
+        }
+      }
+    },
+    {
+      "arguments": [
+        "markdown",
+        "richpaste-list",
+        4194304,
+        "richpaste",
+        "utf16le"
+      ],
+      "phases": {
+        "opened": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776
+        },
+        "rich_paste_ready": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776
+        },
+        "rich_pasted": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776,
+          "can_undo": true
+        },
+        "rich_paste_undo": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776
+        },
+        "rich_paste_redo": {
+          "live_requested_heap_bytes": 41943040,
+          "peak_requested_heap_bytes": 79691776,
+          "can_undo": true
+        },
+        "dropped": {
+          "live_requested_heap_bytes": 1048576,
+          "peak_requested_heap_bytes": 79691776
+        }
+      },
+      "operations": {
+        "richpaste": {
+          "live_requested_heap_delta_bytes": 131072,
+          "peak_requested_heap_delta_bytes": 262144,
+          "allocations_and_reallocations": 14336,
+          "work": {
+            "source_full_materializations": 0,
+            "source_full_materialized_bytes": 0,
+            "source_decoded_bytes": 4096,
+            "formatted_full_materialized_bytes": 0,
+            "formatted_compatibility_materialized_bytes": 0,
+            "markdown_block_parse_calls": 24,
+            "markdown_block_parsed_bytes": 1024,
+            "full_projection_candidates": 0,
+            "regional_projection_candidates": 8,
+            "clipboard_style_blocks_visited": 16,
+            "clipboard_style_text_bytes": 256
+          }
         }
       }
     }

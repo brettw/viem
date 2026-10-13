@@ -165,3 +165,48 @@ fn payload_preparation_reports_requested_and_current_revisions_in_order() {
     assert_eq!(document.source_bytes(), unchanged_source);
     assert_eq!(document.revision(), current_revision);
 }
+
+#[test]
+fn identical_text_payload_can_change_break_metadata_through_full_reprojection() {
+    use viem_core::document::measure_document_work;
+    // LF is literal under Mac line-ending interpretation. Marking the same
+    // scalar as a logical break changes source and line identities, not text.
+    // The long Markdown owner exceeds the regional parser's capture budget.
+    let first = "x".repeat(32769);
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
+        let before_text = format!("{first}\nafter");
+        let original = encoded(&before_text, encoding);
+        let mut document = Document::from_bytes_with_file_format(
+            original.clone(), encoding, Format::Markdown, FileFormat::Mac,
+        ).unwrap();
+        let at = first.len();
+        assert_eq!(document.text(), before_text);
+        assert_eq!(document.line_count(), 1);
+        let payload = FormattedTextPayload::new(&document.hard_line_snapshot(), "\n", vec![0]).unwrap();
+        let request = FormattedPayloadEditRequest::new(document.id(), document.revision(),
+            vec![FormattedPayloadEdit::new(at..at + 1, payload)]);
+        let (prepared, work) = measure_document_work(|| document.prepare_formatted_payload_request(request));
+        let prepared = prepared.unwrap();
+        assert!(work.full_projection_candidates > 0, "exercise full fallback: {work:?}");
+        document.commit_model_transaction(prepared).unwrap();
+        let expected = encoded(&format!("{first}\r\rafter"), encoding);
+        assert_eq!(document.source_bytes(), expected);
+        assert_eq!(document.text(), before_text);
+        assert_eq!(document.line_count(), 2);
+        assert_eq!(document.capture_formatted_payload(0..before_text.len()).unwrap().break_offsets(), &[at]);
+        let reopened = Document::from_bytes_with_file_format(
+            expected.clone(), encoding, Format::Markdown, FileFormat::Mac,
+        ).unwrap();
+        assert_eq!(document.text(), reopened.text());
+        assert_eq!(document.capture_formatted_payload(0..before_text.len()).unwrap().break_offsets(),
+            reopened.capture_formatted_payload(0..before_text.len()).unwrap().break_offsets());
+        document.try_undo().unwrap();
+        assert_eq!(document.source_bytes(), original);
+        assert_eq!(document.text(), before_text);
+        assert_eq!(document.line_count(), 1);
+        document.try_redo().unwrap();
+        assert_eq!(document.source_bytes(), expected);
+        assert_eq!(document.text(), before_text);
+        assert_eq!(document.line_count(), 2);
+    }
+}

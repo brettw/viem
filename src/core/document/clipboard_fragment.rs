@@ -1364,6 +1364,7 @@ fn style_runs_in_context(
     let mut characters = Vec::new();
     let mut paragraphs = Vec::new();
     for block in projection.blocks_for_region(range) {
+        super::super::work_statistics::record(|work| work.clipboard_style_blocks_visited += 1);
         let selected = block.range.start.max(range.start)..block.range.end.min(range.end);
         if selected.start > selected.end {
             continue;
@@ -1387,6 +1388,7 @@ fn style_runs_in_context(
                     .text_tree()
                     .slice(block.range.clone())
                     .map_err(DocumentError::FormattedTextStorage)?;
+                super::super::work_statistics::record(|work| work.clipboard_style_text_bytes += body.len());
                 if unicode_bidi::get_base_direction(body.as_str()) == unicode_bidi::Direction::Rtl {
                     super::super::WritingDirection::RightToLeft
                 } else {
@@ -1566,12 +1568,24 @@ fn verify_styles(
             }
         }
     }
+    let inserted_end = replaced.start + export.source_plain_text.len();
+    // A regional candidate retains all presentation outside its proven parse
+    // windows. Within them, the unselected prefix and suffix still require the
+    // same resolved-style verification as a complete candidate: authored
+    // delimiters may otherwise change untouched text in the edited paragraph.
+    let (old_window, new_window) = prepared.reprojected_region.as_ref()
+        .filter(|(old, new)| old.start == new.start
+            && old.start <= replaced.start && replaced.end <= old.end
+            && new.start <= replaced.start && inserted_end <= new.end
+            && old.end - replaced.end == new.end - inserted_end)
+        .cloned()
+        .unwrap_or_else(|| (0..before.projection().text_tree().byte_len(),
+            0..state.projection.text_tree().byte_len()));
     for (old_range, new_range) in [
-        (0..replaced.start, 0..replaced.start),
+        (old_window.start..replaced.start, new_window.start..replaced.start),
         (
-            replaced.end..before.projection().text_tree().byte_len(),
-            replaced.start + export.source_plain_text.len()
-                ..state.projection.text_tree().byte_len(),
+            replaced.end..old_window.end,
+            inserted_end..new_window.end,
         ),
     ] {
         if old_range.is_empty() {

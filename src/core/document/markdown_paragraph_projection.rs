@@ -1,6 +1,11 @@
 //! Bounded reprojection for independent prose and guarded structural owners.
 use super::*;
 
+pub(super) enum ListParagraphReprojection {
+    Candidate(PreparedModelTransaction, Range<usize>, Range<usize>),
+    TextMismatch,
+}
+
 impl Document {
     pub(super) fn prepare_independent_paragraph_reprojection(
         &self,
@@ -213,6 +218,20 @@ impl Document {
             {
                 return Err(DocumentError::UnsupportedFormatting.into());
             }
+            // A newly blank edge row joins the retained separator outside
+            // this band. Its endings must be paired with that separator, not
+            // interpreted as standalone leading/trailing trivia. Retry with
+            // unchanged guard paragraphs so the complete blank run is parsed.
+            if !guarded && (range.start > self.projection().source_content_start()
+                && normalized.endings.first().is_some_and(|ending|
+                    normalized.text[..ending.normalized.start].bytes()
+                        .all(|byte| matches!(byte, b' ' | b'\t')))
+                || range.end < source.len() && normalized.endings.last().is_some_and(|ending|
+                    normalized.text[ending.normalized.end..].bytes()
+                        .all(|byte| matches!(byte, b' ' | b'\t'))))
+            {
+                return Err(DocumentError::UnsupportedFormatting.into());
+            }
             if !guarded && normalized.text.contains('<')
                 || super::super::markdown_syntax::needs_reference_context(&normalized.text)
             {
@@ -332,7 +351,9 @@ impl Document {
     pub(super) fn prepare_list_paragraph_reprojection(
         &self,
         patches: &[SourcePatch],
-    ) -> Result<Option<(PreparedModelTransaction, Range<usize>, Range<usize>)>, ModelTransactionError> {
+        target_text: &FormattedTextTree,
+        expected_edits: &[TextEdit],
+    ) -> Result<Option<ListParagraphReprojection>, ModelTransactionError> {
         if self.format() != Format::Markdown || patches.is_empty() {
             return Ok(None);
         }
@@ -455,13 +476,71 @@ impl Document {
                 || local.containers.iter().zip(block.containers.iter()).any(|(a, b)|
                     a.container.kind != b.container.kind || a.container.style != b.container.style
                     || a.starts_here != b.starts_here || a.ends_here != b.ends_here))
-            || regional.blocks().iter().any(|block| !supported_body(block))
+            || regional.blocks().iter().any(|block| !supported_body(block)
+                && !(block.kind == super::super::BlockKind::Paragraph
+                    && block.containers.is_empty() && block.quote_depth == 0
+                    && !block.markdown_html && !block.thematic_break
+                    && block.style.0 != "Code Block"))
         { return Ok(None); }
-        // Only paragraph topology may change: all item starts and their
-        // nesting/numbering must remain in the same order within one owner.
+        // Pasted paragraphs may divide this complete owner into several
+        // lists. Container starts follow that parsed partition; the authored
+        // item kinds, nesting and numbering must otherwise remain unchanged.
+        let item_kind = |block: &super::super::Block| {
+            let mut kind = block.kind.clone();
+            if let super::super::BlockKind::ListItem { container_start, .. } = &mut kind {
+                *container_start = false;
+            }
+            kind
+        };
+        // Speculative payloads can introduce an extra item while losing their
+        // visible leading whitespace. The unchanged outer items and marker
+        // prefixes still prove this complete parse; a text mismatch can be
+        // rejected locally before enforcing the successful-candidate policy.
+        let outer_markers_unchanged = || -> Result<bool, ModelTransactionError> {
+            for block in [run.first().unwrap(), run.last().unwrap()] {
+                let Some(content) = self.projection().source_range(block.range.clone()) else {
+                    return Ok(false);
+                };
+                // Only the source-row start is needed; decoding its body
+                // would add work proportional to an untouched long item.
+                let line = self.state().source_hard_lines.line_at_offset(content.start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let start = self.state().source_hard_lines.get(line)
+                    .ok_or(DocumentError::AmbiguousProjection)?.start;
+                let prefix = start..content.start;
+                if patches.iter().any(|patch| patch.range.start < prefix.end
+                    && prefix.start < patch.range.end
+                    || patch.range.is_empty() && prefix.start <= patch.range.start
+                        && patch.range.start < prefix.end) {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        };
+        // A changed outer marker could merge with a neighboring list despite
+        // its blank separator. Keep the existing boundary syntax for both a
+        // successful splice and a definitive speculative rejection.
+        if !outer_markers_unchanged()? { return Ok(None); }
+        if expected_edits.iter().all(|edit|
+            block_range.start <= edit.range.start && edit.range.end <= block_range.end)
+            && regional.blocks().first().is_some_and(|block| item_kind(block) == item_kind(run.first().unwrap()))
+            && regional.blocks().last().is_some_and(|block| item_kind(block) == item_kind(run.last().unwrap()))
+        {
+            let retained_suffix = self.projection().text_tree().byte_len() - block_range.end;
+            let expected_end = target_text.byte_len().checked_sub(retained_suffix)
+                .ok_or(DocumentError::VerificationFailed)?;
+            if expected_end < block_range.start
+                || regional.text_tree().byte_len() != expected_end - block_range.start
+                || regional.text_tree().slice(0..regional.text_tree().byte_len())
+                    .map_err(DocumentError::FormattedTextStorage)?
+                    != target_text.slice(block_range.start..expected_end)
+                        .map_err(DocumentError::FormattedTextStorage)? {
+                return Ok(Some(ListParagraphReprojection::TextMismatch));
+            }
+        }
         let item_kinds = |projection: &FormattedDocument| projection.blocks().iter()
             .filter(|block| matches!(block.kind, super::super::BlockKind::ListItem { item_start: true, .. }))
-            .map(|block| block.kind.clone()).collect::<Vec<_>>();
+            .map(item_kind).collect::<Vec<_>>();
         if item_kinds(&old_local) != item_kinds(&regional) { return Ok(None); }
         let edits = source_backed_reprojection_edits_with_patches(&old_local, &regional, patches)
             .into_iter().map(|edit| TextEdit::new(
@@ -497,7 +576,7 @@ impl Document {
             file_format_origin: self.file_format_origin(), line_ending_evidence: self.line_ending_evidence(),
             has_bom: self.state().has_bom,
         };
-        Ok(Some((self.prepared(revision, ModelChangeSummary {
+        Ok(Some(ListParagraphReprojection::Candidate(self.prepared(revision, ModelChangeSummary {
             kind: ModelChangeKind::TextEdits, source_patches: patches.to_vec(), formatted_splices,
             projection_work: ProjectionWorkStatistics::regional(old_bytes + new_bytes,
                 projected_bytes, projected_lines, text_work, range_work, source_work),
