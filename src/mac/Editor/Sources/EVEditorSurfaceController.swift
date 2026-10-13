@@ -907,6 +907,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 _ = try session.indentList(unindent: menuCommand == .decreaseIndent,
                                           expected: session.listSelection())
             }
+        case .insertListParagraph:
+            guard presentation(for: menuCommand).isEnabled else { return }
+            performInput {
+                _ = try session.insertListParagraph(expected: session.listSelection())
+            }
         case .characterCode:
             formattingToolbar.toggleCharacterCode(formattingToolbar.characterCode)
         case .insertLink:
@@ -967,6 +972,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             listStylePresentation(menuCommand)
         case .increaseIndent, .decreaseIndent:
             listIndentPresentation(unindent: menuCommand == .decreaseIndent)
+        case .insertListParagraph:
+            listParagraphPresentation()
         case .save, .saveAs, .exportHTML, .pageSetup,
              .selectAll, .selectWord, .selectSentence, .selectParagraph,
              .selectHardLine, .selectVisualRow, .find, .findAndReplace,

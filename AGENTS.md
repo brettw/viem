@@ -510,8 +510,16 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   preceding sibling and cannot create nesting beyond four levels; unindent
   requires a parent, but imported deeper lists can be unindented. Enter and
   `o`/`O` continue semantic items, including Source continuations; Enter on an
-  empty item exits to an independent ordinary paragraph. Splitting inside a
-  visible prefix edits that syntax rather than duplicating it.
+  empty item exits to an independent ordinary paragraph. In WYSIWYG prose,
+  Option-Enter on macOS / Alt-Enter on Windows and Insert Paragraph in List Item
+  split at a collapsed caret into another paragraph within the same item. The
+  new paragraph has no label and retains list/quote ownership, including while
+  empty and after reopen. Normal mode enters Insert; Insert/Replace retain mode
+  and group the split with typing. Ordinary Enter from a continuation paragraph
+  creates the next item, including an empty continuation; an empty first
+  paragraph exits only when its item has no retained body or child lists.
+  Shift-Enter remains an internal hard break.
+  Splitting inside a visible prefix edits that syntax rather than duplicating it.
 - Insert-mode Tab/Shift-Tab anywhere in an item, including continuation
   paragraphs and Source marker boundaries, invoke structural indent/unindent.
   An unavailable action leaves it unchanged. Backspace at a WYSIWYG item start

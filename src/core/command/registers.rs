@@ -673,7 +673,7 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
             }
             InputEvent::Key(
                 Key::ModifiedNavigation { .. } | Key::Function { .. }
-                | Key::ShiftEnter
+                | Key::ShiftEnter | Key::AltEnter
                 | Key::BackTab
                 | Key::Backspace
                 | Key::Delete
@@ -719,6 +719,7 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::Char(character)) => text.push(*character),
             InputEvent::Key(Key::Enter) => text.push_str("<Enter>"),
             InputEvent::Key(Key::ShiftEnter) => text.push_str("<S-Enter>"),
+            InputEvent::Key(Key::AltEnter) => text.push_str("<A-Enter>"),
             InputEvent::Key(Key::Tab) => text.push_str("<Tab>"),
             InputEvent::Key(Key::BackTab) => text.push_str("<S-Tab>"),
             InputEvent::Key(Key::Escape) => text.push_str("<Esc>"),

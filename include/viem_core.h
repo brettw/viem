@@ -269,6 +269,7 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_NEXT_PARAGRAPH 26u
 /* Native GUI paste: Vim paste-before placement and cursor-after behavior. */
 #define VIEM_KEY_PASTE_CLIPBOARD 27u
+#define VIEM_KEY_ALT_ENTER 28u
 #define VIEM_KEY_MODIFIER_SHIFT 1u
 #define VIEM_KEY_MODIFIER_CONTROL 2u
 #define VIEM_KEY_MODIFIER_ALT 4u
@@ -1972,6 +1973,7 @@ typedef struct ViemSetBlockQuoteV1 {
 
 #define VIEM_LIST_CAN_INDENT 1u
 #define VIEM_LIST_CAN_UNINDENT 2u
+#define VIEM_LIST_CAN_INSERT_PARAGRAPH 4u
 typedef struct ViemListIndentV1 {
   uint32_t struct_size;
   uint32_t unindent;
@@ -2728,6 +2730,11 @@ ViemStatus viem_core_view_set_list_style(
 ViemStatus viem_core_view_list_indent_capabilities(
     ViemCoreHandle core, ViemViewId view,
     const ViemLogicalSelectionIdentityV1 *expected_selection, uint32_t *out_flags);
+/* Insert a paragraph in the same Markdown WYSIWYG list item. Requires an exact
+ * collapsed eligible caret; Normal mode enters Insert. */
+ViemStatus viem_core_view_insert_list_paragraph(
+    ViemCoreHandle core, ViemViewId view,
+    const ViemLogicalSelectionIdentityV1 *expected_selection, ViemCoreOutcomeV1 *out_outcome);
 /* unindent is 0 or 1. A top-level item cannot be unindented. */
 ViemStatus viem_core_view_indent_list(
     ViemCoreHandle core, ViemViewId view,
