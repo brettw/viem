@@ -32,8 +32,7 @@ pub(super) fn apply(
     }
     let tables = document.tables();
     let first = tables.partition_point(|table| table.range.end <= region.start);
-    let relevant = tables[first..]
-        .iter()
+    let relevant = tables.iter().skip(first)
         .take_while(|table| table.range.start < region.end)
         .filter(|table| table.source_view);
     let mut boxes = None;

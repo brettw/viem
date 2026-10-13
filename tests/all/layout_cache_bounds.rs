@@ -293,3 +293,46 @@ fn oversized_words_in_large_documents_preserve_regional_work_and_resize_invalida
     assert_eq!(document.source_bytes(), source);
     assert_eq!(document.revision(), revision);
 }
+
+#[test]
+fn repeated_cluster_geometry_cache_matches_fresh_after_resize_edit_and_metrics_change() {
+    use viem_core::layout::MetricsGeneration;
+    let line = format!("{} office AV العربية a\u{301} 👩‍💻\n", "漢字仮名文章編集表示速度測定。".repeat(60));
+    let mut document = Document::new(line.repeat(500));
+    assert!(document.projection().text_tree().byte_len() > 1_000_000);
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let mut view = ViewLayout::new(160.0, 64.0);
+    let _ = candidate(&document, &mut view, &mut engine, 1, 250..252);
+    let calls = engine.provider().request_calls();
+    for step in 0..4 {
+        let mut view = ViewLayout::new(220.0 + 40.0 * step as f32, 64.0);
+        if step == 1 {
+            let at = document.line_start(250).unwrap();
+            document.insert(at, "字").unwrap();
+        }
+        if step == 2 {
+            engine.provider_mut().set_metrics_generation(MetricsGeneration(2));
+        }
+        let (_, cached) = candidate(&document, &mut view, &mut engine, step + 2, 250..252);
+        if step == 0 {
+            assert_eq!(engine.provider().request_calls(), calls, "resizing expands cached geometry");
+        }
+        let mut fresh_engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+        if step >= 2 {
+            fresh_engine.provider_mut().set_metrics_generation(MetricsGeneration(2));
+        }
+        let mut fresh_view = ViewLayout::new(view.width(), view.height());
+        let (_, fresh) = candidate(&document, &mut fresh_view, &mut fresh_engine, 1, 250..252);
+        for (actual, expected) in cached.regional_snapshot().lines().iter().zip(fresh.regional_snapshot().lines()) {
+            let mut rows = expected.rows().to_vec();
+            for row in &mut rows {
+                for caret in &mut row.carets {
+                    caret.point.layout_revision = cached.regional_snapshot().revision();
+                }
+            }
+            assert_eq!(actual.rows(), rows, "step {step}: cached glyph handles, geometry and carets");
+        }
+    }
+    engine.clear_caches();
+    assert_eq!(engine.shaping_cache_statistics().fragment_count, 0);
+}

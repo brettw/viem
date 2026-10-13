@@ -436,8 +436,11 @@ impl Document {
             span.range.start <= edit.range.start && edit.range.end <= span.range.end
                 && matches!(&span.application, StyleApplication::Automatic(id) if matches!(id.0.as_str(), "Comment" | "Markdown reference"))
         })) { return Ok(None); }
-        let decoded = self.encoding().decode(&self.source_bytes())?;
-        let input = normalize(&decoded, self.file_format());
+        let range = edits.first().unwrap().range.start..edits.last().unwrap().range.end;
+        let input = if let Some(input) = self.guarded_markdown_input(range)? { input } else {
+            let decoded = self.encoding().decode(&self.source_bytes())?;
+            normalize(&decoded, self.file_format())
+        };
         let syntax = super::super::markdown_syntax::Blocks::parse(&input.text).to_source(&input);
         let Some(first) = edits.first() else {
             return Ok(None);
@@ -493,7 +496,8 @@ impl Document {
                 }
                 let mut patches = Vec::new();
                 for (range, members) in groups {
-                    let mut replacement = self.text()[range.clone()].to_owned();
+                    let mut replacement = self.projection().text_tree().slice(range.clone())
+                        .map_err(DocumentError::FormattedTextStorage)?;
                     for edit in members.into_iter().rev() {
                         replacement.replace_range(
                             edit.range.start - range.start..edit.range.end - range.start,
@@ -530,7 +534,8 @@ impl Document {
                                     }
                                     at = span.formatted.end;
                                     if span.source.is_empty() {
-                                        if self.text()[span.formatted] != *"\n" {
+                                        if self.projection().text_tree().slice(span.formatted)
+                                            .map_err(DocumentError::FormattedTextStorage)? != "\n" {
                                             return Err(DocumentError::AmbiguousProjection);
                                         }
                                     } else {
@@ -608,7 +613,8 @@ impl Document {
                 Format::Markdown,
                 self.file_format(),
             )?;
-            if scratch.text() != &self.text()[start..end] {
+            if scratch.text() != self.projection().text_tree().slice(start..end)
+                .map_err(DocumentError::FormattedTextStorage)? {
                 return Ok(None);
             }
             let converted =
@@ -723,7 +729,9 @@ impl Document {
         let mut merges: BTreeMap<usize, Merge> = BTreeMap::new();
         let mut patches = Vec::new();
         for edit in edits {
-            for (offset, character) in self.text()[edit.range.clone()].char_indices() {
+            let selected = self.projection().text_tree().slice(edit.range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            for (offset, character) in selected.char_indices() {
                 if character != '\n' {
                     continue;
                 }

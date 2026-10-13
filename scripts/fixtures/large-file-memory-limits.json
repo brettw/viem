@@ -409,23 +409,23 @@
           "can_undo": true
         },
         "first_view": {
-          "live_requested_heap_bytes": 9437184,
+          "live_requested_heap_bytes": 6291456,
           "peak_requested_heap_bytes": 13631488,
           "can_undo": true
         },
         "second_view": {
-          "live_requested_heap_bytes": 12582912,
+          "live_requested_heap_bytes": 7340032,
           "peak_requested_heap_bytes": 13631488,
           "can_undo": true
         },
         "scroll_and_wrap_toggles": {
-          "live_requested_heap_bytes": 12582912,
-          "peak_requested_heap_bytes": 15728640,
+          "live_requested_heap_bytes": 7340032,
+          "peak_requested_heap_bytes": 12582912,
           "can_undo": true
         },
         "dropped": {
           "live_requested_heap_bytes": 1048576,
-          "peak_requested_heap_bytes": 15728640
+          "peak_requested_heap_bytes": 12582912
         }
       }
     },
@@ -452,23 +452,23 @@
           "can_undo": true
         },
         "first_view": {
-          "live_requested_heap_bytes": 50331648,
-          "peak_requested_heap_bytes": 67108864,
+          "live_requested_heap_bytes": 10485760,
+          "peak_requested_heap_bytes": 37748736,
           "can_undo": true
         },
         "second_view": {
-          "live_requested_heap_bytes": 50331648,
-          "peak_requested_heap_bytes": 67108864,
+          "live_requested_heap_bytes": 14680064,
+          "peak_requested_heap_bytes": 42991616,
           "can_undo": true
         },
         "scroll_and_wrap_toggles": {
-          "live_requested_heap_bytes": 50331648,
-          "peak_requested_heap_bytes": 67108864,
+          "live_requested_heap_bytes": 15728640,
+          "peak_requested_heap_bytes": 44040192,
           "can_undo": true
         },
         "dropped": {
           "live_requested_heap_bytes": 1048576,
-          "peak_requested_heap_bytes": 67108864
+          "peak_requested_heap_bytes": 44040192
         }
       }
     },
@@ -538,22 +538,22 @@
       ],
       "phases": {
         "opened": {
-          "live_requested_heap_bytes": 118489088,
-          "peak_requested_heap_bytes": 197132288
+          "live_requested_heap_bytes": 67108864,
+          "peak_requested_heap_bytes": 146800640
         },
         "one_edit_default_history": {
-          "live_requested_heap_bytes": 118489088,
-          "peak_requested_heap_bytes": 197132288,
+          "live_requested_heap_bytes": 67108864,
+          "peak_requested_heap_bytes": 146800640,
           "can_undo": true
         },
         "newline_edit_default_history": {
-          "live_requested_heap_bytes": 118489088,
-          "peak_requested_heap_bytes": 197132288,
+          "live_requested_heap_bytes": 67108864,
+          "peak_requested_heap_bytes": 146800640,
           "can_undo": true
         },
         "dropped": {
           "live_requested_heap_bytes": 1048576,
-          "peak_requested_heap_bytes": 197132288
+          "peak_requested_heap_bytes": 146800640
         }
       }
     },
@@ -566,12 +566,12 @@
       ],
       "phases": {
         "opened": {
-          "live_requested_heap_bytes": 276824064,
-          "peak_requested_heap_bytes": 409993216
+          "live_requested_heap_bytes": 125829120,
+          "peak_requested_heap_bytes": 285212672
         },
         "dropped": {
           "live_requested_heap_bytes": 1048576,
-          "peak_requested_heap_bytes": 409993216
+          "peak_requested_heap_bytes": 285212672
         }
       }
     },
@@ -584,17 +584,17 @@
       ],
       "phases": {
         "opened": {
-          "live_requested_heap_bytes": 175112192,
-          "peak_requested_heap_bytes": 326107136
+          "live_requested_heap_bytes": 144703488,
+          "peak_requested_heap_bytes": 285212672
         },
         "one_edit_default_history": {
-          "live_requested_heap_bytes": 206569472,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 145752064,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "newline_edit_default_history": {
-          "live_requested_heap_bytes": 263192576,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 145752064,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         }
       }
@@ -608,17 +608,17 @@
       ],
       "phases": {
         "opened": {
-          "live_requested_heap_bytes": 181403648,
-          "peak_requested_heap_bytes": 329252864
+          "live_requested_heap_bytes": 153092096,
+          "peak_requested_heap_bytes": 294649856
         },
         "one_edit_default_history": {
-          "live_requested_heap_bytes": 213909504,
-          "peak_requested_heap_bytes": 329252864,
+          "live_requested_heap_bytes": 153092096,
+          "peak_requested_heap_bytes": 294649856,
           "can_undo": true
         },
         "newline_edit_default_history": {
-          "live_requested_heap_bytes": 271581184,
-          "peak_requested_heap_bytes": 329252864,
+          "live_requested_heap_bytes": 153092096,
+          "peak_requested_heap_bytes": 294649856,
           "can_undo": true
         }
       }
@@ -632,32 +632,32 @@
       ],
       "phases": {
         "opened": {
-          "live_requested_heap_bytes": 175112192,
-          "peak_requested_heap_bytes": 326107136
+          "live_requested_heap_bytes": 144703488,
+          "peak_requested_heap_bytes": 285212672
         },
         "one_edit_default_history": {
-          "live_requested_heap_bytes": 206569472,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 145752064,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "newline_edit_default_history": {
-          "live_requested_heap_bytes": 263192576,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 145752064,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "first_view": {
-          "live_requested_heap_bytes": 268435456,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 150994944,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "second_view": {
-          "live_requested_heap_bytes": 269484032,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 152043520,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "scroll_and_wrap_toggles": {
-          "live_requested_heap_bytes": 267386880,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 149946368,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         }
       }
@@ -671,31 +671,31 @@
       ],
       "phases": {
         "opened": {
-          "live_requested_heap_bytes": 175112192,
-          "peak_requested_heap_bytes": 326107136
+          "live_requested_heap_bytes": 144703488,
+          "peak_requested_heap_bytes": 285212672
         },
         "one_edit_default_history": {
-          "live_requested_heap_bytes": 206569472,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 145752064,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "newline_edit_default_history": {
-          "live_requested_heap_bytes": 263192576,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 145752064,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "first_view": {
-          "live_requested_heap_bytes": 268435456,
-          "peak_requested_heap_bytes": 326107136,
+          "live_requested_heap_bytes": 150994944,
+          "peak_requested_heap_bytes": 285212672,
           "can_undo": true
         },
         "switched": {
           "live_requested_heap_bytes": 268435456,
-          "peak_requested_heap_bytes": 773849088
+          "peak_requested_heap_bytes": 440401920
         },
         "switched_back": {
           "live_requested_heap_bytes": 265289728,
-          "peak_requested_heap_bytes": 782237696
+          "peak_requested_heap_bytes": 605028352
         }
       }
     }

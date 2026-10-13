@@ -194,3 +194,98 @@ fn mode_switch_keeps_each_views_visible_text_and_insertion_point_in_large_docume
         }
     }
 }
+
+#[test]
+fn compact_switch_maps_match_splice_policies_ranges_and_composition() {
+    use viem_core::document::{Association, DeletionRecovery, ModelRequest, PositionMap, Splice};
+    let bytes = b"# title\n\nA **bold** and `code` tail.\n\n> quote\n\nend".to_vec();
+    for from in [Format::Markdown, Format::MarkdownSource] {
+        let mut document = Document::from_bytes(bytes.clone(), Encoding::Utf8, from).unwrap();
+        let before = document.projection().clone();
+        let before_points = (0..=document.text().len()).map(|offset| document.text_point(offset).unwrap())
+            .collect::<Vec<_>>();
+        let old_revision = document.revision();
+        let prepared = document.prepare_model_request(ModelRequest::SetMarkdownSource {
+            document: document.id(), revision: old_revision, source: from == Format::Markdown,
+        }).unwrap();
+        let splices = prepared.summary().formatted_splices().to_vec();
+        let compact = prepared.text_position_map().clone();
+        document.commit_model_transaction(prepared).unwrap();
+        assert_eq!(document.source_bytes(), bytes);
+        let oracle = PositionMap::for_text(document.id(), old_revision, document.revision(),
+            before.text(), document.text(), splices).unwrap();
+        for policy in [DeletionRecovery::PreferFollowingThenPreceding,
+            DeletionRecovery::PreferPrecedingThenFollowing, DeletionRecovery::Unresolvable] {
+            for association in [Association::BeforeInsertion, Association::AfterInsertion] {
+                for offset in 0..=before.text().len() {
+                    let point = before_points[offset];
+                    assert_eq!(compact.map_text_point(point, association, BoundaryAffinity::Downstream, policy),
+                        oracle.map_text_point(point, association, BoundaryAffinity::Downstream, policy));
+                }
+                let compact_reverse = compact.inverted().unwrap();
+                let oracle_reverse = oracle.inverted().unwrap();
+                for offset in 0..=document.text().len() {
+                    let point = document.text_point(offset).unwrap();
+                    assert_eq!(compact_reverse.map_text_point(point, association, BoundaryAffinity::Downstream, policy),
+                        oracle_reverse.map_text_point(point, association, BoundaryAffinity::Downstream, policy));
+                }
+            }
+        }
+        for start in 0..before.text().len() {
+            for end in start..=before.text().len() {
+                let start = before_points[start];
+                let end = before_points[end];
+                let range = viem_core::document::TextRange::new(start, end).unwrap();
+                assert_eq!(compact.map_text_range(range), oracle.map_text_range(range));
+            }
+        }
+        let text = document.text().to_owned();
+        let next_revision = viem_core::document::Revision(document.revision().0 + 1);
+        let edit = PositionMap::for_text(document.id(), document.revision(), next_revision,
+            &text, &format!("x{text}"), vec![Splice::new(0..0, 1).unwrap()]).unwrap();
+        let composed = compact.then(&edit).unwrap();
+        let expected = oracle.then(&edit).unwrap();
+        for offset in 0..=before.text().len() {
+            let point = before_points[offset];
+            assert_eq!(composed.map_text_point(point, Association::AfterInsertion, BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding), expected.map_text_point(point,
+                Association::AfterInsertion, BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding));
+        }
+        document.try_undo().unwrap();
+        assert_eq!(document.source_bytes(), bytes);
+        assert_eq!(document.text(), before.text());
+        document.try_redo().unwrap();
+        assert_eq!(document.source_bytes(), bytes);
+        assert_eq!(document.text(), text);
+    }
+}
+
+#[test]
+fn source_boundary_queries_match_reopened_projection_after_lazy_suffix_shifts() {
+    use viem_core::document::measure_document_work;
+    for format in [Format::PlainText, Format::MarkdownSource, Format::Markdown] {
+        let source = "Paragraph **bold** with café and tail.\n\n".repeat(700);
+        let mut document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
+        for step in 0..6 {
+            let text = document.text().to_owned();
+            let at = text.match_indices("with café").nth([2, 351, 698][step % 3]).unwrap().0;
+            let (result, work) = measure_document_work(|| document.replace(at..at, "x"));
+            result.unwrap();
+            assert_eq!(work.full_projection_candidates, 0, "{format:?}: {work:?}");
+            assert_eq!(work.formatted_full_materialized_bytes, 0, "{format:?}: {work:?}");
+            assert!(work.source_decoded_bytes < 4096, "{format:?}: {work:?}");
+            let saved = document.source_bytes();
+            let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, format).unwrap();
+            assert_eq!(document.text(), reopened.text());
+            for index in 0..2048 {
+                let source_at = index * 104729 % (saved.len() + 1);
+                for affinity in [BoundaryAffinity::Upstream, BoundaryAffinity::Downstream] {
+                    let query = |document: &Document| document.projection()
+                        .map_source_boundary(document.revision(), source_at, affinity)
+                        .map(|result| (result.source_offset, result.formatted_offset, result.affinity, result.relation));
+                    assert_eq!(query(&document), query(&reopened), "{format:?} edit {step}, source {source_at}");
+                }
+            }
+        }
+    }
+}

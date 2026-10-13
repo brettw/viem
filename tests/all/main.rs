@@ -204,3 +204,7 @@ mod audit_source_regressions;
 mod audit_replay_regressions;
 
 mod audit_format_regressions;
+
+mod local_word_motion;
+
+mod markdown_table_suffix_locality;

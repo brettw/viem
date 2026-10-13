@@ -41,6 +41,11 @@ impl NavigationSummary {
 pub(super) trait RangedItem {
     fn navigation_summary(&self) -> NavigationSummary { NavigationSummary::default() }
 
+    /// An independently shifted coordinate, when this record needs reverse
+    /// lookup through the same tree. Callers use ordered auxiliary lookups
+    /// only when item order is monotonic in this coordinate as well.
+    fn auxiliary_range(&self) -> Option<&Range<usize>> { None }
+
     fn owned_heap_bytes(&self) -> usize { 0 }
 
     fn visit_shared_memory(&self, _visitor: &mut super::history_memory::MemoryVisitor<'_>) {}
@@ -79,6 +84,17 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         }
     }
 
+    /// Translate a complete immutable tree without copying its records.
+    pub(super) fn shifted(&self, text_delta: i128, source_delta: i128) -> Option<Self> {
+        let mut inner = self.inner.clone();
+        if inner.root.is_some() {
+            inner.root_origin = usize::try_from(inner.root_origin as i128 + text_delta).ok()?;
+            inner.root_auxiliary_shift = inner.root_auxiliary_shift.checked_add(source_delta)?;
+        }
+        inner.compatibility_flat = OnceLock::new();
+        Some(Self { inner })
+    }
+
     pub(super) fn as_slice(&self) -> &[T] {
         self.inner.as_slice()
     }
@@ -110,6 +126,12 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     /// Number of items whose range starts before `offset`, by tree descent.
     pub(super) fn partition_point_start(&self, offset: usize) -> usize {
         self.inner.partition_point_start(offset)
+    }
+
+    /// First record ending strictly after an offset in ordered, nonoverlapping
+    /// storage. The subtree max-end summaries make this one tree descent.
+    pub(super) fn partition_point_end(&self, offset: usize) -> usize {
+        self.inner.first_index_ending_after(offset)
     }
 
     /// `slice::partition_point` by ordinal search. Unlike the slice method
@@ -283,6 +305,31 @@ pub(super) struct IntervalRangeStore<T> {
 }
 
 impl<T: Clone + RangedItem> IntervalRangeStore<T> {
+    pub(super) fn partition_point_auxiliary_start(&self, offset: usize) -> usize {
+        self.inner.root.as_ref().map_or(0, |root|
+            count_auxiliary_starts_before(root, self.inner.root_auxiliary_shift, offset))
+    }
+
+    pub(super) fn query_auxiliary_touching(&self, query: &Range<usize>) -> Vec<T> {
+        let mut output = Vec::new();
+        if let Some(root) = &self.inner.root {
+            query_auxiliary_node(root, self.inner.root_origin, self.inner.root_auxiliary_shift,
+                self.inner.root_revision, query, &mut output, None);
+        }
+        output
+    }
+
+    #[cfg(test)]
+    pub(super) fn query_auxiliary_touching_with_stats(&self, query: &Range<usize>) -> (Vec<T>, QueryStats) {
+        let mut output = Vec::new();
+        let mut stats = QueryStats::default();
+        if let Some(root) = &self.inner.root {
+            query_auxiliary_node(root, self.inner.root_origin, self.inner.root_auxiliary_shift,
+                self.inner.root_revision, query, &mut output, Some(&mut stats));
+        }
+        (output, stats)
+    }
+
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         self.inner.visit_retained_memory(visitor);
     }
@@ -502,10 +549,15 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
 
     fn new(items: Vec<T>) -> Self {
         let item_count = items.len();
-        let leaves = items
-            .chunks(RANGE_INDEX_LEAF_ITEMS)
-            .map(|chunk| RangeNode::leaf(chunk.to_vec()))
-            .collect::<Vec<_>>();
+        // Release each input record as its bounded leaf is built. Cloning
+        // all chunks first keeps a second whole-document set of owned table,
+        // style and provenance payloads alive during projection construction.
+        let mut items = items.into_iter();
+        let mut leaves = Vec::with_capacity(item_count.div_ceil(RANGE_INDEX_LEAF_ITEMS));
+        while items.len() != 0 {
+            leaves.push(RangeNode::leaf(items.by_ref().take(RANGE_INDEX_LEAF_ITEMS).collect()));
+        }
+        drop(items);
         let positioned_root = build_balanced_root(&leaves, 0..leaves.len());
         let (root_origin, root) = positioned_root
             .map(|positioned| (positioned.origin, Some(positioned.node)))
@@ -807,6 +859,7 @@ fn clone_once_lock<T>(source: &OnceLock<Arc<Vec<T>>>) -> OnceLock<Arc<Vec<T>>> {
 
 struct RangeNode<T> {
     navigation: NavigationSummary,
+    auxiliary_bounds: Option<Range<usize>>,
     max_end: usize,
     item_count: usize,
     leaf_count: usize,
@@ -868,6 +921,8 @@ impl<T: Clone + RangedItem> RangeNode<T> {
             revision: None,
             node: Arc::new(Self {
                 navigation: normalized.iter().fold(NavigationSummary::default(), |value, item| value.union(item.navigation_summary())),
+                auxiliary_bounds: normalized.iter().filter_map(RangedItem::auxiliary_range)
+                    .cloned().reduce(|a, b| a.start.min(b.start)..a.end.max(b.end)),
                 max_end,
                 item_count: normalized.len(),
                 leaf_count: 1,
@@ -924,6 +979,9 @@ impl<T: Clone + RangedItem> RangeNode<T> {
             .expect("range-index right aggregate is representable");
         Arc::new(Self {
             navigation: left.navigation.union(right.navigation),
+            auxiliary_bounds: shifted_auxiliary_bounds(&left.auxiliary_bounds, left_auxiliary_shift)
+                .into_iter().chain(shifted_auxiliary_bounds(&right.auxiliary_bounds, right_auxiliary_shift))
+                .reduce(|a, b| a.start.min(b.start)..a.end.max(b.end)),
             max_end: left_end.max(right_end),
             item_count: left.item_count + right.item_count,
             leaf_count: left.leaf_count + right.leaf_count,
@@ -990,6 +1048,72 @@ fn count_starts_before<T: RangedItem>(node: &RangeNode<T>, origin: usize, offset
             } else {
                 left.item_count + count_starts_before(right, right_origin, offset)
             }
+        }
+    }
+}
+
+fn shifted_auxiliary_bounds(bounds: &Option<Range<usize>>, shift: i128) -> Option<Range<usize>> {
+    bounds.as_ref().map(|bounds| {
+        usize::try_from(bounds.start as i128 + shift)
+            .expect("range-index auxiliary start is representable")
+            ..usize::try_from(bounds.end as i128 + shift)
+                .expect("range-index auxiliary end is representable")
+    })
+}
+
+fn count_auxiliary_starts_before<T: RangedItem>(
+    node: &RangeNode<T>, shift: i128, offset: usize,
+) -> usize {
+    match &node.kind {
+        RangeNodeKind::Leaf(items) => items.partition_point(|item| {
+            item.auxiliary_range().is_some_and(|range| range.start as i128 + shift < offset as i128)
+        }),
+        RangeNodeKind::Branch {
+            left, left_auxiliary_shift, right, right_auxiliary_shift, ..
+        } => {
+            let right_shift = shift + right_auxiliary_shift;
+            if right.auxiliary_bounds.as_ref()
+                .is_some_and(|range| range.start as i128 + right_shift >= offset as i128)
+            {
+                count_auxiliary_starts_before(left, shift + left_auxiliary_shift, offset)
+            } else {
+                left.item_count + count_auxiliary_starts_before(right, right_shift, offset)
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn query_auxiliary_node<T: Clone + RangedItem>(
+    node: &RangeNode<T>, origin: usize, auxiliary_shift: i128, revision: Option<u64>,
+    query: &Range<usize>, matches: &mut Vec<T>, mut stats: Option<&mut QueryStats>,
+) {
+    if let Some(stats) = stats.as_deref_mut() { stats.nodes_visited += 1; }
+    let Some(bounds) = &node.auxiliary_bounds else { return; };
+    if bounds.end as i128 + auxiliary_shift < query.start as i128
+        || bounds.start as i128 + auxiliary_shift > query.end as i128
+    {
+        return;
+    }
+    match &node.kind {
+        RangeNodeKind::Leaf(items) => {
+            for item in items {
+                if let Some(stats) = stats.as_deref_mut() { stats.items_examined += 1; }
+                let Some(auxiliary) = item.auxiliary_range() else { continue; };
+                if auxiliary.start as i128 + auxiliary_shift > query.end as i128 { break; }
+                if auxiliary.end as i128 + auxiliary_shift >= query.start as i128 {
+                    let range = origin + item.range().start..origin + item.range().end;
+                    matches.push(item.with_transform(range, auxiliary_shift, revision)
+                        .expect("validated lazy range-index transformation is representable"));
+                }
+            }
+        }
+        RangeNodeKind::Branch { left, left_offset, left_auxiliary_shift, left_revision,
+            right, right_offset, right_auxiliary_shift, right_revision } => {
+            query_auxiliary_node(left, origin + left_offset, auxiliary_shift + left_auxiliary_shift,
+                revision.or(*left_revision), query, matches, stats.as_deref_mut());
+            query_auxiliary_node(right, origin + right_offset, auxiliary_shift + right_auxiliary_shift,
+                revision.or(*right_revision), query, matches, stats);
         }
     }
 }

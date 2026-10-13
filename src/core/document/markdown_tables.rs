@@ -1,7 +1,7 @@
 //! Lossless GFM table structure. Source offsets remain physical byte offsets;
 //! formatted ranges are bound to their containing projection revision.
 use super::line_endings::NormalizedText;
-use pulldown_cmark::{Alignment, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, Event, Tag, TagEnd};
 use std::ops::Range;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -55,6 +55,26 @@ fn shifted(range: &Range<usize>, delta: i128) -> Option<Range<usize>> {
         usize::try_from(range.start as i128 + delta).ok()?
             ..usize::try_from(range.end as i128 + delta).ok()?,
     )
+}
+impl super::range_index::RangedItem for MarkdownTable {
+    fn range(&self) -> &Range<usize> { &self.range }
+    fn owned_heap_bytes(&self) -> usize { self.columns.capacity() * std::mem::size_of::<TableAlignment>() }
+    fn visit_shared_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
+        self.rows.visit_retained_memory(visitor);
+        self.source_rows.visit_retained_memory(visitor);
+    }
+    fn with_range(&self, range: Range<usize>) -> Self {
+        self.with_transform(range, 0, None).expect("valid table shift")
+    }
+    fn with_transform(&self, range: Range<usize>, source_delta: i128, _: Option<u64>) -> Option<Self> {
+        let delta = range.start as i128 - self.range.start as i128;
+        Some(Self {
+            id: self.id, range, source_range: shifted(&self.source_range, source_delta)?,
+            source_view: self.source_view, columns: self.columns.clone(),
+            rows: self.rows.shifted(delta, source_delta)?,
+            source_rows: self.source_rows.shifted(delta, source_delta)?,
+        })
+    }
 }
 impl super::range_index::RangedItem for MarkdownTableRow {
     fn range(&self) -> &Range<usize> {
@@ -248,14 +268,18 @@ pub(super) fn split_row(text: &str, range: Range<usize>) -> (Vec<Range<usize>>, 
     (cells, pipes)
 }
 
-pub(super) fn parse(text: &str) -> Vec<TableSyntax> {
-    let mut result = Vec::new();
-    let mut current: Option<TableSyntax> = None;
-    for (event, range) in Parser::new_ext(text, Options::ENABLE_TABLES).into_offset_iter() {
+/// Table recognition shares the projection's block parser event stream.
+#[derive(Default)]
+pub(super) struct TableParser {
+    pub tables: Vec<TableSyntax>,
+    current: Option<TableSyntax>,
+}
+impl TableParser {
+    pub fn event(&mut self, text: &str, event: &Event<'_>, range: &Range<usize>) {
         match event {
             Event::Start(Tag::Table(alignments)) => {
-                current = Some(TableSyntax {
-                    range,
+                self.current = Some(TableSyntax {
+                    range: range.clone(),
                     columns: alignments
                         .into_iter()
                         .map(|a| match a {
@@ -269,7 +293,7 @@ pub(super) fn parse(text: &str) -> Vec<TableSyntax> {
                 })
             }
             Event::Start(Tag::TableHead | Tag::TableRow) => {
-                if let Some(table) = &mut current {
+                if let Some(table) = &mut self.current {
                     let end =
                         range.start + text[range.clone()].trim_end_matches(['\r', '\n']).len();
                     let physical_start = text[..range.start].rfind('\n').map_or(0, |at| at + 1);
@@ -284,7 +308,7 @@ pub(super) fn parse(text: &str) -> Vec<TableSyntax> {
                 }
             }
             Event::End(TagEnd::Table) => {
-                if let Some(mut table) = current.take() {
+                if let Some(mut table) = self.current.take() {
                     if let Some(header) = table.rows.first() {
                         let start = header.range.end;
                         let finish = text[start..]
@@ -311,13 +335,12 @@ pub(super) fn parse(text: &str) -> Vec<TableSyntax> {
                     if let Some(first) = table.rows.first() {
                         table.range.start = first.range.start;
                     }
-                    result.push(table);
+                    self.tables.push(table);
                 }
             }
             _ => {}
         }
     }
-    result
 }
 impl TableSyntax {
     pub(super) fn to_source(mut self, input: &NormalizedText) -> Self {

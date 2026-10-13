@@ -144,3 +144,95 @@ fn opening_beside_headings_without_blank_lines_keeps_new_paragraphs_separate() {
         assert_eq!(core.document().source_bytes(), source.as_bytes(), "{source:?}");
     }
 }
+
+#[test]
+fn guarded_structural_edits_stay_regional_and_restore_exact_source() {
+    for (label, middle, format, target_offset, keys) in [
+        ("list split", "- first item\n- EDITME second item words\n- third item\n\n", Format::Markdown, 3, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
+        ("quote split", "> first quoted paragraph\n>\n> EDITME quoted words\n\n", Format::Markdown, 3, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
+        ("HTML split", "<div>\n<p>EDITME html words</p>\n</div>\n\n", Format::Markdown, 3, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
+        ("after list", "- first item\n- second item\n\nEDITME paragraph after list\n\n", Format::Markdown, 3, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
+        ("heading start", "## EDITME heading words\n\nFollowing paragraph\n\n", Format::Markdown, 0, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
+        ("Source dip", "EDITME source paragraph words\n\nFollowing paragraph\n\n", Format::MarkdownSource, 3, vec![InputEvent::key('d'), InputEvent::key('i'), InputEvent::key('p')]),
+    ] {
+        for blocks in [20, 400] {
+            let source = document(blocks, middle);
+            let original = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            let at = original.projection().text_tree().slice(0..original.projection().text_tree().byte_len())
+                .unwrap().find("EDITME").unwrap() + target_offset;
+            let original_prefix = &source[..source.find(middle).unwrap()];
+            let original_suffix = &source[source.find(middle).unwrap() + middle.len()..];
+            let mut core = Core::new(original);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: at,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            let (result, work) = measure_document_work(|| {
+                for key in &keys { core.handle(view, CoreEvent::Input(key.clone()))?; }
+                Ok::<_, viem_core::CoreError>(())
+            });
+            result.unwrap();
+            assert_eq!(work.full_projection_candidates, 0, "{label} {blocks}: {work:?}");
+            assert_eq!(work.source_full_materialized_bytes, 0, "{label} {blocks}: {work:?}");
+            assert_eq!(work.formatted_full_materialized_bytes, 0, "{label} {blocks}: {work:?}");
+            assert!(work.source_decoded_bytes < 8192, "{label} {blocks}: {work:?}");
+            assert_eq!(work.formatted_compatibility_materialized_bytes, 0, "{label} {blocks}: {work:?}");
+            let saved = core.document().source_bytes();
+            assert!(saved.starts_with(original_prefix.as_bytes()), "{label}: prefix changed");
+            assert!(saved.ends_with(original_suffix.as_bytes()), "{label}: suffix changed");
+            let fresh = Document::from_bytes(saved.clone(), Encoding::Utf8, format).unwrap();
+            assert_eq!(core.document().text(), fresh.text(), "{label}");
+            let actual = core.document().projection().blocks();
+            let expected = fresh.projection().blocks();
+            assert_eq!(actual.len(), expected.len(), "{label}");
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert_eq!(actual.range, expected.range, "{label}");
+                assert_eq!(actual.attributes, expected.attributes, "{label}");
+            }
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+            core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes(), "{label}: undo");
+            core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+            assert_eq!(core.document().source_bytes(), saved, "{label}: redo");
+        }
+    }
+}
+
+#[test]
+fn structural_reprojection_keeps_separator_pairing_and_empty_owner_carets() {
+    for (source, format, at, keys) in [
+        ("a\n \n \n \nb", Format::MarkdownSource, 0, vec![InputEvent::Key(Key::Delete), InputEvent::Key(Key::Delete)]),
+        ("a\n\t\n \n\n\nb", Format::MarkdownSource, 0, vec![InputEvent::Key(Key::Delete), InputEvent::Key(Key::Delete)]),
+        ("```\n\n\n```", Format::Markdown, 1, vec![InputEvent::Key(Key::Backspace), InputEvent::Text("x".into())]),
+        ("```\n\n\n```", Format::Markdown, 0, vec![InputEvent::Key(Key::Delete), InputEvent::Text("x".into())]),
+        ("```\n\n\n```", Format::Markdown, 1, vec![InputEvent::Key(Key::Backspace), InputEvent::Key(Key::Backspace), InputEvent::Text("x".into())]),
+    ] {
+        let original = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+        let mut core = Core::new(original);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 2000.);
+        core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(), text_offset: at,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        for key in keys {
+            core.handle(view, CoreEvent::Input(key.clone())).unwrap();
+            let fresh = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, format).unwrap();
+            assert_eq!(shape(core.document()), shape(&fresh), "{source:?} {key:?}");
+            let provenance = |document: &Document| document.projection().provenance().into_iter()
+                // A valid retained empty caret at an existing text boundary
+                // need not appear in a fresh nonempty projection. When the
+                // owner is empty, its caret contributors must agree exactly.
+                .filter(|span| document.text().is_empty() || !span.formatted.is_empty())
+                .collect::<Vec<_>>();
+            assert_eq!(provenance(core.document()), provenance(&fresh), "{source:?} {key:?}");
+        }
+        let saved = core.document().source_bytes();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), saved);
+    }
+}

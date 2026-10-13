@@ -990,7 +990,121 @@ struct PositionMapStep {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+struct MappedSplice {
+    old: Range<usize>,
+    new: Range<usize>,
+}
+
+/// A single transition has the same answers for every anchor policy without
+/// storing a separate boundary map for each policy. Forward and reverse maps
+/// share these extent pairs. Actual composition still compiles the result,
+/// avoiding both historical lookup chains and repeated document scans.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CompactSpliceTransition {
+    extents: Arc<[MappedSplice]>,
+    inverted: bool,
+    source_revision: Revision,
+    source_len: usize,
+    target_len: usize,
+}
+
+impl CompactSpliceTransition {
+    fn new(step: &PositionMapStep) -> Result<Self, PositionError> {
+        let mut delta = 0;
+        let extents = step.splices.iter().map(|splice| {
+            let start = add_signed(splice.old.start, delta)?;
+            let end = start.checked_add(splice.inserted_len).ok_or(PositionError::ArithmeticOverflow)?;
+            delta = checked_delta(delta, splice)?;
+            Ok(MappedSplice { old: splice.old.clone(), new: start..end })
+        }).collect::<Result<Vec<_>, PositionError>>()?;
+        Ok(Self { extents: extents.into(), inverted: false,
+            source_revision: step.source_revision, source_len: step.source_len, target_len: step.target_len })
+    }
+
+    fn inverted(&self, source_revision: Revision) -> Self {
+        Self { extents: self.extents.clone(), inverted: !self.inverted, source_revision,
+            source_len: self.target_len, target_len: self.source_len }
+    }
+
+    fn ranges(&self, extent: &MappedSplice) -> (Range<usize>, Range<usize>) {
+        if self.inverted { (extent.new.clone(), extent.old.clone()) }
+        else { (extent.old.clone(), extent.new.clone()) }
+    }
+
+    fn step(&self) -> PositionMapStep {
+        PositionMapStep { source_revision: self.source_revision, target_revision: self.source_revision,
+            source_len: self.source_len, target_len: self.target_len,
+            splices: self.extents.iter().map(|extent| {
+                let (old, new) = self.ranges(extent);
+                Splice { old, inserted_len: new.len() }
+            }).collect() }
+    }
+
+    fn map_ordinal(&self, offset: usize, association: Association, recovery: DeletionRecovery)
+        -> Result<MappingOutcome<usize>, PositionError> {
+        let first = self.extents.partition_point(|extent| self.ranges(extent).0.start < offset);
+        let preceding = first.checked_sub(1).map(|index| self.ranges(&self.extents[index]));
+        if let Some((old, new)) = &preceding {
+            if offset < old.end {
+                if recovery == DeletionRecovery::Unresolvable {
+                    return Ok(MappingOutcome::Unresolvable(UnresolvableAnchor::DeletedContent {
+                        revision: self.source_revision, range: old.clone(),
+                    }));
+                }
+                let following = old.end < self.source_len;
+                let preceding = old.start > 0;
+                let target = match recovery {
+                    DeletionRecovery::PreferFollowingThenPreceding if following => new.end,
+                    DeletionRecovery::PreferPrecedingThenFollowing if !preceding && following => new.end,
+                    _ => new.start,
+                };
+                return Ok(MappingOutcome::CollapsedByDeletion(target));
+            }
+        }
+        let base = preceding.map_or(Ok(offset), |(old, new)|
+            new.end.checked_add(offset - old.end).ok_or(PositionError::ArithmeticOverflow))?;
+        // Consecutive insertions, or an insertion followed by replacement,
+        // can share a source boundary. Their final target endpoint answers
+        // AfterInsertion without scanning the group.
+        let mapped = if association == Association::AfterInsertion
+            && self.extents.get(first).is_some_and(|extent| self.ranges(extent).0.start == offset) {
+            let end = self.extents.partition_point(|extent| self.ranges(extent).0.start <= offset);
+            self.ranges(&self.extents[end - 1]).1.end
+        } else { base };
+        Ok(if mapped == offset { MappingOutcome::Exact(mapped) } else { MappingOutcome::Moved(mapped) })
+    }
+
+    fn map_content_range(&self, range: Range<usize>) -> Result<(Vec<Range<usize>>, bool), PositionError> {
+        if range.is_empty() { return Ok((Vec::new(), false)); }
+        let first = self.extents.partition_point(|extent| self.ranges(extent).0.end <= range.start);
+        let (mut cursor, mut target) = first.checked_sub(1)
+            .map(|index| self.ranges(&self.extents[index]))
+            .map_or((0, 0), |(old, new)| (old.end, new.end));
+        let mut mapped = Vec::new();
+        let mut surviving = 0;
+        for (old, new) in self.extents[first..].iter().map(|extent| self.ranges(extent))
+            .chain(std::iter::once((self.source_len..self.source_len, self.target_len..self.target_len))) {
+            let start = cursor.max(range.start);
+            let end = old.start.min(range.end);
+            if start < end {
+                let mapped_start = target + start - cursor;
+                mapped.push(mapped_start..mapped_start + end - start);
+                surviving += end - start;
+            }
+            if old.end >= range.end { break; }
+            cursor = old.end;
+            target = new.end;
+        }
+        Ok((normalize_offset_ranges(mapped), surviving != range.len()))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct CompiledTransition {
+    /// An uncomposed projection switch needs only its changed extents. The
+    /// ordinary compiled policies remain the bounded representation for maps
+    /// that combine multiple edits or relocate content.
+    compact: Option<CompactSpliceTransition>,
     /// One map per anchor policy. Policies that agree share one map: a
     /// transition that only inserts or only deletes needs two or three.
     ordinal: [Arc<CompiledOrdinalMap>; 6],
@@ -1054,10 +1168,27 @@ pub struct PositionMap {
 }
 
 impl PositionMap {
+    /// Projection switches have many independent hidden-syntax changes but
+    /// only one transition. Keep one extent pair per change and resolve all
+    /// association/recovery policies from it on demand.
+    pub(crate) fn for_projection_switch(
+        document: DocumentId, source_revision: Revision, target_revision: Revision,
+        source_text: &super::FormattedDocument, target_text: &super::FormattedDocument,
+        splices: Vec<Splice>,
+    ) -> Result<Self, PositionError> {
+        Self::for_text_snapshots_with_storage(document, source_revision, target_revision,
+            source_text, target_text, splices, true)
+    }
+
     /// Heap held by the compacted map itself, without walking document text or
     /// any history chain. Optional presentation caches use this for eviction.
     pub(crate) fn owned_heap_bytes(&self) -> usize {
-        [&self.forward, &self.reverse].into_iter().map(|transition| {
+        let compact_bytes = self.forward.compact.as_ref().map_or(0, |compact|
+            compact.extents.len() * std::mem::size_of::<MappedSplice>())
+            + self.reverse.compact.as_ref().filter(|reverse| self.forward.compact.as_ref()
+                .is_none_or(|forward| !Arc::ptr_eq(&forward.extents, &reverse.extents)))
+                .map_or(0, |compact| compact.extents.len() * std::mem::size_of::<MappedSplice>());
+        compact_bytes + [&self.forward, &self.reverse].into_iter().map(|transition| {
             transition.ordinal.iter().enumerate()
                 .filter(|(index, map)| !transition.ordinal[..*index].iter().any(|other| Arc::ptr_eq(other, map)))
                 .map(|(_, map)| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>() + map.boxed_bytes()).sum::<usize>()
@@ -1072,6 +1203,9 @@ impl PositionMap {
                     visitor.arc_once(ordinal, |visitor| visitor.vector(&ordinal.pieces, ordinal.boxed_bytes()));
                 }
                 visitor.vector(&transition.surviving_content, 0);
+                if let Some(compact) = &transition.compact {
+                    visitor.arc_once(&compact.extents, |_| {});
+                }
             });
         }
         if let Some(map) = &self.source_transition { map.visit_retained_memory(visitor); }
@@ -1163,6 +1297,15 @@ impl PositionMap {
         S: LogicalGraphemeSnapshot,
         T: LogicalGraphemeSnapshot,
     {
+        Self::for_text_snapshots_with_storage(document, source_revision, target_revision,
+            source_text, target_text, splices, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn for_text_snapshots_with_storage<S: LogicalGraphemeSnapshot, T: LogicalGraphemeSnapshot>(
+        document: DocumentId, source_revision: Revision, target_revision: Revision,
+        source_text: &S, target_text: &T, splices: Vec<Splice>, compact: bool,
+    ) -> Result<Self, PositionError> {
         for splice in &splices {
             for offset in [splice.old.start, splice.old.end] {
                 if offset > source_text.text_len() {
@@ -1181,7 +1324,7 @@ impl PositionMap {
             }
         }
         let validation_splices = splices.clone();
-        let map = Self::from_splices(
+        let map = Self::from_splices_with_storage(
             document,
             PositionDomain::FormattedText,
             source_revision,
@@ -1189,6 +1332,7 @@ impl PositionMap {
             source_text.text_len(),
             target_text.text_len(),
             splices,
+            compact,
         )?;
         {
             let mut delta: isize = 0;
@@ -1239,7 +1383,17 @@ impl PositionMap {
         target_revision: Revision,
         source_len: usize,
         target_len: usize,
-        mut splices: Vec<Splice>,
+        splices: Vec<Splice>,
+    ) -> Result<Self, PositionError> {
+        Self::from_splices_with_storage(document, domain, source_revision, target_revision,
+            source_len, target_len, splices, false)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_splices_with_storage(
+        document: DocumentId, domain: PositionDomain,
+        source_revision: Revision, target_revision: Revision,
+        source_len: usize, target_len: usize, mut splices: Vec<Splice>, compact: bool,
     ) -> Result<Self, PositionError> {
         splices.sort_by_key(|splice| (splice.old.start, splice.old.end));
         for splice in &splices {
@@ -1273,7 +1427,14 @@ impl PositionMap {
             target_len,
             splices,
         };
-        let reverse_step = invert_step(&step)?;
+        let (forward, reverse) = if compact {
+            let compact = CompactSpliceTransition::new(&step)?;
+            let reverse = compact.inverted(step.target_revision);
+            (CompiledTransition::compact(compact), CompiledTransition::compact(reverse))
+        } else {
+            let reverse_step = invert_step(&step)?;
+            (CompiledTransition::from_step(&step)?, CompiledTransition::from_step(&reverse_step)?)
+        };
         Ok(Self {
             document,
             domain,
@@ -1281,8 +1442,8 @@ impl PositionMap {
             target_revision,
             source_len,
             target_len,
-            forward: Arc::new(CompiledTransition::from_step(&step)?),
-            reverse: Arc::new(CompiledTransition::from_step(&reverse_step)?),
+            forward: Arc::new(forward),
+            reverse: Arc::new(reverse),
             source_transition: None,
         })
     }
@@ -1380,12 +1541,15 @@ impl PositionMap {
     /// Old/new extents not connected by surviving content, in document order.
     /// Composed maps report aggregate replacements, not intermediate edits.
     /// This walks only the compacted change boundaries, never document text.
-    pub(crate) fn replacements(&self) -> impl Iterator<Item = (Range<usize>, Range<usize>)> + '_ {
+    pub(crate) fn replacements(&self) -> Box<dyn Iterator<Item = (Range<usize>, Range<usize>)> + '_> {
+        if let Some(compact) = &self.forward.compact {
+            return Box::new(compact.extents.iter().map(|extent| compact.ranges(extent)));
+        }
         // Relocated content may be out of target order. Retain an ordered
         // subsequence for the disposable presentation-change summary; its
         // omitted moved ranges are explicit replacements, never inverted gaps.
         let mut retained_target_end = 0;
-        self.forward.surviving_content.iter()
+        Box::new(self.forward.surviving_content.iter()
             .map(|piece| (piece.source.clone(), piece.target_start))
             .chain(std::iter::once((self.source_len..self.source_len, self.target_len)))
             .filter(move |(source, target_start)| {
@@ -1399,7 +1563,7 @@ impl PositionMap {
                 *source_end = source.end;
                 Some(replaced)
             })
-            .filter(|(old, new)| !old.is_empty() || !new.is_empty())
+            .filter(|(old, new)| !old.is_empty() || !new.is_empty()))
     }
 
     #[cfg(test)]
@@ -1599,7 +1763,32 @@ impl PositionMap {
 }
 
 impl CompiledTransition {
+    fn compact(compact: CompactSpliceTransition) -> Self {
+        let empty = Arc::new(CompiledOrdinalMap { pieces: Vec::new() });
+        Self { compact: Some(compact), ordinal: std::array::from_fn(|_| empty.clone()),
+            surviving_content: Vec::new() }
+    }
+
+    fn materialized(&self) -> Result<std::borrow::Cow<'_, Self>, PositionError> {
+        match &self.compact {
+            Some(compact) => Ok(std::borrow::Cow::Owned(Self::from_step(&compact.step())?)),
+            None => Ok(std::borrow::Cow::Borrowed(self)),
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        if let Some(compact) = &self.compact { return compact.extents.is_empty(); }
+        self.ordinal.iter().all(|map| matches!(map.pieces.as_slice(),
+            [OrdinalPiece { mapping: OrdinalMapping::Linear { delta: 0, status: ResolvedStatus::Exact }, .. }]))
+            && match self.surviving_content.as_slice() {
+                [piece] => piece.source == (0..self.ordinal[0].pieces[0].end) && piece.target_start == 0,
+                [] => self.ordinal[0].pieces[0].end == 0,
+                _ => false,
+            }
+    }
+
     fn relocate_content(&mut self, relocations: &[(Range<usize>, usize)]) -> Result<(), PositionError> {
+        if self.compact.is_some() { *self = self.materialized()?.into_owned(); }
         let mut ordinal = Vec::with_capacity(self.ordinal.len());
         for (index, map) in self.ordinal.iter().enumerate() {
             let mut map = CompiledOrdinalMap::clone(map);
@@ -1648,6 +1837,7 @@ impl CompiledTransition {
 
     fn identity(length: usize) -> Self {
         Self {
+            compact: None,
             ordinal: shared_policy_maps(vec![CompiledOrdinalMap::identity(length)]),
             surviving_content: (!matches!(length, 0))
                 .then_some(SurvivingContent {
@@ -1666,12 +1856,18 @@ impl CompiledTransition {
                 .expect("validated splice arithmetic compiles for every anchor policy")
         }).collect();
         Ok(Self {
+            compact: None,
             ordinal: shared_policy_maps(ordinal),
             surviving_content: surviving_content_for_step(step)?,
         })
     }
 
     fn then(&self, next: &Self) -> Result<Self, PositionError> {
+        if self.is_identity() { return Ok(next.clone()); }
+        if next.is_identity() { return Ok(self.clone()); }
+        if self.compact.is_some() || next.compact.is_some() {
+            return self.materialized()?.then(next.materialized()?.as_ref());
+        }
         let mut ordinal: Vec<CompiledOrdinalMap> = Vec::with_capacity(6);
         for index in 0..6 {
             let same = (0..index).find(|&other| Arc::ptr_eq(&self.ordinal[other], &self.ordinal[index])
@@ -1682,6 +1878,7 @@ impl CompiledTransition {
             });
         }
         Ok(Self {
+            compact: None,
             ordinal: shared_policy_maps(ordinal),
             surviving_content: compose_surviving_content(
                 &self.surviving_content,
@@ -1696,6 +1893,9 @@ impl CompiledTransition {
         association: Association,
         recovery: DeletionRecovery,
     ) -> Result<MappingOutcome<usize>, PositionError> {
+        if let Some(compact) = &self.compact {
+            return compact.map_ordinal(offset, association, recovery);
+        }
         self.ordinal[ordinal_policy_index(association, recovery)].map(offset)
     }
 
@@ -1703,6 +1903,7 @@ impl CompiledTransition {
         &self,
         range: Range<usize>,
     ) -> Result<(Vec<Range<usize>>, bool), PositionError> {
+        if let Some(compact) = &self.compact { return compact.map_content_range(range); }
         if range.is_empty() {
             return Ok((Vec::new(), false));
         }
@@ -2615,6 +2816,19 @@ mod tests {
                     let (association, recovery) = ordinal_policy(policy);
                     let compiled =
                         CompiledOrdinalMap::from_step(step, association, recovery).unwrap();
+                    let compact = CompactSpliceTransition::new(step).unwrap();
+                    let compact_reverse = compact.inverted(step.target_revision);
+                    let reverse_step = invert_step(step).unwrap();
+                    for at in 0..=step.target_len {
+                        assert_eq!(compact_reverse.map_ordinal(at, association, recovery).unwrap(),
+                            map_ordinal_through_step(at, association, recovery, &reverse_step).unwrap());
+                    }
+                    for start in 0..=step.source_len {
+                        for end in start..=step.source_len {
+                            assert_eq!(compact.map_content_range(start..end).unwrap(),
+                                CompiledTransition::from_step(step).unwrap().map_content_range(start..end).unwrap());
+                        }
+                    }
                     let mut cursor = OrdinalStepCursor::new(step, association, recovery);
                     for at in 0..=step.source_len {
                         let expected =
@@ -2622,6 +2836,7 @@ mod tests {
                         assert_eq!(cursor.map(at).unwrap(), expected);
                         assert_eq!(cursor.map(at).unwrap(), expected, "repeated boundary");
                         assert_eq!(compiled.map(at).unwrap(), expected);
+                        assert_eq!(compact.map_ordinal(at, association, recovery).unwrap(), expected);
                     }
                 }
             }

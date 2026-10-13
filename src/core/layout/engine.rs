@@ -3594,6 +3594,145 @@ struct RelativeCluster {
 }
 
 #[derive(Clone)]
+struct RelativeClusterRun {
+    template: RelativeCluster,
+    count: usize,
+}
+
+/// Cache geometry once for adjacent clusters with exactly the same metrics
+/// and relative caret stops. Native render resources remain separate: equal
+/// geometry does not imply equal glyphs or interchangeable resource leases.
+#[derive(Clone)]
+enum RelativeClusters {
+    Individual(Vec<RelativeCluster>),
+    Runs {
+        runs: Vec<RelativeClusterRun>,
+        render_runs: Vec<Option<RenderRunHandle>>,
+    },
+}
+
+impl RelativeClusters {
+    fn from_absolute(clusters: &[ShapedCluster], origin: usize) -> Self {
+        fn same_geometry(left: &ShapedCluster, right: &ShapedCluster) -> bool {
+            left.text_range.len() == right.text_range.len()
+                && left.advance == right.advance
+                && left.metrics == right.metrics
+                && left.typographic_bounds == right.typographic_bounds
+                && left.ink_bounds == right.ink_bounds
+                && left.bidi_level == right.bidi_level
+                && left.fallback_font == right.fallback_font
+                && left.caret_stops.len() == right.caret_stops.len()
+                && left.caret_stops.iter().zip(&right.caret_stops).all(|(left_caret, right_caret)| {
+                    left_caret.text_offset - left.text_range.start == right_caret.text_offset - right.text_range.start
+                        && left_caret.inline_offset == right_caret.inline_offset
+                        && left_caret.affinity == right_caret.affinity
+                })
+        }
+        let mut groups: Vec<Range<usize>> = Vec::new();
+        for (index, cluster) in clusters.iter().enumerate() {
+            if let Some(group) = groups.last_mut() {
+                if clusters[index - 1].text_range.end == cluster.text_range.start
+                    && same_geometry(&clusters[group.start], cluster) {
+                    group.end += 1;
+                    continue;
+                }
+            }
+            groups.push(index..index + 1);
+        }
+        let caret_size = std::mem::size_of::<ClusterCaretStop>();
+        let individual_bytes = clusters.len() * std::mem::size_of::<RelativeCluster>()
+            + clusters.iter().map(|cluster| cluster.caret_stops.len() * caret_size).sum::<usize>();
+        let run_bytes = groups.len() * std::mem::size_of::<RelativeClusterRun>()
+            + clusters.len() * std::mem::size_of::<Option<RenderRunHandle>>()
+            + groups.iter().map(|group| clusters[group.start].caret_stops.len() * caret_size).sum::<usize>();
+        if run_bytes >= individual_bytes {
+            return Self::Individual(clusters.iter().map(|cluster| RelativeCluster::from_absolute(cluster, origin)).collect());
+        }
+        Self::Runs {
+            runs: groups.into_iter().map(|group| {
+                let mut template = RelativeCluster::from_absolute(&clusters[group.start], origin);
+                template.render_run = None;
+                RelativeClusterRun { template, count: group.len() }
+            }).collect(),
+            render_runs: clusters.iter().map(|cluster| cluster.render_run.clone()).collect(),
+        }
+    }
+
+    fn templates(&self) -> impl Iterator<Item = &RelativeCluster> {
+        let (individual, runs): (&[RelativeCluster], &[RelativeClusterRun]) = match self {
+            Self::Individual(clusters) => (clusters, &[]),
+            Self::Runs { runs, .. } => (&[], runs),
+        };
+        individual.iter().chain(runs.iter().map(|run| &run.template))
+    }
+
+    fn owned_heap_bytes(&self) -> usize {
+        let storage = match self {
+            Self::Individual(clusters) => clusters.capacity() * std::mem::size_of::<RelativeCluster>(),
+            Self::Runs { runs, render_runs } => runs.capacity() * std::mem::size_of::<RelativeClusterRun>()
+                + render_runs.capacity() * std::mem::size_of::<Option<RenderRunHandle>>(),
+        };
+        storage + self.templates().map(|cluster| cluster.caret_stops.capacity()
+            * std::mem::size_of::<ClusterCaretStop>()).sum::<usize>()
+    }
+
+    fn to_absolute(&self, origin: usize) -> Vec<ShapedCluster> {
+        match self {
+            Self::Individual(clusters) => clusters.iter().map(|cluster|
+                cluster.to_absolute(origin, cluster.render_run.clone())).collect(),
+            Self::Runs { runs, render_runs } => {
+                let mut output = Vec::with_capacity(render_runs.len());
+                for run in runs {
+                    for index in 0..run.count {
+                        output.push(run.template.to_absolute(origin + index * run.template.text_range.len(),
+                            render_runs[output.len()].clone()));
+                    }
+                }
+                output
+            }
+        }
+    }
+}
+
+impl RelativeCluster {
+    fn from_absolute(cluster: &ShapedCluster, origin: usize) -> Self {
+        Self {
+            text_range: (cluster.text_range.start - origin)..(cluster.text_range.end - origin),
+            advance: cluster.advance,
+            metrics: cluster.metrics.clone(),
+            typographic_bounds: cluster.typographic_bounds,
+            ink_bounds: cluster.ink_bounds,
+            bidi_level: cluster.bidi_level,
+            fallback_font: Arc::clone(&cluster.fallback_font),
+            caret_stops: cluster.caret_stops.iter().map(|caret| ClusterCaretStop {
+                text_offset: caret.text_offset - origin,
+                inline_offset: caret.inline_offset,
+                affinity: caret.affinity,
+            }).collect(),
+            render_run: cluster.render_run.clone(),
+        }
+    }
+
+    fn to_absolute(&self, origin: usize, render_run: Option<RenderRunHandle>) -> ShapedCluster {
+        ShapedCluster {
+            text_range: (self.text_range.start + origin)..(self.text_range.end + origin),
+            advance: self.advance,
+            metrics: self.metrics.clone(),
+            typographic_bounds: self.typographic_bounds,
+            ink_bounds: self.ink_bounds,
+            bidi_level: self.bidi_level,
+            fallback_font: Arc::clone(&self.fallback_font),
+            caret_stops: self.caret_stops.iter().map(|caret| ClusterCaretStop {
+                text_offset: caret.text_offset + origin,
+                inline_offset: caret.inline_offset,
+                affinity: caret.affinity,
+            }).collect(),
+            render_run,
+        }
+    }
+}
+
+#[derive(Clone)]
 struct RelativeDiagnostic {
     text_range: Range<usize>,
     message: String,
@@ -3604,7 +3743,7 @@ struct RelativeFragment {
     /// Length of the stable ownership interior. Cluster ranges are relative to
     /// its start and may extend past this length into following context.
     ownership_len: usize,
-    clusters: Vec<RelativeCluster>,
+    clusters: RelativeClusters,
     visual_order: Vec<usize>,
     default_metrics: TextMetrics,
     diagnostics: Vec<RelativeDiagnostic>,
@@ -3721,17 +3860,14 @@ impl ShapeCacheEntry {
             + style_heap(&self.default_style)
             + std::mem::size_of::<RelativeFragment>()
             + 2 * std::mem::size_of::<usize>() // Arc control words
-            + fragment.clusters.capacity() * std::mem::size_of::<RelativeCluster>()
+            + fragment.clusters.owned_heap_bytes()
             + fragment.visual_order.capacity() * std::mem::size_of::<usize>()
             + fragment.diagnostics.capacity() * std::mem::size_of::<RelativeDiagnostic>();
         for run in &self.style_runs {
             bytes = bytes.saturating_add(style_heap(&run.style));
         }
         let mut fonts = BTreeSet::new();
-        for cluster in &fragment.clusters {
-            bytes = bytes.saturating_add(
-                cluster.caret_stops.capacity() * std::mem::size_of::<ClusterCaretStop>(),
-            );
+        for cluster in fragment.clusters.templates() {
             if fonts.insert(cluster.fallback_font.as_ptr()) {
                 bytes = bytes.saturating_add(
                     cluster.fallback_font.len() + 2 * std::mem::size_of::<usize>(),
@@ -5818,30 +5954,7 @@ impl RelativeFragment {
         debug_assert_eq!(fragment.text_range.start, origin);
         Self {
             ownership_len: fragment.text_range.end - origin,
-            clusters: fragment
-                .clusters
-                .iter()
-                .map(|cluster| RelativeCluster {
-                    text_range: (cluster.text_range.start - origin)
-                        ..(cluster.text_range.end - origin),
-                    advance: cluster.advance,
-                    metrics: cluster.metrics.clone(),
-                    typographic_bounds: cluster.typographic_bounds,
-                    ink_bounds: cluster.ink_bounds,
-                    bidi_level: cluster.bidi_level,
-                    fallback_font: Arc::clone(&cluster.fallback_font),
-                    caret_stops: cluster
-                        .caret_stops
-                        .iter()
-                        .map(|caret| ClusterCaretStop {
-                            text_offset: caret.text_offset - origin,
-                            inline_offset: caret.inline_offset,
-                            affinity: caret.affinity,
-                        })
-                        .collect(),
-                    render_run: cluster.render_run.clone(),
-                })
-                .collect(),
+            clusters: RelativeClusters::from_absolute(&fragment.clusters, origin),
             visual_order: fragment.visual_order.clone(),
             default_metrics: fragment.default_metrics.clone(),
             diagnostics: fragment
@@ -5864,29 +5977,7 @@ impl RelativeFragment {
         metrics_generation: MetricsGeneration,
         origin: usize,
     ) -> ShapedFragment {
-        let clusters = self
-            .clusters
-            .iter()
-            .map(|cluster| ShapedCluster {
-                text_range: (cluster.text_range.start + origin)..(cluster.text_range.end + origin),
-                advance: cluster.advance,
-                metrics: cluster.metrics.clone(),
-                typographic_bounds: cluster.typographic_bounds,
-                ink_bounds: cluster.ink_bounds,
-                bidi_level: cluster.bidi_level,
-                fallback_font: Arc::clone(&cluster.fallback_font),
-                caret_stops: cluster
-                    .caret_stops
-                    .iter()
-                    .map(|caret| ClusterCaretStop {
-                        text_offset: caret.text_offset + origin,
-                        inline_offset: caret.inline_offset,
-                        affinity: caret.affinity,
-                    })
-                    .collect(),
-                render_run: cluster.render_run.clone(),
-            })
-            .collect::<Vec<_>>();
+        let clusters = self.clusters.to_absolute(origin);
         let text_range = origin..origin + self.ownership_len;
         ShapedFragment {
             document_id,

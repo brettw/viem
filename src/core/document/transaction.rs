@@ -4698,7 +4698,7 @@ impl Document {
         } else {
             grapheme_closed_snapshot_map_splices(self.projection(), &candidate.projection, &edits)?
         };
-        let map = PositionMap::for_text_snapshots(
+        let map = PositionMap::for_projection_switch(
             self.id,
             self.revision(),
             revision,

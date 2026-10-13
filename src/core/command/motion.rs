@@ -87,16 +87,16 @@ impl CommandInterpreter {
             }
             Motion::InsertionLineEnd => line_end(&lines, self.cursor),
             Motion::WordForward(big) => {
-                let target = move_word_forward(text(), self.cursor, big, count);
+                let target = word_snapshot::forward(&lines, self.cursor, big, count);
                 if matches!(self.mode, Mode::Insert | Mode::Replace) {
                     target
                 } else {
-                    normalize_normal_cursor(text(), &lines, target)
+                    normalize_normal_cursor_snapshot(&lines, target)
                 }
             }
-            Motion::WordEnd(big) => move_word_end(text(), self.cursor, big, count),
-            Motion::WordBackward(big) => move_word_backward(text(), self.cursor, big, count),
-            Motion::WordEndBackward(big) => move_word_end_backward(text(), self.cursor, big, count),
+            Motion::WordEnd(big) => word_snapshot::end(&lines, self.cursor, big, count, false),
+            Motion::WordBackward(big) => word_snapshot::backward(&lines, self.cursor, big, count),
+            Motion::WordEndBackward(big) => word_snapshot::end_backward(&lines, self.cursor, big, count),
             Motion::LastNonBlank => {
                 let mut position = self.cursor;
                 for _ in 1..count {
