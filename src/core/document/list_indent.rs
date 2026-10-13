@@ -12,10 +12,7 @@ struct Targets {
 }
 
 fn level(block: &Block) -> Option<u8> {
-    match block.kind {
-        BlockKind::ListItem { level, .. } => Some(level),
-        _ => None,
-    }
+    block.list_level()
 }
 fn item_start(block: &Block) -> bool {
     block.list_editing.item_start
@@ -95,7 +92,18 @@ fn targets(
     let parent = (0..first)
         .rev()
         .find(|index| level(&blocks[*index]).map_or(true, |level| level < base))
-        .filter(|index| level(&blocks[*index]) == base.checked_sub(1));
+        .filter(|index| level(&blocks[*index]) == base.checked_sub(1))
+        .and_then(|index| {
+            // The nearest parent leaf may be a continuation or an editable
+            // empty paragraph. Its physical indentation is body whitespace;
+            // lifting a child uses the owning item's marker and ordinal.
+            if item_start(&blocks[index]) { return Some(index); }
+            let owner = blocks[index].list_item_owner()?;
+            (0..=index).rev().find(|candidate|
+                level(&blocks[*candidate]) == base.checked_sub(1)
+                    && item_start(&blocks[*candidate])
+                    && blocks[*candidate].list_item_owner() == Some(owner))
+        });
     if unindent {
         if base == 0 || parent.is_none() {
             return Err(DocumentError::UnsupportedFormatting);

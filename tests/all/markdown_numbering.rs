@@ -411,3 +411,90 @@ fn nesting_updates_both_runs_and_preserves_the_parent_start() {
         assert_eq!(doc.source_bytes(), source.as_bytes());
     }
 }
+
+#[test]
+fn exiting_an_empty_numbered_item_restarts_only_following_siblings() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for (source, ordinal, expected) in [
+            (
+                "1. first\n2.\n3. last",
+                2,
+                "1. first\n\nPlain\n\n1. last",
+            ),
+            (
+                "8. first\n9.\n10. last\n11. tail",
+                9,
+                "8. first\n\nPlain\n\n1. last\n2. tail",
+            ),
+            (
+                "8. first\n   3. child\n   4. other child\n9.\n10. last",
+                9,
+                "8. first\n   3. child\n   4. other child\n\nPlain\n\n1. last",
+            ),
+            (
+                "8. first\n9.\n10. last\n    3. child\n    4. other child\n11. tail",
+                9,
+                "8. first\n\nPlain\n\n1. last\n   3. child\n   4. other child\n2. tail",
+            ),
+        ] {
+            let mut core = Core::new(open(source, format));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 400., 300.);
+            let at = core.document().projection().blocks().iter().find(|block| {
+                matches!(block.kind, BlockKind::ListItem { ordinal: value, level: 0, .. } if value == ordinal)
+            }).unwrap().range.start;
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            }).unwrap();
+            key(&mut core, view, Key::Char('A'));
+            key(&mut core, view, Key::Enter);
+            // Renumber before prose arrives: parser-owned blank separators
+            // must not erase the explicit exit-list intention.
+            let exited = core.document().source_bytes();
+            assert!(String::from_utf8_lossy(&exited).contains("\n1. last"), "{format:?}: {:?}", String::from_utf8_lossy(&exited));
+            core.handle(view, CoreEvent::Input(InputEvent::text("Plain"))).unwrap();
+            key(&mut core, view, Key::Escape);
+            let saved = core.document().source_bytes();
+            assert_eq!(saved, expected.as_bytes(), "{format:?}: {source:?}");
+            let reopened = open(expected, format);
+            assert_eq!(core.document().text(), reopened.text());
+            key(&mut core, view, Key::Char('u'));
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().source_bytes(), saved);
+        }
+    }
+}
+
+#[test]
+fn deleting_an_empty_numbered_item_continues_the_surviving_run() {
+    for format in [Format::Markdown, Format::MarkdownSource] {
+        for (source, ordinal, expected) in [
+            ("1. first\n2.\n3. last", 2, "1. first\n2. last"),
+            ("8. first\n9.\n10. last", 9, "8. first\n9. last"),
+        ] {
+            let mut core = Core::new(open(source, format));
+            let view = core.add_view(MockTextMeasurementProvider::new(), 400., 300.);
+            let at = core.document().projection().blocks().iter().find(|block| {
+                matches!(block.kind, BlockKind::ListItem { ordinal: value, level: 0, .. } if value == ordinal)
+            }).unwrap().range.start;
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(),
+                text_offset: at,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            }).unwrap();
+            key(&mut core, view, Key::Char('d'));
+            key(&mut core, view, Key::Char('d'));
+            assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{format:?}: {source:?}");
+            let reopened = open(expected, format);
+            assert_eq!(core.document().text(), reopened.text());
+            key(&mut core, view, Key::Char('u'));
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            key(&mut core, view, Key::Ctrl('r'));
+            assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        }
+    }
+}

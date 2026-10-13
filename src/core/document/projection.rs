@@ -226,11 +226,13 @@ impl PartialEq for BlockAttributes {
 impl RangedItem for Block {
     fn navigation_summary(&self) -> super::range_index::NavigationSummary {
         // Zero is a non-list boundary; list levels use one through 256.
-        let key = match self.kind { BlockKind::ListItem { level, .. } => u16::from(level) + 1, _ => 0 };
+        let key = self.list_level().map_or(0, |level| u16::from(level) + 1);
+        let owned_paragraph = key != 0 && !matches!(self.kind, BlockKind::ListItem { .. });
         super::range_index::NavigationSummary {
             minimum: key, maximum: key,
             minimum_start: if self.list_editing.item_start { key } else { u16::MAX },
-            flags: u16::from(!self.list_editing.indent) | (u16::from(!self.list_editing.unindent) << 1)
+            flags: u16::from(!self.list_editing.indent && !owned_paragraph)
+                | (u16::from(!self.list_editing.unindent && !owned_paragraph) << 1)
                 | if self.style.0 == "Code Block" { 4 } else { 0 }
                 | if matches!(self.kind, BlockKind::Heading(_)) || self.style.0.strip_prefix("Heading")
                     .and_then(|level| level.parse::<u8>().ok()).is_some_and(|level| (1..=6).contains(&level)) { 8 } else { 0 },

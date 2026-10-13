@@ -258,7 +258,10 @@ pub(super) fn deletion_patches(
     let paragraphs = projection
         .blocks_for_region(range)
         .into_iter()
-        .filter(|block| range.start <= block.range.start && block.range.end <= range.end)
+        .filter(|block| range.start <= block.range.start && block.range.end <= range.end
+            // A retained empty paragraph at the half-open edge owns no
+            // selected text or boundary, even inside the preceding list item.
+            && (range.is_empty() || block.range.start < range.end))
         .collect::<Vec<_>>();
     let (Some(first), Some(last)) = (paragraphs.first(), paragraphs.last()) else {
         return Ok(None);
@@ -347,6 +350,11 @@ pub(super) fn deletion_patches(
     } else {
         source_line(first, false)?.start
     };
+    let retained_empty = projection
+        .blocks_for_region(&(range.end..range.end))
+        .into_iter()
+        .find(|block| block.range == (range.end..range.end)
+            && block.kind == BlockKind::Paragraph);
     let end = if range.end > last.range.end {
         let next = projection
             .blocks_for_region(&(range.end..range.end))
@@ -357,7 +365,27 @@ pub(super) fn deletion_patches(
     } else {
         source_line(last, true)?.end
     };
-    Ok(Some(vec![SourcePatch::primary(start..end, Vec::new())]))
+    let mut replacement = Vec::new();
+    if retained_empty.is_some() && range.start == first.range.start && range.start > 0 {
+        // An item may follow its parent or sibling after a single physical
+        // ending. Removing its marker leaves that retained boundary beside
+        // the empty paragraph's separator. Promote the single ending to a
+        // pair so the unselected empty paragraph survives the new blank run.
+        let boundary = range.start - 1..range.start;
+        if let Some(source) = projection.provenance_for_region(&boundary).into_iter()
+            .find(|span| span.formatted == boundary && !span.source.is_empty())
+            .map(|span| span.source)
+            .filter(|source| source.len() <= 4)
+        {
+            let bytes = document.state().source.bytes_in(source.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, source.start)?;
+            if normalize(&decoded, document.file_format()).text == "\n" {
+                replacement = document.encoding().encode_fragment(document.file_format().spelling())?;
+            }
+        }
+    }
+    Ok(Some(vec![SourcePatch::primary(start..end, replacement)]))
 }
 
 pub(super) fn empty_insertion_patches(

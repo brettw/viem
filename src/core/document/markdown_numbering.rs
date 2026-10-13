@@ -5,8 +5,13 @@ use super::*;
 use crate::document::{Block, BlockKind, ListStyle};
 use std::collections::{HashMap, HashSet};
 
-pub(super) fn scope(request: &ModelRequest) -> Option<Range<usize>> {
-    match request {
+pub(super) struct NumberingScope {
+    range: Range<usize>,
+    continue_list: bool,
+}
+
+pub(super) fn scope(request: &ModelRequest) -> Option<NumberingScope> {
+    let range = match request {
         ModelRequest::SetListStyle { range, .. }
         | ModelRequest::SetBlockQuote { range, .. }
         | ModelRequest::SetParagraphStyle { range, .. }
@@ -16,10 +21,14 @@ pub(super) fn scope(request: &ModelRequest) -> Option<Range<usize>> {
             ..
         }
         | ModelRequest::IndentList { range, .. }
-        | ModelRequest::DeleteLines { range, .. } => Some(range.clone()),
-        ModelRequest::ContinueList { at, .. } | ModelRequest::OpenLine { at, .. } => Some(*at..*at),
-        _ => None,
-    }
+        | ModelRequest::DeleteLines { range, .. } => range.clone(),
+        ModelRequest::ContinueList { at, .. } | ModelRequest::OpenLine { at, .. } => *at..*at,
+        _ => return None,
+    };
+    Some(NumberingScope {
+        range,
+        continue_list: matches!(request, ModelRequest::ContinueList { .. }),
+    })
 }
 
 fn selected(block: &Block, range: &Range<usize>) -> bool {
@@ -34,7 +43,7 @@ impl Document {
     pub(super) fn prepare_markdown_numbering(
         &self,
         prepared: PreparedModelTransaction,
-        range: Range<usize>,
+        scope: NumberingScope,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if prepared.is_no_op() {
             return Ok(prepared);
@@ -42,6 +51,7 @@ impl Document {
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Ok(prepared);
         };
+        let range = scope.range;
         let map = |at, association, affinity| -> Result<usize, ModelTransactionError> {
             prepared
                 .text_position_map()
@@ -84,6 +94,8 @@ impl Document {
         {
             return Ok(prepared);
         }
+        let exits_empty_item = scope.continue_list
+            && self.list_enter_edit(range.start)?.is_some_and(|edit| edit.replacement.is_empty());
         let old_ids = old_local
             .iter()
             .map(|block| block.id)
@@ -117,6 +129,40 @@ impl Document {
             .iter()
             .map(|block| (block.id, block))
             .collect::<HashMap<_, _>>();
+        // Exiting an empty item can leave an ordinary separator that the
+        // parser still owns as part of its preceding item. Preserve the
+        // authoring split through surviving paragraph identities, rather than
+        // treating that temporary ownership as a request to continue numbering.
+        let mut restarted_items = HashSet::new();
+        for old in &old_lists {
+            let mut earlier_survivor = false;
+            let mut released_item = false;
+            for item in &old.items {
+                let Some(block) = blocks.get(&item.paragraph_id) else {
+                    // Source Enter can retire the literal-marker paragraph
+                    // while creating an empty one. Its deleted points recover
+                    // to the following item, so retain the original semantic
+                    // exit intention. DeleteLines and OpenLine never set it.
+                    if earlier_survivor && exits_empty_item && old_ids.contains(&item.paragraph_id) {
+                        released_item = true;
+                    }
+                    continue;
+                };
+                match block.kind {
+                    BlockKind::ListItem { ordered: true, level, .. } if level == old.level => {
+                        if released_item {
+                            restarted_items.insert(item.paragraph_id);
+                        }
+                        earlier_survivor = true;
+                        released_item = false;
+                    }
+                    BlockKind::Paragraph if earlier_survivor && old_ids.contains(&item.paragraph_id) => {
+                        released_item = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
         let mut patches = Vec::new();
         let mut indents = BTreeMap::new();
         let mut literal_overflow = false;
@@ -147,8 +193,11 @@ impl Document {
                 });
                 start = if earlier_survivor { 1 } else { old.start };
             }
-            for (index, item) in list.items.iter().enumerate() {
-                let number = start.saturating_add(index as u64);
+            let mut number = start;
+            for item in &list.items {
+                if restarted_items.contains(&item.paragraph_id) {
+                    number = 1;
+                }
                 literal_overflow |= number > 999_999_999;
                 Self::markdown_number_patches(
                     candidate,
@@ -159,6 +208,7 @@ impl Document {
                     &mut patches,
                     &mut indents,
                 )?;
+                number = number.saturating_add(1);
             }
         }
         for ((start, end), (old, delta)) in indents {
