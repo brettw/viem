@@ -392,6 +392,9 @@ pub enum CoreEvent {
         revision: Revision,
         intent: crate::document::TableEditIntent,
     },
+    InsertListParagraph {
+        expected: LogicalSelectionIdentity,
+    },
     IndentList {
         expected: LogicalSelectionIdentity,
         unindent: bool,
@@ -1401,6 +1404,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             resolved.default_paint.strikethrough,
             resolved.paint_runs.iter().map(|run| (run.text_range.clone(), run.paint.strikethrough)),
         ))
+    }
+
+    pub fn can_insert_list_paragraph(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        Ok(!self.document.is_read_only() && view.composition.is_none() && view.commands.can_insert_list_paragraph(&self.document)
+            && self.list_selection_identity(view_id).is_ok_and(|selection|
+                selection.kind() == LogicalSelectionKind::None && selection.range().is_empty()))
     }
 
     pub fn list_selection_identity(
@@ -5546,6 +5556,13 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::TableEdit { document, revision, intent } => {
                 return self.apply_table_edit(view_id, document, revision, intent);
             }
+            CoreEvent::InsertListParagraph { expected } => {
+                if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
+                if !self.can_insert_list_paragraph(view_id)? {
+                    return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
+                }
+                CoreEvent::InsertListParagraph { expected }
+            }
             CoreEvent::IndentList { expected, unindent } => {
                 if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
                 self.reject_table_block_formatting(&expected)?;
@@ -5757,7 +5774,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         let mut emitted_replay = None;
         let checkpoint =
-            matches!(&event, CoreEvent::Input(_)).then(|| self.begin_input_publication());
+            matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }).then(|| self.begin_input_publication());
         let result = if checkpoint.is_some() {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 #[cfg(test)]
@@ -5823,15 +5840,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         clipboard_context: &Option<ClipboardCommandContext>,
         emitted_replay: &mut Option<ReplayPlan>,
     ) -> Result<CoreOutcome, CoreError> {
-        if matches!(&event, CoreEvent::Input(_)) {
+        if matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) {
             self.install_buffer_commands(view_id);
             self.prepare_input_edit_group(view_id);
         }
         let history_before =
-            matches!(&event, CoreEvent::Input(_)).then(|| self.document.history_status().current);
+            matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }).then(|| self.document.history_status().current);
         let edit_group_depth_before = self.document.edit_group_depth();
         let edit_group_generation_before = self.document.edit_group_generation();
-        let active_position_state = if matches!(&event, CoreEvent::Input(_)) {
+        let active_position_state = if matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) {
             let view = self
                 .views
                 .get(&view_id)
@@ -5847,7 +5864,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .as_ref()
             .map(|(commands, anchors)| commands.substitute_confirmation_history(&self.document)
                 .cloned().unwrap_or_else(|| anchors.history_snapshot()));
-        let inactive_positions = if matches!(&event, CoreEvent::Input(_)) {
+        let inactive_positions = if matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) {
             self.views
                 .iter()
                 .filter(|(id, _)| **id != view_id)
@@ -6204,25 +6221,23 @@ impl<P: TextMeasurementProvider> Core<P> {
                     composition_changes: Vec::new(),
                 })
             }
-            CoreEvent::Input(input) => {
+            event @ (CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) => {
+                let input = match event { CoreEvent::Input(input) => Some(input), _ => None };
                 let was_visual_block = self.views[&view_id].commands.active_visual_block_endpoint_offsets().is_some();
                 let (requires_layout, layout_intent, target_geometry_only) = {
                     let target_view = self
                         .views
                         .get(&view_id)
                         .expect("view existence checked above");
-                    let requires_layout = target_view.commands.requires_layout_for_input(
-                        &self.document,
-                        &input,
-                        clipboard_context.as_ref(),
-                    );
-                    let intent = if target_view.commands.layout_input_preserves_viewport(&input) {
+                    let requires_layout = input.as_ref().is_some_and(|input| target_view.commands.requires_layout_for_input(
+                        &self.document, input, clipboard_context.as_ref()));
+                    let intent = if input.as_ref().is_some_and(|input| target_view.commands.layout_input_preserves_viewport(input)) {
                         ImmediateLayoutIntent::PreserveViewport
                     } else {
                         ImmediateLayoutIntent::RevealCaret
                     };
-                    (requires_layout, intent, target_view.commands.is_ex_address_layout_input(&input)
-                        || target_view.commands.is_counted_viewport_alignment_input(&input))
+                    (requires_layout, intent, input.as_ref().is_some_and(|input| target_view.commands.is_ex_address_layout_input(input)
+                        || target_view.commands.is_counted_viewport_alignment_input(input)))
                 };
                 let layout_is_stale = if requires_layout {
                     self.ensure_command_layout(view_id, layout_intent, target_geometry_only)?
@@ -6239,14 +6254,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .expect("view existence checked above");
                 let before = self.document.revision();
                 let old_viewport_top = target_view.layout.viewport_top();
-                let resolution = if requires_layout {
+                let resolution = if requires_layout || input.is_none() {
                     CommandResolution::Legacy(crate::command::LegacyCommandReason::LayoutDependent)
                 } else {
                     let context = clipboard_context.as_ref().map_or_else(
                         || CommandContext::new(&self.document),
                         |clipboard| CommandContext::with_clipboard(&self.document, clipboard),
                     );
-                    target_view.commands.resolve(&context, input.clone())?
+                    target_view.commands.resolve(&context, input.as_ref().expect("keyboard input").clone())?
                 };
                 let (command_result, committed_position_map, planned_presentation) =
                     match resolution {
@@ -6261,6 +6276,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                         CommandResolution::Legacy(_) => {
                             let (result, map) = self.document.capture_position_maps(
                                 |document| -> Result<_, CoreError> {
+                                    let Some(input) = input else {
+                                        let step = target_view.commands.insert_list_paragraph_for_core(document)?;
+                                        return Ok((step, old_viewport_top, false));
+                                    };
                                     if requires_layout {
                                         let snapshot = target_view
                                             .layout

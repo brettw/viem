@@ -59,6 +59,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case editStyles
     case increaseIndent = 331
     case decreaseIndent
+    case insertListParagraph
     case bulletedList = 344
     case numberedList
     case removeList
@@ -118,6 +119,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
         case .insertLink: .init(key: "k", modifiers: [.command], label: "⌘K")
         case .bulletedList: .init(key: "8", modifiers: [.shift, .command], label: "⇧⌘8")
         case .numberedList: .init(key: "7", modifiers: [.shift, .command], label: "⇧⌘7")
+        case .insertListParagraph: .init(key: "\r", modifiers: [.option], label: "⌥↩")
         default: nil
         }
     }
@@ -135,6 +137,9 @@ public struct EVFormattingShortcut {
     public func matches(_ event: NSEvent) -> Bool {
         let actualModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         let actualKey = event.charactersIgnoringModifiers?.lowercased()
+        if key == "\r" {
+            return actualModifiers == modifiers && (event.keyCode == 36 || event.keyCode == 76)
+        }
         if key == "+" {
             // A layout with a dedicated Plus key needs no Shift. A US layout
             // supplies Plus from Shift-Equals; AppKit reports either spelling.

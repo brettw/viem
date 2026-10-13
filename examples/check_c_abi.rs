@@ -61,6 +61,9 @@ fn probe_source() -> String {
 #include "viem_core.h"
 #include <stddef.h>
 _Static_assert(VIEM_CORE_ABI_VERSION == {abi}, "ABI version");
+_Static_assert(VIEM_KEY_ALT_ENTER == {alt_enter}, "list paragraph key");
+_Static_assert(VIEM_LIST_CAN_INSERT_PARAGRAPH == {list_paragraph_capability}, "list paragraph capability");
+static ViemStatus (*insert_list_paragraph)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_list_paragraph;
 _Static_assert(sizeof(ViemSetDocumentModeV1) == {set_mode_size}, "document mode operation size");
 _Static_assert(offsetof(ViemSetDocumentModeV1, formatted_markdown) == {set_mode_formatted}, "document mode preference offset");
 _Static_assert(sizeof(ViemSetMarkdownSourceV1) == {set_markdown_size}, "format operation size");
@@ -698,6 +701,8 @@ static void typecheck(void) {{
         line_number_region_size = std::mem::size_of::<ViemLineNumberRegionV1>(),
         line_number_region_top = std::mem::offset_of!(ViemLineNumberRegionV1, top),
         abi = VIEM_CORE_ABI_VERSION,
+        alt_enter = VIEM_KEY_ALT_ENTER,
+        list_paragraph_capability = VIEM_LIST_CAN_INSERT_PARAGRAPH,
         selection_character = VIEM_MODE_SELECTION_CHARACTER,
         selection_line = VIEM_MODE_SELECTION_LINE,
         selection_block = VIEM_MODE_SELECTION_BLOCK,

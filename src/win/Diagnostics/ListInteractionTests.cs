@@ -61,6 +61,7 @@ internal static class ListInteractionTests
         var paragraph = styles.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Paragraph");
         var indent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Indent");
         var unindent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Unindent");
+        var insertParagraph = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Insert Paragraph in List Item");
         ulong second = checked((ulong)document.FormattedText().IndexOf("Second", StringComparison.Ordinal));
 
         string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
@@ -104,6 +105,95 @@ internal static class ListInteractionTests
 
         try
         {
+            Check(KeyPolicy.Route(VirtualKey.Enter, false, false, true).Kind == VIEM_KEY_ALT_ENTER
+                && KeyPolicy.Route(VirtualKey.Enter, false, false, true, literal: true).Kind == VIEM_KEY_ALT_ENTER,
+                "Windows preserves Alt-Enter as a distinct core key, including literal-next input");
+            Check(KeyPolicy.Route(VirtualKey.Enter, false, false, false).Kind == VIEM_KEY_ENTER
+                && KeyPolicy.Route(VirtualKey.Enter, false, true, false).Kind == VIEM_KEY_SHIFT_ENTER
+                && KeyPolicy.Route(VirtualKey.Enter, true, false, true).Kind == VIEM_KEY_ENTER
+                && KeyPolicy.Route(VirtualKey.Enter, true, true, true).Kind == VIEM_KEY_SHIFT_ENTER,
+                "Alt-Enter routing preserves Enter, Shift-Enter and Ctrl-Alt/AltGr input");
+
+            PlaceInSecond();
+            await OpenParagraphMenu();
+            Check(insertParagraph.IsEnabled && insertParagraph.KeyboardAcceleratorTextOverride == "Alt+Enter",
+                "Paragraph menu exposes Insert Paragraph in List Item with its shortcut at a Normal list caret");
+            await CloseParagraphMenu();
+            await Invoke(insertParagraph);
+            Check(document.FormattedText() == "First\nSec\nond"
+                && DecorationLabels(view).SequenceEqual(new[] { "1.", "2." }) && !Source().Contains("<br>"),
+                "native list paragraph menu splits the paragraph while retaining one marker per item");
+            view.Key(VIEM_KEY_ESCAPE);
+            view.Undo();
+            Check(Source() == original, "native list paragraph menu undoes to the exact original source");
+
+            foreach (var (mode, entry) in new[] { (VIEM_MODE_INSERT, 'i'), (VIEM_MODE_REPLACE, 'R') })
+            {
+                PlaceInSecond();
+                view.Key(VIEM_KEY_CHARACTER, entry);
+                pane.FocusEditor();
+                await Task.Delay(80);
+                await InputRoutingTests.Key(VirtualKey.Enter, alt: true);
+                Check(document.FormattedText() == "First\nSec\nond" && view.Presentation.mode == mode
+                    && DecorationLabels(view).SequenceEqual(new[] { "1.", "2." }),
+                    $"native Alt-Enter inserts a paragraph in the same list item and preserves mode {mode}");
+                if (mode == VIEM_MODE_REPLACE)
+                {
+                    await InputRoutingTests.Key(VirtualKey.Back);
+                    Check(Source() == original && view.Presentation.mode == VIEM_MODE_REPLACE,
+                        "native Replace Backspace restores the source patches from Alt-Enter");
+                    await InputRoutingTests.Key(VirtualKey.Enter, alt: true);
+                    Check(document.FormattedText() == "First\nSec\nond",
+                        "native Alt-Enter can split again after Replace Backspace restoration");
+                }
+                await InputRoutingTests.Key(VirtualKey.Escape);
+                view.Undo();
+                Check(Source() == original, $"native Alt-Enter in mode {mode} undoes to exact source bytes");
+            }
+
+            PlaceAtSecondStart();
+            view.Key(VIEM_KEY_CHARACTER, 'i');
+            view.Text("Fi");
+            view.Key(VIEM_KEY_CONTROL_CHARACTER, 'n');
+            var completion = view.Completion();
+            for (int attempt = 0; attempt < 100 && (completion.Info.flags & VIEM_COMPLETION_SEARCHING) != 0; attempt++)
+            {
+                await Task.Delay(20);
+                view.Poll();
+                completion = view.Completion();
+            }
+            Check((completion.Info.flags & VIEM_COMPLETION_ACTIVE) != 0 && completion.Info.selected_index >= 0
+                && completion.Info.selected_index < completion.Items.Length
+                && completion.Items[(int)completion.Info.selected_index] == "First"
+                && document.FormattedText() == "First\nFiSecond",
+                "list paragraph menu fixture previews a completion without changing source");
+            await Invoke(insertParagraph);
+            Check(document.FormattedText() == "First\nFirst\nSecond"
+                && view.Presentation.cursor_utf8_offset == (ulong)"First\nFirst\n".Length
+                && (view.Completion().Info.flags & VIEM_COMPLETION_ACTIVE) == 0,
+                "list paragraph menu accepts completion before capturing the split caret");
+            view.Key(VIEM_KEY_ESCAPE);
+            view.Undo();
+            Check(Source() == original, "completion acceptance and native list paragraph insertion share the typing undo unit");
+
+            PlaceInSecond();
+            view.Key(VIEM_KEY_CHARACTER, 'v');
+            await OpenParagraphMenu();
+            Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled for a nonempty selection");
+            await CloseParagraphMenu();
+            view.Key(VIEM_KEY_ESCAPE);
+            view.SetMarkdownSource(true);
+            await OpenParagraphMenu();
+            Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled in Markdown Source");
+            await CloseParagraphMenu();
+            view.SetMarkdownSource(false);
+            PlaceInSecond();
+            document.SetReadOnly(true);
+            await OpenParagraphMenu();
+            Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled for a read-only document");
+            await CloseParagraphMenu();
+            document.SetReadOnly(false);
+
             PlaceInSecond();
             await OpenParagraphMenu();
             Check((view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0 && indent.IsEnabled && !unindent.IsEnabled,
@@ -146,6 +236,9 @@ internal static class ListInteractionTests
             Check(document.FormattedText() == "First\nSecond" && Source() != original
                 && view.ListCapabilities() == 0,
                 "native Backspace at a top-level item start removes its list treatment");
+            await OpenParagraphMenu();
+            Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled outside a list item");
+            await CloseParagraphMenu();
 
             Check(KeyPolicy.Route(VirtualKey.Tab, false, false, false).Kind == VIEM_KEY_TAB
                 && KeyPolicy.Route(VirtualKey.Tab, false, true, false).Kind == VIEM_KEY_BACK_TAB,

@@ -204,3 +204,6 @@ mod audit_source_regressions;
 mod audit_replay_regressions;
 
 mod audit_format_regressions;
+
+mod list_item_paragraph;
+mod list_item_paragraph_input;
