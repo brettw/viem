@@ -208,6 +208,9 @@ fn rich_paste(mut document: Document, original: Vec<u8>, list: bool, started: In
 }
 
 fn main() {
+    // Shadow verification (enabled for Cargo-run processes) would add complete
+    // reprojection to every regional edit and distort the measured allocations.
+    std::env::set_var("VIEM_SHADOW_PROJECTION", "off");
     let args: Vec<_> = std::env::args().collect();
     assert!(
         args.len() >= 4,

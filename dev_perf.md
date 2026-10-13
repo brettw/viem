@@ -237,6 +237,12 @@ in a development guide rather than expanding AGENTS into an implementation
 manual. This postmortem does not change AGENTS or relax existing validation
 requirements.
 
+## Suggestions on architecutal improvements
+
+- Give candidate attempts explicit outcomes: needs more context, proven mismatch, or verified candidate. Today, callers infer these distinctions from optional values, errors, and path\-specific variants.
+- Make a validated regional\-proof object carry coverage and boundary dependencies. Text, break, and style verification should consume that shared contract.
+- Make whole\-store materialization explicit. Ordinary\-looking iteration and indexing should not unexpectedly retain document\-sized caches. Add counters for compatibility\-record materialization.
+
 ## Evidence and limitations
 
 Task durations came from conversation metadata. Phase boundaries and process

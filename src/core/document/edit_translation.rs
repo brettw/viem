@@ -329,6 +329,8 @@ impl Document {
         let syntax = if let Some(payload) = payload {
             if self.format() == Format::Markdown && !in_code && breaks.is_empty() {
                 self.escape_markdown_source_text(source_range.start, &edit.replacement)?
+            } else if self.format() == Format::Markdown && !in_code {
+                self.markdown_payload_paragraph_syntax(source_range.start, &payload.payload)?
             } else {
                 structured_payload_syntax(
                     &payload.payload,
@@ -356,6 +358,44 @@ impl Document {
             source_range,
             self.encoding().encode_fragment(&syntax)?,
         )]))
+    }
+
+    /// Literal paragraphs of a formatted payload with semantic breaks. Each
+    /// break becomes a paragraph separator, and block syntax at the start of
+    /// each paragraph stays literal. Whitespace is spelled as before, so
+    /// whitespace-only paragraphs keep their dedicated clipboard handling.
+    fn markdown_payload_paragraph_syntax(
+        &self,
+        source_at: usize,
+        payload: &FormattedTextPayload,
+    ) -> Result<String, DocumentError> {
+        let text = payload.text();
+        let separator = self.file_format().spelling().repeat(2);
+        let ends = payload.break_offsets().iter().copied().chain([text.len()]).collect::<Vec<_>>();
+        let mut syntax = String::with_capacity(text.len() + 16);
+        let mut start = 0;
+        for (index, end) in ends.iter().copied().enumerate() {
+            let segment = &text[start..end];
+            if index == 0 {
+                // Only a leading block marker needs the insertion point's
+                // line context; other text keeps ordinary prose escaping.
+                let body = segment.trim_start_matches([' ', '\t']);
+                let digits = body.bytes().take_while(u8::is_ascii_digit).count();
+                let marker = segment.len() - body.len() <= 3
+                    && (body.starts_with(['-', '+', '='])
+                        || (1..=9).contains(&digits) && matches!(body.as_bytes().get(digits), Some(b'.' | b')')));
+                syntax.push_str(&if marker {
+                    self.escape_markdown_source_text(source_at, segment)?
+                } else {
+                    escape_markdown_insert_in_encoding(segment, self.encoding())
+                });
+            } else {
+                syntax.push_str(&separator);
+                super::protect_markdown_line_start(&escape_markdown_insert_in_encoding(segment, self.encoding()), &mut syntax);
+            }
+            start = end + 1;
+        }
+        Ok(syntax)
     }
 
     pub(super) fn preserve_markdown_edit_boundaries<'a>(

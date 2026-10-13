@@ -327,6 +327,7 @@ fn splitting_and_joining_independent_paragraphs_stays_regional() {
         result.unwrap();
         assert_eq!(work.full_projection_candidates, 0, "{label}: {work:?}");
         assert_eq!(work.formatted_full_materialized_bytes, 0, "{label}: {work:?}");
+        assert_eq!(work.compatibility_record_materializations, 0, "{label}: {work:?}");
         assert!(work.source_decoded_bytes < 4096, "{label}: {work:?}");
         reopens_as_displayed(&core, label);
     }

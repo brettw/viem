@@ -2326,7 +2326,7 @@ impl FormattedDocument {
     fn resolve_block_boundary(&self, identity: ProjectedBlockBoundary) -> Option<usize> {
         let block = self
             .blocks
-            .iter()
+            .items()
             .find(|block| block.id != 0 && block.id == identity.block())?;
         if block.range.len() != identity.block_len() || identity.local_byte() > block.range.len() {
             return None;
@@ -2688,7 +2688,7 @@ impl FormattedDocument {
         if let Some(previous) = previous {
             let mappings = build_edit_mappings(previous.text().len(), self.text().len(), edits)?;
             if let Some(old) = &previous.flow_blocks {
-                for block in old.as_slice() {
+                for block in &old.to_vec() {
                     if let Some(witness) =
                         block_identity_witness(previous.text(), block, &mappings)?
                     {
@@ -2708,7 +2708,9 @@ impl FormattedDocument {
             }
         }
         let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
-        super::containers::reconcile(&mut blocks, previous.and_then(|previous| previous.flow_blocks.as_ref()).map_or(&[], |blocks| blocks.as_slice()), false);
+        let previous_flow = previous.and_then(|previous| previous.flow_blocks.as_ref())
+            .map(OrderedRangeStore::to_vec).unwrap_or_default();
+        super::containers::reconcile(&mut blocks, &previous_flow, false);
         self.flow_blocks = Some(OrderedRangeStore::new(blocks));
         if let Some(old) = previous.and_then(|previous| previous.flow_blocks.as_ref()) {
             self.flow_blocks.as_mut().unwrap().reuse_equal_chunks(old);
@@ -2756,12 +2758,13 @@ impl FormattedDocument {
         self.install_unchanged_hard_line_ids(previous)?;
         if let (Some(flow), Some(old)) = (&mut self.flow_blocks, &previous.flow_blocks) {
             let mut blocks = flow.to_vec();
-            if blocks.len() != old.len() || blocks.iter().zip(old.as_slice())
+            let old_blocks = old.to_vec();
+            if blocks.len() != old_blocks.len() || blocks.iter().zip(&old_blocks)
                 .any(|(block, old)| block.range != old.range) {
                 return Err(BlockIdentityError::InvalidProjection);
             }
-            for (block, old) in blocks.iter_mut().zip(old.as_slice()) { block.id = old.id; }
-            super::containers::reconcile(&mut blocks, old.as_slice(), false);
+            for (block, old) in blocks.iter_mut().zip(&old_blocks) { block.id = old.id; }
+            super::containers::reconcile(&mut blocks, &old_blocks, false);
             *flow = OrderedRangeStore::new(blocks);
             flow.reuse_equal_chunks(old);
         }
@@ -3323,12 +3326,27 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
     }
 
+    /// Every block, as a flat compatibility copy that this snapshot then
+    /// retains (and history with it). Editing paths use `blocks_for_region`,
+    /// `block_count` or other bounded queries; work statistics count each copy.
     pub fn blocks(&self) -> &[Block] {
-        self.blocks.as_slice()
+        self.blocks.compatibility_slice()
     }
 
+    /// Every style span, as a retained flat compatibility copy; see `blocks`.
     pub fn style_spans(&self) -> &[StyleSpan] {
-        self.styles.as_slice()
+        self.styles.compatibility_slice()
+    }
+
+    /// A one-off copy of every block that this snapshot does not retain, for
+    /// small temporary projections such as a regional parse.
+    pub(crate) fn block_records(&self) -> Vec<Block> {
+        self.blocks.to_vec()
+    }
+
+    /// A one-off copy of every style span; see `block_records`.
+    pub(crate) fn style_span_records(&self) -> Vec<StyleSpan> {
+        self.styles.to_vec()
     }
 
     /// Number of semantic hard lines in this exact projection. This is not
@@ -3373,6 +3391,91 @@ impl FormattedDocument {
             .filter(|separator| range.start <= separator.start && separator.end <= range.end)
             .map(|separator| separator.start)
             .collect()
+    }
+
+    /// First semantic difference from `other`, for shadow verification of a
+    /// regional candidate against complete reprojection. Block identities,
+    /// cached compatibility views and provenance are not compared, and the
+    /// reads retain no flat copies in either snapshot.
+    pub(crate) fn semantic_difference(&self, other: &Self) -> Option<String> {
+        fn excerpt(text: &str, at: usize) -> &str {
+            let mut start = at.saturating_sub(24);
+            while !text.is_char_boundary(start) { start -= 1; }
+            let mut end = (at + 24).min(text.len());
+            while !text.is_char_boundary(end) { end += 1; }
+            &text[start..end]
+        }
+        fn clipped(value: impl fmt::Debug) -> String {
+            let text = format!("{value:?}");
+            text.chars().take(600).collect()
+        }
+        let (left, right) = (self.text.flatten(), other.text.flatten());
+        if left != right {
+            let at = left.bytes().zip(right.bytes()).position(|(a, b)| a != b)
+                .unwrap_or(left.len().min(right.len()));
+            return Some(format!("text differs at byte {at}: regional {:?}, complete {:?}",
+                excerpt(&left, at), excerpt(&right, at)));
+        }
+        // Configuration overlays (direct formatting and deleted-style
+        // fallbacks) are installed identically for every strategy when block
+        // identities are reconciled, so `other` is compared through this
+        // snapshot's style sheet and without direct formatting.
+        let (left, right) = (self.blocks.to_vec(), other.blocks.to_vec());
+        let structure = |block: &Block, sheet: &StyleSheet| {
+            let mut attributes = (*block.attributes).clone();
+            attributes.direct_formatting = None;
+            if sheet.configuration_deleted(&attributes.style, true) {
+                attributes.style = sheet.base_paragraph.clone();
+            }
+            (block.range.clone(), attributes)
+        };
+        if let Some((index, (a, b))) = left.iter().zip(&right).enumerate()
+            .find(|(_, (a, b))| structure(a, &self.style_sheet) != structure(b, &self.style_sheet))
+        {
+            let ((a_range, a), (b_range, b)) = (structure(a, &self.style_sheet), structure(b, &self.style_sheet));
+            let mut fields = Vec::new();
+            macro_rules! field {
+                ($name:literal, $left:expr, $right:expr) => {
+                    if $left != $right {
+                        fields.push(format!("{}: {} vs {}", $name, clipped(&$left), clipped(&$right)));
+                    }
+                };
+            }
+            field!("range", a_range, b_range);
+            field!("kind", a.kind, b.kind);
+            field!("style", a.style, b.style);
+            field!("quote_depth", a.quote_depth, b.quote_depth);
+            field!("list_loose", a.list_loose, b.list_loose);
+            field!("list_editing", a.list_editing, b.list_editing);
+            field!("thematic_break", a.thematic_break, b.thematic_break);
+            field!("markdown_html", a.markdown_html, b.markdown_html);
+            field!("code_language", a.code_language, b.code_language);
+            let containers = |attributes: &BlockAttributes| attributes.containers.iter()
+                .map(|member| (member.container.kind.clone(), member.container.style.clone(), member.starts_here, member.ends_here))
+                .collect::<Vec<_>>();
+            field!("containers", containers(&a), containers(&b));
+            if fields.is_empty() {
+                fields.push(format!("attributes: {} vs {}", clipped(&a), clipped(&b)));
+            }
+            return Some(format!("block {index} differs (regional vs complete): {}", fields.join("; ")));
+        }
+        if left.len() != right.len() {
+            return Some(format!("regional has {} blocks, complete has {}", left.len(), right.len()));
+        }
+        let (left, right) = (self.styles.items().collect::<Vec<_>>(), other.styles.items().collect::<Vec<_>>());
+        if let Some((a, b)) = left.iter().zip(&right).find(|(a, b)| a != b) {
+            return Some(format!("style span differs: regional {}, complete {}", clipped(a), clipped(b)));
+        }
+        if left.len() != right.len() {
+            return Some(format!("regional has {} style spans, complete has {}", left.len(), right.len()));
+        }
+        let (left, right) = (self.hard_break_offsets(), other.hard_break_offsets());
+        if left != right {
+            let at = left.iter().zip(&right).position(|(a, b)| a != b).unwrap_or(left.len().min(right.len()));
+            return Some(format!("hard breaks differ at index {at}: regional {:?}, complete {:?}",
+                left.get(at), right.get(at)));
+        }
+        None
     }
 
     pub(crate) fn hard_break_offsets(&self) -> Vec<usize> {
@@ -3676,7 +3779,7 @@ impl FormattedDocument {
     /// Malformed source ranges represented by visible opaque replacement
     /// items in this exact formatted snapshot.
     pub fn decoding_diagnostics(&self) -> &[DecodingDiagnostic] {
-        self.decoding_diagnostics.as_slice()
+        self.decoding_diagnostics.compatibility_slice()
     }
 
     pub(crate) fn has_decoding_diagnostic_overlapping(&self, range: &Range<usize>) -> bool {
@@ -3894,13 +3997,13 @@ impl FormattedDocument {
     }
 
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
-        (style.0 == "Image" && !self.inline_images.is_empty()) || self.document_style.style == *style || self.blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
-            || self.flow_blocks.as_ref().is_some_and(|blocks| blocks.iter().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style)))
+        (style.0 == "Image" && !self.inline_images.is_empty()) || self.document_style.style == *style || self.blocks.items().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
+            || self.flow_blocks.as_ref().is_some_and(|blocks| blocks.items().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style)))
     }
 
     pub(crate) fn has_character_style_assignment(&self, style: &StyleId) -> bool {
         self.styles
-            .iter()
+            .items()
             .any(|span| matches!(&span.application, StyleApplication::Named(id) if id == style))
     }
 
@@ -3918,21 +4021,21 @@ impl FormattedDocument {
             ranges.push(0..self.text.byte_len());
         }
         if block_styles.contains(&StyleId::from("Image")) {
-            ranges.extend(self.inline_images.iter().map(|image| image.range.clone()));
+            ranges.extend(self.inline_images.items().map(|image| image.range));
         }
         ranges.extend(
             self.blocks
-                .iter()
+                .items()
                 .filter(|block| block_styles.contains(&block.style) || block.containers.iter().any(|member| block_styles.contains(&member.container.style)))
                 .map(|block| block.range.clone()),
         );
         if let Some(blocks) = &self.flow_blocks {
-            ranges.extend(blocks.iter().filter(|block| block_styles.contains(&block.style) || block.containers.iter().any(|member| block_styles.contains(&member.container.style)))
+            ranges.extend(blocks.items().filter(|block| block_styles.contains(&block.style) || block.containers.iter().any(|member| block_styles.contains(&member.container.style)))
                 .map(|block| block.range.clone()));
         }
         ranges.extend(
             self.styles
-                .iter()
+                .items()
                 .filter_map(|span| match &span.application {
                     StyleApplication::Named(id) | StyleApplication::Automatic(id) => {
                         character_styles.contains(id).then(|| span.range.clone())
@@ -4840,7 +4943,7 @@ pub(crate) fn splice_line_local_projection(
         && previous_region_blocks[0].range.start <= old_formatted.start
         && old_formatted.end <= previous_region_blocks[0].range.end
         && regional.blocks.len() == 1
-        && regional.blocks.as_slice()[0].style == previous_region_blocks[0].style;
+        && regional.blocks.get(0).is_some_and(|block| block.style == previous_region_blocks[0].style);
     if !partial_preserved_block && !literal_topology
         && !source_paragraphs
         && (previous_region_blocks
@@ -4935,7 +5038,7 @@ pub(crate) fn splice_line_local_projection(
         }
         *next_projected_block_id = allocate_unassigned_block_ids(&mut regional_blocks, *next_projected_block_id)?;
     } else if source_paragraphs {
-        let regional_lines = regional.hard_lines.as_slice();
+        let regional_lines = regional.hard_lines.to_vec();
         let mut used = std::collections::BTreeSet::new();
         let last = regional_blocks.len().saturating_sub(1);
         for (index, candidate) in regional_blocks.iter_mut().enumerate() {
@@ -5121,8 +5224,7 @@ pub(crate) fn splice_line_local_projection(
             .ok_or(BlockIdentityError::InvalidProjection)?;
         let parsed = regional.flow_lines.as_ref().unwrap_or(&regional.hard_lines);
         let mut next = parsed
-            .as_slice()
-            .iter()
+            .items()
             .map(|line| {
                 Ok(HardLine {
                     id: line.id,
@@ -5259,8 +5361,7 @@ pub(crate) fn splice_line_local_projection(
     };
     let mut regional_styles = regional
         .styles
-        .as_slice()
-        .iter()
+        .items()
         .map(|span| {
             Ok(StyleSpan {
                 range: shift_region_range(&span.range, old_formatted.start)?,
@@ -5297,8 +5398,8 @@ pub(crate) fn splice_line_local_projection(
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
     let image_indices = contained_interval_indices(&previous.inline_images, &old_formatted)?;
-    let regional_images = regional.inline_images.as_slice().iter().map(|image| {
-        Ok(InlineImage { range: shift_region_range(&image.range, old_formatted.start)?, ..image.clone() })
+    let regional_images = regional.inline_images.items().map(|image| {
+        Ok(InlineImage { range: shift_region_range(&image.range, old_formatted.start)?, ..image })
     }).collect::<Result<Vec<_>, BlockIdentityError>>()?;
     let inline_images = previous.inline_images.splice_transformed(image_indices, regional_images,
         old_formatted.end, new_formatted_end, Some((old_source.end, new_source.end)), None, &mut range_stats)
@@ -5532,9 +5633,7 @@ pub(crate) fn splice_line_local_projection(
     )?;
     let regional_diagnostics = regional
         .decoding_diagnostics
-        .as_slice()
-        .iter()
-        .cloned()
+        .items()
         .map(|mut diagnostic| {
             diagnostic.revision = revision;
             diagnostic.formatted_range =
@@ -7576,15 +7675,15 @@ mod tests {
                 projection.document_style.direct_default_character,
                 CharacterProperties::default()
             );
-            assert!(projection.blocks.iter().all(|block| {
+            assert!(projection.blocks().iter().all(|block| {
                 block.direct_paragraph == BlockProperties::default()
                     && block.direct_default_character == CharacterProperties::default()
             }));
         }
-        assert_eq!(plain.blocks[0].style, plain.style_sheet.base_paragraph);
-        assert_eq!(markdown.blocks[0].style, StyleId::from("Heading1"));
+        assert_eq!(plain.blocks()[0].style, plain.style_sheet.base_paragraph);
+        assert_eq!(markdown.blocks()[0].style, StyleId::from("Heading1"));
         assert_eq!(
-            markdown.blocks[1].style,
+            markdown.blocks()[1].style,
             markdown.style_sheet.base_paragraph
         );
     }
@@ -7595,21 +7694,21 @@ mod tests {
         previous.assign_initial_block_ids(1).unwrap();
         add_direct_assignments(&mut previous);
         let expected_root = previous.document_style.clone();
-        let expected_block = previous.blocks[0].clone();
+        let expected_block = previous.blocks()[0].clone();
 
         let mut candidate = plain("first\nsecond".to_owned(), Revision(2));
         candidate.install_unchanged_block_ids(&previous).unwrap();
         assert_eq!(candidate.document_style, expected_root);
-        assert_eq!(candidate.blocks[0], expected_block);
+        assert_eq!(candidate.blocks()[0], expected_block);
 
         let mut history = History::new(previous);
         history.commit(candidate, false);
         assert!(history.undo());
         assert_eq!(history.current().document_style, expected_root);
-        assert_eq!(history.current().blocks[0], expected_block);
+        assert_eq!(history.current().blocks()[0], expected_block);
         assert!(history.redo());
         assert_eq!(history.current().document_style, expected_root);
-        assert_eq!(history.current().blocks[0], expected_block);
+        assert_eq!(history.current().blocks()[0], expected_block);
     }
 
     #[test]
@@ -7620,9 +7719,9 @@ mod tests {
         let next_id = previous.assign_initial_block_ids(1).unwrap();
         add_direct_assignments(&mut previous);
         let expected_root = previous.document_style.clone();
-        let expected_id = previous.blocks[0].id;
-        let expected_paragraph = previous.blocks[0].direct_paragraph.clone();
-        let expected_character = previous.blocks[0].direct_default_character.clone();
+        let expected_id = previous.blocks()[0].id;
+        let expected_paragraph = previous.blocks()[0].direct_paragraph.clone();
+        let expected_character = previous.blocks()[0].direct_default_character.clone();
         let mut candidate = plain(new_text.clone(), Revision(2));
         let edits = vec![TextEdit::new(0..0, "prefix ")];
         let map = PositionMap::for_text(
@@ -7639,10 +7738,10 @@ mod tests {
             .install_reconciled_block_ids(&previous, &edits, &map, next_id)
             .unwrap();
         assert_eq!(candidate.document_style, expected_root);
-        assert_eq!(candidate.blocks[0].id, expected_id);
-        assert_eq!(candidate.blocks[0].direct_paragraph, expected_paragraph);
+        assert_eq!(candidate.blocks()[0].id, expected_id);
+        assert_eq!(candidate.blocks()[0].direct_paragraph, expected_paragraph);
         assert_eq!(
-            candidate.blocks[0].direct_default_character,
+            candidate.blocks()[0].direct_default_character,
             expected_character
         );
     }
@@ -7657,9 +7756,9 @@ mod tests {
             let mut previous = plain(old_text.to_owned(), Revision(1));
             let next_id = previous.assign_initial_block_ids(1).unwrap();
             add_direct_assignments(&mut previous);
-            let old_id = previous.blocks[0].id;
-            let expected_paragraph = previous.blocks[0].direct_paragraph.clone();
-            let expected_character = previous.blocks[0].direct_default_character.clone();
+            let old_id = previous.blocks()[0].id;
+            let expected_paragraph = previous.blocks()[0].direct_paragraph.clone();
+            let expected_character = previous.blocks()[0].direct_default_character.clone();
             let mut candidate = plain(new_text.to_owned(), Revision(2));
             let map = PositionMap::for_text(
                 DocumentId(1),
@@ -7675,12 +7774,12 @@ mod tests {
                 .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
                 .unwrap();
             assert_eq!(candidate.blocks.len(), 2);
-            assert!(candidate.blocks.iter().all(|block| {
+            assert!(candidate.blocks().iter().all(|block| {
                 block.direct_paragraph == expected_paragraph
                     && block.direct_default_character == expected_character
             }));
             let retained_index = if new_text.starts_with('\n') { 1 } else { 0 };
-            assert_eq!(candidate.blocks[retained_index].id, old_id);
+            assert_eq!(candidate.blocks()[retained_index].id, old_id);
         }
     }
 
@@ -7691,8 +7790,8 @@ mod tests {
         let mut previous = markdown_at("# title", Revision(1));
         let next_id = previous.assign_initial_block_ids(1).unwrap();
         add_direct_assignments(&mut previous);
-        let expected_paragraph = previous.blocks[0].direct_paragraph.clone();
-        let expected_character = previous.blocks[0].direct_default_character.clone();
+        let expected_paragraph = previous.blocks()[0].direct_paragraph.clone();
+        let expected_character = previous.blocks()[0].direct_default_character.clone();
         let mut candidate = markdown_at("# title\nbody", Revision(2));
         let edit = TextEdit::new(5..5, "\nbody");
         let map = PositionMap::for_text(
@@ -7708,9 +7807,9 @@ mod tests {
         candidate
             .install_reconciled_block_ids(&previous, &[edit], &map, next_id)
             .unwrap();
-        assert_eq!(candidate.blocks[0].style, StyleId::from("Heading1"));
-        assert_eq!(candidate.blocks[1].style, StyleId::from("Paragraph"));
-        assert!(candidate.blocks.iter().all(|block| {
+        assert_eq!(candidate.blocks()[0].style, StyleId::from("Heading1"));
+        assert_eq!(candidate.blocks()[1].style, StyleId::from("Paragraph"));
+        assert!(candidate.blocks().iter().all(|block| {
             block.direct_paragraph == expected_paragraph
                 && block.direct_default_character == expected_character
         }));
@@ -7727,8 +7826,8 @@ mod tests {
         candidate.blocks = OrderedRangeStore::new(blocks);
 
         candidate.install_unchanged_block_ids(&previous).unwrap();
-        assert_eq!(candidate.blocks[0].id, previous.blocks[0].id);
-        assert_eq!(candidate.blocks[0].kind, BlockKind::Heading(1));
+        assert_eq!(candidate.blocks()[0].id, previous.blocks()[0].id);
+        assert_eq!(candidate.blocks()[0].kind, BlockKind::Heading(1));
     }
 
     #[test]
@@ -7738,7 +7837,7 @@ mod tests {
         let new_text = format!("new\n{old_text}");
         let mut previous = plain(old_text.clone(), Revision(1));
         let next_id = previous.assign_initial_block_ids(1).unwrap();
-        let previous_last = previous.blocks.last().unwrap().id;
+        let previous_last = previous.blocks().last().unwrap().id;
         let mut candidate = plain(new_text.clone(), Revision(2));
         let edits = vec![TextEdit::new(0..0, "new\n")];
         let map = PositionMap::for_text(
@@ -7755,9 +7854,9 @@ mod tests {
             .install_reconciled_block_ids(&previous, &edits, &map, next_id)
             .unwrap();
         assert_eq!(candidate.blocks.len(), LINES + 2);
-        assert_eq!(candidate.blocks[0].id, next_id);
-        assert_eq!(candidate.blocks[1].id, previous.blocks[0].id);
-        assert_eq!(candidate.blocks.last().unwrap().id, previous_last);
+        assert_eq!(candidate.blocks()[0].id, next_id);
+        assert_eq!(candidate.blocks()[1].id, previous.blocks()[0].id);
+        assert_eq!(candidate.blocks().last().unwrap().id, previous_last);
         assert_eq!(after, next_id + 1);
     }
 
@@ -7768,12 +7867,12 @@ mod tests {
         assert_eq!(projected.text_tree().flatten(), projected.text());
         assert_eq!(projected.text_tree().hard_line_count(), 2);
         assert_eq!(projected.text_tree().hard_line_start(1).unwrap(), 26);
-        assert_eq!(projected.blocks[0].kind, BlockKind::Heading(1));
-        assert_eq!(projected.blocks[1].kind, BlockKind::Paragraph);
+        assert_eq!(projected.blocks()[0].kind, BlockKind::Heading(1));
+        assert_eq!(projected.blocks()[1].kind, BlockKind::Paragraph);
         assert_eq!(projected.styles.len(), 4);
-        assert_eq!(projected.styles[0].range, 2..6);
+        assert_eq!(projected.style_spans()[0].range, 2..6);
         assert_eq!(
-            projected.styles[0].application,
+            projected.style_spans()[0].application,
             StyleApplication::Semantic(SemanticInlineStyle::Strong)
         );
     }

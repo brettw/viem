@@ -213,6 +213,9 @@ fn text_fixture(lines: usize) -> Vec<u8> {
 }
 
 fn main() {
+    // Measurements exclude the shadow verification that Cargo-run processes
+    // enable by default (see .cargo/config.toml).
+    std::env::set_var("VIEM_SHADOW_PROJECTION", "off");
     let args: Vec<String> = std::env::args().collect();
     let scenario = args.get(1).map(String::as_str).unwrap_or("markdown");
     let size: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4 * 1024 * 1024);

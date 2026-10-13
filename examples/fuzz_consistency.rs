@@ -7,8 +7,20 @@
 //! available (so the view can scroll and type), and that arrow keys never get
 //! stuck before the document edge.
 //!
+//! Every core action also runs with shadow verification: each regionally
+//! verified candidate is compared with complete reprojection, and differences
+//! are `shadow_mismatch` findings naming the responsible candidate strategy.
+//!
+//! Each probe case has an identity built only from its inputs (format, seed
+//! hash, probe, position and operation). A run writes every failing case to
+//! `<probe>-cases.jsonl`; `compare` reports cases that newly fail or no longer
+//! fail, and `--baseline DIR` keeps complete replayable traces for new ones.
+//! See docs/fuzzing.md for workflows.
+//!
 //! ```sh
 //! cargo run --release --example fuzz_consistency -- probe --out target/consistency
+//! cargo run --release --example fuzz_consistency -- probe --quick --probes insert --out target/quick
+//! cargo run --release --example fuzz_consistency -- compare BASE_DIR NEW_DIR
 //! cargo run --release --example fuzz_consistency -- walk --seed 1 --cases 200 --steps 300 --out target/consistency
 //! cargo run --release --example fuzz_consistency -- replay FILE.json
 //! ```
@@ -17,10 +29,10 @@ mod corpus;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 use unicode_segmentation::UnicodeSegmentation;
 use viem_core::command::clipboard::{
@@ -29,7 +41,9 @@ use viem_core::command::clipboard::{
 };
 use viem_core::command::{CommandStatus, InputEvent, Key, LineMode, Mode, NavigationKey};
 use viem_core::document::{
-    BoundaryAffinity, HistoryNavigationRequest, ListStyle, SemanticInlineStyle, TableEditIntent,
+    trace_candidate_strategies, verify_regional_candidates, BoundaryAffinity, CandidateEvent,
+    CandidateOutcome, HistoryNavigationRequest, ListStyle, SemanticInlineStyle, ShadowMismatch,
+    TableEditIntent,
 };
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent, Document, Encoding, Format, ViewId};
@@ -254,7 +268,16 @@ struct H {
     slow: Vec<(String, f64)>,
     /// Last clipboard content written by the core (native Copy/Cut).
     clipboard: Option<ClipboardContent>,
+    /// Input-only identity of the current probe case within its seed.
+    case: String,
+    /// Candidate strategy that verified the most recent model edit.
+    last_strategy: Option<&'static str>,
+    /// Shadow mismatches not yet reported by `check`.
+    shadow: Vec<ShadowMismatch>,
 }
+
+/// Shadow verification of regional candidates; `--no-shadow` disables it.
+static SHADOW: AtomicBool = AtomicBool::new(true);
 
 #[derive(Debug, Clone)]
 enum Res {
@@ -290,7 +313,8 @@ impl H {
         if std::env::var_os("FUZZ_NUMBER").is_some() {
             core.set_number(view, true).map_err(|e| format!("set number: {e:?}"))?;
         }
-        Ok(H { core, view, views: vec![(view, width, height)], width, height, seed: seed.clone(), trace: vec![Act::Resize { width, height }], slow: Vec::new(), clipboard: None })
+        Ok(H { core, view, views: vec![(view, width, height)], width, height, seed: seed.clone(), trace: vec![Act::Resize { width, height }], slow: Vec::new(), clipboard: None,
+            case: String::new(), last_strategy: None, shadow: Vec::new() })
     }
 
     fn text(&self) -> &str {
@@ -311,13 +335,29 @@ impl H {
         let core = &mut self.core;
         let label = format!("{event:?}").chars().take(120).collect::<String>();
         let started = std::time::Instant::now();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.handle_with_layout(view, event)));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if SHADOW.load(Ordering::Relaxed) {
+                let ((result, events), shadow) = verify_regional_candidates(|| {
+                    trace_candidate_strategies(|| core.handle_with_layout(view, event))
+                });
+                (result, events, shadow)
+            } else {
+                let (result, events) = trace_candidate_strategies(|| core.handle_with_layout(view, event));
+                (result, events, Vec::new())
+            }
+        }));
         let elapsed = started.elapsed().as_secs_f64();
         if elapsed > 0.25 {
             self.slow.push((label, elapsed));
         }
         let result = match result {
-            Ok(r) => r,
+            Ok((r, events, shadow)) => {
+                if let Some(strategy) = last_verified_strategy(&events) {
+                    self.last_strategy = Some(strategy);
+                }
+                self.shadow.extend(shadow);
+                r
+            }
             Err(panic) => return Res::Err(format!("PANIC {}", panic_message(panic))),
         };
         if let Ok(outcome) = &result {
@@ -822,6 +862,9 @@ impl H {
     /// Invariants checked after every action.
     fn check(&mut self, after_input: bool, reproject: bool) -> Vec<(String, String)> {
         let mut problems = Vec::new();
+        for mismatch in std::mem::take(&mut self.shadow) {
+            problems.push(("shadow_mismatch".into(), format!("{}: {}", mismatch.strategy.name(), mismatch.detail)));
+        }
         let cursor = self.cursor();
         if let Err(e) = self.core.document().text_point(cursor) {
             problems.push(("invalid_cursor".into(), format!("cursor {cursor}: {e:?}")));
@@ -878,13 +921,17 @@ impl H {
         if reproject {
             let document = self.core.document();
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reprojection_problem(document))) {
-                Ok(Some(p)) => problems.push(p),
+                Ok(Some(problem)) => problems.push(problem),
                 Ok(None) => {}
                 Err(panic) => problems.push(("reopen_panic".into(), panic_message(panic))),
             }
         }
         problems
     }
+}
+
+fn last_verified_strategy(events: &[CandidateEvent]) -> Option<&'static str> {
+    events.iter().rev().find(|event| event.outcome == CandidateOutcome::Verified).map(|event| event.strategy.name())
 }
 
 fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
@@ -969,6 +1016,10 @@ fn reprojection_problem(document: &Document) -> Option<(String, String)> {
 
 #[derive(Clone, Debug, Serialize)]
 struct Finding {
+    /// Input-only case identity: format, seed hash, probe and parameters.
+    case: String,
+    /// Candidate strategy that verified the case's most recent model edit.
+    strategy: Option<&'static str>,
     kind: String,
     signature: String,
     fmt: Fmt,
@@ -999,13 +1050,32 @@ fn normalize(text: &str) -> String {
 struct Sink {
     findings: Mutex<BTreeMap<String, (usize, Vec<Finding>)>>,
     probes: AtomicUsize,
+    /// Every failing case as `case\tkind\tsignature`.
+    cases: Mutex<BTreeSet<String>>,
+    /// Failing cases of a baseline run, by case identity. Findings for a case
+    /// that did not fail there are kept in full.
+    baseline: Option<BTreeMap<String, HashSet<String>>>,
+    new: Mutex<Vec<Finding>>,
+    new_count: AtomicUsize,
 }
 
+const NEW_FINDING_EXAMPLES: usize = 2000;
+
 impl Sink {
-    fn new() -> Self {
-        Self { findings: Mutex::new(BTreeMap::new()), probes: AtomicUsize::new(0) }
+    fn new(baseline: Option<BTreeMap<String, HashSet<String>>>) -> Self {
+        Self { findings: Mutex::new(BTreeMap::new()), probes: AtomicUsize::new(0), cases: Mutex::new(BTreeSet::new()),
+            baseline, new: Mutex::new(Vec::new()), new_count: AtomicUsize::new(0) }
     }
     fn add(&self, finding: Finding) {
+        let case = case_line(&finding.case, &finding.kind, &finding.signature);
+        if self.baseline.as_ref().is_some_and(|baseline| !baseline.contains_key(&finding.case)) {
+            self.new_count.fetch_add(1, Ordering::Relaxed);
+            let mut new = self.new.lock().unwrap();
+            if new.len() < NEW_FINDING_EXAMPLES {
+                new.push(finding.clone());
+            }
+        }
+        self.cases.lock().unwrap().insert(case);
         let key = format!("{:?}|{}|{}", finding.fmt, finding.kind, finding.signature);
         let mut map = self.findings.lock().unwrap();
         let entry = map.entry(key).or_insert((0, Vec::new()));
@@ -1027,7 +1097,23 @@ impl Sink {
         let mut summary = std::fs::File::create(out.join(format!("{label}-summary.txt"))).unwrap();
         let mut rows: Vec<_> = map.iter().collect();
         rows.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        let cases = self.cases.lock().unwrap();
+        let mut case_file = std::io::BufWriter::new(std::fs::File::create(out.join(format!("{label}-cases.jsonl"))).unwrap());
+        for line in cases.iter() {
+            let mut parts = line.splitn(3, '\t');
+            let (case, kind, signature) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
+            writeln!(case_file, "{}", json!({"case": case, "kind": kind, "signature": signature})).unwrap();
+        }
         writeln!(summary, "probes: {}", self.probes.load(Ordering::Relaxed)).unwrap();
+        writeln!(summary, "failing case findings: {}", cases.len()).unwrap();
+        if self.baseline.is_some() {
+            let new = self.new.lock().unwrap();
+            writeln!(summary, "new case findings (not in baseline): {}", self.new_count.load(Ordering::Relaxed)).unwrap();
+            let mut file = std::fs::File::create(out.join(format!("{label}-new.jsonl"))).unwrap();
+            for finding in new.iter() {
+                writeln!(file, "{}", json!(finding)).unwrap();
+            }
+        }
         for (key, (count, examples)) in rows {
             writeln!(summary, "{count:7}  {key}").unwrap();
             if let Some(example) = examples.first() {
@@ -1042,7 +1128,10 @@ impl Sink {
 }
 
 fn finding(h: &H, kind: &str, signature: &str, context: String, detail: String) -> Finding {
+    let case = if h.case.is_empty() { context.clone() } else { h.case.clone() };
     Finding {
+        case: format!("{:?}|{:016x}|{case}", h.seed.fmt, seed_hash(&h.seed)),
+        strategy: h.last_strategy,
         kind: kind.into(),
         signature: normalize(signature),
         fmt: h.seed.fmt,
@@ -1055,6 +1144,90 @@ fn finding(h: &H, kind: &str, signature: &str, context: String, detail: String) 
 }
 
 /// Signature for an error/status: strip payloads that vary between examples.
+fn case_line(case: &str, kind: &str, signature: &str) -> String {
+    format!("{case}\t{kind}\t{signature}")
+}
+
+/// Stable identity of a seed: FNV-1a over its filename and source.
+fn seed_hash(seed: &Seed) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in seed.filename.as_deref().unwrap_or("").bytes().chain([0]).chain(seed.source.bytes()) {
+        hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// Read `<dir>/<probe>-cases.jsonl` as case identity -> `kind\tsignature` set.
+fn read_cases(dir: &str, probe: &str) -> Option<BTreeMap<String, HashSet<String>>> {
+    let text = std::fs::read_to_string(format!("{dir}/{probe}-cases.jsonl")).ok()?;
+    let mut cases: BTreeMap<String, HashSet<String>> = BTreeMap::new();
+    for line in text.lines().filter(|line| !line.is_empty()) {
+        let value: serde_json::Value = serde_json::from_str(line).unwrap();
+        cases.entry(value["case"].as_str().unwrap().to_string()).or_default()
+            .insert(format!("{}\t{}", value["kind"].as_str().unwrap(), value["signature"].as_str().unwrap()));
+    }
+    Some(cases)
+}
+
+/// Compare the failing cases of two probe runs. A case is newly failing when
+/// it did not fail at all in `base`; changed when it fails in both with a
+/// different finding (for example another error for the same rejected edit);
+/// and repaired when it no longer fails. Returns whether any case newly fails.
+fn compare(base: &str, new: &str, probes: &[String]) -> bool {
+    fn print_groups(label: &str, entries: &[(String, String)], limit: usize) {
+        let mut groups: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+        for (case, finding) in entries {
+            let fmt = case.split('|').next().unwrap_or("");
+            groups.entry(format!("{fmt}|{}", finding.replace('\t', "|"))).or_default().push(case);
+        }
+        let mut groups: Vec<_> = groups.into_iter().collect();
+        groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
+        for (key, cases) in groups.iter().take(limit) {
+            println!("  {label:8} {:6} {}", cases.len(), key.chars().take(140).collect::<String>());
+            if label != "REPAIRED" {
+                println!("           e.g. {}", cases[0].chars().take(160).collect::<String>());
+            }
+        }
+        if groups.len() > limit {
+            println!("  ... {} more {label} groups", groups.len() - limit);
+        }
+    }
+    let mut regressed = false;
+    let mut report = Vec::new();
+    for probe in probes {
+        let (Some(before), Some(after)) = (read_cases(base, probe), read_cases(new, probe)) else {
+            println!("== {probe}: missing {probe}-cases.jsonl in one of the runs");
+            continue;
+        };
+        let mut added = Vec::new();
+        let mut changed = Vec::new();
+        for (case, findings) in &after {
+            match before.get(case) {
+                None => added.extend(findings.iter().map(|finding| (case.clone(), finding.clone()))),
+                Some(old) => changed.extend(findings.difference(old).map(|finding| (case.clone(), finding.clone()))),
+            }
+        }
+        let repaired: Vec<_> = before.iter().filter(|(case, _)| !after.contains_key(*case))
+            .flat_map(|(case, findings)| findings.iter().map(move |finding| (case.clone(), finding.clone())))
+            .collect();
+        let new_cases = added.iter().map(|(case, _)| case).collect::<BTreeSet<_>>().len();
+        println!("== {probe}: base {} failing cases, new {} failing cases; {new_cases} newly failing, \
+            {} with changed findings, {} repaired",
+            before.len(), after.len(), changed.iter().map(|(case, _)| case).collect::<BTreeSet<_>>().len(),
+            repaired.iter().map(|(case, _)| case).collect::<BTreeSet<_>>().len());
+        print_groups("NEW", &added, 40);
+        print_groups("CHANGED", &changed, 20);
+        print_groups("REPAIRED", &repaired, 15);
+        regressed |= !added.is_empty();
+        report.push(json!({"probe": probe, "base_failing_cases": before.len(), "new_failing_cases": after.len(),
+            "newly_failing": added.iter().map(|(case, finding)| format!("{case}\t{finding}")).collect::<Vec<_>>(),
+            "changed": changed.iter().map(|(case, finding)| format!("{case}\t{finding}")).collect::<Vec<_>>(),
+            "repaired_cases": repaired.iter().map(|(case, _)| case).collect::<BTreeSet<_>>().len()}));
+    }
+    let _ = std::fs::write(format!("{new}/comparison.json"), serde_json::to_string_pretty(&report).unwrap());
+    regressed
+}
+
 fn error_signature(res: &Res) -> String {
     let text = res.describe();
     // Keep the variant path, drop numbers.
@@ -1347,6 +1520,7 @@ fn probe_insert(seed: &Seed, sink: &Sink, max_positions: usize) {
             for op in &ops {
                 sink.probes.fetch_add(1, Ordering::Relaxed);
                 let Ok(mut h) = H::open(seed, probe_width(), H_) else { return };
+                h.case = format!("insert|{pos}|{downstream}|{}", op_label(op));
                 let r = h.act(&Act::Key { key: "i".into() });
                 if !r.is_ok() {
                     sink.add(finding(&h, "enter_insert", &error_signature(&r), format!("pos {pos}"), r.describe()));
@@ -1447,6 +1621,7 @@ fn probe_normal(seed: &Seed, sink: &Sink, max_positions: usize) {
         for op in &ops {
             sink.probes.fetch_add(1, Ordering::Relaxed);
             let Ok(mut h) = H::open(seed, probe_width(), H_) else { return };
+            h.case = format!("normal|{pos}|{}", op_label(op));
             // Reset any yank state, then place.
             let r = h.act(&Act::Place { offset: pos, downstream: true, extend: false });
             if !r.is_ok() {
@@ -1598,6 +1773,7 @@ fn probe_selection(seed: &Seed, sink: &Sink, max_pairs: usize) {
                 sink.probes.fetch_add(1, Ordering::Relaxed);
                 let Ok(mut h) = H::open(seed, probe_width(), H_) else { return };
                 let (a, z) = if reverse { (end, start) } else { (start, end) };
+                h.case = format!("selection|{a}|{z}|{}", op_label(op));
                 let r1 = h.act(&Act::Pointer { offset: a });
                 let r2 = h.act(&Act::Place { offset: z, downstream: true, extend: true });
                 if !r1.is_ok() || !r2.is_ok() {
@@ -1744,6 +1920,7 @@ fn probe_navigation(seed: &Seed, sink: &Sink) {
             for wrap in [true, false] {
                 sink.probes.fetch_add(1, Ordering::Relaxed);
                 let Ok(mut h) = H::open(seed, 300., 4000.) else { return };
+                h.case = format!("nav|{insert}|{wrap}|{key}");
                 if !wrap {
                     let _ = h.act(&Act::Wrap { enabled: false });
                 }
@@ -1873,6 +2050,7 @@ fn probe_navigation_positions(seed: &Seed, sink: &Sink, max_positions: usize) {
                     for key in ["Right", "Left", "Down", "Up", "WordRight", "WordLeft", "End", "Home"] {
                         sink.probes.fetch_add(1, Ordering::Relaxed);
                         let Ok(mut h) = H::open(seed, width, 4000.) else { return };
+                        h.case = format!("navpos|{width}|{wrap}|{insert}|{pos}|{downstream}|{key}");
                         if !wrap { let _ = h.act(&Act::Wrap { enabled: false }); }
                         if insert { let _ = h.act(&Act::Key { key: "i".into() }); }
                         let r = h.act(&Act::Place { offset: pos, downstream, extend: false });
@@ -1940,6 +2118,7 @@ fn probe_copy_paste(seed: &Seed, sink: &Sink, max: usize) {
         for &target in &targets {
             sink.probes.fetch_add(1, Ordering::Relaxed);
             let Ok(mut h) = H::open(seed, probe_width(), H_) else { return };
+            h.case = format!("copypaste|{start}|{end}|{target}");
             let _ = h.act(&Act::Pointer { offset: start });
             let _ = h.act(&Act::Place { offset: end, downstream: true, extend: true });
             let r = h.act(&Act::Key { key: "Copy".into() });
@@ -2393,6 +2572,11 @@ fn minimize(path: &str, want: Option<String>) {
 // ---------------------------------------------------------------------------
 
 fn parallel<F: Fn(&Seed) + Sync>(seeds: &[Seed], threads: usize, f: F) {
+    // Longest seeds first: a few large documents otherwise finish last on one
+    // core while the others idle.
+    let mut order: Vec<&Seed> = seeds.iter().collect();
+    order.sort_by_key(|seed| std::cmp::Reverse(seed.source.len()));
+    let seeds = order;
     let next = AtomicUsize::new(0);
     std::thread::scope(|scope| {
         for _ in 0..threads {
@@ -2401,7 +2585,7 @@ fn parallel<F: Fn(&Seed) + Sync>(seeds: &[Seed], threads: usize, f: F) {
                 if i >= seeds.len() {
                     break;
                 }
-                let seed = &seeds[i];
+                let seed = seeds[i];
                 let started = std::time::Instant::now();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(seed)));
                 let secs = started.elapsed().as_secs_f64();
@@ -2431,8 +2615,18 @@ fn main() {
     }
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    // Shadow mismatches are collected per action as findings rather than
+    // following the process-wide policy that Cargo may set for tests.
+    std::env::set_var("VIEM_SHADOW_PROJECTION", "off");
+    SHADOW.store(!flag("--no-shadow"), Ordering::Relaxed);
+    if let Some(ops) = arg("--op-filter") {
+        std::env::set_var("FUZZ_OPS", ops);
+    }
+    let quick = flag("--quick");
     let out = PathBuf::from(arg("--out").unwrap_or_else(|| "target/consistency".into()));
-    let threads = arg("--threads").and_then(|s| s.parse().ok()).unwrap_or(8);
+    let threads = arg("--threads").and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(8, |count| count.get()));
     let filter = arg("--filter");
     let fmt_filter = arg("--fmt");
     let mode = args.get(1).cloned().unwrap_or_else(|| "probe".into());
@@ -2502,11 +2696,33 @@ fn main() {
             trace.extend(acts);
             run_trace(&seed, &trace, true);
         }
+        "compare" => {
+            // compare BASE_DIR NEW_DIR [--probes a,b]: exit 1 on newly failing cases.
+            let probes = match arg("--probes") {
+                Some(list) => list.split(',').map(str::to_string).collect::<Vec<_>>(),
+                None => {
+                    let mut probes = std::fs::read_dir(&args[3]).map(|entries| entries.filter_map(|entry| {
+                        entry.ok()?.file_name().to_str()?.strip_suffix("-cases.jsonl").map(str::to_string)
+                    }).collect::<Vec<_>>()).unwrap_or_default();
+                    probes.sort();
+                    probes
+                }
+            };
+            if compare(&args[2], &args[3], &probes) {
+                std::process::exit(1);
+            }
+        }
         "probe" => {
-            let which = arg("--probes").unwrap_or_else(|| "nav,insert,normal,selection".into());
-            let positions: usize = arg("--positions").and_then(|s| s.parse().ok()).unwrap_or(40);
+            let which = arg("--probes").unwrap_or_else(|| {
+                if quick { "insert,normal,selection,copypaste".into() } else { "nav,insert,normal,selection".into() }
+            });
+            let positions: usize = arg("--positions").and_then(|s| s.parse().ok()).unwrap_or(if quick { 8 } else { 40 });
+            let mut manifest = Vec::new();
             for probe in which.split(',') {
-                let sink = Sink::new();
+                let baseline = arg("--baseline").map(|dir| read_cases(&dir, probe)
+                    .unwrap_or_else(|| panic!("baseline {dir} has no {probe}-cases.jsonl")));
+                let sink = Sink::new(baseline);
+                let probe_started = std::time::Instant::now();
                 eprintln!("probe {probe} over {} seeds", seeds.len());
                 match probe {
                     "nav" => parallel(&seeds, threads, |s| probe_navigation(s, &sink)),
@@ -2518,14 +2734,27 @@ fn main() {
                     other => panic!("unknown probe {other}"),
                 }
                 sink.write(&out, probe);
-                eprintln!("probe {probe} done in {:?}", started.elapsed());
+                let elapsed = probe_started.elapsed().as_secs_f64();
+                eprintln!("probe {probe} done in {elapsed:.1}s ({} cases)", sink.probes.load(Ordering::Relaxed));
+                manifest.push(json!({"probe": probe, "seconds": elapsed, "cases": sink.probes.load(Ordering::Relaxed),
+                    "failing_case_findings": sink.cases.lock().unwrap().len(),
+                    "new_case_findings": sink.baseline.as_ref().map(|_| sink.new_count.load(Ordering::Relaxed))}));
+            }
+            let manifest = json!({"args": &args[1..], "seeds": seeds.len(), "threads": threads, "positions": positions,
+                "shadow": SHADOW.load(Ordering::Relaxed), "probes": manifest});
+            std::fs::write(out.join("manifest.json"), serde_json::to_string_pretty(&manifest).unwrap()).unwrap();
+            if arg("--baseline").is_some() && manifest["probes"].as_array().unwrap().iter()
+                .any(|probe| probe["new_case_findings"].as_u64().unwrap_or(0) > 0)
+            {
+                eprintln!("new failing cases; see {}/*-new.jsonl", out.display());
+                std::process::exit(1);
             }
         }
         "walk" => {
             let first: u64 = arg("--seed").and_then(|s| s.parse().ok()).unwrap_or(1);
             let cases: u64 = arg("--cases").and_then(|s| s.parse().ok()).unwrap_or(100);
             let steps: usize = arg("--steps").and_then(|s| s.parse().ok()).unwrap_or(300);
-            let sink = Sink::new();
+            let sink = Sink::new(None);
             let ids: Vec<Seed> = (first..first + cases)
                 .map(|i| Seed { fmt: Fmt::Plain, source: i.to_string(), filename: None })
                 .collect();

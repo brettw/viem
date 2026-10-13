@@ -102,6 +102,18 @@ transaction verification. Retries and degraded work must remain bounded.
   committed insertion undo group without disturbing other views. Shared buffer
   state includes source/history/registers; each view has its own cursor,
   selection, mode, pending command, desired x, wrapping and viewport.
+- Regional candidate strategies report an explicit outcome: verified, declined
+  with a reason, or rejected only when their proof covers the whole change and
+  contradicts the request. Never signal "try a broader strategy" with an error.
+  A regional proof accounts for boundary dependencies before and after the
+  patches, including separator pairing, encoding seams and container ownership.
+  Cargo-run tests compare every regional candidate with complete reprojection
+  (shadow verification); a difference is a defect in that strategy.
+- Whole-store flat copies are explicit and retained by their snapshot, including
+  in history: compatibility slices, whole-projection accessors and
+  `Document::text()`. Editing paths use bounded queries; locality tests assert
+  the materialization counters. Performance validation covers cold caches,
+  discarded candidates and retained compatibility storage.
 
 ## Source preservation and editing
 
@@ -562,6 +574,12 @@ immediately make a literal paragraph a Code Block with its caret at the beginnin
 retaining list and quote ownership. Protected or opaque content stays literal.
 Thematic-rule prefixes activate on completion. Recognition uses bounded local
 context and verified, atomic source patches, sharing insertion undo and replay.
+A same-kind list marker typed or pasted as the whole body of an empty item's
+first paragraph continues that item rather than nesting a list, and a quote
+prefix in an empty quoted paragraph continues the quote; Tab nests. `-`, `+` and
+`#` (outside a heading's closing sequence) after other content on their hard
+line stay literal without escapes. Literal multiline input protects block
+syntax at every resulting line start.
 With the preference off, ordinary input retains the existing literal behavior.
 Control-Q/V literal-next bypasses recognition and preserves explicit literal
 syntax protection in saved source, including across later input and view changes.
@@ -1962,6 +1980,13 @@ establish compatibility with every installed IME/speech service. Update these
 gaps and native tests when their mechanisms ship.
 
 ## Validation and open work
+
+Follow the [development workflow](docs/development-workflow.md): run focused
+tests and the quick consistency probe before full suites or measurements, compare
+consistency results case by case with a baseline, establish allocation ownership
+by measurement before claiming a cause, and freeze a candidate before final
+validation. Deliberate memory/performance tradeoffs need supporting numbers and
+a recorded decision.
 
 Use deterministic tests at the document, command, layout and coordinator
 boundaries. Cover source-byte round trips and minimal patch locality;

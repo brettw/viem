@@ -14,7 +14,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
-use std::ops::{Deref, Range};
+use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 pub(super) const RANGE_INDEX_LEAF_ITEMS: usize = 64;
@@ -95,12 +95,25 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
         Some(Self { inner })
     }
 
-    pub(super) fn as_slice(&self) -> &[T] {
-        self.inner.as_slice()
+    /// A flat copy of every record, built on first use and then retained
+    /// with this snapshot, including in history. This is the only whole-store
+    /// slice view; editing paths use `items`, `get_range`, `partition_point`
+    /// or a one-off `to_vec` instead. Work statistics count each new copy.
+    pub(super) fn compatibility_slice(&self) -> &[T] {
+        self.inner.compatibility_slice()
     }
 
     pub(super) fn to_vec(&self) -> Vec<T> {
         self.inner.to_vec()
+    }
+
+    /// Records in order, read in bounded chunks without retaining a flat copy.
+    pub(super) fn items(&self) -> impl Iterator<Item = T> + '_ {
+        const CHUNK: usize = 256;
+        let len = self.len();
+        (0..len).step_by(CHUNK).flat_map(move |start| {
+            self.get_range(&(start..(start + CHUNK).min(len))).expect("chunk lies inside the store")
+        })
     }
 
     pub(super) fn len(&self) -> usize {
@@ -135,7 +148,7 @@ impl<T: Clone + RangedItem> OrderedRangeStore<T> {
     }
 
     /// `slice::partition_point` by ordinal search. Unlike the slice method
-    /// reached through `Deref`, this keeps no flat copy of the store.
+    /// `compatibility_slice`, this keeps no flat copy of the store.
     pub(super) fn partition_point(&self, pred: impl FnMut(&T) -> bool) -> usize {
         self.inner.partition_point(pred)
     }
@@ -280,17 +293,9 @@ impl<T: Clone + RangedItem> Clone for OrderedRangeStore<T> {
     }
 }
 
-impl<T: Clone + RangedItem> Deref for OrderedRangeStore<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
 impl<T: Clone + RangedItem + fmt::Debug> fmt::Debug for OrderedRangeStore<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_list().entries(self.as_slice()).finish()
+        formatter.debug_list().entries(self.to_vec()).finish()
     }
 }
 
@@ -343,11 +348,19 @@ impl<T: Clone + RangedItem> IntervalRangeStore<T> {
         }
     }
 
-    pub(super) fn as_slice(&self) -> &[T] {
-        self.inner.as_slice()
+    /// A flat copy of every record, built on first use and then retained
+    /// with this snapshot, including in history. This is the only whole-store
+    /// slice view; editing paths use `items`, `get_range`, `partition_point`
+    /// or a one-off `to_vec` instead. Work statistics count each new copy.
+    pub(super) fn compatibility_slice(&self) -> &[T] {
+        self.inner.compatibility_slice()
     }
 
-    /// Items in order, read in bounded chunks. Unlike `as_slice`, this keeps
+    pub(super) fn to_vec(&self) -> Vec<T> {
+        self.inner.to_vec()
+    }
+
+    /// Items in order, read in bounded chunks. Unlike `compatibility_slice`, this keeps
     /// no flat copy alive after a whole-store pass.
     pub(super) fn items(&self) -> impl Iterator<Item = T> + '_ {
         const CHUNK: usize = 256;
@@ -482,17 +495,9 @@ impl<T: Clone + RangedItem> Clone for IntervalRangeStore<T> {
     }
 }
 
-impl<T: Clone + RangedItem> Deref for IntervalRangeStore<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
 impl<T: Clone + RangedItem + fmt::Debug> fmt::Debug for IntervalRangeStore<T> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_list().entries(self.as_slice()).finish()
+        formatter.debug_list().entries(self.to_vec()).finish()
     }
 }
 
@@ -588,9 +593,17 @@ impl<T: Clone + RangedItem> PersistentRangeStore<T> {
         low
     }
 
-    fn as_slice(&self) -> &[T] {
+    /// The compatibility copy, built on first use and retained by this
+    /// snapshot (and so by every history state that shares it).
+    fn compatibility_slice(&self) -> &[T] {
         self.compatibility_flat
-            .get_or_init(|| Arc::new(self.to_vec()))
+            .get_or_init(|| {
+                super::work_statistics::record(|stats| {
+                    stats.compatibility_record_materializations += 1;
+                    stats.compatibility_records_materialized += self.item_count;
+                });
+                Arc::new(self.to_vec())
+            })
             .as_slice()
     }
 
@@ -2118,7 +2131,8 @@ mod tests {
             let width = usize::try_from(seed % 20).unwrap();
             let query = left..left.saturating_add(width).min(start);
             let expected = store
-                .iter()
+                .to_vec()
+                .into_iter()
                 .filter(|item| item.range().end >= query.start && item.range().start <= query.end)
                 .map(|item| item.1)
                 .collect::<Vec<_>>();
@@ -2151,7 +2165,8 @@ mod tests {
             seed = seed.wrapping_mul(2_862_933_555_777_941_757).wrapping_add(1);
             let query = start..start + usize::try_from(seed % 128 + 1).unwrap();
             let expected = store
-                .iter()
+                .to_vec()
+                .into_iter()
                 .filter(|item| item.range().start < query.end && query.start < item.range().end)
                 .map(|item| item.1)
                 .collect::<Vec<_>>();
@@ -2163,7 +2178,7 @@ mod tests {
             assert_eq!(actual, expected, "query {query:?}");
             // The index span is the tightest contiguous cover of the matches.
             let span = store.overlapping_index_span(&query);
-            let flat = store.as_slice();
+            let flat = store.compatibility_slice();
             let first_end_after = flat
                 .iter()
                 .position(|item| item.range().end > query.start)
