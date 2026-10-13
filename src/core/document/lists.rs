@@ -1,6 +1,7 @@
 //! Portable list containers derived from paragraph identities. Source adapters
 //! supply the structure; WYSIWYG labels are non-text layout decorations.
-use super::{BlockKind, FormattedDocument, ListStyle, Revision};
+use super::{Block, BlockKind, ContainerIdentity, ContainerKind, FormattedDocument, ListStyle, Revision};
+use std::collections::HashMap;
 use std::ops::Range;
 
 /// A list container follows its first item identity through ordinary edits and
@@ -37,6 +38,24 @@ pub struct ListNode {
 pub struct ListStructure {
     pub revision: Revision,
     pub lists: Vec<ListNode>,
+}
+
+impl Block {
+    /// Separator paragraphs have no marker, but remain leaves of their parsed
+    /// list item. Structural traversal must not mistake them for a list break.
+    pub(super) fn list_level(&self) -> Option<u8> {
+        if let BlockKind::ListItem { level, .. } = self.kind { return Some(level); }
+        self.list_item_owner()?;
+        self.containers.iter().filter(|member|
+            matches!(member.container.kind, ContainerKind::List { .. }))
+            .count().checked_sub(1).map(|level| level.min(u8::MAX as usize) as u8)
+    }
+
+    pub(super) fn list_item_owner(&self) -> Option<ContainerIdentity> {
+        self.containers.iter().rev()
+            .find(|member| member.container.kind == ContainerKind::ListItem)
+            .map(|member| member.container.id)
+    }
 }
 
 impl FormattedDocument {
@@ -82,6 +101,7 @@ impl FormattedDocument {
     pub fn list_structure(&self) -> ListStructure {
         let mut lists: Vec<ListNode> = Vec::new();
         let mut stack: Vec<usize> = Vec::new();
+        let mut items_by_owner: HashMap<ContainerIdentity, (usize, usize)> = HashMap::new();
         for block in self.blocks() {
             let BlockKind::ListItem {
                 ordered,
@@ -92,6 +112,15 @@ impl FormattedDocument {
                 ..
             } = block.kind
             else {
+                if let Some(&(list, item)) = block.list_item_owner()
+                    .and_then(|owner| items_by_owner.get(&owner))
+                {
+                    if let Some(depth) = stack.iter().position(|index| *index == list) {
+                        stack.truncate(depth + 1);
+                        lists[list].items[item].paragraph_ids.push(block.id);
+                        continue;
+                    }
+                }
                 stack.clear();
                 continue;
             };
@@ -165,6 +194,9 @@ impl FormattedDocument {
                 .provenance_for_region(&marker_range)
                 .iter()
                 .any(|span| span.is_synthetic());
+            if let Some(owner) = block.list_item_owner() {
+                items_by_owner.insert(owner, (index, lists[index].items.len()));
+            }
             lists[index].items.push(ListItemNode {
                 paragraph_id: block.id,
                 paragraph_ids: vec![block.id],
