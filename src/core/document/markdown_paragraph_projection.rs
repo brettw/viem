@@ -9,40 +9,73 @@ impl Document {
         if self.format() != Format::Markdown || patches.is_empty() {
             return Ok(None);
         }
+        // An ATX heading is one source line opened by its own marker; a setext
+        // heading's underline is a separate line, so it is not independent.
+        let atx = |block: &super::super::Block| -> bool {
+            let Some(content) = self.projection().source_range(block.range.clone()) else { return false; };
+            let Ok(line) = self.physical_line_at_source(content.start) else { return false; };
+            self.source_bytes_in(line.source_range.start..content.start).is_ok_and(|prefix| {
+                self.encoding().decode_region(&prefix, line.source_range.start)
+                    .is_ok_and(|prefix| prefix.text.trim_start_matches(' ').starts_with('#'))
+            })
+        };
+        let ordinary = |block: &super::super::Block| (block.kind == super::super::BlockKind::Paragraph
+                || matches!(block.kind, super::super::BlockKind::Heading(_)) && atx(block))
+            && !block.range.is_empty() && block.containers.is_empty() && block.quote_depth == 0
+            && !block.markdown_html && self.projection().table_at(block.range.start).is_none();
+        // The edited paragraphs: one for edits inside a body, two adjacent
+        // ones when an edit joins them across their separator.
         let first = &patches[0];
+        let last = &patches[patches.len() - 1];
         let point = self.visible_point_for_source(first.range.start, true)?;
-        let Some(block) = self.projection().blocks_for_region(&(point..point)).into_iter()
-            .find(|block| block.range.start <= point && point <= block.range.end)
-        else { return Ok(None); };
-        if block.kind != super::super::BlockKind::Paragraph || block.range.is_empty()
-            || !block.containers.is_empty() || block.quote_depth != 0 || block.markdown_html
-            || self.projection().table_at(point).is_some()
-            || self.markdown_edit_needs_reference_context(&[TextEdit::new(block.range.clone(), "")])
+        let end_point = self.visible_point_for_source(last.range.end, false)?.max(point);
+        let run = self.projection().blocks_for_region(&(point..end_point)).into_iter()
+            .filter(|block| block.range.start <= end_point && point <= block.range.end)
+            .collect::<Vec<_>>();
+        let (Some(first_block), Some(last_block)) = (run.first(), run.last()) else { return Ok(None); };
+        let block_range = first_block.range.start..last_block.range.end;
+        if run.len() > 2 || !run.iter().all(ordinary)
+            || !(first_block.range.start <= point && end_point <= last_block.range.end)
+            || self.markdown_edit_needs_reference_context(&[TextEdit::new(block_range.clone(), "")])
         { return Ok(None); }
         // Blank rows beside a list can still belong to its final item; an
         // unclosed HTML block can consume all later source. Neither neighbor
         // can be retained independently merely because two endings remain.
-        let neighbors = block.range.start.saturating_sub(1)
-            ..block.range.end.saturating_add(1).min(self.projection().text_tree().byte_len());
-        if self.projection().blocks_for_region(&neighbors).iter().any(|neighbor|
-            neighbor.id != block.id && (neighbor.range.is_empty() || neighbor.markdown_html
-                || neighbor.kind != super::super::BlockKind::Paragraph
-                || !neighbor.containers.is_empty() || neighbor.quote_depth != 0
-                || neighbor.style.0 == "Code Block"))
-            || markdown_html_edit::edit_changes_literal_html_grammar(
-                self, &[TextEdit::new(block.range.clone(), "")])?
+        // Headings, rules, tables, code blocks and a following list end at
+        // or begin with their own syntax: across an explicit separator they
+        // neither absorb nor are absorbed by a paragraph, and a standalone
+        // parse below rejects any edit that turns the paragraphs themselves
+        // into code, a list or HTML.
+        let neighbors = block_range.start.saturating_sub(1)
+            ..block_range.end.saturating_add(1).min(self.projection().text_tree().byte_len());
+        if self.projection().blocks_for_region(&neighbors).iter().any(|neighbor| {
+            if run.iter().any(|block| block.id == neighbor.id) { return false; }
+            let preceding = neighbor.range.end <= block_range.start;
+            neighbor.range.is_empty() || neighbor.markdown_html || neighbor.quote_depth != 0
+                || preceding && (matches!(neighbor.kind, super::super::BlockKind::ListItem { .. })
+                    || neighbor.containers.iter().any(|member|
+                        member.container.kind != super::super::ContainerKind::CodeBlock))
+                || neighbor.containers.iter().any(|member|
+                    member.container.kind == super::super::ContainerKind::Quote)
+        }) || markdown_html_edit::edit_changes_literal_html_grammar(
+                self, &[TextEdit::new(block_range.clone(), "")])?
         { return Ok(None); }
-        // Both unedited separators must remain explicit paragraph boundaries.
-        for boundary in [block.range.start.checked_sub(1),
-            (block.range.end < self.projection().text_tree().byte_len()).then_some(block.range.end)]
+        // Both outer separators must be explicit paragraph boundaries before
+        // and after the edit. Endings inserted into a single ending (after a
+        // heading interrupting a paragraph) pair with that ending, which the
+        // regional parse cannot see.
+        for boundary in [block_range.start.checked_sub(1),
+            (block_range.end < self.projection().text_tree().byte_len()).then_some(block_range.end)]
             .into_iter().flatten()
         {
             let Some(source) = self.projection().source_range(boundary..boundary + 1) else { return Ok(None); };
-            if !markdown_block_styles::explicit_paragraph_separator(self, &source, patches)? {
+            if !markdown_block_styles::explicit_paragraph_separator(self, &source, &[])?
+                || !markdown_block_styles::explicit_paragraph_separator(self, &source, patches)?
+            {
                 return Ok(None);
             }
         }
-        let content = self.projection().source_range(block.range.clone())
+        let content = self.projection().source_range(block_range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
         let first_line = self.state().source_hard_lines.line_at_offset(content.start)
             .ok_or(DocumentError::AmbiguousProjection)?;
@@ -50,10 +83,10 @@ impl Document {
             .ok_or(DocumentError::AmbiguousProjection)?;
         let trailing = self.state().source_hard_lines.get(last_line).ok_or(DocumentError::AmbiguousProjection)?;
         let start = self.state().source_hard_lines.get(first_line).ok_or(DocumentError::AmbiguousProjection)?.start;
-        let end = if block.range.end == self.projection().text_tree().byte_len() {
+        let end = if block_range.end == self.projection().text_tree().byte_len() {
             self.source_byte_len()
         } else {
-            self.projection().source_range(block.range.end..block.range.end + 1)
+            self.projection().source_range(block_range.end..block_range.end + 1)
                 .ok_or(DocumentError::AmbiguousProjection)?.start
         };
         let old_source = start..end;
@@ -98,40 +131,41 @@ impl Document {
         };
         let (old_local, _, old_bytes) = parse(&self.state().source, old_source.clone())?;
         let (regional, source_rows, new_bytes) = parse(&source, new_source.clone())?;
-        let inherited_styles = self.projection().style_spans_for_region(&block.range);
+        let inherited_styles = self.projection().style_spans_for_region(&block_range);
         if inherited_styles.iter().any(|span|
-            span.range.start < block.range.start || block.range.end < span.range.end)
+            span.range.start < block_range.start || block_range.end < span.range.end)
         { return Ok(None); }
         let local_styles = inherited_styles.into_iter().map(|mut span| {
-            span.range = span.range.start - block.range.start..span.range.end - block.range.start;
+            span.range = span.range.start - block_range.start..span.range.end - block_range.start;
             span
         }).collect::<Vec<_>>();
         // Standalone parsing must reproduce the owner's complete original
         // semantics. New list/code/HTML owners require their broader grammar.
-        if old_local.text() != self.projection().text_tree().slice(block.range.clone())
+        if old_local.text() != self.projection().text_tree().slice(block_range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?
             || old_local.style_spans() != local_styles
-            || old_local.blocks().len() != 1 || old_local.blocks()[0].kind != block.kind
-            || old_local.blocks()[0].style != block.style
+            || old_local.blocks().len() != run.len()
+            || old_local.blocks().iter().zip(&run).any(|(local, block)|
+                local.kind != block.kind || local.style != block.style)
             || regional.blocks().iter().any(|block| block.markdown_html
                 || !block.containers.is_empty() || matches!(block.kind, super::super::BlockKind::ListItem { .. })
                 || block.style.0 == "Code Block")
         { return Ok(None); }
         let edits = source_backed_reprojection_edits_with_patches(&old_local, &regional, patches)
             .into_iter().map(|edit| TextEdit::new(
-                edit.range.start + block.range.start..edit.range.end + block.range.start,
+                edit.range.start + block_range.start..edit.range.end + block_range.start,
                 edit.replacement)).collect::<Vec<_>>();
         let persistent = edits.iter().map(|edit| (edit.range.clone(), edit.replacement.as_str())).collect::<Vec<_>>();
         let (target_text, text_work) = self.projection().text_tree()
             .splice_prevalidated_batch_with_stats(&persistent).map_err(DocumentError::FormattedTextStorage)?;
-        let first_hard = self.projection().hard_line_at_offset(block.range.start).ok_or(DocumentError::VerificationFailed)?;
-        let last_hard = self.projection().hard_line_at_offset(block.range.end).ok_or(DocumentError::VerificationFailed)?;
-        let new_formatted = block.range.start..block.range.start + regional.text_tree().byte_len();
+        let first_hard = self.projection().hard_line_at_offset(block_range.start).ok_or(DocumentError::VerificationFailed)?;
+        let last_hard = self.projection().hard_line_at_offset(block_range.end).ok_or(DocumentError::VerificationFailed)?;
+        let new_formatted = block_range.start..block_range.start + regional.text_tree().byte_len();
         let projected_bytes = regional.text_tree().byte_len();
         let projected_lines = regional.hard_line_count();
         let mut next_id = self.next_projected_block_id;
         let (projection, range_work) = splice_line_local_projection(self.projection(), regional, revision,
-            first_hard..last_hard + 1, block.range.clone(), old_source, new_source,
+            first_hard..last_hard + 1, block_range.clone(), old_source, new_source,
             target_text, source.len(), false, true, &edits, patches, None, &mut next_id)
             .map_err(super::super::block_identity_document_error)?;
         let (source_hard_lines, source_work) = self.state().source_hard_lines
@@ -156,6 +190,6 @@ impl Document {
             projection_work: ProjectionWorkStatistics::regional(old_bytes + new_bytes,
                 projected_bytes, projected_lines, text_work, range_work, source_work),
             style_change: None, conversion_warnings: Vec::new(),
-        }, map, None, next_id, PreparedPublication::State(state)), block.range, new_formatted)))
+        }, map, None, next_id, PreparedPublication::State(state)), block_range, new_formatted)))
     }
 }

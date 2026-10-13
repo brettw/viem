@@ -238,25 +238,22 @@ impl RangedItem for Block {
     }
 
     fn visit_shared_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-        visitor.arc_once(&self.attributes, |visitor| {
-            visitor.owned(Arc::as_ptr(&self.attributes) as usize, 0, self.style.0.capacity() + self.code_language.as_ref().map_or(0, String::capacity) + 16);
+        // Immutable payloads alone own their strings; one entry charges both.
+        let owned = self.style.0.capacity() + self.code_language.as_ref().map_or(0, String::capacity) + 16;
+        visitor.arc_owning_once(&self.attributes, owned, |visitor| {
             if !self.containers.is_empty() {
                 visitor.arc(&self.containers, |visitor| {
                     for member in self.containers.iter() {
-                        visitor.arc(&member.container, |visitor| {
-                            visitor.owned(Arc::as_ptr(&member.container) as usize, 0, member.container.style.0.capacity() + 16);
+                        visitor.arc_owning(&member.container, member.container.style.0.capacity() + 16, |visitor| {
                             if let Some(properties) = &member.container.direct_formatting {
-                                visitor.arc(properties, |visitor| visitor.owned(Arc::as_ptr(properties) as usize, 0, properties.direct_default_character.owned_heap_bytes()));
+                                visitor.arc_owning(properties, properties.direct_default_character.owned_heap_bytes(), |_| {});
                             }
                         });
                     }
                 });
             }
             if let Some(properties) = &self.direct_formatting {
-                visitor.arc(properties, |visitor| {
-                    visitor.owned(Arc::as_ptr(properties) as usize, 0,
-                        properties.direct_default_character.owned_heap_bytes());
-                });
+                visitor.arc_owning(properties, properties.direct_default_character.owned_heap_bytes(), |_| {});
             }
         });
     }
@@ -1590,11 +1587,42 @@ impl FormattedDocument {
     /// Image is a content-derived paragraph appearance. A prose paragraph
     /// containing any ordinary text keeps its source-selected assignment;
     /// headings, tables and list/quote treatment remain independent.
+    /// Blocks outside containers often have equal attributes (headings, code
+    /// blocks, table cells). Share one allocation per distinct value, as plain
+    /// paragraphs already do; a later change to one block copies on write.
+    fn share_block_attributes(&mut self) {
+        fn share(blocks: &OrderedRangeStore<Block>) -> Option<OrderedRangeStore<Block>> {
+            const DISTINCT: usize = 64;
+            let mut shared: Vec<Arc<BlockAttributes>> = Vec::new();
+            let mut changed = false;
+            // `to_vec` reads the tree once; slice access would retain a flat copy.
+            let blocks = blocks.to_vec().into_iter().map(|mut block| {
+                if block.containers.is_empty() {
+                    if let Some(existing) = shared.iter().find(|candidate| ***candidate == *block.attributes) {
+                        if !Arc::ptr_eq(existing, &block.attributes) {
+                            block.attributes = existing.clone();
+                            changed = true;
+                        }
+                    } else if shared.len() < DISTINCT {
+                        shared.push(block.attributes.clone());
+                    }
+                }
+                block
+            }).collect::<Vec<_>>();
+            changed.then(|| OrderedRangeStore::new(blocks))
+        }
+        if let Some(blocks) = share(&self.blocks) {
+            self.blocks = blocks;
+        }
+        if let Some(blocks) = self.flow_blocks.as_ref().and_then(share) {
+            self.flow_blocks = Some(blocks);
+        }
+    }
+
     fn assign_image_paragraph_styles(&mut self) {
         if self.inline_images.is_empty() { return; }
         let assign = |blocks: &OrderedRangeStore<Block>| {
-            blocks.iter().map(|block| {
-                let mut block = block.clone();
+            blocks.to_vec().into_iter().map(|mut block| {
                 if block.kind != BlockKind::Paragraph || block.style.0 != "Paragraph" {
                     return block;
                 }
@@ -3345,6 +3373,19 @@ impl FormattedDocument {
     /// located in `O(log n + k)` time. The `k` returned records are materialized
     /// with snapshot-absolute ranges and remain ordered by normalized span
     /// start (and stable input order for equal starts).
+    pub(crate) fn block_count(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub(crate) fn style_span_count(&self) -> usize {
+        self.styles.len()
+    }
+
+    /// Style spans whose closed extent touches `range`, including empty ones.
+    pub(crate) fn style_spans_touching(&self, range: &Range<usize>) -> Vec<StyleSpan> {
+        self.styles.query_touching(range)
+    }
+
     pub(crate) fn style_spans_for_region(&self, range: &Range<usize>) -> Vec<StyleSpan> {
         self.styles.query_overlapping(range)
     }
@@ -5933,7 +5974,8 @@ fn project_markdown(
 
         let mut paragraphs: Vec<Block> = Vec::new();
         let mut flow_index = 0;
-        for block in projected.blocks() {
+        // Read the tree once; slice access would retain a flat copy.
+        for block in &projected.blocks.to_vec() {
             while flow_index + 1 < flows.len() && flows[flow_index].end < block.range.start {
                 flow_index += 1;
             }
@@ -5960,6 +6002,7 @@ fn project_markdown(
         projected.install_flow_ranges(flows);
         projected.install_source_containers(syntax.owners.clone());
         projected.assign_image_paragraph_styles();
+        projected.share_block_attributes();
         return projected;
     }
     let (cooked, explicit) = if document_start {
@@ -5994,7 +6037,8 @@ fn project_markdown(
     }
     if !explicit.is_empty() {
         let mut paragraphs: Vec<Block> = Vec::new();
-        for block in projected.blocks() {
+        // Read the tree once; slice access would retain a flat copy.
+        for block in &projected.blocks.to_vec() {
             let join = paragraphs.last().is_some_and(|previous| {
                 (previous.kind == BlockKind::Paragraph && block.kind == BlockKind::Paragraph
                     || matches!((&previous.kind, &block.kind),
@@ -6020,6 +6064,7 @@ fn project_markdown(
     }
     projected.install_source_containers(syntax.owners.clone());
     projected.assign_image_paragraph_styles();
+    projected.share_block_attributes();
     projected
 }
 

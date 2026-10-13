@@ -1168,7 +1168,7 @@ mod tests {
         let spans = (0..96).rev().map(|index| {
             let start = index * 31 % 220;
             StyleSpan { range: start..start + 1 + index % 30,
-                application: StyleApplication::Direct(CharacterProperties {
+                application: StyleApplication::direct(CharacterProperties {
                     bold: Some(index % 2 == 0),
                     underline: (index % 3 == 0).then_some(true),
                     size: Some((12.0 + (index % 5) as f32).into()),
@@ -1202,7 +1202,7 @@ mod tests {
             application: if index % 3 == 0 {
                 StyleApplication::Semantic(if index % 2 == 0 { SemanticInlineStyle::Strong } else { SemanticInlineStyle::Emphasis })
             } else {
-                StyleApplication::Direct(CharacterProperties {
+                StyleApplication::direct(CharacterProperties {
                     bold: Some(index % 4 == 1),
                     size: Some((10.0 + (index % 7) as f32).into()),
                     underline: (index % 5 == 0).then_some(index % 10 == 0),
@@ -1210,7 +1210,7 @@ mod tests {
                 })
             } }).collect::<Vec<_>>();
         spans.extend((0..40).map(|index| StyleSpan { range: index * 7..index * 7 + 90,
-            application: StyleApplication::Direct(CharacterProperties {
+            application: StyleApplication::direct(CharacterProperties {
                 strikethrough: Some(index % 2 == 0), ..Default::default() }) }));
         let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans, inline_images: &[],
             style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
@@ -1394,7 +1394,7 @@ mod tests {
             },
             StyleSpan {
                 range: 0..6,
-                application: StyleApplication::Direct(CharacterProperties {
+                application: StyleApplication::direct(CharacterProperties {
                     size: Some(24.0.into()),
                     slant: Some(FontSlant::Italic),
                     ..CharacterProperties::default()

@@ -9,10 +9,21 @@ An old benchmark result is not evidence of current performance.
 
 The [allocator probe](../examples/large_file_memory.rs) exercises the real core
 in fresh serial release processes. The [runner](../scripts/measure-large-file-memory.py)
-owns two nine-case fixture sets: standard literal opening/editing/views and
+owns two fixture sets: standard literal and Markdown opening/editing/views and
 supplemental encodings, dense lines, giant words, search/save/history/reclamation.
-The checked-in [limits](../scripts/fixtures/large-file-memory-limits.json) are
+The Markdown cases repeat dense rich blocks (headings, inline markup, lists,
+quotes, tables and fences) in formatted and Source presentation, including a
+switch between them. The checked-in [limits](../scripts/fixtures/large-file-memory-limits.json) are
 regression inputs, not recorded results; do not relax them to make a change pass.
+
+Rich projections must not keep per-scalar records. Parser input stores runs of
+scalars that map onto their own encoded bytes, and provenance stores bounded
+divisible runs plus explicit contributors; both expand exactly on query. Range
+stores dereference to a cached flat slice for compatibility: `iter()`, indexing
+or other slice methods on a whole store retain a full copy with that snapshot,
+including in history, so editing paths use tree queries, `partition_point`,
+`get_range` or a one-off `to_vec`. `Document::text()` likewise retains the
+flattened text with the state that materialized it.
 
 ```sh
 cargo build --release --offline --example large_file_memory
@@ -131,8 +142,19 @@ for other scenarios and build/profile options.
 - **Complete native accounting:** the core allocator probe omits native shapers,
   glyph storage and syntax trees. Measure component ownership and whole-app
   live/peak memory through opening, disjoint edits, history branches, multiple
-  views, background jobs and release. Dense decoding exceptions and rich
-  projections need separate coverage from ordinary literal runs.
+  views, background jobs and release. Dense decoding exceptions need separate
+  coverage from ordinary literal runs.
+- **Markdown edits with many tables:** each projection splice still shifts every
+  following table and re-splices its row stores, so editing work and retained
+  history grow with the number of tables rather than with the edit.
+- **View switches:** switching Markdown presentation retains a position map with
+  pieces for every hidden markup run. A provenance-backed map between the two
+  projections of the same source would avoid storing them.
+- **Formatted structural edits:** splitting or joining an ordinary paragraph or
+  ATX heading reprojects only that band. Other structural edits (inside lists,
+  quotes or HTML, or beside a preceding list) still reproject the document.
+- **Layout geometry:** visible-region layout keeps per-cluster caret and glyph
+  records; scripts with one cluster per character use much more than prose.
 
 Unicode line-breaking data, offline regeneration and the intentional numeric
 conformance tailoring difference are documented with the

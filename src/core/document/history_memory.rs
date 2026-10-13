@@ -244,6 +244,14 @@ impl MemoryVisitor<'_> {
         if !self.roots.contains(&id) { self.arc(value, visit_children); }
     }
 
+    /// `arc_once` for a payload that alone owns `owned_bytes` of further heap.
+    pub(super) fn arc_owning_once<T: ?Sized>(
+        &mut self, value: &Arc<T>, owned_bytes: usize, visit_children: impl FnOnce(&mut MemoryVisitor<'_>),
+    ) {
+        let id = AllocationId::arc(Arc::as_ptr(value).cast::<u8>() as usize);
+        if !self.roots.contains(&id) { self.arc_owning(value, owned_bytes, visit_children); }
+    }
+
     pub(super) fn arc<T: ?Sized>(
         &mut self,
         value: &Arc<T>,

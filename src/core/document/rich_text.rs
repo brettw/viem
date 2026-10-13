@@ -113,13 +113,13 @@ impl<'a> Builder<'a> {
         }
         if *style != CharacterProperties::default() {
             if let Some(last) = self.spans.iter_mut().rev().take(3).find(|s| {
-                s.range.end == start && s.application == StyleApplication::Direct(style.clone())
+                s.range.end == start && matches!(&s.application, StyleApplication::Direct(direct) if **direct == *style)
             }) {
                 last.range.end = range.end;
             } else {
                 self.spans.push(StyleSpan {
                     range: range.clone(),
-                    application: StyleApplication::Direct(style.clone()),
+                    application: StyleApplication::direct(style.clone()),
                 });
             }
         }

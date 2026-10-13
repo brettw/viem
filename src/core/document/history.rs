@@ -1703,8 +1703,8 @@ impl<T> History<T, PositionMap> {
         // They need not be mathematical inverses for inserted/deleted content,
         // whose identity is intentionally unrecoverable.
         let reverse = forward.inverted()?;
-        let _ = forward.then(&reverse)?;
-        let _ = reverse.then(&forward)?;
+        forward.check_then(&reverse)?;
+        reverse.check_then(&forward)?;
         let retained_buffers = collect_retained_buffers(self.accounting.as_ref(), &state);
 
         if grouping {

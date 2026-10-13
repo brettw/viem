@@ -173,9 +173,9 @@ impl MarkdownBuilder<'_> {
                 "code" | "kbd" | "samp" | "tt" => Some(StyleApplication::Named("Code".into())),
                 "del" | "s" | "strike" => Some(StyleApplication::Automatic("Strikethrough".into())),
                 "a" if tag.attribute("href").is_some() => Some(StyleApplication::Automatic("Link".into())),
-                "sup" => Some(StyleApplication::Direct(CharacterProperties { superscript: Some(true), subscript: Some(false), ..Default::default() })),
-                "sub" => Some(StyleApplication::Direct(CharacterProperties { subscript: Some(true), superscript: Some(false), ..Default::default() })),
-                "u" | "ins" => Some(StyleApplication::Direct(CharacterProperties { underline: Some(true), ..Default::default() })),
+                "sup" => Some(StyleApplication::direct(CharacterProperties { superscript: Some(true), subscript: Some(false), ..Default::default() })),
+                "sub" => Some(StyleApplication::direct(CharacterProperties { subscript: Some(true), superscript: Some(false), ..Default::default() })),
+                "u" | "ins" => Some(StyleApplication::direct(CharacterProperties { underline: Some(true), ..Default::default() })),
                 _ => None,
             };
             if let Some(application) = application {

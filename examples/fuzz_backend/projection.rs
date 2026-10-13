@@ -517,15 +517,15 @@ fn compare_fresh(document: &Document) -> Result<(), String> {
     )?;
     // Both parsers emit scalar provenance. Empty anchors and hidden syntax
     // boundaries are intentional parts of that relation and must agree too.
-    if left.provenance() != right.provenance() {
-        let first = left
-            .provenance()
+    let (left_spans, right_spans) = (left.provenance(), right.provenance());
+    if left_spans != right_spans {
+        let first = left_spans
             .iter()
-            .zip(right.provenance())
+            .zip(&right_spans)
             .position(|(a, b)| a != b)
-            .unwrap_or(left.provenance().len().min(right.provenance().len()));
+            .unwrap_or(left_spans.len().min(right_spans.len()));
         return Err(format!("incremental/fresh provenance at span {first} differs ({} vs {} spans): {:?} vs {:?}; source {:?}",
-            left.provenance().len(), right.provenance().len(), left.provenance().get(first), right.provenance().get(first),
+            left_spans.len(), right_spans.len(), left_spans.get(first), right_spans.get(first),
             bytes.iter().copied().take(800).collect::<Vec<_>>()));
     }
     let resolved = |document: &Document| -> Result<DocumentLayoutStyles, String> {

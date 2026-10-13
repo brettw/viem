@@ -890,21 +890,36 @@ impl Document {
                 Ok(TextEdit::new(range, replacement))
             })
             .collect::<Result<Vec<_>, DocumentError>>()?;
-        let prepared = self.prepare_text_edits_with_patches(edits, Some(patches))?;
+        let prepared = self.prepare_text_edits_with_patches(edits.clone(), Some(patches))?;
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
-        let actual = candidate.projection.blocks();
-        let expected = scratch.projection().blocks();
-        if actual.len() != expected.len()
-            || actual.iter().zip(expected).any(|(a, b)| {
+        // Both results retain the untouched blocks and styles as the same
+        // shifted structure, so compare the edited extent with its complete
+        // neighboring blocks, and the totals, rather than the whole document.
+        let (actual_projection, expected_projection) = (&candidate.projection, scratch.projection());
+        let delta = edits.iter().map(|edit| edit.replacement.len() as isize - edit.range.len() as isize).sum::<isize>();
+        let changed = edits.first().map_or(at, |edit| edit.range.start)
+            ..edits.last().map_or(at, |edit| edit.range.end).checked_add_signed(delta)
+                .ok_or(DocumentError::VerificationFailed)?;
+        let length = actual_projection.text_tree().byte_len();
+        let around = changed.start.saturating_sub(1)..changed.end.saturating_add(1).min(length);
+        let actual = actual_projection.blocks_for_region(&around);
+        let expected = expected_projection.blocks_for_region(&around);
+        let extent = actual.first().map_or(around.start, |block| block.range.start.min(around.start))
+            ..actual.last().map_or(around.end, |block| block.range.end.max(around.end));
+        if length != expected_projection.text_tree().byte_len()
+            || actual_projection.block_count() != expected_projection.block_count()
+            || actual_projection.style_span_count() != expected_projection.style_span_count()
+            || actual.len() != expected.len()
+            || actual.iter().zip(&expected).any(|(a, b)| {
                 a.range != b.range
                     || a.kind != b.kind
                     || a.style != b.style
                     || a.direct_paragraph != b.direct_paragraph
                     || a.direct_default_character != b.direct_default_character
             })
-            || candidate.projection.style_spans() != scratch.projection().style_spans()
+            || actual_projection.style_spans_touching(&extent) != expected_projection.style_spans_touching(&extent)
         {
             return Err(DocumentError::VerificationFailed.into());
         }
