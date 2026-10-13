@@ -102,7 +102,8 @@ internal sealed partial class EditorWindow
         Top("Format", "O", plainMode, markdownMode, codeMode, Separator(), wrapItem,
             Toggle("Flow source paragraphs", "F", b => View?.ParagraphFlow(b), () => View?.ParagraphFlowEnabled == true));
         paragraphMenu = Sub("Paragraph", "P", ActionItem("Bulleted List", "B", () => ExecuteFormattingAction(ToolbarAction.Bullets), KeyPolicy.FormattingShortcut(NativeAction.Bullets), enabled: () => CanFormatBlocks), ActionItem("Numbered List", "N", () => ExecuteFormattingAction(ToolbarAction.Numbers), KeyPolicy.FormattingShortcut(NativeAction.Numbers), enabled: () => CanFormatBlocks), ActionItem("Remove List", "R", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => CanFormatBlocks),
-            ActionItem("Indent", "I", () => View?.IndentList(false), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", "U", () => View?.IndentList(true), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0), Separator());
+            ActionItem("Indent", "I", () => View?.IndentList(false), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", "U", () => View?.IndentList(true), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0),
+            ActionItem("Insert Paragraph in List Item", "P", () => View?.InsertListParagraph(), "Alt+Enter", enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_INSERT_PARAGRAPH) != 0, inputTarget: true), Separator());
         characterMenu = Sub("Character", "C");
         validation.Add((paragraphMenu, () => Rich || View?.UsesGlobalStyles == true));
         validation.Add((characterMenu, () => Rich || View?.UsesGlobalStyles == true));

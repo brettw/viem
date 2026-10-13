@@ -321,6 +321,7 @@ pub(super) fn literal_key_text(key: Key) -> Option<String> {
         Key::Delete => "<Del>".into(),
         Key::BackTab => "<S-Tab>".into(),
         Key::ShiftEnter => "<S-CR>".into(),
+        Key::AltEnter => "<A-CR>".into(),
         Key::Left => "<Left>".into(),
         Key::Right => "<Right>".into(),
         Key::WordLeft => "<C-Left>".into(),

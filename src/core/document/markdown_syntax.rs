@@ -16,13 +16,24 @@ pub(super) struct Inline {
 }
 
 pub(super) fn inlines(text: &str, range: Range<usize>, definitions: &str) -> BTreeMap<usize, Inline> {
-    // This is a paragraph body, even if its first character resembles a block
-    // marker. A harmless prefix prevents the block parser reinterpreting it.
-    let source = format!("x {}{}", &text[range.clone()], definitions);
+    parse_inlines(text, range, definitions, "x ")
+}
+
+/// Recognize inline pairs in physical source with its actual list and quote
+/// containers. Continuation prefixes belong to those blocks, not inline text.
+pub(super) fn source_inlines(text: &str) -> BTreeMap<usize, Inline> {
+    parse_inlines(text, 0..text.len(), "", "")
+}
+
+fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &str) -> BTreeMap<usize, Inline> {
+    // Paragraph bodies use a harmless prefix to suppress block recognition;
+    // physical source uses its real container grammar.
+    let offset = prefix.len();
+    let source = format!("{prefix}{}{}", &text[range.clone()], definitions);
     let mut result = BTreeMap::new();
     let mut events=Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).into_offset_iter();
     while let Some((event, mut span)) = events.next() {
-        if span.start < 2 || span.end > range.len() + 2 { continue; }
+        if span.start < offset || span.end > range.len() + offset { continue; }
         let raw = &source[span.clone()];
         let (kind, padding) = match event {
             Event::Start(Tag::Emphasis) => (InlineKind::Emphasis, 1),
@@ -50,18 +61,18 @@ pub(super) fn inlines(text: &str, range: Range<usize>, definitions: &str) -> BTr
             Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. }) => (InlineKind::Autolink, 1),
             Event::Start(Tag::Link { link_type: LinkType::Inline, .. }) => {
                 let Some(label_end) = super::links::markdown_label_end(&source, span.start, span.end) else { continue; };
-                let start = range.start + span.start - 2;
-                let end = range.start + span.end - 2;
+                let start = range.start + span.start - offset;
+                let end = range.start + span.end - offset;
                 result.insert(start, Inline { range: start..end,
-                    inner: start + 1..range.start + label_end - 2, kind: InlineKind::Link });
+                    inner: start + 1..range.start + label_end - offset, kind: InlineKind::Link });
                 continue;
             },
             Event::Start(Tag::Link { .. }) => (InlineKind::Reference, 0),
             Event::InlineHtml(_) => (InlineKind::Html, 0),
             _ => continue,
         };
-        let start = range.start + span.start - 2;
-        let end = range.start + span.end - 2;
+        let start = range.start + span.start - offset;
+        let end = range.start + span.end - offset;
         result.insert(start, Inline { range: start..end, inner: start + padding..end - padding, kind });
     }
     result

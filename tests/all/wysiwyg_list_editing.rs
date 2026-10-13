@@ -181,3 +181,318 @@ fn unicode_list_body_end_deletes_one_whole_grapheme() {
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 }
+
+
+fn assert_list_reopens(document: &Document) {
+    use std::collections::HashMap;
+    let shape = |document: &Document| {
+        let mut owners = HashMap::new();
+        document.projection().blocks().iter().map(|block| {
+            let path = block.containers.iter().map(|member| {
+                let next = owners.len();
+                let owner = *owners.entry(member.container.id).or_insert(next);
+                (owner, member.container.kind, member.starts_here, member.ends_here)
+            }).collect::<Vec<_>>();
+            (block.range.clone(), block.kind.clone(), block.style.clone(), block.list_loose, path)
+        }).collect::<Vec<_>>()
+    };
+    let reopened = Document::from_bytes_with_file_format(document.source_bytes(), document.encoding(),
+        document.format(), document.file_format()).unwrap();
+    assert_eq!(document.text(), reopened.text());
+    assert_eq!(shape(document), shape(&reopened));
+}
+
+#[test]
+fn surplus_empty_paragraphs_keep_their_list_item_ownership() {
+    use viem_core::document::BlockKind;
+    for source in ["- a\n\n\n\n- b", "1. a\n\n\n\n2. b\n3. c", "> - a\n>\n>\n>\n> - b"] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let blocks = document.projection().blocks();
+        let empty = blocks.iter().find(|block| block.range.is_empty()).unwrap();
+        if source.starts_with('>') {
+            assert!(matches!(empty.kind, BlockKind::ListItem { item_start: false, .. }));
+        } else {
+            assert_eq!(empty.kind, BlockKind::Paragraph);
+        }
+        let lists = document.projection().list_structure().lists;
+        assert_eq!(lists.len(), 1, "{source:?}");
+        assert_eq!(lists[0].items[0].paragraph_ids, [blocks[0].id, empty.id]);
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
+    for source in ["- a\n\n\n\n+ b", "- a\n\n&nbsp;\n\n- b", "- a\n\nprose\n\n- b"] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(document.projection().list_structure().lists.len(), 2, "{source:?}");
+    }
+}
+
+#[test]
+fn insert_tab_crosses_owned_empty_paragraphs_and_keeps_undo() {
+    use viem_core::document::HistoryNavigationRequest;
+    for source in [
+        "- a\n\n\n\n- b", "- a\n- b\n\n\n\n- c",
+        "1. a\n\n\n\n2. b\n3. c", "- parent\n  - a\n\n\n\n  - b",
+        "- parent\n\n  8. a\n\n\n\n  9. b",
+        "> - a\n>\n>\n>\n> - b",
+    ] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+        let at = core.document().text().find('b').unwrap();
+        keys(&mut core, view, "i");
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+        assert!(core.document().list_indent_capabilities(at..at).0, "{source:?}");
+        let before = core.document().text().to_owned();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Tab))).unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
+        let nested = core.document().source_bytes();
+        assert_ne!(nested, source.as_bytes(), "{source:?}");
+        assert_eq!(core.document().text(), before);
+        assert!(core.document().projection().blocks().iter().any(|block| block.range.is_empty()));
+        assert_list_reopens(core.document());
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), nested);
+        keys(&mut core, view, "i");
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::BackTab)))
+            .unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        assert_eq!(core.document().text(), before);
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{source:?}");
+        assert_list_reopens(core.document());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), nested);
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), nested);
+    }
+}
+
+#[test]
+fn deleting_a_list_row_preserves_an_unselected_empty_edge_paragraph() {
+    use viem_core::document::{BlockKind, HistoryNavigationRequest};
+    for (source, expected) in [
+        ("1. a\n\n\n\n2. b\n3. c", "\n\n1. b\n2. c"),
+        ("- a\n\n\n\n- b\n- c", "\n\n- b\n- c"),
+    ] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+        let empty_id = core.document().projection().blocks().iter()
+            .find(|block| block.range.is_empty()).unwrap().id;
+        keys(&mut core, view, "\"add");
+        assert_eq!(core.document().text(), "\nb\nc");
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        let first = &core.document().projection().blocks()[0];
+        assert!(first.range.is_empty());
+        assert_eq!(first.kind, BlockKind::Paragraph);
+        assert_eq!(first.id, empty_id);
+        assert_eq!(core.command_state(view).unwrap().register('a').unwrap().text, "a\n");
+        assert_list_reopens(core.document());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        keys(&mut core, view, "ggdd");
+        assert_eq!(core.document().text(), "b\nc");
+        assert_list_reopens(core.document());
+    }
+}
+
+#[test]
+fn deleting_a_list_row_after_an_implicit_boundary_retains_the_following_empty() {
+    use viem_core::document::{FileFormat, HistoryNavigationRequest};
+    for (source, expected) in [
+        ("- parent\n  1. a\n\n\n\n  2. b\n  3. c", "- parent\n\n\n\n  1. b\n  2. c"),
+        ("- before\n- a\n\n\n\n- b", "- before\n\n\n\n- b"),
+        ("- before\n- a\n\n\n\n\n\n- b", "- before\n\n\n\n\n\n- b"),
+        ("before\n\n1. a\n\n\n\n2. b", "before\n\n\n\n1. b"),
+    ] {
+        for (encoding, file_format) in [(Encoding::Utf8, FileFormat::Unix),
+            (Encoding::Utf8, FileFormat::Dos), (Encoding::Utf16Le, FileFormat::Dos)] {
+            let encode = |text: &str| {
+                let ending = if file_format == FileFormat::Dos { "\r\n" } else { "\n" };
+                let text = text.replace('\n', ending);
+                match encoding {
+                    Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                    _ => text.into_bytes(),
+                }
+            };
+            let source = encode(source);
+            let expected = encode(expected);
+            let mut core = Core::new(Document::from_bytes_with_file_format(source.clone(), encoding,
+                Format::Markdown, file_format).unwrap());
+            let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+            let at = core.document().text().find("\na\n").unwrap() + 1;
+            let before = core.document().text().to_owned();
+            let text = format!("{}{}", &before[..at], &before[at + 2..]);
+            core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+                text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+            keys(&mut core, view, "\"add");
+            assert_eq!(core.document().text(), text, "{encoding:?} {file_format:?}");
+            assert_eq!(core.document().source_bytes(), expected, "{encoding:?} {file_format:?}");
+            assert_eq!(core.command_state(view).unwrap().register('a').unwrap().text, "a\n");
+            assert_list_reopens(core.document());
+            core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+            assert_eq!(core.document().source_bytes(), source);
+            core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+            assert_eq!(core.document().source_bytes(), expected);
+        }
+    }
+}
+
+#[test]
+fn numbered_items_with_empty_continuations_survive_marker_width_changes() {
+    use viem_core::document::HistoryNavigationRequest;
+    for (source, expected, opening) in [
+        ("9. a\n10. b\n\n\n\n11. c", "9. b\n\n\n\n10. c", false),
+        ("9. a\n9. b\n\n\n\n9. c", "9. a\n10. x\n11. b\n\n\n\n12. c", true),
+    ] {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+        if opening {
+            keys(&mut core, view, "ox");
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        } else {
+            keys(&mut core, view, "dd");
+        }
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        assert_list_reopens(core.document());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
+fn list_owned_separators_after_empty_items_do_not_split_numbered_runs() {
+    use viem_core::document::{BlockKind, ContainerKind};
+    let source = "8. first\n\n   <span></span>\n9. \n\n\n\n10. last\n11. tail";
+    let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let gap = document.projection().blocks().iter().find(|block|
+        block.kind == BlockKind::Paragraph && block.range.is_empty()
+            && block.containers.iter().any(|member| matches!(member.container.kind, ContainerKind::List { .. }))
+            && !block.containers.iter().any(|member| member.container.kind == ContainerKind::ListItem)
+    ).unwrap();
+    let structure = document.projection().list_structure();
+    assert_eq!(structure.lists.len(), 1);
+    assert_eq!(structure.lists[0].items.iter().map(|item| item.ordinal).collect::<Vec<_>>(), [8, 9, 10, 11]);
+    assert!(structure.lists[0].items.iter().all(|item| !item.paragraph_ids.contains(&gap.id)));
+    assert_eq!(document.source_bytes(), source.as_bytes());
+}
+
+fn encoded_list_fixture(text: &str, encoding: Encoding, file_format: viem_core::document::FileFormat) -> Vec<u8> {
+    let text = text.replace('\n', if file_format == viem_core::document::FileFormat::Dos { "\r\n" } else { "\n" });
+    match encoding {
+        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+        _ => text.into_bytes(),
+    }
+}
+
+#[test]
+fn emptying_list_body_after_prose_preserves_the_implicit_paragraph_boundary() {
+    use viem_core::document::{FileFormat, HistoryNavigationRequest};
+    for (source, expected) in [
+        ("text\n1. list after text", "text\n\n1. "),
+        ("text\n- list right after text", "text\n\n- "),
+    ] {
+        for command in ["D", "dip", "d}", "v$d"] {
+            for (encoding, file_format) in [(Encoding::Utf8, FileFormat::Unix),
+                (Encoding::Utf8, FileFormat::Dos), (Encoding::Utf16Le, FileFormat::Dos)] {
+                let original = encoded_list_fixture(source, encoding, file_format);
+                let expected = encoded_list_fixture(expected, encoding, file_format);
+                let mut core = Core::new(Document::from_bytes_with_file_format(original.clone(), encoding,
+                    Format::Markdown, file_format).unwrap());
+                let view = core.add_view(MockTextMeasurementProvider::new(), 600., 2000.);
+                core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+                    text_offset: 5, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+                keys(&mut core, view, command);
+                assert_eq!(core.document().text(), "text\n", "{source:?} {command} {encoding:?} {file_format:?}");
+                assert_eq!(core.document().source_bytes(), expected, "{source:?} {command} {encoding:?} {file_format:?}");
+                assert_list_reopens(core.document());
+                core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+                assert_eq!(core.document().source_bytes(), original);
+                assert_list_reopens(core.document());
+                core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+                assert_eq!(core.document().source_bytes(), expected);
+                assert_list_reopens(core.document());
+            }
+        }
+    }
+}
+
+#[test]
+fn selected_list_body_deletion_after_prose_reopens_in_both_directions() {
+    use viem_core::document::{FileFormat, HistoryNavigationRequest};
+    for (source, expected) in [
+        ("text\n1. list after text", "text\n\n1. "),
+        ("text\n- list right after text", "text\n\n- "),
+    ] {
+        for key in [Key::Backspace, Key::Delete] {
+            for reverse in [false, true] {
+                for (encoding, file_format) in [(Encoding::Utf8, FileFormat::Unix),
+                    (Encoding::Utf8, FileFormat::Dos), (Encoding::Utf16Le, FileFormat::Dos)] {
+                    let original = encoded_list_fixture(source, encoding, file_format);
+                    let expected = encoded_list_fixture(expected, encoding, file_format);
+                    let mut core = Core::new(Document::from_bytes_with_file_format(original.clone(), encoding,
+                        Format::Markdown, file_format).unwrap());
+                    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 2000.);
+                    let end = core.document().text().len();
+                    let (anchor, caret) = if reverse { (end, 5) } else { (5, end) };
+                    core.handle(view, CoreEvent::BeginPointerGesture { document_revision: core.document().revision(),
+                        text_offset: anchor, affinity: BoundaryAffinity::Downstream }).unwrap();
+                    core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+                        text_offset: caret, affinity: BoundaryAffinity::Downstream, extend_selection: true }).unwrap();
+                    core.handle(view, CoreEvent::Input(InputEvent::Key(key.clone()))).unwrap();
+                    assert_eq!(core.document().text(), "text\n", "{source:?} {key:?} reverse={reverse} {encoding:?} {file_format:?}");
+                    assert_eq!(core.document().source_bytes(), expected, "{source:?} {key:?} reverse={reverse} {encoding:?} {file_format:?}");
+                    assert_list_reopens(core.document());
+                    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+                    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+                    assert_eq!(core.document().source_bytes(), original);
+                    assert_list_reopens(core.document());
+                    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+                    assert_eq!(core.document().source_bytes(), expected);
+                    assert_list_reopens(core.document());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn empty_list_boundary_repair_keeps_unrelated_suffix_work_bounded() {
+    use viem_core::command::CommandInterpreter;
+    use viem_core::document::measure_document_work;
+    let mut decoded_work = None;
+    for paragraphs in [100, 5000] {
+        let suffix = "unrelated paragraph stays byte identical.\n\n".repeat(paragraphs);
+        let original = format!("text\n- body\n\n{suffix}");
+        let expected = format!("text\n\n- \n\n{suffix}");
+        let mut document = Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut commands = CommandInterpreter::new();
+        assert!(commands.set_cursor(&document, 5));
+        let (result, work) = measure_document_work(|| commands.handle(&mut document, InputEvent::key('D')));
+        assert!(matches!(result.unwrap().status, CommandStatus::Complete));
+        assert_eq!(work.full_projection_candidates, 0, "{paragraphs}: {work:?}");
+        assert_eq!(work.source_full_materializations, 0, "{paragraphs}: {work:?}");
+        assert_eq!(work.formatted_full_materialized_bytes, 0, "{paragraphs}: {work:?}");
+        assert_eq!(work.formatted_compatibility_materialized_bytes, 0, "{paragraphs}: {work:?}");
+        assert!(work.source_decoded_bytes < 4096, "{paragraphs}: {work:?}");
+        assert!(work.projection_persistent_nodes_copied < 256, "{paragraphs}: {work:?}");
+        if let Some(before) = decoded_work {
+            assert_eq!(work.source_decoded_bytes, before, "unrelated suffix must not widen decoding");
+        }
+        decoded_work = Some(work.source_decoded_bytes);
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        assert_list_reopens(&document);
+        commands.handle(&mut document, InputEvent::key('u')).unwrap();
+        assert_eq!(document.source_bytes(), original.as_bytes());
+        commands.handle(&mut document, InputEvent::Key(Key::Ctrl('r'))).unwrap();
+        assert_eq!(document.source_bytes(), expected.as_bytes());
+        assert_list_reopens(&document);
+    }
+}

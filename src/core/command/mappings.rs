@@ -148,6 +148,7 @@ pub fn parse_key_notation(input: &str) -> Result<Vec<Key>, String> {
             "tab" => Some(Key::Tab),
             "s-tab" => Some(Key::BackTab),
             "s-cr" | "s-enter" => Some(Key::ShiftEnter),
+            "a-cr" | "a-enter" | "m-cr" | "m-enter" => Some(Key::AltEnter),
             "bs" | "backspace" => Some(Key::Backspace),
             "del" | "delete" => Some(Key::Delete),
             "left" => Some(Key::Left),

@@ -1506,6 +1506,14 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
+    func insertListParagraph(expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var selection = selection
+        return try performCoreOperation("Insert paragraph in list item") { outcome in
+            viem_core_view_insert_list_paragraph(document.core, viewID, &selection, outcome)
+        }
+    }
+
+    @discardableResult
     func setBlockQuote(_ enabled: Bool, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
         var request = ViemSetBlockQuoteV1()
         request.struct_size = UInt32(MemoryLayout<ViemSetBlockQuoteV1>.size)

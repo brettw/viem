@@ -334,3 +334,144 @@ fn capability_index_follows_local_edits_structure_changes_and_history() {
         assert_eq!(document.list_indent_capabilities(at..at), (false, true));
     }
 }
+
+fn assert_indent_projection_reopens(document: &Document) {
+    let fresh = Document::from_bytes(document.source_bytes(), document.encoding(), document.format()).unwrap();
+    let shape = |doc: &Document| doc.projection().blocks().iter().map(|block| (
+        block.range.clone(), block.kind.clone(), block.style.clone(), block.list_loose,
+        block.containers.iter().map(|member| (member.container.kind, member.starts_here, member.ends_here))
+            .collect::<Vec<_>>(),
+    )).collect::<Vec<_>>();
+    assert_eq!(document.text(), fresh.text());
+    assert_eq!(shape(document), shape(&fresh));
+    assert_eq!(document.projection().style_spans(), fresh.projection().style_spans());
+}
+
+fn list_only_separator(document: &Document) -> usize {
+    document.projection().blocks().iter().find(|block|
+        block.kind == BlockKind::Paragraph && block.range.is_empty()
+            && block.containers.iter().rev().find(|member|
+                matches!(member.container.kind, ContainerKind::List { .. } | ContainerKind::ListItem))
+                .is_some_and(|member| matches!(member.container.kind, ContainerKind::List { .. }))
+    ).unwrap().range.start
+}
+
+#[test]
+fn insert_tab_crosses_list_only_separator_and_retains_empty_parent() {
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let source = "8. first\n\n   <span></span>\n9. \n\n\n\n10. last\n11. tail";
+    let expected = "8. first\n\n   <span></span>\n9. <span></span>\n\n\n\n   1. last\n10. tail";
+    for quoted in [false, true] {
+        let quote = |text: &str| if quoted {
+            text.split('\n').map(|row| format!("> {row}")).collect::<Vec<_>>().join("\n")
+        } else { text.to_owned() };
+        let source = quote(source);
+        let expected = quote(expected);
+        let mut document = open(&source, Format::Markdown);
+        let gap = list_only_separator(&document);
+        assert_eq!(document.list_indent_capabilities(gap..gap), (false, false));
+        assert!(!document.can_insert_list_paragraph(gap));
+        assert!(apply(&mut document, gap..gap, false).is_err());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        let at = document.text().find("last").unwrap();
+        let text = document.text().to_owned();
+        assert_eq!(document.list_indent_capabilities(at..at), (true, false));
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i')))).unwrap();
+        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Tab)))
+            .unwrap_or_else(|error| panic!("quoted={quoted}: {error:?}"));
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        assert_eq!(core.document().source_bytes(), expected.as_bytes(), "quoted={quoted}");
+        assert_eq!(core.document().text(), text);
+        assert_eq!(ordinals(core.document()), [8, 9, 1, 10]);
+        assert_indent_projection_reopens(core.document());
+        let structure = core.document().projection().list_structure();
+        let parent = &structure.lists[0].items[1];
+        assert_eq!(parent.paragraph_ids.len(), 2);
+        assert_eq!(parent.child_lists.len(), 1);
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        assert_eq!(list_only_separator(core.document()), gap);
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        assert_indent_projection_reopens(core.document());
+    }
+}
+
+#[test]
+fn multi_item_indent_and_unindent_cross_list_only_separator() {
+    let source = "8. first\n\n   <span></span>\n9. \n\n\n\n10. last\n11. tail";
+    let expected = "8. first\n\n   <span></span>\n\n   1. \n\n\n\n   2. last\n9. tail";
+    let mut document = open(source, Format::Markdown);
+    let start = document.projection().blocks().iter().find(|block|
+        matches!(block.kind, BlockKind::ListItem { ordinal: 9, item_start: true, .. })).unwrap().range.start;
+    let end = document.text().find("last").unwrap() + "last".len();
+    let text = document.text().to_owned();
+    assert_eq!(document.list_indent_capabilities(start..end), (true, false));
+    apply(&mut document, start..end, false).unwrap();
+    assert_eq!(document.source_bytes(), expected.as_bytes());
+    assert_eq!(document.text(), text);
+    assert_eq!(ordinals(&document), [8, 1, 2, 9]);
+    assert_indent_projection_reopens(&document);
+    let gap = list_only_separator(&document);
+    assert_eq!(document.list_indent_capabilities(gap..gap), (false, false));
+    assert!(!document.can_insert_list_paragraph(gap));
+    let gap_id = document.projection().blocks().iter().find(|block| block.range == (gap..gap)).unwrap().id;
+    assert!(document.projection().list_structure().lists.iter().flat_map(|list| &list.items)
+        .all(|item| !item.paragraph_ids.contains(&gap_id)));
+    assert_eq!(document.list_indent_capabilities(start..end), (false, true));
+    apply(&mut document, start..end, true).unwrap();
+    assert_eq!(document.text(), text);
+    assert_eq!(ordinals(&document), [8, 9, 10, 11]);
+    assert_indent_projection_reopens(&document);
+    let restored = document.source_bytes();
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), expected.as_bytes());
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), expected.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), restored);
+}
+
+#[test]
+fn list_only_separator_capability_lookup_stays_indexed() {
+    for count in [32, 4_000] {
+        let source = format!("- parent\n{}- target\n- tail", "- \n\n\n\n".repeat(count));
+        let document = open(&source, Format::Markdown);
+        let at = document.text().find("target").unwrap();
+        let (capabilities, work) = measure_document_work(|| document.list_indent_capabilities(at..at));
+        assert_eq!(capabilities, (true, false), "{work:?}");
+        assert_eq!(work.source_full_materializations, 0, "{work:?}");
+        assert_eq!(work.source_decoded_bytes, 0, "{work:?}");
+        assert_eq!(work.formatted_full_materialized_bytes, 0, "{work:?}");
+        assert!(work.list_capability_nodes_visited < 200, "{work:?}");
+        assert!(work.list_capability_blocks_visited < 400, "{work:?}");
+    }
+}
+
+#[test]
+fn selection_starting_in_list_only_separator_agrees_with_capabilities() {
+    let source = "8. first\n\n   <span></span>\n9. \n\n\n\n10. last\n11. tail";
+    let expected = "8. first\n\n   <span></span>\n9. <span></span>\n\n\n\n   1. last\n10. tail";
+    let mut document = open(source, Format::Markdown);
+    let gap = list_only_separator(&document);
+    let at = document.text().find("last").unwrap();
+    assert_eq!(document.list_indent_capabilities(gap..at), (false, false));
+    assert!(apply(&mut document, gap..at, false).is_err());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert_eq!(document.list_indent_capabilities(gap..at + 4), (true, false));
+    apply(&mut document, gap..at + 4, false).unwrap();
+    assert_eq!(document.source_bytes(), expected.as_bytes());
+    assert_indent_projection_reopens(&document);
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), expected.as_bytes());
+}

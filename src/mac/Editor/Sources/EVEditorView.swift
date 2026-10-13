@@ -1593,6 +1593,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         // Consume only this editor's accelerators. Disabled formatting cannot
         // fall through to another menu equivalent such as a heading command.
         if isActiveTextSurface, let command = EVMenuCommand.formattingCommand(for: event) {
+            if command == .insertListParagraph {
+                // This accelerator is an editing key: mappings, literal-next
+                // and replay remain core-owned. The menu uses a native intention.
+                guard window?.isKeyWindow == true, window?.firstResponder === self,
+                      !compositionActive else { return false }
+                keyDown(with: event)
+                return true
+            }
             guard formattingInputAvailable, let surface else { return false }
             guard surface.acceptCompletionForNativeInput() else { return true }
             if surface.presentation(for: command).isEnabled {
@@ -1893,7 +1901,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private func specialKeyKind(for event: NSEvent) -> UInt32? {
         switch event.keyCode {
         case 53: UInt32(VIEM_KEY_ESCAPE)
-        case 36, 76: UInt32(event.modifierFlags.contains(.shift) ? VIEM_KEY_SHIFT_ENTER : VIEM_KEY_ENTER)
+        case 36, 76:
+            UInt32(event.modifierFlags.intersection([.command, .control, .option, .shift]) == [.option]
+                ? VIEM_KEY_ALT_ENTER
+                : event.modifierFlags.contains(.shift) ? VIEM_KEY_SHIFT_ENTER : VIEM_KEY_ENTER)
         case 48:
             UInt32(event.modifierFlags.contains(.shift)
                 ? VIEM_KEY_BACK_TAB : VIEM_KEY_TAB)

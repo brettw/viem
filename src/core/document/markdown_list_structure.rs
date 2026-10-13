@@ -258,7 +258,10 @@ pub(super) fn deletion_patches(
     let paragraphs = projection
         .blocks_for_region(range)
         .into_iter()
-        .filter(|block| range.start <= block.range.start && block.range.end <= range.end)
+        .filter(|block| range.start <= block.range.start && block.range.end <= range.end
+            // A retained empty paragraph at the half-open edge owns no
+            // selected text or boundary, even inside the preceding list item.
+            && (range.is_empty() || block.range.start < range.end))
         .collect::<Vec<_>>();
     let (Some(first), Some(last)) = (paragraphs.first(), paragraphs.last()) else {
         return Ok(None);
@@ -347,6 +350,11 @@ pub(super) fn deletion_patches(
     } else {
         source_line(first, false)?.start
     };
+    let retained_empty = projection
+        .blocks_for_region(&(range.end..range.end))
+        .into_iter()
+        .find(|block| block.range == (range.end..range.end)
+            && block.kind == BlockKind::Paragraph);
     let end = if range.end > last.range.end {
         let next = projection
             .blocks_for_region(&(range.end..range.end))
@@ -357,7 +365,27 @@ pub(super) fn deletion_patches(
     } else {
         source_line(last, true)?.end
     };
-    Ok(Some(vec![SourcePatch::primary(start..end, Vec::new())]))
+    let mut replacement = Vec::new();
+    if retained_empty.is_some() && range.start == first.range.start && range.start > 0 {
+        // An item may follow its parent or sibling after a single physical
+        // ending. Removing its marker leaves that retained boundary beside
+        // the empty paragraph's separator. Promote the single ending to a
+        // pair so the unselected empty paragraph survives the new blank run.
+        let boundary = range.start - 1..range.start;
+        if let Some(source) = projection.provenance_for_region(&boundary).into_iter()
+            .find(|span| span.formatted == boundary && !span.source.is_empty())
+            .map(|span| span.source)
+            .filter(|source| source.len() <= 4)
+        {
+            let bytes = document.state().source.bytes_in(source.clone())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let decoded = document.encoding().decode_region(&bytes, source.start)?;
+            if normalize(&decoded, document.file_format()).text == "\n" {
+                replacement = document.encoding().encode_fragment(document.file_format().spelling())?;
+            }
+        }
+    }
+    Ok(Some(vec![SourcePatch::primary(start..end, replacement)]))
 }
 
 pub(super) fn empty_insertion_patches(
@@ -489,9 +517,9 @@ pub(super) fn empty_insertion_patches(
     )]))
 }
 
-/// An empty dash item cannot interrupt preceding prose, including its parent:
-/// the dash would instead underline that prose as a Setext heading. Preserve the item
-/// with a local blank separator when an edit creates that ambiguous spelling.
+/// An empty item cannot interrupt preceding prose, including its parent.
+/// A dash can instead underline that prose as a Setext heading. Preserve the
+/// item with a local blank separator when an edit creates that spelling.
 pub(super) fn preserve_empty_item_boundaries(
     document: &Document,
     edits: &[TextEdit],
@@ -541,10 +569,10 @@ pub(super) fn preserve_empty_item_boundaries(
         edit.replacement.is_empty() || edit.replacement.contains('\n')
     }) {
         for block in projection.blocks_for_region(&edit.range) {
-            let BlockKind::ListItem { ordered: false, level, item_start: true, .. } = block.kind else {
+            let BlockKind::ListItem { level, item_start: true, .. } = block.kind else {
                 continue;
             };
-            if level == 0 || edit.range.start > block.range.start || block.range.start == 0 {
+            if edit.range.start > block.range.start || block.range.start == 0 {
                 continue;
             }
             let Some(previous) = projection.blocks_for_region(&(block.range.start - 1..block.range.start))
@@ -553,7 +581,8 @@ pub(super) fn preserve_empty_item_boundaries(
             if previous.range.is_empty() || edit.range.start < previous.range.end
                 || previous.style.0.starts_with("Heading") || previous.style.0 == "Code Block"
                 || previous.markdown_html
-                || !matches!(previous.kind, BlockKind::ListItem { level: parent, .. } if parent < level)
+                || !(previous.kind == BlockKind::Paragraph
+                    || matches!(previous.kind, BlockKind::ListItem { level: parent, .. } if parent < level))
             {
                 continue;
             }
@@ -618,7 +647,10 @@ pub(super) fn preserve_empty_item_boundaries(
         let row = &normalized.text[text_start..row_end];
         let quote = super::super::markdown_quotes::prefix(row);
         let row = &row[quote..];
-        if row.starts_with(&indent) && row[indent.len()..].trim_end_matches([' ', '\t']) == "-" {
+        if row.starts_with(&indent)
+            && super::super::markdown_blocks::marker_prefix_geometry(&row[indent.len()..])
+                .is_some_and(|(body, _)| row[indent.len() + body..].trim_matches([' ', '\t']).is_empty())
+        {
             support.insert(row_start, depth);
         }
     }

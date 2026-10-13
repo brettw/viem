@@ -1,6 +1,7 @@
 //! Portable list containers derived from paragraph identities. Source adapters
 //! supply the structure; WYSIWYG labels are non-text layout decorations.
-use super::{BlockKind, FormattedDocument, ListStyle, Revision};
+use super::{Block, BlockKind, ContainerIdentity, ContainerKind, FormattedDocument, ListStyle, Revision};
+use std::collections::HashMap;
 use std::ops::Range;
 
 /// A list container follows its first item identity through ordinary edits and
@@ -37,6 +38,38 @@ pub struct ListNode {
 pub struct ListStructure {
     pub revision: Revision,
     pub lists: Vec<ListNode>,
+}
+
+impl Block {
+    /// Separator paragraphs have no marker, but remain leaves of their parsed
+    /// list item. Structural traversal must not mistake them for a list break.
+    pub(super) fn list_level(&self) -> Option<u8> {
+        if let BlockKind::ListItem { level, .. } = self.kind { return Some(level); }
+        self.list_item_owner()?;
+        self.containers.iter().filter(|member|
+            matches!(member.container.kind, ContainerKind::List { .. }))
+            .count().checked_sub(1).map(|level| level.min(u8::MAX as usize) as u8)
+    }
+
+    pub(super) fn list_item_owner(&self) -> Option<ContainerIdentity> {
+        self.containers.iter().rev()
+            .find(|member| matches!(member.container.kind, ContainerKind::ListItem | ContainerKind::List { .. }))
+            .filter(|member| member.container.kind == ContainerKind::ListItem)
+            .map(|member| member.container.id)
+    }
+
+    /// List-owned separator paragraphs have no item to edit, but sibling
+    /// traversal must cross them at their containing list's depth.
+    pub(super) fn list_navigation_level(&self) -> Option<u8> {
+        self.list_level().or_else(|| {
+            if self.kind != BlockKind::Paragraph || !self.range.is_empty() {
+                return None;
+            }
+            self.containers.iter().filter(|member|
+                matches!(member.container.kind, ContainerKind::List { .. }))
+                .count().checked_sub(1).map(|level| level.min(u8::MAX as usize) as u8)
+        })
+    }
 }
 
 impl FormattedDocument {
@@ -82,6 +115,8 @@ impl FormattedDocument {
     pub fn list_structure(&self) -> ListStructure {
         let mut lists: Vec<ListNode> = Vec::new();
         let mut stack: Vec<usize> = Vec::new();
+        let mut items_by_owner: HashMap<ContainerIdentity, (usize, usize)> = HashMap::new();
+        let mut lists_by_owner: HashMap<ContainerIdentity, usize> = HashMap::new();
         for block in self.blocks() {
             let BlockKind::ListItem {
                 ordered,
@@ -92,6 +127,31 @@ impl FormattedDocument {
                 ..
             } = block.kind
             else {
+                // An empty item can leave separator paragraphs owned by the
+                // list itself, without an item owner. They do not split the
+                // list or become additional paragraphs of either sibling.
+                if let Some(owner) = block.containers.iter().rev().find(|member|
+                    matches!(member.container.kind, ContainerKind::List { .. } | ContainerKind::ListItem))
+                    .filter(|member| matches!(member.container.kind, ContainerKind::List { .. }))
+                {
+                    if let Some(&list) = lists_by_owner.get(&owner.container.id) {
+                        if let Some(depth) = stack.iter().position(|index| *index == list) {
+                            stack.truncate(depth + 1);
+                            continue;
+                        }
+                    }
+                    stack.clear();
+                    continue;
+                }
+                if let Some(&(list, item)) = block.list_item_owner()
+                    .and_then(|owner| items_by_owner.get(&owner))
+                {
+                    if let Some(depth) = stack.iter().position(|index| *index == list) {
+                        stack.truncate(depth + 1);
+                        lists[list].items[item].paragraph_ids.push(block.id);
+                        continue;
+                    }
+                }
                 stack.clear();
                 continue;
             };
@@ -146,6 +206,11 @@ impl FormattedDocument {
                 stack.push(index);
                 index
             };
+            if let Some(owner) = block.containers.iter().rev().find(|member|
+                matches!(member.container.kind, ContainerKind::List { .. }))
+            {
+                lists_by_owner.insert(owner.container.id, index);
+            }
             if !item_start {
                 if let Some(item) = lists[index].items.last_mut() {
                     item.paragraph_ids.push(block.id);
@@ -165,6 +230,9 @@ impl FormattedDocument {
                 .provenance_for_region(&marker_range)
                 .iter()
                 .any(|span| span.is_synthetic());
+            if let Some(owner) = block.list_item_owner() {
+                items_by_owner.insert(owner, (index, lists[index].items.len()));
+            }
             lists[index].items.push(ListItemNode {
                 paragraph_id: block.id,
                 paragraph_ids: vec![block.id],

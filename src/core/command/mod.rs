@@ -186,6 +186,8 @@ pub enum Key {
     Escape,
     Enter,
     ShiftEnter,
+    /// Insert a paragraph within the current Markdown list item.
+    AltEnter,
     Tab,
     BackTab,
     Backspace,
@@ -910,6 +912,7 @@ enum EditSessionStep {
     TypingStyle(typing_style::TypingStyle),
     Text(RegisterValue),
     ListEnter,
+    ListParagraph,
     IndentedEnter,
     Tab,
     ShiftIndent { outdent: bool },
@@ -3402,7 +3405,7 @@ impl CommandInterpreter {
                 && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
             || self.insert_control_g_pending()
             || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
-            || matches!(&event, InputEvent::Key(Key::SelectAll | Key::PasteClipboard)) {
+            || matches!(&event, InputEvent::Key(Key::SelectAll | Key::PasteClipboard | Key::AltEnter)) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         if (matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -3815,6 +3818,64 @@ impl CommandInterpreter {
         Ok(Some(self.edited_plan(document, next, model, output, post_commit)))
     }
 
+    pub(crate) fn can_insert_list_paragraph(&self, document: &Document) -> bool {
+        matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Replace)
+            && !self.command_input_pending()
+            && !self.literal_input_pending()
+            && self.visual_block_insert.is_none()
+            && !self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some())
+            && document.can_insert_list_paragraph(self.cursor)
+    }
+
+    /// Native menus use the same semantic transaction as keyboard insertion,
+    /// without passing through mappings or manufacturing a Vim input event.
+    pub(crate) fn insert_list_paragraph_for_core(
+        &mut self,
+        document: &mut Document,
+    ) -> Result<CommandStep, DocumentError> {
+        let output = self.insert_list_paragraph(document)?;
+        self.finish_non_layout_dispatch(&output);
+        self.position_revision = Some(document.revision());
+        Ok(CommandStep { output, replay: None })
+    }
+
+    fn insert_list_paragraph(&mut self, document: &mut Document) -> Result<CommandOutput, DocumentError> {
+        if !self.can_insert_list_paragraph(document) {
+            return Err(DocumentError::UnsupportedFormatting);
+        }
+        let request = ModelRequest::InsertListParagraph {
+            document: document.id(), revision: document.revision(), at: self.cursor,
+            affinity: self.insertion_boundary_affinity(),
+        };
+        // Validate before opening the Normal caret's new insertion session.
+        let prepared = document.prepare_model_request(request).map_err(command_document_error)?;
+        let cursor = prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?;
+        let entered = self.mode == Mode::Normal;
+        let prepared = if entered {
+            self.enter_insert(document, InsertPlacement::Before, 1);
+            document.prepare_model_request(ModelRequest::InsertListParagraph {
+                document: document.id(), revision: document.revision(), at: self.cursor,
+                affinity: self.insertion_boundary_affinity(),
+            }).map_err(command_document_error)?
+        } else { prepared };
+        let changed = !prepared.is_no_op();
+        let record = if changed && self.mode == Mode::Replace {
+            Some(document.recorded_source_replacement(&prepared, self.cursor, cursor,
+                "\n".to_owned(), None).map_err(command_document_error)?)
+        } else { None };
+        document.commit_model_transaction(prepared).map_err(command_document_error)?;
+        self.cursor = cursor;
+        self.note_paragraph_key(Key::AltEnter);
+        if let (Some(session), Some(record)) = (self.insert_session.as_mut(), record) {
+            session.replace_journal.push(ReplaceJournalEntry {
+                autoindent: false, start: record.before_cursor, inserted: record.inserted.clone(),
+                original: record.original.clone(), source_record: Some(record),
+            });
+        }
+        Ok(CommandOutput { document_changed: changed, cursor_moved: true, mode_changed: entered,
+            ..CommandOutput::complete() })
+    }
+
     fn paragraph_key_request(
         &self,
         document: &Document,
@@ -3822,6 +3883,13 @@ impl CommandInterpreter {
     ) -> Result<Option<ModelRequest>, DocumentError> {
         if matches!(key, Key::Tab | Key::BackTab) && self.mode == Mode::Insert {
             return document.list_item_indent_key_request(self.cursor, key == Key::BackTab);
+        }
+        if key == Key::AltEnter {
+            if !self.can_insert_list_paragraph(document) { return Err(DocumentError::UnsupportedFormatting); }
+            return Ok(Some(ModelRequest::InsertListParagraph {
+                document: document.id(), revision: document.revision(),
+                at: self.cursor, affinity: self.insertion_boundary_affinity(),
+            }));
         }
         if key == Key::ShiftEnter {
             return Ok(Some(ModelRequest::InsertHardBreak {
@@ -3848,10 +3916,10 @@ impl CommandInterpreter {
         }
         self.boundary_affinity = BoundaryAffinity::Downstream;
         if let Some(session) = self.insert_session.as_mut() {
-            if key == Key::ShiftEnter {
+            if matches!(key, Key::ShiftEnter | Key::AltEnter) {
                 session.record_inserted(
                     &RegisterValue::characterwise("\n"),
-                    Some(EditSessionStep::HardBreak),
+                    Some(if key == Key::AltEnter { EditSessionStep::ListParagraph } else { EditSessionStep::HardBreak }),
                 );
             } else {
                 session.record_step(match key {
@@ -3875,7 +3943,7 @@ impl CommandInterpreter {
         let Some(prepared) = Self::prepare_paragraph_key(document, key, request.clone())? else {
             return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
         };
-        next.cursor = if key == Key::ShiftEnter {
+        next.cursor = if matches!(key, Key::ShiftEnter | Key::AltEnter) {
             prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?
         } else {
             prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
@@ -3903,14 +3971,14 @@ impl CommandInterpreter {
         let Some(prepared) = Self::prepare_paragraph_key(document, key, request)? else {
             return Ok(CommandOutput::complete());
         };
-        let cursor = if key == Key::ShiftEnter {
+        let cursor = if matches!(key, Key::ShiftEnter | Key::AltEnter) {
             document.literal_terminal_break_cursor(self.cursor, 0)
                 .unwrap_or(prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?)
         } else {
             prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
         };
         let changed = !prepared.is_no_op();
-        let record = if changed && (self.mode == Mode::Replace && key == Key::Enter
+        let record = if changed && (self.mode == Mode::Replace && matches!(key, Key::Enter | Key::AltEnter)
             || key == Key::ShiftEnter && document.literal_terminal_break_cursor(self.cursor, 0).is_some()) {
             Some(document.recorded_source_replacement(&prepared, self.cursor, cursor,
                 "\n".to_owned(), None).map_err(command_document_error)?)
@@ -8818,6 +8886,9 @@ impl CommandInterpreter {
             output.cursor_moved = true;
             return Ok(output);
         }
+        if key == Key::AltEnter && self.mode == Mode::Normal && !self.command_input_pending() {
+            return self.insert_list_paragraph(document);
+        }
         let key = if key == Key::ShiftEnter && !matches!(self.mode, Mode::Insert | Mode::Replace) {
             Key::Enter
         } else { key };
@@ -11020,7 +11091,7 @@ impl CommandInterpreter {
                 self.register_pending = true;
                 Ok(CommandOutput::pending())
             }
-            Key::Enter | Key::ShiftEnter => Ok(CommandOutput::unsupported(
+            Key::Enter | Key::ShiftEnter | Key::AltEnter => Ok(CommandOutput::unsupported(
                 "Visual Block insertion cannot contain a hard line break",
             )),
             Key::DocumentStart | Key::DocumentEnd | Key::BackTab
@@ -12067,6 +12138,9 @@ impl CommandInterpreter {
                             } else {
                                 self.insert_text(document, &character.to_string())?
                             }
+                        }
+                        EditSessionStep::ListParagraph => {
+                            self.handle_edit_mode_key(document, Key::AltEnter)?
                         }
                         EditSessionStep::HardBreak => {
                             self.handle_edit_mode_key(document, Key::ShiftEnter)?

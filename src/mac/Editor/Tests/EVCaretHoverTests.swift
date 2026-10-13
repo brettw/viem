@@ -35,7 +35,9 @@ final class EVCaretHoverTests: XCTestCase {
                     if !command.isEmpty { _ = try session.sendText(command) }
                 }
                 let row = try XCTUnwrap(surface.layoutSnapshot).rows[rowIndex]
-                for x: CGFloat in [1, 450] {
+                // The outer left margin selects the row. The final two DIPs
+                // before its content edge remain ordinary caret placement.
+                for x: CGFloat in [CGFloat(row.paragraph_content_x) - 1, 450] {
                     let point = surface.editorView.viewPoint(fromLayoutPoint: CGPoint(x: x, y: CGFloat(row.y + row.ascent / 2)))
                     try assertPreviewMatchesClick(surface, at: point)
                 }
@@ -113,6 +115,7 @@ final class EVCaretHoverTests: XCTestCase {
     private func assertPreviewMatchesClick(_ surface: EVEditorSurfaceController, at point: NSPoint) throws {
         let view = surface.editorView
         let session = try XCTUnwrap(surface.session)
+        XCTAssertFalse(view.isRowSelectionPoint(point), "Plain-click comparison must stay outside the row-selection margin")
         let snapshot = try XCTUnwrap(surface.layoutSnapshot)
         let before = surface.viewPresentation
         let preview = try session.pointerCaret(view.layoutPoint(fromViewPoint: point), in: snapshot.info)

@@ -1490,6 +1490,7 @@ internal static unsafe partial class Native
     public const uint VIEM_KEY_PARAGRAPH_END = 25u;
     public const uint VIEM_KEY_NEXT_PARAGRAPH = 26u;
     public const uint VIEM_KEY_PASTE_CLIPBOARD = 27u;
+    public const uint VIEM_KEY_ALT_ENTER = 28u;
     public const uint VIEM_KEY_MODIFIER_SHIFT = 1u;
     public const uint VIEM_KEY_MODIFIER_CONTROL = 2u;
     public const uint VIEM_KEY_MODIFIER_ALT = 4u;
@@ -1928,6 +1929,7 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_SET_BLOCK_QUOTE_V1_SIZE = ((uint)sizeof(ViemSetBlockQuoteV1));
     public const uint VIEM_LIST_CAN_INDENT = 1u;
     public const uint VIEM_LIST_CAN_UNINDENT = 2u;
+    public const uint VIEM_LIST_CAN_INSERT_PARAGRAPH = 4u;
     public static readonly uint VIEM_LIST_INDENT_V1_SIZE = ((uint)sizeof(ViemListIndentV1));
     public static readonly uint VIEM_SET_PARAGRAPH_STYLE_V1_SIZE = ((uint)sizeof(ViemSetParagraphStyleV1));
     public static readonly uint VIEM_ASSIGN_STYLE_V1_SIZE = ((uint)sizeof(ViemAssignStyleV1));
@@ -2236,6 +2238,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_set_list_style(ulong @core, ulong @view, ViemSetListStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_list_indent_capabilities(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected_selection, uint* @out_flags);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_insert_list_paragraph(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected_selection, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_indent_list(ulong @core, ulong @view, ViemListIndentV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

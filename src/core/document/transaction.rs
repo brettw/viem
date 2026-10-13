@@ -316,6 +316,13 @@ pub enum ModelRequest {
         revision: Revision,
         at: usize,
     },
+    /// Split a paragraph while retaining its Markdown list-item owner.
+    InsertListParagraph {
+        document: DocumentId,
+        revision: Revision,
+        at: usize,
+        affinity: BoundaryAffinity,
+    },
     InsertHardBreak {
         document: DocumentId,
         revision: Revision,
@@ -397,6 +404,7 @@ impl ModelRequest {
             | Self::SetParagraphStyle { document, .. }
             | Self::AssignNamedStyle { document, .. }
             | Self::ContinueList { document, .. }
+            | Self::InsertListParagraph { document, .. }
             | Self::InsertHardBreak { document, .. }
             | Self::OpenLine { document, .. }
             | Self::SetFileFormat { document, .. }
@@ -424,6 +432,7 @@ impl ModelRequest {
             | Self::SetParagraphStyle { revision, .. }
             | Self::AssignNamedStyle { revision, .. }
             | Self::ContinueList { revision, .. }
+            | Self::InsertListParagraph { revision, .. }
             | Self::InsertHardBreak { revision, .. }
             | Self::OpenLine { revision, .. }
             | Self::SetFileFormat { revision, .. }
@@ -1229,6 +1238,9 @@ impl Document {
                 self.prepare_persisted_style_intent(intent)
             }
             ModelRequest::ContinueList { at, .. } => self.prepare_structural_list_enter(at),
+            ModelRequest::InsertListParagraph { at, affinity, .. } => {
+                self.prepare_list_paragraph(at, affinity)
+            }
             ModelRequest::InsertHardBreak { at, affinity, .. } => {
                 self.prepare_intra_paragraph_break(at, affinity)
             }
@@ -5209,13 +5221,9 @@ impl Document {
         // A regional Markdown Source result that cannot be proven exact, or
         // that the splice cannot place, leaves this block for the complete
         // verified candidate below.
-        // Filling an empty item can activate an ordered marker beside prose
-        // or change a following indented code block into continuation text.
-        // Its previous classifier context cannot prove that new ownership.
-        let changes_empty_item_grammar = self.markdown_edits_fill_empty_list_item(edits)
-            || self.state().transient_list_separator.as_ref().is_some_and(|range|
+        let changes_transient_separator = self.state().transient_list_separator.as_ref().is_some_and(|range|
                 source_patches.iter().any(|patch| patch.range == *range));
-        let region = if changes_empty_item_grammar { None } else {
+        let region = if changes_transient_separator { None } else {
             self.line_local_projection_region_with_context(edits, source_patches, authored_syntax)?
         };
         if let Some(region) = region {
@@ -5256,7 +5264,7 @@ impl Document {
                 } else {
                     0
                 };
-                let source_rows_change = (self.format() == Format::MarkdownSource || authored_syntax
+                let source_rows_change = (self.format().is_markdown() || authored_syntax
                     || region.retained_separator.is_some())
                     && normalized.endings.len() + usize::from(!unowned_terminal_row)
                         != region.source_lines.len();
@@ -5562,9 +5570,16 @@ impl Document {
             }
         }
 
-        if let Ok(Some((prepared, old_region, new_region))) =
-            self.prepare_independent_paragraph_reprojection(source_patches)
-        {
+        // A list split can change loose spacing throughout its bounded
+        // owner, while all unrelated paragraphs retain their shared trees.
+        let regional = if edits.len() == 1 && edits[0].replacement == "\n" {
+            self.prepare_list_paragraph_reprojection(source_patches)
+        } else { Ok(None) };
+        let regional = match regional {
+            Ok(Some(prepared)) => Ok(Some(prepared)),
+            _ => self.prepare_independent_paragraph_reprojection(source_patches),
+        };
+        if let Ok(Some((prepared, old_region, new_region))) = regional {
             let PreparedPublication::State(state) = prepared.publication else { unreachable!() };
             if edits.iter().all(|edit| old_region.start <= edit.range.start && edit.range.end <= old_region.end)
                 && state.projection.text_tree().byte_len() == target_text.byte_len()
@@ -6115,7 +6130,15 @@ impl Document {
 
     fn markdown_edits_fill_empty_list_item(&self, edits: &[TextEdit]) -> bool {
         self.format() == Format::Markdown && edits.iter().any(|edit| {
-            markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
+            // A structural break in an empty first body can split its item
+            // while moving retained continuation ownership to the new marker.
+            // The former paragraph-local classifier cannot prove that change.
+            edit.replacement.contains('\n') && edit.range.is_empty()
+                && self.projection().blocks_for_region(&edit.range).iter().any(|block| {
+                    block.range == edit.range
+                        && matches!(block.kind, super::BlockKind::ListItem { item_start: true, .. })
+                })
+                || markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
                 .is_ok_and(|patches| patches.is_some())
                 || edit.range.is_empty() && !edit.replacement.is_empty()
                     && self.projection().blocks_for_region(&edit.range).iter().any(|block| {
@@ -6140,7 +6163,8 @@ impl Document {
         edits: &[TextEdit],
         patches: &[SourcePatch],
     ) -> bool {
-        if self.format() != Format::Markdown || edits.is_empty() {
+        if self.format() != Format::Markdown || edits.is_empty()
+            || self.markdown_edits_fill_empty_list_item(edits) {
             return false;
         }
         let mut source_bodies = Vec::new();
@@ -6163,6 +6187,11 @@ impl Document {
             else {
                 return false;
             };
+            if edit.replacement.is_empty() && !block.range.is_empty()
+                && edit.range.start <= block.range.start && block.range.end <= edit.range.end {
+                // An empty item can change the enclosing list's looseness.
+                return false;
+            }
             let Some(body) = self.projection().source_range(block.range) else {
                 return false;
             };
@@ -6258,6 +6287,25 @@ impl Document {
             }
         }
         let mut prefixes = std::collections::BTreeMap::new();
+        // An empty continuation has a real source caret but no character
+        // contributor. Its hidden item indentation still needs the same
+        // parser-only removal when the first character is inserted; otherwise
+        // a tab or four spaces at this restart falsely gives it Code style.
+        for block in &blocks {
+            if !block.range.is_empty() || block.range.start < old_formatted.start
+                || block.range.end > old_formatted.end || block.style.0 == "Code Block"
+                || !matches!(block.kind, super::BlockKind::ListItem { .. })
+                || !block.containers.iter().rev()
+                    .find(|member| member.container.kind == super::ContainerKind::ListItem)
+                    .is_some_and(|member| omitted_items.get(&member.container.id) == Some(&true))
+            { continue; }
+            let at = self.projection().source_insertion_point(block.range.start, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let row = self.state().source_hard_lines.line_at_offset(at)
+                .and_then(|index| self.state().source_hard_lines.get(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            prefixes.insert(row.start, at);
+        }
         for span in self.projection().provenance_for_region(old_formatted) {
             let owner = blocks.partition_point(|block| block.range.start <= span.formatted.start)
                 .checked_sub(1).and_then(|index| blocks.get(index));
@@ -6853,23 +6901,21 @@ impl Document {
             return Ok(None);
         }
         if edits.iter().any(|edit| self.projection().table_at(edit.range.start).is_some() || self.projection().table_at(edit.range.end).is_some()) { return Ok(None); }
+        let fills_empty_item = self.markdown_edits_fill_empty_list_item(edits);
         if self.format() == Format::Markdown && edits.iter().any(|edit| {
-            // An empty paragraph can still be separator trivia inside an
-            // adjacent list or unclosed HTML block. Giving it a body changes
-            // that neighbor's ownership/looseness even with two source breaks.
+            // Unclosed HTML can own text beyond the regional list context.
             self.projection().blocks_for_region(&edit.range).iter().any(|block| {
                 block.range.is_empty() && block.kind == super::BlockKind::Paragraph
                     && self.projection().blocks_for_region(&(
                         block.range.start.saturating_sub(1)
                             ..block.range.end.saturating_add(1).min(self.projection().text_tree().byte_len())
-                    )).iter().any(|neighbor| neighbor.markdown_html
-                        || matches!(neighbor.kind, super::BlockKind::ListItem { .. }))
+                    )).iter().any(|neighbor| neighbor.markdown_html)
             })
         }) { return Ok(None); }
         // An explicit prose separator proves independence from the following
         // paragraph. Capture its small source contributor, never that body's
         // potentially unbounded physical line.
-        let retained_separator = if self.format() == Format::Markdown {
+        let mut retained_separator = if self.format() == Format::Markdown {
             edits.first().and_then(|edit| {
                 let line = self.projection().hard_line_at_offset(edit.range.start)?;
                 let row = self.projection().hard_line_range(line)?;
@@ -6892,21 +6938,6 @@ impl Document {
             None
         };
         if self.format() == Format::Markdown {
-            if edits.iter().any(|edit| {
-                edit.replacement.is_empty()
-                    && self
-                        .projection()
-                        .blocks_for_region(&edit.range)
-                        .iter()
-                        .any(|block| {
-                            matches!(block.kind, super::BlockKind::ListItem { .. })
-                                && !block.range.is_empty()
-                                && edit.range.start <= block.range.start
-                                && block.range.end <= edit.range.end
-                        })
-            }) {
-                return Ok(None);
-            }
             for patch in source_patches.iter().filter(|_| !authored_syntax) {
                 let old = self
                     .state()
@@ -6916,7 +6947,7 @@ impl Document {
                 for bytes in [&old, &patch.replacement] {
                     let decoded = self.encoding().decode_region(bytes, patch.range.start)?;
                     if !normalize(&decoded, self.file_format()).endings.is_empty() {
-                        if !retained_separator.as_ref().is_some_and(|separator| {
+                        if !fills_empty_item && !retained_separator.as_ref().is_some_and(|separator| {
                             separator.start < patch.range.start
                                 && patch.range.end <= separator.end
                         }) {
@@ -6966,6 +6997,7 @@ impl Document {
 
         let mut first_line = usize::MAX;
         let mut last_line = 0usize;
+        let mut list_grammar_region = false;
         for edit in edits {
             let Some(line) = self.projection().hard_line_at_offset(edit.range.start) else {
                 return Ok(None);
@@ -7153,6 +7185,18 @@ impl Document {
                         .unwrap(),
                 );
             }
+            if fills_empty_item && last_line + 1 < self.projection().hard_line_count() {
+                // Filling an empty marker can change the ownership of the
+                // following indented paragraph. Its support separator and the
+                // affected neighbor are part of the same list grammar proof.
+                let next = self.projection().hard_line_range(last_line + 1).unwrap();
+                let neighbors = self.projection().blocks_for_region(&next);
+                if neighbors.iter().any(|block| block.markdown_html) { return Ok(None); }
+                if let Some(last) = neighbors.last() {
+                    last_line = self.projection().hard_line_at_offset(last.range.end).unwrap();
+                    retained_separator = None;
+                }
+            }
             // Prose can absorb the next physical line as a setext underline
             // or continuation. Verify sensitive neighbors with the edit
             // instead of inheriting their old projection.
@@ -7174,7 +7218,7 @@ impl Document {
                     }
                 }
             }
-            if authored_syntax {
+            if !self.can_inherit_markdown_list_context(edits, source_patches) {
                 let in_list = |line| {
                     self.projection()
                         .hard_line_range(line)
@@ -7182,31 +7226,67 @@ impl Document {
                             self.projection()
                                 .blocks_for_region(&range)
                                 .iter()
-                                .any(|block| matches!(block.kind, super::BlockKind::ListItem { .. }))
+                                .any(|block| matches!(block.kind, super::BlockKind::ListItem { .. })
+                                    || block.containers.iter().any(|member|
+                                        matches!(member.container.kind, super::ContainerKind::List { .. })))
                         })
                 };
-                if (first_line..=last_line).any(in_list) {
-                    // Authored inline punctuation must be parsed with its
-                    // list stack. A continuation's indentation alone has a
-                    // different meaning at a standalone parser restart.
-                    while first_line > 0 && in_list(first_line - 1) {
-                        first_line -= 1;
-                        if last_line - first_line >= MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
-                            return Err(DocumentError::UnsupportedFormatting.into());
-                        }
+                let empty_beside_list = blocks.iter().any(|block| block.range.is_empty())
+                    && (first_line.checked_sub(1).is_some_and(in_list)
+                        || (last_line + 1 < self.projection().hard_line_count() && in_list(last_line + 1)));
+                if authored_syntax || (first_line..=last_line).any(in_list) || empty_beside_list {
+                    // List grammar reaches adjacent items even when an editable
+                    // empty paragraph lies between them. Creation also changes
+                    // a neighboring list's first item and tight/loose spacing.
+                    // Only literal body edits can inherit those dependencies.
+                    let indexed = self.projection().list_indentation_blocks(false);
+                    let first = indexed.index_touching_point(self.projection().hard_line_range(first_line).unwrap().start)
+                        .ok_or(DocumentError::VerificationFailed)?;
+                    let last = indexed.index_touching_point(self.projection().hard_line_range(last_line).unwrap().end)
+                        .ok_or(DocumentError::VerificationFailed)?;
+                    let first = indexed.find_navigation(0..first, true, |summary| summary.flags & 16 != 0)
+                        .map_or(0, |index| index + 1);
+                    let end = indexed.find_navigation(last + 1..indexed.len(), false, |summary| summary.flags & 16 != 0)
+                        .unwrap_or(indexed.len());
+                    // A complete list is a grammar dependency in its own right:
+                    // its item count is independent of the small paragraph-band
+                    // limit. The first unrelated owner still ends this region.
+                    list_grammar_region = indexed.find_navigation(first..end, false, |summary| summary.maximum > 0).is_some();
+                    if list_grammar_region {
+                        let list_first = self.projection().hard_line_at_offset(indexed.get(first).unwrap().range.start).unwrap();
+                        let list_last = self.projection().hard_line_at_offset(indexed.get(end - 1).unwrap().range.end).unwrap();
+                        if list_last != last_line { retained_separator = None; }
+                        first_line = list_first;
+                        last_line = list_last;
                     }
-                    while last_line + 1 < self.projection().hard_line_count() && in_list(last_line + 1) {
-                        last_line += 1;
-                        if last_line - first_line >= MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
-                            return Err(DocumentError::UnsupportedFormatting.into());
-                        }
+                }
+            }
+            if list_grammar_region && first_line > 0 {
+                let start = self.projection().hard_line_range(first_line).unwrap().start;
+                let boundary = self.projection().source_range(start - 1..start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                if !markdown_block_styles::explicit_paragraph_separator(self, &boundary, &[])?
+                    || !markdown_block_styles::explicit_paragraph_separator(self, &boundary, source_patches)?
+                {
+                    // A nonempty marker may interrupt prose where an empty
+                    // marker cannot. Capture that preceding owner so a parse
+                    // cannot silently borrow a missing outer separator.
+                    let previous = self.projection().blocks_for_region(&(start - 1..start - 1));
+                    let Some(previous) = previous.iter().find(|block| block.range.end < start) else {
+                        return Ok(None);
+                    };
+                    if previous.range.len() > 32768 || !previous.containers.is_empty()
+                        || previous.markdown_html || previous.quote_depth != 0 {
+                        return Ok(None);
                     }
+                    first_line = self.projection().hard_line_at_offset(previous.range.start).unwrap();
                 }
             }
         }
         let hard_lines = first_line..last_line.saturating_add(1);
         if hard_lines.is_empty()
             || (!self.format().is_literal()
+                && !list_grammar_region
                 && hard_lines.len() > MAX_LINE_LOCAL_PROJECTION_HARD_LINES)
         {
             return Ok(None);
@@ -7221,6 +7301,14 @@ impl Document {
             .hard_line_range(last_line)
             .ok_or(DocumentError::VerificationFailed)?;
         let mut old_formatted = first_formatted.start..last_formatted.end;
+        if list_grammar_region && self.markdown_edit_needs_reference_context(&[
+            TextEdit::new(old_formatted.clone(), ""),
+        ]) {
+            // Neighboring items brought into the parse carry dependencies too.
+            // A reference image can resolve through a definition outside this
+            // list even when the edited item itself contains no reference.
+            return Ok(None);
+        }
         if self.format().is_literal() && old_formatted.len() > 2 * LITERAL_EDIT_CONTEXT_BYTES {
             let first_edit = edits
                 .first()
@@ -7325,7 +7413,7 @@ impl Document {
         }) {
             return Ok(None);
         }
-        if authored_syntax && old_source.len() > 32768 {
+        if authored_syntax && !list_grammar_region && old_source.len() > 32768 {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
 

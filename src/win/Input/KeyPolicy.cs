@@ -69,7 +69,8 @@ internal static class KeyPolicy
         uint kind = key switch
         {
             VirtualKey.Escape => VIEM_KEY_ESCAPE,
-            VirtualKey.Enter => shift ? VIEM_KEY_SHIFT_ENTER : VIEM_KEY_ENTER,
+            VirtualKey.Enter => alt && !control && !shift ? VIEM_KEY_ALT_ENTER
+                : shift ? VIEM_KEY_SHIFT_ENTER : VIEM_KEY_ENTER,
             VirtualKey.Tab => shift ? VIEM_KEY_BACK_TAB : VIEM_KEY_TAB,
             VirtualKey.Back => VIEM_KEY_BACKSPACE,
             VirtualKey.Delete => VIEM_KEY_DELETE,
