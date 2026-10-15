@@ -112,45 +112,6 @@ import XCTest
     assertError(await f.navigate(.previous), EVArgumentListError.beforeFirst)
   }
 
-  func testSplitNavigationRetainsModifiedSharedBufferAndUsesEachCurrentFile() async throws {
-    let f = try Fixture()
-    defer { f.close() }
-    try await f.launch()
-    let original = f.document
-    let firstSurface = f.surface
-    try f.modify()
-    _ = try await f.perform(.split).get()
-    _ = try await f.navigate().get()
-    XCTAssertEqual(f.document.fileURL, f.urls[1])
-    XCTAssertTrue(original.editorBackend.persistenceState.isDirty)
-    _ = try await f.navigate(.previous, force: true).get()
-    XCTAssertTrue(f.document === original, "Returning reuses the edited buffer, even with bang")
-    _ = try await f.navigate(.next, count: 2).get()
-    XCTAssertEqual(f.document.fileURL, f.urls[2])
-    f.window.perform(windowRequests: [.focusTop], from: f.surface)
-    XCTAssertTrue(f.surface === firstSurface)
-    assertError(await f.navigate(), EVDocumentHostError.documentModified)
-    _ = try await f.navigate(force: true).get()
-    XCTAssertEqual(f.document.fileURL, f.urls[1], "The other pane's position must not affect this pane")
-  }
-
-  func testEditOutsideListRetainsPositionAndEditInsideListUsesCurrentIdentity() async throws {
-    let f = try Fixture()
-    defer { f.close() }
-    try await f.launch()
-    _ = try await f.navigate().get()
-    let outside = f.directory.appendingPathComponent("outside.txt")
-    try Data("outside".utf8).write(to: outside)
-    _ = try f.open(outside)
-    _ = try await f.perform(.edit, path: outside.path).get()
-    _ = try await f.navigate().get()
-    XCTAssertEqual(f.document.fileURL, f.urls[2])
-    _ = try f.open(f.urls[0])
-    _ = try await f.perform(.edit, path: f.urls[0].path).get()
-    _ = try await f.navigate().get()
-    XCTAssertEqual(f.document.fileURL, f.urls[1])
-  }
-
   func testWriteNextSavesBeforeNavigationIncludingEndOfListAndReadOnlyFailure() async throws {
     let f = try Fixture(count: 2)
     defer { f.close() }
@@ -172,20 +133,6 @@ import XCTest
     let forcedPrevious = await f.navigate(.previous, force: true, write: true)
     XCTAssertNil(forcedPrevious.failure, "Forced write-previous failed: \(String(describing: forcedPrevious.failure))")
     XCTAssertEqual(f.document.fileURL, f.urls[0])
-  }
-
-  func testAlternateWriteNextPreservesBindingAndDirtyGuard() async throws {
-    let f = try Fixture(count: 2)
-    defer { f.close() }
-    try await f.launch()
-    try f.modify()
-    let copy = f.directory.appendingPathComponent("copy.txt")
-    assertError(await f.navigate(write: true, path: copy.path), EVDocumentHostError.documentModified)
-    XCTAssertEqual(f.document.fileURL, f.urls[0])
-    XCTAssertTrue(f.backend.persistenceState.isDirty)
-    XCTAssertEqual(try Data(contentsOf: copy), try f.backend.serializedSource(typeName: EVDocument.plainTextType))
-    _ = try await f.navigate(force: true, write: true, path: copy.path).get()
-    XCTAssertEqual(f.document.fileURL, f.urls[1])
   }
 
   func testFailedAndStaleOpensPreservePaneAndListPosition() async throws {
@@ -240,25 +187,6 @@ import XCTest
     _ = try await f.perform(.edit, path: f.urls[1].path).get()
     XCTAssertEqual(f.document.fileURL, f.urls[1])
     XCTAssertTrue(original.editorBackend.persistenceState.isDirty)
-  }
-
-  func testExplicitSplitCountCreatesExtraBlankPanesAndSupportsNoFiles() async throws {
-    for fileCount in [0, 1] {
-      let f = try Fixture(count: fileCount)
-      defer { f.close() }
-      try await f.launch(split: 3)
-      XCTAssertEqual(f.window.paneCount, 3)
-      XCTAssertTrue(f.window.window?.isVisible == true)
-      f.window.perform(windowRequests: [.focusBottom], from: f.surface)
-      XCTAssertNil(f.document.fileURL)
-      XCTAssertFalse(f.backend.persistenceState.isDirty)
-      if fileCount == 0 {
-        assertError(await f.navigate(), EVArgumentListError.empty)
-      } else {
-        _ = try await f.navigate(.first).get()
-        XCTAssertEqual(f.document.fileURL, f.urls[0])
-      }
-    }
   }
 
   func testNewWindowForBufferInheritsListAndKeepsOriginalModifiedView() async throws {

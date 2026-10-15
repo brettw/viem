@@ -795,11 +795,18 @@ fn paragraph_insertion_patches(
     }
     let mut start = 0;
     let mut number = ordinal;
+    // Text after a written marker begins the item body, where whitespace
+    // would extend the marker padding and markers would nest a list.
+    let push_segment = |syntax: &mut String, segment: &str, after_marker: bool| {
+        let escaped = escape_markdown_insert_in_encoding(segment, document.encoding());
+        if after_marker {
+            super::protect_markdown_line_start(&escaped, syntax);
+        } else {
+            syntax.push_str(&escaped);
+        }
+    };
     for &boundary in breaks {
-        syntax.push_str(&escape_markdown_insert_in_encoding(
-            &text[start..boundary],
-            document.encoding(),
-        ));
+        push_segment(&mut syntax, &text[start..boundary], start > 0 || insert_before_label);
         syntax.push_str(document.file_format().spelling());
         if !(insert_before_label && boundary + 1 == text.len()) {
             syntax.push_str(quote_prefix);
@@ -813,10 +820,7 @@ fn paragraph_insertion_patches(
         }
         start = boundary + 1;
     }
-    syntax.push_str(&escape_markdown_insert_in_encoding(
-        &text[start..],
-        document.encoding(),
-    ));
+    push_segment(&mut syntax, &text[start..], true);
     let source_at = if insert_before_label {
         line.start
     } else {

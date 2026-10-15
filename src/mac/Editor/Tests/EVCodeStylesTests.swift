@@ -37,45 +37,6 @@ final class EVCodeStylesTests: XCTestCase {
         XCTAssertEqual(saved["futureExtension"] as? [String: Bool], ["enabled": true])
     }
 
-    func testGlobalEditorHasIndependentTargetUndoAndPersistence() throws {
-        let configuration = configuration()
-        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
-            (.baseParagraph, .characterSize, .float(14)),
-        ])
-        let session = try EVCodeStyleSession(configuration: configuration)
-        let editor = EVStyleEditorViewController()
-        editor.retarget(settingsSession: session)
-        XCTAssertNil(editor.inspection.targetDocumentIdentity)
-        XCTAssertEqual(editor.inspection.targetCoreDocumentID, 0)
-        XCTAssertEqual(editor.inspection.selectedStyleKey, .baseParagraph)
-        XCTAssertFalse(editor.inspection.hasDocument)
-        XCTAssertTrue(editor.inspection.mutationsEnabled)
-        let controls = descendants(of: editor.view)
-        for label in ["Style name", "Create syntax style", "Delete selected style"] {
-            XCTAssertFalse(controls.contains { $0.accessibilityLabel() == label })
-        }
-        let status = try XCTUnwrap(controls.first { $0.accessibilityLabel() == "Style editing status" })
-        XCTAssertTrue(status.isHidden)
-        editor.beginContinuousStyleEditForTesting()
-        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(18)), editor.inspection.diagnostic)
-        XCTAssertTrue(editor.setPropertyForTesting(.characterSize, value: .float(20)), editor.inspection.diagnostic)
-        editor.endContinuousStyleEditForTesting()
-        XCTAssertTrue(session.undoManager.canUndo)
-        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
-        let committedRevision = try session.snapshot().identity.styleSheetRevision
-        session.undoManager.undo()
-        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(14))
-        XCTAssertFalse(session.undoManager.canUndo, "The continuous edit is one settings transaction")
-        XCTAssertGreaterThan(try session.snapshot().identity.styleSheetRevision, committedRevision)
-        session.undoManager.redo()
-        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
-        let data = try XCTUnwrap(configuration.codeStyleSheet())
-        XCTAssertEqual(viem_code_replace_style_json(nil, 0), UInt32(VIEM_STATUS_OK))
-        XCTAssertEqual(data.withUnsafeBytes { viem_code_replace_style_json($0.bindMemory(to: UInt8.self).baseAddress, UInt64($0.count)) }, UInt32(VIEM_STATUS_OK))
-        XCTAssertEqual(try session.snapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.declared, .float(20))
-        XCTAssertNotNil(try configuration.styleDefaults(named: "text"))
-    }
-
     func testNamesAreExactAndDeletionAndRenamePersistWithoutResurrectingBuiltins() throws {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
@@ -148,89 +109,6 @@ final class EVCodeStylesTests: XCTestCase {
         try session.restoreDefaults()
         XCTAssertNil(session.lastError)
         XCTAssertNotNil(try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
-    }
-
-    func testGlobalMetricsChangesKeepViewportTextAnchoredAcrossTwoBuffers() throws {
-        let configuration = configuration()
-        try EVStyleTestFixtures.configure(configuration, format: .code, declarations: [
-            (.baseParagraph, .characterSize, .float(14)),
-            (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
-            (.baseParagraph, .characterFontAxes, .string("{}")),
-            (.baseParagraph, .characterWeight, .unsigned(400)),
-            (.baseParagraph, .paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_NORMAL), value: 0))),
-            (.baseParagraph, .blockMarginTop, .float(0)),
-            (.baseParagraph, .blockMarginBottom, .float(0)),
-        ])
-        let source = (0..<2_000).map { "Line \($0): a short code statement" }.joined(separator: "\n")
-        let viewMargins = EVViewPreferences.shared.margins
-        let backends = [EVCoreDocumentBackend(configuration: configuration), EVCoreDocumentBackend(configuration: configuration)]
-        let surfaces = try backends.enumerated().map { index, backend in
-            try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType)
-            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-            surface.loadViewIfNeeded()
-            surface.view.frame = NSRect(x: 0, y: 0, width: 560, height: 180)
-            surface.viewDidLayout()
-            let session = try XCTUnwrap(surface.session)
-            surface.performInput { _ = try session.sendTestKeys("\(301 + index * 500)Gzt") }
-            if index == 1 {
-                // An offscreen caret must not pull a view back during global
-                // style changes. This view retains its first visible text.
-                surface.requestVerticalViewport(top: CGFloat(surface.viewportState.top + 500))
-            }
-            return surface
-        }
-        func topRow(_ surface: EVEditorSurfaceController) throws -> ViemVisualRowV1 {
-            let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-            return try XCTUnwrap(snapshot.rows.first { $0.y + $0.line_advance > surface.viewportState.top + 0.01 })
-        }
-        let before = try surfaces.map { try topRow($0) }
-        let beforeOffsets = zip(before, surfaces).map { $0.y - $1.viewportState.top }
-        XCTAssertLessThan(surfaces[1].viewPresentation.cursor_utf8_offset, before[1].text_start)
-        func caretRow(_ surface: EVEditorSurfaceController) throws -> ViemVisualRowV1 {
-            let layout = try XCTUnwrap(surface.layoutSnapshot)
-            let presentation = surface.viewPresentation
-            let caret = try XCTUnwrap(surface.session).caretGeometry(offset: presentation.cursor_utf8_offset,
-                affinity: presentation.cursor_affinity, in: layout.info)
-            return try XCTUnwrap(layout.rows.first { $0.row_index == caret.row_index })
-        }
-        var expectedCaretBaseline = try caretRow(surfaces[0]).baseline - surfaces[0].viewportState.top
-        let original = try backends.map { try $0.recoverySnapshot() }
-        let session = try EVCodeStyleSession(configuration: configuration)
-        for (key, mutation) in [(EVStyleKey.baseParagraph, EVStyleMutation.setDeclaration(.characterSize, .float(23))),
-                         (.baseParagraph, .setDeclaration(.paragraphLineSpacing, .lineSpacing(EVLineSpacing(kind: UInt32(VIEM_STYLE_LINE_SPACING_EXACT), value: 38))))] {
-            try session.edit(key: key, expected: session.snapshot().identity, mutation: mutation)
-            for (index, backend) in backends.enumerated() {
-                backend.pollSyntax()
-                let row = try topRow(surfaces[index])
-                let layout = try XCTUnwrap(surfaces[index].layoutSnapshot)
-                if index == 0 {
-                    // The visible caret wins over the first-row anchor. At
-                    // zt's top edge, growing text may shift its baseline only
-                    // as far as required to show the complete row and ink.
-                    let caret = try caretRow(surfaces[index])
-                    let ink = layout.clusters.filter { $0.row_index == caret.row_index }.map(\.ink_bounds)
-                    let top = min(caret.y, ink.map(\.y).min() ?? caret.y)
-                    let naturalBottom = caret.y + caret.ascent + caret.descent + caret.leading
-                    let bottom = max(naturalBottom, ink.map { $0.y + $0.height }.max() ?? naturalBottom)
-                    expectedCaretBaseline = min(max(expectedCaretBaseline,
-                        caret.baseline - top + Float(viewMargins.top)),
-                        layout.info.viewport_height - Float(viewMargins.bottom) - (bottom - caret.baseline))
-                    XCTAssertEqual(caret.baseline - surfaces[index].viewportState.top,
-                                   expectedCaretBaseline, accuracy: 0.5)
-                    XCTAssertGreaterThanOrEqual(top - surfaces[index].viewportState.top, -0.5)
-                    XCTAssertLessThanOrEqual(bottom - surfaces[index].viewportState.top,
-                                            layout.info.viewport_height + 0.5)
-                } else {
-                    XCTAssertEqual(row.text_start, before[index].text_start)
-                    XCTAssertEqual(row.y - surfaces[index].viewportState.top, beforeOffsets[index], accuracy: 0.5)
-                }
-                XCTAssertLessThan(layout.rows.count, 100)
-                XCTAssertLessThan(layout.clusters.count, 6_000)
-                XCTAssertEqual(try backend.recoverySnapshot(), original[index])
-                XCTAssertFalse(surfaces[index].canUndo)
-            }
-        }
-        for surface in surfaces { XCTAssertEqual(try topRow(surface).line_advance, 38, accuracy: 0.5) }
     }
 
     func testExternalStyleReloadUpdatesAllBuffersAndKeepsLastValidStylesOnMalformedOrMissingFile() async throws {

@@ -2819,7 +2819,6 @@ impl Document {
             self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
-        if std::env::var_os("VIEM_DBG").is_some() { eprintln!("DBG payload patches {:?} target {:?}", source_patches.iter().map(|p| (p.range.clone(), String::from_utf8_lossy(&p.replacement).into_owned())).collect::<Vec<_>>(), target_text.byte_len()); }
         let after_revision = Revision(self.next_revision);
         let built = self.build_verified_text_edit_candidate(
             source,
@@ -2831,9 +2830,8 @@ impl Document {
             false,
             Some(&edits),
         ).map_err(|error| match error {
-            ModelTransactionError::Document(DocumentError::VerificationFailed) => {
-                if std::env::var_os("VIEM_DBG").is_some() { eprintln!("DBG verify failed"); }
-                ModelTransactionError::Document(DocumentError::FormattedPayloadCannotReproject) }
+            ModelTransactionError::Document(DocumentError::VerificationFailed) =>
+                ModelTransactionError::Document(DocumentError::FormattedPayloadCannotReproject),
             error => error,
         })?;
         // Text equality alone cannot distinguish literal LF from logical
@@ -2851,7 +2849,6 @@ impl Document {
                 &new_region,
             )?;
             if built.state.projection.hard_breaks_for_region(&new_region) != expected_hard_breaks {
-                if std::env::var_os("VIEM_DBG").is_some() { eprintln!("DBG hard breaks {:?} vs expected {:?} text {:?}", built.state.projection.hard_breaks_for_region(&new_region), expected_hard_breaks, built.state.projection.text()); }
                 return Err(DocumentError::FormattedPayloadCannotReproject.into());
             }
         }

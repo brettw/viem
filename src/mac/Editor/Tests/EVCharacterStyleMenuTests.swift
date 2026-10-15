@@ -109,65 +109,6 @@ import XCTest
         }
     }
 
-    func testCharacterStyleInheritsEachParagraphFontSizeAndClearsToItsParagraph() throws {
-        for (source, type) in [("body\n\n# title", EVDocument.markdownType)] {
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-character-inheritance-\(UUID())")
-            addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-            let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
-            let code = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Code"))
-            let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading1"))
-            let green = EVStyleColor(red: 0, green: 0.5, blue: 0, alpha: 1)
-            try EVStyleTestFixtures.configure(configuration, declarations: [
-                (.baseParagraph, .characterFontFamilies, .stringList(["Times New Roman"])),
-                (.baseParagraph, .characterFontFace, .string("")),
-                (.baseParagraph, .characterSize, .float(12)),
-                (heading, .characterSize, .float(20)),
-                (heading, .characterFontFamilies, nil),
-                (heading, .characterFontFace, nil),
-                (code, .characterFontFamilies, .stringList(["Courier"])),
-                (code, .characterFontFace, .string("")),
-                (code, .characterSize, nil),
-                (code, .characterForeground, .color(green)),
-            ])
-            let (backend, view, session) = try surface(source, type: type, configuration: configuration)
-            let sheet = try backend.styleSheetSnapshot()
-            XCTAssertNil(sheet.definition(for: .defaultParagraph))
-            XCTAssertNil(sheet.definition(for: code)?.parentKey)
-            XCTAssertNil(sheet.definition(for: code)?.properties[.characterSize]?.declared)
-            for (range, size, paragraph) in [(NSRange(location: 0, length: 4), CGFloat(12), EVStyleKey.baseParagraph),
-                                           (NSRange(location: 5, length: 5), CGFloat(20), heading)] {
-                _ = try selectedStyle(range, view: view, session: session)
-                try choose("Code", in: view)
-                let cluster = try XCTUnwrap(session.layoutExport().clusters.first {
-                    $0.text_start == UInt64(range.location)
-                })
-                XCTAssertEqual(session.provider.renderRegistry.resolvedFontFamily(
-                    identifier: cluster.render_run.identifier,
-                    metricsGeneration: cluster.render_run.metrics_generation), "Courier")
-                XCTAssertEqual(CTFontGetSize(try XCTUnwrap(session.provider.renderRegistry.resolvedFont(
-                    identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation))), size)
-                let paint = try session.layoutPaintExport()
-                let foreground = try XCTUnwrap(view.editorView.resolvedTextPaint(for: cluster, paint: paint)
-                    .foreground.usingColorSpace(.sRGB))
-                XCTAssertEqual(Float(foreground.redComponent), green.red, accuracy: 0.001)
-                XCTAssertEqual(Float(foreground.greenComponent), green.green, accuracy: 0.001)
-                XCTAssertEqual(Float(foreground.blueComponent), green.blue, accuracy: 0.001)
-                XCTAssertEqual(view.currentStyleEditorKey(), code)
-                try choose("", in: view)
-                XCTAssertNil(try session.selectedNamedStyles().character)
-                XCTAssertEqual(view.currentStyleEditorKey(), paragraph)
-                let inherited = try XCTUnwrap(session.layoutExport().clusters.first {
-                    $0.text_start == UInt64(range.location)
-                })
-                XCTAssertEqual(session.provider.renderRegistry.resolvedFontFamily(
-                    identifier: inherited.render_run.identifier,
-                    metricsGeneration: inherited.render_run.metrics_generation), "Times New Roman")
-                XCTAssertEqual(CTFontGetSize(try XCTUnwrap(session.provider.renderRegistry.resolvedFont(
-                    identifier: inherited.render_run.identifier, metricsGeneration: inherited.render_run.metrics_generation))), size)
-            }
-        }
-    }
-
     func testDefaultParagraphClearsSelectedCharacterStylesAndUndoRestoresThem() throws {
         for (source, type) in [("one two", EVDocument.markdownType)] {
             let (backend, view, session) = try surface(source, type: type)

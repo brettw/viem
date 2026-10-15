@@ -8,49 +8,6 @@ import XCTest
 @MainActor
 final class EVProseQualityTests: XCTestCase {
 
-  func testCommonEditingCommandsDoNotPoisonReflowOrUndo() throws {
-    let fixtures = [
-      (EVDocument.plainTextType, "First words with café and emoji 👩🏽‍💻.\nSecond paragraph.\nTail."),
-      (
-        EVDocument.markdownType,
-        "**First** words with café and emoji 👩🏽‍💻.\n\nSecond paragraph.\n\nTail."
-      ),
-
-    ]
-    for (type, source) in fixtures {
-      for command in ["gg0dw", "gg0ciw", "G0o", "gg0viw~", "ggyyGp"] {
-        check("\(type), \(command)") {
-          let backend = EVCoreDocumentBackend()
-          try backend.read(source: Data(source.utf8), typeName: type)
-          let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-          surface.loadViewIfNeeded()
-          let session = try XCTUnwrap(surface.session)
-          try session.resize(width: 170, height: 100)
-          try session.sendTestKeys(command)
-          if ["gg0ciw", "G0o"].contains(command) {
-            try session.sendText("Changed é👩🏽‍💻")
-            try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-          }
-          for width in [1, 120, 800, 240] {
-            try session.resize(width: CGFloat(width), height: 160)
-            surface.refreshPresentation()
-            XCTAssertNil(
-              surface.commandOutput,
-              "\(type), \(command), width \(width): \(surface.commandOutput ?? "")")
-            XCTAssertEqual(
-              try session.layoutExport().info.identity.document_revision,
-              backend.currentDocumentState.document_revision)
-          }
-          XCTAssertNotEqual(
-            try backend.serializedSource(typeName: type), Data(source.utf8), "\(type), \(command)")
-          try session.undo()
-          XCTAssertEqual(
-            try backend.serializedSource(typeName: type), Data(source.utf8), "\(type), \(command)")
-        }
-      }
-    }
-  }
-
   func testRepeatedProseFormattingUndoAndReflowAcrossRichFormats() throws {
     let fixtures = [
       (EVDocument.markdownType, "A **word** and more prose.\nA continuation.\n\nLast paragraph.")

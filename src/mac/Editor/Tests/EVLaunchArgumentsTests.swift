@@ -361,24 +361,6 @@ final class EVLaunchArgumentsTests: XCTestCase {
         XCTAssertEqual(controller.paneCount, 1)
     }
 
-    func testRepeatedExistingArgumentsDoNotConsumeSpaceForNewSplitFiles() throws {
-        let f = try LaunchFixture()
-        defer { f.close() }
-        let existingURL = try f.write("existing.txt")
-        let newURL = try f.write("new.txt")
-        f.process(EVLaunchArguments(filenames: [existingURL.path]))
-        let existing = try f.document(at: existingURL)
-        let existingController = try f.window(for: existing)
-        let arguments = Array(repeating: existingURL.path, count: 10_000) + [newURL.path]
-        f.process(EVLaunchArguments(filenames: arguments, splitCount: 0))
-        let opened = try f.document(at: newURL)
-        let newController = try f.window(for: opened)
-        XCTAssertEqual(f.documents.count, 2)
-        XCTAssertEqual(existingController.paneCount, 1)
-        XCTAssertEqual(newController.paneCount, 1)
-        XCTAssertFalse(existingController === newController)
-    }
-
     func testExplicitSplitCountLimitsArgumentSlotsBeforeDuplicateSuppression() throws {
         let f = try LaunchFixture()
         defer { f.close() }

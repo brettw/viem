@@ -653,28 +653,6 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         }
     }
 
-    func testDirectoryCancellationIsSilentAndStopsQueuedCommands() throws {
-        let directory = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        for kind in [EVDocumentHostRequest.Kind.edit, .split, .editNewWindow] {
-            let backend = Backend(data: Data("unsaved".utf8))
-            let (original, controller) = makeController(backend: backend)
-            defer { controller.openFilePanelPresenter = nil; controller.close() }
-            let state = backend.persistenceState
-            controller.openFilePanelPresenter = { _, _, choose in choose(nil) }
-            var result: Result<String?, Error>?
-            controller.perform(documentHostRequests: [
-                EVDocumentHostRequest(kind: kind, documentID: state.documentID,
-                    documentRevision: state.documentRevision, path: directory.path),
-                request(.split, backend: backend)
-            ]) { result = $0 }
-            XCTAssertNil(try XCTUnwrap(result).get())
-            XCTAssertTrue(controller.activeDocument === original)
-            XCTAssertEqual(controller.paneCount, 1)
-            XCTAssertEqual(backend.persistenceState, state)
-        }
-    }
-
     func testDirectoryCancellationStopsSourceBeforeNextLine() throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

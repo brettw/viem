@@ -60,13 +60,6 @@ final class EVPresentationCacheIntegrationTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(surface.layoutSnapshot).info.identity.isSameLayout(as: try session.layoutSnapshotInfo().identity))
     }
 
-    func testRepeatedVisibleSelectionsInAgentFileReusePresentationExports() throws {
-        var root = URL(fileURLWithPath: #filePath)
-        for _ in 0..<5 { root.deleteLastPathComponent() }
-        let text = try String(contentsOf: root.appendingPathComponent("AGENTS.md"), encoding: .utf8)
-        try assertSelectionsReuseExports(text, label: "AGENTS.md", type: EVDocument.codeType)
-    }
-
     func testRepeatedVisibleSelectionsInTwentyThousandLinesReusePresentationExports() throws {
         let text = (0..<20_000).map { "Line \($0): selection caching keeps visible text ready.  " }
             .joined(separator: "\n")

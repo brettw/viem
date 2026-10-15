@@ -17,9 +17,16 @@ explicitly and repeat the affected stages rather than calling a build final.
 | Focused tests | `python3 scripts/validate.py focused --filter module::` | The tests nearest the change |
 | Quick consistency | `python3 scripts/validate.py consistency --baseline main` | Any change to transactions, projection, typing or paste |
 | Suites | `python3 scripts/validate.py suites` | Before measurements or review |
-| Full consistency | `python3 scripts/validate.py consistency-full --baseline main` | Final evidence |
-| Memory | `python3 scripts/validate.py memory` | Changes that can affect retained or peak memory |
 | Native | `python3 scripts/validate.py native` | Frontend, ABI or rendering changes |
+| Full consistency | `python3 scripts/validate.py consistency-full --baseline main` | Large or risky refactors, or a request to run all tests |
+| Backend fuzzing | `python3 scripts/fuzz-backend.py` ([guide](fuzzing.md)) | Large or risky refactors, or a request to run all tests |
+| Memory | `python3 scripts/validate.py memory` | A request to run all tests or about memory, or a change that could plausibly have nontrivial memory impact |
+
+Ordinary changes stop after the suites (and native tests when they apply).
+The quick consistency probe is a small curated subset, about a twentieth of
+the full probe, that runs in seconds. Full consistency, backend fuzz campaigns
+and memory measurements take minutes or have open-ended length; do not run
+them for routine changes.
 
 `scripts/validate.py` records a manifest under `target/validation/<timestamp>/`
 with the source identity (commit and a digest of uncommitted changes), every
@@ -103,8 +110,8 @@ that an edit made none.
 The consistency probe is described in [backend fuzzing](fuzzing.md#consistency-probe).
 Compare individual cases with the baseline: newly failing cases are the
 regressions, including ones that share a signature with repaired cases. Use the
-quick probe while iterating on shared transaction code and the full probe once
-for final evidence.
+quick probe while iterating on shared transaction code. Run the full probe once
+for final evidence only on large or risky refactors.
 
 ## Memory and performance claims
 
@@ -117,9 +124,12 @@ checked-in limits; limits are regression inputs and are not raised to make a
 change pass. The runners' work ceilings also catch an edit that stays regional
 but takes a costlier route, for example when a speculative formulation that
 used to fail cheaply now succeeds through a heavier strategy. Run the memory
-stage after changing edit translation, escaping or candidate strategies, not
-only after storage changes. A change that deliberately trades one measured cost for another
-needs the supporting numbers and a recorded decision.
+stage when asked to run all tests or to reduce memory, or when a change could
+plausibly have nontrivial memory impact: storage, retained caches or history,
+whole-document copies, or a candidate strategy that changes what an edit
+materializes. Small fixes to edit translation or escaping do not need it. A
+change that deliberately trades one measured cost for another needs the
+supporting numbers and a recorded decision.
 
 ## Native tests
 

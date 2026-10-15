@@ -105,6 +105,19 @@ fn all_seeds(include_files: bool) -> Vec<Seed> {
     seeds
 }
 
+/// The curated `--quick` subset, in corpus order.
+fn quick_seeds(seeds: Vec<Seed>) -> Vec<Seed> {
+    let chosen = |seed: &Seed| match seed.fmt {
+        Fmt::Wysiwyg => corpus::QUICK_MARKDOWN.contains(&seed.source.as_str()),
+        Fmt::Code => corpus::QUICK_CODE.contains(&seed.source.as_str()),
+        Fmt::Plain => corpus::QUICK_PLAIN.contains(&seed.source.as_str()),
+    };
+    let quick = seeds.into_iter().filter(chosen).collect::<Vec<_>>();
+    assert_eq!(quick.len(), corpus::QUICK_MARKDOWN.len() + corpus::QUICK_CODE.len() + corpus::QUICK_PLAIN.len(),
+        "every quick seed names a corpus seed");
+    quick
+}
+
 // ---------------------------------------------------------------------------
 // Replayable actions
 
@@ -2637,6 +2650,9 @@ fn main() {
     let fmt_filter = arg("--fmt");
     let mode = args.get(1).cloned().unwrap_or_else(|| "probe".into());
     let mut seeds = all_seeds(mode == "walk" || args.iter().any(|a| a == "--files"));
+    if quick {
+        seeds = quick_seeds(seeds);
+    }
     if let Some(f) = &filter {
         seeds.retain(|s| s.source.contains(f.as_str()));
     }
@@ -2722,7 +2738,7 @@ fn main() {
             let which = arg("--probes").unwrap_or_else(|| {
                 if quick { "insert,normal,selection,copypaste".into() } else { "nav,insert,normal,selection".into() }
             });
-            let positions: usize = arg("--positions").and_then(|s| s.parse().ok()).unwrap_or(if quick { 8 } else { 40 });
+            let positions: usize = arg("--positions").and_then(|s| s.parse().ok()).unwrap_or(if quick { 4 } else { 40 });
             let mut manifest = Vec::new();
             for probe in which.split(',') {
                 let baseline = arg("--baseline").map(|dir| read_cases(&dir, probe)

@@ -120,9 +120,13 @@ did not fail in the baseline), changed (it fails in both, differently) or
 repaired, and exits 1 only when a case newly fails. `--baseline DIR` on a probe run also keeps
 complete, replayable findings for newly failing cases in `<probe>-new.jsonl`.
 
-`--quick` uses eight positions per seed and the insert, normal, selection and
-copy/paste probes. It takes roughly a quarter of a full run and is the feedback
-pass after changing shared transaction or projection code. Narrow further with
+`--quick` runs the insert, normal, selection and copy/paste probes over a
+curated subset of the corpus (`QUICK_MARKDOWN`, `QUICK_CODE` and `QUICK_PLAIN`
+in the corpus: a few seeds per construct, favoring documents that mix
+structures) with four positions per seed. It runs in seconds, about a twentieth
+of a full run, and is the feedback pass after changing shared transaction or
+projection code. Keep the subset small when adding seeds; the full probe still
+covers the whole corpus. Narrow further with
 `--filter TEXT` (seed source), `--fmt wysiwyg|code|plain`,
 `--op-filter LABEL` and `--probes`. Workers default to all available cores and
 start with the largest seeds. Per-case cost is dominated by real editing and
