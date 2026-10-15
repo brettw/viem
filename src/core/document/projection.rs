@@ -290,6 +290,29 @@ impl RangedItem for InlineImage {
 }
 
 /// Character-style display names of a Code sheet, for run-name resolution.
+/// Remove `carved` ranges from automatic syntax spans, keeping span order.
+fn carve_spans(spans: Vec<StyleSpan>, carved: &[Range<usize>]) -> Vec<StyleSpan> {
+    let mut output = Vec::with_capacity(spans.len());
+    for span in spans {
+        if !matches!(span.application, StyleApplication::Automatic(_)) {
+            output.push(span);
+            continue;
+        }
+        let mut at = span.range.start;
+        let first = carved.partition_point(|range| range.end <= at);
+        for range in carved[first..].iter().take_while(|range| range.start < span.range.end) {
+            if at < range.start {
+                output.push(span.with_range(at..range.start));
+            }
+            at = at.max(range.end);
+        }
+        if at < span.range.end {
+            output.push(span.with_range(at..span.range.end));
+        }
+    }
+    output
+}
+
 fn code_style_names(sheet: &StyleSheet) -> std::collections::BTreeMap<&str, &StyleId> {
     sheet
         .character_styles()
@@ -1469,6 +1492,16 @@ struct MarkdownCodePresentation {
     spans: IntervalRangeStore<StyleSpan>,
 }
 
+/// Simplified Markdown in Code comments. Code text is carved out of its
+/// comment's own syntax spans, and role and code-language spans fold after
+/// the syntax spans they decorate, in their declared cascade order.
+#[derive(Clone, Debug)]
+struct CommentMarkdownPresentation {
+    /// Sorted, disjoint code text ranges.
+    carved: Arc<[Range<usize>]>,
+    spans: IntervalRangeStore<StyleSpan>,
+}
+
 /// Immutable formatted projection consumed by commands and layout.
 #[derive(Clone, Debug)]
 pub struct FormattedDocument {
@@ -1501,6 +1534,7 @@ pub struct FormattedDocument {
     decoding_diagnostics: IntervalRangeStore<DecodingDiagnostic>,
     style_sheet: Arc<StyleSheet>,
     markdown_code_presentation: Option<Arc<MarkdownCodePresentation>>,
+    comment_markdown: Option<Arc<CommentMarkdownPresentation>>,
     document_style: DocumentStyleAssignment,
     source_content_start: usize,
     source_content_end: usize,
@@ -1924,6 +1958,7 @@ impl FormattedDocument {
             decoding_diagnostics: IntervalRangeStore::new(decoding_diagnostics),
             style_sheet: Arc::new(style_sheet),
             markdown_code_presentation: None,
+            comment_markdown: None,
             document_style,
             source_content_start,
             source_content_end,
@@ -3637,7 +3672,49 @@ impl FormattedDocument {
             spans.extend(presentation.spans.query_overlapping(range));
             spans.sort_by_key(|span| span.range.start);
         }
+        if let Some(comments) = &self.comment_markdown {
+            if !comments.carved.is_empty() {
+                spans = carve_spans(spans, &comments.carved);
+            }
+            // Appended rather than merged: decorations fold after every
+            // syntax span, so a comment's own style is the base they override.
+            spans.extend(comments.spans.query_overlapping(range));
+        }
         spans
+    }
+
+    /// Install simplified comment Markdown: `carved` code text loses its
+    /// comment's syntax spans, then `runs` (roles followed by code-language
+    /// runs, in cascade order) resolve through the installed Code sheet.
+    pub(crate) fn install_comment_markdown(&mut self, mut carved: Vec<Range<usize>>, runs: &[super::syntax::SyntaxRun]) {
+        let names = code_style_names(&self.style_sheet);
+        let spans: Vec<_> = runs.iter().filter_map(|run| self.automatic_span(&names, run)).collect();
+        carved.retain(|range| !range.is_empty() && range.end <= self.text.byte_len());
+        carved.sort_by_key(|range| range.start);
+        carved.dedup_by(|next, previous| {
+            if next.start <= previous.end {
+                previous.end = previous.end.max(next.end);
+                true
+            } else {
+                false
+            }
+        });
+        self.comment_markdown = (!spans.is_empty() || !carved.is_empty()).then(|| Arc::new(CommentMarkdownPresentation {
+            carved: carved.into(),
+            spans: IntervalRangeStore::new(spans),
+        }));
+    }
+
+    pub(crate) fn has_comment_markdown(&self) -> bool {
+        self.comment_markdown.is_some()
+    }
+
+    pub(crate) fn clear_comment_markdown(&mut self) {
+        self.comment_markdown = None;
+    }
+
+    pub(crate) fn take_comment_markdown_from(&mut self, previous: &FormattedDocument) {
+        self.comment_markdown = previous.comment_markdown.clone();
     }
 
 
@@ -5346,6 +5423,7 @@ pub(crate) fn splice_line_local_projection(
         source_ordered: true,
         decoding_diagnostics,
         markdown_code_presentation: None,
+            comment_markdown: None,
         style_sheet: {
             let mut sheet = previous.style_sheet.clone();
             if let Some(level) = regional

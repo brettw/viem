@@ -1633,6 +1633,7 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_OPTION_AUTOSELECT = 23u;
     public const uint VIEM_EX_OPTION_HLSEARCH = 19u;
     public const uint VIEM_EX_OPTION_INCSEARCH = 20u;
+    public const uint VIEM_EX_OPTION_COMMENTMARKDOWN = 28u;
     public const uint VIEM_EX_JUMP_CURRENT = (1u << 0);
     public const uint VIEM_OUTCOME_HAS_COMMAND = (1u << 0);
     public const uint VIEM_OUTCOME_CURSOR_MOVED = (1u << 1);
@@ -2342,6 +2343,12 @@ internal static unsafe partial class Native
     public static extern uint viem_core_copy_link_destination(ulong @core, ulong @document_id, ulong @revision, ulong @text_offset, byte* @output, ulong @capacity, ulong* @required, byte* @found);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_set_text_width_default(ulong @core, uint @width);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_set_comment_markdown_default(ulong @core, byte @enabled);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_set_comment_markdown(ulong @core, byte @enabled);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_comment_markdown(ulong @core, byte* @out_enabled, byte* @out_applicable);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_validate_whitespace_presentation(byte* @json, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

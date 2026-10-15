@@ -23,6 +23,7 @@ mod command_layout_viewport;
 mod command_prompt_editing;
 mod command_rich_boundary_actions;
 mod comment_editing;
+mod comment_markdown;
 mod composition_typing_style;
 mod core_acceptance;
 mod empty_markdown_list_input;

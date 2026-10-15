@@ -65,7 +65,7 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(format.item(withTitle: "Word wrap")?.tag, EVMenuCommand.wordWrap.rawValue)
         let view = try submenu("View", of: menu)
         XCTAssertEqual(tokens(in: view), [
-            "Show Status Bar", "-", "Show line numbers", "Show Invisible Characters", "-",
+            "Show Status Bar", "-", "Show line numbers", "Markdown in comments", "Show Invisible Characters", "-",
             "Zoom In", "Zoom Out", "Actual Size", "-", "Enter Full Screen",
         ])
         let file = try submenu("File", of: menu)
@@ -520,13 +520,16 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertNil(try submenu("View", of: menu).item(withTitle: "Wrap at Word Boundaries"))
     }
 
-    func testLineNumberCheckboxPrecedesInvisibleCharactersInViewMenu() throws {
+    func testLineNumberAndCommentMarkdownCheckboxesPrecedeInvisibleCharactersInViewMenu() throws {
         let owner = Owner()
         let builder = EVMenuBuilder(owner: owner)
         let menu = builder.buildMainMenu(for: NSApplication.shared)
         let view = try submenu("View", of: menu)
         let index = try XCTUnwrap(view.items.firstIndex(where: { $0.title == "Show line numbers" }))
-        XCTAssertEqual(view.items[index + 1].title, "Show Invisible Characters")
+        XCTAssertEqual(view.items[index + 1].title, "Markdown in comments")
+        XCTAssertEqual(view.items[index + 1].tag, EVMenuCommand.commentMarkdown.rawValue)
+        XCTAssertEqual(view.items[index + 1].action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+        XCTAssertEqual(view.items[index + 2].title, "Show Invisible Characters")
         XCTAssertTrue(view.showsStateColumn)
         XCTAssertEqual(view.items[index].tag, EVMenuCommand.showLineNumbers.rawValue)
         XCTAssertEqual(view.items[index].action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
