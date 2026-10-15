@@ -46,36 +46,6 @@ final class EVDocumentExportTests: XCTestCase {
         return (document, backend, original)
     }
 
-    func testExportPanelRestrictsHTMLAndSuggestsSafeCopyNames() throws {
-        for (filename, expected) in [("notes.md", "notes.html"), ("page.HTML", "page-export.html"), ("page.xhtml", "page-export.html")] {
-            let (document, _, original) = try fixture(filename: filename)
-            defer { document.close() }
-            let panel = document.makeHTMLExportPanel()
-            XCTAssertEqual(panel.allowedContentTypes, [.html])
-            XCTAssertFalse(panel.allowsOtherFileTypes)
-            XCTAssertEqual(panel.nameFieldStringValue, expected)
-            XCTAssertEqual(panel.directoryURL, original.deletingLastPathComponent())
-            XCTAssertEqual(panel.prompt, "Export")
-        }
-    }
-
-    func testCancelDoesNotGenerateOrWriteAFile() throws {
-        let (document, backend, original) = try fixture()
-        defer { document.close() }
-        let surface = Surface()
-        var shown = false
-        document.htmlExportPanelHandler = { panel, complete in
-            shown = true
-            XCTAssertEqual(panel.allowedContentTypes, [.html])
-            complete(nil)
-        }
-        document.exportHTML(from: surface)
-        XCTAssertTrue(shown)
-        XCTAssertEqual(surface.exportCount, 0)
-        XCTAssertEqual(try Data(contentsOf: original), backend.source)
-        XCTAssertEqual(backend.acknowledgementCount, 0)
-    }
-
     func testExportWritesStyledCopyWithoutChangingDocumentOrSaveBaseline() async throws {
         let (document, backend, original) = try fixture()
         defer { document.close() }

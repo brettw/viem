@@ -326,45 +326,65 @@ fn markdown_paste_into_a_large_document_stays_regional() {
     assert!(editor.source().contains(&format!("target \n\n{}\n\nhere", REPORT.trim_end())));
 }
 
+/// A copied flat bullet list stays one level, and its items accept the
+/// ordinary structural list keys.
 #[test]
-fn zz_scratch_one() {
-    for (src, op) in [("\t", "type"), ("\t", "x"), ("\t", "a\nb"), ("  ", "a\nb"), ("\t\n\na", "a\nb"), ("a\n\n\t\n\nb", "a\nb")] {
-        let mut editor = Editor::open(src, Format::Markdown);
-        editor.key(Key::Char('i'));
-        let at = if src.starts_with('a') { 2 } else { 0 };
-        editor.place(at);
-        let r = if op == "type" { editor.core.handle(editor.view, viem_core::CoreEvent::Input(viem_core::command::InputEvent::key('x'))).map(|_| ()) } else {
-            let clipboard = viem_core::command::clipboard::ClipboardCommandContext::new().with_read(viem_core::command::clipboard::ClipboardSnapshot::new(
-                viem_core::command::clipboard::ClipboardTarget::Clipboard,
-                viem_core::command::clipboard::ClipboardGeneration(1),
-                viem_core::command::clipboard::ClipboardContent::from_plain_text(op),
-            ));
-            editor.core.handle(editor.view, viem_core::CoreEvent::InputWithClipboard { input: viem_core::command::InputEvent::Key(Key::PasteClipboardMatchingStyle), clipboard }).map(|_| ())
-        };
-        eprintln!("RES {src:?} {op:?} -> {r:?} {:?}", editor.source());
+fn a_pasted_flat_list_stays_flat_and_keeps_structural_keys() {
+    const LIST: &str = "- Give candidate attempts explicit outcomes.\n- Make a validated regional-proof object.\n- Make whole-store materialization explicit.\n";
+    let level = |editor: &Editor, needle: &str| {
+        let document = editor.document();
+        let text = document.text();
+        document.projection().blocks().iter()
+            .find(|block| text[block.range.clone()].starts_with(needle))
+            .and_then(|block| match block.kind { BlockKind::ListItem { level, .. } => Some(level), _ => None })
+            .unwrap_or_else(|| panic!("{needle:?} list item in {:?}", shape(document)))
+    };
+    for (source, needle) in [("", ""), ("Intro", "Intro"), ("- one", "one")] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.type_keys("i");
+        editor.place(editor.document().text().find(needle).unwrap() + needle.len());
+        editor.paste_plain(LIST);
+        let context = format!("{source:?}: {:?}", editor.source());
+        assert_reopens_as_displayed(editor.document(), &context);
+        for item in ["Give", "Make a", "Make whole"] {
+            assert_eq!(level(&editor, item), 0, "{context}");
+        }
+
+        editor.place_at("Make a");
+        editor.key(Key::Tab);
+        assert_eq!(level(&editor, "Make a"), 1, "Tab {context}");
+        editor.key(Key::BackTab);
+        assert_eq!(level(&editor, "Make a"), 0, "Shift-Tab {context}");
+        editor.key(Key::Tab);
+        editor.key(Key::Backspace);
+        assert_eq!(level(&editor, "Make a"), 0, "Backspace unindents {context}");
+        editor.key(Key::Backspace);
+        let document = editor.document();
+        let text = document.text();
+        assert!(document.projection().blocks().iter()
+            .any(|block| text[block.range.clone()].starts_with("Make a") && !matches!(block.kind, BlockKind::ListItem { .. })),
+            "Backspace removes top-level list treatment {context}: {:?}", shape(document));
+        assert_reopens_as_displayed(editor.document(), &context);
     }
 }
 
+/// Paste and Match Style keeps indented, marker-like continuation lines
+/// literal when the destination writes list or quote prefixes for them.
 #[test]
-fn zz_scratch_matching_style() {
-    for source in ["", "\t", "#", "- a", "a*b*c", "<div>", "`` ` ``", "999999999. big", "<script>alert(1)</script>"] {
-        for (key, text) in [("m", "## H\n  - x\n**y**"), ("p", "## H\n\n- a\n- b\n\npara"), ("p", "**md** | x\n\n- y"), ("p", "> q\n\n1. one\n2. two\n"), ("p", "line one\nline two\n")] {
-            let len = source.len();
-            for at in 0..=len.min(25) {
-                let mut editor = Editor::open(source, Format::Markdown);
-                let text_len = editor.document().text().len();
-                if at > text_len { continue; }
-                editor.key(Key::Char('i'));
-                editor.place(at);
-                let clipboard = viem_core::command::clipboard::ClipboardCommandContext::new().with_read(viem_core::command::clipboard::ClipboardSnapshot::new(
-                    viem_core::command::clipboard::ClipboardTarget::Clipboard,
-                    viem_core::command::clipboard::ClipboardGeneration(1),
-                    viem_core::command::clipboard::ClipboardContent::from_plain_text(text),
-                ));
-                let k = if key == "m" { Key::PasteClipboardMatchingStyle } else { Key::PasteClipboard };
-                let r = editor.core.handle(editor.view, viem_core::CoreEvent::InputWithClipboard { input: viem_core::command::InputEvent::Key(k), clipboard });
-                if let Err(e) = r { eprintln!("FAIL {source:?} @{at} {key} {text:?}: {e:?}"); }
-            }
-        }
+fn literal_continuation_lines_stay_literal_inside_lists_and_quotes() {
+    const TEXT: &str = "## H\n  - x\n1. y";
+    for (source, needle) in [("text\n- list item", "item"), ("> quoted text", "text"), ("1. one\n2. two", "two")] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.type_keys("i");
+        editor.place_at(needle);
+        let before = editor.document().text().to_owned();
+        let at = before.find(needle).unwrap();
+        editor.paste_matching_style(TEXT);
+        let context = format!("{source:?}: {:?}", editor.source());
+        assert_eq!(editor.document().text(), format!("{}{TEXT}{}", &before[..at], &before[at..]), "{context}");
+        assert!(editor.document().projection().style_spans().is_empty(), "{context}");
+        assert_reopens_as_displayed(editor.document(), &context);
+        let after = editor.source();
+        assert_exact_undo_redo(&mut editor, source, &after, &context);
     }
 }

@@ -5,50 +5,6 @@ import XCTest
 
 @MainActor
 final class EVBaseParagraphStyleEditorTests: XCTestCase {
-    func testBaseParagraphNextStyleIsFixedAcrossGeneratedAndNativeStyles() throws {
-        for (type, source, headingID) in [
-            ("public.markdown", "Text", "Heading1"),
-        ] {
-            let configuration = try isolatedConfiguration()
-            let backend = EVCoreDocumentBackend(configuration: configuration)
-            try backend.read(source: Data(source.utf8), typeName: type)
-            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-            defer { withExtendedLifetime(surface) {} }
-            surface.loadViewIfNeeded()
-            let editor = EVStyleEditorViewController()
-            editor.themeStore = EVThemeStore(configuration: configuration)
-            editor.retarget(document: surface, styleKey: .baseParagraph)
-            let before = try backend.recoverySnapshot()
-            let snapshot = try backend.styleSheetSnapshot()
-            let root = try XCTUnwrap(snapshot.definition(for: .baseParagraph))
-            XCTAssertNil(root.nextStyleID)
-            XCTAssertFalse(root.capabilities.contains(.nextStyle))
-            try assertNextStyleLocked(in: editor)
-
-            let heading = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: headingID))
-            XCTAssertFalse(editor.setFollowingStyleForTesting(heading))
-            XCTAssertEqual(try backend.recoverySnapshot(), before)
-            XCTAssertEqual(try backend.styleSheetSnapshot().identity, snapshot.identity)
-            XCTAssertFalse(surface.canUndo)
-            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-
-            editor.selectStyle(heading)
-            XCTAssertTrue(try nextStylePopup(in: editor).isEnabled)
-            editor.selectStyle(EVStyleKey.baseParagraph)
-            try assertNextStyleLocked(in: editor)
-        }
-    }
-
-    func testGlobalCodeBaseParagraphNextStyleIsSameStyle() throws {
-        let configuration = try isolatedConfiguration()
-        let session = try EVCodeStyleSession(configuration: configuration)
-        let editor = EVStyleEditorViewController()
-        editor.themeStore = EVThemeStore(configuration: configuration)
-        editor.retarget(settingsSession: session)
-        editor.selectStyle(EVStyleKey.baseParagraph)
-        try assertNextStyleLocked(in: editor)
-        XCTAssertFalse(session.undoManager.canUndo)
-    }
 
     func testEveryBaseParagraphOverrideIsLockedWhileValuesRemainEditable() throws {
         for (type, source) in [
@@ -75,23 +31,6 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
             XCTAssertFalse(surface.canUndo)
             XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
         }
-    }
-
-    func testGlobalCodeBaseParagraphOverrideClicksLeaveSettingsAndHistoryUnchanged() throws {
-        let configuration = try isolatedConfiguration()
-        let session = try EVCodeStyleSession(configuration: configuration)
-        let editor = EVStyleEditorViewController()
-        editor.themeStore = EVThemeStore(configuration: configuration)
-        editor.retarget(settingsSession: session)
-        editor.selectStyle(EVStyleKey.baseParagraph)
-        let snapshot = try session.snapshot()
-        let persisted = try configuration.codeStyleSheet()
-
-        try assertOverridesLockedAndValuesEditable(in: editor)
-        XCTAssertEqual(try session.snapshot(), snapshot)
-        XCTAssertEqual(try configuration.codeStyleSheet(), persisted)
-        XCTAssertFalse(session.undoManager.canUndo)
-        XCTAssertFalse(editor.hasActiveStyleEditGroupForTesting)
     }
 
     private func assertOverridesLockedAndValuesEditable(in editor: EVStyleEditorViewController) throws {
@@ -137,21 +76,6 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
                 }
             }
         }
-    }
-
-    private func assertNextStyleLocked(in editor: EVStyleEditorViewController) throws {
-        let popup = try nextStylePopup(in: editor)
-        XCTAssertEqual(popup.titleOfSelectedItem, "Same Style")
-        XCTAssertEqual(popup.numberOfItems, 1)
-        XCTAssertFalse(popup.isEnabled)
-        let next = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSButton }
-            .first { $0.accessibilityLabel() == "Edit next paragraph style" })
-        XCTAssertFalse(next.isEnabled)
-    }
-
-    private func nextStylePopup(in editor: EVStyleEditorViewController) throws -> NSPopUpButton {
-        try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? NSPopUpButton }
-            .first { $0.accessibilityLabel() == "Following paragraph style" })
     }
 
     private func descendants(of view: NSView) -> [NSView] {

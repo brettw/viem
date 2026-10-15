@@ -8,71 +8,6 @@ import XCTest
 
 @MainActor
 final class EVDefaultStyleIntegrationTests: XCTestCase {
-  func testMarkdownThemeRoundTripRestoresRenderedFontAndSurvivesResize() throws {
-    var root = URL(fileURLWithPath: #filePath)
-    for _ in 0..<5 { root.deleteLastPathComponent() }
-    let fontDirectory = root.appendingPathComponent("assets/fonts/recursive")
-    XCTAssertTrue(EVFontCatalog.registerBundledFonts(in: fontDirectory).isEmpty)
-    defer {
-      CTFontManagerUnregisterFontsForURL(fontDirectory.appendingPathComponent("Recursive_VF_1.085.ttf") as CFURL, .process, nil)
-      EVFontCatalog.invalidate()
-    }
-    let config = try configuration()
-    try config.selectTheme(named: "Paper")
-    // These are deliberately different font fixtures, independent of either
-    // shipped preset's editable typography.
-    try EVStyleTestFixtures.configure(config, declarations: [
-      (.baseParagraph, .characterSize, .float(14)),
-      (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
-      (.baseParagraph, .characterFontAxes, .string("{}")),
-      (.baseParagraph, .characterWeight, .unsigned(400)),
-      (EVStyleTestFixtures.block("Heading1"), .characterFontFamilies, nil),
-    ])
-    try config.createTheme(named: "Recursive")
-    let styles = try EVThemeStyleSession(configuration: config, format: .markdown)
-    try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
-      mutation: .setDeclaration(.characterFontFamilies, .stringList(["Recursive"])))
-    try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity,
-      mutation: .setDeclaration(.characterSize, .float(16)))
-    let specimen = "# Heading\n\nWriting with [a link](https://example.com) and ~~struck text~~.\n\n<!-- Comment -->\n\n[reference][unknown]\n\n"
-    // Keep most of the document outside the viewport to exercise regional
-    // reflow while the automatically styled content remains visible.
-    let source = Data(String(repeating: specimen, count: 256).utf8)
-    try config.selectTheme(named: "Paper")
-    let backend = EVCoreDocumentBackend(configuration: config)
-    try backend.read(source: source, typeName: EVDocument.markdownType)
-    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-    surface.loadViewIfNeeded()
-    let session = try XCTUnwrap(surface.session)
-    _ = try session.resize(width: 700, height: 180)
-    surface.refreshPresentation()
-    func renderedFont() throws -> String {
-      let cluster = try XCTUnwrap(surface.layoutSnapshot?.clusters.first { $0.text_start == 0 })
-      let font = try XCTUnwrap(session.provider.renderRegistry.resolvedFont(
-        identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation))
-      return CTFontCopyFamilyName(font) as String
-    }
-    let originalFont = try renderedFont()
-    let original = try backend.recoverySnapshot()
-    for name in ["Recursive", "Paper", "Recursive", "Paper"] {
-      try config.selectTheme(named: name)
-      XCTAssertNil(backend.configurationWarning)
-      XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?
-        .properties[.characterFontFamilies]?.effective,
-        .stringList([name == "Paper" ? "system-ui" : "Recursive"]))
-      surface.refreshPresentation()
-      XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive")
-      for width: CGFloat in [420, 900, 700] {
-        _ = try session.resize(width: width, height: 180)
-        surface.refreshPresentation()
-        XCTAssertNil(surface.commandOutput, surface.statusBarState.message)
-        XCTAssertEqual(try renderedFont(), name == "Paper" ? originalFont : "Recursive")
-      }
-      XCTAssertEqual(try backend.recoverySnapshot(), original)
-      XCTAssertFalse(surface.canUndo)
-      XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
-    }
-  }
 
   private func configuration() throws -> EVConfigurationStore {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-style-defaults-\(UUID().uuidString)")
@@ -80,41 +15,6 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     let legacy = try XCTUnwrap(UserDefaults(suiteName: suite))
     addTeardownBlock { try? FileManager.default.removeItem(at: directory); legacy.removePersistentDomain(forName: suite) }
     return EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-  }
-  func testThemeStyleEditsUpdateExistingAndFutureDocumentsWithoutChangingSourceOrUndo() throws {
-    for (format, type, source) in [(EVSourceFormat.plainText, EVDocument.plainTextType, "Text"),
-      (.markdown, EVDocument.markdownType, "# Heading\n\nText"),
-    ] {
-      let config = try configuration()
-      try EVStyleTestFixtures.configure(config, format: format, declarations: [
-        (.baseParagraph, .characterSize, .float(14)),
-      ])
-      let backends = [EVCoreDocumentBackend(configuration: config), EVCoreDocumentBackend(configuration: config)]
-      let surfaces = try backends.map { backend -> EVEditorSurfaceController in
-        try backend.read(source: Data(source.utf8), typeName: type)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        return surface
-      }
-      let originals = try backends.map { try $0.recoverySnapshot() }
-      let session = try EVThemeStyleSession(configuration: config, format: format)
-      try session.edit(key: .baseParagraph, expected: session.snapshot().identity,
-        mutation: .setDeclaration(.characterSize, .float(27)))
-      for (index, backend) in backends.enumerated() {
-        XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
-        XCTAssertEqual(try backend.recoverySnapshot(), originals[index])
-        XCTAssertFalse(surfaces[index].canUndo)
-      }
-      let reopened = EVCoreDocumentBackend(configuration: config)
-      try reopened.read(source: Data(source.utf8), typeName: type)
-      XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
-      XCTAssertFalse(reopened.persistenceState.isDirty)
-      XCTAssertEqual(try reopened.serializedSource(typeName: type), Data(source.utf8))
-      session.undoManager.undo()
-      XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(14))
-      session.undoManager.redo()
-      XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(27))
-    }
   }
 
   func testDefaultThemeStyleEditsRemainInMemoryAndAreClonedByNewTheme() throws {

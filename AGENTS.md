@@ -1994,11 +1994,16 @@ gaps and native tests when their mechanisms ship.
 ## Validation and open work
 
 Follow the [development workflow](docs/development-workflow.md): run focused
-tests and the quick consistency probe before full suites or measurements, compare
-consistency results case by case with a baseline, establish allocation ownership
-by measurement before claiming a cause, and freeze a candidate before final
-validation. Deliberate memory/performance tradeoffs need supporting numbers and
-a recorded decision.
+tests and, for shared editing changes, the quick consistency probe before full
+suites, compare consistency results case by case with a baseline, establish
+allocation ownership by measurement before claiming a cause, and freeze a
+candidate before final validation. Ordinary changes do not run the full
+consistency probe, backend fuzz campaigns or other runs of open-ended length;
+reserve them for particularly large or risky refactors or a request to run all
+tests. Run the memory measurements only for such a request, a request about
+memory, or a change that could plausibly have nontrivial memory impact.
+Deliberate memory/performance tradeoffs need supporting numbers and a recorded
+decision.
 
 Use deterministic tests at the document, command, layout and coordinator
 boundaries. Cover source-byte round trips and minimal patch locality;

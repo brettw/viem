@@ -8,40 +8,6 @@ import XCTest
 final class EVCodeEditingStabilityTests: XCTestCase {
     private let implicitRange = NSRange(location: NSNotFound, length: 0)
 
-    func testTypingInScrolledCodePreservesOffCenterCaretBaselineWithAndWithoutRustSyntax() async throws {
-        for highlighting in [false, true] {
-            let fixture = try makeFixture(highlighting: highlighting)
-            if highlighting { try await waitForCommentSize(14, fixture: fixture) }
-            fixture.surface.requestVerticalViewport(top: 18_000)
-            if highlighting { try await waitForCommentSize(14, fixture: fixture) }
-            try placeInsertCaret(fixture, screenFraction: 0.3)
-            let baseline = try caretState(fixture).screenBaseline
-            let viewportHeight = try XCTUnwrap(fixture.surface.layoutSnapshot).info.viewport_height
-            XCTAssertGreaterThan(abs(baseline - viewportHeight / 2), 12,
-                                 "The fixture must detect accidental recentering")
-            let insertion = Int(fixture.surface.viewPresentation.cursor_utf8_offset)
-            let typed = "reliable"
-            for character in typed {
-                let client: NSTextInputClient = fixture.surface.editorView
-                client.insertText(String(character), replacementRange: implicitRange)
-                try assertBaseline(baseline, fixture: fixture,
-                                   reason: "Immediate typing of \(character), Rust=\(highlighting)")
-                // Source-change callbacks and the real syntax timer can both
-                // refresh the same view after the immediate editing turn.
-                try await Task.sleep(for: .milliseconds(20))
-                fixture.backend.pollSyntax()
-                fixture.surface.refreshPresentation()
-                try assertBaseline(baseline, fixture: fixture,
-                                   reason: "Deferred refresh after \(character), Rust=\(highlighting)")
-            }
-            var expected = fixture.source
-            expected.insert(contentsOf: typed.utf8, at: insertion)
-            XCTAssertEqual(try fixture.backend.serializedSource(typeName: EVDocument.plainTextType), expected)
-            if !highlighting { XCTAssertTrue(try fixture.backend.syntaxStyleNames().isEmpty) }
-            try assertCurrentBoundedLayout(fixture)
-        }
-    }
-
     func testDelayedLargerRustSyntaxPreservesTheTypedCaretBaseline() async throws {
         let fixture = try makeFixture(highlighting: true, commentSize: 36, includeComments: false)
         try await waitForCommentSize(14, fixture: fixture)

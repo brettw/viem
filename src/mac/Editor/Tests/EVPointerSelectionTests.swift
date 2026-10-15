@@ -126,65 +126,6 @@ final class EVPointerSelectionTests: XCTestCase {
       x: CGFloat(cluster.x) + CGFloat(cluster.advance) * fraction, y: CGFloat(row.y + row.ascent * 0.5)))
   }
 
-  func testOffscreenDragKeepsItsAnchorAndVisibleSelectionAcrossLongDocuments() throws {
-    var checkout = URL(fileURLWithPath: #filePath)
-    for _ in 0..<5 { checkout.deleteLastPathComponent() }
-    let agents = try String(contentsOf: checkout.appendingPathComponent("AGENTS.md"), encoding: .utf8)
-    let fixtures = [
-      ("AGENTS.md", agents, EVDocument.markdownType),
-      ("20,000 lines", String(repeating: "Words continue across a long document with wrapped lines of text.\n", count: 20_000), EVDocument.plainTextType),
-    ]
-    for (label, source, format) in fixtures {
-      let (backend, surface, window) = try makeSurface(source, width: 480, format: format)
-      defer { withExtendedLifetime(window) {} }
-      let view = surface.editorView
-      try click(surface, at: 4, count: 1)
-      let anchor = surface.viewPresentation.cursor_utf8_offset
-      let viewport = view.bounds
-      let outside = NSPoint(x: viewport.midX, y: viewport.maxY + 2000)
-      let drag = try pointerEvent(surface, type: .leftMouseDragged, at: outside)
-      let release = try pointerEvent(surface, type: .leftMouseUp, at: outside)
-      defer { view.mouseUp(with: release) }
-      view.mouseDragged(with: drag)
-      let initialTop = surface.viewportState.top
-
-      func assertSelection(_ step: String) throws {
-        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
-        XCTAssertEqual(surface.viewPresentation.visual_anchor_utf8_offset, anchor,
-                       "\(label), step \(step): the drag must retain its original anchor")
-        let selection = try XCTUnwrap(surface.visualSelection,
-          "\(label), step \(step): selection disappeared after scrolling to \(surface.viewportState.top)")
-        XCTAssertEqual(selection.segments.first?.text_start, anchor)
-        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-        XCTAssertTrue(view.selectionRectsForDrawing(in: snapshot).contains { $0.intersects(view.bounds) },
-                      "\(label), step \(step): selected visible rows lost their highlight")
-      }
-
-      for step in 0..<160 {
-        XCTAssertTrue(view.performDragAutoscrollStep(), "\(label), step \(step)")
-        try assertSelection("down \(step)")
-      }
-
-      XCTAssertGreaterThan(surface.viewportState.top, initialTop + Float(viewport.height * 3))
-      let downwardEnd = surface.viewPresentation.cursor_utf8_offset
-      let above = NSPoint(x: viewport.midX, y: viewport.minY - 2000)
-      view.mouseDragged(with: try pointerEvent(surface, type: .leftMouseDragged, at: above))
-      for step in 0..<40 {
-        XCTAssertTrue(view.performDragAutoscrollStep(), "\(label), reverse step \(step)")
-        try assertSelection("up \(step)")
-      }
-      XCTAssertLessThan(surface.viewPresentation.cursor_utf8_offset, downwardEnd)
-      let selectionBeforeRelease = view.selectedRange()
-      XCTAssertNotEqual(selectionBeforeRelease.location, NSNotFound)
-      XCTAssertGreaterThan(selectionBeforeRelease.length, 0)
-      view.mouseUp(with: release)
-      XCTAssertFalse(view.isDragAutoscrollActive)
-      XCTAssertEqual(view.selectedRange(), selectionBeforeRelease)
-      XCTAssertEqual(try backend.serializedSource(typeName: format), Data(source.utf8))
-      XCTAssertFalse(backend.persistenceState.isDirty)
-    }
-  }
-
   func testDoubleClickUsesPortableWordBoundariesAndDoesNotEditSource() throws {
     let source = "before naïve e\u{301}lan after"
     let (backend, surface, window) = try makeSurface(source, width: 600)

@@ -38,12 +38,17 @@ impl Document {
         )? {
             return Ok(Some(patches));
         }
-        let syntax = edit
-            .replacement
-            .split('\n')
-            .map(|part| self.escape_markdown_source_text(range.start, part))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(&separator);
+        // Each later part begins a quoted paragraph after its prefix.
+        let mut syntax = String::new();
+        for (index, part) in edit.replacement.split('\n').enumerate() {
+            let escaped = self.escape_markdown_source_text(range.start, part)?;
+            if index == 0 {
+                syntax.push_str(&escaped);
+            } else {
+                syntax.push_str(&separator);
+                super::protect_markdown_line_start(&escaped, &mut syntax);
+            }
+        }
         Ok(Some(vec![SourcePatch::primary(
             range,
             self.encoding().encode_fragment(&syntax)?,

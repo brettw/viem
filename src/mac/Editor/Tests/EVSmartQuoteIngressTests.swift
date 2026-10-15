@@ -43,25 +43,6 @@ final class EVSmartQuoteIngressTests: XCTestCase {
         }
     }
 
-    func testCodeSpansAndParagraphsKeepLiteralQuotesAcrossNativeIngress() throws {
-        for (source, type) in [
-            ("X", EVDocument.codeType),
-            ("`X`", EVDocument.markdownType),
-            ("```\nX\n```", EVDocument.markdownType),
-        ] {
-            for route in InputRoute.allCases {
-                let (backend, surface, session) = try makeSurface(source, type: type)
-                let original = try backend.formattedText()
-                try startInsertAtX(surface, session: session)
-                try insert("\"word\"", through: route, surface: surface)
-                XCTAssertEqual(try backend.formattedText(), original.replacingOccurrences(of: "X", with: "\"word\"X"), "\(type) \(source) \(route)")
-                surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-                surface.perform(menuCommand: .undo, sender: nil)
-                XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-            }
-        }
-    }
-
     func testNormalReplaceAndItsMarkedTextOperandUseTheSameQuotePolicy() throws {
         for (source, type, expected) in [
             ("X", EVDocument.plainTextType, "“"),

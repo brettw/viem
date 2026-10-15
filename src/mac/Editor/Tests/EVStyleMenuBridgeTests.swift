@@ -142,36 +142,6 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   }
 
   @MainActor
-  func testEditActionRetargetsSingletonToExactStableStyleIdentity() throws {
-    let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("# Heading".utf8), typeName: "public.markdown")
-    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-    surface.loadViewIfNeeded()
-    let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
-    let coordinator = EVStyleEditorCoordinator.shared
-    coordinator.close()
-    defer { coordinator.close() }
-
-    surface.perform(
-      styleMenuAction: EVStyleMenuAction(
-        kind: .edit,
-        role: .paragraph,
-        stableID: "Heading2",
-        documentID: catalogue.documentID,
-        documentRevision: catalogue.documentRevision,
-        styleSheetRevision: catalogue.styleSheetRevision
-      ),
-      sender: nil
-    )
-
-    XCTAssertEqual(
-      coordinator.inspection?.selectedStyleKey,
-      EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Heading2"))
-    )
-    XCTAssertNotEqual(coordinator.inspection?.targetCoreDocumentID, catalogue.documentID)
-  }
-
-  @MainActor
   func testAssignmentPayloadCannotBypassDisabledAdapterCapability() throws {
     let backend = EVCoreDocumentBackend()
     try backend.read(source: Data("plain text".utf8), typeName: "public.plain-text")

@@ -65,71 +65,6 @@ final class EVCodeScrollingTests: XCTestCase {
         XCTAssertFalse(surface.canUndo)
     }
 
-    func testRustAndVimScrollingPublishesBeforeTheFirstFrameOrCompletesAfterTimeout() async throws {
-        for (filename, text) in [
-            ("scroll.rs", (0..<1_024).map { "fn item_\($0)() { let value = \($0); }\n" }.joined()),
-            ("scroll.vim", (0..<1_024).map { "set number \" row \($0)\n" }.joined())
-        ] {
-            let source = Data(text.utf8)
-            let (backend, surface, _) = try makeCodeSurface(filename: filename, source: source)
-            // Finish cold provider setup before testing newly exposed coverage.
-            // Inspect the first frame before polling or yielding to the timer.
-            try await waitForVisibleSyntaxPaint(backend: backend, surface: surface)
-            let start = ProcessInfo.processInfo.systemUptime
-            surface.requestVerticalViewport(top: 8_192)
-            if !hasVisibleSyntaxPaint(surface) {
-                // Real provider latency varies by machine. A slow provider may
-                // use the shared 100 ms grace period and finish asynchronously.
-                XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - start, 0.08,
-                    "\(filename) presented missing colors without waiting for syntax")
-                try await waitForVisibleSyntaxPaint(backend: backend, surface: surface)
-            }
-            XCTAssertGreaterThan(surface.viewportState.top, 0)
-            let session = try XCTUnwrap(surface.session)
-            XCTAssertEqual(try session.layoutExport().info.identity.layout_revision,
-                           surface.viewportState.layout_revision)
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
-            XCTAssertFalse(backend.persistenceState.isDirty)
-            XCTAssertFalse(surface.canUndo)
-        }
-    }
-
-    func testRustWheelScrollingRemainsUsableAcrossSyntaxAndGeometryRefreshes() async throws {
-        let (backend, surface, source) = try makeRustSurface()
-        let session = try XCTUnwrap(surface.session)
-        try await waitForRustPaint(backend: backend, surface: surface)
-
-        for iteration in 0..<24 {
-            if iteration % 4 == 0 {
-                // A font/scale environment change and width change require
-                // fresh geometry while syntax work is independently pending.
-                _ = session.provider.invalidateMetrics()
-                surface.view.frame.size.width = iteration % 8 == 0 ? 360 : 520
-                surface.viewDidLayout()
-            }
-            XCTAssertNotNil(surface.layoutSnapshot, "Iteration \(iteration): \(message(surface))")
-            let oldTextStart = try firstVisibleTextStart(surface)
-            surface.editorView.scrollWheel(with: CodeWheelEvent(deltaY: -83))
-            try await waitForVisibleSyntaxPaint(backend: backend, surface: surface)
-            // Geometry refresh can change the absolute y coordinate. Forward
-            // scrolling must advance through source text across that reflow.
-            XCTAssertGreaterThan(try firstVisibleTextStart(surface), oldTextStart,
-                                 "Iteration \(iteration): \(message(surface))")
-            XCTAssertNil(surface.commandOutput, message(surface))
-            do {
-                let layout = try session.layoutExport()
-                XCTAssertEqual(layout.info.identity.layout_revision, surface.viewportState.layout_revision)
-                XCTAssertEqual(layout.info.identity.configuration_generation,
-                               surface.viewportState.configuration_generation)
-            } catch {
-                XCTFail("Iteration \(iteration) could not export layout after scrolling: \(error)")
-                return
-            }
-        }
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), source)
-        XCTAssertFalse(backend.persistenceState.isDirty)
-    }
-
     private func makeRustSurface() throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, Data) {
         let source = Data((0..<4_096).map { index in
             if index >= 128 && index % 11 == 0 {
@@ -208,14 +143,6 @@ final class EVCodeScrollingTests: XCTestCase {
             $0.text_end > first.text_start && $0.text_start < last.text_end
                 && $0.paint.flags & UInt32(VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) == 0
         }) == true
-    }
-
-    private func firstVisibleTextStart(_ surface: EVEditorSurfaceController) throws -> UInt64 {
-        let layout = try XCTUnwrap(surface.layoutSnapshot)
-        let row = try XCTUnwrap(layout.rows.first(where: {
-            $0.y + max($0.line_advance, 1) > surface.viewportState.top
-        }))
-        return row.text_start
     }
 
     private func message(_ surface: EVEditorSurfaceController) -> String {

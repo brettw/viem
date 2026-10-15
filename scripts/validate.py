@@ -18,11 +18,15 @@ Stages (run in the order given):
                     verification compares regional edits with complete
                     reprojection (see .cargo/config.toml).
   suites            The complete library and integration test suites.
-  consistency       The quick consistency probe, compared case by case with
-                    the same probe at --baseline.
+  consistency       The quick consistency probe (a curated seed subset that
+                    runs in seconds), compared case by case with the same
+                    probe at --baseline.
   consistency-full  The full consistency probe, compared with --baseline.
+                    Only for large or risky refactors or when asked to run
+                    all tests.
   memory            The standard, supplemental and rich-paste allocation
-                    runners with their checked-in limits.
+                    runners with their checked-in limits. Only when asked,
+                    or for changes with plausible memory impact.
   native            The macOS native tests (scripts/test-mac.sh), after a
                     preflight, with a stall watchdog.
 
@@ -319,7 +323,7 @@ def main():
     parser.add_argument("--positions", type=int, help="override probe positions per seed")
     parser.add_argument("--seed-filter", help="only consistency seeds containing this text")
     parser.add_argument("--op-filter", help="only consistency operations whose label contains this text")
-    parser.add_argument("--fmt", help="only consistency seeds of this format (wysiwyg, source, code, plain)")
+    parser.add_argument("--fmt", help="only consistency seeds of this format (wysiwyg, code, plain)")
     parser.add_argument("--stall-minutes", type=float, default=10, help="native watchdog (default 10)")
     parser.add_argument("--keep-going", action="store_true", help="continue after a failed stage")
     parser.add_argument("--out", type=Path, help="results directory")

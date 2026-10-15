@@ -379,3 +379,54 @@ pub const PLAIN: &[&str] = &[
     "   leading\ntrailing   \n",
     "**not markdown**\n# nope\n| a | b |",
 ];
+
+/// The `--quick` subset: a few seeds per construct, favoring documents that
+/// mix structures, so a quick run stays near a twentieth of the full probe.
+/// Every entry must name a seed above.
+pub const QUICK_MARKDOWN: &[&str] = &[
+    "",
+    "a\n\nb",
+    "a\n \n \n \nb",
+    "# h\n \n \n \n- b",
+    "Setext\n===",
+    "# **Bold** heading\n\ntext",
+    "**a *b* c**",
+    "a `b` c `d` e",
+    "<ins>under</ins> <sup>sup</sup> <sub>sub</sub>",
+    "&amp; &lt; &gt; &quot; &#35; &#x41; &nbsp;",
+    "[link](https://example.com \"title\")",
+    "[a][ref]\n\n[ref]: https://example.com",
+    "- a\n- b\n- c",
+    "1. a\n2. b\n3. c",
+    "- a\n  - b\n    - c\n      - d\n        - e",
+    "- a\n\n  continued\n- b",
+    "- [ ] task\n  - [x] nested done\n- [X] upper",
+    "- a\n  ```\n  code\n  ```\n- b",
+    "> a\n>\n> b",
+    "> - list in quote\n> - b",
+    "```rust\nfn main() {}\n```",
+    "    a\n\n    b",
+    "a\n\n---\n\nb",
+    "| a | b |\n| - | - |\n| 1 | 2 |\n\ntext after",
+    "| **bold** | _it_ |\n| - | - |\n| [l](u) | `c` |",
+    "- item\n\n  | a | b | c | d |\n  |---|---|---|---|\n  | 1 | 2 | 3 | 4 |\n\n- next",
+    "> - > - > a\n> - > - > b",
+    "a\r\nb\nc\rd",
+    "**bold *nested _deep `code` deep_ nested* bold**",
+    "<details><summary>s</summary>\n\nbody\n\n</details>",
+    "a <!-- inline --> b",
+    "é👩‍💻🇨🇦 العربية עברית 中文",
+    "# Title\n\nPara **bold** and _it_.\n\n- a\n- b\n\n> q\n\n```\nc\n```\n\n| a | b |\n| - | - |\n| 1 | 2 |",
+    "- a\n\n  > q\n\n  ```\n  c\n  ```\n\n- b",
+    "**a\n\nb**",
+];
+
+pub const QUICK_CODE: &[&str] = &[
+    "// comment\n/// doc\n/* block\n * star\n */\nfn f() {}",
+    "def f(x):\n    return x  # comment\n\n\nclass A:\n    pass\n",
+];
+
+pub const QUICK_PLAIN: &[&str] = &[
+    "First paragraph.\nSecond line.\n\nLast line.",
+    "e\u{301} 👩\u{200d}💻 🇨🇦 العربية עברית 中文\n\tTabs\0NUL\n",
+];

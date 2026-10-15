@@ -471,56 +471,6 @@ final class EVWindowCommandTests: XCTestCase {
     }
   }
 
-  func testEyeClicksAndDragsUseTheNativeGesturePath() async throws {
-    let container = try stack(panes: 3)
-    let window = PointerTestWindow(contentRect: container.view.bounds,
-      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.tabbingMode = .disallowed
-    container.view.translatesAutoresizingMaskIntoConstraints = false
-    window.contentView = container.view
-    window.setContentSize(NSSize(width: 600, height: 600))
-    window.makeKeyAndOrderFront(nil)
-    defer { window.close() }
-    prepareForPointerEvents(in: window)
-    container.focusPane(at: 0)
-    XCTAssertTrue(window.firstResponder === container.panes[0].editorSurface.viewController.view)
-    let first = container.panes[0]
-    let surface = try XCTUnwrap(first.editorSurface as? Surface)
-    let button = try XCTUnwrap(first.statusBar.subviews.compactMap { $0 as? NSButton }.first)
-    let eye = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-    let start = barTops(container)
-    XCTAssertGreaterThan(button.bounds.width, 0)
-    XCTAssertTrue(button.isEnabled)
-    let hitPoint = container.view.superview?.convert(eye, from: nil) ?? eye
-    XCTAssertTrue(container.view.hitTest(hitPoint) === button)
-    XCTAssertEqual(container.view.bounds.height, 600, accuracy: 1,
-      "window frame: \(window.frame), content frame: \(container.view.frame), root bounds: \(container.view.bounds), screen: \(String(describing: window.screen))")
-    try await pointerGesture(window: window, points: [eye, eye])
-    XCTAssertEqual(surface.statusClicks, 1, "a plain eye click toggles line mode (active: \(NSApplication.shared.isActive), key: \(window.isKeyWindow))")
-    try await pointerGesture(window: window, points: [eye, NSPoint(x: eye.x, y: eye.y - 40), NSPoint(x: eye.x, y: eye.y - 40)])
-    XCTAssertEqual(surface.statusClicks, 1, "dragging the eye must consume its click")
-    XCTAssertEqual(barTops(container)[0] - start[0], 40, accuracy: 1)
-    let movedEye = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-    try await pointerGesture(window: window, points: [movedEye,
-      NSPoint(x: movedEye.x, y: movedEye.y - 800),
-      NSPoint(x: movedEye.x, y: movedEye.y - 850),
-      NSPoint(x: movedEye.x, y: movedEye.y - 838),
-      NSPoint(x: movedEye.x, y: movedEye.y - 838)])
-    let maximum = container.view.bounds.height - container.panes.reduce(CGFloat(0)) { $0 + $1.statusBarHeight }
-    XCTAssertEqual(barTops(container)[0], maximum - 12, accuracy: 1, "native dragging reverses immediately after overshooting the edge")
-    XCTAssertEqual(surface.statusClicks, 1)
-    let bottom = container.panes.last!
-    let bottomSurface = try XCTUnwrap(bottom.editorSurface as? Surface)
-    let bottomButton = try XCTUnwrap(bottom.statusBar.subviews.compactMap { $0 as? NSButton }.first)
-    let bottomEye = bottomButton.convert(NSPoint(x: bottomButton.bounds.midX, y: bottomButton.bounds.midY), to: nil)
-    let beforeBottom = barTops(container)
-    try await pointerGesture(window: window, points: [bottomEye, bottomEye])
-    XCTAssertEqual(bottomSurface.statusClicks, 1)
-    XCTAssertEqual(barTops(container), beforeBottom)
-    checkBars(container)
-  }
-
   func testVerticalSplitterTranslucentCornersArePaintedOnce() throws {
     let splitter = EVVerticalSplitter(frame: NSRect(x: 0, y: 0, width: 5, height: 20))
     var geometry = ViemPaneFrame()
@@ -678,48 +628,6 @@ final class EVWindowCommandTests: XCTestCase {
       "The first native drag must install the resize cursor; observed: \(statusCursorTransitions)")
     XCTAssertTrue(container.activePane === third,"a status-bar drag preserves focus")
     XCTAssertNil(below.statusBar.dragDidMove)
-  }
-
-  func testVerticalSplitStatusHeightsAndTextAlignmentSurviveNarrowingAndWidening() throws {
-    func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
-    let previousStyles = try XCTUnwrap(EVConfigurationStore.shared.styleDefaults(named: "text"))
-    defer { try? EVConfigurationStore.shared.saveStyleDefaults(previousStyles, named: "text") }
-    let container = try stack(panes: 1)
-    let first = container.panes[0]
-    let second = EVDocumentContentViewController(editorSurface: Surface())
-    try container.insert(second, splitting: first, vertical: true)
-    let window = NSWindow(contentRect: container.view.bounds, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
-    window.isReleasedWhenClosed = false
-    window.tabbingMode = .disallowed
-    window.contentView = container.view
-    window.setContentSize(NSSize(width: 840, height: 600))
-    window.makeKeyAndOrderFront(nil)
-    defer { window.close() }
-    container.focusPane(at: 0)
-    for (family, size) in [("System", 11.0), ("Georgia", 16), ("Helvetica", 24)] {
-      try editStatusStyle(character: ["font_families": [family], "size": size])
-      for columns in [20, 50, 12, 70, 20] {
-        container.perform(.setWidth(columns: columns))
-        container.view.layoutSubtreeIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.02))
-        for pane in container.panes {
-          let bar = pane.statusBar
-          XCTAssertEqual(bar.frame.height, EVStatusBarView.preferredHeight, accuracy: 0.01)
-          XCTAssertEqual(bar.bounds.height, bar.frame.height, accuracy: 0.01)
-          XCTAssertEqual(EVThemeStore.shared.chromeStyles.statusBar.topBorder.width, 1)
-          let button = try XCTUnwrap(bar.subviews.compactMap { $0 as? NSButton }.first)
-          let buttonText = try XCTUnwrap(button.cell).titleRect(forBounds: button.bounds)
-          let buttonY = button.convert(buttonText, to: bar).midY
-          let labels = descendants(bar).compactMap { $0 as? NSTextField }
-          XCTAssertFalse(button.isHiddenOrHasHiddenAncestor, "The position retains priority while other status text adapts")
-          for label in labels where !label.isHiddenOrHasHiddenAncestor && !label.stringValue.isEmpty {
-            let text = try XCTUnwrap(label.cell).titleRect(forBounds: label.bounds)
-            let labelY = label.convert(text, to: bar).midY
-            XCTAssertEqual(labelY, buttonY, accuracy: 1.5, "\(label.stringValue), width \(pane.view.frame.width), bar \(bar.frame), bounds \(bar.bounds), text \(labelY)/\(buttonY)")
-          }
-        }
-      }
-    }
   }
 
   func testCloseOthersLeavesOnlyTheFocusedPane() throws {

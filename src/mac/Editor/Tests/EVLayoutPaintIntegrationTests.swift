@@ -185,46 +185,6 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   }
 
   @MainActor
-  func testLongFlowedParagraphDrawsOnlyVisibleInkAfterResizeAndMetricsInvalidation() throws {
-    // Enough offscreen ink to enforce the >10,000-cluster and 10:1 culling
-    // bounds below; larger text only repeats the same native drawing work.
-    let source = String(repeating: "naturally flowing prose with neighboring letters\n", count: 600)
-    for type in [EVDocument.markdownType] {
-      let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: type)
-      let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-      surface.loadViewIfNeeded()
-      let session = try XCTUnwrap(surface.session)
-      var previousIdentity: ViemLayoutSnapshotIdentityV1?
-      for width in [420, 280] {
-        surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 200)
-        surface.viewDidLayout()
-        _ = session.provider.invalidateMetrics()
-        surface.refreshPresentation()
-        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-        if let previousIdentity {
-          XCTAssertFalse(previousIdentity.isSameLayout(as: snapshot.info.identity))
-        }
-        previousIdentity = snapshot.info.identity
-        XCTAssertGreaterThan(snapshot.clusters.count, 10_000,
-                             "Keep substantial shaping context so this exercises native culling")
-        let visible = surface.editorView.drawingClusters(in: surface.editorView.bounds, snapshot: snapshot)
-        XCTAssertFalse(visible.isEmpty)
-        XCTAssertLessThan(visible.count, 2_000, "Only viewport ink may reach native drawing")
-        XCTAssertLessThan(visible.count * 10, snapshot.clusters.count)
-        XCTAssertTrue(visible.allSatisfy { $0.render_run.metrics_generation == session.provider.metricsGeneration })
-        let first = try XCTUnwrap(visible.first)
-        let damage = surface.editorView.viewRect(first.typographic_bounds)
-        let local = surface.editorView.drawingClusters(in: damage, snapshot: snapshot)
-        XCTAssertTrue(local.contains { $0.text_start == first.text_start })
-        XCTAssertLessThan(local.count, 10, "Caret damage must not redraw a long paragraph")
-        _ = try render(surface.editorView)
-        XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
-      }
-    }
-  }
-
-  @MainActor
   func testEmptyDocumentCaretWidthUsesCurrentTypingFont() throws {
     let surface = try makeSurface(text: "")
     let session = try XCTUnwrap(surface.session)

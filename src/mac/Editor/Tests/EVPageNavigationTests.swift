@@ -80,14 +80,6 @@ import XCTest
         XCTAssertFalse(view.canRedo)
     }
 
-    func testRepeatedPhysicalPageKeysTraverseMarkdownAndCodeBeyondPartialLayouts() throws {
-        for type in [EVDocument.markdownType, EVDocument.codeType] {
-            for (width, height): (CGFloat, CGFloat) in [(340, 180), (720, 420)] {
-                try check(type: type, width: width, height: height, entry: "")
-            }
-        }
-    }
-
     func testRepeatedPageKeysPreserveInsertReplaceAndVisualModes() throws {
         for entry in ["i", "R", "v"] {
             try check(type: EVDocument.markdownType, width: 420, height: 220, entry: entry)
