@@ -43,20 +43,7 @@ const SEEDS: &[&str] = &[
 /// Operations that currently fail cleanly (no source change) for a seed. They
 /// are long-standing consistency findings, not regressions; remove an entry
 /// when the operation starts to succeed so the matrix guards the fix.
-const KNOWN_FAILURES: &[(&str, &str)] = &[
-    // `dd` on the last item of a list followed by a paragraph fails
-    // verification, and `P` cannot put a deleted list item back there.
-    ("- a\n- b\n\nc", "DeleteLine"),
-    ("- a\n- b\n\nc", "DeleteLinePut"),
-    // `P` cannot put a deleted paragraph back beside a list or table.
-    ("text\n- item", "DeleteLinePut"),
-    ("before\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nafter", "DeleteLinePut"),
-    // Forward Delete at a paragraph end before a table fails verification
-    // instead of reporting an unsupported structural join.
-    ("before\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nafter", "Delete"),
-    // The same paragraph-to-table boundary refuses a selection replacement.
-    ("before\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\nafter", "SelectionEnter"),
-];
+const KNOWN_FAILURES: &[(&str, &str)] = &[];
 
 #[derive(Clone, Copy, Debug)]
 enum Operation {

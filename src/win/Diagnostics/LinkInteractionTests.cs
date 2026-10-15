@@ -58,25 +58,6 @@ internal static class LinkInteractionTests
             Check(Source().StartsWith("[alpha](<#destination>)", StringComparison.Ordinal), "link editing publishes the destination through the core transaction");
             view.Undo(); Check(Source() == source, "link editing undo restores exact source bytes");
 
-            view.SetMarkdownSource(true);
-            foreach (ulong offset in new ulong[] { 0, 6, 7, 12, 32 })
-            {
-                view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-                Check(view.LinkContext().Link?.Destination == "https://example.test/a%20b" && pane.LinkPopupVisible
-                    && window.Toolbar.InsertLink.IsChecked == true,
-                    "Source link punctuation and destination activate the popup at offset " + offset);
-            }
-            view.Place(7, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-            view.Place(12, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision, true);
-            Check(window.Toolbar.InsertLink.IsChecked == true && !window.Toolbar.InsertLink.IsEnabled,
-                "a Source destination selection retains link state and disables unsupported treatment changes");
-            ulong sourceRevision = document.State.document_revision;
-            uint sourceSelectionMode = view.Presentation.mode;
-            window.Toolbar.ExecuteLink();
-            Check(!pane.LinkEditorVisible && view.Presentation.mode == sourceSelectionMode && document.State.document_revision == sourceRevision
-                && Source() == source, "an unavailable active-link action preserves selection and never opens an insertion form");
-            view.Key(VIEM_KEY_ESCAPE);
-            view.SetMarkdownSource(false);
             view.Place(1, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             var previous = view.LinkContext();
             view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
@@ -215,12 +196,12 @@ internal static class LinkInteractionTests
                     linkedView.Padding(17, 10, 29, 10);
                     foreach (bool sourceView in new[] { true, false })
                     {
-                        linkedView.SetMarkdownSource(sourceView);
+                        linkedView.SetMarkdownPreview(!sourceView);
                         await window.OpenLinkedDocument(pane, new(LinkDestinationKind.Document, linkedPath, "L83"));
                         string targetText = sourceView ? "**line41**" : "line41";
                         ulong offset = (ulong)linkedPane.Document.FormattedText().IndexOf(targetText, StringComparison.Ordinal);
                         Check(linkedView.Presentation.cursor_utf8_offset == offset && beforeReuse.SetEquals(App.Instance.Windows),
-                            "a physical source-line link focuses the unsaved existing pane in " + (sourceView ? "Source" : "WYSIWYG"));
+                            "a physical source-line link focuses the unsaved existing pane in " + (sourceView ? "Code" : "Markdown Preview"));
                         var layout = linkedView.Layout();
                         var row = layout.Rows.Single(row => row.text_start == offset);
                         float middle = row.y + (row.ascent + row.descent + row.leading) / 2;

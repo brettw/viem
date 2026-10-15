@@ -71,18 +71,25 @@ impl Editor {
         }
     }
 
-    /// Paste external plain text through the native clipboard path.
+    /// Paste external plain text through the native clipboard path. Markdown
+    /// Preview interprets it as Markdown.
     pub fn paste_plain(&mut self, text: &str) {
+        self.paste_with(Key::PasteClipboard, text);
+    }
+
+    /// Native Paste and Match Style: external text stays literal.
+    pub fn paste_matching_style(&mut self, text: &str) {
+        self.paste_with(Key::PasteClipboardMatchingStyle, text);
+    }
+
+    fn paste_with(&mut self, key: Key, text: &str) {
         let clipboard = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
             ClipboardTarget::Clipboard,
             ClipboardGeneration(1),
             ClipboardContent::from_plain_text(text),
         ));
         self.core
-            .handle(self.view, CoreEvent::InputWithClipboard {
-                input: InputEvent::Key(Key::PasteClipboard),
-                clipboard,
-            })
+            .handle(self.view, CoreEvent::InputWithClipboard { input: InputEvent::Key(key), clipboard })
             .unwrap_or_else(|error| panic!("paste {text:?}: {error:?}"));
     }
 

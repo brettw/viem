@@ -17,7 +17,7 @@ final class EVEditingAssistanceIntegrationTests: XCTestCase {
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
     surface.editorView.editingPreferences = preferences
-    surface.setFormattedView(true)
+    surface.setMarkdownPreview(true)
     surface.performInput { _ = try session.sendText("i") }
     func type(_ value: String) {
       surface.editorView.insertText(value, replacementRange: NSRange(location: NSNotFound, length: 0))

@@ -9,7 +9,6 @@ fn main() {
     let format = match value["format"].as_str().unwrap_or("plain") {
         "plain" => Format::PlainText,
         "markdown" => Format::Markdown,
-        "markdown_source" => Format::MarkdownSource,
         "code" => Format::Code,
         other => panic!("unknown format {other}"),
     };

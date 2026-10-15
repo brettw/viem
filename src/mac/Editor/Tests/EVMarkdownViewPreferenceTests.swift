@@ -16,7 +16,8 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
     private func surface(configuration: EVConfigurationStore, type: String? = nil)
         throws -> EVEditorSurfaceController {
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("# Heading\n\n**Words**".utf8), typeName: type ?? EVDocument.markdownSourceType)
+        try backend.read(source: Data("# Heading\n\n**Words**".utf8), typeName: type ?? EVDocument.codeType,
+            filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         return surface
@@ -36,7 +37,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
                 document.recordRecentDocument = { _ in }
                 defer { document.close() }
                 try document.read(from: url, ofType: nativeType)
-                XCTAssertEqual(backend.sourceFormat, enabled ? .markdown : .markdownSource)
+                XCTAssertEqual(backend.sourceFormat, enabled ? .markdown : .code)
                 XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
                 XCTAssertFalse(backend.persistenceState.isDirty)
             }
@@ -56,10 +57,10 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         background.refreshPresentation()
         _ = try background.backend.documentState()
         let anotherSource = try surface(configuration: configuration)
-        XCTAssertEqual(anotherSource.backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(anotherSource.backend.sourceFormat, .code)
         XCTAssertTrue(configuration.markdownFormattedView, "Opening an explicit source specimen must not reset the default")
         first.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(first.backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(first.backend.sourceFormat, .code)
         XCTAssertFalse(configuration.markdownFormattedView)
         first.perform(menuCommand: .redo, sender: nil)
         XCTAssertEqual(first.backend.sourceFormat, .markdown)
@@ -67,7 +68,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
 
         for type in [EVDocument.plainTextType, EVDocument.codeType] {
             let other = try surface(configuration: configuration, type: type)
-            other.setFormattedView(false)
+            other.setMarkdownPreview(false)
             other.refreshPresentation()
             XCTAssertTrue(configuration.markdownFormattedView)
         }
@@ -79,7 +80,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         let surface = try surface(configuration: configuration)
         let snapshot = try surface.backend.recoverySnapshot()
         try surface.backend.restoreRecovery(snapshot)
-        XCTAssertEqual(surface.backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(surface.backend.sourceFormat, .code)
         XCTAssertTrue(configuration.markdownFormattedView)
 
         let url = configuration.directory.appendingPathComponent("reloaded.md")
@@ -89,7 +90,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         document.fileURL = url
         defer { document.close() }
         try document.installExternalFileSnapshot(EVExternalFileSnapshot.read(url), from: url)
-        XCTAssertEqual(surface.backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(surface.backend.sourceFormat, .code)
         XCTAssertTrue(configuration.markdownFormattedView)
     }
 
@@ -100,8 +101,8 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         let stale = try surface.backend.documentState()
         _ = try session.sendTestKeys("iChange")
         _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-        XCTAssertThrowsError(try session.setMarkdownSource(false, expected: stale))
-        XCTAssertEqual(surface.backend.sourceFormat, .markdownSource)
+        XCTAssertThrowsError(try session.setMarkdownPreview(true, expected: stale))
+        XCTAssertEqual(surface.backend.sourceFormat, .code)
         XCTAssertFalse(configuration.markdownFormattedView)
     }
 

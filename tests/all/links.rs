@@ -23,27 +23,6 @@ fn destination(document: &Document, offset: usize) -> Option<String> {
 }
 
 #[test]
-fn markdown_source_styles_the_entire_construct_and_resolves_each_part() {
-    let source = "before [café **bold**](https://example.test/a(b)?x=1&amp;y=2 \"title\") after";
-    let document = document(source, Format::MarkdownSource);
-    let start = source.find('[').unwrap();
-    let end = source.find(" after").unwrap();
-    assert_eq!(document.text(), source);
-    assert_eq!(link_ranges(&document), vec![start..end]);
-    for (at, _) in source[start..end].char_indices() {
-        assert_eq!(
-            destination(&document, start + at).as_deref(),
-            Some("https://example.test/a(b)?x=1&y=2"),
-            "offset {}",
-            start + at
-        );
-    }
-    assert_eq!(destination(&document, start - 1), None);
-    assert_eq!(destination(&document, end), None);
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}
-
-#[test]
 fn markdown_wysiwyg_shows_only_label_with_link_and_inline_styles() {
     let document = document(
         "before [**bold** and `code`](https://example.test/) after",
@@ -90,7 +69,7 @@ fn escaped_balanced_and_angle_destinations_are_decoded_without_execution() {
             "https://example.test/$(touch /tmp/viem-link-injection);`whoami`",
         ),
     ] {
-        for format in [Format::MarkdownSource, Format::Markdown] {
+        for format in [Format::Markdown] {
             let document = document(source, format);
             assert_eq!(
                 destination(&document, 1).as_deref(),
@@ -112,7 +91,7 @@ fn code_images_escaped_openers_and_invalid_links_remain_literal() {
         "[label](bad space)",
         "[label](bad(nesting)",
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let document = document(source, format);
             assert!(link_ranges(&document).is_empty(), "{source:?} {format:?}");
             for (at, _) in document.text().char_indices() {
@@ -132,7 +111,7 @@ fn code_images_escaped_openers_and_invalid_links_remain_literal() {
 
 #[test]
 fn links_validate_snapshot_and_document_identity_before_lookup() {
-    let mut document = document("[label](https://example.test/)", Format::MarkdownSource);
+    let mut document = document("[label](https://example.test/)", Format::Markdown);
     let point = document.text_point(1).unwrap();
     document.insert(0, "prefix ").unwrap();
     assert!(matches!(
@@ -154,7 +133,6 @@ fn links_validate_snapshot_and_document_identity_before_lookup() {
 #[test]
 fn link_queries_map_normalized_newlines_and_non_utf8_source_bytes() {
     for format in [
-        Format::MarkdownSource,
         Format::Markdown,
     ] {
         let source = if format.is_markdown() {
@@ -202,10 +180,6 @@ fn link_style_defaults_are_blue_underlined_and_not_applied_to_neighbors() {
     for (source, format) in [
         (
             "before [label](https://example.test/) after",
-            Format::MarkdownSource,
-        ),
-        (
-            "before [label](https://example.test/) after",
             Format::Markdown,
         ),
     ] {
@@ -231,42 +205,12 @@ fn link_style_defaults_are_blue_underlined_and_not_applied_to_neighbors() {
 }
 
 #[test]
-fn changing_destination_in_source_and_undo_refresh_the_on_demand_result() {
-    for (source, format) in [
-        (
-            "before [label](https://old.test/) after",
-            Format::MarkdownSource,
-        ),
-    ] {
-        let mut document = document(source, format);
-        let at = document.text().find("old").unwrap();
-        document.replace(at..at + 3, "new").unwrap();
-        let label = document.text().find("label").unwrap();
-        assert_eq!(
-            destination(&document, label).as_deref(),
-            Some("https://new.test/")
-        );
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert_eq!(
-            destination(&document, label).as_deref(),
-            Some("https://old.test/")
-        );
-        assert!(document.redo());
-        assert_eq!(
-            destination(&document, label).as_deref(),
-            Some("https://new.test/")
-        );
-    }
-}
-
-#[test]
 fn code_delimiters_cannot_create_an_outer_link_during_destination_lookup() {
     for source in [
         "`[fake` [real](https://good.test/)](https://wrong.test/)",
         "```\n[unclosed\n```\n[real](https://good.test/)](https://wrong.test/)",
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let document = document(source, format);
             let at = document.text().find("real").unwrap();
             assert_eq!(
@@ -280,7 +224,7 @@ fn code_delimiters_cannot_create_an_outer_link_during_destination_lookup() {
 
 #[test]
 fn nested_links_reject_the_outer_construct_but_code_labels_do_not() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in [
             "[outer [inner](https://inner.test/) rest](https://outer.test/)",
             "[[inner](https://inner.test/)](https://outer.test/)",
@@ -312,7 +256,7 @@ fn nested_links_reject_the_outer_construct_but_code_labels_do_not() {
 #[test]
 fn physical_multiline_link_labels_resolve_in_both_markdown_modes() {
     let source = "before [multi\nline](https://example.test/) after";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let document = document(source, format);
         let at = document.text().find("multi").unwrap();
         assert_eq!(
@@ -467,10 +411,6 @@ fn deleting_link_style_never_leaves_an_undefined_layout_reference() {
     use viem_core::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
     for (source, format) in [
         ("[label](https://example.test/) tail", Format::Markdown),
-        (
-            "[label](https://example.test/) tail",
-            Format::MarkdownSource,
-        ),
     ] {
         let mut document = document(source, format);
         let request = StyleModelRequest::new(
@@ -522,10 +462,6 @@ fn deleted_link_appearance_survives_core_viewport_capture_install_and_edit() {
 
     for (source, format) in [
         ("[label](https://example.test/) tail", Format::Markdown),
-        (
-            "[label](https://example.test/) tail",
-            Format::MarkdownSource,
-        ),
     ] {
         let mut document = document(source, format);
         document

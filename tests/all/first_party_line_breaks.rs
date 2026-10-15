@@ -3,7 +3,6 @@
 //! not from a second line-breaking implementation or a third-party crate.
 
 use std::ops::Range;
-use viem_core::document::{Encoding, Format};
 use viem_core::layout::{
     compute_layout_job, inspect_layout_provider, prepare_layout_job, LayoutCancellationToken,
     LayoutEngine, LayoutExecutionContext, LayoutJobId, LayoutJobPriority, LayoutJobRegion,
@@ -55,10 +54,9 @@ fn continued_rows(
     panic!("bounded Unicode layout did not complete in twenty captures");
 }
 
-fn complete_rows(document: &Document, width: f32, flow: bool) -> Vec<Range<usize>> {
+fn complete_rows(document: &Document, width: f32) -> Vec<Range<usize>> {
     let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     let mut view = ViewLayout::new(width, 80.0);
-    view.set_paragraph_flow(flow);
     engine.relayout(document, &mut view).unwrap();
     view.snapshot()
         .unwrap()
@@ -91,7 +89,7 @@ fn unicode_continuations_and_resize_match_complete_layout() {
         for width in [93.0, 213.0] {
             view.resize(width, 80.0);
             let actual = continued_rows(&document, &mut engine, &mut view, &mut next_job);
-            assert_same_rows(&actual, &complete_rows(&document, width, false));
+            assert_same_rows(&actual, &complete_rows(&document, width));
         }
     }
 }
@@ -131,27 +129,3 @@ fn opening_punctuation_with_giant_space_context_remains_one_sparse_overflow_row(
     );
 }
 
-#[test]
-fn flowing_source_newlines_have_space_break_semantics_across_captures() {
-    let pattern = "alpha\n中文（中文） a\u{00a0}b a\u{2060}b 🇺🇸🇨🇦 tail ";
-    let source = pattern.repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES / pattern.len() + 50);
-    let document = Document::from_bytes(
-        source.as_bytes().to_vec(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
-    let mut view = ViewLayout::new(171.0, 80.0);
-    view.set_paragraph_flow(true);
-    let actual = continued_rows(&document, &mut engine, &mut view, &mut 1);
-    assert_same_rows(&actual, &complete_rows(&document, 171.0, true));
-    let spaces = Document::from_bytes(
-        source.replace('\n', " ").into_bytes(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    assert_same_rows(&actual, &complete_rows(&spaces, 171.0, true));
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}

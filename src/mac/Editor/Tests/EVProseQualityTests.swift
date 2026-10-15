@@ -53,11 +53,7 @@ final class EVProseQualityTests: XCTestCase {
 
   func testRepeatedProseFormattingUndoAndReflowAcrossRichFormats() throws {
     let fixtures = [
-      (EVDocument.markdownType, "A **word** and more prose.\nA continuation.\n\nLast paragraph."),
-      (
-        EVDocument.markdownSourceType,
-        "A **word** and more prose.\nA continuation.\n\nLast paragraph."
-      ),
+      (EVDocument.markdownType, "A **word** and more prose.\nA continuation.\n\nLast paragraph.")
     ]
     for (type, source) in fixtures {
       var phase = "open"

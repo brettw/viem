@@ -4,24 +4,24 @@ use viem_core::document::{
     HistoryNavigationRequest, ListStyle, MappingOutcome, ModelRequest, ModelTransactionError,
 };
 use viem_core::layout::MockTextMeasurementProvider;
-use viem_core::{Core, CoreError, CoreEvent};
+use viem_core::{Core, CoreError, CoreEvent, DocumentMode};
 
 #[test]
 fn format_switch_with_identical_visible_text_including_empty_is_undoable() {
     for text in ["", "plain text", "__visible__"] {
         let mut document = Document::from_bytes(text.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         document
-            .set_markdown_source(Format::MarkdownSource == Format::MarkdownSource)
+            .set_view_format(Format::Code)
             .unwrap();
         assert_eq!(document.text(), text);
         assert_eq!(document.source_bytes(), text.as_bytes());
-        assert_eq!(document.format(), Format::MarkdownSource);
+        assert_eq!(document.format(), Format::Code);
         assert!(document.undo());
         assert_eq!(document.format(), Format::Markdown);
         if !text.contains('_') {
-            document.set_markdown_source(true).unwrap();
+            document.set_view_format(Format::Code).unwrap();
             document
-                .set_markdown_source(Format::Markdown == Format::MarkdownSource)
+                .set_view_format(Format::Markdown)
                 .unwrap();
             assert_eq!(document.text(), text);
             assert!(document.undo());
@@ -35,7 +35,7 @@ fn format_switch_preserves_source_and_anchors_between_distant_markers() {
     let mut document = Document::from_bytes_with_file_format(
         original.to_vec(),
         Encoding::Utf8,
-        Format::MarkdownSource,
+        Format::Code,
         FileFormat::Dos,
     )
     .unwrap();
@@ -49,12 +49,11 @@ fn format_switch_preserves_source_and_anchors_between_distant_markers() {
         )
         .unwrap();
     let prepared = document
-        .prepare_model_request(ModelRequest::SetMarkdownSource {
+        .prepare_model_request(ModelRequest::SetViewFormat {
             document: document.id(),
             revision: document.revision(),
-            source: Format::Markdown == Format::MarkdownSource,
-
-        })
+            target: Format::Markdown,
+            })
         .unwrap();
     assert!(prepared.summary().source_patches().is_empty());
     assert!(prepared.summary().formatted_splices().len() >= 3);
@@ -71,11 +70,11 @@ fn format_switch_preserves_source_and_anchors_between_distant_markers() {
     assert_eq!(document.text(), "Heading\nbold middle tail");
     assert_eq!(mapped.offset(), document.text().find("middle").unwrap());
     assert!(document.undo());
-    assert_eq!(document.format(), Format::MarkdownSource);
+    assert_eq!(document.format(), Format::Code);
     assert_eq!(document.source_bytes(), original);
     assert!(document.redo());
     document
-        .set_markdown_source(Format::MarkdownSource == Format::MarkdownSource)
+        .set_view_format(Format::Code)
         .unwrap();
     assert_eq!(document.text(), "# Heading\n__bold__ middle *tail*\n");
     assert_eq!(document.source_bytes(), original);
@@ -141,11 +140,10 @@ fn invalid_or_stale_options_leave_source_history_and_identity_unchanged() {
     document.insert(0, "new ").unwrap();
     let history = document.history_status();
     assert!(matches!(
-        document.prepare_model_request(ModelRequest::SetMarkdownSource {
+        document.prepare_model_request(ModelRequest::SetViewFormat {
             document: document.id(),
             revision,
-            source: Format::Markdown == Format::MarkdownSource,
-
+            target: Format::Markdown,
         }),
         Err(ModelTransactionError::StaleRevision { .. })
     ));
@@ -154,7 +152,7 @@ fn invalid_or_stale_options_leave_source_history_and_identity_unchanged() {
 
 #[test]
 fn native_options_relayout_all_views_and_keep_undo_units_separate() {
-    let mut core = Core::new(Document::from_bytes(b"__alpha__ beta".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap());
+    let mut core = Core::new(Document::from_bytes(b"__alpha__ beta".to_vec(), Encoding::Utf8, Format::Code).unwrap());
     let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
     let observer = core.add_view(MockTextMeasurementProvider::new(), 120.0, 100.0);
     core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i'))))
@@ -165,11 +163,10 @@ fn native_options_relayout_all_views_and_keep_undo_units_separate() {
     let revision = core.document().revision();
     core.handle(
         view,
-        CoreEvent::SetMarkdownSource {
-
+        CoreEvent::SetDocumentMode {
             document,
             revision,
-            source: Format::Markdown == Format::MarkdownSource,
+            mode: DocumentMode::Markdown,
         },
     )
     .unwrap();
@@ -256,7 +253,7 @@ fn native_list_action_uses_exact_current_paragraph_or_visual_range() {
 #[test]
 fn rejected_native_format_change_keeps_pending_insert_undo_group_open() {
     let mut core = Core::new(
-        Document::from_bytes(b"__word__".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap(),
+        Document::from_bytes(b"__word__".to_vec(), Encoding::Utf8, Format::Code).unwrap(),
     );
     let view = core.add_view(MockTextMeasurementProvider::new(), 240.0, 100.0);
     let original_revision = core.document().revision();
@@ -268,11 +265,10 @@ fn rejected_native_format_change_keeps_pending_insert_undo_group_open() {
     assert!(core
         .handle(
             view,
-            CoreEvent::SetMarkdownSource {
-
+            CoreEvent::SetDocumentMode {
                 document: core.document().id(),
                 revision: original_revision,
-                source: Format::Markdown == Format::MarkdownSource
+                mode: DocumentMode::Markdown,
             }
         )
         .is_err());
@@ -290,18 +286,3 @@ fn rejected_native_format_change_keeps_pending_insert_undo_group_open() {
     assert_eq!(core.document().source_bytes(), b"__word__");
 }
 
-#[test]
-fn markdown_source_switch_rejects_literal_formats_without_changing_state() {
-    for format in [Format::PlainText, Format::Code] {
-        let mut document = Document::from_bytes(b"**literal**".to_vec(), Encoding::Utf8, format).unwrap();
-        let history = document.history_status();
-        let revision = document.revision();
-        for source in [false, true] {
-            assert!(document.set_markdown_source(source).is_err());
-            assert_eq!(document.format(), format);
-            assert_eq!(document.source_bytes(), b"**literal**");
-            assert_eq!(document.revision(), revision);
-            assert_eq!(document.history_status(), history);
-        }
-    }
-}

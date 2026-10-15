@@ -28,9 +28,9 @@ use unicode_segmentation::UnicodeSegmentation;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Format {
     PlainText,
+    /// Markdown presented as formatted text (Markdown Preview). Its source is
+    /// edited literally as Code with the Markdown language.
     Markdown,
-    /// Editable Markdown source with formatting applied to visible syntax.
-    MarkdownSource,
     /// Literal source text with disposable, asynchronously computed syntax styles.
     Code,
 }
@@ -40,37 +40,10 @@ impl Format {
 
     /// Formats with identity semantics after decoding and physical line endings.
     pub const fn is_literal(self) -> bool { matches!(self, Self::PlainText | Self::Code) }
-    /// The semantic editing view for this persistence format.
-    pub const fn wysiwyg(self) -> Self {
-        match self {
-            Self::MarkdownSource => Self::Markdown,
 
-            format => format,
-        }
-    }
-
-    /// Markdown, in either its WYSIWYG or its source view.
+    /// Markdown presented as formatted text.
     pub const fn is_markdown(self) -> bool {
-        matches!(self, Self::Markdown | Self::MarkdownSource)
-    }
-
-    /// A source view: the format's own markup is visible, editable text.
-    pub const fn is_source_view(self) -> bool {
-        matches!(self, Self::MarkdownSource)
-    }
-
-    /// A WYSIWYG view: block structure and named styles are presented instead
-    /// of the syntax which spells them. Plain text has no such structure and
-    /// source views deliberately show the syntax, so neither qualifies.
-    pub const fn is_wysiwyg(self) -> bool {
         matches!(self, Self::Markdown)
-    }
-
-    /// `Enter` continues an enclosing list structure rather than inserting the
-    /// marker text literally. Markdown Source qualifies because its list
-    /// syntax is still structural.
-    pub const fn has_structural_lists(self) -> bool {
-        self.is_wysiwyg() || matches!(self, Self::MarkdownSource)
     }
 }
 
@@ -111,8 +84,7 @@ pub struct Block {
 
 #[derive(Clone, Debug)]
 pub struct BlockAttributes {
-    /// Adapter support retained by the parser, including semantic item starts
-    /// when a source view suppresses generated list labels.
+    /// Adapter support retained by the parser, including semantic item starts.
     pub(super) list_editing: ListEditing,
     pub kind: BlockKind,
     /// Independent Markdown containers; a heading/code style does not erase them.
@@ -304,7 +276,6 @@ pub struct InlineImage {
     pub destination: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    pub source_view: bool,
     pub(super) source: Range<usize>,
     pub(super) inline: bool,
     pub(super) html: bool,
@@ -1127,7 +1098,7 @@ fn logical_is_grapheme_boundary(
     // Only semantic image objects split adjacent combining/prepend text;
     // an authored U+FFFC in a literal document retains Unicode segmentation.
     if inline_images.query_touching(&(offset..offset)).iter().any(|image|
-        !image.source_view && (image.range.start==offset || image.range.end==offset)) { return Ok(true); }
+        image.range.start==offset || image.range.end==offset) { return Ok(true); }
     if is_semantic_item_boundary(hard_lines, offset) {
         return Ok(true);
     }
@@ -1145,7 +1116,7 @@ fn logical_next_grapheme_boundary(
     }
     let mut unicode = text.next_grapheme_boundary(offset)?;
     if let Some(end)=unicode {
-        for image in inline_images.query_touching(&(offset..end)).iter().filter(|image|!image.source_view) {
+        for image in inline_images.query_touching(&(offset..end)).iter() {
             for boundary in [image.range.start,image.range.end] { if offset<boundary && boundary<=end {unicode=Some(unicode.unwrap().min(boundary));} }
         }
     }
@@ -1169,7 +1140,7 @@ fn logical_previous_grapheme_boundary(
     }
     let mut unicode = text.previous_grapheme_boundary(offset)?;
     if let Some(start)=unicode {
-        for image in inline_images.query_touching(&(start..offset)).iter().filter(|image|!image.source_view) {
+        for image in inline_images.query_touching(&(start..offset)).iter() {
             for boundary in [image.range.start,image.range.end] { if start<=boundary && boundary<offset {unicode=Some(unicode.unwrap().max(boundary));} }
         }
     }
@@ -1518,10 +1489,6 @@ pub struct FormattedDocument {
     /// populated independently from paragraph identity. A pipeline may also retain U+000A as ordinary
     /// content (for example forced legacy-Mac input).
     hard_lines: OrderedRangeStore<HardLine>,
-    flow_lines: Option<OrderedRangeStore<HardLine>>,
-    /// Source-visible structural paragraphs, used only by paragraph flow.
-    /// Their ranges retain every source character, including surrounding tags.
-    flow_blocks: Option<OrderedRangeStore<Block>>,
     styles: IntervalRangeStore<StyleSpan>,
     inline_images: IntervalRangeStore<InlineImage>,
     /// Contributors and their source-keyed boundary index. Rich projections
@@ -1547,8 +1514,6 @@ impl PartialEq for FormattedDocument {
             && self.tables == other.tables
             && self.blocks == other.blocks
             && self.hard_lines == other.hard_lines
-            && self.flow_lines == other.flow_lines
-            && self.flow_blocks == other.flow_blocks
             && self.inline_images == other.inline_images
             && self.styles == other.styles
             && self.provenance == other.provenance
@@ -1629,9 +1594,6 @@ impl FormattedDocument {
         if let Some(blocks) = share(&self.blocks) {
             self.blocks = blocks;
         }
-        if let Some(blocks) = self.flow_blocks.as_ref().and_then(share) {
-            self.flow_blocks = Some(blocks);
-        }
     }
 
     fn assign_image_paragraph_styles(&mut self) {
@@ -1643,7 +1605,6 @@ impl FormattedDocument {
                 }
                 let images = self.inline_images.query_overlapping(&block.range);
                 if images.is_empty() { return block; }
-                let source_view = images[0].source_view;
                 let mut body = String::new();
                 let mut at = block.range.start;
                 for image in images {
@@ -1659,30 +1620,13 @@ impl FormattedDocument {
                 let Ok(tail) = self.text.slice(at..block.range.end) else { return block; };
                 if tail.contains('\u{fffc}') { return block; }
                 body.push_str(&tail);
-                let only_images = |text: &str| text.chars().all(|ch| ch == '\u{fffc}' || ch.is_whitespace());
-                // Source exposes link/emphasis delimiters around images. Test
-                // their visible body so the same paragraph receives Image in
-                // both views; known images are replaced before this bounded
-                // parse, so reference definitions need not be read again.
-                let image_only = if source_view {
-                    use pulldown_cmark::{Event, Options, Parser};
-                    Parser::new_ext(&body, Options::ENABLE_STRIKETHROUGH).all(|event| match event {
-                        Event::Text(text) | Event::Code(text) => only_images(&text),
-                        Event::Html(text) | Event::InlineHtml(text) => markdown_html::image_only_html(&text),
-                        Event::Start(_) | Event::End(_) | Event::SoftBreak | Event::HardBreak => true,
-                        _ => false,
-                    })
-                } else { only_images(&body) };
-                if image_only {
+                if body.chars().all(|ch| ch == '\u{fffc}' || ch.is_whitespace()) {
                     block.style = "Image".into();
                 }
                 block
             }).collect()
         };
-        let blocks = assign(&self.blocks);
-        let flow = self.flow_blocks.as_ref().map(assign);
-        self.blocks = OrderedRangeStore::new(blocks);
-        if let Some(flow) = flow { self.flow_blocks = Some(OrderedRangeStore::new(flow)); }
+        self.blocks = OrderedRangeStore::new(assign(&self.blocks));
     }
     pub fn tables(&self) -> &super::TableRows<super::MarkdownTable> { &self.tables }
     pub(super) fn extract_table_row(&self,index:usize,source_delta:i128,source:Range<usize>)
@@ -1796,13 +1740,10 @@ impl FormattedDocument {
             if table.rows.is_frozen() { continue; }
             let mut table_previous=None;
             for row in &mut table.rows {
-                let block_id=self.blocks.get(self.blocks.partition_point_start(row.range.start+1).saturating_sub(1)).map_or(0,|block|block.id);
-                let old_row=if table.source_view {previous_rows.get(&block_id).copied()} else {row.cells.iter().find_map(|cell|self.blocks.get(self.blocks.partition_point_start(cell.range.start+1).saturating_sub(1)).and_then(|block|previous_cells.get(&block.id).copied()))};
+                let old_row=row.cells.iter().find_map(|cell|self.blocks.get(self.blocks.partition_point_start(cell.range.start+1).saturating_sub(1)).and_then(|block|previous_cells.get(&block.id).copied()));
                 if let Some((old_table,_))=old_row {table_previous=Some(old_table);}
-                for (column,cell) in row.cells.iter_mut().enumerate() {
-                    if table.source_view {
-                        cell.id=if column==0 {block_id} else if let Some(old)=old_row.and_then(|(_,row)|row.cells.get(column)) {old.id} else if cell.id!=0 {cell.id} else {let id=next_id;next_id=next_id.checked_add(1).ok_or(BlockIdentityError::Exhausted)?;id};
-                    } else {cell.id=self.blocks.get(self.blocks.partition_point_start(cell.range.start+1).saturating_sub(1)).map_or(0,|block|block.id);}
+                for cell in &mut row.cells {
+                    cell.id=self.blocks.get(self.blocks.partition_point_start(cell.range.start+1).saturating_sub(1)).map_or(0,|block|block.id);
                 }
                 row.id=old_row.map_or_else(||row.cells.first().map_or(0,|cell|cell.id),|(_,row)|row.id);
             }
@@ -1840,10 +1781,8 @@ impl FormattedDocument {
         if trace { eprintln!("  blocks {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.hard_lines.visit_retained_memory(visitor);
         if trace { eprintln!("  hard_lines {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
-        if let Some(lines) = &self.flow_lines { lines.visit_retained_memory(visitor); }
         if let Some(lines) = &self.table_lines { lines.visit_retained_memory(visitor); }
         self.tables.visit_retained_memory(visitor);
-        if let Some(blocks) = &self.flow_blocks { blocks.visit_retained_memory(visitor); }
         self.inline_images.visit_retained_memory(visitor);
         self.styles.visit_retained_memory(visitor);
         if trace { eprintln!("  styles {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
@@ -1977,8 +1916,6 @@ impl FormattedDocument {
             table_lines: None,
             blocks: OrderedRangeStore::new(blocks),
             hard_lines: OrderedRangeStore::new(hard_lines),
-            flow_lines: None,
-            flow_blocks: None,
             styles: IntervalRangeStore::new(styles),
             inline_images: IntervalRangeStore::new(Vec::new()),
             provenance,
@@ -1994,75 +1931,19 @@ impl FormattedDocument {
         }
     }
 
-    pub(crate) fn install_flow_ranges(&mut self, ranges: Vec<Range<usize>>) {
-        let text_len = self.text.byte_len();
-        let ends = ranges
-            .iter()
-            .skip(1)
-            .map(|range| range.start)
-            .chain(std::iter::once(text_len))
-            .collect::<Vec<_>>();
-        let lines = ranges
-            .into_iter()
-            .zip(ends)
-            .map(|(range, next_start)| {
-                (range.start <= range.end && range.end <= next_start && next_start <= text_len)
-                    .then(|| HardLine { id: 0, separator_length: next_start - range.end, range })
-            })
-            .collect::<Option<Vec<_>>>();
-        // Flow is optional source layout. Ranges that disagree with the
-        // projected text fall back to physical hard lines instead of
-        // recording wrapped separator lengths.
-        debug_assert!(lines.is_some(), "flow ranges partition the projected text");
-        self.flow_lines = lines.map(OrderedRangeStore::new);
+    pub fn presentation_line_count(&self) -> usize {
+        self.table_lines.as_ref().unwrap_or(&self.hard_lines).len()
     }
 
-    pub(crate) fn flow_blocks_for_region(&self, range: &Range<usize>) -> Option<Vec<Block>> {
-        self.flow_blocks
-            .as_ref()
-            .map(|blocks| blocks.query_touching(range))
+    pub fn presentation_line_range(&self, index: usize) -> Option<Range<usize>> {
+        self.table_lines.as_ref().unwrap_or(&self.hard_lines).get(index).map(|line| line.range)
     }
 
-    pub(crate) fn flow_ranges_for_region(&self, range: &Range<usize>) -> Option<Vec<Range<usize>>> {
-        self.flow_lines.as_ref().map(|lines| {
-            lines
-                .query_touching(range)
-                .into_iter()
-                .map(|line| line.range)
-                .collect()
-        })
-    }
-
-    pub fn presentation_line_count(&self, flow: bool) -> usize {
-        if let Some(lines) = &self.table_lines { return lines.len(); }
-        if flow {
-            self.flow_lines
-                .as_ref()
-                .map_or(self.hard_lines.len(), OrderedRangeStore::len)
-        } else {
-            self.hard_lines.len()
-        }
-    }
-
-    pub fn presentation_line_range(&self, index: usize, flow: bool) -> Option<Range<usize>> {
-        if let Some(lines) = &self.table_lines { return lines.get(index).map(|line| line.range); }
-        let lines = if flow {
-            self.flow_lines.as_ref().unwrap_or(&self.hard_lines)
-        } else {
-            &self.hard_lines
-        };
-        lines.get(index).map(|line| line.range)
-    }
-
-    pub fn presentation_line_at_offset(&self, offset: usize, flow: bool) -> Option<usize> {
+    pub fn presentation_line_at_offset(&self, offset: usize) -> Option<usize> {
         if offset > self.text.byte_len() {
             return None;
         }
-        let lines = self.table_lines.as_ref().unwrap_or_else(|| if flow {
-            self.flow_lines.as_ref().unwrap_or(&self.hard_lines)
-        } else {
-            &self.hard_lines
-        });
+        let lines = self.table_lines.as_ref().unwrap_or(&self.hard_lines);
         // The persistent store answers this in logarithmic time; slicing it
         // would flatten every line of the document on the first lookup after
         // each edit.
@@ -2668,53 +2549,9 @@ impl FormattedDocument {
         self.blocks = OrderedRangeStore::new(blocks);
         let next_id=self.install_table_ids(next_id,None)?;
         let next_id = self.assign_initial_hard_line_ids(next_id)?;
-        let next_id = self.reconcile_flow_block_ids(None, &[], next_id)?;
         // Initial validation used the construction string. Literal snapshots
         // publish only bounded text buffers; a legacy flat read remains lazy.
         if self.literal_encoding.is_some() { self.flat_text = Arc::new(OnceLock::new()); }
-        Ok(next_id)
-    }
-
-    fn reconcile_flow_block_ids(
-        &mut self,
-        previous: Option<&Self>,
-        edits: &[TextEdit],
-        next_id: u64,
-    ) -> Result<u64, BlockIdentityError> {
-        let Some(flow) = &self.flow_blocks else {
-            return Ok(next_id);
-        };
-        let mut blocks = flow.to_vec();
-        if let Some(previous) = previous {
-            let mappings = build_edit_mappings(previous.text().len(), self.text().len(), edits)?;
-            if let Some(old) = &previous.flow_blocks {
-                for block in &old.to_vec() {
-                    if let Some(witness) =
-                        block_identity_witness(previous.text(), block, &mappings)?
-                    {
-                        let at = map_surviving_byte(witness, &mappings)?;
-                        let index = block_index_for_witness(
-                            self.text(),
-                            &blocks,
-                            at,
-                            witness_side(previous.text(), block, witness),
-                        )?;
-                        if let Some(candidate) = blocks.get_mut(index).filter(|block| block.id == 0)
-                        {
-                            candidate.id = block.id;
-                        }
-                    }
-                }
-            }
-        }
-        let next_id = allocate_unassigned_block_ids(&mut blocks, next_id)?;
-        let previous_flow = previous.and_then(|previous| previous.flow_blocks.as_ref())
-            .map(OrderedRangeStore::to_vec).unwrap_or_default();
-        super::containers::reconcile(&mut blocks, &previous_flow, false);
-        self.flow_blocks = Some(OrderedRangeStore::new(blocks));
-        if let Some(old) = previous.and_then(|previous| previous.flow_blocks.as_ref()) {
-            self.flow_blocks.as_mut().unwrap().reuse_equal_chunks(old);
-        }
         Ok(next_id)
     }
 
@@ -2756,18 +2593,6 @@ impl FormattedDocument {
         self.blocks.reuse_equal_chunks(&previous.blocks);
         self.install_table_ids(u64::MAX,Some(previous))?;
         self.install_unchanged_hard_line_ids(previous)?;
-        if let (Some(flow), Some(old)) = (&mut self.flow_blocks, &previous.flow_blocks) {
-            let mut blocks = flow.to_vec();
-            let old_blocks = old.to_vec();
-            if blocks.len() != old_blocks.len() || blocks.iter().zip(&old_blocks)
-                .any(|(block, old)| block.range != old.range) {
-                return Err(BlockIdentityError::InvalidProjection);
-            }
-            for (block, old) in blocks.iter_mut().zip(&old_blocks) { block.id = old.id; }
-            super::containers::reconcile(&mut blocks, &old_blocks, false);
-            *flow = OrderedRangeStore::new(blocks);
-            flow.reuse_equal_chunks(old);
-        }
         self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(())
@@ -2869,7 +2694,6 @@ impl FormattedDocument {
         self.blocks.reuse_equal_chunks(&previous.blocks);
         let next_id=self.install_table_ids(next_id,Some(previous))?;
         let next_id = self.reconcile_hard_line_ids(previous, edits, next_id)?;
-        let next_id = self.reconcile_flow_block_ids(Some(previous), edits, next_id)?;
         self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(next_id)
@@ -3000,7 +2824,7 @@ impl FormattedDocument {
             self.rebuild_table_presentation_lines();
             self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
-            return self.reconcile_flow_block_ids(None, &[], next_id);
+            return Ok(next_id);
         }
         if previous_blocks.len() != previous.hard_lines.len()
             || blocks.len() != self.hard_lines.len()
@@ -3044,7 +2868,7 @@ impl FormattedDocument {
         self.rebuild_table_presentation_lines();
         self.inline_images.reuse_equal_chunks(&previous.inline_images);
         self.styles.reuse_equal_chunks(&previous.styles);
-        self.reconcile_flow_block_ids(None, &[], next_id)
+        Ok(next_id)
     }
 
     #[cfg(test)]
@@ -3520,12 +3344,12 @@ impl FormattedDocument {
         found.and_then(|index| self.blocks.get(index)).and_then(|block| block.code_language.clone())
     }
 
-    pub(super) fn list_indentation_blocks(&self, source_view: bool) -> &OrderedRangeStore<Block> {
-        if source_view { self.flow_blocks.as_ref().unwrap_or(&self.blocks) } else { &self.blocks }
+    pub(super) fn list_indentation_blocks(&self) -> &OrderedRangeStore<Block> {
+        &self.blocks
     }
 
-    pub(super) fn heading_after(&self, index: usize, source_view: bool) -> Option<(usize, Block)> {
-        let blocks = self.list_indentation_blocks(source_view);
+    pub(super) fn heading_after(&self, index: usize) -> Option<(usize, Block)> {
+        let blocks = self.list_indentation_blocks();
         let index = blocks.find_navigation(index..blocks.len(), false, |summary| summary.flags & 8 != 0)?;
         Some((index, blocks.get(index)?))
     }
@@ -3839,11 +3663,6 @@ impl FormattedDocument {
             let mut blocks = self.blocks.to_vec();
             for block in &mut blocks { reassign(block); }
             self.blocks = OrderedRangeStore::new(blocks);
-            if let Some(flow) = &mut self.flow_blocks {
-                let mut blocks = flow.to_vec();
-                for block in &mut blocks { reassign(block); }
-                *flow = OrderedRangeStore::new(blocks);
-            }
 
             if &self.document_style.style == id {
                 self.document_style.style = self.style_sheet.base_paragraph.clone();
@@ -3998,7 +3817,6 @@ impl FormattedDocument {
 
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
         (style.0 == "Image" && !self.inline_images.is_empty()) || self.document_style.style == *style || self.blocks.items().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
-            || self.flow_blocks.as_ref().is_some_and(|blocks| blocks.items().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style)))
     }
 
     pub(crate) fn has_character_style_assignment(&self, style: &StyleId) -> bool {
@@ -4029,10 +3847,6 @@ impl FormattedDocument {
                 .filter(|block| block_styles.contains(&block.style) || block.containers.iter().any(|member| block_styles.contains(&member.container.style)))
                 .map(|block| block.range.clone()),
         );
-        if let Some(blocks) = &self.flow_blocks {
-            ranges.extend(blocks.items().filter(|block| block_styles.contains(&block.style) || block.containers.iter().any(|member| block_styles.contains(&member.container.style)))
-                .map(|block| block.range.clone()));
-        }
         ranges.extend(
             self.styles
                 .items()
@@ -4785,18 +4599,8 @@ fn project_with_start(
             revision,
             source_content_start,
             source_content_end,
-            false,
             document_start,
         ),
-        Format::MarkdownSource => project_markdown(
-            normalized,
-            revision,
-            source_content_start,
-            source_content_end,
-            true,
-            document_start,
-        ),
-
     }
 }
 
@@ -5216,134 +5020,6 @@ pub(crate) fn splice_line_local_projection(
         )
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
-    let flow_lines = if let Some(old_flow) = &previous.flow_lines {
-        let indices = old_flow.partition_point(|line| line.range.end < old_formatted.start)
-            ..old_flow.partition_point(|line| line.range.start <= old_formatted.end);
-        let old = old_flow
-            .get_range(&indices)
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        let parsed = regional.flow_lines.as_ref().unwrap_or(&regional.hard_lines);
-        let mut next = parsed
-            .items()
-            .map(|line| {
-                Ok(HardLine {
-                    id: line.id,
-                    range: shift_region_range(&line.range, old_formatted.start)?,
-                    separator_length: line.separator_length,
-                })
-            })
-            .collect::<Result<Vec<_>, BlockIdentityError>>()?;
-        let (Some(first), Some(last)) = (old.first(), old.last()) else {
-            return Err(BlockIdentityError::InvalidProjection);
-        };
-        // Source restart regions retain an unchanged neighboring physical line
-        // Connections outside the
-        // region therefore keep their old classification. Extend the edge
-        // records without reading or rebuilding the untouched prose suffix.
-        if first.range.start < old_formatted.start {
-            next.first_mut()
-                .ok_or(BlockIdentityError::InvalidProjection)?
-                .range
-                .start = first.range.start;
-        }
-        if last.range.end > old_formatted.end {
-            let tail = next
-                .last_mut()
-                .ok_or(BlockIdentityError::InvalidProjection)?;
-            tail.range.end = (last.range.end as i128 + new_formatted_end as i128
-                - old_formatted.end as i128)
-                .try_into()
-                .map_err(|_| BlockIdentityError::InvalidProjection)?;
-            tail.separator_length = last.separator_length;
-        }
-        Some(
-            old_flow
-                .splice(
-                    indices,
-                    next,
-                    old_formatted.end,
-                    new_formatted_end,
-                    &mut range_stats,
-                )
-                .ok_or(BlockIdentityError::InvalidProjection)?,
-        )
-    } else {
-        None
-    };
-
-    let flow_blocks = if let Some(old_flow) = &previous.flow_blocks {
-        let indices = old_flow.partition_point(|block| {
-            block.range.end <= old_formatted.start && !block.range.is_empty()
-        })..old_flow.partition_point(|block| {
-            block.range.start < old_formatted.end
-                || block.range.is_empty() && block.range.start == old_formatted.end
-        });
-        let old = old_flow
-            .get_range(&indices)
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        let parsed = regional
-            .flow_blocks
-            .as_ref()
-            .ok_or(BlockIdentityError::InvalidProjection)?;
-        let mut next = parsed.to_vec();
-        for block in &mut next {
-            block.id = 0;
-            block.range = shift_region_range(&block.range, old_formatted.start)?;
-        }
-        if let (Some(first), Some(old)) = (next.first_mut(), old.first()) {
-            first.range.start = first.range.start.min(old.range.start);
-        }
-        if let (Some(last), Some(old)) = (next.last_mut(), old.last()) {
-            if old.range.end > old_formatted.end {
-                last.range.end = old.range.end - old_formatted.end + new_formatted_end;
-            }
-        }
-        // Source tags can create, join, or remove several presentation
-        // paragraphs inside an unchanged physical source line. Reconcile
-        // only the touched metadata, using surviving bytes as identity
-        // witnesses and the owning document's normal ID allocator.
-        let mappings =
-            build_edit_mappings(previous.text.byte_len(), target_text.byte_len(), edits)?;
-        for old in &old {
-            let at = if let Some(witness) = first_surviving_byte(&old.range, &mappings) {
-                map_surviving_byte(witness, &mappings)?
-            } else if old.range.is_empty() {
-                match map_old_boundary_before(old.range.start, &mappings) {
-                    Ok(at) => at,
-                    Err(_) => continue,
-                }
-            } else {
-                continue;
-            };
-            let index = next
-                .partition_point(|block| block.range.start <= at)
-                .saturating_sub(1);
-            if let Some(block) = next.get_mut(index).filter(|block| {
-                block.id == 0
-                    && (block.range.contains(&at)
-                        || block.range.is_empty() && block.range.start == at)
-            }) {
-                block.id = old.id;
-            }
-        }
-        *next_projected_block_id =
-            allocate_unassigned_block_ids(&mut next, *next_projected_block_id)?;
-        super::containers::reconcile(&mut next, &old, true);
-        Some(
-            old_flow
-                .splice(
-                    indices,
-                    next,
-                    old_formatted.end,
-                    new_formatted_end,
-                    &mut range_stats,
-                )
-                .ok_or(BlockIdentityError::InvalidProjection)?,
-        )
-    } else {
-        None
-    };
-
     let literal_mapping = previous.literal_encoding.is_some()
         && regional.literal_encoding == previous.literal_encoding;
     let style_indices = if literal_mapping {
@@ -5663,8 +5339,6 @@ pub(crate) fn splice_line_local_projection(
         table_lines: None,
         blocks,
         hard_lines,
-        flow_lines,
-        flow_blocks,
         styles,
         inline_images,
         provenance,
@@ -5741,10 +5415,7 @@ pub(crate) fn splice_line_local_projection(
         let mut replacement=Vec::with_capacity(rows.len());
         for index in rows.clone() {let mut row=table.source_rows[index].clone();
             row.range=map_range(&row.range,&text_spans);row.source_range=map_range(&row.source_range,&source_spans);row.source_body=map_range(&row.source_body,&source_spans);
-            for cell in &mut row.cells {*cell=map_range(cell,&text_spans);}
             for cell in &mut row.source_cells {*cell=map_range(cell,&source_spans);}
-            for marker in &mut row.delimiter_markers {*marker=map_range(marker,&text_spans);}
-            for pipe in &mut row.pipes {*pipe=map_point(*pipe,&text_spans,true);}
             replacement.push(row);
         }
         table.source_rows=table.source_rows.splice_transformed(rows,replacement,old_formatted.end,new_formatted_end,
@@ -5754,7 +5425,7 @@ pub(crate) fn splice_line_local_projection(
     for mut table in regional.tables.iter().cloned() {
         table.range=shift_region_range(&table.range,old_formatted.start)?;
         for row in &mut table.rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {cell.range=shift_region_range(&cell.range,old_formatted.start)?;}}
-        for row in &mut table.source_rows {row.range=shift_region_range(&row.range,old_formatted.start)?;for cell in &mut row.cells {*cell=shift_region_range(cell,old_formatted.start)?;}for marker in &mut row.delimiter_markers {*marker=shift_region_range(marker,old_formatted.start)?;}for pipe in &mut row.pipes {*pipe+=old_formatted.start;}}
+        for row in &mut table.source_rows {row.range=shift_region_range(&row.range,old_formatted.start)?;}
         tables.push(table);
     }
     tables.sort_by_key(|table|table.range.start);
@@ -5775,7 +5446,7 @@ pub(crate) fn splice_line_local_projection(
         let mut index=candidate.hard_lines.partition_point_start(new_start);
         let mut lines=Vec::new();
         while let Some(line)=candidate.hard_lines.get(index).filter(|line|line.range.start<=new_end) {
-            if let Some(table)=candidate.table_at(line.range.start).filter(|table|!table.source_view) {
+            if let Some(table)=candidate.table_at(line.range.start) {
                 let row_index=table.rows.partition_point_start(line.range.start.saturating_add(1)).saturating_sub(1);
                 if let Some(row)=table.rows.get(row_index).filter(|row|line.range.start<=row.range.end) {
                     lines.push(HardLine{id:row.id,range:row.range.clone(),separator_length:1});
@@ -6031,7 +5702,6 @@ fn project_markdown(
     revision: Revision,
     source_content_start: usize,
     source_content_end: usize,
-    preserve_markers: bool,
     document_start: bool,
 ) -> FormattedDocument {
     let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(normalized)).to_source(normalized);
@@ -6039,158 +5709,12 @@ fn project_markdown(
     let quote_context = super::markdown_quotes::source_context_with_syntax(normalized, &syntax);
     let indented = super::markdown_indented_code::classify_with_syntax(normalized, &syntax);
     let list_context = super::markdown_blocks::source_context_with_syntax(normalized, &syntax);
-    if preserve_markers {
-        let (cooked, explicit) = super::paragraph_flow::markdown_with_syntax(normalized, true, true, &syntax);
-        let soft = super::paragraph_flow::markdown_soft_breaks_with_syntax(normalized, &syntax);
-        let soft_sources = normalized
-            .endings
-            .iter()
-            .filter(|ending| soft.contains(&ending.normalized.start))
-            .map(|ending| (ending.source.start, ending.source.end))
-            .collect::<std::collections::BTreeSet<_>>();
-        let cooked_soft = cooked
-            .endings
-            .iter()
-            .filter(|ending| soft_sources.contains(&(ending.source.start, ending.source.end)))
-            .map(|ending| ending.normalized.start)
-            .collect();
-        let mut projected = project_markdown_lines(
-            &cooked,
-            revision,
-            source_content_start,
-            source_content_end,
-            true,
-            &list_context,
-            &quote_context,
-            &indented,
-            &syntax,
-            &definitions,
-            &explicit,
-        );
-        let flows = super::paragraph_flow::flow_ranges(&cooked, &cooked_soft);
-        // Source keeps physical lines, while inline link labels/destinations
-        // may cross a soft source break within the same paragraph. Recognize
-        // those intervals without changing any source-visible text or blocks.
-        let mut multiline_links = Vec::new();
-        for flow in &flows {
-            if !cooked.text[flow.clone()].contains('\n') { continue; }
-            if projected.blocks_for_region(flow).iter().any(|block| block.style.0 == "Code Block") {
-                continue;
-            }
-            for link in super::links::markdown_links_in(&cooked.text, flow.clone()) {
-                if cooked.text[link.range.clone()].contains('\n') {
-                    multiline_links.push(StyleSpan {
-                        range: link.range,
-                        application: StyleApplication::Automatic("Link".into()),
-                    });
-                }
-            }
-        }
-        projected.append_link_styles(multiline_links);
-        // Source physical rows retain bytes, but image context spans a whole
-        // soft-wrapped construct. Replace only that paragraph's image metadata.
-        let mut images = projected.inline_images.to_vec();
-        let mut opaque_html_ranges = Vec::new();
-        for flow in &flows {
-            if !cooked.text[flow.clone()].contains('\n') || projected.blocks_for_region(flow).iter().any(|block| block.style.0 == "Code Block") { continue; }
-            let mut inlines = super::markdown_syntax::inlines(&cooked.text, flow.clone(), &definitions);
-            let excluded = markdown_html::quote_prefix_ranges(&cooked, flow, &quote_context);
-            if !excluded.is_empty() {
-                let removed = super::html::without_ranges(&cooked.text[flow.clone()], &excluded);
-                inlines.retain(|_, inline| !matches!(inline.kind, super::markdown_syntax::InlineKind::Html));
-                for mut inline in super::markdown_syntax::inlines(&removed.text, 0..removed.text.len(), &definitions).into_values()
-                    .filter(|inline| matches!(inline.kind, super::markdown_syntax::InlineKind::Html)) {
-                    let range = removed.original_range(inline.range);
-                    inline.range = flow.start + range.start..flow.start + range.end;
-                    inline.inner = inline.range.clone();
-                    inlines.insert(inline.range.start, inline);
-                }
-            }
-            let has_html_image = projected.inline_images_for_region(flow).iter().any(|image| image.html)
-                || inlines.values().any(|inline| matches!(inline.kind, super::markdown_syntax::InlineKind::Html)
-                    && cooked.text[inline.range.clone()].get(..4).is_some_and(|prefix| prefix.eq_ignore_ascii_case("<img")));
-            let html_tokens = if has_html_image {
-                // Only grammar-recognized inline HTML can open a raw-text
-                // scope. A literal `<script>` in a code span must not hide a
-                // later image. Keep tag contents intact for attribute values.
-                let html_ranges: Vec<_> = inlines.values().filter(|inline| matches!(inline.kind, super::markdown_syntax::InlineKind::Html))
-                    .map(|inline| inline.range.clone()).collect();
-                let mut lexical = cooked.text[flow.clone()].as_bytes().to_vec();
-                let mut index = 0;
-                for (offset, byte) in lexical.iter_mut().enumerate().filter(|(_, byte)| **byte == b'<') {
-                    let at = flow.start + offset;
-                    while index < html_ranges.len() && html_ranges[index].end <= at { index += 1; }
-                    if !html_ranges.get(index).is_some_and(|range| range.contains(&at)) { *byte = b' '; }
-                }
-                super::html::tokenize_without_ranges(std::str::from_utf8(&lexical).unwrap(), &excluded)
-            } else { Vec::new() };
-            opaque_html_ranges.extend(html_tokens.iter().filter_map(|token| matches!(token.kind, super::html::TokenKind::Opaque)
-                .then_some(flow.start + token.range.start..flow.start + token.range.end)));
-            for inline in inlines.into_values() {
-                if !cooked.text[inline.range.clone()].contains('\n') { continue; }
-                let Some(source)=cooked.source_hull(&inline.range) else {continue;};
-                let image = if let super::markdown_syntax::InlineKind::Image { destination, text, inline: is_inline } = inline.kind {
-                    Some(InlineImage {range:inline.range.clone(),text,destination,source_view:true,
-                        source,inline:is_inline,width:None,height:None,html:false})
-                } else if matches!(inline.kind, super::markdown_syntax::InlineKind::Html) {
-                    html_tokens.get(html_tokens.partition_point(|token| flow.start + token.range.start < inline.range.start))
-                    .filter(|token| flow.start + token.range.start == inline.range.start && flow.start + token.range.end == inline.range.end).and_then(|token| {
-                        let super::html::TokenKind::Tag(tag) = &token.kind else { return None; };
-                        super::html::image_metadata(tag, inline.range.clone(), source, true)
-                    })
-                } else { None };
-                if let Some(image) = image {
-                    if image.html && !syntax.recognizes_inline_html(&image.source) { continue; }
-                    images.retain(|image| image.range.end<=inline.range.start || inline.range.end<=image.range.start);
-                    images.push(image);
-                }
-            }
-        }
-        images.retain(|image| !image.html || !opaque_html_ranges.get(opaque_html_ranges.partition_point(|range| range.end <= image.range.start))
-            .is_some_and(|range| range.start <= image.range.start && image.range.end <= range.end));
-        images.sort_by_key(|image|image.range.start);
-        projected.inline_images=IntervalRangeStore::new(images);
-
-        let mut paragraphs: Vec<Block> = Vec::new();
-        let mut flow_index = 0;
-        // Read the tree once; slice access would retain a flat copy.
-        for block in &projected.blocks.to_vec() {
-            while flow_index + 1 < flows.len() && flows[flow_index].end < block.range.start {
-                flow_index += 1;
-            }
-            // Table rows are structural boundaries even when a row's source
-            // line ends in hard-break syntax.
-            let join = paragraphs.last().is_some_and(|previous| {
-                previous.quote_depth == block.quote_depth && previous.style == block.style && previous.style.0 != "Code Block" && block.style.0 != "Code Block"
-                    && !projected.range_intersects_table(&previous.range) && !projected.range_intersects_table(&block.range)
-                    && (flows[flow_index].start <= previous.range.start && block.range.end <= flows[flow_index].end
-                        || (previous.kind == BlockKind::Paragraph && block.kind == BlockKind::Paragraph
-                            || matches!((&previous.kind, &block.kind),
-                                (BlockKind::ListItem { ordered:a, ordinal:b, level:c, .. }, BlockKind::ListItem { ordered:d, ordinal:e, level:f, item_start:false, .. })
-                                if a == d && b == e && c == f))
-                            && projected.provenance_for_region(&(previous.range.end..block.range.start)).iter()
-                                .any(|span| !span.formatted.is_empty() && explicit.contains(&span.source.end)))
-            });
-            if join {
-                paragraphs.last_mut().unwrap().range.end = block.range.end;
-            } else {
-                paragraphs.push(block.clone());
-            }
-        }
-        projected.install_paragraph_partition(paragraphs);
-        projected.install_flow_ranges(flows);
-        projected.install_source_containers(syntax.owners.clone());
-        projected.assign_image_paragraph_styles();
-        projected.share_block_attributes();
-        return projected;
-    }
-    let (cooked, explicit) = super::paragraph_flow::markdown_with_syntax(normalized, false, document_start, &syntax);
+    let (cooked, explicit) = super::paragraph_flow::markdown_with_syntax(normalized, document_start, &syntax);
     let mut projected = project_markdown_lines(
         &cooked,
         revision,
         source_content_start,
         source_content_end,
-        false,
         &list_context,
         &quote_context,
         &indented,
@@ -6243,13 +5767,13 @@ fn project_markdown(
     projected
 }
 
-fn markdown_presented_kind(mut kind: BlockKind, preserve_markers: bool) -> BlockKind {
+fn markdown_presented_kind(mut kind: BlockKind) -> BlockKind {
     if let BlockKind::ListItem {
         marker_is_decoration,
         ..
     } = &mut kind
     {
-        *marker_is_decoration = !preserve_markers;
+        *marker_is_decoration = true;
     }
     kind
 }
@@ -6259,7 +5783,6 @@ fn project_markdown_lines(
     revision: Revision,
     source_content_start: usize,
     source_content_end: usize,
-    preserve_markers: bool,
     list_context: &[(Range<usize>, super::markdown_blocks::ListLine)],
     quote_context: &[super::markdown_quotes::QuoteLine],
     indented: &[super::markdown_indented_code::CodeBlock],
@@ -6272,7 +5795,6 @@ fn project_markdown_lines(
         revision,
         syntax,
     );
-    builder.preserve_markers = preserve_markers;
     builder.reference_definitions = definitions.to_owned();
     let input_lines = normalized_hard_line_ranges(normalized);
     let mut hard_breaks = Vec::new();
@@ -6302,10 +5824,7 @@ fn project_markdown_lines(
             .filter(|line| line.range.start <= at && at <= line.range.end));
         let quote_depth = quote_depth.max(quote.map_or(0, |line| line.depth));
         let quoted = quote_depth > 0;
-        let semantic_start = quote.filter(|_| preserve_markers).map_or(line.start, |quote| {
-            normalized.unit_at_or_after_source(quote.content_start)
-                .map_or(line.end, |unit| unit.normalized.start).min(line.end)
-        });
+        let semantic_start = line.start;
         let context = source_at.map(|at| quote.map_or(at, |quote| at.max(quote.content_start))).and_then(|at| {
             list_context
                 .get(
@@ -6327,7 +5846,7 @@ fn project_markdown_lines(
                     kind
                 }).unwrap_or(fallback)
             } else { fallback };
-            markdown_presented_kind(kind, preserve_markers)
+            markdown_presented_kind(kind)
         };
         if let Some(table) = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= at)).filter(|table| table.range.start <= source_end && at < table.range.end) {
             // All table rows belong to the same enclosing list item. Only
@@ -6342,34 +5861,14 @@ fn project_markdown_lines(
                 }
                 kind
             };
-            let mut projected = super::MarkdownTable { id: 0, range: output_start..output_start, source_range: table.range.clone(), source_view:preserve_markers, columns: table.columns.clone(), rows: Default::default(), source_rows: Default::default() };
+            let mut projected = super::MarkdownTable { id: 0, range: output_start..output_start, source_range: table.range.clone(), columns: table.columns.clone(), rows: Default::default(), source_rows: Default::default() };
             builder.in_table = true;
             for source_row in &table.rows {
                 let row_start = builder.output.len();
-                let raw_start = normalized_at(source_row.range.start);
                 let raw_end = normalized_at(source_row.body.end);
                 let style = if source_row.delimiter || projected.rows.is_empty() { "Table header" } else { "Table cell" };
                 let mut cells = Vec::new();
-                let mut shown_cells = Vec::new();
-                let mut delimiter_markers = Vec::new();
-                if preserve_markers {
-                    let mut previous = raw_start;
-                    for cell in &source_row.cells {
-                        let a = normalized_at(cell.start).min(raw_end); let b = normalized_at(cell.end).min(raw_end);
-                        builder.emit_range(previous, a);
-                        let start = builder.output.len(); builder.parse_inline(a,b);
-                        if source_row.delimiter {
-                            let spelling = &normalized.text[a..b];
-                            let leading = spelling.len() - spelling.trim_start_matches([' ', '\t']).len();
-                            let end = spelling.trim_end_matches([' ', '\t']).len();
-                            delimiter_markers.push(start + leading..start + end);
-                        }
-                        shown_cells.push(start..builder.output.len()); previous = b;
-                    }
-                    builder.emit_range(previous, raw_end);
-                    let mut block = Block::new(0,row_start..builder.output.len(),table_kind(row_start == output_start),style.into(),None);
-                    block.quote_depth = quote_depth; builder.blocks.push(block);
-                } else if !source_row.delimiter {
+                if !source_row.delimiter {
                     for column in 0..table.columns.len() {
                         if column > 0 { hard_breaks.push(builder.output.len()); builder.output.push('\n'); }
                         let start = builder.output.len();
@@ -6387,18 +5886,11 @@ fn project_markdown_lines(
                     }
                 }
                 let row_end = builder.output.len();
-                if preserve_markers && !source_row.delimiter {
-                    for column in 0..table.columns.len() {
-                        let raw = source_row.cells.get(column).cloned().unwrap_or(source_row.body.end..source_row.body.end);
-                        let shown = shown_cells.get(column).cloned().unwrap_or(row_end..row_end);
-                        cells.push(super::MarkdownTableCell { id:0,range:shown,source_range:raw,missing:column>=source_row.cells.len() });
-                    }
-                }
-                projected.source_rows.push(super::MarkdownTableSourceRow { range:row_start..row_end,source_range:source_row.range.clone(),source_body:source_row.body.clone(),cells:shown_cells,source_cells:source_row.cells.clone(),pipes:source_row.pipes.iter().map(|pipe| row_start+normalized_at(*pipe)-raw_start).collect(),delimiter_markers,delimiter:source_row.delimiter });
+                projected.source_rows.push(super::MarkdownTableSourceRow { range:row_start..row_end,source_range:source_row.range.clone(),source_body:source_row.body.clone(),source_cells:source_row.cells.clone(),delimiter:source_row.delimiter });
                 if !source_row.delimiter { projected.rows.push(super::MarkdownTableRow { id:0,range:row_start..row_end,source_range:source_row.range.clone(),cells }); }
-                if preserve_markers || !source_row.delimiter {
-                    let last = source_row.range.end == table.rows.iter().rev().find(|row| preserve_markers || !row.delimiter).unwrap().range.end;
-                    if !last { hard_breaks.push(builder.output.len()); if preserve_markers && normalized.text.as_bytes().get(raw_end)==Some(&b'\n') { builder.emit_unit_at(raw_end); } else { builder.output.push('\n'); } }
+                if !source_row.delimiter {
+                    let last = source_row.range.end == table.rows.iter().rev().find(|row| !row.delimiter).unwrap().range.end;
+                    if !last { hard_breaks.push(builder.output.len()); builder.output.push('\n'); }
                 }
             }
             builder.in_table = false;
@@ -6417,24 +5909,13 @@ fn project_markdown_lines(
             let contains_table = markdown_html::contains_table(&normalized.text[range.clone()]);
             let pre_ending = !contains_table && normalized.endings.get(line_index).is_some_and(|ending|
                 ending.source.end == source_content_end && markdown_html::open_pre(&normalized.text[range.clone()]));
-            let range = if preserve_markers && pre_ending {
-                range.start..normalized.endings[line_index].normalized.end
-            } else { range };
-            if preserve_markers || normalized.text[range.clone()].starts_with("<!--") || contains_table {
+            if normalized.text[range.clone()].starts_with("<!--") || contains_table {
                 builder.emit_range(range.start, range.end);
-                if preserve_markers && !contains_table {
-                    builder.source_html_images(range.clone(), output_start, quote_context);
-                }
                 for ending in normalized.endings.iter().filter(|ending| range.contains(&ending.normalized.start)) {
                     hard_breaks.push(output_start + ending.normalized.start - range.start);
                 }
-                if preserve_markers && !contains_table {
-                    let blocks = builder.source_html_blocks(range.clone(), output_start, presented_kind(BlockKind::Paragraph), quote_depth, quote_context);
-                    builder.blocks.extend(blocks);
-                } else {
-                    builder.blocks.push(Block::new(0, output_start..builder.output.len(), presented_kind(BlockKind::Paragraph), "Paragraph".into(), None));
-                    builder.blocks.last_mut().unwrap().quote_depth = quote_depth;
-                }
+                builder.blocks.push(Block::new(0, output_start..builder.output.len(), presented_kind(BlockKind::Paragraph), "Paragraph".into(), None));
+                builder.blocks.last_mut().unwrap().quote_depth = quote_depth;
                 if normalized.text[range.clone()].starts_with("<!--") && output_start < builder.output.len() {
                     builder.styles.push(StyleSpan { range: output_start..builder.output.len(), application: StyleApplication::Automatic("Comment".into()) });
                 }
@@ -6474,12 +5955,10 @@ fn project_markdown_lines(
                 let at = builder.unit_at(row.start).map_or(source_content_end, |unit| unit.source.start);
                 if at > code.source.end { break; }
                 let owner = &code.lines[(line_index - first).min(code.lines.len() - 1)];
-                let content = if preserve_markers { row.start } else {
-                    normalized.unit_at_or_after_source(owner.content_start)
-                        .map_or(row.end, |unit| unit.normalized.start).min(row.end)
-                };
+                let content = normalized.unit_at_or_after_source(owner.content_start)
+                    .map_or(row.end, |unit| unit.normalized.start).min(row.end);
                 let output = builder.output.len();
-                if !preserve_markers && owner.padding > 0 {
+                if owner.padding > 0 {
                     let index = normalized.unit_partition_point(|unit| unit.source.start < owner.content_start);
                     if let Some(unit) = index.checked_sub(1).and_then(|index| normalized.unit(index)) {
                         builder.output.push_str(&" ".repeat(owner.padding));
@@ -6499,12 +5978,12 @@ fn project_markdown_lines(
                 }
             }
             builder.blocks.push(Block::new(0, output_start..builder.output.len(), markdown_presented_kind(
-                context.map_or(BlockKind::Paragraph, |context| context.kind.clone()), preserve_markers),
+                context.map_or(BlockKind::Paragraph, |context| context.kind.clone())),
                 "Code Block".into(), None));
             if let Some(block) = builder.blocks.last_mut() {
                 block.kind = presented_kind(block.kind.clone());
                 block.quote_depth = quote_depth;
-                block.code_language_label = !preserve_markers;
+                block.code_language_label = true;
             }
             if let Some(ending) = normalized.endings.get(line_index - 1) {
                 hard_breaks.push(builder.output.len());
@@ -6529,10 +6008,7 @@ fn project_markdown_lines(
                     && source == fence.range.end && input_lines[closing].is_empty();
                 if source >= fence.range.end && !terminal_body { break; }
                 let raw = &normalized.text[input_lines[closing].clone()];
-                let body = if preserve_markers && quoted {
-                    &raw[super::markdown_quotes::prefix(raw)..]
-                } else { raw };
-                if super::markdown_syntax::fence_close(body, delimiter, length) {
+                if super::markdown_syntax::fence_close(raw, delimiter, length) {
                     closed = true;
                     break;
                 }
@@ -6542,18 +6018,14 @@ fn project_markdown_lines(
                 [length..].split_whitespace().next().filter(|value| !value.is_empty())
                 .map(super::syntax::detection::canonical_language);
             let after = (closing + usize::from(closed)).min(input_lines.len());
-            let body_start = if preserve_markers {
-                line_index
-            } else {
-                line_index + 1
-            };
-            let body_end = if preserve_markers { after } else { closing };
+            let body_start = line_index + 1;
+            let body_end = closing;
             if body_start < body_end {
                 for index in body_start..body_end {
                     let output_start = builder.output.len();
                     let row = &input_lines[index];
                     let indent = normalized.text[fence_start..line.end].bytes().take_while(|byte| *byte == b' ').count();
-                    let trim = if preserve_markers { 0 } else { normalized.text[row.clone()].bytes().take_while(|byte| *byte == b' ').take(indent).count() };
+                    let trim = normalized.text[row.clone()].bytes().take_while(|byte| *byte == b' ').take(indent).count();
                     builder.emit_range(row.start + trim, row.end);
                     if input_lines[index].is_empty() {
                         let at = builder
@@ -6572,12 +6044,9 @@ fn project_markdown_lines(
                         }
                     }
                 }
-                {
-                    builder.blocks.push(Block::new(0, output_start..builder.output.len(), markdown_presented_kind(
-                            context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
-                            preserve_markers,
-                        ), "Code Block".into(), None));
-                }
+                builder.blocks.push(Block::new(0, output_start..builder.output.len(), markdown_presented_kind(
+                        context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
+                    ), "Code Block".into(), None));
             } else {
                 let body_at = input_lines
                     .get(line_index + 1)
@@ -6591,14 +6060,13 @@ fn project_markdown_lines(
                 });
                 builder.blocks.push(Block::new(0, output_start..output_start, markdown_presented_kind(
                         context.map_or(BlockKind::Paragraph, |context| context.kind.clone()),
-                        preserve_markers,
                     ), "Code Block".into(), None));
             }
             if let Some(block) = builder.blocks.last_mut() {
                 block.kind = presented_kind(block.kind.clone());
                 block.quote_depth = quote_depth;
                 block.code_language = language;
-                block.code_language_label = !preserve_markers;
+                block.code_language_label = true;
             }
             if let Some(ending) = normalized.endings.get(after - 1) {
                 hard_breaks.push(builder.output.len());
@@ -6639,14 +6107,13 @@ fn project_markdown_lines(
                 super::markdown_syntax::BlockRole::Rule => {
                     thematic_break = true;
                     kind = BlockKind::Paragraph;
-                    if !preserve_markers { content_end = content_start; }
+                    content_end = content_start;
                 }
                 _ => {}
             }
         }
         // Quote markers after a list prefix belong to the container too.
         if quoted && heading.is_none() { content_start += super::markdown_quotes::prefix(&normalized.text[content_start..content_end]); }
-        if preserve_markers { builder.emit_range(line.start, content_start); }
         kind = presented_kind(kind);
         let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= at)).is_some_and(|range| range.start <= source_end && at < range.end);
         if definition {
@@ -6657,13 +6124,8 @@ fn project_markdown_lines(
             if quoted {
                 let limit = containers.iter().map(|container| normalized_at(container.range.end)).min().unwrap_or(content_end);
                 let mut start = content_start;
-                while let Some(mut image) = builder.multiline_image(start, content_end, limit, quote_context) {
+                while let Some(image) = builder.multiline_image(start, content_end, limit, quote_context) {
                     let last = image.range.end;
-                    if preserve_markers {
-                        image.range = output_start + image.range.start - line.start..output_start + last - line.start;
-                        builder.inline_images.push(image);
-                        break;
-                    }
                     while input_lines.get(line_index + 1).is_some_and(|next| next.start < last) { line_index += 1; }
                     content_end = input_lines[line_index].end;
                     start = last;
@@ -6676,7 +6138,7 @@ fn project_markdown_lines(
                 while normalized.endings.get(line_index).is_some_and(|ending| {
                     let html = syntax.inline_html.get(syntax.inline_html.partition_point(|range| range.end <= ending.source.start))
                         .is_some_and(|range| range.start <= ending.source.start && ending.source.end < range.end);
-                    html || !preserve_markers && explicit_breaks.contains(&ending.source.end)
+                    html || explicit_breaks.contains(&ending.source.end)
                 }) {
                     let Some(next) = input_lines.get(line_index + 1) else { break; };
                     line_index += 1;
@@ -6686,32 +6148,25 @@ fn project_markdown_lines(
             let inline_start = builder.output.len();
             let provenance_start = builder.provenance.mark(&builder.output);
             builder.parse_inline(content_start, content_end);
-            {
-                for span in builder.provenance.indivisible_since(provenance_start) {
-                    if span.formatted.start < inline_start { continue; }
-                    if span.formatted.len() == 1
-                        && (preserve_markers || explicit_breaks.contains(&span.source.end))
-                        && builder.output.as_bytes().get(span.formatted.start) == Some(&b'\n') {
-                        hard_breaks.push(span.formatted.start);
-                    }
+            for span in builder.provenance.indivisible_since(provenance_start) {
+                if span.formatted.start < inline_start { continue; }
+                if span.formatted.len() == 1
+                    && explicit_breaks.contains(&span.source.end)
+                    && builder.output.as_bytes().get(span.formatted.start) == Some(&b'\n') {
+                    hard_breaks.push(span.formatted.start);
                 }
             }
         }
-        if preserve_markers { builder.emit_range(content_end, line.end); }
-        // Setext underlines are part of the same heading. Source keeps their
-        // physical hard line; the formatted view hides the whole annotation.
+        // Setext underlines are part of the same heading; the formatted view
+        // hides the whole annotation.
         if let Some(syntax) = block_syntax.filter(|syntax| matches!(syntax.role, super::markdown_syntax::BlockRole::Heading(_))) {
-            while let Some(next) = input_lines.get(line_index + 1).filter(|next| {
+            while input_lines.get(line_index + 1).is_some_and(|next| {
                 builder.unit_at(next.start).is_some_and(|unit| unit.source.start < syntax.range.end)
             }) {
-                if preserve_markers {
-                    if let Some(ending) = normalized.endings.get(line_index) { hard_breaks.push(builder.output.len()); builder.emit_unit_at(ending.normalized.start); }
-                    builder.emit_range(next.start, next.end);
-                }
                 line_index += 1;
             }
         }
-        if thematic_break && !preserve_markers {
+        if thematic_break {
             builder.push_provenance(ProvenanceSpan { formatted: output_start..output_start, source: at..at });
         }
         let output_end = builder.output.len();
@@ -6728,18 +6183,18 @@ fn project_markdown_lines(
                 source: at..at,
             });
         }
-        let style = if let Some(level) = heading { StyleId(format!("Heading{level}")) } else if quoted && preserve_markers { "Block quote".into() } else { match kind {
+        let style = if let Some(level) = heading { StyleId(format!("Heading{level}")) } else { match kind {
             BlockKind::Heading(level) => format!("Heading{level}").as_str().into(),
             BlockKind::Paragraph => "Paragraph".into(),
             BlockKind::ListItem { ordered, level, .. } => {
                 StyleId(format!("{}{}", if ordered { "NumberedList" } else { "BulletedList" }, u16::from(level).min(3) + 1))
             }
         }};
-        let loose = !preserve_markers && matches!(kind, BlockKind::ListItem { .. }) && list.is_some_and(|container| container.loose);
+        let loose = matches!(kind, BlockKind::ListItem { .. }) && list.is_some_and(|container| container.loose);
         let mut block = Block::new(0, output_start..output_end, kind, style, None);
         block.list_loose = loose;
         block.quote_depth = quote_depth;
-        block.thematic_break = thematic_break && !preserve_markers;
+        block.thematic_break = thematic_break;
         let first_rule = builder.inline_rules.partition_point(|at| *at < output_start);
         let rules: Vec<_> = builder.inline_rules[first_rule..].iter().copied()
             .take_while(|at| *at <= output_end).collect();
@@ -6796,7 +6251,7 @@ fn project_markdown_lines(
     }
     lines.push(start..text_len);
     projection.install_hard_line_partition(lines);
-    if !preserve_markers && !tables.is_empty() {
+    if !tables.is_empty() {
         let mut presentation = Vec::new(); let mut index=0;
         for table in &tables {
             while index < projection.hard_lines.len() && projection.hard_lines.get(index).unwrap().range.start < table.range.start { presentation.push(projection.hard_lines.get(index).unwrap()); index+=1; }
@@ -6876,7 +6331,6 @@ pub(crate) fn markdown_block_prefix(text: &str, start: usize, end: usize) -> (us
 
 struct MarkdownBuilder<'a> {
     in_table: bool,
-    preserve_markers: bool,
     html_stack: Vec<(String, usize, StyleApplication, Option<usize>)>,
     html_raw_text: Option<String>,
     inline_syntax: std::collections::BTreeMap<usize, super::markdown_syntax::Inline>,
@@ -6904,7 +6358,6 @@ impl<'a> MarkdownBuilder<'a> {
         source_syntax: &'a super::markdown_syntax::Blocks,
     ) -> Self {
         Self {
-            preserve_markers: false,
             in_table: false,
             html_stack: Vec::new(),
             html_raw_text: None,
@@ -6947,16 +6400,6 @@ impl<'a> MarkdownBuilder<'a> {
             }
             for (_, start, _, _) in &mut self.html_stack { *start = (*start).min(end); }
         }
-        if self.preserve_markers {
-            let combined: Vec<_> = self.styles[first_style..].iter().filter(|span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Emphasis)
-                && ["***", "___"].iter().any(|marker| self.output[span.range.clone()].starts_with(marker) && self.output[span.range.clone()].ends_with(marker)))
-                .map(|span| span.range.clone()).collect();
-            for span in &mut self.styles[first_style..] {
-                if span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong) {
-                    if let Some(outer) = combined.iter().find(|outer| outer.start + 1 == span.range.start && span.range.end + 1 == outer.end) { span.range = outer.clone(); }
-                }
-            }
-        }
         let entries: Vec<_> = self.html_stack.drain(..).collect();
         for (_, start, application, slot) in entries {
             self.finish_html_scope(start, self.output.len(), application, slot);
@@ -6970,7 +6413,7 @@ impl<'a> MarkdownBuilder<'a> {
         }
         let mut at = start;
         while at < end {
-            if self.in_table && !self.preserve_markers && self.source_text[at..].starts_with('\\') {
+            if self.in_table && self.source_text[at..].starts_with('\\') {
                 let slashes = self.source_text.as_bytes()[at..end].iter()
                     .take_while(|byte| **byte == b'\\').count();
                 let pipe = at + slashes;
@@ -6992,11 +6435,7 @@ impl<'a> MarkdownBuilder<'a> {
                     if next < end {
                         let escaped = self.source_text[next..].chars().next().unwrap();
                         if escaped.is_ascii_punctuation() {
-                            if self.preserve_markers {
-                                self.emit_range(at, next + escaped.len_utf8());
-                            } else {
-                                self.emit_escaped(at, next);
-                            }
+                            self.emit_escaped(at, next);
                             at = next + escaped.len_utf8();
                             continue;
                         }
@@ -7021,12 +6460,10 @@ impl<'a> MarkdownBuilder<'a> {
                 match inline.kind {
                     InlineKind::Image { destination, text, inline: is_inline } => {
                         let source = self.unit_at(at).unwrap().source.start..self.unit_at(inline.range.end - 1).unwrap().source.end;
-                        if self.preserve_markers { self.emit_range(at, inline.range.end); } else {
-                            self.output.push('\u{fffc}');
-                            self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source: source.clone() });
-                        }
+                        self.output.push('\u{fffc}');
+                        self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source: source.clone() });
                         self.inline_images.push(InlineImage { range: output..self.output.len(), text, destination,
-                            source_view: self.preserve_markers, source, inline: is_inline,
+                            source, inline: is_inline,
                             width: None, height: None, html: false });
                     }
                     InlineKind::Reference => {
@@ -7034,22 +6471,17 @@ impl<'a> MarkdownBuilder<'a> {
                         self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) });
                     }
                     InlineKind::Autolink => {
-                        let shown = if self.preserve_markers { inline.range.clone() } else { inline.inner.clone() };
-                        self.emit_range(shown.start, shown.end);
+                        self.emit_range(inline.inner.start, inline.inner.end);
                         self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Link".into()) });
                     }
                     InlineKind::Link => {
-                        if self.preserve_markers { self.emit_range(at, inline.inner.start); }
                         self.parse_inline_depth(inline.inner.start, inline.inner.end, depth + 1);
-                        if self.preserve_markers { self.emit_range(inline.inner.end, inline.range.end); }
                         if output < self.output.len() {
                             self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Link".into()) });
                         }
                     }
                     InlineKind::Emphasis | InlineKind::Strong | InlineKind::Strike => {
-                        if self.preserve_markers { self.emit_range(at, inline.inner.start); }
                         self.parse_inline_depth(inline.inner.start, inline.inner.end, depth + 1);
-                        if self.preserve_markers { self.emit_range(inline.inner.end, inline.range.end); }
                         match inline.kind {
                             InlineKind::Emphasis => self.push_semantic_style(output, SemanticInlineStyle::Emphasis),
                             InlineKind::Strong => self.push_semantic_style(output, SemanticInlineStyle::Strong),
@@ -7057,12 +6489,11 @@ impl<'a> MarkdownBuilder<'a> {
                         }
                     }
                     InlineKind::Html if markdown_inline_break_length(&self.source_text[inline.range.clone()]).is_some() => {
-                        if self.preserve_markers { self.emit_range(at, inline.range.end); } else {
-                            let first = self.unit_at(at).unwrap().source.start;
-                            let last = self.unit_at(inline.range.end - 1).unwrap().source.end;
-                            self.inline_hard_breaks.push(output); self.output.push('\n');
-                            self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source: first..last });
-                        }
+                        let first = self.unit_at(at).unwrap().source.start;
+                        let last = self.unit_at(inline.range.end - 1).unwrap().source.end;
+                        self.inline_hard_breaks.push(output); self.output.push('\n');
+                        self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source: first..last });
+                    
                     }
                     InlineKind::Html => {
                         // Comments remain editable, visible source by product policy.
@@ -7078,33 +6509,32 @@ impl<'a> MarkdownBuilder<'a> {
                 continue;
             }
 
-            if !self.preserve_markers {
-                if let Some((length, character)) = markdown_inline_character_reference(&self.source_text[at..end]) {
-                    if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
-                        let source = first.source.start..last.source.end;
-                        let output_start = self.output.len();
-                        self.output.push_str(&character);
-                        self.push_provenance(ProvenanceSpan {
-                            formatted: output_start..self.output.len(), source,
-                        });
-                        at += length;
-                        continue;
-                    }
-                }
-                if let Some(length) = markdown_inline_break_length(&self.source_text[at..end]) {
-                    if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
-                        let source = first.source.start..last.source.end;
-                        let output_start = self.output.len();
-                        self.inline_hard_breaks.push(output_start);
-                        self.output.push('\n');
-                        self.push_provenance(ProvenanceSpan {
-                            formatted: output_start..self.output.len(), source,
-                        });
-                        at += length;
-                        continue;
-                    }
+            if let Some((length, character)) = markdown_inline_character_reference(&self.source_text[at..end]) {
+                if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
+                    let source = first.source.start..last.source.end;
+                    let output_start = self.output.len();
+                    self.output.push_str(&character);
+                    self.push_provenance(ProvenanceSpan {
+                        formatted: output_start..self.output.len(), source,
+                    });
+                    at += length;
+                    continue;
                 }
             }
+            if let Some(length) = markdown_inline_break_length(&self.source_text[at..end]) {
+                if let (Some(first), Some(last)) = (self.unit_at(at), self.unit_at(at + length - 1)) {
+                    let source = first.source.start..last.source.end;
+                    let output_start = self.output.len();
+                    self.inline_hard_breaks.push(output_start);
+                    self.output.push('\n');
+                    self.push_provenance(ProvenanceSpan {
+                        formatted: output_start..self.output.len(), source,
+                    });
+                    at += length;
+                    continue;
+                }
+            }
+        
 
             if self.source_text[at..].starts_with('`') {
                 let length = self.source_text.as_bytes()[at..end]
@@ -7130,20 +6560,17 @@ impl<'a> MarkdownBuilder<'a> {
                 }
                 if let Some(close) = close {
                     let output_start = self.output.len();
-                    if self.preserve_markers {
-                        self.emit_range(at, close + length);
-                    } else {
-                        let mut body = at + length..close;
-                        let text = &self.source_text[body.clone()];
-                        if text.starts_with(' ') && text.ends_with(' ') && text.bytes().any(|byte| byte != b' ') {
-                            body.start += 1;
-                            body.end -= 1;
-                        }
-                        if self.in_table {
-                            let mut point=body.start;
-                            while point<body.end { if self.source_text[point..body.end].starts_with("\\|") { self.emit_escaped(point,point+1); point+=2; } else { self.emit_unit_at(point); point=self.next_boundary(point).unwrap_or(body.end); } }
-                        } else { self.emit_range(body.start, body.end); }
+                    let mut body = at + length..close;
+                    let text = &self.source_text[body.clone()];
+                    if text.starts_with(' ') && text.ends_with(' ') && text.bytes().any(|byte| byte != b' ') {
+                        body.start += 1;
+                        body.end -= 1;
                     }
+                    if self.in_table {
+                        let mut point=body.start;
+                        while point<body.end { if self.source_text[point..body.end].starts_with("\\|") { self.emit_escaped(point,point+1); point+=2; } else { self.emit_unit_at(point); point=self.next_boundary(point).unwrap_or(body.end); } }
+                    } else { self.emit_range(body.start, body.end); }
+                
                     self.push_semantic_style(output_start, SemanticInlineStyle::Code);
                     if output_start < self.output.len() {
                         self.styles.push(StyleSpan {
@@ -7347,8 +6774,7 @@ mod tests {
         ];
         let mut gaps = 0;
         for source in sources {
-            for (encoding, format) in [(Encoding::Utf8, Format::Markdown), (Encoding::Utf8, Format::MarkdownSource),
-                (Encoding::Utf16Le, Format::Markdown)] {
+            for (encoding, format) in [(Encoding::Utf8, Format::Markdown), (Encoding::Utf16Le, Format::Markdown)] {
                 let bytes = encoding.encode_fragment(source).unwrap();
                 let document = crate::document::Document::from_bytes(bytes.clone(), encoding, format).unwrap();
                 let projection = document.projection();
@@ -7570,10 +6996,6 @@ mod tests {
             (
                 Format::PlainText,
                 "A\r\nB e\u{301} क्‍ष 👩🏽‍💻 🇺🇸🇨🇦\n\u{301}end",
-            ),
-            (
-                Format::MarkdownSource,
-                "# e\u{301} **bold**\n\n- item\n  continuation\n\n```\ncode\n\n```",
             ),
             (
                 Format::Markdown,
@@ -8205,46 +7627,18 @@ mod tests {
     /// deliberate decision about every predicate, not an inherited default.
     #[test]
     fn format_predicates_have_exact_membership() {
-        const ALL: [Format; 4] = [
-            Format::PlainText,
-            Format::Markdown,
-            Format::MarkdownSource,
-
-            Format::Code,
-        ];
+        const ALL: [Format; 3] = [Format::PlainText, Format::Markdown, Format::Code];
 
         fn members(predicate: fn(Format) -> bool) -> Vec<Format> {
             ALL.into_iter().filter(|format| predicate(*format)).collect()
         }
 
-        assert_eq!(
-            members(Format::is_markdown),
-            [Format::Markdown, Format::MarkdownSource]
-        );
-        assert_eq!(
-            members(Format::is_source_view),
-            [Format::MarkdownSource]
-        );
-        assert_eq!(
-            members(Format::is_wysiwyg),
-            [Format::Markdown]
-        );
-        assert_eq!(
-            members(Format::has_structural_lists),
-            [
-                Format::Markdown,
-                Format::MarkdownSource,
-            ]
-        );
-
+        assert_eq!(members(Format::is_markdown), [Format::Markdown]);
         assert_eq!(members(Format::is_code), [Format::Code]);
         assert_eq!(members(Format::is_literal), [Format::PlainText, Format::Code]);
-        // Every format is exactly one of literal, WYSIWYG, or source view.
+        // Every format is exactly one of literal or Markdown.
         for format in ALL {
-            let kinds = usize::from(format.is_wysiwyg())
-                + usize::from(format.is_source_view())
-                + usize::from(format.is_literal());
-            assert_eq!(kinds, 1, "{format:?} is not exactly one view kind");
+            assert_ne!(format.is_markdown(), format.is_literal(), "{format:?}");
         }
     }
 }

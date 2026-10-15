@@ -158,7 +158,6 @@ fn literal_and_markdown_code_keep_exact_encoding_failures_atomic() {
     for (format, source, range) in [
         (Format::PlainText, "middle", 0..6),
         (Format::Code, "middle", 0..6),
-        (Format::MarkdownSource, "**middle**", 2..8),
         (Format::Markdown, "`middle`", 0..6),
         (Format::Markdown, "```\nmiddle\n```", 0..6),
     ] {
@@ -226,7 +225,7 @@ fn references_follow_gfm_replacements_without_creating_hard_lines_or_decoding_co
         assert_eq!(document.hard_line_snapshot().line_count(), 1);
     }
     let source = "**&#x4E2D;**";
-    assert_eq!(document(source, Format::MarkdownSource).text(), source);
+    assert_eq!(document(source, Format::Code).text(), source);
 }
 
 #[test]

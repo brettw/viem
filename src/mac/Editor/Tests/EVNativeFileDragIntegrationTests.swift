@@ -129,8 +129,8 @@ final class EVNativeFileDragIntegrationTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(secondController.window).isVisible)
         let secondSurface = try XCTUnwrap(secondController.editorSurface as? EVEditorSurfaceController)
         XCTAssertTrue(secondSurface.backend === secondBackend)
-        // Markdown opens in its source-visible view.
-        XCTAssertEqual(secondSurface.formattedText, "## Second file\nParagraph")
+        // Markdown opens with Preview off, as literal Code.
+        XCTAssertEqual(secondSurface.formattedText, "## Second file\n\nParagraph")
         XCTAssertEqual(try Data(contentsOf: firstURL), firstBytes)
         XCTAssertEqual(try Data(contentsOf: secondURL), secondBytes)
         firstSurface.perform(menuCommand: .undo, sender: nil)

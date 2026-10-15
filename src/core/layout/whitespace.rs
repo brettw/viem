@@ -355,7 +355,7 @@ pub(super) fn marker_plan(
     viewport: LayoutRect,
     wrap: bool,
 ) -> Vec<WhitespaceMarker> {
-    if config.format.is_wysiwyg() || !config.options.visible_whitespace.enabled
+    if config.format.is_markdown() || !config.options.visible_whitespace.enabled
         || viewport.width <= 0.0 || viewport.height <= 0.0 {
         return Vec::new();
     }

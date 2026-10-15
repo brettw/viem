@@ -145,19 +145,20 @@ fullscreen bounds do not replace the saved normal frame.
   fonts, colors, and paragraph properties remain
   available in the independent theme style inspector. Its title identifies the
   Code, Markdown, or Plain Text stylesheet and the selected theme.
-- Markdown's right-aligned **Formatted view** toolbar toggle switches between
-  Source and WYSIWYG while retaining source bytes. Its document/Aa icon is pressed
-  for WYSIWYG and unpressed for Source. The last choice is saved as
-  `editing.markdownFormattedView` in `config.json` and used for subsequent Markdown
-  opens, including Ex commands. With no saved choice, Markdown opens in Source.
+- Markdown's right-aligned **Markdown Preview** toolbar toggle switches between
+  formatted Markdown and literal Code with the Markdown language while retaining
+  source bytes. Its document/Aa icon is pressed while Preview is on. The last choice
+  is saved as `editing.markdownFormattedView` in `config.json` and used for
+  subsequent Markdown opens, including Ex commands. With no saved choice, Markdown
+  opens with Preview off.
   Existing documents and recovered sessions retain their view.
   The status bar shows mode, the current file path, and messages on
   the left and cursor position on the right. Paths are relative to the working
   directory unless that would traverse the root or cross drives; narrow panes
   trim paths from the left while keeping the mode column a fixed width. Right-click
   the filename to copy its full path or its path relative to the working directory.
-- Format sits between Edit and Style, with checked Plain text, Markdown, and Code
-  document types, then Word wrap and Flow source paragraphs after a divider.
+- Format sits between Edit and Style, with checked Plain text, Markdown Preview,
+  and Code document types, then Word wrap after a divider.
   Choosing Code retains the current automatic or explicit language choice.
   File > Code language sits immediately before Text Encoding and lists Auto,
   an Obscure languages flyout, a divider, and the primary languages. Each language

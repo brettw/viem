@@ -32,12 +32,7 @@ pub struct MarkdownTableSourceRow {
     pub source_range: Range<usize>,
     pub source_body: Range<usize>,
     /// Every original cell spelling, including whitespace and ignored extras.
-    pub cells: Vec<Range<usize>>,
     pub source_cells: Vec<Range<usize>>,
-    pub pipes: Vec<usize>,
-    /// Source-view punctuation after trimming each delimiter cell's spaces and
-    /// tabs. Cached once during projection so paint never reads a giant row.
-    pub delimiter_markers: Vec<Range<usize>>,
     pub delimiter: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,7 +40,6 @@ pub struct MarkdownTable {
     pub id: u64,
     pub range: Range<usize>,
     pub source_range: Range<usize>,
-    pub source_view: bool,
     pub columns: Vec<TableAlignment>,
     pub rows: super::TableRows<MarkdownTableRow>,
     pub source_rows: super::TableRows<MarkdownTableSourceRow>,
@@ -70,7 +64,7 @@ impl super::range_index::RangedItem for MarkdownTable {
         let delta = range.start as i128 - self.range.start as i128;
         Some(Self {
             id: self.id, range, source_range: shifted(&self.source_range, source_delta)?,
-            source_view: self.source_view, columns: self.columns.clone(),
+            columns: self.columns.clone(),
             rows: self.rows.shifted(delta, source_delta)?,
             source_rows: self.source_rows.shifted(delta, source_delta)?,
         })
@@ -109,9 +103,7 @@ impl super::range_index::RangedItem for MarkdownTableSourceRow {
         &self.range
     }
     fn owned_heap_bytes(&self) -> usize {
-        (self.cells.capacity() + self.source_cells.capacity() + self.delimiter_markers.capacity())
-            * std::mem::size_of::<Range<usize>>()
-            + self.pipes.capacity() * std::mem::size_of::<usize>()
+        self.source_cells.capacity() * std::mem::size_of::<Range<usize>>()
     }
     fn with_range(&self, range: Range<usize>) -> Self {
         self.with_transform(range, 0, None)
@@ -123,22 +115,12 @@ impl super::range_index::RangedItem for MarkdownTableSourceRow {
         source_delta: i128,
         _revision: Option<u64>,
     ) -> Option<Self> {
-        let delta = range.start as i128 - self.range.start as i128;
         let mut row = self.clone();
         row.range = range;
         row.source_range = shifted(&row.source_range, source_delta)?;
         row.source_body = shifted(&row.source_body, source_delta)?;
-        for cell in &mut row.cells {
-            *cell = shifted(cell, delta)?;
-        }
         for cell in &mut row.source_cells {
             *cell = shifted(cell, source_delta)?;
-        }
-        for marker in &mut row.delimiter_markers {
-            *marker = shifted(marker, delta)?;
-        }
-        for pipe in &mut row.pipes {
-            *pipe = usize::try_from(*pipe as i128 + delta).ok()?;
         }
         Some(row)
     }
@@ -224,12 +206,11 @@ pub(super) struct RowSyntax {
     pub range: Range<usize>,
     pub body: Range<usize>,
     pub cells: Vec<Range<usize>>,
-    pub pipes: Vec<usize>,
     pub delimiter: bool,
 }
 
 /// Split using GFM's pipe rule, independent of inline backtick scopes.
-pub(super) fn split_row(text: &str, range: Range<usize>) -> (Vec<Range<usize>>, Vec<usize>) {
+pub(super) fn split_row(text: &str, range: Range<usize>) -> Vec<Range<usize>> {
     let bytes = text.as_bytes();
     let mut pipes = Vec::new();
     let mut slashes = 0;
@@ -265,7 +246,7 @@ pub(super) fn split_row(text: &str, range: Range<usize>) -> (Vec<Range<usize>>, 
         at = pipe + 1;
     }
     cells.push(at..end.max(at));
-    (cells, pipes)
+    cells
 }
 
 /// Table recognition shares the projection's block parser event stream.
@@ -297,12 +278,11 @@ impl TableParser {
                     let end =
                         range.start + text[range.clone()].trim_end_matches(['\r', '\n']).len();
                     let physical_start = text[..range.start].rfind('\n').map_or(0, |at| at + 1);
-                    let (cells, pipes) = split_row(text, range.start..end);
+                    let cells = split_row(text, range.start..end);
                     table.rows.push(RowSyntax {
                         range: physical_start..range.end,
                         body: range.start..end,
                         cells,
-                        pipes,
                         delimiter: false,
                     });
                 }
@@ -320,14 +300,13 @@ impl TableParser {
                             - text[start + prefix..end]
                                 .trim_start_matches([' ', '\t'])
                                 .len();
-                        let (cells, pipes) = split_row(text, body_start..end);
+                        let cells = split_row(text, body_start..end);
                         table.rows.insert(
                             1,
                             RowSyntax {
                                 range: start..finish,
                                 body: body_start..end,
                                 cells,
-                                pipes,
                                 delimiter: true,
                             },
                         );
@@ -351,9 +330,6 @@ impl TableSyntax {
             row.body = at(row.body.start)..at(row.body.end);
             for cell in &mut row.cells {
                 *cell = at(cell.start)..at(cell.end);
-            }
-            for pipe in &mut row.pipes {
-                *pipe = at(*pipe);
             }
         }
         self
@@ -380,6 +356,6 @@ mod tests {
         );
         assert_eq!(table.rows.len(), 3);
         assert_eq!(table.rows[2].cells.len(), 2);
-        assert_eq!(doc.projection().presentation_line_count(false), 3);
+        assert_eq!(doc.projection().presentation_line_count(), 3);
     }
 }

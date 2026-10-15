@@ -1,7 +1,7 @@
 use viem_core::command::{InputEvent, Key, Mode};
 use viem_core::document::{BoundaryAffinity, Encoding, Format, HistoryNavigationRequest};
 use viem_core::layout::MockTextMeasurementProvider;
-use viem_core::{Core, CoreEvent, Document, ViewId};
+use viem_core::{Core, CoreEvent, Document, DocumentMode, ViewId};
 
 type Editor = Core<MockTextMeasurementProvider>;
 
@@ -50,10 +50,14 @@ fn switch_and_check(core: &mut Editor, view: ViewId, target: Format, retained_pr
     let original = core.document().source_bytes();
     core.handle(
         view,
-        CoreEvent::SetMarkdownSource {
+        CoreEvent::SetDocumentMode {
             document: core.document().id(),
             revision: core.document().revision(),
-            source: target == Format::MarkdownSource,
+            mode: if target == Format::Code {
+                DocumentMode::Code("markdown".into())
+            } else {
+                DocumentMode::Markdown
+            },
         },
     )
     .unwrap();
@@ -95,8 +99,8 @@ fn switch_and_check(core: &mut Editor, view: ViewId, target: Format, retained_pr
 
 #[test]
 fn insert_upstream_soft_wrap_caret_keeps_its_semantic_boundary_across_format_switch() {
-    for from in [Format::Markdown,] {
-        for target in [Format::MarkdownSource] {
+    for from in [Format::Markdown] {
+        for target in [Format::Code] {
             let (mut core, view) = editor(from);
             let paragraph_start = core.document().text().find(PARAGRAPH).unwrap();
             let boundary = core
@@ -118,9 +122,9 @@ fn insert_upstream_soft_wrap_caret_keeps_its_semantic_boundary_across_format_swi
 }
 
 #[test]
-fn insert_upstream_paragraph_end_caret_stays_before_generated_source_delimiters() {
-    for from in [Format::Markdown,] {
-        for target in [Format::MarkdownSource] {
+fn insert_upstream_paragraph_end_caret_stays_before_source_delimiters() {
+    for from in [Format::Markdown] {
+        for target in [Format::Code] {
             let (mut core, view) = editor(from);
             let boundary = core.document().text().find(PARAGRAPH).unwrap() + PARAGRAPH.len();
             place(&mut core, view, boundary);

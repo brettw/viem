@@ -11,14 +11,6 @@
 
 ## Open questions
 
-### Q3. Source Enter inside a table row
-
-Source view, Enter in the middle of `| 1 | 2 |` inserts `\n\n`, which ends the
-table and turns the following rows into a paragraph. The table spec says
-Source has "no table-specific Enter … rewrite", but a paragraph separator
-inside a row is rarely intended. Should Source Enter in a table row insert a
-single line ending?
-
 ### Q4. Autoformatting in an existing list item
 
 Typing `- ` at the start of `- a` autoformats to a nested bullet (`- - a`).
@@ -28,7 +20,7 @@ way, or should neither autoformat inside an existing item's first line?
 ### Q5. Line commands on table rows
 
 What should `J`, `gJ`, `2dd`, `gUU`, `g~~`, `>>`, `:sort` and `:g` do in
-WYSIWYG tables? They currently fail with a mix of "Editing across table cell
+Markdown Preview tables? They currently fail with a mix of "Editing across table cell
 boundaries…", `TextDoesNotMatchLayout`, `AmbiguousProjection` and
 `UnsupportedFormatting`. Possible rules: act on the current cell's text, act
 on whole rows, or refuse with one consistent message.
@@ -37,12 +29,6 @@ on whole rows, or refuse with one consistent message.
 
 These are no-ops by design. Should they at least move the caret to the
 previous or next cell, as Word does, so the key doesn't feel dead?
-
-### Q7. Source view hiding emptied lines
-
-In `a\nb\n\nc`, selecting `b` and pressing Backspace leaves source `a\n\n\nc`.
-Source view collapses the separator, so the line the user was editing
-disappears from view. Is that intended?
 
 ### Q9. Formatting availability vs. refusal
 
@@ -76,10 +62,10 @@ support is added?
 ### Q17. Literal CRs in mixed-ending files
 
 A file with mostly LF and some CRLF lines opens as `unix`, following Vim's
-`fileformats=unix,dos`. The CRs become literal content: WYSIWYG shows `ab\r
+`fileformats=unix,dos`. The CRs become literal content: Preview shows `ab\r
 c`, the caret can sit between CR and LF, and Backspace at a line start can
 delete an invisible CR instead of joining lines. This matches Vim's `^M`
-behavior. Should WYSIWYG show or protect these CRs, for example with a visible
+behavior. Should Preview show or protect these CRs, for example with a visible
 marker or by refusing to put the caret between CR and LF?
 
 ### Q19. List continuation in Plain Text
@@ -94,8 +80,8 @@ continue lists, and if so, should `o` match Enter?
 
 Deleting `a` from `a\u{feff}b` leaves a visible content U+FEFF in the live
 projection, but reopening interprets its bytes as a BOM and shows only `b`.
-The incremental and reopened documents must agree. WYSIWYG can preserve the
-character with a numeric reference; literal Source/Text/Code cannot use that
+The incremental and reopened documents must agree. Preview can preserve the
+character with a numeric reference; literal Text/Code cannot use that
 spelling without changing visible text. Should those views add a BOM before
 the retained U+FEFF (changing BOM metadata), reject this edit with an encoding
 explanation, or deliberately turn the leading character into a BOM?
@@ -118,24 +104,11 @@ appearance be refused? The original reproduction is `| **bold** | _it_ |\n|
 --- | --- |\n| a | b |`, copying logical range 0..9 and pasting at 0. This
 paste currently returns an unsupported-formatting result atomically.
 
-### Q24. Formatting a partial source-syntax selection or caret
-
-Bold and Italic on Source `a\\\nb` or `a  \nb`, range 0..2, select `a` and
-only part of the hard-break spelling. Should formatting apply to the raw
-selected characters, to the represented visible text, or be unavailable until
-the selection contains complete syntax contributors? Ordinary visible-space
-and entity selections do not have this ambiguity. The same question applies to
-pending Code/Bold/Italic after a hard-break backslash (`a\\\nb` at 2) or
-inside an escape (`\# not heading` at 1): retaining the existing backslash
-means it consumes a newly inserted formatting delimiter. Should typing
-preserve the raw spelling or change that syntax to make the new text carry the
-requested style?
-
 ### Q25. Shifting a wrapped row
 
 Under Visual line meaning, `>>`, `<<` and `V>` on the second or later display
 row of a soft-wrapped line insert indentation in the middle of the sentence
-(`jumps   over the lazy dog`), in Plain and WYSIWYG. Should row-based shifts
+(`jumps   over the lazy dog`), in Plain and Markdown Preview. Should row-based shifts
 apply to the row's hard line, or be refused on continuation rows?
 
 ### Q26. `yyp` on a partial row
@@ -146,8 +119,8 @@ and put it after the row's end?
 
 ### Q28. Paragraphs in Markdown views
 
-What should count as a paragraph for `}`, `{`, `ap` and `ip` in WYSIWYG and
-Source: each block (heading, list item, table, code block), or runs of
+What should count as a paragraph for `}`, `{`, `ap` and `ip` in Markdown
+Preview: each block (heading, list item, table, code block), or runs of
 ordinary paragraphs as separated in the source? Vim users will expect `dap` on
 a list item to delete that item, or the whole list.
 

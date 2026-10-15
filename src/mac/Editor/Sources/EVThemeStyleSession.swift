@@ -62,7 +62,7 @@ final class EVThemeStyleSession: EVStyleSettingsSession {
 
     init(configuration: EVConfigurationStore, format: EVSourceFormat) throws {
         self.configuration = configuration
-        sourceFormat = format == .markdownSource ? .markdown : format
+        sourceFormat = format
         backend = try EVCoreDocumentBackend(themeStyleFormat: sourceFormat, configuration: configuration)
         viewSession = try EVCoreViewSession(document: backend, width: 400, height: 200)
         undoManager.groupsByEvent = false

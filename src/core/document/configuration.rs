@@ -11,7 +11,7 @@ pub(super) struct Configuration {
 
 impl Configuration {
     fn applies_to(&self, format: Format) -> bool {
-        self.format == format || (self.format.is_markdown() && format.is_markdown())
+        self.format == format
     }
 }
 

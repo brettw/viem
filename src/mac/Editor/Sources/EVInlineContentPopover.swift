@@ -249,7 +249,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     func refresh() {
         guard !applying else { return }
         guard let surface, let session = surface.session, let window = surface.editorView.window,
-              surface.backend.sourceFormat == .markdown || surface.backend.sourceFormat == .markdownSource,
+              surface.backend.sourceFormat == .markdown,
               !session.hasActiveComposition, surface.commandLine?.prompt == nil,
               let selection = try? session.listSelection() else { close(); return }
         if kind == .link, !isEditing, (try? session.inlineContentContext(.image).item) != nil { close(); return }

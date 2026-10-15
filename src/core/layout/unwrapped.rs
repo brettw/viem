@@ -142,7 +142,7 @@ fn next_break(
     state: &mut WrapBreakState,
     cancellation: &dyn LayoutCancellationProbe,
 ) -> Result<usize, LayoutComputationError> {
-    super::super::line_breaks::first_line_break(tree, range, false, state, cancellation).map_err(|error| {
+    super::super::line_breaks::first_line_break(tree, range, state, cancellation).map_err(|error| {
         match error {
             super::super::jobs::LayoutJobError::Cancelled => LayoutComputationError::Cancelled,
             super::super::jobs::LayoutJobError::FormattedText(error) => text_error(error),
@@ -1662,51 +1662,4 @@ mod tests {
         assert_eq!(view.viewport_left(), 100_000.0);
     }
 
-    #[test]
-    fn giant_source_lists_quotes_and_styled_paragraphs_match_complete_layout() {
-        use crate::document::{Encoding, Format};
-        for (format, source) in [
-            (
-                Format::MarkdownSource,
-                format!("12. {}", "AV fi word ".repeat(7_000)),
-            ),
-            (
-                Format::MarkdownSource,
-                format!("> {}", "AV fi word ".repeat(7_000)),
-            ),
-
-        ] {
-            let document =
-                Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
-            let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
-            let mut full = ViewLayout::new(320.0, 100.0);
-            full.set_wrap(false);
-            engine.relayout(&document, &mut full).unwrap();
-            let expected = &full.snapshot().unwrap().rows[0];
-            let mut sparse = ViewLayout::new(320.0, 100.0);
-            sparse.set_wrap(false);
-            materialize(&document, &mut engine, &mut sparse, 1, 0);
-            let actual = &sparse.snapshot().unwrap().rows[0];
-            assert_eq!(actual.width, expected.width, "{format:?}");
-            assert_eq!(actual.baseline, expected.baseline, "{format:?}");
-            assert_eq!(
-                actual.paragraph_content_x, expected.paragraph_content_x,
-                "{format:?}"
-            );
-            assert_eq!(
-                actual.paragraph_content_width, expected.paragraph_content_width,
-                "{format:?}"
-            );
-            assert_eq!(actual.decorations, expected.decorations, "{format:?}");
-            for cluster in &actual.clusters {
-                let reference = expected
-                    .clusters
-                    .iter()
-                    .find(|entry| entry.text_range == cluster.text_range)
-                    .unwrap();
-                assert_eq!(cluster.x, reference.x, "{format:?}");
-                assert_eq!(cluster.advance, reference.advance, "{format:?}");
-            }
-        }
-    }
 }

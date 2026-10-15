@@ -5,7 +5,7 @@ use viem_core::document::{measure_document_work, Document, Encoding, Format};
 
 #[test]
 fn local_word_motions_do_not_materialize_unrelated_text() {
-    for format in [Format::PlainText, Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Markdown] {
         for (keys, start, expected) in [("w", 0, 4), ("W", 0, 4), ("e", 0, 2), ("E", 0, 2),
             ("b", 8, 4), ("B", 8, 4), ("ge", 8, 6), ("gE", 8, 6), ("3w", 0, 11)] {
             let source = "one two ++ three\n\nfour five\n\n".repeat(4096);

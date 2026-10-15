@@ -52,7 +52,7 @@ impl Document {
         &self,
         range: Range<usize>,
     ) -> Result<Option<ReplacementTypingContext>, DocumentError> {
-        if !self.format().is_wysiwyg() || range.is_empty() {
+        if !self.format().is_markdown() || range.is_empty() {
             return Ok(None);
         }
         self.validate_range(&range)?;
@@ -133,5 +133,4 @@ impl Document {
 pub(super) struct Insertion {
     pub source: Range<usize>,
     pub syntax: String,
-    pub source_caret: usize,
 }

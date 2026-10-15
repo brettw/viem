@@ -126,15 +126,6 @@ fn large_image_document_queries_and_shapes_only_requested_region() {
         assert_eq!((cluster.advance,cluster.typographic_bounds.height),(200.,100.));
     }
 }
-#[test]
-fn source_view_shapes_literal_image_syntax_and_never_requests_a_resource() {
-    let document=Document::from_bytes(b"![alt](https://example.test/image.png)".to_vec(),Encoding::Utf8,Format::MarkdownSource).unwrap();
-    let mut engine=LayoutEngine::new(Images::new());
-    let mut view=ViewLayout::new(1000.,300.);
-    engine.relayout(&document,&mut view).unwrap();
-    assert!(engine.provider().destinations.is_empty());
-    assert_eq!(document.text(),"![alt](https://example.test/image.png)");
-}
 
 #[test]
 fn image_edges_remain_atomic_next_to_combining_marks() {

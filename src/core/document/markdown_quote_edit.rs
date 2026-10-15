@@ -80,56 +80,15 @@ impl Document {
         };
         // Quoted lists share item ownership and split repairs with all other
         // Markdown lists; the physical quote prefix alone is not that owner.
-        if self.format() == Format::Markdown
-            && matches!(block.kind, BlockKind::ListItem { .. })
+        if matches!(block.kind, BlockKind::ListItem { .. })
             && !crate::document::markdown_quotes::is_fenced_block(self, &block)?
         {
             return Ok(None);
         }
-        if self.format() == Format::Markdown
-            && block.style.0 == "Code Block"
+        if block.style.0 == "Code Block"
             && !crate::document::markdown_quotes::is_fenced_block(self, &block)?
         {
             return Ok(None);
-        }
-        let mut split_quote_prefix = None;
-        if self.format() == Format::MarkdownSource {
-            let row = self
-                .projection()
-                .hard_line_at_offset(at)
-                .and_then(|index| self.projection().hard_line_range(index))
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let text = self
-                .projection()
-                .text_tree()
-                .slice(row.clone())
-                .map_err(DocumentError::FormattedTextStorage)?;
-            let prefix = crate::document::markdown_quotes::prefix(&text);
-            let marker = crate::document::markdown_blocks::marker_prefix_length(&text[prefix..])
-                .unwrap_or(0);
-            let marker = if matches!(
-                block.kind,
-                BlockKind::ListItem {
-                    item_start: false,
-                    ..
-                }
-            ) {
-                marker.max(
-                    text[prefix..].len() - text[prefix..].trim_start_matches([' ', '\t']).len(),
-                )
-            } else {
-                marker
-            };
-            // Visible source syntax can itself be split. Continuing its
-            // container before that prefix would duplicate the original label.
-            let quote_marker_end = text[..prefix].rfind('>').map_or(0, |index| index + 1);
-            if marker == 0 && at >= row.start + quote_marker_end && at <= row.start + prefix {
-                // The quote marker is complete. Retain its following authored
-                // whitespace with the body instead of leaving that body bare.
-                split_quote_prefix = Some(text[..at - row.start].to_owned());
-            } else if at < row.start + prefix + marker {
-                return Ok(None);
-            }
         }
         let source_start = self
             .projection()
@@ -207,37 +166,20 @@ impl Document {
                             .encoding()
                             .encode_fragment(&body[..label_length])?
                             .len();
-                    let edit = if self.format() == Format::MarkdownSource {
-                        let start = self
-                            .projection()
-                            .map_source_boundary(
-                                self.revision(),
-                                source_start,
-                                BoundaryAffinity::Downstream,
-                            )
-                            .map_err(|_| DocumentError::AmbiguousProjection)?
-                            .formatted_offset;
-                        TextEdit::new(start..start + label_length, logical.clone())
-                    } else {
-                        TextEdit::new(block.range.clone(), "")
-                    };
                     return Ok(Some((
-                        edit,
+                        TextEdit::new(block.range.clone(), ""),
                         source_start..source_end,
                         logical.replace('\n', self.file_format().spelling()),
                     )));
                 }
             }
         }
-        let code_prefix = if code && self.format() == Format::Markdown {
+        let code_prefix = if code {
             crate::document::markdown_code::fenced_source(self, &block)?
                 .map(|fence| fence.body_prefix)
         } else { None };
-        let continuation_prefix = split_quote_prefix.as_deref()
-            .or(code_prefix.as_deref()).unwrap_or(prefix);
-        // A list continuation can start with a quote rather than a list label.
-        // Splitting just after that quote marker must continue the quote itself.
-        let list_kind = (!code && split_quote_prefix.is_none()).then_some(&block.kind);
+        let continuation_prefix = code_prefix.as_deref().unwrap_or(prefix);
+        let list_kind = (!code).then_some(&block.kind);
         let logical = if let Some(BlockKind::ListItem {
             ordered, ordinal, ..
         }) = list_kind
@@ -260,29 +202,16 @@ impl Document {
                 },
                 delimiter
             )
-        } else if code || split_quote_prefix.is_some() {
-            // Splitting the completed source prefix leaves an empty quote
-            // above the body. One ending already separates those two lines;
-            // a prose paragraph separator would add a third quote-only row.
+        } else if code {
+            // Code lines continue the fence body with one ending; a prose
+            // paragraph separator would add a quote-only row.
             format!("\n{continuation_prefix}")
         } else {
             format!("\n{}\n{continuation_prefix}", prefix.trim_end_matches([' ', '\t']))
         };
-        let edit = TextEdit::new(
-            at..at,
-            if self.format() == Format::MarkdownSource {
-                logical.clone()
-            } else {
-                "\n".into()
-            },
-        );
-        let source_at = if self.format() == Format::Markdown {
-            crate::document::source_edit::insertion_point(self.projection(), at, None)
-        } else {
-            self.projection()
-                .source_insertion_point(at, at == block.range.start)
-        }
-        .ok_or(DocumentError::AmbiguousProjection)?;
+        let edit = TextEdit::new(at..at, "\n");
+        let source_at = crate::document::source_edit::insertion_point(self.projection(), at, None)
+            .ok_or(DocumentError::AmbiguousProjection)?;
         let syntax = logical.replace('\n', self.file_format().spelling());
         Ok(Some((edit, source_at..source_at, syntax)))
     }
@@ -298,16 +227,12 @@ impl Document {
             source_range,
             self.encoding().encode_fragment(&syntax)?,
         )];
-        Ok(Some(if self.format() == Format::MarkdownSource {
-            self.prepare_markdown_source_syntax_edit(edit, patches)?
-        } else {
-            self.preserve_markdown_edit_boundaries(
-                std::slice::from_ref(&edit),
-                std::iter::once(&edit.range),
-                &mut patches,
-            )?;
-            self.prepare_text_edits_with_patches(vec![edit], Some(patches))?
-        }))
+        self.preserve_markdown_edit_boundaries(
+            std::slice::from_ref(&edit),
+            std::iter::once(&edit.range),
+            &mut patches,
+        )?;
+        Ok(Some(self.prepare_text_edits_with_patches(vec![edit], Some(patches))?))
     }
 
     pub(super) fn prepare_markdown_quote_style(

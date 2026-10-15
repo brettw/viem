@@ -342,6 +342,11 @@ pub(super) fn deletion_patches(
                 .and_then(|index| document.state().source_hard_lines.get(index))
                 .ok_or(DocumentError::AmbiguousProjection)
         };
+    let retained_empty = projection
+        .blocks_for_region(&(range.end..range.end))
+        .into_iter()
+        .find(|block| block.range == (range.end..range.end)
+            && block.kind == BlockKind::Paragraph);
     let start = if range.start < first.range.start {
         projection
             .source_range(range.start..first.range.start)
@@ -350,18 +355,26 @@ pub(super) fn deletion_patches(
     } else {
         source_line(first, false)?.start
     };
-    let retained_empty = projection
-        .blocks_for_region(&(range.end..range.end))
-        .into_iter()
-        .find(|block| block.range == (range.end..range.end)
-            && block.kind == BlockKind::Paragraph);
     let end = if range.end > last.range.end {
         let next = projection
             .blocks_for_region(&(range.end..range.end))
             .into_iter()
             .find(|block| block.range.start == range.end)
             .ok_or(DocumentError::AmbiguousProjection)?;
-        source_line(&next, false)?.start
+        let next_start = source_line(&next, false)?.start;
+        let last_end = source_line(last, true)?.end;
+        // Blank lines between the deleted lines and the next block separate
+        // it from the content above. Keep them unless a blank line already
+        // precedes the deletion (or they spell retained empty paragraphs);
+        // otherwise a following paragraph would become a lazy continuation of
+        // the preceding item.
+        let lines = &document.state().source_hard_lines;
+        let separated_above = start == 0 || lines.line_at_offset(start - 1)
+            .and_then(|index| lines.get(index))
+            .and_then(|line| document.state().source.bytes_in(line))
+            .map(|bytes| document.encoding().decode_region(&bytes, 0).is_ok_and(|text| text.text.trim().is_empty()))
+            .unwrap_or(true);
+        if last_end < next_start && !separated_above && retained_empty.is_none() { last_end } else { next_start }
     } else {
         source_line(last, true)?.end
     };
@@ -716,7 +729,7 @@ fn paragraph_insertion_patches(
     else {
         return Ok(None);
     };
-    let blocks = document.projection().list_indentation_blocks(false);
+    let blocks = document.projection().list_indentation_blocks();
     // Keep the first touching block selected above, including empty bodies at
     // a shared boundary. The usual point lookup instead selects the last one.
     let index = if at == 0 { 0 } else { blocks.partition_point_end(at - 1) };

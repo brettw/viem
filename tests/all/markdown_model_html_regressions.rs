@@ -196,9 +196,9 @@ fn preformatted_html_retains_literal_lines_and_local_edits() {
         ("<pre>a\\\n", "a\\\n"),
         ("<pre>a  \n", "a  \n"),
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-            assert_eq!(document.text(), if format.is_source_view() { source } else { text });
+            assert_eq!(document.text(), text);
             assert_eq!(document.source_bytes(), source.as_bytes());
             let needle = if source.contains('b') { 'b' } else { 'a' };
             let at = document.text().rfind(needle).unwrap();
@@ -275,9 +275,6 @@ fn passive_html_rules_create_editable_furniture_boundaries() {
         }
         let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         edit(&mut document, rule_at..rule_at, "X");
-        let source_document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-        assert_eq!(source_document.text(), source);
-        assert!(source_document.projection().blocks().iter().all(|block| !block.thematic_break));
     }
 }
 

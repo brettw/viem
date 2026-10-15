@@ -65,10 +65,6 @@ _Static_assert(VIEM_KEY_ALT_ENTER == {alt_enter}, "list paragraph key");
 _Static_assert(VIEM_LIST_CAN_INSERT_PARAGRAPH == {list_paragraph_capability}, "list paragraph capability");
 static ViemStatus (*insert_list_paragraph)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_list_paragraph;
 _Static_assert(sizeof(ViemSetDocumentModeV1) == {set_mode_size}, "document mode operation size");
-_Static_assert(offsetof(ViemSetDocumentModeV1, formatted_markdown) == {set_mode_formatted}, "document mode preference offset");
-_Static_assert(sizeof(ViemSetMarkdownSourceV1) == {set_markdown_size}, "format operation size");
-_Static_assert(offsetof(ViemSetMarkdownSourceV1, source) == {set_markdown_source}, "format operation offset");
-_Static_assert(offsetof(ViemSetMarkdownSourceV1, document_id) == {set_markdown_document}, "format document offset");
 static ViemStatus (*read_file_bytes)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, uint32_t, uint64_t, const uint8_t *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_read_file;
 static ViemStatus (*copy_source_bytes)(ViemCoreHandle, uint64_t, uint64_t, uint64_t, uint64_t, uint8_t *, uint64_t, uint64_t *, uint32_t *) = viem_core_copy_source_range_bytes;
 static ViemStatus (*wait_for_syntax)(ViemCoreHandle, ViemViewId, uint8_t *) = viem_core_view_wait_for_syntax;
@@ -708,10 +704,6 @@ static void typecheck(void) {{
         selection_block = VIEM_MODE_SELECTION_BLOCK,
         autoselect = VIEM_EX_OPTION_AUTOSELECT,
         set_mode_size = std::mem::size_of::<ViemSetDocumentModeV1>(),
-        set_mode_formatted = std::mem::offset_of!(ViemSetDocumentModeV1, formatted_markdown),
-        set_markdown_size = std::mem::size_of::<ViemSetMarkdownSourceV1>(),
-        set_markdown_source = std::mem::offset_of!(ViemSetMarkdownSourceV1, source),
-        set_markdown_document = std::mem::offset_of!(ViemSetMarkdownSourceV1, document_id),
         document_options = std::mem::size_of::<ViemDocumentOptions>(),
         document_state = std::mem::size_of::<ViemDocumentStateV1>(),
         formatted_identity = std::mem::size_of::<ViemFormattedSnapshotIdentityV1>(),

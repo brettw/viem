@@ -12,8 +12,7 @@ internal sealed partial class Preferences
     internal void ObserveMarkdownView(CoreDocument document, Action<Exception> report)
     {
         uint previous = document.State.format;
-        if (previous is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE)
-            || !markdownViewDocuments.Add(document)) return;
+        if (!document.IsMarkdownDocument || !markdownViewDocuments.Add(document)) return;
         // Initial attachment, recovery, and switching between existing panes
         // do not replace the last choice. Observe actual shared document changes
         // once, including history navigation, rather than toolbar refreshes.
@@ -22,8 +21,10 @@ internal sealed partial class Preferences
             uint current = document.State.format;
             if (current == previous) return;
             uint old = previous; previous = current;
-            if (old is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE)
-                || current is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE)) return;
+            // Markdown Preview off is literal Code with the Markdown language.
+            if (old is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_CODE)
+                || current is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_CODE)
+                || !document.IsMarkdownDocument) return;
             bool formatted = current == VIEM_FORMAT_MARKDOWN;
             try
             {

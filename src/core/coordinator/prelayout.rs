@@ -57,7 +57,6 @@ impl<P: TextMeasurementProvider> Core<P> {
         cancel_obsolete_layout_work(view, self.document.revision(), requirements);
         let Some(band) = self.prelayout_band(view_id, forward)? else { return Ok(None); };
         let view = &self.views[&view_id];
-        let flow = view.layout.paragraph_flow();
         let lines: Box<dyn Iterator<Item = usize>> = if forward { Box::new(band) } else { Box::new(band.rev()) };
         let mut requested: Option<Range<usize>> = None;
         let mut text: Option<Range<usize>> = None;
@@ -66,7 +65,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if requested.is_some() { break; }
                 continue;
             }
-            let range = self.document.projection().presentation_line_range(line, flow)
+            let range = self.document.projection().presentation_line_range(line)
                 .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line: line })?;
             if range.len() > MAX_JOB_BYTES {
                 if requested.is_some() { break; }

@@ -223,42 +223,6 @@ fn zero_container_perimeter_retains_independent_outer_cell_edges() {
 }
 
 #[test]
-fn source_geometry_ignores_table_and_cell_box_declarations() {
-    let document = document(
-        SOURCE,
-        Format::MarkdownSource,
-        json!({}),
-        json!({}),
-        json!({}),
-    );
-    let first = layout(&document, 1.);
-    let mut changed = Document::from_bytes(
-        document.source_bytes().to_vec(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    configure(
-        &mut changed,
-        json!({"padding_top":20,"padding_left":50,"border_top_width":40}),
-        json!({}),
-        json!({"padding_top":50,"padding_left":70,"border_left_width":30,"border_top_width":60}),
-    );
-    let second = layout(&changed, 1.);
-    assert!(second.tables().is_empty());
-    for (before, after) in first.rows.iter().zip(second.rows.iter()) {
-        close(before.y, after.y);
-        close(before.paragraph_content_x, after.paragraph_content_x);
-        close(before.width, after.width);
-        assert!(after
-            .decorations
-            .iter()
-            .all(|decoration| decoration.kind != DecorationKind::BlockBorder));
-    }
-    assert_eq!(changed.source_bytes(), SOURCE.as_bytes());
-}
-
-#[test]
 fn table_box_style_changes_invalidate_geometry_with_bounded_discovery() {
     let source = "| A | B |\n| - | - |\n".to_owned()
         + &(0..10_000)

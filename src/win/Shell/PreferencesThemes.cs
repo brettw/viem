@@ -107,7 +107,7 @@ internal sealed partial class Preferences
         catch (Exception error) { activeTheme = DefaultTheme(); SelectedTheme = null; SelectedThemePath = null; ThemeWarning(error.Message + " Using Default."); }
     }
     public static string StyleFamily(uint format) => format switch {
-        VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE => "markdown", VIEM_FORMAT_CODE => "code", _ => "text"
+        VIEM_FORMAT_MARKDOWN => "markdown", VIEM_FORMAT_CODE => "code", _ => "text"
     };
     public byte[] ThemeStyleDefaults(uint format)
     {

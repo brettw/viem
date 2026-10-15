@@ -54,8 +54,7 @@ into editable pipe tables.
 
 ## Insert Table control
 
-Add an **Insert Table** toolbar button to Markdown, available in both Source and
-WYSIWYG. Its icon is a grid two rectangles across and three high, with each
+Add an **Insert Table** toolbar button to Markdown Preview. Its icon is a grid two rectangles across and three high, with each
 rectangle twice as wide as high. All strokes have the same thin weight. Give the
 button an accessible name and tooltip. Text and Code retain their existing
 toolbar policy.
@@ -107,8 +106,7 @@ use the same portable insertion intention.
 
 Insert empty cells, an empty header, and an initially unspecified/left-aligned
 delimiter for each column. Never insert placeholder words. Place the caret in
-the first header cell in Insert mode after acceptance. In Source, that caret is
-inside the first source cell rather than on its outer pipe.
+the first header cell in Insert mode after acceptance.
 
 Insert at the exact caret. Split surrounding prose only as needed to put the
 table between valid block boundaries, preserving text on both sides and existing
@@ -133,7 +131,7 @@ The 20 × 50 limit belongs only to this picker. Loaded tables and structural
 row/column commands have no fixed product size limit; resource limits must fail
 explicitly and atomically, never truncate a table.
 
-## Styles and WYSIWYG geometry
+## Styles and Preview geometry
 
 Add stable built-in styles **Table cell**, **Table header**, and **Table**.
 Cell/header styles are structural paragraph/cell styles, not character styles.
@@ -194,9 +192,9 @@ Viem already interprets `<br>` in Markdown; table work must preserve and extend
 that shared behavior, not introduce a table-only decoder. Recognize `<br>`,
 `<br/>`, `<br />`, and other already supported equivalent passive spellings.
 Retain their original bytes unless edited. Escaped markup and code-span contents
-remain literal; Source displays the tag instead of breaking the visual row.
+remain literal.
 
-In WYSIWYG Insert/Replace within a cell:
+In Preview Insert/Replace within a cell:
 
 - Inline code uses the same affinity policy as ordinary prose: an explicit
   downstream caret at its closing boundary types outside Code, including at a
@@ -224,12 +222,10 @@ In WYSIWYG Insert/Replace within a cell:
 
 Table cell navigation takes precedence over enclosing-list Tab indentation.
 Literal-next input keeps its existing precedence and representability rules.
-Source has no table-specific Enter or Tab rewrite. Preserve its existing source
-editing, indentation, and list-continuation rules, including structural
-Tab/Shift-Tab for a table inside a list owner. Enter at a completed quote prefix
-creates one empty quoted line before the retained body, just as for prose; at
-the header prefix, the following quoted table remains intact. Source edits may
-intentionally invalidate the table grammar. Normal/Visual Vim
+With Preview off, Markdown is literal Code: tables have no table-specific
+Enter or Tab rewrite, and edits may intentionally invalidate the table grammar.
+Structural Tab/Shift-Tab still applies to a Preview table inside a list owner.
+Normal/Visual Vim
 commands retain their declared line, count, register, and operator semantics.
 Do not silently repurpose `dd`, `o`, or `O` as row-widget commands. A complete
 table/row structural deletion must be distinguished from clearing cell content
@@ -275,10 +271,10 @@ desired x; at table edges it reaches adjacent prose. This is the table-specific
 interpretation of visual navigation, independent of Ex/logical reading order.
 
 Physical Source line commands retain actual source-line meaning, including the
-delimiter row. Source view edits those bytes literally. In WYSIWYG, a command
+delimiter row. In Preview, a command
 that fully consumes a source table row uses structural row deletion and its
 header rules; partial visual-line deletion clears only its exact cell content.
-Deleting just the hidden delimiter row in WYSIWYG is unavailable because it
+Deleting just the hidden delimiter row in Preview is unavailable because it
 would destroy table interpretation without a visible content target. Counts,
 cross-cell selections, registers, and replay must retain the originating line
 domain and exact range set. Do not claim command support until these cases and
@@ -368,8 +364,7 @@ to character selection; existing keyboard document-selection commands remain
 available for selections that span tables and prose.
 
 Cell selection is a semantic rectangle of cell identities, distinct from Vim
-Visual Block's display-space rectangle and from a contiguous text range. Source
-does not enter Cell selection: its pointer gestures select actual source text.
+Visual Block's display-space rectangle and from a contiguous text range.
 Font changes, wrapping preferences, and column resizing cannot alter which
 logical cells are selected.
 
@@ -409,8 +404,7 @@ tabular fallback, with tabs between columns and newlines between rows. Quote
 fields containing tabs, newlines, or quotes using doubled embedded quotes so
 cell-internal breaks are distinguishable from row boundaries. A rectangle copied
 from body rows does not silently promote its first row to a Markdown header.
-Source copying always preserves the selected source characters, with no visual
-alignment padding added.
+Code copying always preserves the selected source characters.
 
 Structured matrix paste into a Cell selection requires matching dimensions;
 a mismatch reports the size difference and leaves the selection unchanged.
@@ -431,66 +425,9 @@ an editable HTML-document format.
 
 Expose table dimensions, header relationships, cell coordinates/content,
 selection, and named structural actions to native accessibility. Empty cells
-remain navigable. Screen readers must not report alignment gaps as spaces or
-hidden delimiter rows as WYSIWYG content. Frontend accessibility limitations
+remain navigable. Screen readers must not report hidden delimiter rows as
+Preview content. Frontend accessibility limitations
 remain explicit until their adapters are implemented and tested.
-
-## Source view: align without rewriting
-
-Recognized tables retain every original source character and physical source
-line, including whitespace, optional pipes, delimiter hyphens/colons, escapes,
-and literal `<br>` tags. Table rows remain unwrapped and unflowed even when soft
-wrap or Flow Source Paragraphs is enabled. Draw no table borders or WYSIWYG row/
-column widgets in Source. The Insert Table picker remains available.
-
-Align corresponding structural pipe boundaries and position each cell's source
-content according to its column alignment, using layout advances only. Columns
-must be wide enough for the header, delimiter spelling, and literal body markup
-as displayed in this view. Do not reuse WYSIWYG widths when the source text has
-different metrics. Original leading/trailing cell whitespace remains present;
-alignment adds geometry around it rather than consuming it.
-
-Use Table header styling for the header's structural pipes and the delimiter
-row's pipes, hyphens, and colons. Use Table cell styling for body-row structural
-pipes. Explicit cell border colors also paint these source characters: outer
-pipes use their left/right edge, shared pipes use the thicker adjacent edge
-(the preceding cell wins ties), and delimiter hyphens/colons use the shared
-header-bottom/body-top edge (the header wins ties). A header-only table uses its
-header-bottom color. An unspecified winning edge color retains the character's
-normal text color. These paint-only changes preserve source and text metrics.
-WYSIWYG borders likewise use the resolved edge color, falling back to that
-edge's cell/container text color, including the active theme's default color.
-Header/body source contents retain the corresponding cell typography and
-normal Source inline-markup treatment. An escaped pipe is content, not a
-structural separator. Missing outer pipes or omitted body cells do not authorize
-drawing invented source characters. Excess body cells remain visible, selectable
-source after the aligned recognized columns, without creating WYSIWYG columns.
-
-For example, the actual source may be:
-
-```markdown
-| Feature | Example |
-| --- | ---: |
-| Bold | **bold**<br>Hello, world! |
-| Italic | *italic* |
-```
-
-The view adds only horizontal alignment geometry. Left/Right crosses each such
-gap in one move between real text boundaries; there are no added characters,
-caret stops, search matches, registers, or clipboard bytes. Clicking a gap picks
-the adjacent legal source boundary with the appropriate affinity. Existing
-source spaces still have their ordinary logical behavior.
-
-The request's pasted example collapsed these physical rows into one line. A
-literal single-line sequence such as `| a | b || --- | --- || c | d |` is not a
-table and must stay one line; never infer or insert missing source breaks for
-presentation. Explicit Insert Table and structural edits can create required
-source lines, but opening, drawing, or switching views cannot.
-
-An edit that invalidates the table grammar returns the affected region to normal
-Source layout without repairing the user's literal input. A later valid edit
-restores alignment. Switching views preserves exact bytes, anchors, cell-local
-locations where recoverable, and viewport position through checked provenance.
 
 ## Preservation, ownership, and bounded work
 
@@ -536,8 +473,7 @@ not permission to retain fixed widths or block editing on offscreen work.
 
 No table operation justifies full-document relayout per keystroke. Shape huge
 cells incrementally, bound caches/queues and native allocations, coalesce obsolete
-work, and prioritize the active view. Source and WYSIWYG measurements have
-separate dependencies while sharing source and semantic identities.
+work, and prioritize the active view.
 
 ## Acceptance coverage
 
@@ -551,9 +487,8 @@ implementation lands.
 | Parsing | GFM table examples 198–205; optional pipes; short delimiter runs; every alignment; mismatched headers; header-only tables; empty, missing, excess cells; escaped pipes/backslashes/code; entities; block termination; list/quote ownership; literal code/HTML contexts. |
 | Insertion | Click-open and drag-open; native jitter threshold; cell press/drag/release; hover; outside/Escape/capture loss; above/left cancellation; right/bottom independent clamping and mixed corners; growth to 20 × 50; small screens; keyboard/accessibility; stale originating targets; counts excluding the header. |
 | Geometry/styles | Minimum sizes measured from Table cell; wider headers; multiline/mixed-font/bidi/emoji cells; shrinking after maximum deletion; shared borders; per-column alignment; theme/zoom/fallback changes; horizontal scrolling; blank-cell carets. |
-| Editing | Inline formatting and protected pipes; Enter/Shift-Enter and `<br>` variants inside/outside tables; literal Source/code contexts; repeated Tab traversal/last-cell append; boundary deletion; row-major search/Ex and cell-local visual lines; physical row commands; IME commit/cancel; all row/column insert/delete cases including ragged header promotion and last-column removal. |
+| Editing | Inline formatting and protected pipes; Enter/Shift-Enter and `<br>` variants inside/outside tables; literal code contexts; repeated Tab traversal/last-cell append; boundary deletion; row-major search/Ex and cell-local visual lines; physical row commands; IME commit/cancel; all row/column insert/delete cases including ragged header promotion and last-column removal. |
 | Selection/clipboard | Text-to-cell transition; multiline/RTL/empty cells; reversed rectangles; autoscroll; mixed formatting; clear versus structural deletion; native Copy preservation; exact replacement scope; matrix paste/mismatch; quoted tabular fallback; register and command policies. |
-| Source presentation | Unequal spelling lengths; no synthetic copy/search/caret content; gap hit testing; optional/missing pipes; visible excess cells; no soft wrapping/flow; literal `<br>`; malformed edits; both view switches. |
 | Preservation | No-op byte equality; minimal patches; ragged/excess cells; opaque content; mixed endings/encodings/BOMs; final terminators; reopening edits; exact undo/redo; cancellation/stale failures; multiple views. |
 | Scale | More than 20 columns and 50 rows; very large tables and cells; cold visible interaction; edits near/offscreen width maxima; work-count bounds; cache eviction; rapid resize/style/edit changes; stale background results; native memory/latency. |
 

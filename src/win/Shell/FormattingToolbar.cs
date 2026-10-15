@@ -59,11 +59,11 @@ internal sealed partial class FormattingToolbar : UserControl
         layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         layout.Children.Add(Viewport); layout.Children.Add(FormattedView); Grid.SetColumn(FormattedView, 1);
         FormattedView.Content = FormattedViewIcon(FormattedView);
-        AutomationProperties.SetName(FormattedView, "Formatted view");
-        ToolTipService.SetToolTip(FormattedView, "Formatted view (WYSIWYG)");
+        AutomationProperties.SetName(FormattedView, "Markdown Preview");
+        ToolTipService.SetToolTip(FormattedView, "Markdown Preview");
         FormattedView.Click += (_, _) => {
             if (View is not { } view) return;
-            Run(() => view.SetMarkdownSource(FormattedView.IsChecked != true));
+            Run(() => view.SetMarkdownPreview(FormattedView.IsChecked == true));
             RestoreEditorFocus();
         };
         var chrome = new Border { Child = layout };
@@ -222,8 +222,11 @@ internal sealed partial class FormattingToolbar : UserControl
         refreshing = true;
         try
         {
-            FormattedView.IsChecked = view.Document.State.format == VIEM_FORMAT_MARKDOWN;
-            bool markdown = view.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
+            bool markdown = view.Document.State.format == VIEM_FORMAT_MARKDOWN;
+            FormattedView.IsChecked = markdown;
+            FormattedView.IsEnabled = view.Document.IsMarkdownDocument;
+            // With Preview off the document is literal Code: only the toggle remains.
+            Viewport.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             bool available = view.HasFormattingSelection;
             InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertImage.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
@@ -293,7 +296,7 @@ internal sealed partial class FormattingToolbar : UserControl
     {
         bool active = choices.Any(c => c.Key == code && c.Selected);
         bool available = choices.Any(c => c.Key == (active ? fallback : code) && c.Enabled);
-        bool visible = View?.Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
+        bool visible = View?.Document.State.format == VIEM_FORMAT_MARKDOWN;
         Set(action, active ? 1u : 0u, available, visible);
     }
 

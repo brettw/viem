@@ -422,12 +422,8 @@ fn plain_label(source: &str) -> String {
 
 impl Document {
     pub(crate) fn link_typing_end(&self, link: &LinkSnapshot) -> Result<usize, DocumentError> {
-        if self.format().is_source_view() {
-            link_boundary(self, link.label_source.end, BoundaryAffinity::Upstream)
-                .ok_or(DocumentError::AmbiguousProjection)
-        } else {
-            Ok(link.range.end)
-        }
+        Ok(link.range.end)
+    
     }
     pub(crate) fn prepared_link_typing_caret(
         &self,
@@ -509,11 +505,7 @@ impl Document {
             }
         };
         for link in markdown_links_in(&input.text, 0..input.text.len()) {
-            let displayed = if self.format().is_source_view() {
-                &link.range
-            } else {
-                &link.label
-            };
+            let displayed = &link.label;
             let Some(physical) = source_range(displayed) else {
                 continue;
             };
@@ -530,14 +522,10 @@ impl Document {
             let Some(label_source) = source_range(&link.label) else {
                 continue;
             };
-            let text = if self.format().is_source_view() {
-                plain_label(&input.text[link.range.clone()])
-            } else {
-                self.projection()
-                    .text_tree()
-                    .slice(span.range.clone())
-                    .map_err(DocumentError::FormattedTextStorage)?
-            };
+            let text = self.projection()
+                .text_tree()
+                .slice(span.range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
             return Ok(Some(LinkSnapshot {
                 range: span.range.clone(),
                 text,
@@ -764,14 +752,6 @@ impl Document {
             return false;
         };
         link.editable
-            && (link.destination_source.is_none()
-                || !self.format().is_source_view()
-                || self
-                    .projection()
-                    .source_insertion_point(at, true)
-                    .is_some_and(|source| {
-                        link.label_source.start <= source && source <= link.label_source.end
-                    }))
     }
 
     pub(crate) fn can_remove_link_selection(&self, range: Range<usize>) -> bool {
@@ -790,12 +770,7 @@ impl Document {
         if !link.editable || range.end > link.range.end {
             return false;
         }
-        range == link.range
-            || link.destination_source.is_none()
-            || (!self.format().is_source_view()
-                || self.projection().source_range(range).is_some_and(|source| {
-                    link.label_source.start <= source.start && source.end <= link.label_source.end
-                }))
+        true
     }
 
     /// Convert only an editable automatic-link construct to explicit Markdown
@@ -837,62 +812,9 @@ impl Document {
         if original.text() != explicit.text() {
             return Err(DocumentError::VerificationFailed.into());
         }
-        let relative = |at: usize, boundary: BoundaryAffinity| -> Result<usize, DocumentError> {
-            let source = self
-                .projection()
-                .source_insertion_point(at, boundary == BoundaryAffinity::Downstream)
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            link_boundary(
-                &original,
-                source
-                    .checked_sub(link.source.start)
-                    .ok_or(DocumentError::AmbiguousProjection)?,
-                boundary,
-            )
-            .ok_or(DocumentError::AmbiguousProjection)
-        };
-        let logical = if self.format().is_source_view() {
-            relative(range.start, affinity)?
-                ..relative(
-                    range.end,
-                    if range.is_empty() {
-                        affinity
-                    } else {
-                        BoundaryAffinity::Upstream
-                    },
-                )?
-        } else {
-            range.start - link.range.start..range.end - link.range.start
-        };
         let patch = SourcePatch::primary(link.source.clone(), replacement);
-        let prepared = if self.format().is_source_view() {
-            self.prepare_visible_source_patches(vec![patch])?
-        } else {
-            self.prepare_text_edits_with_patch_policy(Vec::new(), Some(vec![patch]), true)?
-        };
-        let projected = if self.format().is_source_view() {
-            let candidate = self.prepared_candidate_document(&prepared)?;
-            let map = |at: usize, downstream: bool| -> Result<usize, DocumentError> {
-                let source = explicit
-                    .projection()
-                    .source_insertion_point(at, downstream)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                link_boundary(
-                    &candidate,
-                    link.source.start + source,
-                    if downstream {
-                        BoundaryAffinity::Downstream
-                    } else {
-                        BoundaryAffinity::Upstream
-                    },
-                )
-                .ok_or(DocumentError::AmbiguousProjection)
-            };
-            map(logical.start, true)?..map(logical.end, false)?
-        } else {
-            range
-        };
-        Ok((prepared, projected))
+        let prepared = self.prepare_text_edits_with_patch_policy(Vec::new(), Some(vec![patch]), true)?;
+        Ok((prepared, range))
     }
 
     /// Once an edit would cease to be automatic-link syntax, retain its
@@ -960,37 +882,7 @@ impl Document {
         if range.start < link.range.start || range.end > link.range.end {
             return Err(DocumentError::UnsupportedFormatting);
         }
-        if !self.format().is_source_view() {
-            return Ok(range.start - link.range.start..range.end - link.range.start);
-        }
-        let lower = self
-            .projection()
-            .source_insertion_point(range.start, true)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let upper = self
-            .projection()
-            .source_insertion_point(range.end, false)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        if lower < link.label_source.start || upper > link.label_source.end || upper < lower {
-            return Err(DocumentError::UnsupportedFormatting);
-        }
-        let fragment = self.link_label_document(link)?;
-        let prefix = self.encoding().encode_fragment("[")?.len();
-        let start = link_boundary(
-            &fragment,
-            prefix + lower - link.label_source.start,
-            BoundaryAffinity::Downstream,
-        )
-        .ok_or(DocumentError::UnsupportedFormatting)?;
-        let end = link_boundary(
-            &fragment,
-            prefix + upper - link.label_source.start,
-            BoundaryAffinity::Upstream,
-        )
-        .ok_or(DocumentError::UnsupportedFormatting)?;
-        fragment.text_point(start)?;
-        fragment.text_point(end)?;
-        Ok(start..end)
+        Ok(range.start - link.range.start..range.end - link.range.start)
     }
 
     /// Slice one bounded link label through ordinary verified deletion, so
@@ -1056,7 +948,7 @@ impl Document {
         link: &LinkSnapshot,
         selected: Range<usize>,
         middle: Vec<u8>,
-    ) -> Result<(Vec<u8>, usize), ModelTransactionError> {
+    ) -> Result<Vec<u8>, ModelTransactionError> {
         if link.destination_source.is_none() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
@@ -1083,13 +975,12 @@ impl Document {
             replacement.extend_from_slice(&suffix);
         }
         replacement.extend_from_slice(&middle);
-        let caret_source = link.source.start + replacement.len();
         if logical.end < length {
             replacement.extend(prefix);
             replacement.extend(self.link_label_fragment(link, logical.end..length, false)?);
             replacement.extend(suffix);
         }
-        Ok((replacement, caret_source))
+        Ok(replacement)
     }
 
     fn prepare_split_link(
@@ -1099,8 +990,7 @@ impl Document {
         middle: Vec<u8>,
         text: &str,
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
-        let (replacement, caret_source) =
-            self.split_link_replacement(link, range.clone(), middle)?;
+        let replacement = self.split_link_replacement(link, range.clone(), middle)?;
         let original = self
             .state()
             .source
@@ -1136,22 +1026,13 @@ impl Document {
             link.source.start + prefix..suffix_start,
             replacement[prefix..replacement.len() - suffix].to_vec(),
         );
-        let prepared = if self.format().is_source_view() {
-            self.prepare_visible_source_patches(vec![patch])?
-        } else {
-            self.prepare_text_edits_with_patch_policy(
-                vec![TextEdit::new(range.clone(), text)],
-                Some(vec![patch]),
-                true,
-            )?
-        };
+        let prepared = self.prepare_text_edits_with_patch_policy(
+            vec![TextEdit::new(range.clone(), text)],
+            Some(vec![patch]),
+            true,
+        )?;
         let candidate = self.prepared_candidate_document(&prepared)?;
-        let caret = if self.format().is_source_view() {
-            link_boundary(&candidate, caret_source, BoundaryAffinity::Upstream)
-                .ok_or(DocumentError::VerificationFailed)?
-        } else {
-            range.start + text.len()
-        };
+        let caret = range.start + text.len();
         candidate.text_point(caret)?;
         Ok((prepared, caret))
     }
@@ -1211,21 +1092,20 @@ impl Document {
             .slice(range.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
         let (prepared, caret) = self.prepare_split_link(&link, range.clone(), middle, &text)?;
-        if !self.format().is_source_view() {
-            let candidate = self.prepared_candidate_document(&prepared)?;
-            if candidate
-                .projection()
-                .style_spans_for_region(&range)
-                .iter()
-                .any(|span| {
-                    span.application == StyleApplication::Automatic("Link".into())
-                        && span.range.start < range.end
-                        && range.start < span.range.end
-                })
-            {
-                return Err(DocumentError::VerificationFailed.into());
-            }
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        if candidate
+            .projection()
+            .style_spans_for_region(&range)
+            .iter()
+            .any(|span| {
+                span.application == StyleApplication::Automatic("Link".into())
+                    && span.range.start < range.end
+                    && range.start < span.range.end
+            })
+        {
+            return Err(DocumentError::VerificationFailed.into());
         }
+    
         Ok((prepared, caret))
     }
 
@@ -1238,42 +1118,13 @@ impl Document {
             .ok_or(DocumentError::UnsupportedFormatting)?;
         let logical = self.link_label_logical_range(&link, range.clone())?;
         let middle = self.link_label_fragment(&link, logical, true)?;
-        let length = middle.len();
-        let fragment = Document::from_bytes_with_file_format(
-            middle.clone(),
-            self.encoding(),
-            Format::Markdown,
-            self.file_format(),
-        )?;
-        let inner = fragment
-            .projection()
-            .source_insertion_point(0, true)
-            .ok_or(DocumentError::AmbiguousProjection)?;
         let text = self
             .projection()
             .text_tree()
             .slice(range.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
-        let (prepared, end) = self.prepare_split_link(&link, range.clone(), middle, &text)?;
-        let at = if self.format().is_source_view() {
-            let candidate = self.prepared_candidate_document(&prepared)?;
-            let end_source = candidate
-                .projection()
-                .source_insertion_point(end, false)
-                .ok_or(DocumentError::VerificationFailed)?;
-            link_boundary(
-                &candidate,
-                end_source
-                    .checked_sub(length)
-                    .ok_or(DocumentError::VerificationFailed)?
-                    + inner,
-                BoundaryAffinity::Downstream,
-            )
-            .ok_or(DocumentError::VerificationFailed)?
-        } else {
-            range.start
-        };
-        Ok((prepared, at))
+        let (prepared, _) = self.prepare_split_link(&link, range.clone(), middle, &text)?;
+        Ok((prepared, range.start))
     }
 
     pub(crate) fn prepare_insertion_without_link(
@@ -1346,30 +1197,6 @@ impl Document {
         };
         if text.contains(['\n', '\r']) {
             return false;
-        }
-        if self.format().is_source_view() {
-            // A toolbar wrapper cannot start in an escape or delimiter run:
-            // its opening bracket would become literal source instead of a
-            // link. Keep ordinary Source typing available at these positions.
-            let mut at = range.start;
-            let mut slashes = 0;
-            while let Some(previous) = self.previous_grapheme_boundary(at) {
-                let Ok(value) = self.projection().text_tree().slice(previous..at) else { return false; };
-                if value != "\\" { break; }
-                slashes += 1;
-                if slashes > 128 { return false; }
-                at = previous;
-            }
-            if slashes % 2 != 0 { return false; }
-            if range.is_empty() {
-                if let (Some(previous), Some(next)) = (self.previous_grapheme_boundary(range.start), self.next_grapheme_boundary(range.end)) {
-                    if self.projection().text_tree().slice(previous..next).as_deref() == Ok("``") { return false; }
-                }
-            }
-            if self.projection().style_spans_for_region(&range).iter().any(|span|
-                span.application == StyleApplication::Automatic("Markdown reference".into())
-                    && span.range.start <= range.start && range.start < span.range.end)
-            { return false; }
         }
         if self
             .projection()
@@ -1481,7 +1308,7 @@ impl Document {
             .ok_or(DocumentError::AmbiguousProjection)?;
         let preserved_label = if let Some(link) = &existing {
             (text == link.text).then(|| link.label_source.clone())
-        } else if !self.format().is_source_view() && text == old_text {
+        } else if text == old_text {
             Some(source_range.clone())
         } else {
             None
@@ -1597,18 +1424,7 @@ impl Document {
                 link_source_start = start;
             }
         }
-        let replacement_text = super::line_endings::normalize(
-            &self
-                .encoding()
-                .decode_region(&replacement, source_range.start)?,
-            self.file_format(),
-        )
-        .text;
-        let expected_replacement = if self.format().is_source_view() {
-            replacement_text
-        } else {
-            text.clone()
-        };
+        let expected_replacement = text.clone();
         // The shared authored-syntax path verifies a persistent text splice and
         // reparses the affected region, preserving unrelated document storage.
         let authored = source_range.start == link_source_start;
@@ -1711,7 +1527,7 @@ impl Document {
         let mut decoded_bytes = 0usize;
         while let Some((found, block)) = self
             .projection()
-            .heading_after(index, self.format().is_source_view())
+            .heading_after(index)
         {
             index = found + 1;
             let level = match block.kind {

@@ -3,16 +3,16 @@ import UniformTypeIdentifiers
 
 public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     case plainText
+    /// Markdown Preview. Turning Preview off selects Code with the Markdown language.
     case markdown
-    case markdownSource
     case code
 
-    public var isMarkdown: Bool { self == .markdown || self == .markdownSource }
+    public var isMarkdown: Bool { self == .markdown }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
         let value = try container.decode(String.self)
-        if value == "html" || value == "htmlSource" { self = .code; return }
+        if ["html", "htmlSource", "markdownSource"].contains(value) { self = .code; return }
         guard let format = Self(rawValue: value) else {
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown document format")
         }
@@ -22,16 +22,15 @@ public enum EVSourceFormat: String, CaseIterable, Equatable, Sendable, Codable {
     public var displayName: String {
         switch self {
         case .plainText: "Plain Text"
-        case .markdown: "Markdown WYSIWYG"
-        case .markdownSource: "Markdown Source"
+        case .markdown: "Markdown Preview"
         case .code: "Code"
         }
     }
 
+    /// Code is the literal presentation of both plain text and Markdown with
+    /// Preview off; each saves the same exact source bytes.
     public func hasSameSerialization(as other: Self) -> Bool {
-        self == other || ([Self.plainText, .code].contains(self)
-            && [Self.plainText, .code].contains(other)) || ([Self.markdown, .markdownSource].contains(self)
-            && [Self.markdown, .markdownSource].contains(other))
+        self == other || self == .code || other == .code
     }
 }
 
@@ -67,7 +66,6 @@ public final class EVDocument: NSDocument {
     public static let plainTextType = UTType.plainText.identifier
     public static let markdownType = UTType(filenameExtension: "md")?.identifier
         ?? "net.daringfireball.markdown"
-    public static let markdownSourceType = "com.viem.markdown-source"
     public static let htmlType = UTType.html.identifier
     public static let codeType = "com.viem.code"
 
@@ -245,10 +243,13 @@ public final class EVDocument: NSDocument {
             case nil, .readOnly, .editAndDeleteRecovery:
                 var openingType = Self.defaultOpeningType(for: target, nativeType: typeName,
                     markdownFormattedView: self.editorBackend.prefersMarkdownFormattedView)
-                if let currentURL = self.fileURL, EVDocumentIdentity.sameFile(currentURL, target),
-                   [.markdown, .markdownSource].contains(self.editorBackend.sourceFormat) {
-                    openingType = self.editorBackend.sourceFormat == .markdown
-                        ? Self.markdownType : Self.markdownSourceType
+                if let currentURL = self.fileURL, EVDocumentIdentity.sameFile(currentURL, target) {
+                    // Reopening keeps the current Markdown Preview choice.
+                    switch self.editorBackend.sourceFormat {
+                    case .markdown: openingType = Self.markdownType
+                    case .code where openingType == Self.markdownType: openingType = Self.codeType
+                    default: break
+                    }
                 }
                 try self.editorBackend.read(source: original.get(), typeName: openingType,
                     filename: target.path, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
@@ -285,7 +286,6 @@ public final class EVDocument: NSDocument {
         let openingType: String
         switch format {
         case .code: openingType = Self.codeType
-        case .markdownSource: openingType = Self.markdownSourceType
         default: openingType = Self.typeName(for: format)
         }
         try editorBackend.read(source: snapshot.data, typeName: openingType,
@@ -529,7 +529,7 @@ public final class EVDocument: NSDocument {
     public static func typeName(for format: EVSourceFormat) -> String {
         switch format {
         case .plainText: plainTextType
-        case .markdown, .markdownSource: markdownType
+        case .markdown: markdownType
         case .code: plainTextType
         }
     }
@@ -813,10 +813,11 @@ public final class EVDocument: NSDocument {
     }
 
     /// Native types identify the bytes on disk. New Markdown documents use the
-    /// last chosen presentation; explicit backend reads and recovery keep theirs.
+    /// last chosen Preview choice: Preview off opens Code, which detects the
+    /// Markdown language. Explicit backend reads and recovery keep theirs.
     static func defaultOpeningType(for url: URL, nativeType typeName: String,
                                    markdownFormattedView: Bool = false) -> String {
-        let markdownOpeningType = markdownFormattedView ? markdownType : markdownSourceType
+        let markdownOpeningType = markdownFormattedView ? markdownType : codeType
         return switch url.pathExtension.lowercased() {
         case "md", "markdown", "mdown", "mkd":
             markdownOpeningType
@@ -824,7 +825,7 @@ public final class EVDocument: NSDocument {
             codeType
         default:
             switch sourceFormat(forTypeName: typeName) {
-            case .some(.markdown), .some(.markdownSource): markdownOpeningType
+            case .some(.markdown): markdownOpeningType
             case .some(.code): codeType
             default: readableType(for: typeName)
             }
@@ -834,7 +835,6 @@ public final class EVDocument: NSDocument {
     public static func sourceFormat(forTypeName typeName: String) -> EVSourceFormat? {
         let lowered = typeName.lowercased()
         if lowered == codeType { return .code }
-        if lowered == markdownSourceType { return .markdownSource }
         if [".html", ".htm", ".xhtml", htmlType].contains(lowered) || lowered.hasSuffix(".html") {
             return .code
         }
@@ -895,8 +895,12 @@ public final class EVDocument: NSDocument {
 
     private func synchronizeEditedState(_ state: EVDocumentPersistenceState) {
         // The source adapter can change through an undoable status option.
-        // Native save validation must follow that current buffer state.
-        fileType = Self.typeName(for: editorBackend.sourceFormat)
+        // Native save validation must follow that current buffer state; a
+        // compatible presentation (Markdown Preview off) keeps the file's type.
+        let format = editorBackend.sourceFormat
+        if fileType.flatMap(Self.sourceFormat(forTypeName:))?.hasSameSerialization(as: format) != true {
+            fileType = Self.typeName(for: format)
+        }
         isReadOnly = state.isReadOnly
         if !state.isDirty { wasRecovered = false }
         if state.isDirty {

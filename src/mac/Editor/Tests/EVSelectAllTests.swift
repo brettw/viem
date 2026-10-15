@@ -32,14 +32,10 @@ import XCTest
         for (source, type) in [
             ("first\nsecond\n\(tail)", EVDocument.plainTextType),
             ("# first\n\nsecond\n\n\(tail)", EVDocument.markdownType),
-            ("# first\n\nsecond\n\n\(tail)", EVDocument.markdownSourceType),
         ] {
             for mode: EVLineMode in [.visual, .physicalSource] {
                 let (backend, view, session, pasteboard) = try surface(source, type: type)
                 try session.setLineMode(mode)
-                if type == EVDocument.markdownSourceType {
-                    try session.setParagraphFlow(true)
-                }
                 _ = try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 86)
                 view.refreshPresentation()
                 let text = try backend.formattedText()
@@ -49,7 +45,7 @@ import XCTest
                 XCTAssertEqual(view.editorView.accessibilitySelectedText(), text)
                 XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_SELECTION_CHARACTER))
                 view.perform(menuCommand: .copy, sender: nil)
-                let expectedCopy = (type == EVDocument.markdownSourceType) ? source : text
+                let expectedCopy = text
                 XCTAssertEqual(pasteboard.text, expectedCopy, "\(type) \(mode)")
                 XCTAssertEqual(try backend.serializedSource(typeName: type), original)
                 view.perform(menuCommand: .selectAll, sender: nil)

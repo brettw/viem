@@ -32,75 +32,6 @@ final class EVEditingReliabilityTests: XCTestCase {
     }
 
     @MainActor
-    func testMarkdownSourceBulletEnterAndContinuedTypingPreserveTheNewItem() throws {
-        for (prefix, tail) in [
-            ("- ", ""), ("- ", "\n- Last"),
-            ("> - ", ""), ("> - ", "\n> - Last"),
-            ("  - ", ""), ("  - ", "\n  - Last"),
-        ] {
-            let source = "\(prefix)First\(tail)"
-            let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
-            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-            surface.loadViewIfNeeded()
-            let client: NSTextInputClient = surface.editorView
-            let implicit = NSRange(location: NSNotFound, length: 0)
-            client.insertText("A", replacementRange: implicit)
-            surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
-            XCTAssertEqual(surface.statusBarState.message, "")
-            client.insertText("Added", replacementRange: implicit)
-            surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-            XCTAssertEqual(surface.statusBarState.message, "")
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType),
-                           Data("\(prefix)First\n\(prefix)Added\(tail)".utf8))
-            client.insertText("u", replacementRange: implicit)
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
-        }
-    }
-
-    @MainActor
-    func testMarkdownSourceListEnterAndOpenContinueNumbering() throws {
-        for command in ["A", "o"] {
-            let source = "1.\tFirst\n2.\tLast"
-            let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
-            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-            surface.loadViewIfNeeded()
-            let client: NSTextInputClient = surface.editorView
-            let implicit = NSRange(location: NSNotFound, length: 0)
-            client.insertText(command, replacementRange: implicit)
-            if command == "A" {
-                surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
-            }
-            XCTAssertEqual(surface.statusBarState.message, "")
-            client.insertText("Added", replacementRange: implicit)
-            surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType),
-                           Data("1.\tFirst\n2.\tAdded\n3.\tLast".utf8))
-            client.insertText("u", replacementRange: implicit)
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
-        }
-    }
-
-    @MainActor
-    func testMarkdownSourceBareEmptyNumberedItemEnterBecomesProse() throws {
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("1.".utf8), typeName: EVDocument.markdownSourceType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        let client: NSTextInputClient = surface.editorView
-        let implicit = NSRange(location: NSNotFound, length: 0)
-        client.insertText("A", replacementRange: implicit)
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
-        XCTAssertEqual(surface.statusBarState.message, "")
-        client.insertText("Plain", replacementRange: implicit)
-        surface.performInput { _ = try surface.session?.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data("Plain".utf8))
-        client.insertText("u", replacementRange: implicit)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data("1.".utf8))
-    }
-
-    @MainActor
     func testMarkdownFormattingMenusUseEffectiveStateAndPreserveSourceOnUndo() throws {
         for (type, source) in [(EVDocument.markdownType, "**Words**")] {
             let backend = EVCoreDocumentBackend()
@@ -134,7 +65,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         for (type, source) in [
             (EVDocument.plainTextType, "first line\nsecond line"),
             (EVDocument.markdownType, "**first** line\nsecond line"),
-            (EVDocument.markdownSourceType, "**first** line\nsecond line"),
+            (EVDocument.codeType, "**first** line\nsecond line"),
         ] {
             let backend = EVCoreDocumentBackend()
             try backend.read(source: Data(source.utf8), typeName: type)
@@ -228,16 +159,16 @@ final class EVEditingReliabilityTests: XCTestCase {
     }
 
     @MainActor
-    func testFormattedViewToggleAndEncodingMenuPreserveSourceAndHistory() throws {
+    func testMarkdownPreviewToggleAndEncodingMenuPreserveSourceAndHistory() throws {
         let source = "## Heading\n__bold__ café\n"
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-editing-view-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         XCTAssertEqual(surface.formattingToolbar.formattedView.state, .off)
-        XCTAssertEqual(backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(backend.sourceFormat, .code)
         XCTAssertEqual(surface.formattedText, source)
         surface.formattingToolbar.formattedView.performClick(nil)
         XCTAssertEqual(backend.sourceFormat, .markdown)
@@ -249,13 +180,13 @@ final class EVEditingReliabilityTests: XCTestCase {
         surface.perform(menuCommand: .undo, sender: nil)
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
         surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(backend.sourceFormat, .code)
         XCTAssertEqual(surface.formattedText, source)
         XCTAssertEqual(surface.statusBarState.message, "")
     }
 
     @MainActor
-    func testFormattedViewToggleKeepsInteriorUnicodeCursorAtTheSameRepeatedOccurrence() throws {
+    func testMarkdownPreviewToggleKeepsInteriorUnicodeCursorAtTheSameRepeatedOccurrence() throws {
         let source = (0..<180).map { "## Heading \($0)\n\nText **café العربية** α\($0) end." }.joined(separator: "\n\n")
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-editing-view-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
@@ -289,7 +220,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         }
         let topOccurrence = try firstVisibleOccurrence()
         XCTAssertGreaterThan(topOccurrence, 70)
-        for format: EVSourceFormat in [.markdown, .markdownSource, .markdown] {
+        for format: EVSourceFormat in [.markdown, .markdown] {
             surface.formattingToolbar.formattedView.performClick(nil)
             let text = try backend.formattedText()
             let offsets = occurrenceOffsets(text)
@@ -326,19 +257,5 @@ final class EVEditingReliabilityTests: XCTestCase {
         client.insertText("u", replacementRange: implicit)
         XCTAssertEqual(surface.formattedText, original)
         XCTAssertEqual(surface.statusBarState.message, "")
-    }
-
-    @MainActor
-    func testListMenuUpdatesMarkersAndIsUndoable() throws {
-        let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("first\nsecond\n".utf8), typeName: EVDocument.markdownSourceType)
-        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
-        surface.loadViewIfNeeded()
-        surface.perform(menuCommand: .selectAll, sender: nil)
-        surface.perform(menuCommand: .bulletedList, sender: nil)
-        XCTAssertTrue(surface.formattedText.hasPrefix("- first\n- second"))
-        XCTAssertEqual(surface.statusBarState.message, "")
-        surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(surface.formattedText, "first\nsecond\n")
     }
 }

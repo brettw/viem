@@ -19,6 +19,7 @@ impl super::CommandInterpreter {
         &mut self,
         document: &mut crate::document::Document,
         layout: Option<&super::LayoutCommandContext<'_>>,
+        key: super::Key,
     ) -> Result<super::CommandOutput, crate::document::DocumentError> {
         use super::*;
         if layout.is_some_and(|context| {
@@ -58,7 +59,7 @@ impl super::CommandInterpreter {
             );
         }
         if self.visual_block_insert.is_some() {
-            return self.paste_platform_deferred_block(document, &value);
+            return self.paste_platform_deferred_block(document, &value, key);
         }
         let checkpoint = self.clone();
         let model_checkpoint = document.begin_command_checkpoint();
@@ -80,7 +81,7 @@ impl super::CommandInterpreter {
             {
                 return Ok(CommandOutput::complete());
             }
-            self.record_event(&InputEvent::Key(Key::PasteClipboard));
+            self.record_event(&InputEvent::Key(key));
             self.clear_pending();
             self.requested_register = Some('+');
             if editing {
@@ -91,7 +92,22 @@ impl super::CommandInterpreter {
                 document.end_edit_group();
                 document.begin_edit_group();
             }
+            // External text in Markdown Preview is Markdown; Paste and Match
+            // Style and every fallback insert it literally, without typing
+            // assistance recognizing its markup.
+            let markdown = key == Key::PasteClipboard
+                && document.format() == crate::document::Format::Markdown
+                && value.clipboard_fragment().is_none()
+                && value.kind != RegisterKind::Blockwise
+                && self.mode != Mode::VisualBlock;
+            self.native_paste = true;
             let output = if let Some(output) = self.paste_table_matrix(document, &value, 1)? {
+                output
+            } else if let Some(output) = (markdown && self.table_selection(document).is_none())
+                .then(|| self.paste_platform_markdown(document, &value, selected, editing))
+                .transpose()?
+                .flatten()
+            {
                 output
             } else if let Some(extent) = self.table_selection(document) {
                 // Cell rectangles retain the portable table replacement rules.
@@ -139,6 +155,7 @@ impl super::CommandInterpreter {
             } else {
                 self.paste_impl(document, true, 1, true)?
             };
+            self.native_paste = false;
             if separate_unit {
                 document.end_edit_group();
             }
@@ -180,6 +197,7 @@ impl super::CommandInterpreter {
         })();
         match result {
             Ok(mut output) if output.status == CommandStatus::Complete => {
+                self.native_paste = false;
                 self.line_layout = checkpoint.line_layout;
                 self.finish_insert_normal_once(document, &mut output);
                 self.finish_clipboard_writes(&mut output);
@@ -193,6 +211,60 @@ impl super::CommandInterpreter {
                 result
             }
         }
+    }
+
+    /// Interpret external text as Markdown at the native paste position: the
+    /// selection, the insertion boundary, or (for linewise text in Normal)
+    /// above the current line. `None` keeps the literal paste path.
+    fn paste_platform_markdown(
+        &mut self,
+        document: &mut crate::document::Document,
+        value: &RegisterValue,
+        selected: bool,
+        editing: bool,
+    ) -> Result<Option<super::CommandOutput>, crate::document::DocumentError> {
+        use super::*;
+        let lines = document.hard_line_snapshot();
+        let extent = selected.then(|| self.visual_extent(document));
+        let (range, affinity) = if let Some(extent) = &extent {
+            (extent.range.clone(), BoundaryAffinity::Downstream)
+        } else if editing {
+            (self.cursor..self.cursor, self.markdown_typing_affinity(document))
+        } else if value.kind == RegisterKind::Linewise {
+            let at = line_start(&lines, self.cursor);
+            (at..at, BoundaryAffinity::Downstream)
+        } else {
+            (self.cursor..self.cursor, BoundaryAffinity::Downstream)
+        };
+        let Some((prepared, caret)) = document
+            .prepare_markdown_paste(range, affinity, &value.text, self.typing_style.is_empty())
+            .map_err(command_document_error)?
+        else {
+            return Ok(None);
+        };
+        let replaced = extent.as_ref().map(|extent| {
+            (register_value(document, &lines, extent, None), ordinary_deletion_class(&lines, extent))
+        });
+        document.commit_model_transaction(prepared).map_err(command_document_error)?;
+        if let Some((replaced, class)) = replaced {
+            self.delete_register(Some('-'), replaced, class);
+            self.visual_anchor = None;
+            self.pointer_word_origin = None;
+            self.pointer_rows = false;
+            self.pointer_character_origin = None;
+            self.leave_visual();
+        }
+        self.cursor = if editing {
+            caret
+        } else {
+            normalize_normal_cursor_document(document, &document.hard_line_snapshot(), caret)
+        };
+        Ok(Some(CommandOutput {
+            document_changed: true,
+            cursor_moved: true,
+            mode_changed: selected,
+            ..CommandOutput::complete()
+        }))
     }
 
     /// Place block rows against the lines surviving the change. In particular,
@@ -607,7 +679,7 @@ impl ClipboardContent {
             .clipboard_fragment()
             .and_then(|fragment| fragment.source_mode_text())
         {
-            // Source views publish their literal source as interoperable plain
+            // Literal views publish their source as interoperable plain
             // text rather than a Viem-private payload. Preserve Vim's only
             // portable linewise marker when the final physical source line did
             // not already have one.
@@ -1191,7 +1263,7 @@ mod rich_tests {
         use crate::{Core, CoreEvent};
         for (format, source, expected) in [
             (Format::PlainText, "word", "word"),
-            (Format::MarkdownSource, "__word__", "__word__"),
+            (Format::Code, "__word__", "__word__"),
             (Format::Markdown, "__word__", "word"),
         ] {
             for policy in [LineMode::Visual, LineMode::PhysicalSource] {
@@ -1423,7 +1495,7 @@ mod rich_tests {
             ("__one__ two", Format::Markdown, "one two"),
             ("one two", Format::PlainText, "one two"),
             ("one two\n", Format::PlainText, "one two\n"),
-            ("__one__ two", Format::MarkdownSource, "__one__ two"),
+            ("__one__ two", Format::Code, "__one__ two"),
         ] {
             let mut core = Core::new(open(source.as_bytes(), format));
             let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
@@ -1437,8 +1509,8 @@ mod rich_tests {
             assert_eq!(core.list_selection_identity(view).unwrap(), before);
             let content = output.clipboard_writes[0].content();
             assert_eq!(content.plain_text(), plain);
-            if format.is_source_view() { assert!(content.portable_register().is_none()); }
-            else if format.is_wysiwyg() {
+            if format.is_code() { assert!(content.portable_register().is_none()); }
+            else if format.is_markdown() {
                 let fragment = content.portable_register().unwrap().clipboard_fragment().unwrap();
                 let json: serde_json::Value = serde_json::from_str(fragment.json()).unwrap();
                 assert_eq!(json["character_runs"][0]["bold"], true);

@@ -150,7 +150,6 @@ final class EVListParagraphTests: XCTestCase {
     func testParagraphMenuDisablesUnsupportedContextsAndSelections() throws {
         for (source, type) in [
             ("body", EVDocument.markdownType),
-            ("- body", EVDocument.markdownSourceType),
             ("- body", EVDocument.plainTextType),
             ("- body", EVDocument.codeType),
             ("- ```\n  body\n  ```", EVDocument.markdownType),

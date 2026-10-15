@@ -326,7 +326,7 @@ impl CommandInterpreter {
     fn try_batch_rich_global_delete(&mut self, document: &mut Document, command: &ExCommand,
         lines: &[ex_addresses::ResolvedExLine]) -> Option<CommandOutput> {
         let ExAction::Delete(arguments) = &command.action else { return None; };
-        if !document.format().is_wysiwyg() || self.line_mode != LineMode::Visual
+        if !document.format().is_markdown() || self.line_mode != LineMode::Visual
             || !self.global_batch_lines_match_mode(lines) || command.range.is_some()
             || arguments.count.is_some() || arguments.register.is_some_and(|name| name.is_uppercase() || matches!(name, '+' | '*')) {
             return None;
@@ -422,7 +422,7 @@ impl CommandInterpreter {
         lines: &[ex_addresses::ResolvedExLine],
     ) -> Option<Result<CommandOutput, DocumentError>> {
         let ExAction::Delete(arguments) = &command.action else { return None; };
-        if !(document.format().is_literal() || document.format().is_source_view()) || command.range.is_some() || arguments.count.is_some()
+        if !document.format().is_literal() || command.range.is_some() || arguments.count.is_some()
             || lines.iter().any(|line| line.source.is_none()) {
             return None;
         }

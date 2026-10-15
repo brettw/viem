@@ -147,7 +147,6 @@ fn substitution_line_break_splits_inline_code_and_restores_exact_source() {
 fn unrepresentable_substitute_literal_lf_explains_the_format_constraint() {
     for format in [
         Format::Markdown,
-        Format::MarkdownSource,
         Format::PlainText,
         Format::Code,
     ] {
@@ -174,9 +173,6 @@ fn unrepresentable_substitute_literal_lf_explains_the_format_constraint() {
             key(&mut core, view, Key::Char('i'));
             text(&mut core, view, "x");
             assert_eq!(core.document().text(), "xabc");
-        }
-        if format == Format::MarkdownSource {
-            continue;
         }
         let (mut core, view) = editor("abc", format, FileFormat::Mac);
         text(&mut core, view, ":s/b/\\n/");
@@ -209,38 +205,6 @@ fn replacing_only_a_paragraph_separator_with_unicode_keeps_positions_valid() {
         key(&mut core, view, Key::Char('u'));
         assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
-}
-
-#[test]
-fn pending_source_emphasis_enter_maps_the_existing_unicode_insert_floor() {
-    let source = "- x\n- y\n<ins>unclosed";
-    let (mut core, view) = editor(source, Format::MarkdownSource, FileFormat::Unix);
-    place(&mut core, view, 8, false);
-    key(&mut core, view, Key::Char('O'));
-    text(&mut core, view, "العربية");
-    place(&mut core, view, 1, false);
-    let expected = core.list_selection_identity(view).unwrap();
-    core.handle_with_layout(
-        view,
-        CoreEvent::SetSelectionSemanticStyle {
-            expected,
-            style: viem_core::document::SemanticInlineStyle::Emphasis,
-            enabled: true,
-        },
-    )
-    .unwrap();
-    key(&mut core, view, Key::Enter);
-    assert!(core
-        .document()
-        .text_point(core.command_state(view).unwrap().cursor())
-        .is_ok());
-    text(&mut core, view, "é");
-    fresh(&core, Format::MarkdownSource, FileFormat::Unix);
-    let edited = core.document().source_bytes();
-    key(&mut core, view, Key::Escape);
-    key(&mut core, view, Key::Char('u'));
-    key(&mut core, view, Key::Ctrl('r'));
-    assert_eq!(core.document().source_bytes(), edited);
 }
 
 #[test]
@@ -467,33 +431,6 @@ fn repository_markdown_structural_actions_use_current_content_positions() {
             core.document().source_bytes(),
             source.as_bytes(),
             "{action}"
-        );
-    }
-}
-
-#[test]
-fn source_selection_enter_and_table_typeover_preserve_literal_editing() {
-    for (source, range, action) in [
-        ("*it*", 1..4, "enter"),
-        ("**bold**", 1..8, "enter"),
-        ("a | b\n- | -\n1 | 2", 0..14, "delete"),
-        ("a | b\n- | -\n1 | 2", 0..14, "replace"),
-    ] {
-        let (mut core, view) = editor(source, Format::MarkdownSource, FileFormat::Unix);
-        place(&mut core, view, range.start, false);
-        place(&mut core, view, range.end, true);
-        match action {
-            "enter" => key(&mut core, view, Key::Enter),
-            "delete" => key(&mut core, view, Key::Backspace),
-            _ => text(&mut core, view, "x"),
-        }
-        fresh(&core, Format::MarkdownSource, FileFormat::Unix);
-        key(&mut core, view, Key::Escape);
-        key(&mut core, view, Key::Char('u'));
-        assert_eq!(
-            core.document().source_bytes(),
-            source.as_bytes(),
-            "{source:?} {action}"
         );
     }
 }

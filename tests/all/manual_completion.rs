@@ -450,7 +450,6 @@ fn completion_works_in_literal_formats_and_keeps_original_encoding() {
     for format in [
         Format::PlainText,
         Format::Code,
-        Format::MarkdownSource,
     ] {
         let (mut core, view) =
             fixture(Document::from_bytes(b"alphabet al".to_vec(), Encoding::Utf8, format).unwrap());

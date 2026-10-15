@@ -58,8 +58,9 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         FilePath = path;
         var options = New<ViemDocumentOptions>();
         options.format = format ?? FormatForPath(path);
-        if (format == null && options.format == VIEM_FORMAT_MARKDOWN_SOURCE && markdownFormattedView)
-            options.format = VIEM_FORMAT_MARKDOWN;
+        // Markdown Preview off opens literal Code; filename detection selects Markdown.
+        if (format == null && options.format == VIEM_FORMAT_MARKDOWN && !markdownFormattedView)
+            options.format = VIEM_FORMAT_CODE;
         options.encoding = encoding; options.file_format = fileFormat;
         ulong handle = 0, revision = 0;
         fixed (byte* bytes = source) Check(viem_core_create(bytes, (ulong)source.Length, &options, &handle, &revision), "Open document");
@@ -77,14 +78,17 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         }
         catch { Dispose(); throw; }
     }
-    public static bool IsMarkdown(uint format) => format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
+    public static bool IsMarkdown(uint format) => format == VIEM_FORMAT_MARKDOWN;
+    /// <summary>Markdown Preview, or literal Code whose effective language is Markdown.</summary>
+    public bool IsMarkdownDocument => State.format == VIEM_FORMAT_MARKDOWN
+        || State.format == VIEM_FORMAT_CODE && DocumentModes.Read(this) is { } mode && (mode.Language ?? mode.DetectedLanguage) == "markdown";
     public static uint FormatForPath(string? path) => Path.GetExtension(path ?? "").ToLowerInvariant() switch
     {
-        ".md" or ".markdown" or ".mdown" or ".mkd" => VIEM_FORMAT_MARKDOWN_SOURCE,
+        ".md" or ".markdown" or ".mdown" or ".mkd" => VIEM_FORMAT_MARKDOWN,
         ".html" or ".htm" or ".xhtml" => VIEM_FORMAT_CODE,
         _ => VIEM_FORMAT_PLAIN_TEXT
     };
-    public static string FormatName(uint format) => format switch { 1 => "Text", 2 => "Markdown", 5 => "Markdown Source", 7 => "Code", _ => "Text" };
+    public static string FormatName(uint format) => format switch { 1 => "Text", 2 => "Markdown Preview", 7 => "Code", _ => "Text" };
     public byte[] Source(ulong revision) => Copy((p, n, r) => viem_core_copy_source_bytes(Handle, revision, p, n, r));
     public string FormattedText() { ulong revision = State.document_revision; return Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_copy_formatted_utf8(Handle, revision, p, n, r))); }
     public string FormattedRange(ulong start, ulong end)

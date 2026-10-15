@@ -32,7 +32,7 @@ separately in [BUGS.md](BUGS.md).
   fit the link label within their previous maximum width.
 - **Inline images:** Markdown images, including resolved references, and passive
   HTML `<img src="…">` tags are atomic
-  objects in WYSIWYG; Source retains full notation. Native Insert Image controls
+  objects in Preview; Code retains full notation. Native Insert Image controls
   and location popups insert, edit, copy, open or remove images with ordinary
   undo. Local previews retain intrinsic aspect ratio and fit the content width
   without upscaling, with a maximum displayed width or height of 1024
@@ -51,7 +51,7 @@ separately in [BUGS.md](BUGS.md).
   local previews show their location with a broken-image indicator and can be
   refreshed after the local resource changes without fetching remote images.
 - **Reference links:** full, collapsed and defined shortcut links and reference
-  definitions keep their literal brackets in WYSIWYG, styled with the light-purple
+  definitions keep their literal brackets in Preview, styled with the light-purple
   **Markdown reference** character style. Definition edits invalidate dependent
   image metadata as well as reference styling.
 - **Composed containers:** headings in lists, quotes inside lists, nested quote
@@ -67,7 +67,7 @@ separately in [BUGS.md](BUGS.md).
   lookalikes stay in the code body. Fences end with their containing quote;
   a later unquoted fence starts an independent code block. Live edits and
   reopened files keep those owners separate. Indented code remains supported.
-  WYSIWYG blocks highlight specified languages with the Code syntax system and
+  Preview blocks highlight specified languages with the Code syntax system and
   offer a native language selector. None retains the Code Block style. New
   blocks inherit the preceding language or, without a preceding block, the next.
 - **Headings and thematic breaks:** Setext underlines, optional closing ATX
@@ -84,16 +84,15 @@ separately in [BUGS.md](BUGS.md).
 - **Prose continuation whitespace:** indentation and trailing whitespace at a
   soft source break fold to one space. Explicit hard breaks remain distinct.
 - **Loose lists:** items receive paragraph spacing; tight lists retain their
-  compact presentation. Tightness is structure, not direct formatting. WYSIWYG
+  compact presentation. Tightness is structure, not direct formatting. Preview
   Option-Enter (macOS) / Alt-Enter (Windows), also available in Style > Paragraph,
   creates another prose paragraph within the same list item. Empty continuation
   paragraphs retain their ownership on reopen. The action requires a collapsed
   caret; code bodies, table cells, and passive HTML blocks retain their own editing
   rules. Native Windows validation remains pending on a Windows host.
 - **GFM pipe tables:** header/body structure, alignment, optional pipes,
-  short and excess rows, inline formatting and explicit cell breaks. WYSIWYG
-  uses content-sized cells; Source aligns the original syntax through geometry
-  without adding source characters. Native insertion, row/column actions and
+  short and excess rows, inline formatting and explicit cell breaks. Preview
+  uses content-sized cells. Native insertion, row/column actions and
   rectangular cell editing follow the [table specification](docs/markdown-tables.md).
   Nested tables honor enclosing list/quote insets and continuous container
   borders/backgrounds in full, regional and progressive large-cell layout.
@@ -108,7 +107,7 @@ Unedited source is not regenerated.
 
 The loadable feature tour is [docs/markdown_demo.md](docs/markdown_demo.md).
 Regression coverage includes `tests/all/markdown_gfm.rs` and the existing
-Markdown source, caret, deletion, replacement, formatting and layout audits.
+Markdown caret, deletion, replacement, formatting and layout audits.
 
 ## P1 — deferred structure
 

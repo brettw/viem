@@ -16,7 +16,7 @@ internal static class MarkdownViewPreferenceTests
         string directory = Path.Combine(profile, "markdown-view-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var preferences = new Preferences(directory);
-        Check(!preferences.MarkdownFormattedView, "Markdown without a remembered view defaults to Source");
+        Check(!preferences.MarkdownFormattedView, "Markdown without a remembered view defaults to Preview off");
         byte[] source = "# Heading\n\nSome **text**.\n"u8.ToArray();
         string firstPath = Path.Combine(directory, "first.md"), secondPath = Path.Combine(directory, "second.markdown");
         await File.WriteAllBytesAsync(firstPath, source); await File.WriteAllBytesAsync(secondPath, source);
@@ -27,11 +27,11 @@ internal static class MarkdownViewPreferenceTests
             await window.ActivePane!.Ready;
             await window.OpenNative(firstPath);
             var first = window.ActivePane!; var firstView = await first.Ready;
-            Check(first.Document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE,
-                "native Markdown open uses Source when no choice has been saved");
+            Check(first.Document.State.format == VIEM_FORMAT_CODE,
+                "native Markdown open uses Code with Preview off when no choice has been saved");
             int settingsChanges = 0;
             preferences.Changed += () => settingsChanges++;
-            firstView.SetMarkdownSource(false);
+            firstView.SetMarkdownPreview(true);
             Check(preferences.MarkdownFormattedView && new Preferences(directory).MarkdownFormattedView && settingsChanges == 0,
                 "a successful formatted-view change persists without reapplying document settings");
 
@@ -43,7 +43,7 @@ internal static class MarkdownViewPreferenceTests
                 && second.Document.Source(second.Document.State.document_revision).AsSpan().SequenceEqual(source),
                 "Ex Markdown open uses the remembered view without changing source or adding history");
 
-            firstView.SetMarkdownSource(true);
+            firstView.SetMarkdownPreview(false);
             second.Document.NotifyChanged(); secondView.Refresh(); window.Toolbar.Refresh();
             preferences.ObserveMarkdownView(second.Document, error => throw error);
             Check(!preferences.MarkdownFormattedView && !new Preferences(directory).MarkdownFormattedView,
@@ -58,10 +58,10 @@ internal static class MarkdownViewPreferenceTests
             string newPath = Path.Combine(directory, "new.md");
             secondView.Ex("split " + newPath); await window.PendingEffectsForTesting;
             var empty = window.ActivePane!; await empty.Ready;
-            Check(empty.Document.FilePath == newPath && empty.Document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE
+            Check(empty.Document.FilePath == newPath && empty.Document.State.format == VIEM_FORMAT_CODE
                 && empty.Document.State.source_byte_count == 0,
-                "new named Markdown files use the last Source choice");
-            firstView.SetMarkdownSource(false);
+                "new named Markdown files use the last Preview-off choice");
+            firstView.SetMarkdownPreview(true);
             var reloaded = new Preferences(directory);
             using (var reopened = new CoreDocument(source, "reopened.md", markdownFormattedView: reloaded.MarkdownFormattedView))
                 Check(reopened.State.format == VIEM_FORMAT_MARKDOWN,
@@ -75,11 +75,11 @@ internal static class MarkdownViewPreferenceTests
             await window.ClosePane(empty, force: true);
             await window.ClosePane(second, force: true);
 
-            var snapshot = new RecoverySnapshot(source, "markdownSource", 1, 1, 1, 1);
-            var recovered = window.AddPane(new CoreDocument(snapshot.source, format: snapshot.Format,
+            var snapshot = new RecoverySnapshot(source, "code", 1, 1, 1, 1);
+            var recovered = window.AddPane(new CoreDocument(snapshot.source, Path.Combine(directory, "recovered.md"), format: snapshot.Format,
                 encoding: snapshot.encoding, fileFormat: snapshot.fileFormat, markdownFormattedView: preferences.MarkdownFormattedView));
             var recoveredView = await recovered.Ready; recovered.Document.MarkRecovered();
-            Check(recovered.Document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && preferences.MarkdownFormattedView,
+            Check(recovered.Document.State.format == VIEM_FORMAT_CODE && preferences.MarkdownFormattedView,
                 "explicit recovery format is retained without replacing the remembered choice");
             foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE })
             {
@@ -94,7 +94,7 @@ internal static class MarkdownViewPreferenceTests
             var external = JsonNode.Parse(File.ReadAllText(config))!;
             external["editing"]!["markdownFormattedView"] = false;
             File.WriteAllText(config, external.ToJsonString());
-            recoveredView.SetMarkdownSource(false);
+            recoveredView.SetMarkdownPreview(true);
             Check(new Preferences(directory).MarkdownFormattedView,
                 "the latest actual view choice replaces an externally changed value even when the cached preference matches");
             byte[] before = File.ReadAllBytes(config);
@@ -110,12 +110,12 @@ internal static class MarkdownViewPreferenceTests
             string brokenDirectory = Path.Combine(directory, "failed-write");
             Directory.CreateDirectory(brokenDirectory);
             var broken = new Preferences(brokenDirectory);
-            using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN_SOURCE);
+            using var document = new CoreDocument(source, "broken.md", format: VIEM_FORMAT_CODE);
             using var brokenView = new CoreView(document, first.Canvas.Device, first.DispatcherQueue, 500, 200);
             Exception? failure = null;
             broken.ObserveMarkdownView(document, error => failure = error);
             File.WriteAllText(Path.Combine(brokenDirectory, "config.json"), "{\"version\":99}");
-            brokenView.SetMarkdownSource(false);
+            brokenView.SetMarkdownPreview(true);
             Check(failure != null && document.State.format == VIEM_FORMAT_MARKDOWN,
                 "preference-write failure is reported without undoing the successful view change");
         }

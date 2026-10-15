@@ -157,7 +157,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    private func applyThemeStyles(changedNames: [String]) {
+    private func applyThemeStyles(changedNames: [String], refreshSurfaces: Bool = true) {
         guard !isStylePreview, !isApplyingThemeStyles else { return }
         isApplyingThemeStyles = true
         defer { isApplyingThemeStyles = false }
@@ -170,7 +170,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 path: configuration.selectedThemeURL?.path ?? "Default", replacing: true)
             try checked(result.status, operation: "Apply theme styles")
             if !result.messages.isEmpty { noteConfigurationWarning(result.messages.joined(separator: "\n")) }
-            for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
+            if refreshSurfaces {
+                for surface in surfaces.compactMap(\.value) { surface.refreshPresentation() }
+            }
             NotificationCenter.default.post(name: .viemCoreDocumentDidChange, object: self)
         } catch { noteConfigurationWarning("Could not apply theme styles; keeping available styles. \(error.localizedDescription)") }
     }
@@ -624,11 +626,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     }
 
     private static func openingType(for format: EVSourceFormat) -> String {
-        switch format {
-        case .code: EVDocument.codeType
-        case .markdownSource: EVDocument.markdownSourceType
-        default: EVDocument.typeName(for: format)
-        }
+        format == .code ? EVDocument.codeType : EVDocument.typeName(for: format)
     }
 
     private func configureSyntax() {
@@ -849,16 +847,24 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         return output
     }
 
+    /// The effective Code language is Markdown, explicitly or by detection.
+    public var codeLanguageIsMarkdown: Bool {
+        guard core != 0, let mode: EVDocumentModeState = try? EVDocumentModeJSON.read({
+            viem_core_copy_document_mode_json(core, $0, $1, $2)
+        }) else { return false }
+        return (mode.language ?? mode.detectedLanguage) == "markdown"
+    }
+
     private func installDocumentState(_ state: ViemDocumentStateV1) {
         let oldPersistence = Self.persistenceState(from: currentDocumentState)
         let previousFormat = sourceFormat
         let nextFormat = Self.sourceFormat(from: state)
+        // Markdown Preview off is literal Code with the Markdown language.
         let changedMarkdownView = !isStylePreview
             && currentDocumentState.document_id != 0
             && currentDocumentState.document_id == state.document_id
-            && previousFormat != nextFormat
-            && [.markdown, .markdownSource].contains(previousFormat)
-            && [.markdown, .markdownSource].contains(nextFormat)
+            && Set([previousFormat, nextFormat]) == [.markdown, .code]
+            && codeLanguageIsMarkdown
         let changedFamily = currentDocumentState.document_id == state.document_id
             && previousFormat.defaultStyleName != nextFormat.defaultStyleName
         currentDocumentState = state
@@ -872,7 +878,10 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
                 for surface in surfaces.compactMap(\.value) { surface.showDocumentMessage(warning) }
             }
         }
-        if changedFamily { applyThemeStyles(changedNames: [sourceFormat.defaultStyleName]) }
+        // A source change refreshes every surface right after installing state.
+        if changedFamily {
+            applyThemeStyles(changedNames: [sourceFormat.defaultStyleName], refreshSurfaces: !isRefreshingSurfaces)
+        }
         let newPersistence = Self.persistenceState(from: state)
         if oldPersistence != newPersistence {
             persistenceStateDidChange?(newPersistence)
@@ -908,7 +917,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private static func sourceFormat(from state: ViemDocumentStateV1) -> EVSourceFormat {
         switch state.format {
         case UInt32(VIEM_FORMAT_MARKDOWN): .markdown
-        case UInt32(VIEM_FORMAT_MARKDOWN_SOURCE): .markdownSource
         case UInt32(VIEM_FORMAT_CODE): .code
         default: .plainText
         }
@@ -918,8 +926,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         switch EVDocument.sourceFormat(forTypeName: typeName) {
         case .markdown:
             UInt32(VIEM_FORMAT_MARKDOWN)
-        case .markdownSource:
-            UInt32(VIEM_FORMAT_MARKDOWN_SOURCE)
         case .code:
             UInt32(VIEM_FORMAT_CODE)
         case .plainText, nil:
@@ -1180,18 +1186,6 @@ final class EVCoreViewSession {
         var value = ViemViewLineLocationV1(); value.struct_size = UInt32(MemoryLayout<ViemViewLineLocationV1>.size)
         try checked(viem_core_view_line_location(document.core, viewID, &value), operation: "Read line position")
         return value
-    }
-
-    func paragraphFlow() throws -> Bool {
-        var value: UInt32 = 0
-        try checked(viem_core_view_paragraph_flow(document.core, viewID, &value), operation: "Read paragraph flow")
-        return value != 0
-    }
-
-    func setParagraphFlow(_ enabled: Bool) throws {
-        _ = try performCoreOperation("Change paragraph flow") { outcome in
-            viem_core_view_set_paragraph_flow(document.core, viewID, enabled ? 1 : 0, outcome)
-        }
     }
 
     func lineMode() throws -> EVLineMode {
@@ -1566,33 +1560,30 @@ final class EVCoreViewSession {
     }
 
     @discardableResult
-    func setDocumentMode(_ choice: EVDocumentModeChoice, expected state: EVDocumentModeState,
-                         formattedMarkdown: Bool) throws -> ViemCoreOutcomeV1 {
+    func setDocumentMode(_ choice: EVDocumentModeChoice, expected state: EVDocumentModeState) throws -> ViemCoreOutcomeV1 {
+        try setDocumentMode(choice, documentID: state.documentId, revision: state.documentRevision)
+    }
+
+    /// Markdown Preview on, or off into literal Code with the Markdown language.
+    @discardableResult
+    func setMarkdownPreview(_ enabled: Bool, expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
+        try setDocumentMode(enabled ? .markdown : .code("markdown"),
+            documentID: state.document_id, revision: state.document_revision)
+    }
+
+    private func setDocumentMode(_ choice: EVDocumentModeChoice, documentID: UInt64,
+                                 revision: UInt64) throws -> ViemCoreOutcomeV1 {
         var request = ViemSetDocumentModeV1()
         request.struct_size = UInt32(MemoryLayout<ViemSetDocumentModeV1>.size)
         request.mode = choice.code
-        request.document_id = state.documentId
-        request.document_revision = state.documentRevision
-        request.formatted_markdown = formattedMarkdown ? 1 : 0
+        request.document_id = documentID
+        request.document_revision = revision
         let language = Array(choice.language.utf8)
         return try performHostEffectTurn("Change document mode") { outcome, effects in
             language.withUnsafeBufferPointer {
                 viem_core_view_set_document_mode_with_effects(document.core, viewID, &request,
                     $0.baseAddress, UInt64($0.count), outcome, effects)
             }
-        }
-    }
-
-    @discardableResult
-    func setMarkdownSource(_ source: Bool,
-                           expected state: ViemDocumentStateV1) throws -> ViemCoreOutcomeV1 {
-        var request = ViemSetMarkdownSourceV1()
-        request.struct_size = UInt32(MemoryLayout<ViemSetMarkdownSourceV1>.size)
-        request.source = source ? 1 : 0
-        request.document_id = state.document_id
-        request.document_revision = state.document_revision
-        return try performHostEffectTurn("Change Markdown presentation") { outcome, effects in
-            viem_core_view_set_markdown_source_with_effects(document.core, viewID, &request, outcome, effects)
         }
     }
 

@@ -1,5 +1,5 @@
-//! Semantic paragraph keyboard actions. Source views retain literal newline
-//! editing; WYSIWYG hard breaks use each adapter's native inline break syntax.
+//! Semantic paragraph keyboard actions. Literal formats retain literal newline
+//! editing; Markdown hard breaks use its native inline break syntax.
 use super::*;
 
 impl Document {
@@ -94,7 +94,7 @@ impl Document {
     /// Paragraph keyboard actions use the formatted boundary, independently
     /// of its source spelling, affinity, or how the caret arrived there.
     fn keyboard_paragraph(&self, at: usize) -> Result<Option<super::super::Block>, DocumentError> {
-        if !self.format().is_wysiwyg() {
+        if !self.format().is_markdown() {
             return Ok(None);
         }
         super::super::edit_boundary::paragraph_at(self, at)
@@ -105,42 +105,6 @@ impl Document {
         at: usize,
         unindent: bool,
     ) -> Result<Option<ModelRequest>, DocumentError> {
-        if self.format().is_source_view() {
-            self.text_point(at)?;
-            let source_blocks = self
-                .projection()
-                .flow_blocks_for_region(&(at..at))
-                .unwrap_or_else(|| self.projection().blocks_for_region(&(at..at)));
-            let in_list = source_blocks
-                .iter()
-                .any(|block| matches!(block.kind, super::super::BlockKind::ListItem { .. }));
-            if !in_list {
-                return Ok(None);
-            }
-            let source_at = self
-                .projection()
-                .source_insertion_point(at, true)
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let semantic = Document::from_bytes_with_file_format(
-                self.source_bytes(),
-                self.encoding(),
-                Format::Markdown,
-                self.file_format(),
-            )?;
-            let visible_at = semantic.visible_point_for_source(source_at, true)?;
-            let Some(block) = semantic.keyboard_paragraph(visible_at)? else {
-                return Ok(None);
-            };
-            if !matches!(block.kind, super::super::BlockKind::ListItem { .. }) {
-                return Ok(None);
-            }
-            return Ok(Some(ModelRequest::IndentList {
-                document: self.id(),
-                revision: self.revision(),
-                range: at..at,
-                unindent,
-            }));
-        }
         let Some(block) = self.keyboard_paragraph(at)? else {
             return Ok(None);
         };
@@ -229,7 +193,7 @@ impl Document {
         affinity: BoundaryAffinity,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.text_point(at)?;
-        if !self.format().is_wysiwyg() {
+        if !self.format().is_markdown() {
             // Plain/source projections author a literal source line ending.
             if let Some((prepared, _)) = self.prepare_literal_terminal_break(at, "")? {
                 return Ok(prepared);

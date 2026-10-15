@@ -3,7 +3,7 @@ use viem_core::{Document, Encoding, Format};
 
 #[test]
 fn paragraph_menu_assignments_update_source_markers_and_undo() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = if format == Format::Markdown {
             b"__First__\r\n\r\nSecond".as_slice()
         } else {
@@ -154,36 +154,8 @@ fn removing_structural_markers_keeps_neighboring_paragraphs_separate() {
 }
 
 #[test]
-fn source_list_removal_keeps_the_middle_item_a_separate_paragraph() {
-    for marker in ["- ", "3. "] {
-        let source = format!("{marker}Before\n{marker}Middle\n{marker}After");
-        let mut document = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        let at = document.text().find("Middle").unwrap();
-        document.set_list_style(at..at, None).unwrap();
-        let tail = if marker == "3. " { "1. " } else { marker };
-        let expected = format!("{marker}Before\n\nMiddle\n\n{tail}After");
-        assert_eq!(document.source_bytes(), expected.as_bytes());
-        for format in [Format::MarkdownSource, Format::Markdown] {
-            let reopened =
-                Document::from_bytes(document.source_bytes(), Encoding::Utf8, format).unwrap();
-            assert_eq!(reopened.projection().blocks().len(), 3);
-            assert_eq!(reopened.projection().blocks()[1].kind, BlockKind::Paragraph);
-        }
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert!(document.redo());
-        assert_eq!(document.source_bytes(), expected.as_bytes());
-    }
-}
-
-#[test]
 fn code_paragraph_assignment_wraps_and_unwraps_the_whole_paragraph() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for newline in ["\n", "\r\n"] {
             let source = format!("Before{newline}{newline}Words{newline}{newline}After");
             let mut document =
@@ -213,7 +185,7 @@ fn code_paragraph_assignment_wraps_and_unwraps_the_whole_paragraph() {
 
 #[test]
 fn clearing_code_fences_preserves_boundaries_without_existing_blank_lines() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "Before\n```rust\nWords\n```\nAfter";
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -229,7 +201,7 @@ fn clearing_code_fences_preserves_boundaries_without_existing_blank_lines() {
 
 #[test]
 fn code_toggle_handles_empty_multiline_and_literal_delimiters() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in ["", "Words", "one\ntwo", "# Heading", "- Item"] {
             let mut document =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -282,60 +254,12 @@ fn code_toggle_handles_empty_multiline_and_literal_delimiters() {
 }
 
 #[test]
-fn source_structural_removal_preserves_paragraphs_and_existing_separators() {
-    for (source, needle, expected) in [
-        (
-            "Before\n# Heading\nAfter",
-            "Heading",
-            "Before\n\nHeading\n\nAfter",
-        ),
-        (
-            "Before\n> Quote\n\nAfter",
-            "Quote",
-            "Before\n\nQuote\n\nAfter",
-        ),
-        (
-            "- Before\n- Middle\n  continuation\n- After",
-            "Middle",
-            "- Before\n\nMiddle\ncontinuation\n\n- After",
-        ),
-        (
-            "- Before\n \t\n- Middle\n\n- After",
-            "Middle",
-            "- Before\n \t\nMiddle\n\n- After",
-        ),
-    ] {
-        let mut document = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        let at = document.text().find(needle).unwrap();
-        document
-            .set_paragraph_style(at..at, "Paragraph".into())
-            .unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
-        assert_eq!(document.source_bytes(), expected.as_bytes());
-        assert_eq!(document.projection().blocks().len(), 3);
-        let saved = document.source_bytes();
-        let reopened =
-            Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
-        assert_eq!(reopened.projection().blocks().len(), 3);
-        assert_eq!(reopened.projection().blocks()[1].kind, BlockKind::Paragraph);
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert!(document.redo());
-        assert_eq!(document.source_bytes(), saved);
-    }
-}
-
-#[test]
 fn code_toolbar_command_keeps_the_caret_in_the_body_and_groups_undo() {
     use viem_core::command::InputEvent;
     use viem_core::document::{BoundaryAffinity, StyleNamespace};
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "Before\n\nWords\n\nAfter";
         let mut core = Core::new(
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
@@ -397,7 +321,7 @@ fn code_fences_preserve_encodings_and_selected_paragraph_boundaries() {
         Encoding::Latin1 => text.chars().map(|ch| ch as u8).collect(),
         Encoding::Utf8 => text.as_bytes().to_vec(),
     };
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for encoding in [
             Encoding::Utf8,
             Encoding::Latin1,
@@ -447,17 +371,4 @@ fn code_fences_preserve_encodings_and_selected_paragraph_boundaries() {
             );
         }
     }
-    let mut document = Document::from_bytes(
-        b"Text ````literal````".to_vec(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    document
-        .set_paragraph_style(0..0, "Code Block".into())
-        .unwrap();
-    assert_eq!(
-        document.source_bytes(),
-        b"`````\nText ````literal````\n`````"
-    );
 }

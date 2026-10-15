@@ -23,8 +23,6 @@ impl Document {
             }
         }
         let mut patches = Vec::new();
-        let mut expected_text = self.text().to_owned();
-        let mut edits = Vec::new();
         let mut targets = Vec::new();
         for block in blocks {
             let is_code = block.style.0 == "Code Block"
@@ -38,22 +36,10 @@ impl Document {
                 .slice(block.range.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
             let (source, raw) = self.markdown_paragraph_source(&block, !enabled)?;
-            let (syntax, body_range, body_syntax, opening, closing) = if enabled {
+            let (body_range, body_syntax, opening, closing) = if enabled {
                 let container =
                     &raw[..super::super::markdown_quotes::prefix(raw.lines().next().unwrap_or(""))];
-                let source_body = if container.is_empty() {
-                    raw.clone()
-                } else {
-                    strip_quote_prefixes(
-                        &raw,
-                        container.bytes().filter(|byte| *byte == b'>').count(),
-                    )
-                };
-                let body = if self.format().is_source_view() {
-                    source_body.as_str()
-                } else {
-                    &visible
-                };
+                let body = &visible;
                 // A fence must be longer than every possible closing run in
                 // its literal body, including pasted backtick-only lines.
                 let width = body
@@ -67,7 +53,6 @@ impl Document {
                 let language = self.projection().default_code_language(block.range.start).unwrap_or_default();
                 let body = quote_lines(body, container);
                 (
-                    format!("{container}{fence}{language}\n{body}\n{container}{fence}"),
                     0..raw.len(),
                     body,
                     format!("{container}{fence}{language}\n"),
@@ -104,7 +89,6 @@ impl Document {
                     .map(|(index, line)| format!("{}{line}", if index == 0 { first } else { &continuation }))
                     .collect::<Vec<_>>().join("\n");
                 (
-                    prose.clone(),
                     0..raw.len(),
                     prose,
                     String::new(),
@@ -127,33 +111,10 @@ impl Document {
                     width,
                 );
                 let body_end = if closed { last_start - 1 } else { raw.len() };
-                let body = &raw[(first_end + 1).min(body_end)..body_end];
-                let source_body = if quote > 0 {
-                    strip_quote_prefixes(
-                        body,
-                        opening[..quote]
-                            .bytes()
-                            .filter(|byte| *byte == b'>')
-                            .count(),
-                    )
-                } else {
-                    body.to_owned()
-                };
-                let prose = prose_from_code(if self.format().is_source_view() {
-                    &source_body
-                } else {
-                    &visible
-                });
+                let prose = prose_from_code(&visible);
                 let prose = if matches!(block.kind, super::super::BlockKind::ListItem { .. }) {
-                    let continuation = if self.format().is_source_view() {
-                        body.lines().next().map(|line| {
-                            let end = super::super::markdown_quotes::prefix(line);
-                            line[..end].to_owned()
-                        }).unwrap_or_default()
-                    } else {
-                        super::super::markdown_code::fenced_source(self, &block)?
-                            .map(|fence| fence.body_prefix).unwrap_or_default()
-                    };
+                    let continuation = super::super::markdown_code::fenced_source(self, &block)?
+                        .map(|fence| fence.body_prefix).unwrap_or_default();
                     prose.split('\n').enumerate().map(|(index, line)| {
                         format!("{}{line}", if index == 0 { &opening[..quote] } else { &continuation })
                     }).collect::<Vec<_>>().join("\n")
@@ -161,7 +122,6 @@ impl Document {
                     quote_lines(&prose, &opening[..quote])
                 };
                 (
-                    prose.clone(),
                     (first_end + 1).min(body_end)..body_end,
                     prose,
                     String::new(),
@@ -192,9 +152,6 @@ impl Document {
                     encode(&closing)?,
                 ));
             }
-            if self.format().is_source_view() {
-                edits.push(TextEdit::new(block.range.clone(), syntax));
-            }
             targets.push(block.range);
         }
         if !enabled {
@@ -218,21 +175,14 @@ impl Document {
                 combined.push(patch);
             }
         }
-        for edit in edits.iter().rev() {
-            expected_text.replace_range(edit.range.clone(), &edit.replacement);
-        }
-        let mut prepared = if self.format().is_source_view() {
-            self.prepare_reprojected_source_patches(combined)?
-        } else {
-            self.prepare_text_edits_with_patches(Vec::new(), Some(combined))?
-        };
+        let mut prepared = self.prepare_text_edits_with_patches(Vec::new(), Some(combined))?;
         if prepared.is_no_op() {
             return Ok(prepared);
         }
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
-        if candidate.projection.text() != expected_text
+        if candidate.projection.text() != self.text()
             || candidate.projection.blocks().len() != self.projection().blocks().len()
         {
             return Err(DocumentError::VerificationFailed.into());
@@ -268,11 +218,7 @@ impl Document {
                     block.range.start == at
                         && (block.style.0 == expected
                             || retained_list.as_ref().is_some_and(|(kind, quote, style)|
-                                block.kind == *kind && block.quote_depth == *quote && block.style == *style)
-                            || !enabled
-                                && self.format().is_source_view()
-                                && block.quote_depth > 0
-                                && block.style.0 == "Block quote")
+                                block.kind == *kind && block.quote_depth == *quote && block.style == *style))
                 })
             {
                 return Err(DocumentError::VerificationFailed.into());
@@ -303,7 +249,7 @@ impl Document {
         let last = lines
             .line_at_offset(body.end.saturating_sub(1).max(body.start))
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let source = if code && !self.format().is_source_view() {
+        let source = if code {
             let fence = super::super::markdown_code::fenced_source(self, block)?
                 .ok_or(DocumentError::UnsupportedFormatting)?;
             fence.opening.start..fence.closing_content_end.unwrap_or(body.end)
@@ -371,31 +317,6 @@ fn prose_from_code(body: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(separator)
-}
-
-fn strip_quote_prefixes(body: &str, depth: usize) -> String {
-    body.split('\n')
-        .map(|line| {
-            let mut start = 0;
-            for _ in 0..depth {
-                let tail = &line[start..];
-                if super::super::markdown_quotes::prefix(tail) == 0 {
-                    break;
-                }
-                let marker = tail.find('>').unwrap();
-                start += marker + 1;
-                if line
-                    .as_bytes()
-                    .get(start)
-                    .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
-                {
-                    start += 1;
-                }
-            }
-            &line[start..]
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn quote_lines(body: &str, prefix: &str) -> String {

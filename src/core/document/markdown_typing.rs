@@ -31,7 +31,6 @@ pub(super) fn replacement_insertion(
                 let syntax = format!("{prefix}{body}");
                 return Ok(Some(super::super::replacement_context::Insertion {
                     source: source..source,
-                    source_caret: source + document.encoding().encode_fragment(&syntax)?.len(),
                     syntax,
                 }));
             }
@@ -60,7 +59,6 @@ pub(super) fn replacement_insertion(
         let prefix = format!("{fence}{language}{newline}");
         return Ok(Some(super::super::replacement_context::Insertion {
             source: source..source,
-            source_caret: source + prefix.len() + body.len(),
             syntax: format!("{prefix}{body}{newline}{fence}")
                 .split(newline)
                 .map(|line| format!("{}{line}", "> ".repeat(inherited.paragraph.quote_depth)))
@@ -82,7 +80,6 @@ pub(super) fn replacement_insertion(
             .join(document.file_format().spelling());
         return Ok(Some(super::super::replacement_context::Insertion {
             source: source..source,
-            source_caret: source + syntax.len(),
             syntax,
         }));
     }
@@ -121,7 +118,6 @@ pub(super) fn replacement_insertion(
     let escaped = escape_markdown_insert_in_encoding(text, document.encoding());
     Ok(Some(super::super::replacement_context::Insertion {
         source: source..source,
-        source_caret: source + 1 + escaped.len(),
         syntax: format!("[{escaped}](<{destination}>)"),
     }))
 }
@@ -133,66 +129,32 @@ struct Scope {
     italic: bool,
     strike: bool,
 }
-fn scopes(projection: &FormattedDocument, at: usize) -> Result<Vec<Scope>, DocumentError> {
-    let text = projection.text_tree();
-    let spans = projection
-        .style_spans_for_region(&(at.saturating_sub(1)..at.saturating_add(1).min(text.byte_len())));
-    let mut result: Vec<Scope> = Vec::new();
-    for span in &spans {
-        let style = match &span.application {
-            StyleApplication::Semantic(style @ (SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)) => Some(*style),
-            StyleApplication::Automatic(id) if id.0 == "Strikethrough" => None,
-            _ => continue,
-        };
-        if result.iter().any(|scope| scope.range == span.range) {
-            continue;
-        }
-        let bold = spans.iter().any(|s| {
-            s.range == span.range
-                && s.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)
-        });
-        let italic = spans.iter().any(|s| {
-            s.range == span.range
-                && s.application == StyleApplication::Semantic(SemanticInlineStyle::Emphasis)
-        });
-        let strike = style.is_none();
-        let width = if strike {
-            let opening = text.slice(span.range.start..span.range.end).map_err(DocumentError::FormattedTextStorage)?;
-            if opening.starts_with("~~") { 2 } else { 1 }
-        } else if bold && italic {
-            3
-        } else if style == Some(SemanticInlineStyle::Strong) {
-            2
-        } else {
-            1
-        };
-        if span.range.len() < width * 2
-            || at < span.range.start + width
-            || at > span.range.end - width
-        {
-            continue;
-        }
-        let marker = text
-            .slice(span.range.start..span.range.start + width)
-            .map_err(DocumentError::FormattedTextStorage)?;
-        if (!marker.bytes().all(|b| b == b'*') && !marker.bytes().all(|b| b == b'_') && !(strike && marker.bytes().all(|b| b == b'~')))
-            || text
-                .slice(span.range.end - width..span.range.end)
-                .map_err(DocumentError::FormattedTextStorage)?
-                != marker
-        {
-            continue;
-        }
-        result.push(Scope {
-            range: span.range.clone(),
-            marker,
-            bold,
-            italic,
-            strike,
-        });
-    }
+/// Emphasis, strong and strikethrough scopes in one physical source line
+/// whose content contains `at`, outermost first.
+fn scopes(text: &str, at: usize) -> Vec<Scope> {
+    use super::super::markdown_syntax::InlineKind;
+    let mut result: Vec<Scope> = super::super::markdown_syntax::source_inlines(text)
+        .into_values()
+        .filter_map(|inline| {
+            let (bold, italic, strike) = match inline.kind {
+                InlineKind::Strong => (true, false, false),
+                InlineKind::Emphasis => (false, true, false),
+                InlineKind::Strike => (false, false, true),
+                _ => return None,
+            };
+            if at < inline.inner.start || at > inline.inner.end {
+                return None;
+            }
+            let marker = &text[inline.range.start..inline.inner.start];
+            let uniform = |byte| marker.bytes().all(|b| b == byte);
+            let valid = !marker.is_empty()
+                && (uniform(b'*') || uniform(b'_') || strike && uniform(b'~'))
+                && text[inline.inner.end..inline.range.end] == *marker;
+            valid.then(|| Scope { range: inline.range, marker: marker.to_owned(), bold, italic, strike })
+        })
+        .collect();
     result.sort_by_key(|scope| (scope.range.start, std::cmp::Reverse(scope.range.end)));
-    Ok(result)
+    result
 }
 
 pub(super) fn insertion(
@@ -210,109 +172,47 @@ pub(super) fn insertion(
     {
         return Ok(None);
     }
-    if document.format() == Format::MarkdownSource
-        && text.chars().next().is_some_and(char::is_alphanumeric)
-    {
-        let span = document
-            .projection()
-            .style_spans_for_region(&(at.saturating_sub(1)..at))
-            .into_iter()
-            .filter(|span| {
-                span.range.end == at
-                    && matches!(
-                        span.application,
-                        StyleApplication::Semantic(
-                            SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis
-                        )
-                    )
-            })
-            .min_by_key(|span| span.range.start);
-        if let Some(span) = span {
-            let body = document
-                .projection()
-                .text_tree()
-                .slice(span.range.clone())
-                .map_err(DocumentError::FormattedTextStorage)?;
-            let prefix = body
-                .bytes()
-                .take_while(|b| matches!(b, b'*' | b'_'))
-                .count();
-            let suffix = body
-                .bytes()
-                .rev()
-                .take_while(|b| matches!(b, b'*' | b'_'))
-                .count();
-            if prefix > 0 && prefix == suffix && body[..prefix].contains('_') {
-                let source = document
-                    .projection()
-                    .source_range(span.range.clone())
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let marker = "*".repeat(prefix);
-                return Ok(Some(super::super::replacement_context::Insertion {
-                    source,
-                    source_caret: at + text.len(),
-                    syntax: format!(
-                        "{marker}{}{marker}{text}",
-                        &body[prefix..body.len() - suffix]
-                    ),
-                }));
-            }
-        }
-    }
-    let local;
-    let (projection, local_at) = if document.format() == Format::MarkdownSource {
-        (document.projection(), at)
-    } else {
-        let source_at = document
-            .projection()
-            .source_insertion_point(
-                at,
-                affinity == BoundaryAffinity::Downstream
-                    && at < document.projection().text_tree().byte_len(),
-            )
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let index = document
-            .state()
-            .source_hard_lines
-            .line_at_offset(source_at)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let source_line = document
-            .state()
-            .source_hard_lines
-            .get(index)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let bytes = document
-            .state()
-            .source
-            .bytes_in(source_line.clone())
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let decoded = document
-            .encoding()
-            .decode_region(&bytes, source_line.start)?;
-        let normalized = normalize(&decoded, document.file_format());
-        let local_at = normalized
-            .unit_with_source_start(source_at)
-            .map(|unit| unit.normalized.start)
-            .or_else(|| {
-                normalized
-                    .last_unit()
-                    .filter(|unit| unit.source.end == source_at)
-                    .map(|unit| unit.normalized.end)
-            })
-            // A final empty physical row has no scalar units, but its body
-            // start is still an exact caret location with no inline scopes.
-            .or_else(|| (!normalized.has_units() && source_at == source_line.start).then_some(0))
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        local = project(
-            &normalized,
-            Format::MarkdownSource,
-            document.revision(),
-            source_line.start,
-            source_line.end,
-        );
-        (&local, local_at)
-    };
-    let scopes = scopes(projection, local_at)?;
+    let source_at = document
+        .projection()
+        .source_insertion_point(
+            at,
+            affinity == BoundaryAffinity::Downstream
+                && at < document.projection().text_tree().byte_len(),
+        )
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let index = document
+        .state()
+        .source_hard_lines
+        .line_at_offset(source_at)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let source_line = document
+        .state()
+        .source_hard_lines
+        .get(index)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(source_line.clone())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let decoded = document
+        .encoding()
+        .decode_region(&bytes, source_line.start)?;
+    let normalized = normalize(&decoded, document.file_format());
+    let local_at = normalized
+        .unit_with_source_start(source_at)
+        .map(|unit| unit.normalized.start)
+        .or_else(|| {
+            normalized
+                .last_unit()
+                .filter(|unit| unit.source.end == source_at)
+                .map(|unit| unit.normalized.end)
+        })
+        // A final empty physical row has no scalar units, but its body
+        // start is still an exact caret location with no inline scopes.
+        .or_else(|| (!normalized.has_units() && source_at == source_line.start).then_some(0))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let scopes = scopes(&normalized.text, local_at);
     let Some(first) = scopes.iter().position(|scope| {
         scope.bold && desired.bold == Some(false)
             || scope.italic && desired.slant == Some(crate::document::FontSlant::Upright)
@@ -362,11 +262,7 @@ pub(super) fn insertion(
         local_at
     };
     prefix.push_str(&preserved_open);
-    let mut escaped = if document.format() == Format::MarkdownSource {
-        text.to_owned()
-    } else {
-        escape_markdown_insert_in_encoding(text, document.encoding())
-    };
+    let mut escaped = escape_markdown_insert_in_encoding(text, document.encoding());
     if active.iter().any(|scope| scope.marker.starts_with('_')) || preserved.starts_with('_') {
         let mut characters = escaped.chars();
         if let Some(first) = characters.next() {
@@ -379,12 +275,9 @@ pub(super) fn insertion(
             escaped = body;
         }
     }
-    let source = projection
-        .source_insertion_point(point, true)
-        .ok_or(DocumentError::AmbiguousProjection)?;
+    let source = normalized.source_at(point);
     Ok(Some(super::super::replacement_context::Insertion {
         source: source..source,
-        source_caret: point + prefix.len() + escaped.len(),
         syntax: format!("{prefix}{escaped}{suffix}"),
     }))
 }

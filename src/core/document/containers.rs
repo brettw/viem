@@ -172,7 +172,7 @@ mod tests {
 
     #[test]
     fn deleting_a_configured_container_style_reassigns_flow_paths_and_picker_context() {
-        let mut doc = Document::from_bytes(b"> body".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let mut doc = Document::from_bytes(b"> body".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         let id = StyleId::from("Block quote");
         assert!(doc.projection().has_block_style_assignment(&id));
         doc.apply_style_request(StyleModelRequest::new(doc.id(), doc.revision(),

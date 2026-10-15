@@ -314,7 +314,7 @@ fn pending_style_choice_discards_surrounding_traits_before_normal_insert_or_repl
 
 #[test]
 fn normal_caret_style_queries_use_the_current_character_while_insert_honors_upstream() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for (syntax, visible, bold, italic, strike, named) in [
             ("**bold**", "bold", true, false, false, None),
             ("*italic*", "italic", false, true, false, None),
@@ -324,7 +324,7 @@ fn normal_caret_style_queries_use_the_current_character_while_insert_honors_upst
         ] {
             let source = format!("plain {syntax} tail");
             let start = "plain ".len();
-            let end = start + if format.is_source_view() { syntax.len() } else { visible.len() };
+            let end = start + visible.len();
             for mode in [Mode::Normal, Mode::Insert] {
                 for at in [start, end] {
                     let (mut core, view) = fixture(format, &source);

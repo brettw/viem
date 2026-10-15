@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn code_block_membership_survives_quotes_and_mixed_selections() {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             for code in ["```mermaid\ngraph LR\n```", "    graph LR", "> ```\n> graph LR\n> ```"] {
                 let source = format!("Before `inline`\n\n{code}\n\nAfter");
                 let doc = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();

@@ -129,7 +129,7 @@ fn named_typing_preserves_space_only_markdown_and_rejects_internal_styles() {
         assert!(document.undo());
     }
     assert_eq!(document.source_bytes(), before);
-    let source = open(b"word", Format::MarkdownSource);
+    let source = open(b"word", Format::Markdown);
     let internal = source
         .projection()
         .style_sheet()
@@ -176,54 +176,3 @@ fn markdown_partial_style_choice_clears_emphasis_only_in_selection() {
     }
 }
 
-#[test]
-fn source_view_style_choices_clear_inline_traits_without_changing_visible_words() {
-    use viem_core::layout::DocumentLayoutStyles;
-    for (format, source) in [
-        (Format::MarkdownSource, "left ***word*** right"),
-    ] {
-        for chosen in ["Code", ""] {
-            let mut document = open(source.as_bytes(), format);
-            let start = document.text().find("word").unwrap();
-            assign(&mut document, start..start + 4, chosen).unwrap_or_else(|error| panic!("{format:?} {chosen}: {error:?}"));
-            let source_after = document.source_bytes();
-            let rich = open(&source_after, Format::Markdown);
-            let start = rich.text().find("word").unwrap();
-            let value = DocumentLayoutStyles::semantic_character_at(rich.projection(), start, false).unwrap();
-            assert!(!value.bold);
-            assert_eq!(value.slant, FontSlant::Upright);
-            assert_eq!(named(&rich, start).0, chosen);
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), source.as_bytes());
-        }
-    }
-}
-
-#[test]
-fn source_partial_character_choices_terminate_and_clear_selected_traits() {
-    use viem_core::layout::DocumentLayoutStyles;
-    for (source, needle, within) in [
-        ("_ab_", "ab", 1..2),
-        ("__bold__", "bold", 1..2),
-        ("**[bold link](u)**", "bold link", 1..2),
-        ("**a *b* c**", "b", 0..1),
-    ] {
-        for chosen in ["Code", ""] {
-            let mut document = open(source.as_bytes(), Format::MarkdownSource);
-            let start = document.text().find(needle).unwrap();
-            assign(&mut document, start + within.start..start + within.end, chosen)
-                .unwrap_or_else(|error| panic!("{source:?} {chosen:?}: {error:?}"));
-            let bytes = document.source_bytes();
-            let rich = open(&bytes, Format::Markdown);
-            let target = rich.text().find(needle).unwrap_or_else(|| panic!("{source:?} {chosen:?}: {} => {:?}", String::from_utf8_lossy(&bytes), rich.text())) + within.start;
-            let value = DocumentLayoutStyles::semantic_character_at(rich.projection(), target, false).unwrap();
-            assert!(!value.bold, "{}", String::from_utf8_lossy(&bytes));
-            assert_eq!(value.slant, FontSlant::Upright);
-            assert_eq!(named(&rich, target).0, chosen);
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), source.as_bytes());
-            assert!(document.redo());
-            assert_eq!(document.source_bytes(), bytes);
-        }
-    }
-}

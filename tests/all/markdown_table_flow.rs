@@ -113,7 +113,7 @@ fn huge_cell_tree_layout_preserves_the_gap_after_its_table() {
 #[test]
 fn giant_prose_before_table_preserves_following_container_spacing() {
     let source = format!("{}\n\n| A | B |\n| - | - |\n| x | y |", "x".repeat(70_000));
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for wrap in [false, true] {
             let document = styled_document_in_format(&source, format);
             let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());

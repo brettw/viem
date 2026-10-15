@@ -59,12 +59,8 @@ fn start(
     .unwrap();
     (core, view)
 }
-fn fixtures() -> [(Format, &'static str, usize); 2] {
-    [
-
-        (Format::Markdown, "word", 0),
-        (Format::MarkdownSource, "word", 0),
-    ]
+fn fixtures() -> [(Format, &'static str, usize); 1] {
+    [(Format::Markdown, "word", 0)]
 }
 #[test]
 fn styled_replace_backspace_restores_each_original_grapheme_and_exact_source() {
@@ -75,14 +71,10 @@ fn styled_replace_backspace_restores_each_original_grapheme_and_exact_source() {
         let after_first = core.document().source_bytes();
         let first_cursor = core.command_state(view).unwrap().cursor();
         key(&mut core, view, Key::Char('b'));
-        let wysiwyg_format = match format {
-            Format::MarkdownSource => Format::Markdown,
-            other => other,
-        };
         let reopened = Document::from_bytes(
             core.document().source_bytes(),
             Encoding::Utf8,
-            wysiwyg_format,
+            format,
         )
         .unwrap();
         assert_eq!(
@@ -143,14 +135,10 @@ fn styled_replace_batch_is_atomic_but_backspace_restores_one_grapheme() {
             .unwrap_or_else(|error| panic!("{format:?}: {error:?}"));
         assert_eq!(core.document().revision().0, before.0 + 1, "{format:?}");
         key(&mut core, view, Key::Backspace);
-        let wysiwyg_format = match format {
-            Format::MarkdownSource => Format::Markdown,
-            other => other,
-        };
         let reopened = Document::from_bytes(
             core.document().source_bytes(),
             Encoding::Utf8,
-            wysiwyg_format,
+            format,
         )
         .unwrap();
         assert_eq!(reopened.text(), "éord", "{format:?}");
@@ -234,14 +222,10 @@ fn styled_replace_counts_backspace_and_dot_keep_one_undo_unit() {
             .unwrap();
         key(&mut core, view, Key::Backspace);
         key(&mut core, view, Key::Escape);
-        let wysiwyg_format = match format {
-            Format::MarkdownSource => Format::Markdown,
-            other => other,
-        };
         let reopened = Document::from_bytes(
             core.document().source_bytes(),
             Encoding::Utf8,
-            wysiwyg_format,
+            format,
         )
         .unwrap();
         assert_eq!(reopened.text(), "aaad", "{format:?}");
@@ -267,23 +251,6 @@ fn styled_replace_counts_backspace_and_dot_keep_one_undo_unit() {
             source.as_bytes(),
             "{format:?}: counted undo"
         );
-    }
-}
-#[test]
-fn failed_styled_replace_batch_never_commits_a_prefix_or_discards_its_frontier() {
-    for format in [Format::MarkdownSource] {
-        let (mut core, view) = start(format, b"word".to_vec(), Encoding::Latin1, 0);
-        style(&mut core, view, SemanticInlineStyle::Emphasis, true);
-        key(&mut core, view, Key::Char('a'));
-        let before = core.document().source_bytes();
-        let cursor = core.command_state(view).unwrap().cursor();
-        assert!(core
-            .handle(view, CoreEvent::Input(InputEvent::text("b猫")))
-            .is_err());
-        assert_eq!(core.document().source_bytes(), before);
-        assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
-        key(&mut core, view, Key::Backspace);
-        assert_eq!(core.document().source_bytes(), b"word");
     }
 }
 

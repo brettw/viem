@@ -420,16 +420,14 @@ impl<'a> AddressResolver<'a> {
 
     fn physical_count(&self) -> usize { self.document.physical_source_line_number_count() }
 
-    fn presentation_line(&self, snapshot: &crate::layout::LayoutSnapshot, at: usize)
-        -> Result<usize, ExAddressResolutionError> {
-        let flow = snapshot.coverage.document_hard_line_count() != self.document.line_count();
-        self.document.projection().presentation_line_at_offset(at, flow)
+    fn presentation_line(&self, at: usize) -> Result<usize, ExAddressResolutionError> {
+        self.document.projection().presentation_line_at_offset(at)
             .ok_or_else(|| ExExecuteError::AddressOverflow.into())
     }
 
     fn endpoint_demand(&self, snapshot: &crate::layout::LayoutSnapshot, at: usize)
         -> Result<LayoutMotionError, ExAddressResolutionError> {
-        let line = self.presentation_line(snapshot, at)?;
+        let line = self.presentation_line(at)?;
         Ok(layout_motion::exact_ex_address_demand(snapshot, line..line + 1, at))
     }
 
@@ -440,9 +438,8 @@ impl<'a> AddressResolver<'a> {
         }
         match layout_motion::command_row_span(snapshot, position, delta) {
             Err(LayoutMotionError::OutsideMaterializedCoverage(demand)) => {
-                let flow = snapshot.coverage.document_hard_line_count() != self.document.line_count();
-                let line = self.presentation_line(snapshot, position.text_offset)?;
-                let giant_line = self.document.projection().presentation_line_range(line, flow)
+                let line = self.presentation_line(position.text_offset)?;
+                let giant_line = self.document.projection().presentation_line_range(line)
                     .is_some_and(|range| range.len() > crate::layout::MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
                 if giant_line {
                     // Wrapped slices must retain their bounded continuation
@@ -698,8 +695,8 @@ impl<'a> AddressResolver<'a> {
             let snapshot = self.layout.unwrap();
             if !snapshot.coverage.contains_text_offset(range.start.position.text_offset)
                 || !snapshot.coverage.contains_text_offset(range.end.position.text_offset) {
-                let first = self.presentation_line(snapshot, range.text.start)?;
-                let last = self.presentation_line(snapshot, range.end.content.end)?;
+                let first = self.presentation_line(range.text.start)?;
+                let last = self.presentation_line(range.end.content.end)?;
                 if last.saturating_sub(first) >= 4_096 {
                     return Err(ExExecuteError::Regex(super::search_regex::RegexError::RegexResourceLimit(
                         "exact visual replay layout")).into());
@@ -714,8 +711,8 @@ impl<'a> AddressResolver<'a> {
                         else { BoundaryAffinity::Upstream } })? };
             let units = self.between(first, last)?.lines;
             if units.is_empty() {
-                let first = self.presentation_line(snapshot, range.text.start)?;
-                let last = self.presentation_line(snapshot, range.end.content.end)?;
+                let first = self.presentation_line(range.text.start)?;
+                let last = self.presentation_line(range.end.content.end)?;
                 if last.saturating_sub(first) >= 4_096 {
                     return Err(ExExecuteError::Regex(super::search_regex::RegexError::RegexResourceLimit(
                         "exact visual replay layout")).into());

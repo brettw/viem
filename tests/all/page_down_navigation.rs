@@ -219,17 +219,11 @@ fn page_down_demand_is_atomic_and_resumes_after_exact_layout_is_installed() {
         .collect::<String>();
     for (format, flow) in [
         (Format::Markdown, false),
-        (Format::MarkdownSource, false),
-        (Format::MarkdownSource, true),
     ] {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 320., 160.);
-        if format == Format::MarkdownSource {
-            core.handle(view, CoreEvent::SetParagraphFlow(flow))
-                .unwrap();
-        }
         let revision = core.document().revision();
         let mut demand_observed = false;
         for _ in 0..100 {

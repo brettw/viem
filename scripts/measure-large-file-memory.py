@@ -28,7 +28,6 @@ CASES = [
     ['plain', 'lines', 4194304, 'flat'],
     ['plain', 'lines', 104857600, 'open'],
     ['markdown', 'markdown', 4194304, 'document'],
-    ['source', 'markdown', 4194304, 'document'],
     ['markdown', 'markdown', 4194304, 'views'],
     ['markdown', 'markdown', 4194304, 'switch'],
 ]

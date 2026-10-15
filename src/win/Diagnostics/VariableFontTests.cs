@@ -315,7 +315,7 @@ internal static class VariableFontTests
         using var midnightDoc = new CoreDocument("`Midnight code`"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         midnightDoc.InitializeStyleDefaults(System.Text.Encoding.UTF8.GetBytes(markdown.GetRawText()));
         using var midnight = new CoreView(midnightDoc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
-        midnight.SetMarkdownSource(false);
+        midnight.SetMarkdownPreview(true);
         var midnightRun = midnight.Layout().Clusters.First().render_run.identifier;
         Check(midnight.Provider.RenderedFontNames(midnightRun).Contains("FlightlineCode-Normal"), "Midnight inline Code renders the upright Flightline design");
     }

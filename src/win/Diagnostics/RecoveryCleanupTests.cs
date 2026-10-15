@@ -17,7 +17,7 @@ internal static class RecoveryCleanupTests
     {
         string directory = Path.Combine(profile, "files", "recovery-cleanup-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
-        var snapshot = new RecoverySnapshot("# recovered\r\n"u8.ToArray(), "markdownSource", 1, 1, 1, 1);
+        var snapshot = new RecoverySnapshot("# recovered\r\n"u8.ToArray(), "code", 1, 1, 1, 1);
         string NewPath(string name)
         {
             string path = Path.Combine(directory, name + ".md");

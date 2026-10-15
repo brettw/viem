@@ -7,21 +7,18 @@ fn document(source: &str, format: Format) -> Document {
 #[test]
 fn html_images_share_atomic_projection_and_literal_source_metadata() {
     let source = "before <IMG SRC='local&amp;file.png' ALT='a &quot;cat&quot;' WIDTH=320 HEIGHT=180 title='kept'> after";
-    for format in [Format::Markdown, Format::MarkdownSource] {
-        let doc = document(source, format);
-        assert_eq!(doc.source_bytes(), source.as_bytes());
-        assert_eq!(doc.text(), if format == Format::Markdown { "before \u{fffc} after" } else { source });
-        let images = doc.projection().inline_images_for_region(&(0..doc.text().len()));
-        assert_eq!(images.len(), 1);
-        let image = &images[0];
-        assert_eq!(image.destination, "local&file.png");
-        assert_eq!(image.text, "a \"cat\"");
-        assert_eq!((image.width, image.height), (Some(320), Some(180)));
-        assert_eq!(image.source_view, format == Format::MarkdownSource);
-        assert_eq!(image.range, if image.source_view { 7..source.len() - 6 } else { 7..10 });
-        assert_eq!(doc.image_snapshot_at(doc.text_point(7).unwrap()).unwrap().unwrap().destination, image.destination);
-        if format == Format::Markdown { assert!(doc.text_point(8).is_err()); }
-    }
+    let doc = document(source, Format::Markdown);
+    assert_eq!(doc.source_bytes(), source.as_bytes());
+    assert_eq!(doc.text(), "before \u{fffc} after");
+    let images = doc.projection().inline_images_for_region(&(0..doc.text().len()));
+    assert_eq!(images.len(), 1);
+    let image = &images[0];
+    assert_eq!(image.destination, "local&file.png");
+    assert_eq!(image.text, "a \"cat\"");
+    assert_eq!((image.width, image.height), (Some(320), Some(180)));
+    assert_eq!(image.range, 7..10);
+    assert_eq!(doc.image_snapshot_at(doc.text_point(7).unwrap()).unwrap().unwrap().destination, image.destination);
+    assert!(doc.text_point(8).is_err());
 }
 
 #[test]
@@ -44,7 +41,7 @@ fn html_images_project_inside_blocks_and_multiline_tags() {
         ("<img src='local.png' title='<table>'>", "\u{fffc}", 1),
         ("<img src='local.png' data-value='<table>'>", "\u{fffc}", 1),
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(source, format);
             assert_eq!(doc.source_bytes(), source.as_bytes(), "{source} {format:?}");
             let images = doc.projection().inline_images_for_region(&(0..doc.text().len()));
@@ -65,7 +62,7 @@ fn html_image_dimensions_are_positive_integers_and_cannot_wrap() {
         ("20px", None), ("50%", None), (" 100 ", None),
     ] {
         let source = format!("before <img src='local.png' width='{value}' height='{value}'>");
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(&source, format);
             let images = doc.projection().inline_images_for_region(&(0..doc.text().len()));
             assert_eq!((images[0].width, images[0].height), (expected, expected), "{value} {format:?}");
@@ -91,7 +88,7 @@ fn html_images_require_a_source_and_exclude_literal_or_opaque_contexts() {
         "- > `prefix\n  > <img\n  > src='local.png'>\n  > suffix`",
         "- > `prefix\n  > <img src='local.png'>\n  > suffix`",
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(source, format);
             assert!(doc.projection().inline_images_for_region(&(0..doc.text().len())).is_empty(), "{source} {format:?}");
             assert_eq!(doc.source_bytes(), source.as_bytes());
@@ -103,7 +100,7 @@ fn html_images_require_a_source_and_exclude_literal_or_opaque_contexts() {
 fn raw_inline_html_context_ends_with_its_paragraph() {
     for tag in ["script", "textarea"] {
         let source = format!("before <{tag}>ignored\n\n</{tag}>\n\nafter <img src=after.png>");
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(&source, format);
             let images = doc.projection().inline_images_for_region(&(0..doc.text().len()));
             assert_eq!(images.len(), 1, "{tag} {format:?}");
@@ -111,7 +108,7 @@ fn raw_inline_html_context_ends_with_its_paragraph() {
         }
     }
     for source in ["before `<script>`\n<img src=after.png>", "before \\<script>\n<img src=after.png>"] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(source, format);
             assert_eq!(doc.projection().inline_images_for_region(&(0..doc.text().len())).len(), 1, "{source} {format:?}");
         }
@@ -121,7 +118,7 @@ fn raw_inline_html_context_ends_with_its_paragraph() {
 #[test]
 fn html_image_appearance_does_not_override_structural_html_owners() {
     for source in ["<h1><img src='local.png'></h1>", "<pre><img src='local.png'></pre>", "<ul><li><img src='local.png'></li></ul>"] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(source, format);
             assert_ne!(doc.projection().blocks()[0].style.0, "Image", "{source} {format:?}");
         }
@@ -132,7 +129,7 @@ fn html_image_appearance_does_not_override_structural_html_owners() {
 fn html_image_only_paragraphs_use_image_appearance_in_both_views() {
     for source in ["<img src='local.png'>", "<p><img src='local.png'></p>", "<div>\n<img src='local.png'>\n</div>",
         "<img src='one.png'> <img src='two.png'>", "**<img src='local.png'>**"] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(source, format);
             assert_eq!(doc.projection().blocks()[0].style.0, "Image", "{source} {format:?}");
         }
@@ -142,7 +139,7 @@ fn html_image_only_paragraphs_use_image_appearance_in_both_views() {
 #[test]
 fn html_image_metadata_matches_fresh_projection_after_local_edits_and_undo() {
     let source = "before <img src='local.png' width=120 height=80> after\n\nuntouched";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc = document(source, format);
         doc.insert(0, "prefix ").unwrap();
         let fresh = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, format).unwrap();
@@ -158,7 +155,7 @@ fn html_image_metadata_matches_fresh_projection_after_local_edits_and_undo() {
 #[test]
 fn nested_list_quote_images_keep_owner_identity_during_location_edits() {
     let source = "- > <img\n  > src='nested.png'\n  > width='123' height=45>";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc = document(source, format);
         let image = doc.projection().inline_images_for_region(&(0..doc.text().len())).remove(0);
         assert_eq!(doc.projection().blocks().iter().find(|block| block.range.contains(&image.range.start)).unwrap().quote_depth, 1);

@@ -19,7 +19,7 @@ fn main(){
  for source in cases { 
   println!("SRC {source:?}");
   println!("PARSE {:?}",Parser::new_ext(source,Options::ENABLE_TABLES).collect::<Vec<_>>());
-  for format in [Format::Markdown,Format::MarkdownSource] {
+  for format in [Format::Markdown] {
    let d=std::panic::catch_unwind(|| Document::from_bytes(source.as_bytes().to_vec(),Encoding::Utf8,format));
    match d { Ok(Ok(d))=>println!("VIEM {:?} {:?} {:?}",format,d.text(),d.projection().blocks().iter().map(|b|(&b.range,&b.kind,&b.style,b.quote_depth)).collect::<Vec<_>>()),Ok(Err(e))=>println!("FAIL {e:?}"),Err(_)=>println!("PANIC") }
   }
@@ -31,6 +31,6 @@ fn fuzz() {
  let atoms=["a\r# b","|a|\r|-|",">\t\tfoo","\u{a0}","é\r# b","a\r","\u{0}","a","# b","##","-","*","1.","2.","- a","  # b","    a",">"," > a","> >","```","```a"," ```","~~~","    ```","<div>","<span>","<pre>","</div>","</pre>","<!--","-->","é","ü","|a|","|-|","","  ","\\","  > # b","- > a","- \t\tcode","<img src='x'>"];
  let mut seed=91873u64;let mut failures=0;
  for case in 0..10000 {let mut source=String::new(); for _ in 0..(case%5+2) {seed=seed.wrapping_mul(6364136223846793005).wrapping_add(1);if !source.is_empty(){source.push('\n');}source.push_str(atoms[(seed as usize>>7)%atoms.len()]);} 
-  for format in [Format::Markdown,Format::MarkdownSource] {let out=std::panic::catch_unwind(||Document::from_bytes(source.as_bytes().to_vec(),Encoding::Utf8,format)); match out {Err(_)=>{println!("PANIC {format:?} {source:?}");failures+=1},Ok(Err(e))=>{println!("ERR {format:?} {source:?} {e:?}");failures+=1},_=>{}}}
+  for format in [Format::Markdown] {let out=std::panic::catch_unwind(||Document::from_bytes(source.as_bytes().to_vec(),Encoding::Utf8,format)); match out {Err(_)=>{println!("PANIC {format:?} {source:?}");failures+=1},Ok(Err(e))=>{println!("ERR {format:?} {source:?} {e:?}");failures+=1},_=>{}}}
  }println!("DONE failures={failures}");
 }

@@ -16,7 +16,6 @@ fn switch(core: &mut Editor, view: ViewId, target: Format) {
                 Format::Code => DocumentMode::Code("rust".into()),
                 _ => DocumentMode::Markdown,
             },
-            formatted_markdown: target == Format::Markdown,
         },
     )
     .unwrap();
@@ -41,13 +40,11 @@ fn conversion_preserves_insert_carets_in_repeated_unicode_content_and_history() 
         Format::PlainText,
         Format::Code,
         Format::Markdown,
-        Format::MarkdownSource,
     ] {
         for to in [
             Format::PlainText,
             Format::Code,
             Format::Markdown,
-            Format::MarkdownSource,
         ] {
             for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
                 let markdown = "# Before\n\nA **café & 👩‍💻 العربية** tail.\n\n# Middle\n\nA **café & 👩‍💻 العربية** tail.\n\n# After\n\nA **café & 👩‍💻 العربية** tail.";
@@ -158,7 +155,6 @@ fn mode_switch_keeps_each_views_visible_text_and_insertion_point_in_large_docume
     for format in [
         Format::PlainText,
         Format::Code,
-        Format::MarkdownSource,
         Format::Markdown,
     ] {
         switch(&mut core, views[0], format);
@@ -199,14 +195,14 @@ fn mode_switch_keeps_each_views_visible_text_and_insertion_point_in_large_docume
 fn compact_switch_maps_match_splice_policies_ranges_and_composition() {
     use viem_core::document::{Association, DeletionRecovery, ModelRequest, PositionMap, Splice};
     let bytes = b"# title\n\nA **bold** and `code` tail.\n\n> quote\n\nend".to_vec();
-    for from in [Format::Markdown, Format::MarkdownSource] {
+    for from in [Format::Markdown] {
         let mut document = Document::from_bytes(bytes.clone(), Encoding::Utf8, from).unwrap();
         let before = document.projection().clone();
         let before_points = (0..=document.text().len()).map(|offset| document.text_point(offset).unwrap())
             .collect::<Vec<_>>();
         let old_revision = document.revision();
-        let prepared = document.prepare_model_request(ModelRequest::SetMarkdownSource {
-            document: document.id(), revision: old_revision, source: from == Format::Markdown,
+        let prepared = document.prepare_model_request(ModelRequest::SetViewFormat {
+            document: document.id(), revision: old_revision, target: Format::Code,
         }).unwrap();
         let splices = prepared.summary().formatted_splices().to_vec();
         let compact = prepared.text_position_map().clone();
@@ -263,7 +259,7 @@ fn compact_switch_maps_match_splice_policies_ranges_and_composition() {
 #[test]
 fn source_boundary_queries_match_reopened_projection_after_lazy_suffix_shifts() {
     use viem_core::document::measure_document_work;
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Markdown] {
         let source = "Paragraph **bold** with café and tail.\n\n".repeat(700);
         let mut document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
         for step in 0..6 {

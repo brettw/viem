@@ -42,43 +42,30 @@ pub struct TableGeometry {
 #[derive(Clone, Debug)]
 pub(crate) struct TableLayoutContext {
     projection: Arc<FormattedDocument>,
-    pub(super) source: bool,
 }
 impl PartialEq for TableLayoutContext {
     fn eq(&self, other: &Self) -> bool {
-        self.source == other.source
-            && self.projection.revision() == other.projection.revision()
+        self.projection.revision() == other.projection.revision()
             && Arc::ptr_eq(&self.projection, &other.projection)
     }
 }
 impl TableLayoutContext {
-    pub(crate) fn new(document: &FormattedDocument, source: bool) -> Self {
+    pub(crate) fn new(document: &FormattedDocument) -> Self {
         Self {
             projection: Arc::new(document.clone()),
-            source,
         }
     }
     pub(super) fn row(&self, range: &Range<usize>) -> Option<(&MarkdownTable, usize)> {
         let table = self.projection.table_at(range.start)?;
-        if self.source {
-            let index = table
-                .source_rows
-                .partition_point(|row| row.range.start < range.start);
-            table
-                .source_rows
-                .get(index)
-                .filter(|row| row.range == *range)
-                .map(|_| (table, index))
-        } else {
-            let index = table
-                .rows
-                .partition_point(|row| row.range.start < range.start);
-            table
-                .rows
-                .get(index)
-                .filter(|row| row.range == *range)
-                .map(|_| (table, index))
-        }
+        let index = table
+            .rows
+            .partition_point(|row| row.range.start < range.start);
+        table
+            .rows
+            .get(index)
+            .filter(|row| row.range == *range)
+            .map(|_| (table, index))
+    
     }
     pub(super) fn table_style(
         &self,
@@ -129,7 +116,6 @@ struct WidthKey {
     document: DocumentId,
     revision: Revision,
     table: u64,
-    source: bool,
     metrics: MetricsGeneration,
     environment: MeasurementEnvironmentId,
     scale: f32,
@@ -381,23 +367,14 @@ impl TableMeasurementCache {
                 continue;
             }
             let mut changed = Vec::new();
-            if entry.key.source {
-                let first = table.source_rows.partition_point(|row| row.range.end < old_hull.start);
-                for (row, value) in table.source_rows.iter().enumerate().skip(first)
-                    .take_while(|(_, row)| row.range.start <= old_hull.end) {
-                    for (column, cell) in value.cells.iter().enumerate().take(table.columns.len()) {
-                        if cell.start <= old_hull.end && old_hull.start <= cell.end { changed.push((row,column)); }
-                    }
-                }
-            } else {
-                let first = table.rows.partition_point(|row| row.range.end < old_hull.start);
-                for (row, value) in table.rows.iter().enumerate().skip(first)
-                    .take_while(|(_, row)| row.range.start <= old_hull.end) {
-                    for (column, cell) in value.cells.iter().enumerate() {
-                        if cell.range.start <= old_hull.end && old_hull.start <= cell.range.end { changed.push((row,column)); }
-                    }
+            let first = table.rows.partition_point(|row| row.range.end < old_hull.start);
+            for (row, value) in table.rows.iter().enumerate().skip(first)
+                .take_while(|(_, row)| row.range.start <= old_hull.end) {
+                for (column, cell) in value.cells.iter().enumerate() {
+                    if cell.range.start <= old_hull.end && old_hull.start <= cell.range.end { changed.push((row,column)); }
                 }
             }
+        
             let widths = Arc::make_mut(entry);
             for (row,column) in changed { widths.remove(row,column); widths.dirty.push_back((row,column)); }
         }
@@ -557,17 +534,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .text_tree()
             .slice(range.clone())
             .map_err(|_| LayoutError::InvalidTextOffset(range.start))?;
-        let mut styles = DocumentLayoutStyles::resolve_region_for_presentation(
-            &context.projection,
-            range.clone(),
-            false,
-            &[],
-            if context.source {
-                crate::document::Format::MarkdownSource
-            } else {
-                crate::document::Format::Markdown
-            },
-        )
+        let mut styles = DocumentLayoutStyles::resolve_region_for_presentation(&context.projection, range.clone(), &[], crate::document::Format::Markdown)
         .map_err(LayoutError::from)?;
         styles.table_context = None;
         styles.document_insets = EdgeInsets::default();
@@ -591,11 +558,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             paragraph.quote_depth = 0;
             paragraph.thematic_break = false;
         }
-        let lines = if context.source {
-            vec![range.clone()]
-        } else {
-            hard_line_ranges(&text, range.start)
-        };
+        let lines = hard_line_ranges(&text, range.start);
         let mut cell_view = view.clone();
         cell_view.wrap = false;
         cell_view.insets = EdgeInsets::default();
@@ -656,12 +619,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         }
         // Cell boxes belong to the grid. Only enclosing list/quote boxes
         // constrain the table's canvas; source markers retain literal geometry.
-        let (left, right) = if context.source {
-            (0., 0.)
-        } else {
-            block_box::horizontal_insets(paragraph,
-                paragraph.base_direction == WritingDirection::RightToLeft)
-        };
+        let (left, right) = block_box::horizontal_insets(paragraph,
+            paragraph.base_direction == WritingDirection::RightToLeft);
         let x = content_insets.left + left * view.scale;
         let right_inset = content_insets.right + right * view.scale;
         let cell_style = context.resolved_style("Table cell")?;
@@ -697,47 +656,32 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let minimum_height = empty
             .first()
             .map_or(em, |fragment| fragment.default_metrics.height());
-        let min_width = if context.source { 0. } else { 4. * em };
-        let row_count = if context.source {
-            table.source_rows.len()
-        } else {
-            table.rows.len()
-        };
+        let min_width = 4. * em;
+        let row_count = table.rows.len();
         let minimum_column = |column| {
-            if context.source {
-                0.
-            } else {
-                min_width
-                    + boxes
-                        .horizontal_insets(0, column, row_count, column_count)
-                        .max(boxes.horizontal_insets(
-                            row_count - 1,
-                            column,
-                            row_count,
-                            column_count,
-                        ))
-            }
+            min_width
+                + boxes
+                    .horizontal_insets(0, column, row_count, column_count)
+                    .max(boxes.horizontal_insets(
+                        row_count - 1,
+                        column,
+                        row_count,
+                        column_count,
+                    ))
+        
         };
         let measured_width = |row, column, width: f32| {
-            if context.source {
-                width
-            } else {
-                width.max(min_width) + boxes.horizontal_insets(row, column, row_count, column_count)
-            }
+            width.max(min_width) + boxes.horizontal_insets(row, column, row_count, column_count)
+        
         };
         let table_edges = boxes.container_edges();
-        let table_left = if context.source { 0. } else { table_edges.left };
-        let table_right = if context.source {
-            0.
-        } else {
-            table_edges.right
-        };
+        let table_left = table_edges.left;
+        let table_right = table_edges.right;
         let key = WidthKey {
             document: document_id,
             revision,
             table: table.id,
-            image_max_width: if !context.source && context.projection.has_inline_images_in_region(&table.range) { view.width.to_bits() } else { 0 },
-            source: context.source,
+            image_max_width: if context.projection.has_inline_images_in_region(&table.range) { view.width.to_bits() } else { 0 },
             metrics: self.provider.metrics_generation(),
             environment: self.provider.measurement_environment_id(),
             scale: view.scale,
@@ -784,41 +728,23 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             {
                 if let Some(previous) = widths.projection.table_at(widths.source_range_start) {
                     let mut changed = Vec::new();
-                    if context.source {
-                        let first = previous
-                            .source_rows
-                            .partition_point(|row| row.range.end < old.start);
-                        for (row_index, row) in previous
-                            .source_rows
-                            .iter()
-                            .enumerate()
-                            .skip(first)
-                            .take_while(|(_, row)| row.range.start <= old.end)
-                        {
-                            for (column, cell) in row.cells.iter().enumerate().take(column_count) {
-                                if cell.start <= old.end && old.start <= cell.end {
-                                    changed.push((row_index, column));
-                                }
-                            }
-                        }
-                    } else {
-                        let first = previous
-                            .rows
-                            .partition_point(|row| row.range.end < old.start);
-                        for (row_index, row) in previous
-                            .rows
-                            .iter()
-                            .enumerate()
-                            .skip(first)
-                            .take_while(|(_, row)| row.range.start <= old.end)
-                        {
-                            for (column, cell) in row.cells.iter().enumerate() {
-                                if cell.range.start <= old.end && old.start <= cell.range.end {
-                                    changed.push((row_index, column));
-                                }
+                    let first = previous
+                        .rows
+                        .partition_point(|row| row.range.end < old.start);
+                    for (row_index, row) in previous
+                        .rows
+                        .iter()
+                        .enumerate()
+                        .skip(first)
+                        .take_while(|(_, row)| row.range.start <= old.end)
+                    {
+                        for (column, cell) in row.cells.iter().enumerate() {
+                            if cell.range.start <= old.end && old.start <= cell.range.end {
+                                changed.push((row_index, column));
                             }
                         }
                     }
+                
                     for (row, column) in changed {
                         widths.remove(row, column);
                         widths.dirty.push_back((row, column));
@@ -842,51 +768,31 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 ..Default::default()
             });
         let ranges = |row: usize, column: usize| -> Option<Range<usize>> {
-            if context.source {
-                table.source_rows.get(row)?.cells.get(column).cloned()
-            } else {
-                table
-                    .rows
-                    .get(row)?
-                    .cells
-                    .get(column)
-                    .map(|cell| cell.range.clone())
-            }
+            table
+                .rows
+                .get(row)?
+                .cells
+                .get(column)
+                .map(|cell| cell.range.clone())
+        
         };
         let focused_column = view.horizontal_focus_offset.and_then(|at| {
-            if context.source { return None; }
             let (owner, row, cell) = context.projection.table_cell_at(at)?;
             (owner.id == table.id).then(|| row.cells.partition_point(|candidate| candidate.range.start < cell.range.start))
         });
         // Exact active-row geometry is always measured first. Additional cold
         // work is limited independently of the number of rows in the table.
         let mut measured_cells = Vec::new();
-        let mut column_left = x + if context.source {
-            0.
-        } else {
-            table_style.margin_left * view.scale + table_left
-        };
+        let mut column_left = x + table_style.margin_left * view.scale + table_left;
         for column in 0..column_count {
             control.checkpoint()?;
-            let estimate = if context.source && !widths.measured.contains(column) {
-                4. * em
-            } else {
-                widths.widths[column]
-            };
-            let column_right = column_left + estimate + if context.source { em * 0.45 } else { 0. };
+            let column_right = column_left + widths.widths[column];
             let owns_anchor = view.horizontal_anchor_offset.is_some_and(|at| {
                 ranges(row_index, column).is_some_and(|range| range.start <= at && at <= range.end)
             });
             let owns_focus = owns_anchor || focused_column == Some(column) || view.horizontal_focus_offset.is_some_and(|at| {
                 ranges(row_index, column).is_some_and(|range| {
                     range.start <= at && at <= range.end
-                        || context.source
-                            && (column == 0
-                                && table.source_rows[row_index].range.start <= at
-                                && at < range.start
-                                || column + 1 == column_count
-                                    && range.end < at
-                                    && at <= table.source_rows[row_index].range.end)
                 })
             });
             // Insets may consume a very narrow pane. Keep the nearest edge
@@ -909,15 +815,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             widths.record(row_index, column, measured_width(row_index, column, width));
             let complete = ranges(row_index, column)
                 .is_none_or(|range| self.table_cell_complete(&range, revision));
-            if !context.source {
-                let height = ranges(row_index, column)
-                    .and_then(|range| self.table_cell_height(&range, revision))
-                    .unwrap_or_else(|| {
-                        cell.last()
-                            .map_or(minimum_height, |row| row.y + row.natural_height())
-                    });
-                row_heights.record(column, height, complete);
-            }
+            let height = ranges(row_index, column)
+                .and_then(|range| self.table_cell_height(&range, revision))
+                .unwrap_or_else(|| {
+                    cell.last()
+                        .map_or(minimum_height, |row| row.y + row.natural_height())
+                });
+            row_heights.record(column, height, complete);
+        
             if !complete {
                 widths.measured.remove(row_index * column_count + column);
             }
@@ -930,8 +835,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         };
         widths.discovery_layout = Some(layout_revision);
         // Rediscover evicted active-row heights before unrelated width work.
-        while !context.source
-            && row_heights.measured.count < column_count
+        while row_heights.measured.count < column_count
             && row_heights.next < column_count
             && budget > 0
         {
@@ -990,19 +894,18 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             widths.record(row, column, measured_width(row, column, width));
             let complete =
                 ranges(row, column).is_none_or(|range| self.table_cell_complete(&range, revision));
-            if !context.source {
-                let height = ranges(row, column)
-                    .and_then(|range| self.table_cell_height(&range, revision))
-                    .unwrap_or_else(|| {
-                        cell.last()
-                            .map_or(minimum_height, |row| row.y + row.natural_height())
-                    });
-                if row == row_index {
-                    row_heights.record(column, height, complete);
-                } else {
-                    widths.record_height(row, column, height, complete);
-                }
+            let height = ranges(row, column)
+                .and_then(|range| self.table_cell_height(&range, revision))
+                .unwrap_or_else(|| {
+                    cell.last()
+                        .map_or(minimum_height, |row| row.y + row.natural_height())
+                });
+            if row == row_index {
+                row_heights.record(column, height, complete);
+            } else {
+                widths.record_height(row, column, height, complete);
             }
+        
             if !complete {
                 widths.measured.remove(row * column_count + column);
                 widths.dirty.push_back((row, column));
@@ -1016,14 +919,13 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             *width = width.max(minimum_column(column));
         }
         let exact = widths.measured.count == widths.total
-            && (context.source || row_heights.measured.count == column_count);
+            && row_heights.measured.count == column_count;
         let retained_row_height = row_heights.height();
-        if !context.source {
-            widths.row_heights.push_back(Arc::new(row_heights));
-            while widths.row_heights.len() > 256 {
-                widths.row_heights.pop_front();
-            }
+        widths.row_heights.push_back(Arc::new(row_heights));
+        while widths.row_heights.len() > 256 {
+            widths.row_heights.pop_front();
         }
+    
         let column_widths = widths.widths.clone();
         let total_width = column_widths.iter().sum::<f32>() + table_left + table_right;
         let available = (view.width
@@ -1032,33 +934,17 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             - table_style.margin_left * view.scale
             - table_style.margin_right * view.scale)
             .max(0.);
-        let x = if context.source {
-            x
-        } else {
-            x + table_style.margin_left * view.scale
-                + match table_style.alignment {
-                    ParagraphAlignment::Center => ((available - total_width) / 2.).max(0.),
-                    ParagraphAlignment::End => (available - total_width).max(0.),
-                    _ => 0.,
-                }
-        };
+        let x = x + table_style.margin_left * view.scale
+            + match table_style.alignment {
+                ParagraphAlignment::Center => ((available - total_width) / 2.).max(0.),
+                ParagraphAlignment::End => (available - total_width).max(0.),
+                _ => 0.,
+            };
         self.table_cache.entries.push_back(Arc::new(widths));
         while self.table_cache.entries.len() > CACHE_TABLES {
             self.table_cache.entries.pop_front();
         }
-        let mut rows = if context.source {
-            self.align_source_table_row(
-                context,
-                table,
-                row_index,
-                measured_cells,
-                &column_widths,
-                document_id,
-                revision,
-                view,
-                control,
-            )?
-        } else {
+        let mut rows = {
             let edges = boxes.cell_edges(row_index, 0, row_count, column_count);
             let row_style = boxes.row_style(row_index);
             let padding_top = row_style.padding_top * view.scale;
@@ -1163,19 +1049,11 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 );
             }
             result
+        
         };
-        if context.source {
-            complete_boundary_affinities(&mut rows, &table.source_rows[row_index].range);
-        }
-        let height = if context.source {
-            rows.iter()
-                .map(|row| row.y + row.height())
-                .fold(em * 1.12, f32::max)
-        } else {
-            rows.first()
-                .and_then(|row| row.table_cell.as_ref())
-                .map_or(em * 1.12, |cell| cell.table_row_rect.height)
-        };
+        let height = rows.first()
+            .and_then(|row| row.table_cell.as_ref())
+            .map_or(em * 1.12, |cell| cell.table_row_rect.height);
         for row in &mut rows {
             translate_x(row, x);
             // Cell geometry already uses global row coordinates.
@@ -1198,217 +1076,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         Ok(Some((rows, height)))
     }
 
-    fn align_source_table_row(
-        &mut self,
-        context: &TableLayoutContext,
-        table: &MarkdownTable,
-        row_index: usize,
-        mut cells: Vec<Vec<VisualRow>>,
-        widths: &[f32],
-        document_id: DocumentId,
-        revision: Revision,
-        view: &LayoutJobViewConfiguration,
-        control: &LayoutRunControl<'_>,
-    ) -> Result<Vec<VisualRow>, LayoutComputationError> {
-        let source = &table.source_rows[row_index];
-        // Every physical row uses the same structural gutter, even when the
-        // header and body styles give the actual pipe glyph different advances.
-        let mut pipe_width = 0f32;
-        for row in [table.source_rows.first(), table.source_rows.get(2)]
-            .into_iter()
-            .flatten()
-        {
-            if let Some(&pipe) = row.pipes.first() {
-                pipe_width = pipe_width.max(span_width(&self.shape_table_cell_piece(
-                    context,
-                    pipe..pipe + 1,
-                    document_id,
-                    revision,
-                    view,
-                    control,
-                    None,
-                )?));
-            }
-        }
-        if source.range.len() > 4096 || source.cells.len() > 16 {
-            let mut result: Option<VisualRow> = None;
-            let mut boundary = 0.;
-            let mut previous = source.range.start;
-            let mut append = |mut piece: VisualRow, x: f32| {
-                translate_x(&mut piece, x);
-                if let Some(row) = &mut result {
-                    row.ascent = row.ascent.max(piece.ascent);
-                    row.descent = row.descent.max(piece.descent);
-                    row.leading = row.leading.max(piece.leading);
-                    row.clusters.append(&mut piece.clusters);
-                    row.carets.append(&mut piece.carets);
-                    row.decorations.append(&mut piece.decorations);
-                    row.width = row.width.max(x + piece.width);
-                } else {
-                    result = Some(piece);
-                }
-            };
-            for (column, cell) in source.cells.iter().take(widths.len()).enumerate() {
-                let visible = !cells[column].is_empty();
-                if visible && previous < cell.start {
-                    let gap = self.shape_table_cell(
-                        context,
-                        previous..cell.start,
-                        document_id,
-                        revision,
-                        view,
-                        control,
-                    )?;
-                    for row in gap {
-                        append(row, boundary);
-                    }
-                }
-                let content = span_width(&cells[column]);
-                let x = boundary
-                    + pipe_width
-                    + alignment_extra(table.columns[column], (widths[column] - content).max(0.));
-                for row in cells[column].drain(..) {
-                    append(row, x);
-                }
-                boundary += pipe_width + widths[column];
-                previous = cell.end;
-            }
-            if previous < source.range.end
-                && (boundary <= view.viewport_left + view.width && boundary >= view.viewport_left
-                    || view
-                        .horizontal_focus_offset
-                        .is_some_and(|at| previous <= at && at <= source.range.end))
-            {
-                for row in self.shape_table_cell(
-                    context,
-                    previous..source.range.end,
-                    document_id,
-                    revision,
-                    view,
-                    control,
-                )? {
-                    append(row, boundary);
-                }
-            }
-            if let Some(mut row) = result {
-                row.width = row.width.max(boundary + pipe_width);
-                row.text_range = source.range.clone();
-                row.hard_line_range = source.range.clone();
-                row.paragraph_content_width = row.width;
-                row.line_advance = row.natural_height();
-                row.carets.sort_by(|a, b| a.x.total_cmp(&b.x));
-                return Ok(vec![row]);
-            }
-            return Ok(Vec::new());
-        }
-        let mut rows = self.shape_table_cell(
-            context,
-            source.range.clone(),
-            document_id,
-            revision,
-            view,
-            control,
-        )?;
-        let Some(row) = rows.first_mut() else {
-            return Ok(rows);
-        };
-        // Structural pipes keep their real glyphs. Optional outer pipes use
-        // the same column origin, without drawing or adding an absent pipe.
-        let first_cell = source
-            .cells
-            .first()
-            .map_or(source.range.start, |cell| cell.start);
-        let first_pipe = source
-            .pipes
-            .first()
-            .copied()
-            .filter(|pipe| *pipe < first_cell);
-        let prefix_end = first_pipe.unwrap_or(first_cell);
-        let prefix = row
-            .clusters
-            .iter()
-            .filter(|cluster| cluster.text_range.end <= prefix_end)
-            .map(|cluster| cluster.advance)
-            .sum::<f32>();
-        let original = row.clusters.clone();
-        let mut placements: Vec<(Range<usize>, f32)> = Vec::new();
-        let mut boundary = prefix;
-        for (column, cell) in source.cells.iter().take(widths.len()).enumerate() {
-            let start = original
-                .iter()
-                .find(|cluster| cluster.text_range.start >= cell.start)
-                .map_or(row.width, |cluster| cluster.x);
-            let content = original
-                .iter()
-                .filter(|cluster| {
-                    cell.start <= cluster.text_range.start && cluster.text_range.end <= cell.end
-                })
-                .map(|cluster| cluster.advance)
-                .sum::<f32>();
-            let desired = boundary
-                + pipe_width
-                + alignment_extra(table.columns[column], (widths[column] - content).max(0.));
-            placements.push((cell.clone(), desired - start));
-            if let Some(pipe) = source.pipes.iter().copied().find(|pipe| {
-                *pipe < cell.start
-                    && *pipe
-                        >= if column == 0 {
-                            source.range.start
-                        } else {
-                            source.cells[column - 1].end
-                        }
-            }) {
-                if let Some(cluster) = original
-                    .iter()
-                    .find(|cluster| cluster.text_range.start == pipe)
-                {
-                    placements.push((pipe..pipe + 1, boundary - cluster.x));
-                }
-            }
-            boundary += pipe_width + widths[column];
-        }
-        if let Some(last) = source.cells.get(widths.len().saturating_sub(1)) {
-            if let Some(cluster) = original
-                .iter()
-                .find(|cluster| cluster.text_range.start >= last.end)
-            {
-                placements.push((last.end..source.range.end, boundary - cluster.x));
-            }
-        }
-        for cluster in &mut row.clusters {
-            if let Some((_, delta)) = placements.iter().find(|(range, _)| {
-                range.start <= cluster.text_range.start && cluster.text_range.end <= range.end
-            }) {
-                cluster.x += delta;
-                cluster.typographic_bounds.x += delta;
-                cluster.ink_bounds.x += delta;
-            }
-        }
-        for caret in &mut row.carets {
-            let at = caret.point.text_offset;
-            let adjacent = placements
-                .iter()
-                .filter(|(range, _)| range.start <= at && at <= range.end)
-                .min_by_key(|(range, _)| {
-                    if caret.point.affinity == BoundaryAffinity::Downstream {
-                        usize::from(at == range.end)
-                    } else {
-                        usize::from(at == range.start)
-                    }
-                });
-            if let Some((_, delta)) = adjacent {
-                caret.x += delta;
-            }
-        }
-        row.width = row
-            .clusters
-            .iter()
-            .map(|cluster| cluster.x + cluster.advance)
-            .fold(0., f32::max);
-        row.paragraph_content_width = row.width;
-        row.carets.sort_by(|left, right| left.x.total_cmp(&right.x));
-        Ok(rows)
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1861,8 +1528,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 let text = tree
                     .slice(range.clone())
                     .map_err(|_| LayoutError::InvalidTextOffset(range.start))?;
-                let text =
-                    super::super::jobs::flow_text(text, range.start, std::slice::from_ref(range));
                 let mut part = self.layout_hard_line_region_cancellable(
                     document_id,
                     document_revision,

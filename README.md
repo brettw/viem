@@ -12,10 +12,10 @@ It has several presentation modes.
 
 - Text (for plain text files)
 - Code (for source code)
-- Markdown source and WYSIWYG
+- Markdown Preview (formatted Markdown)
 
-The Format menu selects Plain text, Markdown, or Code and offers Word wrap and
-Flow source paragraphs. Selecting Code retains the language choice. File > Code
+The Format menu selects Plain text, Markdown Preview, or Code and offers Word
+wrap. Selecting Code retains the language choice. File > Code
 language > Auto shows the detected language and falls back to Plain text when
 none is detected. On Markdown files, Auto shows literal source with Markdown
 syntax highlighting. Mode changes preserve the file's bytes.
@@ -28,9 +28,9 @@ Code mode supports optional word wrapping for long lines which are indented by o
 
 In code mode, leading spaces are always treated as 1en wide. This allows the use of proportional fonts while maintaining reasonable indenting.
 
-### Markdown modes
+### Markdown Preview
 
-The toolbar’s Formatted view toggle switches between Markdown Source, which keeps markup visible while applying its styles, and WYSIWYG, which shows the interpreted document. New Markdown documents remember your last choice across launches. With no previous choice, Formatted view is off.
+The toolbar’s Markdown Preview toggle switches between the formatted document and literal Code with Markdown syntax highlighting. New Markdown documents remember your last choice across launches. With no previous choice, Preview is off.
 
 HTML files open as literal Code, with syntax highlighting and ordinary code editing.
 

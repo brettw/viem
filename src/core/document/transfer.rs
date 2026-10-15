@@ -97,7 +97,7 @@ pub(crate) fn plan(
     // different semantic style at its destination, just as a source edit can.
     // Code has no source-backed styling: asynchronous syntax must not enter
     // transaction verification. Its exact text and hard breaks are verified.
-    let signatures = if document.format().is_source_view() || document.format().is_code() {
+    let signatures = if document.format().is_code() {
         None
     } else {
         Some(projection_signatures(document.projection(), &infos)?)
@@ -117,7 +117,7 @@ pub(crate) fn plan(
     let origin = infos[source_lines.start].content_range().start;
     let destination_at = if destination < line_count { infos[destination].content_range().start }
         else { snapshot.text_length() };
-    let literal_boundary = document.format().is_wysiwyg()
+    let literal_boundary = document.format().is_markdown()
         && document.projection().blocks_for_region(&(origin..origin)).iter().any(|block|
             block.style.0 == "Code Block" && block.range.start <= origin && origin <= block.range.end
                 && block.range.start <= destination_at && destination_at <= block.range.end);
@@ -230,8 +230,7 @@ pub(super) fn preserve_source_blank_rows(
     expected: &str,
 ) -> Result<(), DocumentError> {
     if !document.format().is_markdown()
-        || document.format() == super::Format::Markdown
-            && !expected.starts_with('\n') && !expected.ends_with('\n') && !expected.contains("\n\n")
+        || !expected.starts_with('\n') && !expected.ends_with('\n') && !expected.contains("\n\n")
     {
         return Ok(());
     }
@@ -242,11 +241,10 @@ pub(super) fn preserve_source_blank_rows(
     }
     let decoded = document.encoding().decode(&bytes)?;
     let physical = normalize(&decoded, document.file_format());
-    let cooked = super::paragraph_flow::markdown_source(&physical).0;
-    let visible = (document.format() == super::Format::Markdown).then(||
-        Document::from_bytes_with_file_format(bytes.clone(), document.encoding(), document.format(), document.file_format())
-    ).transpose()?;
-    let actual = visible.as_ref().map_or(cooked.text.as_str(), |document| document.text());
+    let visible = Document::from_bytes_with_file_format(
+        bytes.clone(), document.encoding(), document.format(), document.file_format(),
+    )?;
+    let actual = visible.text();
     if actual == expected {
         return Ok(());
     }
@@ -274,13 +272,8 @@ pub(super) fn preserve_source_blank_rows(
         .encoding()
         .encode_fragment(document.file_format().spelling())?;
     for (at, count) in missing.into_iter().rev() {
-        let source_at = if let Some(visible) = &visible {
-            visible.projection().source_insertion_point(at, true)
-                .ok_or(DocumentError::AmbiguousProjection)?
-        } else { cooked
-            .unit(cooked.unit_partition_point(|unit| unit.normalized.end <= at))
-            .filter(|unit| unit.normalized.start == at)
-            .map_or(bytes.len(), |unit| unit.source.start) };
+        let source_at = visible.projection().source_insertion_point(at, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
         let mut end = source_at;
         let mut index = physical
             .endings
@@ -366,7 +359,6 @@ pub(super) fn physical_hard_lines(
     let normalized = normalize(&decoded, document.file_format());
     let normalized = match document.format() {
         super::Format::Markdown => super::paragraph_flow::markdown(&normalized).0,
-        super::Format::MarkdownSource => super::paragraph_flow::markdown_source(&normalized).0,
         _ => normalized,
     };
     if normalized.endings.len().checked_add(1) != Some(expected_count) {

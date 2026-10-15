@@ -24,7 +24,7 @@ fn markdown_tree_sitter_highlighting_requires_code_mode_and_preserves_native_vie
     use viem_core::DocumentMode;
     let text = "# Heading\r\n\r\n**café** and *italic* [link](https://example.com)\r\n";
     for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
-        for format in [Format::MarkdownSource, Format::Markdown] {
+        for format in [Format::Markdown] {
             for mode in [DocumentMode::Automatic, DocumentMode::Code("markdown".into())] {
                 let bytes = encoded(text, encoding);
                 let document = Document::from_bytes_with_file_format(
@@ -43,7 +43,7 @@ fn markdown_tree_sitter_highlighting_requires_code_mode_and_preserves_native_vie
 
                 core.handle(view, CoreEvent::SetDocumentMode {
                     document: core.document().id(), revision: core.document().revision(),
-                    mode, formatted_markdown: format == Format::Markdown,
+                    mode,
                 }).unwrap();
                 assert_eq!(core.document().format(), Format::Code);
                 assert_eq!(core.document().text(), text.replace("\r\n", "\n"));
@@ -113,7 +113,6 @@ fn git_messages_open_as_literal_code_preserving_bytes_and_explicit_formats() {
             for (format, automatic, expected_format) in [
                 (Format::PlainText, true, Format::Code),
                 (Format::PlainText, false, Format::PlainText),
-                (Format::MarkdownSource, true, Format::MarkdownSource),
             ] {
                 let document = Document::from_bytes_with_file_format(
                     source.clone(), encoding, format, FileFormat::Dos,
@@ -750,7 +749,6 @@ fn newly_recognized_files_open_as_code_without_changing_source_or_explicit_forma
         for (format, automatic, expected_format) in [
             (Format::PlainText, true, Format::Code),
             (Format::PlainText, false, Format::PlainText),
-            (Format::MarkdownSource, true, Format::MarkdownSource),
         ] {
             let document = Document::from_bytes_with_file_format(
                 source.to_vec(), Encoding::Utf8, format, FileFormat::Dos,

@@ -107,49 +107,6 @@ fn reference_boundary_and_definition_edits_preserve_visible_content_and_reopen()
         }
     }
 }
-#[test]
-fn source_enter_reprojects_separator_whitespace_without_losing_source() {
-    for (source, needle, delta, expected) in [
-        (
-            "  \n\naaa\n  \n\n# aaa\n\n  \n",
-            "aaa",
-            3,
-            "  \n\naaa\n\n  \n\n# aaa\n\n  \n",
-        ),
-        ("- foo\n\n\n  bar\n", "  bar", 1, "- foo\n\n\n \n bar\n"),
-    ] {
-        for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
-            for format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
-                let original = bytes(&source.replace('\n', ending(format)), encoding);
-                let mut doc = Document::from_bytes_with_file_format(
-                    original.clone(),
-                    encoding,
-                    Format::MarkdownSource,
-                    format,
-                )
-                .unwrap();
-                let at = doc.text().find(needle).unwrap() + delta;
-                doc.apply_model_request(ModelRequest::ApplyTextEdits {
-                    document: doc.id(),
-                    revision: doc.revision(),
-                    edits: vec![TextEdit::new(at..at, "\n")],
-                })
-                .unwrap();
-                assert_eq!(
-                    doc.source_bytes(),
-                    bytes(&expected.replace('\n', ending(format)), encoding)
-                );
-                reopened(&doc);
-                let saved = doc.source_bytes();
-                assert!(doc.undo());
-                assert_eq!(doc.source_bytes(), original);
-                assert!(doc.redo());
-                assert_eq!(doc.source_bytes(), saved);
-                reopened(&doc);
-            }
-        }
-    }
-}
 
 #[test]
 fn every_multiline_definition_insertion_keeps_its_visible_rows() {

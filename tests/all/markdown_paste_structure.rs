@@ -1,9 +1,11 @@
-//! Markdown-looking text typed or pasted into formatted view keeps the
-//! structure a reader expects: a pasted list stays one flat list, a repeated
-//! quote prefix stays in its quote, and literal pastes keep every line literal.
-use crate::support::{assert_exact_undo_redo, assert_reopens_as_displayed, shape, Editor};
-use viem_core::command::Key;
-use viem_core::document::{BlockKind, Format};
+//! Markdown-looking text typed or pasted into Markdown Preview keeps the
+//! structure a reader expects. Paste interprets external text as Markdown:
+//! complete pasted blocks keep their own top-level structure, a partial
+//! paragraph joins the destination, and code keeps literal text. Paste and
+//! Match Style keeps every line literal.
+use crate::support::{assert_exact_undo_redo, assert_reopens_as_displayed, assert_regional, shape, Editor};
+use viem_core::command::{Key, Mode};
+use viem_core::document::{BlockKind, Format, SemanticInlineStyle, StyleApplication};
 
 fn list_levels(editor: &Editor) -> Vec<(String, u8, bool)> {
     let document = editor.document();
@@ -26,7 +28,8 @@ fn pasted_and_typed_lists_stay_flat_with_unescaped_words() {
         ("- one\n- two-part\n- three", false, "- one\n- two-part\n- three"),
         ("* one\n* two-part\n* three", false, "* one\n* two-part\n* three"),
         ("1. one\n2. two-part\n3. three", true, "1. one\n2. two-part\n3. three"),
-        // Continuation numbering wins over a repeated typed ordinal.
+        // Continuation numbering wins over a repeated typed ordinal; pasted
+        // Markdown keeps its authored (equivalent) ordinals.
         ("1. one\n1. two-part\n1. three", true, "1. one\n2. two-part\n3. three"),
     ] {
         for pasted in [true, false] {
@@ -34,6 +37,7 @@ fn pasted_and_typed_lists_stay_flat_with_unescaped_words() {
             editor.type_keys("i");
             if pasted { editor.paste_plain(input) } else { editor.type_keys(input) }
             let context = format!("{input:?} pasted={pasted}");
+            let expected = if pasted { input } else { expected };
             assert_eq!(editor.source(), expected, "{context}");
             assert_eq!(
                 list_levels(&editor),
@@ -67,11 +71,13 @@ fn a_pasted_list_supports_backspace_and_indentation_at_its_second_item() {
 
 #[test]
 fn a_repeated_quote_prefix_continues_the_quote() {
-    for pasted in [true, false] {
+    // Typing Enter makes paragraphs; pasted Markdown keeps its one quoted
+    // paragraph with a soft line ending.
+    for (pasted, expected) in [(true, "> a\n> b"), (false, "> a\n>\n> b")] {
         let mut editor = Editor::open("", Format::Markdown);
         editor.type_keys("i");
         if pasted { editor.paste_plain("> a\n> b") } else { editor.type_keys("> a\n> b") }
-        assert_eq!(editor.source(), "> a\n>\n> b", "pasted={pasted}");
+        assert_eq!(editor.source(), expected, "pasted={pasted}");
         assert!(editor.document().projection().blocks().iter().all(|block| block.quote_depth == 1), "pasted={pasted}");
         assert_reopens_as_displayed(editor.document(), &format!("pasted={pasted}"));
     }
@@ -119,13 +125,13 @@ fn literal_multiline_paste_protects_every_line_start() {
         ("a\n- b", "a\n\n\\- b"),
         ("a\n2. b", "a\n\n2\\. b"),
         ("a\n    code", "a\n\n&#32;   code"),
+        ("a\n  - b", "a\n\n&#32; - b"),
         ("- a\n- b", "\\- a\n\n\\- b"),
         ("# x\n> y", "\\# x\n\n\\> y"),
     ] {
         let mut editor = Editor::open("", Format::Markdown);
-        editor.set_autoformat(false);
         editor.type_keys("i");
-        editor.paste_plain(input);
+        editor.paste_matching_style(input);
         assert_eq!(editor.source(), expected, "{input:?}");
         assert_eq!(shape(editor.document()).0, input, "{input:?}");
         assert_reopens_as_displayed(editor.document(), input);
@@ -136,8 +142,12 @@ fn literal_multiline_paste_protects_every_line_start() {
 #[test]
 fn a_nested_item_sharing_its_empty_parents_line_can_be_lifted() {
     // Imported or older files can nest an item on the same line as an empty
-    // parent's marker. Backspace and Shift-Tab lift it beside its sibling.
-    for (source, expected) in [("- a\n- - b", "- a\n- b"), ("1. a\n2. 1. b", "1. a\n2. b")] {
+    // parent's marker. Backspace and Shift-Tab lift it beside its sibling, or
+    // to the parent's place when no item precedes it.
+    for (source, expected) in [
+        ("- a\n- - b", "- a\n- b"), ("1. a\n2. 1. b", "1. a\n2. b"),
+        ("- - b", "- b"), ("1. 1. b", "1. b"), ("> - - b", "> - b"), ("- - b\n- c", "- b\n- c"),
+    ] {
         for key in [Key::Backspace, Key::BackTab] {
             let mut editor = Editor::open(source, Format::Markdown);
             editor.type_keys("i");
@@ -149,4 +159,169 @@ fn a_nested_item_sharing_its_empty_parents_line_can_be_lifted() {
             assert_exact_undo_redo(&mut editor, source, expected, &format!("{source:?} {key:?}"));
         }
     }
+}
+
+const REPORT: &str = "## Work\n\n- **Tests:** pass.\n- **Memory:** two limits fail.\n  - nested detail\n\nA closing *paragraph*.\n\n1. first\n2. second\n";
+
+/// Every heading is top level, and the pasted lists remain their own lists.
+fn assert_report_structure(editor: &Editor, context: &str) {
+    let document = editor.document();
+    let text = document.text();
+    let blocks = document.projection().blocks();
+    let block = |needle: &str| blocks.iter()
+        .find(|block| text[block.range.clone()] == *needle)
+        .unwrap_or_else(|| panic!("{context}: block {needle:?} in {:?}", shape(document)));
+    let heading = block("Work");
+    assert_eq!(heading.kind, BlockKind::Heading(2), "{context}");
+    assert!(heading.quote_depth == 0 && heading.containers.is_empty(), "{context}: {:?}", shape(document));
+    let closing = block("A closing paragraph.");
+    assert!(matches!(closing.kind, BlockKind::Paragraph) && closing.quote_depth == 0 && closing.containers.is_empty(),
+        "{context}: {:?}", shape(document));
+    for (item, level, ordered) in [("Tests: pass.", 0, false), ("nested detail", 1, false), ("first", 0, true), ("second", 0, true)] {
+        assert!(matches!(block(item).kind, BlockKind::ListItem { level: actual, ordered: actual_ordered, .. }
+            if actual == level && actual_ordered == ordered), "{context}: {item:?} {:?}", shape(document));
+    }
+}
+
+#[test]
+fn pasted_markdown_blocks_keep_their_own_top_level_structure() {
+    // (destination, caret needle and offset, expected source)
+    for (source, needle, offset, expected) in [
+        ("", "", 0, REPORT.trim_end().to_owned()),
+        ("Intro here.", "here", 0, format!("Intro \n\n{}\n\nhere.", REPORT.trim_end())),
+        ("- one\n- ", "", 4, format!("- one\n\n{}", REPORT.trim_end())),
+        ("- one\n- two", "two", 0, format!("- one\n\n{}\n\n- two", REPORT.trim_end())),
+        ("- one\n- two", "two", 3, format!("- one\n- two\n\n{}", REPORT.trim_end())),
+        ("> quoted here", "here", 0, format!("> quoted \n\n{}\n\n>\n> here", REPORT.trim_end())),
+        // Same-kind lists join, as CommonMark requires; the join stays tight.
+        ("1. a\n2. b\n3. c", "b", 1, format!("1. a\n2. b\n\n{}\n3. c", REPORT.trim_end())),
+        ("- a\n  - b\n    - c\n    - e\n", "c", 1, format!("- a\n  - b\n    - c\n\n{}\n\n- e\n", REPORT.trim_end())),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.type_keys("i");
+        let at = editor.document().text().find(needle).unwrap() + offset;
+        editor.place(at);
+        editor.paste_plain(REPORT);
+        let context = format!("{source:?} at {needle:?}+{offset}");
+        assert_eq!(editor.source(), expected, "{context}");
+        assert_report_structure(&editor, &context);
+        assert_eq!(editor.core.command_state(editor.view).unwrap().mode(), Mode::Insert, "{context}");
+        assert_reopens_as_displayed(editor.document(), &context);
+        assert_exact_undo_redo(&mut editor, source, &expected, &context);
+    }
+}
+
+#[test]
+fn a_partial_pasted_paragraph_joins_the_destination_inline() {
+    let mut editor = Editor::open("Hello world", Format::Markdown);
+    editor.type_keys("i");
+    editor.place_at("world");
+    editor.paste_plain("**bold** text ");
+    assert_eq!(editor.document().text(), "Hello bold text world");
+    assert_eq!(editor.document().projection().blocks().len(), 1);
+    assert!(editor.document().projection().style_spans().iter().any(|span| span.range == (6..10)
+        && span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
+    assert_eq!(editor.core.command_state(editor.view).unwrap().cursor(), 16);
+    assert_reopens_as_displayed(editor.document(), "inline");
+    let after = editor.source();
+    assert_exact_undo_redo(&mut editor, "Hello world", &after, "inline");
+
+    // The first and last paragraphs join the text around the caret.
+    let mut editor = Editor::open("Hello world", Format::Markdown);
+    editor.type_keys("i");
+    editor.place_at("world");
+    editor.paste_plain("first\n\n## Middle\n\nlast ");
+    assert_eq!(editor.source(), "Hello first\n\n## Middle\n\nlast world");
+    assert_eq!(editor.document().text(), "Hello first\nMiddle\nlast world");
+    assert_reopens_as_displayed(editor.document(), "joined edges");
+}
+
+#[test]
+fn code_destinations_keep_pasted_markdown_literal() {
+    for (source, needle, expected_text) in [
+        ("some `code` here", "ode", "some c**b**\n\n## Hode here"),
+        ("```\ncode\n```", "ode", "c**b**\n\n## Hode"),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.type_keys("i");
+        editor.place_at(needle);
+        editor.paste_plain("**b**\n\n## H");
+        assert_eq!(editor.document().text(), expected_text, "{source:?}");
+        assert!(!editor.document().projection().blocks().iter().any(|block| matches!(block.kind, BlockKind::Heading(_))),
+            "{source:?}: {:?}", shape(editor.document()));
+        assert_reopens_as_displayed(editor.document(), source);
+    }
+    // A table cell takes inline Markdown but keeps block syntax literal.
+    let table = "| a | b |\n| - | - |\n| c | d |";
+    let mut editor = Editor::open(table, Format::Markdown);
+    editor.type_keys("i");
+    editor.place(editor.document().text().find('c').unwrap() + 1);
+    editor.paste_plain("**x** y");
+    assert_eq!(editor.document().text(), "a\nb\ncx y\nd");
+    let mut editor = Editor::open(table, Format::Markdown);
+    editor.type_keys("i");
+    editor.place(editor.document().text().find('c').unwrap() + 1);
+    editor.paste_plain("## H\n\npara");
+    assert_eq!(editor.document().text(), "a\nb\nc## H\n\npara\nd");
+    assert_reopens_as_displayed(editor.document(), "table cell");
+}
+
+#[test]
+fn paste_and_match_style_keeps_every_line_literal() {
+    let mut editor = Editor::open("", Format::Markdown);
+    editor.type_keys("i");
+    editor.paste_matching_style(REPORT);
+    assert_eq!(editor.document().text(), REPORT);
+    assert!(editor.document().projection().blocks().iter()
+        .all(|block| matches!(block.kind, BlockKind::Paragraph) && block.containers.is_empty()));
+    assert_reopens_as_displayed(editor.document(), "matching style");
+    let after = editor.source();
+    assert_exact_undo_redo(&mut editor, "", &after, "matching style");
+
+    // Indented continuation lines inside a reopened inline scope keep their
+    // leading whitespace and the scope.
+    for text in ["l1\n  l2", "l1\n  - l2"] {
+        let mut editor = Editor::open("*it*", Format::Markdown);
+        editor.place(1);
+        editor.type_keys("v");
+        editor.paste_matching_style(text);
+        assert_eq!(editor.document().text(), format!("i{text}"), "{text:?}");
+        assert!(editor.document().projection().style_spans().iter()
+            .any(|span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Emphasis)
+                && span.range.end == editor.document().text().len()), "{text:?}");
+        assert_reopens_as_displayed(editor.document(), text);
+    }
+}
+
+#[test]
+fn normal_and_selected_markdown_paste_follow_native_paste_placement() {
+    // Linewise text goes above the current line and the caret stays on it.
+    let mut editor = Editor::open("first\n\nsecond line", Format::Markdown);
+    editor.place_at("line");
+    editor.paste_plain("## Pasted\n");
+    assert_eq!(editor.source(), "first\n\n## Pasted\n\nsecond line");
+    let state = editor.core.command_state(editor.view).unwrap();
+    assert_eq!((state.mode(), state.cursor()), (Mode::Normal, editor.document().text().find("second").unwrap()));
+
+    // A selection is replaced, ending in Normal with the deletion in `-`.
+    let mut editor = Editor::open("keep this and that", Format::Markdown);
+    editor.place_at("this");
+    editor.type_keys("viw");
+    editor.paste_plain("- x\n- y");
+    assert_eq!(editor.source(), "keep \n\n- x\n- y\n\n&#32;and that");
+    let state = editor.core.command_state(editor.view).unwrap();
+    assert_eq!(state.mode(), Mode::Normal);
+    assert_eq!(state.register('-').unwrap().text, "this");
+    assert_reopens_as_displayed(editor.document(), "selection");
+}
+
+#[test]
+fn markdown_paste_into_a_large_document_stays_regional() {
+    let source = "Unchanged paragraph.\n\n".repeat(5_000) + "target here\n\n" + &"After.\n\n".repeat(5_000);
+    let mut editor = Editor::open(&source, Format::Markdown);
+    editor.type_keys("i");
+    editor.place_at("here");
+    assert_regional("block paste", || editor.paste_plain(REPORT));
+    assert_report_structure(&editor, "large");
+    assert!(editor.source().contains(&format!("target \n\n{}\n\nhere", REPORT.trim_end())));
 }

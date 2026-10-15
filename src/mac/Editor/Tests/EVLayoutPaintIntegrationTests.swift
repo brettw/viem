@@ -189,13 +189,12 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
     // Enough offscreen ink to enforce the >10,000-cluster and 10:1 culling
     // bounds below; larger text only repeats the same native drawing work.
     let source = String(repeating: "naturally flowing prose with neighboring letters\n", count: 600)
-    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+    for type in [EVDocument.markdownType] {
       let backend = EVCoreDocumentBackend()
       try backend.read(source: Data(source.utf8), typeName: type)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       surface.loadViewIfNeeded()
       let session = try XCTUnwrap(surface.session)
-      if type == EVDocument.markdownSourceType { _ = try session.setParagraphFlow(true) }
       var previousIdentity: ViemLayoutSnapshotIdentityV1?
       for width in [420, 280] {
         surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 200)

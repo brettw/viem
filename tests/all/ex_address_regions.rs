@@ -60,7 +60,7 @@ fn restored<P: TextMeasurementProvider>(core: &mut Core<P>, view: ViewId, before
 #[test]
 fn numeric_delete_and_yank_do_not_expand_folded_source_lines() {
     let source = "before\nfirst\nsecond\n\nafter";
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Markdown] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
             let document =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -124,7 +124,7 @@ fn numeric_offsets_and_counts_keep_physical_units() {
 #[test]
 fn numeric_join_changes_only_real_physical_endings() {
     let source = "outside\nalpha\n  beta\nlast";
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Markdown] {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let (mut core, view) = editor(document, 55., LineMode::Visual);
@@ -147,7 +147,7 @@ fn numeric_join_changes_only_real_physical_endings() {
 #[test]
 fn numeric_sort_reorders_exact_source_and_preserves_style_syntax() {
     let source = "before\n# Zebra\n# Apple\n\nafter";
-    for format in [Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::Markdown] {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let (mut core, view) = editor(document, 55., LineMode::Visual);
@@ -601,7 +601,7 @@ fn physical_move_relocates_marks_and_inactive_view_cursors() {
 #[test]
 fn physical_sort_relocates_marks_and_inactive_cursors_with_original_bytes() {
     let source = "head\n**zebra**\n**apple**\ntail";
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Markdown] {
         let document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let (mut core, view) = editor(document, 80., LineMode::Visual);
@@ -737,7 +737,7 @@ fn numeric_goto_does_not_decode_a_giant_target_line_body() {
         execute_ex, ExExecutionContext, ExExecutionState, ExNavigation,
     };
     let source = format!("before\n  {}\nafter", "x".repeat(2_000_000));
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Markdown] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let (outcome, work) = measure_document_work(|| {

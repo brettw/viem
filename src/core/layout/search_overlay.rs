@@ -444,12 +444,7 @@ mod tests {
         let mut ranges = vec![0..6];
         ranges.extend((0..MATCHES).map(|index| start + index * 2..start + index * 2 + 1));
         ranges.push(end + 1..text.len());
-        let styles = crate::layout::DocumentLayoutStyles::resolve_region_with_search(
-            document.projection(),
-            start..end,
-            false,
-            &ranges,
-        )
+        let styles = crate::layout::DocumentLayoutStyles::resolve_region_with_search(document.projection(), start..end, &ranges)
         .unwrap();
         assert_eq!(styles.paint_runs.len(), MATCHES);
         assert!(styles.shaping_runs.is_empty());
@@ -457,12 +452,7 @@ mod tests {
             assert_eq!(run.text_range, start + index * 2..start + index * 2 + 1);
             assert!(run.paint.background.is_some());
         }
-        let cleared = crate::layout::DocumentLayoutStyles::resolve_region_with_search(
-            document.projection(),
-            start..end,
-            false,
-            &[],
-        )
+        let cleared = crate::layout::DocumentLayoutStyles::resolve_region_with_search(document.projection(), start..end, &[])
         .unwrap();
         assert!(cleared.paint_runs.is_empty());
         assert_eq!(styles.shaping_runs, cleared.shaping_runs);

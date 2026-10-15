@@ -188,7 +188,6 @@ fn rtl_markers_use_right_gutter_and_source_modes_keep_literal_text() {
     assert_eq!(label(row), "12.");
     assert!(row.decorations[0].x > row.paragraph_content_x + row.paragraph_content_width);
     for (format, source) in [
-        (Format::MarkdownSource, "1. source"),
         (Format::PlainText, "1. plain"),
     ] {
         let document =

@@ -165,36 +165,6 @@ fn table_insertion_and_following_typing_have_separate_undo_units() {
 }
 
 #[test]
-fn source_switch_retires_cell_rectangle_without_changing_source() {
-    let (mut core, view) = editor(SOURCE);
-    select(&mut core, view, (0, 0), (1, 0));
-    core.handle(
-        view,
-        CoreEvent::SetMarkdownSource {
-            document: core.document().id(),
-            revision: core.document().revision(),
-            source: true,
-        },
-    )
-    .unwrap();
-    assert!(core.table_selection(view).unwrap().is_none());
-    assert_eq!(core.command_state(view).unwrap().mode(), Mode::Normal);
-    assert_eq!(core.document().source_bytes(), SOURCE.as_bytes());
-    assert!(core
-        .list_selection_identity(view)
-        .unwrap()
-        .range()
-        .is_empty());
-    core.handle(
-        view,
-        CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-    )
-    .unwrap();
-    assert!(core.table_selection(view).unwrap().is_none());
-    assert_eq!(core.document().source_bytes(), SOURCE.as_bytes());
-}
-
-#[test]
 fn stale_rectangle_style_does_not_mutate_after_another_view_edits() {
     let (mut core, view) = editor(SOURCE);
     let second = core.add_view(MockTextMeasurementProvider::new(), 500., 300.);
@@ -232,7 +202,7 @@ fn stale_rectangle_style_does_not_mutate_after_another_view_edits() {
 #[test]
 fn obsolete_table_width_workers_cannot_replace_current_geometry() {
     use viem_core::layout::{compute_layout_job, LayoutEngine, LayoutExecutionContext};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for change in [
             CoreEvent::Resize {
                 width: 420.,
@@ -334,7 +304,7 @@ fn cancelled_table_width_request_does_not_block_its_replacement() {
 fn end_motion_in_a_giant_table_cell_reveals_exact_caret_geometry() {
     use viem_core::document::BoundaryAffinity;
     use viem_core::layout::{compute_layout_job, LayoutEngine, LayoutExecutionContext};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for warm in [false, true] {
             let source = format!(
                 "# Long cell interaction test\n\n| Text | Neighbor |\n| --- | --- |\n| {} | still a separate cell |\n\nAfter the table.\n",
@@ -343,28 +313,13 @@ fn end_motion_in_a_giant_table_cell_reveals_exact_caret_geometry() {
             let document = Document::from_bytes(
                 source.as_bytes().to_vec(),
                 Encoding::Utf8,
-                Format::MarkdownSource,
+                format,
             )
             .unwrap();
             let mut core = Core::new(document);
             let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
-            if format == Format::Markdown {
-                core.handle(
-                    view,
-                    CoreEvent::SetMarkdownSource {
-                        document: core.document().id(),
-                        revision: core.document().revision(),
-                        source: false,
-                    },
-                )
-                .unwrap();
-            }
             let table = &core.document().projection().tables()[0];
-            let range = if format == Format::Markdown {
-                table.rows[1].cells[0].range.clone()
-            } else {
-                table.source_rows[2].range.clone()
-            };
+            let range = table.rows[1].cells[0].range.clone();
             if warm {
                 let mut iterations = 0;
                 while let Some(request) = core.prepare_view_table_refinement(view).unwrap() {
@@ -635,18 +590,14 @@ fn unchanged_resize_reuses_table_geometry_but_rebuilds_changed_metrics() {
             self.inner.shape_batch(requests)
         }
     }
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = format!(
             "| A | B |\n| - | - |\n| {} | next |\n\nAfter",
             "readable text ".repeat(12_000)
         );
         let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
         let table = &document.projection().tables()[0];
-        let offset = if format == Format::Markdown {
-            table.rows[1].cells[0].range.end - 1
-        } else {
-            table.source_rows[2].range.end - 1
-        };
+        let offset = table.rows[1].cells[0].range.end - 1;
         let calls = Arc::new(AtomicUsize::new(0));
         let metrics = Arc::new(AtomicU64::new(1));
         let mut core = Core::new(document);

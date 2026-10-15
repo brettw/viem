@@ -44,6 +44,8 @@ mod markdown_list_edit;
 mod markdown_list_structure;
 #[path = "markdown_numbering.rs"]
 mod markdown_numbering;
+#[path = "markdown_paste.rs"]
+mod markdown_paste;
 #[path = "markdown_quote_edit.rs"]
 mod markdown_quote_edit;
 #[path = "markdown_split.rs"]
@@ -337,8 +339,7 @@ pub enum ModelRequest {
         affinity: BoundaryAffinity,
     },
     /// Open a paragraph at a line boundary, using the originating paragraph's
-    /// following style. Markdown Source continues parsed list items; other
-    /// source-view line insertion remains literal.
+    /// following style. Literal formats insert a literal line.
     OpenLine {
         document: DocumentId,
         revision: Revision,
@@ -352,12 +353,6 @@ pub enum ModelRequest {
         target: FileFormat,
     },
 
-    /// Switch between the two views of the same Markdown source.
-    SetMarkdownSource {
-        document: DocumentId,
-        revision: Revision,
-        source: bool,
-    },
     /// Reproject the same physical source in another supported view format.
     SetViewFormat {
         document: DocumentId,
@@ -415,7 +410,6 @@ impl ModelRequest {
             | Self::InsertHardBreak { document, .. }
             | Self::OpenLine { document, .. }
             | Self::SetFileFormat { document, .. }
-            | Self::SetMarkdownSource { document, .. }
             | Self::SetViewFormat { document, .. }
             | Self::SetEncoding { document, .. }
             | Self::ReorderHardLines { document, .. }
@@ -443,7 +437,6 @@ impl ModelRequest {
             | Self::InsertHardBreak { revision, .. }
             | Self::OpenLine { revision, .. }
             | Self::SetFileFormat { revision, .. }
-            | Self::SetMarkdownSource { revision, .. }
             | Self::SetViewFormat { revision, .. }
             | Self::SetEncoding { revision, .. }
             | Self::ReorderHardLines { revision, .. }
@@ -904,17 +897,13 @@ fn escape_interior_line_starts(text: &str) -> String {
 
 /// Append already-escaped prose that begins a Markdown line, protecting what
 /// a line start would reinterpret: list and setext markers, ordered-list
-/// punctuation, and indentation that would make indented code.
+/// punctuation, and leading whitespace, which a paragraph start strips (or,
+/// from four columns, turns into indented code).
 fn protect_markdown_line_start(line: &str, output: &mut String) {
     let whitespace = line.len() - line.trim_start_matches([' ', '\t']).len();
     let (leading, body) = line.split_at(whitespace);
-    let columns = leading.bytes().fold(0usize, |column, byte| column + if byte == b'\t' { 4 - column % 4 } else { 1 });
-    if columns >= 4 {
-        for byte in leading.bytes() {
-            output.push_str(if byte == b' ' { "&#32;" } else { "&#9;" });
-        }
-    } else {
-        output.push_str(leading);
+    for byte in leading.bytes() {
+        output.push_str(if byte == b' ' { "&#32;" } else { "&#9;" });
     }
     let digits = body.bytes().take_while(u8::is_ascii_digit).count();
     if body.starts_with(['-', '+', '=']) {
@@ -1304,7 +1293,6 @@ impl Document {
             } => self.prepare_open_line(at, origin, after),
             ModelRequest::SetFileFormat { target, .. } => self.prepare_file_format(target),
 
-            ModelRequest::SetMarkdownSource { source, .. } => self.prepare_markdown_source_change(source),
             ModelRequest::SetViewFormat { target, .. } => self.prepare_view_format_change(target),
             ModelRequest::SetEncoding { target, .. } => self.prepare_encoding(target),
             ModelRequest::ReorderHardLines {
@@ -1493,10 +1481,7 @@ impl Document {
         // the first authoritative mutation so publication remains infallible.
         self.attach_prepared_source_map(&mut prepared)?;
         let next_position_capture = self.composed_position_capture(&prepared.text_position_map)?;
-        let old_line_counts = [
-            self.projection().presentation_line_count(false),
-            self.projection().presentation_line_count(true),
-        ];
+        let old_line_count = self.projection().presentation_line_count();
         let history_record = match &prepared.publication {
             PreparedPublication::State(_) => Some((
                 history_transaction_summary(
@@ -1550,11 +1535,8 @@ impl Document {
                 .map(|range| super::LocalFormattedChange {
                     new: range.clone(),
                     old: range,
-                    old_line_counts,
-                    new_line_counts: [
-                        self.projection().presentation_line_count(false),
-                        self.projection().presentation_line_count(true),
-                    ],
+                    old_line_count,
+                    new_line_count: self.projection().presentation_line_count(),
                 })
                 .or_else(|| {
                     (prepared.summary.projection_work().scope() == ProjectionWorkScope::RegionalHardLines
@@ -1573,11 +1555,8 @@ impl Document {
                         Some(super::LocalFormattedChange {
                             new: old.start..new_end,
                             old,
-                            old_line_counts,
-                            new_line_counts: [
-                                self.projection().presentation_line_count(false),
-                                self.projection().presentation_line_count(true),
-                            ],
+                            old_line_count,
+                            new_line_count: self.projection().presentation_line_count(),
                         })
                     })
                     .flatten()
@@ -2130,7 +2109,7 @@ impl Document {
             && text.contains('\r')
         {
             // The shared line-ending stage consumes every literal source CR
-            // before these projections run. Plain/source modes and the current
+            // before these projections run. Literal formats and the current
             // Markdown adapter have no escape that can recreate a literal CR.
             Some('\r')
         } else {
@@ -2285,30 +2264,7 @@ impl Document {
 
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
-        // Table rows own their physical source grammar. A verified row stub
-        // proves literal Source edits without reparsing unrelated table rows.
-        let table_candidate = if self.format() == Format::MarkdownSource {
-            self.build_table_row_candidate(&source, after_revision, &target_text,
-                text_splice_work, &edits, &source_patches)?
-        } else { None };
-        if table_candidate.is_none() && self.source_edit_requires_reprojection(&edits, &source_patches, authored_syntax)? {
-            // Source-mode delimiters are editable syntax. Changing a fence
-            // can make formerly literal blank lines become paired paragraph
-            // separators, so the new projection need not be a flat splice of
-            // the old one. Commit the exact translated source intention and
-            // derive its complete formatted change from authoritative parsing.
-            // Proven ordinary line edits retain the incremental path below.
-            let mut prepared = self.prepare_reprojected_source_patches(source_patches)?;
-            if repaired_utf16 {
-                prepared
-                    .summary
-                    .conversion_warnings
-                    .push(super::ConversionWarning::RepairedTruncatedUtf16);
-            }
-            return Ok(prepared);
-        }
-
-        let built = if let Some(candidate) = table_candidate { Ok(candidate) } else { self.build_verified_text_edit_candidate(
+        let built = self.build_verified_text_edit_candidate(
             source,
             after_revision,
             &target_text,
@@ -2317,7 +2273,7 @@ impl Document {
             &source_patches,
             authored_syntax,
             None,
-        ) };
+        );
         let TextEditCandidate {
             state: mut candidate,
             work: projection_work,
@@ -2688,66 +2644,6 @@ impl Document {
         Ok(escaped)
     }
 
-    /// Source fence edits may reinterpret later paragraph separators. Both
-    /// literal and structured payload edits publish the same parsed source
-    /// result instead of imposing a pre-edit paragraph/break partition.
-    fn source_edit_requires_reprojection(
-        &self,
-        edits: &[TextEdit],
-        patches: &[SourcePatch],
-        authored_syntax: bool,
-    ) -> Result<bool, ModelTransactionError> {
-        if self.format() != Format::MarkdownSource {
-            return Ok(false);
-        }
-        let Some(region) = self.line_local_projection_region_with_context(edits, patches, authored_syntax)? else {
-            return Ok(true);
-        };
-        // A region that cannot be proven independent of the rest of the
-        // document is treated like an edit without a local region.
-        let source = apply_source_patches(&self.state().source, patches)?;
-        let new_end =
-            rebase_source_boundary(region.old_source.end, patches, Association::AfterInsertion)?;
-        let Some(bytes) = source.bytes_in(region.old_source.start..new_end) else {
-            return Ok(true);
-        };
-        let decoded = self
-            .state()
-            .encoding
-            .decode_region(&bytes, region.old_source.start)?;
-        let regional = project(
-            &normalize(&decoded, self.state().file_format),
-            self.state().format,
-            Revision(self.next_revision),
-            region.old_source.start,
-            new_end,
-        );
-        let inherited_blocks = self.can_inherit_markdown_source_list_context(edits);
-        if self
-            .verify_markdown_source_region(&region, &regional, edits, inherited_blocks)
-            .is_err()
-        {
-            return Ok(true);
-        }
-        // Source edits can change folded separator whitespace without changing
-        // the regional row count or owners. Prove the literal splice as well
-        // before selecting the text-preserving candidate path.
-        let mut expected = self.projection().text_tree()
-            .slice(region.old_formatted.clone())
-            .map_err(DocumentError::FormattedTextStorage)?;
-        for edit in edits.iter().rev() {
-            if edit.range.start < region.old_formatted.start
-                || edit.range.end > region.old_formatted.end
-            {
-                return Ok(true);
-            }
-            expected.replace_range(edit.range.start - region.old_formatted.start
-                ..edit.range.end - region.old_formatted.start, &edit.replacement);
-        }
-        Ok(regional.text_tree().slice(0..regional.text_tree().byte_len())
-            .map_err(DocumentError::FormattedTextStorage)? != expected)
-    }
-
     fn prepare_formatted_payload_edits(
         &self,
         mut edits: Vec<FormattedPayloadEdit>,
@@ -2856,36 +2752,7 @@ impl Document {
         let without_breaks = edits.iter().all(|edit| {
             !edit.payload.text().contains('\n') && edit.payload.break_offsets().is_empty()
         });
-        // Markdown Source delimiters are literal, editable text, so such a
-        // payload is an ordinary text splice. Text-edit preparation
-        // keeps a proven line-local edit regional and reparses the complete
-        // source itself when a delimiter could reshape other lines. An edit
-        // it cannot verify keeps the payload reparse below as its reference.
-        // Every Markdown Source U+000A is a hard-line boundary, so a payload
-        // whose breaks are exactly its newlines is also a text splice.
-        let breaks_are_newlines = edits.iter().all(|edit| {
-            !edit.payload.text().contains('\r')
-                && edit.payload.break_offsets().iter().copied().eq(edit
-                    .payload
-                    .text()
-                    .match_indices('\n')
-                    .map(|(at, _)| at))
-        });
-        if self.format() == Format::MarkdownSource && (without_breaks || breaks_are_newlines)
-            && edits.iter().all(|edit| !edit.payload.text().contains('\r')) {
-            let patches = self.translate_source_edits(
-                logical_edits
-                    .iter()
-                    .zip(&edits)
-                    .map(|(text, payload)| (text, Some(payload))),
-            )?;
-            if let Ok(prepared) =
-                self.prepare_text_edits_with_patches(logical_edits.clone(), Some(patches))
-            {
-                return Ok(prepared);
-            }
-        }
-        if self.format().is_wysiwyg() && without_breaks {
+        if self.format().is_markdown() && without_breaks {
             if let Some(prepared) = self.prepare_structural_text_batch(&logical_edits)? {
                 return Ok(prepared);
             }
@@ -2933,22 +2800,6 @@ impl Document {
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
-        // A literal CR can combine with a following bare LF under DOS.
-        // Source grammar may reshape paragraphs, but must not silently consume
-        // an explicitly requested character through line-ending normalization.
-        if edits.iter().all(|edit| !edit.payload.text().contains('\r'))
-            && self.source_edit_requires_reprojection(&text_edits, &source_patches, false)?
-        {
-            let mut prepared = self.prepare_reprojected_source_patches(source_patches)?;
-            if repaired_utf16 {
-                prepared
-                    .summary
-                    .conversion_warnings
-                    .push(super::ConversionWarning::RepairedTruncatedUtf16);
-            }
-            return Ok(prepared);
-        }
-
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
         let built = self.build_verified_text_edit_candidate(
@@ -3066,42 +2917,17 @@ impl Document {
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
-        let mut candidate = if self.format() == Format::MarkdownSource {
-            let decoded = self.encoding().decode(&source.bytes())?;
-            let candidate = build_state_from_decoded(
-                source,
-                decoded,
-                self.format(),
-                self.file_format(),
-                self.file_format_origin(),
-                self.line_ending_evidence(),
-                after_revision,
-            )?;
-            if candidate.projection.text() != plan.expected_text {
-                // Moving source fences can change whether separator bytes
-                // are literal code whitespace or folded paragraph boundaries.
-                // The transferred source remains authoritative; reconcile its
-                // new paragraph partition rather than impose the old row count.
-                return self.prepare_reprojected_source_candidate(
-                    source_patches,
-                    candidate,
-                    ModelChangeKind::HardLineTransfer,
-                );
-            }
-            candidate
-        } else {
-            self.build_verified_candidate(
-                source,
-                self.state().file_format,
-                self.state().file_format_origin,
-                after_revision,
-                CandidateVerification {
-                    expected_text: plan.expected_text.clone(),
-                    expected_hard_breaks: Some(&plan.expected_hard_breaks),
-                    mismatch_error: DocumentError::HardLineTransferProjectionMismatch,
-                },
-            )?
-        };
+        let mut candidate = self.build_verified_candidate(
+            source,
+            self.state().file_format,
+            self.state().file_format_origin,
+            after_revision,
+            CandidateVerification {
+                expected_text: plan.expected_text.clone(),
+                expected_hard_breaks: Some(&plan.expected_hard_breaks),
+                mismatch_error: DocumentError::HardLineTransferProjectionMismatch,
+            },
+        )?;
         transfer::verify_projection(&candidate.projection, &plan)?;
         candidate
             .projection
@@ -3320,16 +3146,6 @@ impl Document {
         if style.0 == "Code Block" {
             return self.prepare_markdown_code_style(&range, true);
         }
-        if self.format().is_source_view() {
-            let selected = structural_style::selected_blocks(self, &range);
-            if !selected.is_empty() && selected.iter().all(|block|
-                block.style == style && !block.thematic_break
-                    && (style != self.projection().style_sheet().base_paragraph
-                        || matches!(block.kind, super::BlockKind::Paragraph) && block.quote_depth == 0))
-            {
-                return Ok(self.no_op_prepared());
-            }
-        }
         if self.format() == Format::Markdown {
             let selected = structural_style::selected_blocks(self, &range);
             if !selected.is_empty() && selected.iter().all(|block| block.style == style
@@ -3484,36 +3300,8 @@ impl Document {
                 source_start..source_start + removed_bytes,
                 self.state().encoding.encode_fragment(&inserted_prefix)?,
             ));
-            let visible = self
-                .projection()
-                .text_tree()
-                .slice(line.clone())
-                .map_err(DocumentError::FormattedTextStorage)?;
-            let mut visible_container = if self.format() == Format::MarkdownSource {
-                super::markdown_quotes::prefix(&visible)
-            } else {
-                0
-            };
-            if self.format() == Format::MarkdownSource && in_list {
-                visible_container = super::markdown_quotes::container_prefix(&visible);
-            }
-            let visible_body = &visible[visible_container..];
-            let (visible_prefix, _) =
-                super::projection::markdown_block_prefix(visible_body, 0, visible_body.len());
-            let remove = if self.format() == Format::MarkdownSource {
-                visible_prefix
-            } else {
-                0
-            };
-            let replacement = if self.format() == Format::MarkdownSource {
-                inserted_prefix
-            } else {
-                String::new()
-            };
-            edits.push(TextEdit::new(
-                line.start + visible_container..line.start + visible_container + remove,
-                replacement,
-            ));
+            // Block prefixes are hidden syntax: the visible row is unchanged.
+            edits.push(TextEdit::new(line.start..line.start, String::new()));
         }
         if self.format() == Format::Markdown && level > 0 {
             self.prepare_markdown_heading_patches(patches, &range, &style)
@@ -3568,7 +3356,7 @@ impl Document {
 
         if !matches!(
             self.format(),
-            Format::PlainText | Format::Markdown | Format::MarkdownSource
+            Format::PlainText | Format::Markdown
         ) {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
@@ -3645,12 +3433,7 @@ impl Document {
                 .text_tree()
                 .slice(line.clone())
                 .map_err(DocumentError::FormattedTextStorage)?;
-            let visible_container = if self.format() == Format::MarkdownSource {
-                super::markdown_quotes::prefix(&visible)
-            } else {
-                0
-            };
-            let visible_body = &visible[visible_container..];
+            let visible_body = visible.as_str();
             let (visible_prefix, visible_kind) =
                 super::projection::markdown_block_prefix(visible_body, 0, visible_body.len());
             let indent = visible_body
@@ -3745,7 +3528,7 @@ impl Document {
                 self.state().encoding.encode_fragment(&source_prefix)?,
             ));
             edits.push(TextEdit::new(
-                line.start + visible_container..line.start + visible_container + remove_visible,
+                line.start..line.start + remove_visible,
                 prefix,
             ));
         }
@@ -3769,9 +3552,6 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if let Some(prepared) = self.prepare_enter_at_folded_ending(at)? {
             return Ok(prepared);
-        }
-        if self.format() == Format::MarkdownSource {
-            return self.prepare_markdown_source_list_enter(at);
         }
         if let Some(prepared) = self.prepare_markdown_quote_enter(at)? {
             return Ok(prepared);
@@ -3823,34 +3603,6 @@ impl Document {
         }
 
 
-        if self.state().format == Format::MarkdownSource {
-            let edits = self.markdown_source_style_edits(&range, style, enabled)?;
-            let added = edits
-                .iter()
-                .map(|edit| edit.replacement.len())
-                .sum::<usize>();
-            let prepared = self.prepare_text_edits(edits)?;
-            if enabled {
-                if let PreparedPublication::State(candidate) = &prepared.publication {
-                    if !candidate
-                        .projection
-                        .style_spans_for_region(&(range.start..range.end + added))
-                        .iter()
-                        .any(|span| {
-                            span.application == StyleApplication::Semantic(style)
-                                // Adjacent emphasis delimiters can join into a
-                                // triple run whose source-visible style owner
-                                // also includes the original outer markers.
-                                && span.range.start <= range.start
-                                && range.end + added <= span.range.end
-                        })
-                    {
-                        return Err(DocumentError::UnsupportedFormatting.into());
-                    }
-                }
-            }
-            return Ok(prepared);
-        }
         let Some(mut source_patches) =
             self.semantic_style_source_patches(&range, style, enabled)?
         else {
@@ -3985,84 +3737,8 @@ impl Document {
             }
             return Ok(());
         }
-        if self.state().format == Format::MarkdownSource {
-            return self
-                .markdown_source_style_edits(&range, style, enabled)
-                .map(|_| ());
-        }
         self.semantic_style_source_patches(&range, style, enabled)
             .map(|_| ())
-    }
-
-    /// In source-visible Markdown the delimiters are ordinary editable content.
-    /// Formatting actions use the same text transaction as typing those markers,
-    /// including its source patches, anchor maps, and undo restoration.
-    fn markdown_source_style_edits(
-        &self,
-        range: &Range<usize>,
-        style: SemanticInlineStyle,
-        enabled: bool,
-    ) -> Result<Vec<TextEdit>, ModelTransactionError> {
-        self.validate_range(range)?;
-        if range.is_empty() {
-            return Ok(Vec::new());
-        }
-        let spans = self.projection().style_spans_for_region(range);
-        let containing = spans.iter().find(|span| {
-            span.application == StyleApplication::Semantic(style)
-                && span.range.start <= range.start
-                && range.end <= span.range.end
-        });
-        if enabled {
-            if containing.is_some() {
-                return Ok(Vec::new());
-            }
-            if spans
-                .iter()
-                .any(|span| span.range.start < range.end && range.start < span.range.end
-                    && !(style == SemanticInlineStyle::Code
-                        && matches!(&span.application, StyleApplication::Automatic(id) if id.0 == "Link"))
-                    && (!matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
-                        || span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)))
-            {
-                return Err(DocumentError::OverlappingFormatting.into());
-            }
-            let selected = self
-                .projection()
-                .text_tree()
-                .slice(range.clone())
-                .map_err(DocumentError::FormattedTextStorage)?;
-            if selected.contains('\n') || selected.trim().is_empty() {
-                return Err(DocumentError::UnsupportedFormatting.into());
-            }
-            let marker = markdown_style_markers(style)
-                .iter()
-                .find(|marker| !selected.contains(**marker))
-                .copied()
-                .ok_or(DocumentError::UnsupportedFormatting)?;
-            return Ok(vec![
-                TextEdit::new(range.start..range.start, marker),
-                TextEdit::new(range.end..range.end, marker),
-            ]);
-        }
-        let span = containing.ok_or(DocumentError::UnsupportedFormatting)?;
-        let text = self
-            .projection()
-            .text_tree()
-            .slice(span.range.clone())
-            .map_err(DocumentError::FormattedTextStorage)?;
-        let marker = markdown_style_markers(style)
-            .iter()
-            .find(|marker| {
-                text.starts_with(**marker)
-                    && text.ends_with(**marker)
-                    && text.len() >= 2 * marker.len()
-            })
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        Ok(vec![
-            TextEdit::new(span.range.start..span.range.start + marker.len(), ""),
-            TextEdit::new(span.range.end - marker.len()..span.range.end, ""),
-        ])
     }
 
     /// Return the minimal source patches for an authorized Markdown semantic
@@ -4347,17 +4023,7 @@ impl Document {
         if self.format().is_literal() {
             self.prepare_visible_source_patches(patches)
         } else {
-            if self.format().is_source_view() {
-                // Benign authored Source edits have the same exact boundary
-                // relation as visible edits. Regional verification proves
-                // independence; grammar changes fall back to reprojection.
-                if let Ok(prepared) = self.prepare_visible_source_patches(patches.clone()) {
-                    return Ok(prepared);
-                }
-                if let Ok(Some(prepared)) = self.prepare_regional_markdown_source_patches(patches.clone()) {
-                    return Ok(prepared);
-                }
-            } else if let Ok(Some(prepared)) = self.prepare_regional_wysiwyg_prose_patches(patches.clone()) {
+            if let Ok(Some(prepared)) = self.prepare_regional_wysiwyg_prose_patches(patches.clone()) {
                 return Ok(prepared);
             }
             self.prepare_reprojected_source_patches(patches)
@@ -4411,8 +4077,8 @@ impl Document {
             .map_err(DocumentError::FormattedTextStorage)?;
         if old_local.text() != old || old_local.block_records().len() != 1
             || old_local.block_records()[0].attributes != owner.attributes
-            || markdown_source_region_signature(projection, &owner.range)
-                != markdown_source_region_signature(&old_local, &(0..old.len())) {
+            || markdown_region_signature(projection, &owner.range)
+                != markdown_region_signature(&old_local, &(0..old.len())) {
             return Ok(None);
         }
         let source = apply_source_patches(&self.state().source, &patches)?;
@@ -4440,103 +4106,6 @@ impl Document {
         let prepared = self.prepare_text_edits_with_patch_policy(vec![edit], Some(patches.clone()), true)?;
         if prepared.summary.source_patches != patches { return Ok(None); }
         Ok(Some(prepared))
-    }
-
-    /// A physical gap can lie inside a paired Source paragraph separator, so
-    /// its exact source intention has no single formatted insertion boundary.
-    /// Recover a bounded verification band, derive its actual parsed edit, and
-    /// publish the original patches without redirecting or expanding them.
-    fn prepare_regional_markdown_source_patches(
-        &self,
-        mut patches: Vec<SourcePatch>,
-    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if !self.format().is_source_view() || patches.is_empty() { return Ok(None); }
-        validate_source_patches(&mut patches)?;
-        let seed_for = |indices: &Range<usize>| -> Result<Option<TextEdit>, ModelTransactionError> {
-            let start = self.visible_point_for_source(patches[indices.start].range.start, false)?;
-            let end = self.visible_point_for_source(patches[indices.end - 1].range.end, true)?;
-            if start > end { return Ok(None); }
-            let projection = self.projection();
-            let Some((first, last)) = projection.hard_line_at_offset(start)
-                .zip(projection.hard_line_at_offset(end)) else { return Ok(None); };
-            if last.saturating_sub(first) >= MAX_LINE_LOCAL_PROJECTION_HARD_LINES { return Ok(None); }
-            Ok(Some(TextEdit::new(start..end, "")))
-        };
-        // Grammar context can extend beyond a patch. Merge overlapping owner
-        // and support bands before proving groups independently; a distant
-        // destination does not make the unchanged intervening prose a region.
-        let mut groups: Vec<(Range<usize>, TextEdit, Range<usize>)> = Vec::new();
-        for index in 0..patches.len() {
-            let mut indices = index..index + 1;
-            loop {
-                let Some(seed) = seed_for(&indices)? else { return Ok(None); };
-                let Some(region) = self.line_local_projection_region(std::slice::from_ref(&seed),
-                    &patches[indices.clone()])? else { return Ok(None); };
-                if let Some(previous) = groups.last().filter(|previous|
-                    previous.2.start <= region.old_source.end && region.old_source.start <= previous.2.end) {
-                    indices.start = previous.0.start;
-                    groups.pop();
-                } else {
-                    groups.push((indices, seed, region.old_source));
-                    break;
-                }
-            }
-        }
-        let mut edits = Vec::with_capacity(groups.len());
-        for (indices, seed, _) in &groups {
-            let Some(edit) = self.markdown_source_reparsed_edit(seed, &patches[indices.clone()])?
-                else { return Ok(None); };
-            edits.push(edit);
-        }
-        if groups.len() == 1 {
-            return self.prepare_text_edits_with_patch_policy(edits, Some(patches), true).map(Some);
-        }
-
-        let persistent: Vec<_> = edits.iter().map(|edit| (edit.range.clone(), edit.replacement.as_str())).collect();
-        let (expected_text, text_work) = self.projection().text_tree()
-            .splice_prevalidated_batch_with_stats(&persistent).map_err(DocumentError::FormattedTextStorage)?;
-        let mut scratch = self.scratch_document();
-        let mut work = ProjectionWorkStatistics::none();
-        work.formatted_text_nodes_visited = text_work.nodes_visited;
-        work.formatted_text_nodes_copied = text_work.nodes_copied;
-        work.formatted_text_leaves_copied = text_work.leaves_copied;
-        for (group, edit) in groups.iter().zip(&edits).rev() {
-            let group_patches = patches[group.0.clone()].to_vec();
-            let prepared = scratch.prepare_text_edits_with_patch_policy(vec![edit.clone()],
-                Some(group_patches.clone()), true)?;
-            if prepared.summary.source_patches != group_patches { return Ok(None); }
-            work.accumulate(prepared.summary.projection_work);
-            scratch.commit_model_transaction(prepared)?;
-        }
-        let mut state = scratch.state().clone();
-        if state.projection.text_tree().byte_len() != expected_text.byte_len() {
-            return Err(DocumentError::VerificationFailed.into());
-        }
-        // Independent regional proofs preserve all outer text. Check the
-        // simultaneous changed bands, never flatten their unrelated gap.
-        let mut shift = 0i128;
-        for edit in &edits {
-            let start = usize::try_from(edit.range.start as i128 + shift)
-                .map_err(|_| PositionError::ArithmeticOverflow)?;
-            let end = start.checked_add(edit.replacement.len()).ok_or(PositionError::ArithmeticOverflow)?;
-            if state.projection.text_tree().slice(start..end).map_err(DocumentError::FormattedTextStorage)?
-                != edit.replacement { return Err(DocumentError::VerificationFailed.into()); }
-            shift += edit.replacement.len() as i128 - edit.range.len() as i128;
-        }
-        let revision = Revision(self.next_revision);
-        state.revision = revision;
-        let sheet = state.projection.style_sheet().clone();
-        let assignment = state.projection.document_style().clone();
-        state.projection.install_configuration_styles(revision, sheet, assignment);
-        let splices = grapheme_closed_snapshot_map_splices(self.projection(), &state.projection, &edits)?;
-        let map = PositionMap::for_text_snapshots(self.id, self.revision(), revision,
-            self.projection(), &state.projection, splices)?;
-        let formatted_splices = edits.iter().map(|edit| Splice::new(edit.range.clone(), edit.replacement.len()))
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Some(self.prepared(revision, ModelChangeSummary {
-            kind: ModelChangeKind::TextEdits, source_patches: patches, formatted_splices,
-            projection_work: work, style_change: None, conversion_warnings: Vec::new(),
-        }, map, None, scratch.next_projected_block_id, PreparedPublication::State(state))))
     }
 
     fn prepare_physical_source_relocation(
@@ -4800,16 +4369,6 @@ impl Document {
             next_id,
             PreparedPublication::State(candidate),
         ))
-    }
-
-    fn prepare_markdown_source_change(
-        &self, source: bool,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if !self.format().is_markdown() {
-            return Err(DocumentError::UnsupportedFormatting.into());
-        }
-        let target = if source { Format::MarkdownSource } else { Format::Markdown };
-        self.prepare_view_format_change(target)
     }
 
     fn prepare_view_format_change(&self, target: Format) -> Result<PreparedModelTransaction, ModelTransactionError> {
@@ -5361,8 +4920,8 @@ impl Document {
         attempt!(Strategy::StructuredLocal, Attempt::optional(Strategy::StructuredLocal,
             self.build_markdown_structured_local_candidate(&source, revision, target_text,
                 text_splice_work, edits, source_patches)));
-        // A regional Markdown Source result that cannot be proven exact, or
-        // that the splice cannot place, declines to the strategies below.
+        // A regional result that cannot be proven exact, or that the splice
+        // cannot place, declines to the strategies below.
         let changes_transient_separator = self.state().transient_list_separator.as_ref().is_some_and(|range|
                 source_patches.iter().any(|patch| patch.range == *range));
         let region = if changes_transient_separator {
@@ -5378,8 +4937,6 @@ impl Document {
                 attempt!(Strategy::LineLocal, match built {
                     Ok(Some(candidate)) => Attempt::Verified(candidate),
                     Ok(None) => Attempt::Declined("regional source rows could not be verified"),
-                    Err(_) if self.format() == Format::MarkdownSource =>
-                        Attempt::Declined("regional source verification failed"),
                     Err(error) => Attempt::Rejected(error),
                 });
             }
@@ -5511,8 +5068,8 @@ impl Document {
         }
     }
 
-    /// Build the line-local candidate for a proven region. `Ok(None)` and
-    /// Markdown Source errors mean the regional rows could not be verified.
+    /// Build the line-local candidate for a proven region. `Ok(None)` means
+    /// the regional rows could not be verified.
     #[allow(clippy::too_many_arguments)]
     fn build_line_local_candidate(
         &self,
@@ -5546,21 +5103,11 @@ impl Document {
         // A folded separator can end a regional Source capture exactly
         // at the next physical row; its parser-only terminal row is not
         // one of the source records replaced by this regional edit.
-        let unowned_terminal_row = (region.retained_separator.is_some()
-            || (self.format() == Format::MarkdownSource && new_source.end < source.len()))
+        let unowned_terminal_row = region.retained_separator.is_some()
             && normalized
                 .endings
                 .last()
                 .is_some_and(|ending| ending.source.end == new_source.end);
-        // A Markdown Source break adds or removes source rows, even
-        // where the formatted rows stay, as when an empty list item
-        // becomes a paragraph. The regional parse's endings then
-        // delimit the region's new source rows.
-        let row_delta = if self.format() == Format::MarkdownSource {
-            self.markdown_source_row_delta(edits)?
-        } else {
-            0
-        };
         let source_rows_change = (self.format().is_markdown() || authored_syntax
             || region.retained_separator.is_some())
             && normalized.endings.len() + usize::from(!unowned_terminal_row)
@@ -5597,9 +5144,7 @@ impl Document {
                 new_source.end,
             )
         };
-        if self.can_inherit_markdown_source_list_context(edits)
-            || self.can_inherit_markdown_list_context(edits, source_patches)
-        {
+        if self.can_inherit_markdown_list_context(edits, source_patches) {
             let old_blocks = self.projection().blocks_for_region(&region.old_formatted);
             let map = |at: usize| {
                 let delta: i128 = edits
@@ -5649,58 +5194,6 @@ impl Document {
             regional_projection
                 .try_install_paragraph_partition(blocks)
                 .map_err(|_| DocumentError::VerificationFailed)?;
-            let first = self
-                .projection()
-                .presentation_line_at_offset(region.old_formatted.start, true)
-                .unwrap();
-            let last = self
-                .projection()
-                .presentation_line_at_offset(region.old_formatted.end, true)
-                .unwrap();
-            let map_end = |at: usize| {
-                let delta: i128 = edits
-                    .iter()
-                    .filter(|edit| edit.range.end <= at)
-                    .map(|edit| edit.replacement.len() as i128 - edit.range.len() as i128)
-                    .sum();
-                (at as i128 - region.old_formatted.start as i128 + delta) as usize
-            };
-            let ranges = (first..=last)
-                .map(|index| {
-                    let old = self
-                        .projection()
-                        .presentation_line_range(index, true)
-                        .unwrap();
-                    let start = old.start.max(region.old_formatted.start);
-                    let end = old.end.min(region.old_formatted.end);
-                    let start = if start == region.old_formatted.start {
-                        0
-                    } else {
-                        map_end(start)
-                    };
-                    start..map_end(end)
-                })
-                .collect();
-            regional_projection.install_flow_ranges(ranges);
-            if self.format() == Format::MarkdownSource
-                && self
-                    .verify_markdown_source_region(
-                        &region,
-                        &regional_projection,
-                        edits,
-                        true,
-                    )
-                    .is_err()
-            {
-                return Ok(None);
-            }
-        } else if self.format() == Format::MarkdownSource {
-            if self
-                .verify_markdown_source_region(&region, &regional_projection, edits, false)
-                .is_err()
-            {
-                return Ok(None);
-            }
         }
         let projected_formatted_bytes = regional_projection.text().len();
         let projected_hard_lines = regional_projection.hard_line_count();
@@ -5724,7 +5217,7 @@ impl Document {
             new_source.clone(),
             target_text.clone(),
             source.len(),
-            self.format() == Format::MarkdownSource,
+            false,
             self.format().is_literal(),
             edits,
             source_patches,
@@ -5733,11 +5226,7 @@ impl Document {
         )
         .map_err(super::block_identity_document_error)?;
         if !self.format().is_literal()
-            && Some(projection.hard_line_count())
-                != self
-                    .projection()
-                    .hard_line_count()
-                    .checked_add_signed(row_delta)
+            && projection.hard_line_count() != self.projection().hard_line_count()
         {
             return Err(DocumentError::VerificationFailed.into());
         }
@@ -5955,7 +5444,6 @@ impl Document {
                 return Ok(None);
             }
         }
-        if self.format().is_source_view() && !markdown_table {return Ok(None);}
         let markdown_code = self.format() == Format::Markdown;
         let inline_sample = edit.range.start.saturating_sub(1)
             ..(edit.range.end + 1).min(self.projection().text_tree().byte_len());
@@ -6692,445 +6180,6 @@ impl Document {
         Ok(result)
     }
 
-    /// A regional Markdown Source reparse is exact only when the region does
-    /// not depend on the rest of the document and the edit does not reach
-    /// outside it. Prove both before a regional candidate is published:
-    /// the old region must parse alone exactly as it does in the whole
-    /// document, and the unchanged rows around the edited rows must parse
-    /// unchanged. Anything else is left to the complete reparse.
-    ///
-    /// With `inherited_blocks`, the regional projection carries the old
-    /// block partition, so only its text and styles come from the reparse.
-    fn verify_markdown_source_region(
-        &self,
-        region: &LineLocalProjectionRegion,
-        regional: &FormattedDocument,
-        edits: &[TextEdit],
-        inherited_blocks: bool,
-    ) -> Result<(), ModelTransactionError> {
-        let signature = |projection: &FormattedDocument, range: &Range<usize>| {
-            let mut signature = markdown_source_region_signature(projection, range);
-            if inherited_blocks {
-                signature.blocks.clear();
-                signature.flows = None;
-            }
-            signature
-        };
-        let failed = || ModelTransactionError::from(DocumentError::VerificationFailed);
-        if region.old_source.end < self.source_byte_len()
-            && regional.block_records().iter().any(|block| block.style.0 == "Code Block" || block.markdown_html)
-        {
-            // Joining ordinary source rows can create a fence or HTML opener
-            // without inserting a delimiter character. A newly active opener
-            // can capture the untouched suffix beyond this regional restart.
-            return Err(failed());
-        }
-        let old_bytes = self
-            .state()
-            .source
-            .bytes_in(region.old_source.clone())
-            .ok_or_else(failed)?;
-        let decoded = self
-            .state()
-            .encoding
-            .decode_region(&old_bytes, region.old_source.start)?;
-        let old_alone = project(
-            &normalize(&decoded, self.state().file_format),
-            self.state().format,
-            self.revision(),
-            region.old_source.start,
-            region.old_source.end,
-        );
-        let old_text = self
-            .projection()
-            .text_tree()
-            .slice(region.old_formatted.clone())
-            .map_err(DocumentError::FormattedTextStorage)?;
-        if old_alone.text() != old_text
-            || signature(&old_alone, &(0..old_text.len()))
-                != signature(self.projection(), &region.old_formatted)
-        {
-            return Err(failed());
-        }
-
-        // Every unchanged row around the edited rows must parse as before;
-        // the edited rows themselves are the regional parse's to decide.
-        let (Some(first), Some(last)) = (edits.first(), edits.last()) else {
-            return Err(failed());
-        };
-        let (Some(first_edited), Some(last_edited)) = (
-            self.projection().hard_line_at_offset(first.range.start),
-            self.projection().hard_line_at_offset(last.range.end),
-        ) else {
-            return Err(failed());
-        };
-        // Source syntax can reassign every continuation row of the edited
-        // paragraph or item, for example when an empty marker gains a body.
-        // These rows belong to the captured grammar owner; outer rows remain proof
-        // boundaries even when their physical text is unchanged.
-        let mut affected_rows = first_edited..last_edited + 1;
-        if !inherited_blocks {
-            let owners = self.projection().blocks_for_region(&(first.range.start..last.range.end));
-            let items: std::collections::BTreeSet<_> = owners.iter().filter_map(|block| {
-                block.containers.iter().rev()
-                    .find(|member| member.container.kind == super::ContainerKind::ListItem)
-                    .map(|member| member.container.id)
-            }).collect();
-            for block in self.projection().blocks_for_region(&region.old_formatted) {
-                if !owners.iter().any(|owner| owner.id == block.id)
-                    && !block.containers.iter().any(|member| items.contains(&member.container.id)) {
-                    continue;
-                }
-                let Some(start) = self.projection().hard_line_at_offset(block.range.start) else { continue; };
-                let Some(end) = self.projection().hard_line_at_offset(block.range.end) else { continue; };
-                affected_rows.start = affected_rows.start.min(start);
-                affected_rows.end = affected_rows.end.max(end + 1);
-            }
-        }
-        // Rows after the edited rows move by the number of breaks it adds.
-        let delta = self.markdown_source_row_delta(edits)?;
-        let new_line = |line: usize| {
-            let local = line - region.hard_lines.start;
-            if line > last_edited {
-                local.checked_add_signed(delta)
-            } else {
-                Some(local)
-            }
-        };
-        if Some(regional.hard_line_count()) != region.hard_lines.len().checked_add_signed(delta) {
-            return Err(failed());
-        }
-        // Consecutive source endings pair into paragraph separators. A run
-        // of them just outside the region is bounded by the region's edge
-        // row. Emptying that row can join the runs without editing an ending
-        // itself, so its new blank state is also a dependency on the omitted
-        // neighbor (for example the opening fence immediately after prose).
-        let changes_breaks =
-            first_edited != last_edited || edits.iter().any(|edit| edit.replacement.contains('\n'));
-        if changes_breaks || first_edited == region.hard_lines.start
-            || last_edited + 1 == region.hard_lines.end
-        {
-            let blank = |line: usize| -> Result<bool, ModelTransactionError> {
-                let row = regional.hard_line_range(line).ok_or_else(failed)?;
-                let text = regional
-                    .text_tree()
-                    .slice(row)
-                    .map_err(DocumentError::FormattedTextStorage)?;
-                Ok(text.trim().is_empty())
-            };
-            let last_row = regional
-                .hard_line_count()
-                .checked_sub(1)
-                .ok_or_else(failed)?;
-            if (region.hard_lines.start > 0 && blank(0)?
-                && (changes_breaks || first_edited == region.hard_lines.start))
-                || (region.hard_lines.end < self.projection().hard_line_count() && blank(last_row)?
-                    && (changes_breaks || last_edited + 1 == region.hard_lines.end))
-            {
-                return Err(failed());
-            }
-        }
-        // A region cut inside a paragraph too long to reparse must leave the
-        // rows outside it with the parser state they had.
-        if !inherited_blocks {
-            let row_text = |projection: &FormattedDocument, row: Range<usize>| {
-                projection.text_tree().slice(row).map_err(|error| {
-                    ModelTransactionError::from(DocumentError::FormattedTextStorage(error))
-                })
-            };
-            let last = region.hard_lines.end - 1;
-            let old_row = self.projection().hard_line_range(last).ok_or_else(failed)?;
-            let new_last = new_line(last).ok_or_else(failed)?;
-            let new_row = regional.hard_line_range(new_last).ok_or_else(failed)?;
-            let old_owner =
-                markdown_source_row_owner(self.projection(), &old_row).ok_or_else(failed)?;
-            if old_owner.range.end > old_row.end {
-                // The rows after the region see one open plain paragraph and
-                // whether a hard break has occurred in it, after which the
-                // paragraph ends at the next row without one. Continuing in
-                // the old document, an unedited last row without a hard break
-                // means none occurred; the new paragraph must agree.
-                let new_owner = markdown_source_row_owner(regional, &new_row).ok_or_else(failed)?;
-                if (first_edited..=last_edited).contains(&last)
-                    || old_owner.kind != super::BlockKind::Paragraph
-                    || new_owner.kind != super::BlockKind::Paragraph
-                    || old_owner.style != new_owner.style
-                {
-                    return Err(failed());
-                }
-                if !markdown_row_has_hard_break(&row_text(regional, new_row)?) {
-                    let owner_first = regional
-                        .hard_line_at_offset(new_owner.range.start)
-                        .ok_or_else(failed)?;
-                    for local in owner_first..new_last {
-                        let row = regional.hard_line_range(local).ok_or_else(failed)?;
-                        if markdown_row_has_hard_break(&row_text(regional, row)?) {
-                            return Err(failed());
-                        }
-                    }
-                }
-            }
-
-            let first = region.hard_lines.start;
-            let old_row = self
-                .projection()
-                .hard_line_range(first)
-                .ok_or_else(failed)?;
-            let old_owner =
-                markdown_source_row_owner(self.projection(), &old_row).ok_or_else(failed)?;
-            if old_owner.range.start < old_row.start {
-                // Earlier rows pass the same fact forward. A first row ending
-                // in a hard break fixes it, and so does a previous row without
-                // one, which could not still belong to the paragraph after a
-                // hard break.
-                let hard_break = |line: usize| -> Result<bool, ModelTransactionError> {
-                    let row = self.projection().hard_line_range(line).ok_or_else(failed)?;
-                    Ok(markdown_row_has_hard_break(&row_text(
-                        self.projection(),
-                        row,
-                    )?))
-                };
-                if first_edited == first || (!hard_break(first)? && hard_break(first - 1)?) {
-                    return Err(failed());
-                }
-            }
-        }
-        for line in region.hard_lines.clone() {
-            if affected_rows.contains(&line) {
-                continue;
-            }
-            let (Some(old_row), Some(new_row)) = (
-                self.projection().hard_line_range(line),
-                new_line(line).and_then(|local| regional.hard_line_range(local)),
-            ) else {
-                return Err(failed());
-            };
-            let (old_owner, old_styles) =
-                markdown_source_row_signature(self.projection(), &old_row);
-            let (new_owner, new_styles) = markdown_source_row_signature(regional, &new_row);
-            if old_styles != new_styles || (!inherited_blocks && old_owner != new_owner) {
-                return Err(failed());
-            }
-        }
-        Ok(())
-    }
-
-    /// The formatted edit a proven regional reparse makes for `edit`'s
-    /// source `patches`. It is `edit` itself unless the parse reshapes the
-    /// text beside it, such as trimming whitespace that now ends or begins a
-    /// paragraph; then it is the smallest change that covers `edit` and the
-    /// parse's text. `None` when the region cannot be proven.
-    pub(super) fn markdown_source_reparsed_edit(
-        &self,
-        edit: &TextEdit,
-        patches: &[SourcePatch],
-    ) -> Result<Option<TextEdit>, ModelTransactionError> {
-        if self.format() != Format::MarkdownSource {
-            return Ok(None);
-        }
-        let Some(region) =
-            self.line_local_projection_region(std::slice::from_ref(edit), patches)?
-        else {
-            return Ok(None);
-        };
-        let source = apply_source_patches(&self.state().source, patches)?;
-        let new_end =
-            rebase_source_boundary(region.old_source.end, patches, Association::AfterInsertion)?;
-        let Some(bytes) = source.bytes_in(region.old_source.start..new_end) else {
-            return Ok(None);
-        };
-        let decoded = self
-            .state()
-            .encoding
-            .decode_region(&bytes, region.old_source.start)?;
-        let regional = project(
-            &normalize(&decoded, self.state().file_format),
-            self.state().format,
-            Revision(self.next_revision),
-            region.old_source.start,
-            new_end,
-        );
-        let old = self
-            .projection()
-            .text_tree()
-            .slice(region.old_formatted.clone())
-            .map_err(DocumentError::FormattedTextStorage)?;
-        let new = regional.text();
-        let (local_start, local_end) = (
-            edit.range.start - region.old_formatted.start,
-            edit.range.end - region.old_formatted.start,
-        );
-        let prefix = old
-            .char_indices()
-            .zip(new.chars())
-            .take_while(|((at, a), b)| *at < local_start && a == b)
-            .map(|((at, a), _)| at + a.len_utf8())
-            .last()
-            .unwrap_or(0)
-            .min(local_start);
-        let suffix = old[prefix..]
-            .chars()
-            .rev()
-            .zip(new[prefix..].chars().rev())
-            .take_while(|(a, b)| a == b)
-            .map(|(a, _)| a.len_utf8())
-            .scan(0, |length, add| {
-                *length += add;
-                Some(*length)
-            })
-            .take_while(|&length| length <= old.len() - local_end)
-            .last()
-            .unwrap_or(0);
-        let effective = TextEdit::new(
-            region.old_formatted.start + prefix..region.old_formatted.start + old.len() - suffix,
-            &new[prefix..new.len() - suffix],
-        );
-        let edits = std::slice::from_ref(&effective);
-        if self
-            .verify_markdown_source_region(&region, &regional, edits, false)
-            .is_err()
-        {
-            return Ok(None);
-        }
-        Ok(Some(effective))
-    }
-
-    /// The change in hard-line count made by `edits`: every U+000A in
-    /// Markdown Source formatted text is a hard-line boundary.
-    fn markdown_source_row_delta(
-        &self,
-        edits: &[TextEdit],
-    ) -> Result<isize, ModelTransactionError> {
-        let mut delta = 0isize;
-        for edit in edits {
-            let replaced = self
-                .projection()
-                .text_tree()
-                .slice(edit.range.clone())
-                .map_err(DocumentError::FormattedTextStorage)?;
-            delta += edit.replacement.matches('\n').count() as isize
-                - replaced.matches('\n').count() as isize;
-        }
-        Ok(delta)
-    }
-
-    /// Within a paragraph, only links and hard breaks connect rows: a link
-    /// label can cross rows, and a row's trailing hard break divides the
-    /// paragraph's flow. An edit is row-local when its rows contain no link
-    /// syntax and keep their hard-break state.
-    fn markdown_source_edit_is_row_local(&self, edits: &[TextEdit], rows: Range<usize>) -> bool {
-        let link_syntax =
-            |text: &str| text.contains(['[', ']', '(', ')', '<', '>', '\\', '"', '\'']);
-        // A break splits the paragraph, and with it any link crossing the row.
-        if edits.iter().any(|edit| edit.replacement.contains('\n')) {
-            return false;
-        }
-        rows.into_iter().all(|line| {
-            let Some(range) = self.projection().hard_line_range(line) else {
-                return false;
-            };
-            let Ok(old) = self.projection().text_tree().slice(range.clone()) else {
-                return false;
-            };
-            let mut new = old.clone();
-            for edit in edits.iter().rev() {
-                if edit.range.start < range.start || edit.range.end > range.end {
-                    if edit.range.end > range.start && edit.range.start < range.end {
-                        return false;
-                    }
-                    continue;
-                }
-                new.replace_range(
-                    edit.range.start - range.start..edit.range.end - range.start,
-                    &edit.replacement,
-                );
-            }
-            !link_syntax(&old)
-                && !link_syntax(&new)
-                && markdown_row_has_hard_break(&old) == markdown_row_has_hard_break(&new)
-        })
-    }
-
-    fn can_inherit_markdown_source_list_context(&self, edits: &[TextEdit]) -> bool {
-        self.format() == Format::MarkdownSource
-            && !edits.is_empty()
-            && edits.iter().all(|edit| {
-                let Some(line) = self
-                    .projection()
-                    .hard_line_at_offset(edit.range.start)
-                    .and_then(|index| self.projection().hard_line_range(index))
-                else {
-                    return false;
-                };
-                let Some(block) =
-                    self.projection()
-                        .blocks_for_region(&line)
-                        .into_iter()
-                        .find(|block| {
-                            block.range.start <= line.start
-                                && line.end <= block.range.end
-                                && matches!(block.kind, super::BlockKind::ListItem { .. })
-                        })
-                else {
-                    return false;
-                };
-                if edit.range.end > line.end || block.style.0 == "Code Block" {
-                    return false;
-                }
-                let Ok(old) = self.projection().text_tree().slice(line.clone()) else {
-                    return false;
-                };
-                let prefix = self
-                    .projection()
-                    .list_marker_range_for_block(&block)
-                    // A list paragraph can contain lazy continuation lines.
-                    // Its marker belongs only to the physical line that owns
-                    // it, never to a same-length prefix of the continuation.
-                    .filter(|marker| line.start <= marker.start && marker.end <= line.end)
-                    .map_or_else(
-                        || old.len() - old.trim_start_matches([' ', '\t']).len(),
-                        |marker| marker.end - line.start,
-                    );
-                if edit.range.start < line.start + prefix {
-                    return false;
-                }
-                // Code delimiters can reach past the paragraph; other
-                // punctuation is inline and checked by the regional proof.
-                let literal = |text: &str| {
-                    text.chars().all(|ch| {
-                        ch == ' '
-                            || !(ch.is_control() || ch.is_whitespace() || matches!(ch, '`' | '~'))
-                    })
-                };
-                if !literal(&edit.replacement)
-                    || !literal(&old[edit.range.start - line.start..edit.range.end - line.start])
-                {
-                    return false;
-                }
-                let mut next = old.clone();
-                next.replace_range(
-                    edit.range.start - line.start..edit.range.end - line.start,
-                    &edit.replacement,
-                );
-                // The first content character selects this line's block
-                // syntax: a quote, heading, marker, fence or thematic break.
-                // Literal text preserves that choice only while a letter
-                // begins the content both before and after the edit.
-                let starts_with_letter = |text: &str| {
-                    text[prefix..]
-                        .trim_start_matches(['*', '_'])
-                        .chars()
-                        .next()
-                        .is_some_and(char::is_alphabetic)
-                };
-                !next[prefix..].trim().is_empty()
-                    && old[..prefix] == next[..prefix]
-                    && old[prefix..].starts_with(' ') == next[prefix..].starts_with(' ')
-                    && starts_with_letter(&old)
-                    && starts_with_letter(&next)
-            })
-    }
-
     fn markdown_edit_needs_reference_context(&self, edits: &[TextEdit]) -> bool {
         if !self.format().is_markdown() {
             return false;
@@ -7291,10 +6340,6 @@ impl Document {
         if edits.is_empty() {
             return candidate::decline(Strategy::LineLocal, "no retained edits");
         }
-        // Markdown Source rows are regional source rows: the regional proof
-        // below maps rows that follow an added or removed break by the change
-        // in the row count.
-        let splits_rows = self.format() == Format::MarkdownSource;
         for edit in edits.iter().filter(|_| !self.format().is_literal()) {
             let replaced = self
                 .projection()
@@ -7303,7 +6348,8 @@ impl Document {
                 .map_err(DocumentError::FormattedTextStorage)?;
             if edit.replacement.contains('\r')
                 || replaced.contains('\r')
-                || (!splits_rows && (edit.replacement.contains('\n') || replaced.contains('\n')))
+                || edit.replacement.contains('\n')
+                || replaced.contains('\n')
             {
                 // Edits that change hard-line topology require the whole pipeline.
                 return candidate::decline(Strategy::LineLocal, "edit changes hard-line topology");
@@ -7321,12 +6367,12 @@ impl Document {
                 return candidate::decline(Strategy::LineLocal, "edited hard line not found");
             };
             if edit.range.start < line_range.start
-                || (!self.format().is_literal() && !splits_rows && edit.range.end > line_range.end)
+                || (!self.format().is_literal() && edit.range.end > line_range.end)
             {
                 return candidate::decline(Strategy::LineLocal, "edit spans hard lines");
             }
             first_line = first_line.min(line);
-            last_line = last_line.max(if self.format().is_literal() || splits_rows {
+            last_line = last_line.max(if self.format().is_literal() {
                 self.projection()
                     .hard_line_at_offset(edit.range.end)
                     .unwrap_or(line)
@@ -7334,157 +6380,7 @@ impl Document {
                 line
             });
         }
-        if self.format() == Format::MarkdownSource {
-            let in_list = |line| {
-                self.projection()
-                    .hard_line_range(line)
-                    .is_some_and(|range| {
-                        self.projection()
-                            .blocks_for_region(&range)
-                            .iter()
-                            .any(|block| matches!(block.kind, super::BlockKind::ListItem { .. }))
-                    })
-            };
-            // Inline syntax such as a link can span every row of its
-            // paragraph, so the region covers the edited rows' whole blocks.
-            let edited = self.projection().hard_line_range(first_line).unwrap().start
-                ..self.projection().hard_line_range(last_line).unwrap().end;
-            let (mut block_first, mut block_last) = (first_line, last_line);
-            for block in self.projection().blocks_for_region(&edited) {
-                if block.range.end < edited.start || block.range.start > edited.end {
-                    continue;
-                }
-                let (Some(first), Some(last)) = (
-                    self.projection().hard_line_at_offset(block.range.start),
-                    self.projection().hard_line_at_offset(block.range.end),
-                ) else {
-                    return candidate::decline(Strategy::LineLocal, "Source block lines not found");
-                };
-                block_first = block_first.min(first);
-                block_last = block_last.max(last);
-            }
-            if block_last - block_first <= MAX_LINE_LOCAL_PROJECTION_HARD_LINES {
-                (first_line, last_line) = (block_first, block_last);
-            } else if !self.markdown_source_edit_is_row_local(edits, first_line..last_line + 1) {
-                // A paragraph too long to reparse keeps a row-sized region,
-                // which is exact only for edits that cannot reach another row.
-                return candidate::decline(Strategy::LineLocal, "long Source paragraph edit may reach another row");
-            }
-            let edited_in_list = (first_line..=last_line).any(in_list);
-            // Structural list syntax depends on its enclosing stack and can
-            // change following siblings. Literal body edits retain the
-            // validated old context without reparsing prefixes; any other
-            // list edit reparses the whole list, which the regional proof
-            // requires to parse alone as it does in the document.
-            let whole_list =
-                edited_in_list && !self.can_inherit_markdown_source_list_context(edits);
-            // A source marker can change whether either adjacent physical
-            // break is prose whitespace, so the region captures unchanged
-            // neighboring rows on each side, bounded by the regional limit.
-            let neighbor_is_code = |line| {
-                self.projection()
-                    .hard_line_range(line)
-                    .is_some_and(|range| {
-                        self.projection()
-                            .blocks_for_region(&range)
-                            .iter()
-                            .any(|block| {
-                                block.markdown_html
-                                    || super::edit_boundary::is_code_paragraph(self, block)
-                                        .unwrap_or(true)
-                            })
-                    })
-            };
-            // A closing fence cannot be parsed in isolation as the preceding
-            // neighbor: it would become an opening fence. Code boundaries are
-            // already structural, so prose edits need no context inside them.
-            //
-            // An empty row's existence depends on the lines around it, so a
-            // region never ends on one: it extends to the next row with text.
-            let empty = |line| {
-                self.projection()
-                    .hard_line_range(line)
-                    .is_some_and(|range| {
-                        self.projection()
-                            .text_tree()
-                            .slice(range)
-                            .is_ok_and(|text| {
-                                text[super::markdown_quotes::prefix(&text)..]
-                                    .trim()
-                                    .is_empty()
-                            })
-                    })
-            };
-            // A neighboring list parses independently only from its first
-            // item, so an edit outside a list takes in the whole adjacent list
-            // as context. The regional proof rejects a list that is cut off.
-            let extends = |line| empty(line) || ((!edited_in_list || whole_list) && in_list(line));
-            while first_line > 0 && !neighbor_is_code(first_line - 1) {
-                first_line -= 1;
-                if !extends(first_line)
-                    || last_line - first_line > MAX_LINE_LOCAL_PROJECTION_HARD_LINES
-                {
-                    break;
-                }
-            }
-            while last_line + 1 < self.projection().hard_line_count()
-                && !neighbor_is_code(last_line + 1)
-            {
-                last_line += 1;
-                if !extends(last_line)
-                    || last_line - first_line > MAX_LINE_LOCAL_PROJECTION_HARD_LINES
-                {
-                    break;
-                }
-            }
-            // A fence inside a list inherits the preceding item's ownership.
-            // Cutting there is safe for body typing, but a structural edit may
-            // release the fenced block or change its nesting and later items.
-            if !self.can_inherit_markdown_source_list_context(edits) {
-                for line in [
-                    first_line.checked_sub(1),
-                    (last_line + 1 < self.projection().hard_line_count()).then_some(last_line + 1),
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|&line| neighbor_is_code(line))
-                {
-                    let row = self.projection().hard_line_range(line).unwrap();
-                    let text = self
-                        .projection()
-                        .text_tree()
-                        .slice(row)
-                        .map_err(DocumentError::FormattedTextStorage)?;
-                    if text.starts_with([' ', '\t', '>']) {
-                        return candidate::decline(Strategy::LineLocal, "Source list fence boundary");
-                    }
-                }
-            }
-            // Parser state carries through a paragraph, so a region starts
-            // and ends on block boundaries when they fit. Otherwise the
-            // regional proof decides whether a cut paragraph is unaffected.
-            if !edited_in_list || whole_list {
-                let owner = |line| {
-                    self.projection()
-                        .hard_line_range(line)
-                        .and_then(|row| markdown_source_row_owner(self.projection(), &row))
-                };
-                let owner_end = owner(last_line)
-                    .and_then(|block| self.projection().hard_line_at_offset(block.range.end));
-                if let Some(end) = owner_end
-                    .filter(|&end| end - first_line <= MAX_LINE_LOCAL_PROJECTION_HARD_LINES)
-                {
-                    last_line = last_line.max(end);
-                }
-                let owner_start = owner(first_line)
-                    .and_then(|block| self.projection().hard_line_at_offset(block.range.start));
-                if let Some(start) = owner_start
-                    .filter(|&start| last_line - start <= MAX_LINE_LOCAL_PROJECTION_HARD_LINES)
-                {
-                    first_line = first_line.min(start);
-                }
-            }
-        } else if self.format() == Format::Markdown {
+        if self.format() == Format::Markdown {
             let start = self.projection().hard_line_range(first_line).unwrap().start;
             let end = self.projection().hard_line_range(last_line).unwrap().end;
             let blocks = self.projection().blocks_for_region(&(start..end));
@@ -7574,7 +6470,7 @@ impl Document {
                     // empty paragraph lies between them. Creation also changes
                     // a neighboring list's first item and tight/loose spacing.
                     // Only literal body edits can inherit those dependencies.
-                    let indexed = self.projection().list_indentation_blocks(false);
+                    let indexed = self.projection().list_indentation_blocks();
                     let first = indexed.index_touching_point(self.projection().hard_line_range(first_line).unwrap().start)
                         .ok_or(DocumentError::VerificationFailed)?;
                     let last = indexed.index_touching_point(self.projection().hard_line_range(last_line).unwrap().end)
@@ -8295,33 +7191,16 @@ fn semantic_style_edit_was_exactly_projected(
     })
 }
 
-/// The block that owns a whole Markdown Source row.
-fn markdown_source_row_owner(
-    projection: &FormattedDocument,
-    row: &Range<usize>,
-) -> Option<super::Block> {
-    projection
-        .blocks_for_region(row)
-        .into_iter()
-        .find(|block| block.range.start <= row.start && row.end <= block.range.end)
-}
-
-/// Markdown's hard break: a row ending in two spaces or a backslash.
-fn markdown_row_has_hard_break(row: &str) -> bool {
-    row.ends_with("  ") || row.ends_with('\\')
-}
-
-/// What a Markdown Source parse determines inside `range`: block kinds and
-/// styles, flow rows and style spans, clipped to the range and made relative
+/// What a Markdown parse determines inside `range`: block kinds and
+/// styles and style spans, clipped to the range and made relative
 /// to its start. Regional reparses are compared with the published
 /// projection through this signature.
 #[derive(Debug, PartialEq)]
-struct MarkdownSourceRegionSignature {
+struct MarkdownRegionSignature {
     blocks: Vec<(
         Range<usize>,
         std::sync::Arc<super::projection::BlockAttributes>,
     )>,
-    flows: Option<Vec<Range<usize>>>,
     styles: Vec<(Range<usize>, super::StyleApplication)>,
 }
 
@@ -8346,53 +7225,25 @@ fn markdown_regional_attributes(
     std::sync::Arc::new(attributes)
 }
 
-fn markdown_source_region_signature(
+fn markdown_region_signature(
     projection: &FormattedDocument,
     range: &Range<usize>,
-) -> MarkdownSourceRegionSignature {
+) -> MarkdownRegionSignature {
     let clip = |inner: &Range<usize>| {
         inner.start.max(range.start) - range.start..inner.end.min(range.end) - range.start
     };
-    MarkdownSourceRegionSignature {
+    MarkdownRegionSignature {
         blocks: projection
             .blocks_for_region(range)
             .into_iter()
             .map(|block| (clip(&block.range), markdown_regional_attributes(&block)))
             .collect(),
-        flows: projection
-            .flow_ranges_for_region(range)
-            .map(|flows| flows.iter().map(clip).collect()),
         styles: projection
             .style_spans_for_region(range)
             .into_iter()
             .map(|span| (clip(&span.range), span.application))
             .collect(),
     }
-}
-
-/// What a Markdown Source parse determines for one row: the kind and style
-/// of the block that owns it and the style spans on it, relative to the row.
-fn markdown_source_row_signature(
-    projection: &FormattedDocument,
-    row: &Range<usize>,
-) -> (
-    Option<std::sync::Arc<super::projection::BlockAttributes>>,
-    Vec<(Range<usize>, super::StyleApplication)>,
-) {
-    let owner = markdown_source_row_owner(projection, row)
-        .map(|block| markdown_regional_attributes(&block));
-    let styles = projection
-        .style_spans_for_region(row)
-        .into_iter()
-        .map(|span| {
-            (
-                span.range.start.max(row.start) - row.start
-                    ..span.range.end.min(row.end) - row.start,
-                span.application,
-            )
-        })
-        .collect();
-    (owner, styles)
 }
 
 fn rebase_source_boundary(
@@ -8956,16 +7807,16 @@ mod prepared_group_reuse_tests {
     use super::*;
 
     fn request(document: &Document) -> ModelRequest {
-        ModelRequest::SetMarkdownSource {
+        ModelRequest::SetViewFormat {
             document: document.id(),
             revision: document.revision(),
-            source: false,
+            target: Format::Markdown,
         }
     }
 
     #[test]
     fn closed_group_reuse_is_explicit_and_other_preconditions_remain_strict() {
-        let mut document = Document::from_bytes(b"__word__".to_vec(), super::super::Encoding::Utf8, Format::MarkdownSource).unwrap();
+        let mut document = Document::from_bytes(b"__word__".to_vec(), super::super::Encoding::Utf8, Format::Code).unwrap();
         document.begin_edit_group();
         document.insert(0, "X").unwrap();
         let prepared = document.prepare_model_request(request(&document)).unwrap();

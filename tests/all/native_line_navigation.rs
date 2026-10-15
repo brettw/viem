@@ -126,7 +126,7 @@ fn native_line_navigation_uses_physical_lines_in_both_markdown_views_and_line_mo
     use viem_core::command::LineMode;
     use viem_core::document::{Encoding, Format};
     let source = "# heading\n\nfirst\n  continuation\n\n```text\nbody\n```\n";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
             let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             let mut core = Core::new(document);

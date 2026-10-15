@@ -179,7 +179,7 @@ final class EVLaunchArgumentsTests: XCTestCase {
         let store = try EVRecoveryStore.claim(for: url)
         defer { store.closeAndRemove(); store.drainForTesting() }
         let recovered = Data("# Unsaved recovery\n\nSecond paragraph".utf8)
-        store.write(EVRecoverySnapshot(source: recovered, format: .markdownSource,
+        store.write(EVRecoverySnapshot(source: recovered, format: .code,
             encoding: UInt32(VIEM_ENCODING_UTF8), fileFormat: UInt32(VIEM_FILE_FORMAT_UNIX),
             documentID: 81, documentRevision: 4))
         store.drainForTesting()

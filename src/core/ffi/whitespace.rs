@@ -138,7 +138,7 @@ pub unsafe extern "C" fn viem_core_view_copy_whitespace_markers(
                     })
                 })
                 .collect();
-            let applicable = !core.document().format().is_wysiwyg();
+            let applicable = !core.document().format().is_markdown();
             let enabled = applicable
                 && core
                     .presentation_layout(id)

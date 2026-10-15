@@ -15,14 +15,14 @@ use unicode_segmentation::UnicodeSegmentation;
 enum SourceFormat {
     Plain,
     Markdown,
-    MarkdownSource,
+    Code,
 }
 impl SourceFormat {
     fn core(self) -> Format {
         match self {
             Self::Plain => Format::PlainText,
             Self::Markdown => Format::Markdown,
-            Self::MarkdownSource => Format::MarkdownSource,
+            Self::Code => Format::Code,
         }
     }
 }
@@ -208,16 +208,13 @@ impl Oracle {
                 Action::Check => {}
                 _ => {
                     let expected_text = match action {
-                        Action::Replace { start, end, text }
-                            if document.format() != Format::MarkdownSource =>
-                        {
+                        Action::Replace { start, end, text } => {
                             let mut expected = before.text.clone();
                             expected.replace_range(*start..*end, text);
                             Some(expected)
                         }
                         _ => None,
                     };
-                    let source_intention = source_visible_replacement_intention(document, action);
                     let request = match action {
                         Action::Replace { start, end, text } => ModelRequest::ApplyTextEdits {
                             document: document.id(),
@@ -248,10 +245,10 @@ impl Oracle {
                             },
                             enabled: *enabled,
                         },
-                        Action::NoOpFormat => ModelRequest::SetMarkdownSource {
+                        Action::NoOpFormat => ModelRequest::SetViewFormat {
                             document: document.id(),
                             revision,
-                            source: document.format().is_source_view(),
+                            target: document.format(),
                         },
                         _ => unreachable!(),
                     };
@@ -309,13 +306,6 @@ impl Oracle {
                             &expected,
                         )?;
                     }
-                    if let Some(expected) = source_intention {
-                        same(
-                            "literal source-visible replacement",
-                            &document.source_bytes(),
-                            &expected,
-                        )?;
-                    }
                     if let Action::SourceReplace { start, end, text } = action {
                         let spelling = match before.endings {
                             FileFormat::Unix => "\n",
@@ -370,41 +360,6 @@ impl Oracle {
         compare_fresh(self.document.as_ref().unwrap())?;
         Ok(false)
     }
-}
-
-fn source_visible_replacement_intention(document: &Document, action: &Action) -> Option<Vec<u8>> {
-    let Action::Replace { start, end, text } = action else {
-        return None;
-    };
-    if document.format() != Format::MarkdownSource || start == end || text.contains('\n') {
-        return None;
-    }
-    // Delimiter changes in Source mode can change which blank separators are
-    // folded, so a flat formatted splice is not its semantic oracle. For a
-    // nonempty, newline-free replacement independently patch its original
-    // physical provenance. Newline authoring additionally pairs separators;
-    // every case still audits declared patches, fresh parsing and exact history.
-    let spans = document.projection().provenance();
-    let first = spans
-        .iter()
-        .find(|span| span.formatted.start == *start && span.formatted.end > *start)?;
-    let last = spans
-        .iter()
-        .rev()
-        .find(|span| span.formatted.end == *end && span.formatted.start < *end)?;
-    let replacement = match document.encoding() {
-        Encoding::Utf8 => text.as_bytes().to_vec(),
-        Encoding::Latin1 => text
-            .chars()
-            .map(|ch| u8::try_from(ch as u32))
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?,
-        Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
-        Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
-    };
-    let mut expected = document.source_bytes();
-    expected.splice(first.source.start..last.source.end, replacement);
-    Some(expected)
 }
 
 fn expected_rejection(error: &ModelTransactionError) -> bool {
@@ -477,18 +432,16 @@ fn compare_fresh(document: &Document) -> Result<(), String> {
         &lines(document),
         &lines(&fresh),
     )?;
-    for flow in [false, true] {
-        let ranges = |document: &Document| {
-            (0..document.projection().presentation_line_count(flow))
-                .map(|line| document.projection().presentation_line_range(line, flow))
-                .collect::<Vec<_>>()
-        };
-        same(
-            "incremental/fresh flow boundaries",
-            &ranges(document),
-            &ranges(&fresh),
-        )?;
-    }
+    let ranges = |document: &Document| {
+        (0..document.projection().presentation_line_count())
+            .map(|line| document.projection().presentation_line_range(line))
+            .collect::<Vec<_>>()
+    };
+    same(
+        "incremental/fresh presentation lines",
+        &ranges(document),
+        &ranges(&fresh),
+    )?;
     // Compare application coverage rather than span segmentation. Regional
     // splicing may legitimately split one equivalent adjacent style run.
     same(
@@ -680,16 +633,16 @@ fn fixture(rng: &mut Rng) -> Action {
             "# Title\n\nA **bold** and _italic_ paragraph.\nA continuation.\n\nTail.\n",
         ),
         (
-            MarkdownSource,
+            Code,
             "# Title\n\nA **bold** and _italic_ paragraph.\nA continuation.\n\nTail.\n",
         ),
         (
             Markdown,
             "1. first\n   continuation\n2. **second**\n   - nested\n\nTail.",
         ),
-        (MarkdownSource, "1. first\n2. second\n3. "),
+        (Code, "1. first\n2. second\n3. "),
         (Markdown, "```rs\none\n\n**code**\n```\n\nTail.\n"),
-        (MarkdownSource, "```\nline one\n\nline two\n```\n\nTail."),
+        (Code, "```\nline one\n\nline two\n```\n\nTail."),
         (
             Markdown,
             "Malformed *one **two_ [link](unfinished\n\n`code\n",
@@ -845,27 +798,4 @@ mod tests {
             .contains("exact history restoration"));
     }
 
-    #[test]
-    fn source_oracle_checks_literal_fence_deletion_and_reprojection() {
-        let mut oracle = Oracle::default();
-        oracle
-            .execute(&Action::Init {
-                bytes: b"```\na\n\nb\n```\n\nTail".to_vec(),
-                format: SourceFormat::MarkdownSource,
-                encoding: SourceEncoding::Utf8,
-                endings: Endings::Unix,
-            })
-            .unwrap();
-        oracle
-            .execute(&Action::Replace {
-                start: 0,
-                end: 2,
-                text: String::new(),
-            })
-            .unwrap();
-        assert_eq!(
-            oracle.document.as_ref().unwrap().source_bytes(),
-            b"`\na\n\nb\n```\n\nTail"
-        );
-    }
 }

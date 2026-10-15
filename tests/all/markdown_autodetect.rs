@@ -162,7 +162,6 @@ fn literal_next_survives_more_typing_reopen_and_repeat() {
 fn preference_off_and_other_formats_keep_literal_input() {
     for format in [
         Format::Markdown,
-        Format::MarkdownSource,
         Format::PlainText,
         Format::Code,
     ] {

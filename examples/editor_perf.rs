@@ -4,7 +4,7 @@
 //! p50/p95/max latencies can be compared across builds.
 //!
 //! Usage: editor_perf <scenario> [size_bytes] [json_out]
-//! Scenarios: markdown, markdown_source, html, code, text.
+//! Scenarios: markdown, html, code, text.
 //! Shaping uses the mock provider; results are core costs, not native frames.
 use serde_json::{json, Value};
 use std::time::{Duration, Instant};
@@ -221,7 +221,6 @@ fn main() {
     let size: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(4 * 1024 * 1024);
     let (bytes, format, filename) = match scenario {
         "markdown" => (markdown_fixture(size), Format::Markdown, "probe.md"),
-        "markdown_source" => (markdown_fixture(size), Format::MarkdownSource, "probe.md"),
         "html" => (html_fixture(size), Format::Code, "probe.html"),
         "code" => (code_fixture(size), Format::Code, "probe.rs"),
         "text" => (text_fixture(size / 37), Format::PlainText, "probe.txt"),

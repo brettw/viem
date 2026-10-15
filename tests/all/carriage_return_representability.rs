@@ -33,7 +33,6 @@ fn mac_literal_cr_is_a_precise_atomic_policy_in_literal_source_adapters() {
         for format in [
             Format::PlainText,
             Format::Markdown,
-            Format::MarkdownSource,
         ] {
             for replacement in ["\r", "x\ry", "\r\n"] {
                 let mut document = open("AB", encoding, format, FileFormat::Mac);
@@ -64,7 +63,6 @@ fn mac_literal_cr_rejects_an_entire_batch_or_structured_payload_before_commit() 
     for format in [
         Format::PlainText,
         Format::Markdown,
-        Format::MarkdownSource,
     ] {
         let mut document = open("ABCD", Encoding::Utf8, format, FileFormat::Mac);
         let expected = DocumentError::UnrepresentableFormattedCharacter {
@@ -101,7 +99,6 @@ fn unix_and_dos_keep_representable_literal_cr_in_literal_source_adapters() {
             for format in [
                 Format::PlainText,
                 Format::Markdown,
-                Format::MarkdownSource,
             ] {
                 let mut document = open("AB", encoding, format, endings);
                 document.insert(1, "\r").unwrap();

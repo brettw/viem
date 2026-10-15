@@ -224,7 +224,6 @@ final class EVDocumentLifecycleTests: XCTestCase {
         XCTAssertEqual(document.fileURL, original)
     }
 
-
     func testNativeMoveWritesCopyAndFailedMovePreservesBothOriginalAndBinding() throws {
         let (original, backend, document) = try preservationFixture()
         defer { document.close() }
@@ -256,7 +255,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
     func testSameSerializationPresentationChangesKeepOrdinarySave() throws {
         let (original, backend, document) = try preservationFixture()
         defer { document.close() }
-        for (from, to) in [(EVSourceFormat.plainText, EVSourceFormat.code), (.markdown, .markdownSource)] {
+        for (from, to) in [(EVSourceFormat.plainText, EVSourceFormat.code), (.markdown, .code)] {
             backend.sourceFormat = from
             document.recordFileBaseline(Data("original bytes".utf8), at: original)
             backend.sourceFormat = to
@@ -375,7 +374,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
 
         XCTAssertEqual(backend.readCalls.count, 1)
         XCTAssertEqual(backend.readCalls[0].0, input)
-        XCTAssertEqual(backend.readCalls[0].1, EVDocument.markdownSourceType)
+        XCTAssertEqual(backend.readCalls[0].1, EVDocument.codeType)
         XCTAssertEqual(backend.serializationTypes, [EVDocument.markdownType])
         XCTAssertEqual(try Data(contentsOf: outputURL), backend.serializedData)
         XCTAssertEqual(recent, [EVDocumentIdentity.canonicalURL(inputURL)],

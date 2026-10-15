@@ -9,20 +9,19 @@ fn editor(source: &[u8], format: Format, filename: &str) -> (Editor, ViewId) {
     let view = core.add_view(MockTextMeasurementProvider::new(), 300., 120.);
     (core, view)
 }
-fn select(core: &mut Editor, view: ViewId, mode: DocumentMode, formatted: bool) {
-    core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision: core.document().revision(), mode, formatted_markdown: formatted }).unwrap();
+fn select(core: &mut Editor, view: ViewId, mode: DocumentMode) {
+    core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision: core.document().revision(), mode }).unwrap();
 }
 
 #[test]
 fn all_view_formats_preserve_bytes_dirty_state_shared_cursors_and_history() {
     let bytes = "\u{feff}# Heading\r\n\r\n**café** tail\r\n".as_bytes();
-    for from in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
-        for (mode, target, formatted) in [
-            (DocumentMode::PlainText, Format::PlainText, false),
-            (DocumentMode::CodeFormat, Format::Code, false),
-            (DocumentMode::Code("rust".into()), Format::Code, false),
-            (DocumentMode::Markdown, Format::MarkdownSource, false),
-            (DocumentMode::Markdown, Format::Markdown, true),
+    for from in [Format::PlainText, Format::Code, Format::Markdown] {
+        for (mode, target) in [
+            (DocumentMode::PlainText, Format::PlainText),
+            (DocumentMode::CodeFormat, Format::Code),
+            (DocumentMode::Code("rust".into()), Format::Code),
+            (DocumentMode::Markdown, Format::Markdown),
         ] {
             let (mut core, first) = editor(bytes, from, "");
             let second = core.add_view(MockTextMeasurementProvider::new(), 180., 90.);
@@ -31,7 +30,7 @@ fn all_view_formats_preserve_bytes_dirty_state_shared_cursors_and_history() {
                 core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(), text_offset: at,
                     affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
             }
-            select(&mut core, first, mode, formatted);
+            select(&mut core, first, mode);
             assert_eq!(core.document().format(), target, "{from:?} -> {target:?}");
             assert_eq!(core.document().source_bytes(), bytes);
             assert!(!core.document().is_dirty());
@@ -53,18 +52,18 @@ fn overrides_preserve_detection_and_auto_falls_back_to_plain_text() {
     let (mut core, view) = editor(b"text", Format::PlainText, "notes.rs");
     assert_eq!(core.document().format(), Format::Code);
     assert_eq!(core.document_mode_state().detected_name, "Rust");
-    select(&mut core, view, DocumentMode::PlainText, false);
+    select(&mut core, view, DocumentMode::PlainText);
     assert_eq!(core.document().format(), Format::PlainText);
     assert!(!core.document_mode_state().automatic);
-    select(&mut core, view, DocumentMode::Code("python".into()), false);
+    select(&mut core, view, DocumentMode::Code("python".into()));
     assert_eq!(core.document_mode_state().language.as_deref(), Some("python"));
     assert_eq!(core.document_mode_state().detected_name, "Rust");
-    select(&mut core, view, DocumentMode::Automatic, false);
+    select(&mut core, view, DocumentMode::Automatic);
     assert_eq!(core.document().format(), Format::Code);
     assert!(core.document_mode_state().automatic);
     assert_eq!(core.code_language_detection().unwrap().language.as_deref(), Some("rust"));
     core.redetect_code_language(Some("notes.unknown"));
-    select(&mut core, view, DocumentMode::Automatic, false);
+    select(&mut core, view, DocumentMode::Automatic);
     assert_eq!(core.document().format(), Format::PlainText);
     assert_eq!(core.document_mode_state().detected_name, "Plain Text");
     assert!(core.document_mode_state().automatic);
@@ -74,7 +73,7 @@ fn overrides_preserve_detection_and_auto_falls_back_to_plain_text() {
 fn code_format_without_a_detected_language_stays_code_and_retains_automatic_selection() {
     let bytes = b"\xef\xbb\xbf**text**\r\n";
     let (mut core, view) = editor(bytes, Format::PlainText, "notes.unknown");
-    select(&mut core, view, DocumentMode::CodeFormat, false);
+    select(&mut core, view, DocumentMode::CodeFormat);
     assert_eq!(core.document().format(), Format::Code);
     assert!(core.document_mode_state().automatic);
     assert!(core.document_mode_state().language.is_none());
@@ -83,7 +82,7 @@ fn code_format_without_a_detected_language_stays_code_and_retains_automatic_sele
     assert!(!core.document().is_dirty());
 
     let revision = core.document().revision();
-    select(&mut core, view, DocumentMode::CodeFormat, false);
+    select(&mut core, view, DocumentMode::CodeFormat);
     assert_eq!(core.document().revision(), revision);
     core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
     assert_eq!(core.document().format(), Format::PlainText);
@@ -97,10 +96,10 @@ fn code_format_retains_language_policy_after_selecting_other_formats() {
             let bytes = b"**text**\r\n";
             let (mut core, view) = editor(bytes, Format::Code, "notes.rs");
             if let Some(language) = language {
-                select(&mut core, view, DocumentMode::Code(language.into()), false);
+                select(&mut core, view, DocumentMode::Code(language.into()));
             }
-            select(&mut core, view, other, true);
-            select(&mut core, view, DocumentMode::CodeFormat, false);
+            select(&mut core, view, other);
+            select(&mut core, view, DocumentMode::CodeFormat);
             assert_eq!(core.document().format(), Format::Code);
             assert_eq!(core.document_mode_state().automatic, language.is_none());
             assert_eq!(core.document_mode_state().language.as_deref(), language);
@@ -114,15 +113,13 @@ fn code_format_retains_language_policy_after_selecting_other_formats() {
 #[test]
 fn code_auto_on_markdown_remains_code_and_top_level_markdown_uses_preference() {
     let (mut core, view) = editor(b"# heading", Format::Markdown, "notes.md");
-    select(&mut core, view, DocumentMode::Automatic, true);
+    select(&mut core, view, DocumentMode::Automatic);
     assert_eq!(core.document().format(), Format::Code);
     assert_eq!(core.document().text(), "# heading");
     assert_eq!(core.document_mode_state().detected_name, "Markdown");
-    select(&mut core, view, DocumentMode::Markdown, true);
+    select(&mut core, view, DocumentMode::Markdown);
     assert_eq!(core.document().format(), Format::Markdown);
     assert_eq!(core.document().text(), "heading");
-    select(&mut core, view, DocumentMode::Markdown, false);
-    assert_eq!(core.document().format(), Format::MarkdownSource);
 }
 
 #[test]
@@ -131,13 +128,13 @@ fn rejected_modes_and_stale_requests_leave_document_and_override_unchanged() {
     let revision = core.document().revision();
     let before = serde_json::to_value(core.document_mode_state()).unwrap();
     assert!(core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision,
-        mode: DocumentMode::Code("not-a-bundled-language".into()), formatted_markdown: false }).is_err());
+        mode: DocumentMode::Code("not-a-bundled-language".into()) }).is_err());
     assert_eq!(serde_json::to_value(core.document_mode_state()).unwrap(), before);
-    select(&mut core, view, DocumentMode::Markdown, false);
+    select(&mut core, view, DocumentMode::Markdown);
     let before = serde_json::to_value(core.document_mode_state()).unwrap();
     for mode in [DocumentMode::Code("rust".into()), DocumentMode::CodeFormat] {
         assert!(core.handle(view, CoreEvent::SetDocumentMode { document: core.document().id(), revision,
-            mode, formatted_markdown: false }).is_err());
+            mode }).is_err());
         assert_eq!(serde_json::to_value(core.document_mode_state()).unwrap(), before);
         assert_eq!(core.document().source_bytes(), b"text");
     }
@@ -185,7 +182,7 @@ fn both_language_picker_tiers_preserve_the_catalogue_and_shared_policy() {
 #[test]
 fn auto_detects_bounded_physical_source_in_every_view_and_encoding() {
     use viem_core::document::syntax::detection::DETECTION_BYTE_LIMIT;
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         for (source, language) in [
             ("#!/usr/bin/env **python**\r\n", None),
             ("#!/usr/bin/env python3\r\n", Some("python")),
@@ -201,7 +198,7 @@ fn auto_detects_bounded_physical_source_in_every_view_and_encoding() {
                 let mut core = Editor::new(Document::from_bytes(bytes.clone(), encoding, format).unwrap());
                 core.initialize_code_detection("unknown", false).unwrap();
                 let view = core.add_view(MockTextMeasurementProvider::new(), 300., 120.);
-                select(&mut core, view, DocumentMode::Automatic, false);
+                select(&mut core, view, DocumentMode::Automatic);
                 assert_eq!(core.document_mode_state().detected_language.as_deref(), language, "{format:?} {encoding:?} {source}");
                 assert_eq!(core.document().format(), if language.is_some() { Format::Code } else { Format::PlainText });
                 assert_eq!(core.document().source_bytes(), bytes);
@@ -210,7 +207,7 @@ fn auto_detects_bounded_physical_source_in_every_view_and_encoding() {
     }
     let source = format!("{} vim: ft=rust\n", "x".repeat(DETECTION_BYTE_LIMIT * 2));
     let (mut core, view) = editor(source.as_bytes(), Format::PlainText, "unknown");
-    select(&mut core, view, DocumentMode::Automatic, false);
+    select(&mut core, view, DocumentMode::Automatic);
     assert_eq!(core.document().format(), Format::PlainText);
     assert!(core.code_language_detection().unwrap().bytes_inspected <= DETECTION_BYTE_LIMIT);
 
@@ -220,4 +217,28 @@ fn auto_detects_bounded_physical_source_in_every_view_and_encoding() {
     let mut core = Editor::new(Document::from_bytes(bytes, Encoding::Latin1, Format::PlainText).unwrap());
     core.initialize_code_detection("unknown", false).unwrap();
     assert!(core.code_language_detection().unwrap().bytes_inspected <= DETECTION_BYTE_LIMIT);
+}
+
+#[test]
+fn views_follow_the_format_line_mode_default_unless_explicitly_changed() {
+    use viem_core::command::LineMode;
+    let (mut core, following) = editor(b"# heading\n\ntext\n", Format::Code, "notes.md");
+    let explicit = core.add_view(MockTextMeasurementProvider::new(), 300., 120.);
+    let line_mode = |core: &Editor, view| core.command_state(view).unwrap().line_mode();
+    assert_eq!(line_mode(&core, following), LineMode::PhysicalSource);
+    core.handle(explicit, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
+    select(&mut core, following, DocumentMode::Markdown);
+    assert_eq!(line_mode(&core, following), LineMode::Visual);
+    assert_eq!(line_mode(&core, explicit), LineMode::Visual);
+    select(&mut core, following, DocumentMode::Code("markdown".into()));
+    assert_eq!(line_mode(&core, following), LineMode::PhysicalSource);
+    assert_eq!(line_mode(&core, explicit), LineMode::Visual);
+    // Undoing the switch restores the default of the restored format.
+    core.handle(following, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+    assert_eq!(core.document().format(), Format::Markdown);
+    assert_eq!(line_mode(&core, following), LineMode::Visual);
+    // Choosing the default again resumes following it.
+    core.handle(explicit, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
+    select(&mut core, following, DocumentMode::Code("markdown".into()));
+    assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
 }

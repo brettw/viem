@@ -106,16 +106,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         let inline_preview = if view.layout.wrap() {
             true
         } else {
-            let flow = view.layout.paragraph_flow();
             let caret = view.commands.cursor();
             let line = self
                 .document
                 .projection()
-                .presentation_line_at_offset(caret, flow)
+                .presentation_line_at_offset(caret)
                 .and_then(|index| {
                     self.document
                         .projection()
-                        .presentation_line_range(index, flow)
+                        .presentation_line_range(index)
                 })
                 .ok_or(LayoutError::InvalidTextOffset(caret))?;
             line.len() <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES

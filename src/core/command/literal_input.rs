@@ -352,7 +352,7 @@ pub(super) fn literal_key_text(key: Key) -> Option<String> {
             name.push_str(&base[1..]);
             name
         }
-        Key::SelectAll | Key::CopySelection | Key::PasteClipboard => return None,
+        Key::SelectAll | Key::CopySelection | Key::PasteClipboard | Key::PasteClipboardMatchingStyle => return None,
     })
 }
 
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn literal_replay_bypasses_smart_quotes() {
-        for format in [Format::PlainText, Format::MarkdownSource] {
+        for format in [Format::PlainText] {
             let mut document = Document::from_bytes(Vec::new(), Encoding::Utf8, format).unwrap();
             let mut commands = CommandInterpreter::new();
             commands.set_smart_quotes(true);
@@ -727,26 +727,6 @@ mod tests {
         );
         send(&mut core, Key::Char('u'));
         assert_eq!(core.document().text(), after_first);
-    }
-
-    #[test]
-    fn protected_quote_offsets_include_source_syntax_and_unicode_prefixes() {
-        let document =
-            Document::from_bytes(Vec::new(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-        let mut commands = CommandInterpreter::new();
-        commands.set_smart_quotes(true);
-        let input = "`code \"x\"` é\"y\"";
-        let protected = input.find("\"y").unwrap();
-        let transformed = commands
-            .assist_input_payload_with_literals(
-                &document,
-                0..0,
-                BoundaryAffinity::Downstream,
-                &RegisterValue::characterwise(input),
-                &[protected..protected + 1],
-            )
-            .unwrap();
-        assert_eq!(transformed.text, "`code \"x\"` é\"y”");
     }
 
     #[test]

@@ -35,10 +35,6 @@ enum Action {
         view: usize,
         enabled: bool,
     },
-    Flow {
-        view: usize,
-        enabled: bool,
-    },
     Scale {
         view: usize,
         scale: f32,
@@ -48,9 +44,10 @@ enum Action {
         left: f32,
         top: f32,
     },
-    MarkdownSource {
+    /// Markdown Preview on, or off into Code with the Markdown language.
+    Preview {
         view: usize,
-        source: bool,
+        enabled: bool,
     },
     Place {
         view: usize,
@@ -72,7 +69,6 @@ fn format(name: &str) -> Result<Format, String> {
     Ok(match name {
         "plain" => Format::PlainText,
         "markdown" => Format::Markdown,
-        "markdown_source" => Format::MarkdownSource,
         "code" => Format::Code,
         _ => return Err(format!("invalid format {name}")),
     })
@@ -228,20 +224,16 @@ fn generate(
                 view,
                 enabled: rng.chance(1, 2),
             });
-            queue.push_back(Action::Flow {
-                view,
-                enabled: rng.chance(1, 2),
-            });
             queue.push_back(Action::Scale {
                 view,
                 scale: [0.25, 0.67, 1., 1.25, 2., 5.][rng.usize(6)],
             });
         }
         11 => {
-            if core.document().format().is_markdown() {
-                queue.push_back(Action::MarkdownSource {
+            if !core.document().format().is_literal() || core.document().format().is_code() {
+                queue.push_back(Action::Preview {
                     view,
-                    source: !core.document().format().is_source_view(),
+                    enabled: !core.document().format().is_markdown(),
                 });
             } else {
                 queue.push_back(Action::Reopen);
@@ -505,9 +497,6 @@ pub fn run(
                     true,
                 ),
                 Action::Wrap { view, enabled } => (*view, Some(CoreEvent::SetWrap(*enabled)), true),
-                Action::Flow { view, enabled } => {
-                    (*view, Some(CoreEvent::SetParagraphFlow(*enabled)), true)
-                }
                 Action::Scale { view, scale } => (*view, Some(CoreEvent::SetScale(*scale)), true),
                 Action::Scroll { view, left, top } => (
                     *view,
@@ -517,12 +506,16 @@ pub fn run(
                     }),
                     true,
                 ),
-                Action::MarkdownSource { view, source } => (
+                Action::Preview { view, enabled } => (
                     *view,
-                    Some(CoreEvent::SetMarkdownSource {
+                    Some(CoreEvent::SetDocumentMode {
                         document: core.document().id(),
                         revision: core.document().revision(),
-                        source: *source,
+                        mode: if *enabled {
+                            viem_core::DocumentMode::Markdown
+                        } else {
+                            viem_core::DocumentMode::Code("markdown".into())
+                        },
                     }),
                     true,
                 ),

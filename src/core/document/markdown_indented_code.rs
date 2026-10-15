@@ -147,24 +147,22 @@ pub(super) fn source_block(
         .projection()
         .source_insertion_point(block.range.start, true)
         .ok_or(super::DocumentError::AmbiguousProjection)?;
-    if !document.format().is_source_view() {
-        let row = document
-            .state()
-            .source_hard_lines
-            .line_at_offset(at)
-            .and_then(|index| document.state().source_hard_lines.get(index))
-            .ok_or(super::DocumentError::AmbiguousProjection)?;
-        let bytes = document
-            .state()
-            .source
-            .bytes_in(row.start..at)
-            .ok_or(super::DocumentError::AmbiguousProjection)?;
-        let prefix = document.encoding().decode_region(&bytes, row.start)?.text;
-        let quote = super::markdown_quotes::prefix(&prefix);
-        let marker = super::markdown_blocks::marker_prefix_length(&prefix[quote..]).unwrap_or(0);
-        if strip_indent(&prefix[quote + marker..], 4).is_none() {
-            return Ok(None);
-        }
+    let row = document
+        .state()
+        .source_hard_lines
+        .line_at_offset(at)
+        .and_then(|index| document.state().source_hard_lines.get(index))
+        .ok_or(super::DocumentError::AmbiguousProjection)?;
+    let bytes = document
+        .state()
+        .source
+        .bytes_in(row.start..at)
+        .ok_or(super::DocumentError::AmbiguousProjection)?;
+    let prefix = document.encoding().decode_region(&bytes, row.start)?.text;
+    let quote = super::markdown_quotes::prefix(&prefix);
+    let marker = super::markdown_blocks::marker_prefix_length(&prefix[quote..]).unwrap_or(0);
+    if strip_indent(&prefix[quote + marker..], 4).is_none() {
+        return Ok(None);
     }
     let decoded = document.encoding().decode(&document.source_bytes())?;
     let input = super::line_endings::normalize(&decoded, document.file_format());

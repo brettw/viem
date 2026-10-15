@@ -10,7 +10,7 @@ fn apply(document: &mut Document, intent: LinkEditIntent) {
 }
 #[test]
 fn insert_selected_label_edit_destination_and_unlink_are_exactly_undoable() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "before selected after";
         let mut doc = document(source, format);
         apply(
@@ -31,11 +31,8 @@ fn insert_selected_label_edit_destination_and_unlink_are_exactly_undoable() {
         assert_eq!(link.range.start, 7);
         assert_eq!(
             link.range.end,
-            if format.is_source_view() {
-                doc.text().len() - 6
-            } else {
-                15
-            }
+            15
+        
         );
         apply(
             &mut doc,
@@ -124,25 +121,8 @@ fn typing_and_deleting_autolink_syntax_keeps_the_requested_visible_label() {
     }
 }
 #[test]
-fn source_popup_recognizes_opening_label_destination_and_closing_syntax() {
-    let mut doc = document("[label](<docs/local file.md>)", Format::MarkdownSource);
-    for at in 0..doc.text().len() {
-        let link = doc
-            .link_snapshot_at(doc.text_point(at).unwrap())
-            .unwrap()
-            .unwrap();
-        assert_eq!(link.range, 0..doc.text().len());
-    }
-    let stale = doc.text_point(1).unwrap();
-    doc.insert(0, "x ").unwrap();
-    assert!(matches!(
-        doc.link_snapshot_at(stale),
-        Err(DocumentError::WrongSnapshot { .. })
-    ));
-}
-#[test]
 fn destination_only_edit_and_unlink_preserve_nested_label_formatting() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc = document("before [a **bold** word](old.md) after", format);
         let link = doc
             .link_snapshot_at(doc.text_point(8).unwrap())
@@ -211,9 +191,6 @@ fn link_and_image_authoring_availability_excludes_unrepresentable_contexts() {
         ("`code`", Format::Markdown, 1..1),
         ("```\ncode\n```", Format::Markdown, 1..1),
         ("plain [link](u) end", Format::Markdown, 3..9),
-        ("a\\\nb", Format::MarkdownSource, 2..2),
-        ("``", Format::MarkdownSource, 1..1),
-        ("[ref]: /url", Format::MarkdownSource, 2..2),
     ] {
         let doc = document(source, format);
         assert!(!doc.can_insert_link(range.clone()), "{source:?} {format:?} {range:?}");
@@ -263,7 +240,7 @@ fn links_preserve_encoding_and_reject_unrepresentable_labels_without_changes() {
 }
 #[test]
 fn fragment_navigation_matches_headings_and_duplicate_suffixes() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let doc = document(
             "# Hello, **World**!\n\ntext\n\n## Hello, **World**!\n\n# Café",
             format,
@@ -297,7 +274,6 @@ fn line_fragments_use_physical_source_lines_across_encodings_and_projections() {
         };
         for format in [
             Format::Markdown,
-            Format::MarkdownSource,
             Format::PlainText,
             Format::Code,
         ] {
@@ -360,7 +336,7 @@ fn line_fragment_navigation_centers_and_clamps_without_editing_or_moving_other_v
         .map(|line| format!("line {line}"))
         .collect::<Vec<_>>()
         .join("\n\n");
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut core = Core::new(document(&source, format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
         let other = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
@@ -435,7 +411,7 @@ fn distant_line_fragment_navigation_is_indexed_and_materializes_only_a_viewport(
     use viem_core::{Core, CoreEvent};
     let mut core = Core::new(document(
         &"paragraph\n\n".repeat(10_000),
-        Format::MarkdownSource,
+        Format::Markdown,
     ));
     let view = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
     core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
@@ -478,7 +454,7 @@ fn distant_line_fragment_navigation_is_indexed_and_materializes_only_a_viewport(
 #[test]
 fn heading_picker_uses_navigation_fragments_and_omits_code_lookalikes() {
     let source = "# Hello, **World**!\n\n## Hello, **World**!\n\nSetext `title`\n===\n\n> ### Quoted heading\n\n- Parent\n  - #### ~~Nested~~ heading\n\n```\n# Not a heading\n```";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let doc = document(source, format);
         let list = doc.link_headings().unwrap();
         assert!(!list.truncated);
@@ -511,7 +487,7 @@ fn heading_picker_has_finite_retention_and_reports_truncation() {
 
 #[test]
 fn heading_picker_reads_only_indexed_headings_and_bounds_giant_labels() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let doc = document(&format!("{}# Target\n", "unrelated prose\n\n".repeat(10_000)), format);
         let (result, work) = measure_document_work(|| doc.link_headings().unwrap());
         assert_eq!(result.headings.len(), 1);
@@ -541,7 +517,7 @@ fn passive_link_refresh_never_decodes_unrelated_large_document_source() {
 
 #[test]
 fn editing_existing_link_retains_authored_title_and_unchanged_destination_spelling() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc = document("[label](old.md 'authored title')", format);
         let link = doc
             .link_snapshot_at(doc.text_point(1).unwrap())
@@ -596,7 +572,7 @@ fn inserting_over_selected_rich_label_keeps_selected_and_neighbor_formatting() {
 
 #[test]
 fn automatic_links_can_be_edited_and_removed_without_reactivation() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in ["<https://example.test>", "https://example.test"] {
             let mut doc = document(source, format);
             let link = doc
@@ -677,7 +653,7 @@ fn native_noop_and_stale_selection_preserve_controller_and_history() {
 
 #[test]
 fn label_whitespace_and_literal_punctuation_are_preserved_in_both_views() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc = document("before after", format);
         let label = " *quoted* [label] ";
         apply(
@@ -727,37 +703,8 @@ fn local_link_edit_keeps_large_document_projection_work_regional() {
 }
 
 #[test]
-fn source_empty_labels_empty_destinations_and_long_destinations_remain_editable() {
-    for source in [
-        "[label]()".to_owned(),
-        "[](#target)".to_owned(),
-        format!("[label](https://example.test/{})", "path/".repeat(800)),
-    ] {
-        let mut doc = document(&source, Format::MarkdownSource);
-        let link = doc
-            .link_snapshot_at(doc.text_point(0).unwrap())
-            .unwrap()
-            .unwrap();
-        assert!(link.editable);
-        assert_eq!(link.range, 0..source.len());
-        apply(
-            &mut doc,
-            LinkEditIntent::Edit {
-                range: link.range,
-                text: "new label".into(),
-                destination: "#new".into(),
-            },
-        );
-        assert_eq!(
-            doc.link_at(doc.text_point(2).unwrap()).unwrap().as_deref(),
-            Some("#new")
-        );
-    }
-}
-
-#[test]
 fn removing_explicit_link_does_not_reactivate_an_automatic_url_in_the_label() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc = document("[https://example.test](old.md)", format);
         let link = doc
             .link_snapshot_at(doc.text_point(1).unwrap())
@@ -774,10 +721,10 @@ fn removing_explicit_link_does_not_reactivate_an_automatic_url_in_the_label() {
 fn fragment_navigation_exact_source_fixture_points_at_the_requested_heading() {
     let doc = document(
         "[Jump](#second-heading)\n\n# First heading\n\n# Second heading\n\nbody",
-        Format::MarkdownSource,
+        Format::Markdown,
     );
     let offset = doc.find_link_fragment("second-heading").unwrap().unwrap();
-    assert!(doc.text()[offset..].starts_with("# Second heading"));
+    assert!(doc.text()[offset..].starts_with("Second heading"));
 }
 
 #[test]
@@ -785,7 +732,7 @@ fn native_link_publication_resumes_native_and_select_typing_in_a_separate_undo_u
     use viem_core::command::{InputEvent, Key, Mode};
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for select_mode in [false, true] {
             let mut core = Core::new(document("label tail", format));
             let view = core.add_view(MockTextMeasurementProvider::new(), 600.0, 200.0);
@@ -893,7 +840,7 @@ fn native_link_publication_keeps_visual_normal_and_restarts_insert_replace_sessi
 #[test]
 fn changed_label_inherits_only_the_first_selected_character_formatting() {
     use viem_core::layout::DocumentLayoutStyles;
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for (source, bold, italic) in [
             ("[**bold**](target.md)", true, false),
             ("[**bold** regular](target.md)", true, false),
@@ -938,7 +885,7 @@ fn changed_label_inherits_only_the_first_selected_character_formatting() {
 
 #[test]
 fn unlink_preserves_url_code_spans_without_escaping_their_literal_body() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in [
             "[`https://example.com`](target.md)",
             "[code `https://example.com` tail](target.md)",
@@ -976,17 +923,7 @@ fn pending_unlink_splits_source_retains_inline_styles_and_restores_exact_history
             "before [ab**cd**ef](<target.md> 'title') after",
             "d",
         ),
-        (
-            Format::MarkdownSource,
-            "before [ab**cd**ef](<target.md> 'title') after",
-            "d",
-        ),
         (Format::Markdown, "before [ab`cd`ef](target.md) after", "d"),
-        (
-            Format::MarkdownSource,
-            "before [ab`cd`ef](target.md) after",
-            "d",
-        ),
     ] {
         let mut core = Core::new(document(source, format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
@@ -1082,7 +1019,7 @@ fn native_link_insert_from_normal_starts_typing_inside_the_new_link() {
     use viem_core::command::{InputEvent, Mode};
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut core = Core::new(document("tail", format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
         let expected = core.list_selection_identity(view).unwrap();
@@ -1122,7 +1059,7 @@ fn pending_unlink_ime_commit_and_subsequent_typing_keep_the_override() {
     use viem_core::document::BoundaryAffinity;
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "before [abcdef](target.md) after";
         let mut core = Core::new(document(source, format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
@@ -1187,7 +1124,7 @@ fn pending_unlink_replace_restores_original_source_and_repeat_keeps_unlinked_tex
     use viem_core::document::BoundaryAffinity;
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "[abcdef](target.md)";
         let mut core = Core::new(document(source, format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
@@ -1261,7 +1198,7 @@ fn pending_unlink_preserves_multiline_payload_and_quote_owner() {
     use viem_core::document::BoundaryAffinity;
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut core = Core::new(document("> [abcdef](target.md)", format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
         let at = core.document().text().find("cd").unwrap();
@@ -1392,7 +1329,7 @@ fn pending_unlink_can_insert_a_new_link_without_changing_the_remaining_destinati
     use viem_core::document::BoundaryAffinity;
     use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut core = Core::new(document(
             "before [ab**cd**ef](<original.md> 'title') after",
             format,
@@ -1494,7 +1431,7 @@ fn pending_unlink_handles_editable_automatic_links_and_protects_plain_url_payloa
     use viem_core::document::BoundaryAffinity;
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in [
             "before https://example.test/path after",
             "before <https://example.test/path> after",
@@ -1584,7 +1521,7 @@ fn pending_unlink_preserves_utf16_bom_non_ascii_title_and_untouched_encoded_tail
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut core =
             Core::new(Document::from_bytes(original.clone(), Encoding::Utf16Le, format).unwrap());
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
@@ -1643,7 +1580,7 @@ fn pending_unlink_preserves_utf16_bom_non_ascii_title_and_untouched_encoded_tail
 
 #[test]
 fn selected_automatic_link_removal_preserves_linked_label_halves_and_exact_undo() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in [
             "before https://example.test/path after",
             "before <https://example.test/path> after",
@@ -1689,7 +1626,7 @@ fn source_label_fields_share_inline_context_and_gfm_strikethrough_with_rich_view
         ("[# Heading](url)", "# Heading"),
         ("[~~label~~](url)", "label"),
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(source, format);
             let link = doc
                 .link_snapshot_at(doc.text_point(1).unwrap())

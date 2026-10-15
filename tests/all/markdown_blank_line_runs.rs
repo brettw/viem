@@ -56,18 +56,6 @@ fn blank_line_runs_count_pairs_at_the_start_middle_and_end() {
 }
 
 #[test]
-fn source_view_keeps_unpaired_edge_lines_and_literal_whitespace() {
-    for (source, expected) in [
-        ("\nb", &["", "b"][..]),
-        (" \nb", &[" ", "b"]),
-        ("\n\nb", &["", "b"]),
-        ("a\n", &["a", ""]),
-    ] {
-        assert_eq!(paragraphs(source, Format::MarkdownSource), expected, "{source:?}");
-    }
-}
-
-#[test]
 fn typing_into_empty_paragraphs_reopens_as_displayed() {
     for source in [
         "\n\nb", " \n \nb", "    \n    \nb", "\t\n\t\nb", "a\n\n\n\nb", "a\n \n \n \nb",

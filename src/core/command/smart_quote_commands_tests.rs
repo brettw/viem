@@ -177,7 +177,7 @@ fn block_insert_replace_and_put_assist_each_destination_row() {
 }
 
 #[test]
-fn normal_block_put_and_physical_source_put_preserve_code_context() {
+fn normal_block_put_preserves_code_context() {
     let (mut document, mut commands) = fixture(Format::Markdown, "abcd\n\n```\nefgh\n```");
     commands
         .registers
@@ -188,23 +188,6 @@ fn normal_block_put_and_physical_source_put_preserve_code_context() {
         &[Key::Char('"'), Key::Char('a'), Key::Char('P')],
     );
     assert_eq!(document.text(), "“q”abcd\n\"r\"efgh");
-
-    let (mut document, mut commands) =
-        fixture(Format::MarkdownSource, "x\n\n```\ncode\nline\n```");
-    commands
-        .set_line_mode(&document, LineMode::PhysicalSource)
-        .unwrap();
-    commands.registers.yank(
-        Some('a'),
-        RegisterValue::linewise("\"q\"\n"),
-    );
-    keys(&mut commands, &mut document, "\"aP");
-    assert!(document.text().starts_with("“q”\n"));
-    assert!(commands.set_cursor(&document, document.text().find("line\n```").unwrap()));
-    keys(&mut commands, &mut document, "\"aP");
-    assert!(document
-        .text()
-        .contains("```\ncode\n\"q\"\nline\n```"));
 }
 
 #[test]
@@ -285,67 +268,3 @@ fn replace_backspace_restores_text_and_style_after_quote_width_changes() {
     }
 }
 
-#[test]
-fn markdown_source_fence_batches_share_text_and_put_projection_and_caret_rules() {
-    let input = "\"prose\" `\"code\"`\n\n```\n'code'\n```\n\n'prose'";
-    let assisted = "“prose” `\"code\"`\n\n```\n'code'\n```\n\n‘prose’";
-    for smart in [false, true] {
-        for paste in [false, true] {
-            let (mut document, mut commands) = fixture(Format::MarkdownSource, "tail");
-            commands.set_smart_quotes(smart);
-            if paste {
-                commands
-                    .registers
-                    .yank(Some('a'), RegisterValue::characterwise(input));
-                keys(&mut commands, &mut document, "\"aP");
-            } else {
-                key(&mut commands, &mut document, Key::Char('i'));
-                let output = commands
-                    .handle(&mut document, InputEvent::text(input))
-                    .unwrap();
-                assert_eq!(output.status, CommandStatus::Complete);
-            }
-            let authored = if smart { assisted } else { input };
-            let expected_source = format!("{authored}tail");
-            assert_eq!(document.source_bytes(), expected_source.as_bytes());
-            let expected = Document::from_bytes(
-                expected_source.into_bytes(),
-                Encoding::Utf8,
-                Format::MarkdownSource,
-            )
-            .unwrap();
-            assert_eq!(document.text(), expected.text());
-            let insertion_end = document.text().len() - 4;
-            let expected_caret = if paste {
-                document
-                    .hard_line_snapshot()
-                    .previous_grapheme_boundary(insertion_end)
-                    .unwrap()
-            } else {
-                insertion_end
-            };
-            assert_eq!(
-                commands.cursor(),
-                expected_caret,
-                "smart={smart}, paste={paste}"
-            );
-            key(&mut commands, &mut document, Key::Escape);
-            key(&mut commands, &mut document, Key::Char('u'));
-            assert_eq!(document.source_bytes(), b"tail");
-        }
-    }
-}
-
-#[test]
-fn markdown_source_typing_caret_does_not_cross_unchanged_grapheme_suffixes() {
-    for (before, input) in [("\u{301}next", "a"), ("🇧🇨🇩next", "🇦")] {
-        let (mut document, mut commands) = fixture(Format::MarkdownSource, before);
-        key(&mut commands, &mut document, Key::Char('i'));
-        commands
-            .handle(&mut document, InputEvent::text(input))
-            .unwrap();
-        let first_cluster_end = document.text().graphemes(true).next().unwrap().len();
-        assert_eq!(commands.cursor(), first_cluster_end, "{before:?}");
-        assert!(document.text()[commands.cursor()..].ends_with("next"));
-    }
-}

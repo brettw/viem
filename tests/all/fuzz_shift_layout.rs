@@ -39,9 +39,6 @@ fn keys<P: TextMeasurementProvider>(core: &mut Core<P>, view: ViewId, text: &str
 }
 
 fn scroll<P: TextMeasurementProvider>(core: &mut Core<P>, view: ViewId, top: f32) {
-    if core.document().format().is_source_view() {
-        core.handle(view, CoreEvent::SetParagraphFlow(false)).unwrap();
-    }
     core.handle(view, CoreEvent::SetLineMode(viem_core::command::LineMode::PhysicalSource)).unwrap();
     core.handle(
         view,
@@ -99,14 +96,14 @@ fn counted_outdent_changes_only_the_requested_source_lines() {
     );
     let source = format!("  alpha\n\n   \n{tail}");
     let expected = format!("alpha\n\n \n{tail}");
-    let mut core = Core::new(document(&source, Format::MarkdownSource));
+    let mut core = Core::new(document(&source, Format::Code));
     let view = core.add_view(MockTextMeasurementProvider::new(), 180., 16.);
     scroll(&mut core, view, 1000.);
     keys(&mut core, view, "3<<");
     assert_eq!(core.document().source_bytes(), expected.as_bytes());
     assert_eq!(core.command_state(view).unwrap().cursor(), 0);
     assert_cursor_is_materialized(&core, view);
-    let reopened = document(&expected, Format::MarkdownSource);
+    let reopened = document(&expected, Format::Code);
     assert_eq!(reopened.text(), core.document().text());
     key(&mut core, view, Key::Char('u'));
     assert_eq!(core.document().source_bytes(), source.as_bytes());
@@ -196,7 +193,7 @@ fn offscreen_shift_with_changed_metrics_shapes_bounded_large_document_work() {
         requests: Arc::clone(&requests),
         bytes: Arc::clone(&bytes),
     };
-    let mut core = Core::new(document(&source, Format::MarkdownSource));
+    let mut core = Core::new(document(&source, Format::Code));
     let view = core.add_view(provider, 180., 80.);
     scroll(&mut core, view, 100_000.);
     let old_layout = core.layout(view).unwrap().snapshot().unwrap().revision;

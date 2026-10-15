@@ -20,7 +20,7 @@ internal sealed partial class EditorWindow
         // Only opening a top-level Format or File flyout captures a document revision.
         // Loading nested language rows must retain that snapshot for validation.
         plainMode.Loaded += (_, _) => ValidateMenus();
-        markdownMode = DocumentModeChoice("Markdown", "M", VIEM_DOCUMENT_MODE_MARKDOWN);
+        markdownMode = DocumentModeChoice("Markdown Preview", "M", VIEM_DOCUMENT_MODE_MARKDOWN);
         codeMode = DocumentModeChoice("Code", "C", VIEM_DOCUMENT_MODE_CODE);
         autoMode = DocumentModeChoice("Auto (Plain Text)", "A", VIEM_DOCUMENT_MODE_AUTO);
         obscureLanguageModes = Sub("Obscure languages", "O");
@@ -39,7 +39,7 @@ internal sealed partial class EditorWindow
     private ToggleMenuFlyoutItem DocumentModeChoice(string name, string accessKey, uint mode, string language = "")
         => Toggle(name, accessKey, _ => {
             if (View is { } view && menuModeState is { } expected)
-                view.SetDocumentMode(mode, language, preferences.MarkdownFormattedView, expected);
+                view.SetDocumentMode(mode, language, expected);
             menusDirty = true; ValidateMenus();
         }, validateOnLoad: false);
 

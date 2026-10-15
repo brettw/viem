@@ -56,19 +56,6 @@ unsafe fn test_send_text(
     discard_test_effects(status, effects)
 }
 
-unsafe fn test_set_markdown_source(
-    core: ViemCoreHandle,
-    view: ViemViewId,
-    request: *const ViemSetMarkdownSourceV1,
-    outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    let mut effects = 0;
-    let status = unsafe {
-        viem_core_view_set_markdown_source_with_effects(core, view, request, outcome, &mut effects)
-    };
-    discard_test_effects(status, effects)
-}
-
 unsafe fn test_set_encoding(
     core: ViemCoreHandle,
     view: ViemViewId,
@@ -695,7 +682,7 @@ pub(super) fn table_ffi_fixture(source: &[u8], format: u32) -> TableFfiFixture {
 #[test]
 fn recovered_layout_warnings_are_exact_bounded_and_do_not_replay_source_edits() {
     let source = b"Markdown [link](url) with text\n\nMore text.";
-    let core = create_core(source, ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN_SOURCE, ..Default::default() });
+    let core = create_core(source, ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN, ..Default::default() });
     let mut context = Box::new(FakeProviderContext::new(core.handle));
     context.fail_next = Some(ViemStatus::ProviderFailure);
     let (view, mut outcome) = add_test_view(&core, &mut *context);
@@ -1416,9 +1403,9 @@ fn core_create_detects_encoding_losslessly_and_explicit_values_remain_forced() {
 #[test]
 fn native_paragraph_style_request_is_revision_and_selection_checked() {
     let core = create_core(
-        b"Heading\nBody",
+        b"Heading\n\nBody",
         ViemDocumentOptions {
-            format: VIEM_FORMAT_MARKDOWN_SOURCE,
+            format: VIEM_FORMAT_MARKDOWN,
             ..Default::default()
         },
     );
@@ -1442,11 +1429,11 @@ fn native_paragraph_style_request_is_revision_and_selection_checked() {
     let state = document_state(&core);
     assert_eq!(
         copy_core_bytes(
-            viem_core_copy_formatted_utf8,
+            viem_core_copy_source_bytes,
             &core,
             state.document_revision
         ),
-        b"## Heading\nBody"
+        b"## Heading\n\nBody"
     );
     assert_eq!(
         unsafe { viem_core_view_set_paragraph_style(core.handle, view, &request, &mut outcome) },
@@ -1464,7 +1451,7 @@ fn native_paragraph_style_request_is_revision_and_selection_checked() {
 
 #[test]
 fn strikethrough_ffi_preserves_source_undo_and_checked_selection() {
-    for format in [VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE] {
+    for format in [VIEM_FORMAT_MARKDOWN] {
         let core = create_core(b"word", ViemDocumentOptions { format, ..Default::default() });
         let mut provider = Box::new(FakeProviderContext::new(core.handle));
         let (view, mut outcome) = add_test_view(&core, provider.as_mut());
@@ -1495,21 +1482,24 @@ fn strikethrough_ffi_preserves_source_undo_and_checked_selection() {
 
 #[test]
 fn native_format_encoding_and_list_requests_validate_exact_identity() {
-    let core = create_core(b"__alpha__\n\nbeta", ViemDocumentOptions { format: VIEM_FORMAT_MARKDOWN_SOURCE, ..ViemDocumentOptions::default() });
+    let core = create_core(b"__alpha__\n\nbeta", ViemDocumentOptions { format: VIEM_FORMAT_CODE, ..ViemDocumentOptions::default() });
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, _) = add_test_view(&core, provider.as_mut());
     let state = document_state(&core);
     let mut outcome = ViemCoreOutcomeV1::default();
-    let format = ViemSetMarkdownSourceV1 {
-        struct_size: VIEM_SET_MARKDOWN_SOURCE_V1_SIZE,
-        source: 0,
+    let mode = ViemSetDocumentModeV1 {
+        struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE,
+        mode: VIEM_DOCUMENT_MODE_MARKDOWN,
         document_id: state.document_id,
         document_revision: state.document_revision,
     };
-    assert_eq!(
-        unsafe { test_set_markdown_source(core.handle, view, &format, &mut outcome) },
-        ViemStatus::Ok
-    );
+    let set_mode = |outcome: &mut ViemCoreOutcomeV1| {
+        let mut effects = 0;
+        let status = unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, &mode,
+            ptr::null(), 0, outcome, &mut effects) };
+        discard_test_effects(status, effects)
+    };
+    assert_eq!(set_mode(&mut outcome), ViemStatus::Ok);
     let changed = document_state(&core);
     assert_eq!(changed.format, VIEM_FORMAT_MARKDOWN);
     assert_eq!(
@@ -1528,10 +1518,7 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
         ),
         b"alpha\nbeta"
     );
-    assert_eq!(
-        unsafe { test_set_markdown_source(core.handle, view, &format, &mut outcome) },
-        ViemStatus::StaleRevision
-    );
+    assert_eq!(set_mode(&mut outcome), ViemStatus::StaleRevision);
     let encoding = ViemSetEncodingV1 {
         struct_size: VIEM_SET_ENCODING_V1_SIZE,
         encoding: VIEM_ENCODING_UTF16_LE,
@@ -1563,8 +1550,13 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
         unsafe { viem_core_view_set_list_style(core.handle, view, &list, &mut outcome) },
         ViemStatus::StaleRevision
     );
+    let mut effects = 0;
     assert_eq!(
-        unsafe { test_set_markdown_source(core.handle, view, ptr::null(), &mut outcome) },
+        unsafe {
+            viem_core_view_set_document_mode_with_effects(
+                core.handle, view, ptr::null(), ptr::null(), 0, &mut outcome, &mut effects,
+            )
+        },
         ViemStatus::NullPointer
     );
 }
@@ -2620,15 +2612,12 @@ fn command_line_export_is_exact_kind_cursor_and_utf8_state() {
 }
 
 #[test]
-fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy() {
-    for (source, flow) in [
-        ("abcdefgh ijklmnop qrstuvwxyz\nTail", false),
-        ("ab\ncdefgh ijklmnop qrstuvwxyz\n\nTail", true),
-    ] {
+fn visual_line_export_uses_wrapped_rows_and_the_physical_line_policy() {
+    for source in ["abcdefgh ijklmnop qrstuvwxyz\nTail"] {
         let core = create_core(
             source.as_bytes(),
             ViemDocumentOptions {
-                format: VIEM_FORMAT_MARKDOWN_SOURCE,
+                format: VIEM_FORMAT_PLAIN_TEXT,
                 ..ViemDocumentOptions::default()
             },
         );
@@ -2636,12 +2625,6 @@ fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy()
         let (view, mut outcome) = add_test_view(&core, &mut *context);
         assert_eq!(
             unsafe { viem_core_view_resize(core.handle, view, 90., 250., &mut outcome) },
-            ViemStatus::Ok
-        );
-        assert_eq!(
-            unsafe {
-                viem_core_view_set_paragraph_flow(core.handle, view, u32::from(flow), &mut outcome)
-            },
             ViemStatus::Ok
         );
         let mut layout = ViemLayoutSnapshotInfoV1::default();
@@ -2719,7 +2702,7 @@ fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy()
             assert_eq!(segments[0].text_start, 0);
             assert_eq!(
                 segments[0].text_end, expected_end,
-                "flow={flow}, mode={mode}"
+                "mode={mode}"
             );
             assert_eq!(
                 unsafe {
@@ -2737,7 +2720,7 @@ fn visual_line_export_uses_wrapped_or_flowed_rows_and_the_physical_line_policy()
         for (kind, expected) in [
             (
                 VIEM_KEY_DOCUMENT_END,
-                source.len() as u64 - if flow { 2 } else { 1 },
+                source.len() as u64 - 1,
             ),
             (VIEM_KEY_DOCUMENT_START, 0),
         ] {
@@ -5029,38 +5012,6 @@ fn link_destination_ffi_checks_snapshot_boundaries_and_output_aliases() {
 }
 
 #[test]
-fn markdown_source_request_validates_boolean_size_and_preserves_source() {
-    let original = b"**First**\n\nSecond";
-    let core = create_core(original, ViemDocumentOptions {
-        format: VIEM_FORMAT_MARKDOWN,
-        ..ViemDocumentOptions::default()
-    });
-    let mut provider = Box::new(FakeProviderContext::new(core.handle));
-    let (view, _) = add_test_view(&core, provider.as_mut());
-    let before = document_state(&core);
-    let request = ViemSetMarkdownSourceV1 {
-        struct_size: VIEM_SET_MARKDOWN_SOURCE_V1_SIZE,
-        source: 1,
-        document_id: before.document_id,
-        document_revision: before.document_revision,
-    };
-    let mut outcome = ViemCoreOutcomeV1::default();
-    for invalid in [
-        ViemSetMarkdownSourceV1 { source: 2, ..request },
-        ViemSetMarkdownSourceV1 { struct_size: VIEM_SET_MARKDOWN_SOURCE_V1_SIZE - 1, ..request },
-    ] {
-        assert_eq!(unsafe { test_set_markdown_source(core.handle, view, &invalid, &mut outcome) }, ViemStatus::InvalidArgument);
-        assert_eq!(document_state(&core), before);
-    }
-    assert_eq!(unsafe { test_set_markdown_source(core.handle, view, &request, &mut outcome) }, ViemStatus::Ok);
-    let after = document_state(&core);
-    assert_eq!(after.format, VIEM_FORMAT_MARKDOWN_SOURCE);
-    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &core, after.document_revision), original);
-    assert_eq!(copy_core_bytes(viem_core_copy_formatted_utf8, &core, after.document_revision), b"**First**\nSecond");
-    assert_eq!(unsafe { test_set_markdown_source(core.handle, view, &request, &mut outcome) }, ViemStatus::StaleRevision);
-}
-
-#[test]
 fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
     let original = b"**First**\r\n\r\nSecond";
     let core = create_core(original, ViemDocumentOptions::default());
@@ -5072,8 +5023,6 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
         mode: VIEM_DOCUMENT_MODE_MARKDOWN,
         document_id: before.document_id,
         document_revision: before.document_revision,
-        formatted_markdown: 1,
-        reserved: 0,
     };
     let call = |request: &ViemSetDocumentModeV1, language: &[u8]| {
         let mut outcome = ViemCoreOutcomeV1::default();
@@ -5084,8 +5033,6 @@ fn document_mode_request_checks_inputs_aliases_stale_revisions_and_source() {
         status
     };
     for invalid in [
-        ViemSetDocumentModeV1 { formatted_markdown: 2, ..request },
-        ViemSetDocumentModeV1 { reserved: 1, ..request },
         ViemSetDocumentModeV1 { mode: 99, ..request },
         ViemSetDocumentModeV1 { struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE - 1, ..request },
     ] {
@@ -5187,7 +5134,7 @@ fn image_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
 #[test]
 fn image_popup_ffi_identifies_forward_and_reversed_native_image_selections() {
     let source = b"A![cat](image.png)B";
-    for format in [VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE] {
+    for format in [VIEM_FORMAT_MARKDOWN] {
         for reversed in [false, true] {
             let core = create_core(source, ViemDocumentOptions { format, ..Default::default() });
             let mut provider = Box::new(FakeProviderContext::new(core.handle));
@@ -5233,7 +5180,7 @@ fn image_popup_ffi_identifies_forward_and_reversed_native_image_selections() {
 
 #[test]
 fn composition_replacing_selection_exports_only_overlay_selection_until_cancel() {
-    for format in [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE, VIEM_FORMAT_MARKDOWN_SOURCE, VIEM_FORMAT_MARKDOWN] {
+    for format in [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE, VIEM_FORMAT_MARKDOWN] {
         let source = b"First paragraph.\nSecond line.";
         let core = create_core(source, ViemDocumentOptions { format, encoding: VIEM_ENCODING_LATIN1, ..ViemDocumentOptions::default() });
         let mut context = Box::new(FakeProviderContext::new(core.handle));

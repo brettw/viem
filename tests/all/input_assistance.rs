@@ -88,9 +88,7 @@ fn replacement_and_batches_share_quote_context_and_atomic_undo() {
 fn every_text_command_preserves_quotes_in_code_spans_and_paragraphs() {
     for (format, source) in [
         (Format::Markdown, "before `xxxxxx` after"),
-        (Format::MarkdownSource, "before `xxxxxx` after"),
         (Format::Markdown, "```\nxxxxxx\n```"),
-        (Format::MarkdownSource, "```\nxxxxxx\n```"),
     ] {
         for command in ['i', 'r', 'R'] {
             let (mut core, view) = smart_fixture(format, source);
@@ -113,30 +111,6 @@ fn every_text_command_preserves_quotes_in_code_spans_and_paragraphs() {
                 "{format:?} {command}"
             );
         }
-    }
-}
-
-#[test]
-fn source_batches_protect_their_own_code_and_attribute_syntax() {
-    for (format, input, expected) in [
-        (
-            Format::MarkdownSource,
-            "\"prose\" `\"code\"`\n\n```\n'code'\n```\n\n'prose'",
-            "“prose” `\"code\"`\n\n```\n'code'\n```\n\n‘prose’",
-        ),
-    ] {
-        let (mut core, view) = smart_fixture(format, "");
-        key(&mut core, view, Key::Char('i'));
-        core.handle(view, CoreEvent::Input(InputEvent::text(input)))
-            .unwrap();
-        assert_eq!(
-            core.document().source_bytes(),
-            expected.as_bytes(),
-            "{format:?}"
-        );
-        let reopened =
-            Document::from_bytes(expected.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        assert_eq!(core.document().text(), reopened.text(), "{format:?}");
     }
 }
 
@@ -248,7 +222,6 @@ fn implicit_quotes_do_not_make_encodable_input_fail() {
     for (format, source) in [
         (Format::PlainText, "x"),
         (Format::Markdown, "x"),
-        (Format::MarkdownSource, "x"),
     ] {
         let mut core = Core::new(
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Latin1, format).unwrap(),

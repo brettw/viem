@@ -84,7 +84,7 @@ fn list_paragraph_split_retains_owner_and_roundtrips() {
 
 #[test]
 fn list_paragraph_stale_or_ineligible_request_preserves_source() {
-    for (source, format) in [("ordinary", Format::Markdown), ("- item", Format::MarkdownSource), ("- item", Format::PlainText)] {
+    for (source, format) in [("ordinary", Format::Markdown), ("- item", Format::Code), ("- item", Format::PlainText)] {
         let mut doc = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         assert!(!doc.can_insert_list_paragraph(1));
         assert!(doc.apply_model_request(ModelRequest::InsertListParagraph {

@@ -67,10 +67,10 @@ impl Document {
             }
         }
 
-        let mut syntax = if self.format().is_wysiwyg() {
+        let mut syntax = if self.format().is_markdown() {
             self.escape_markdown_source_text(at.offset(), payload.text())?
         } else { payload.text().to_owned() };
-        if self.format().is_wysiwyg() && syntax.contains('\n') {
+        if self.format().is_markdown() && syntax.contains('\n') {
             // Marked breaks retain their semantic identity. An unmarked LF
             // is literal text, so protect it from Markdown's ending fold.
             let offsets: Vec<_> = payload.text().match_indices('\n').map(|(offset, _)| offset).collect();

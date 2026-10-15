@@ -229,7 +229,7 @@ internal sealed partial class StyleWindow : Window
     private global::Windows.UI.Color refreshedForeground;
     private StyleSheet? catalogueSheet;
     private static string VariantTitle(uint format) => format switch {
-        VIEM_FORMAT_CODE => "Code", VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE => "Markdown", _ => "Plain Text"
+        VIEM_FORMAT_CODE => "Code", VIEM_FORMAT_MARKDOWN => "Markdown", _ => "Plain Text"
     };
     private StyleSheet VariantSheet(uint format)
     {

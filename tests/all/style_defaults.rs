@@ -63,7 +63,7 @@ fn plain_text_loads_and_exports_explicit_rich_definitions_without_filtering() {
 #[test]
 fn theme_replacement_restores_markdown_defaults_and_automatic_styles() {
     let source = "# Heading\n\n[a link](https://example.com) and ~~struck text~~\n\n<!-- Comment -->\n\n[reference][unknown]\n\n```\ncode\n```";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut document = open(source, format);
         let initial = document.projection().style_sheet().clone();
         let revision = document.revision();
@@ -99,7 +99,7 @@ fn theme_replacement_restores_markdown_defaults_and_automatic_styles() {
 fn live_theme_replacement_survives_edits_undo_redo_without_source_or_history_changes() {
     let large = br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":27},"block":{}}]}"#;
     for (format, source) in [(Format::PlainText, "Text"), (Format::Markdown, "Text"),
-        (Format::MarkdownSource, "Text")] {
+        ] {
         let mut document = open(source, format);
         document.insert(0, "New ").unwrap();
         let source = document.source_bytes();
@@ -320,7 +320,6 @@ fn markdown_defaults_define_two_four_level_families_independent_of_used_depth() 
     ];
     for format in [
         Format::Markdown,
-        Format::MarkdownSource,
     ] {
         assert_eq!(lists(&open("", format)), expected, "{format:?}");
     }
@@ -335,23 +334,6 @@ fn markdown_defaults_define_two_four_level_families_independent_of_used_depth() 
         document.projection().blocks().last().unwrap().style,
         StyleId::from("BulletedList4")
     );
-}
-
-#[test]
-fn editing_list_depth_reuses_fourth_style_and_undo_restores_source() {
-    let original = "- One\n  - Two\n    - Three";
-    let mut document = open(original, Format::MarkdownSource);
-    let styles = lists(&document);
-    let end = document.text().len();
-    document.insert(end, "\n      - Four").unwrap();
-    assert_eq!(lists(&document), styles);
-    assert_eq!(
-        document.projection().blocks().last().unwrap().style,
-        StyleId::from("BulletedList4")
-    );
-    assert!(document.undo());
-    assert_eq!(lists(&document), styles);
-    assert_eq!(document.source_bytes(), original.as_bytes());
 }
 
 fn clear_definition(document: &mut Document, id: &StyleId, character: bool) {

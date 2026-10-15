@@ -281,8 +281,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             document,
             revision,
             table: 0,
-            image_max_width: if !context.source && context.projection.has_inline_images_in_region(&range) { view.width.to_bits() } else { 0 },
-            source: context.source,
+            image_max_width: if context.projection.has_inline_images_in_region(&range) { view.width.to_bits() } else { 0 },
             metrics: self.provider.metrics_generation(),
             environment: self.provider.measurement_environment_id(),
             scale: view.scale,
@@ -354,25 +353,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 return None;
             }
             let column = |offset: usize| -> Option<usize> {
-                if context.source {
-                    let row = table
-                        .source_rows
-                        .partition_point(|row| row.range.end < offset);
-                    let cells = &table.source_rows.get(row)?.cells;
-                    Some(
-                        cells
-                            .partition_point(|cell| cell.end < offset)
-                            .min(table.columns.len() - 1),
-                    )
-                } else {
-                    let row = table.rows.partition_point(|row| row.range.end < offset);
-                    let cells = &table.rows.get(row)?.cells;
-                    Some(
-                        cells
-                            .partition_point(|cell| cell.range.end < offset)
-                            .min(table.columns.len() - 1),
-                    )
-                }
+                let row = table.rows.partition_point(|row| row.range.end < offset);
+                let cells = &table.rows.get(row)?.cells;
+                Some(
+                    cells
+                        .partition_point(|cell| cell.range.end < offset)
+                        .min(table.columns.len() - 1),
+                )
+            
             };
             let current = column(range.start)?;
             let active = column(at)?;
@@ -391,8 +379,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 }
             })
         });
-        let multiline = !context.source
-            && context.projection.hard_line_at_offset(range.start)
+        let multiline = context.projection.hard_line_at_offset(range.start)
                 != context.projection.hard_line_at_offset(range.end);
         let signature = (
             focus,
@@ -543,8 +530,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     progress.line_height = progress.line_height.max(row.natural_height());
                     progress.width = progress.width.max(progress.line_width);
                     let at = row.text_range.end;
-                    if !context.source
-                        && at < end
+                    if at < end
                         && context
                             .projection
                             .text_tree()
@@ -565,7 +551,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 progress.fragments += 1;
             }
         }
-        if !context.source && progress.next < range.end {
+        if progress.next < range.end {
             let remaining = context
                 .projection
                 .hard_line_at_offset(range.end)
@@ -670,8 +656,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     );
                 }
             }
-            if context.source
-                || context.projection.hard_line_at_offset(range.start)
+            if context.projection.hard_line_at_offset(range.start)
                     == context.projection.hard_line_at_offset(range.end)
             {
                 row.text_range = range.clone();

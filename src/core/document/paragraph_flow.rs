@@ -1,6 +1,5 @@
 //! Format-owned classification of physical source breaks. The editable
-//! Markdown projection normalizes prose whitespace; source views retain every
-//! character and use the same classification only for optional layout flow.
+//! Markdown projection folds prose whitespace and maps paragraph separators.
 use super::line_endings::{LineEnding, LogicalUnit, NormalizedText};
 use std::collections::BTreeSet;
 use std::ops::Range;
@@ -21,7 +20,6 @@ fn push_blank_run(
     input: &NormalizedText,
     lines: &[Range<usize>],
     replacements: &mut Vec<(Range<usize>, &'static str, bool)>,
-    hide_blank_text: bool,
     start: usize,
     first: usize,
     last: usize,
@@ -35,7 +33,7 @@ fn push_blank_run(
         let to = if pair + 1 == pairs { last } else { from + 1 };
         let begin = if pair == 0 { start } else { input.endings[from].normalized.start };
         replacements.push((begin..input.endings[to].normalized.end, "\n", true));
-        if hide_blank_text && pair + 1 < pairs {
+        if pair + 1 < pairs {
             let empty = lines[to + 1].clone();
             if !empty.is_empty() {
                 replacements.push((empty, "", false));
@@ -43,7 +41,7 @@ fn push_blank_run(
         }
     }
     // A final blank line after the run is the last (empty) paragraph's text.
-    if hide_blank_text && last + 1 == input.endings.len() && !lines[last + 1].is_empty() && blank(&input.text[lines[last + 1].clone()]) {
+    if last + 1 == input.endings.len() && !lines[last + 1].is_empty() && blank(&input.text[lines[last + 1].clone()]) {
         replacements.push((lines[last + 1].clone(), "", false));
     }
 }
@@ -77,52 +75,30 @@ pub(super) fn markdown_soft_breaks_with_syntax(input: &NormalizedText, syntax: &
     }).collect()
 }
 
-pub(super) fn flow_ranges(input: &NormalizedText, soft: &BTreeSet<usize>) -> Vec<Range<usize>> {
-    let mut start = 0;
-    let mut ranges = Vec::new();
-    for ending in &input.endings {
-        if !soft.contains(&ending.normalized.start) {
-            ranges.push(start..ending.normalized.start);
-            start = ending.normalized.end;
-        }
-    }
-    ranges.push(start..input.text.len());
-    ranges
-}
-
 /// A cooked Unicode stream still maps each output unit to exact physical
 /// bytes. Each canonical pair of source endings is one mapped paragraph
 /// newline; repeated pairs retain authored empty paragraphs. Deleting a
 /// semantic boundary owns its complete physical separator extent.
 pub(super) fn markdown(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
-    markdown_projection(input, false, true)
+    markdown_projection(input, true)
 }
 
 /// A band of lines from inside a document: its first line may follow earlier
 /// blocks, so leading blank lines are not document-start separators.
 pub(super) fn markdown_region(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
-    markdown_projection(input, false, false)
-}
-
-/// Source syntax remains visible, but blank paragraph-separator lines share
-/// the same mapped boundary as WYSIWYG. Ordinary source endings still belong
-/// to the optional per-view flow policy.
-pub(super) fn markdown_source(input: &NormalizedText) -> (NormalizedText, BTreeSet<usize>) {
-    markdown_projection(input, true, true)
+    markdown_projection(input, false)
 }
 
 fn markdown_projection(
     input: &NormalizedText,
-    preserve_markers: bool,
     document_start: bool,
 ) -> (NormalizedText, BTreeSet<usize>) {
     let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
-    markdown_with_syntax(input, preserve_markers, document_start, &syntax)
+    markdown_with_syntax(input, document_start, &syntax)
 }
 
 pub(super) fn markdown_with_syntax(
     input: &NormalizedText,
-    preserve_markers: bool,
     document_start: bool,
     syntax: &super::markdown_syntax::Blocks,
 ) -> (NormalizedText, BTreeSet<usize>) {
@@ -130,24 +106,23 @@ pub(super) fn markdown_with_syntax(
     let quotes = super::markdown_quotes::classify_with_syntax(input, syntax);
     // Count blank physical lines before any block. Quote stripping can empty
     // a line that still owns container markers, so judge the original text.
-    let leading_blank = if document_start && !preserve_markers {
+    let leading_blank = if document_start {
         source_lines(input).iter().take_while(|line| blank(&input.text[(*line).clone()])).count()
     } else {
         0
     };
-    if !preserve_markers && quotes.iter().any(|line| line.depth > 0) {
+    if quotes.iter().any(|line| line.depth > 0) {
         let body = super::markdown_quotes::strip(input, &quotes);
         let body_soft = input.endings.iter().zip(&body.endings)
             .filter_map(|(before, after)| soft.contains(&before.normalized.start)
                 .then_some(after.normalized.start)).collect();
-        return markdown_projection_with_soft_breaks(&body, false, leading_blank, body_soft, &syntax);
+        return markdown_projection_with_soft_breaks(&body, leading_blank, body_soft, syntax);
     }
-    markdown_projection_with_soft_breaks(input, preserve_markers, leading_blank, soft, &syntax)
+    markdown_projection_with_soft_breaks(input, leading_blank, soft, syntax)
 }
 
 fn markdown_projection_with_soft_breaks(
     input: &NormalizedText,
-    preserve_markers: bool,
     leading_blank: usize,
     soft: BTreeSet<usize>,
     syntax: &super::markdown_syntax::Blocks,
@@ -170,7 +145,7 @@ fn markdown_projection_with_soft_breaks(
             }
         } else {
             let last = leading_blank.min(input.endings.len()) - 1;
-            push_blank_run(input, &lines, &mut replacements, true, 0, 0, last);
+            push_blank_run(input, &lines, &mut replacements, 0, 0, last);
             i = last + 1;
         }
     }
@@ -193,7 +168,7 @@ fn markdown_projection_with_soft_breaks(
         let inline_code = syntax.inline_code.get(syntax.inline_code.partition_point(|range| range.end <= ending.source.start))
             .is_some_and(|range| range.start <= ending.source.start && ending.source.end <= range.end);
         if inline_code {
-            if !preserve_markers { replacements.push((ending.normalized.clone(), " ", false)); }
+            replacements.push((ending.normalized.clone(), " ", false));
             i += 1;
             continue;
         }
@@ -206,7 +181,7 @@ fn markdown_projection_with_soft_breaks(
             i += 1;
             continue;
         }
-        if !preserve_markers && lists[i].as_ref().is_some_and(|line|
+        if lists[i].as_ref().is_some_and(|line|
             line.marker.is_some() && input.text[line.content_start..lines[i].end].trim().is_empty()
                 && lists.get(i + 1).and_then(Option::as_ref).is_some_and(|next|
                     !next.code && matches!((&line.kind, &next.kind),
@@ -220,10 +195,6 @@ fn markdown_projection_with_soft_breaks(
             continue;
         }
         if soft.contains(&ending.normalized.start) {
-            if preserve_markers {
-                i += 1;
-                continue;
-            }
             let end = lists
                 .get(i + 1)
                 .and_then(Option::as_ref)
@@ -244,16 +215,11 @@ fn markdown_projection_with_soft_breaks(
                 last += 1;
             }
             if last > i {
-                push_blank_run(input, &lines, &mut replacements, !preserve_markers,
+                push_blank_run(input, &lines, &mut replacements,
                     input.endings[i].normalized.start, i, last);
                 i = last;
-            } else if preserve_markers {
-                // An ordinary terminal source ending remains editable.
-                if hard {
-                    explicit.insert(ending.source.end);
-                }
             } else if !hard {
-                push_blank_run(input, &lines, &mut replacements, true, ending.normalized.start, i, i);
+                push_blank_run(input, &lines, &mut replacements, ending.normalized.start, i, i);
             } else {
                 let count = if text.ends_with('\\') {
                     1
@@ -268,18 +234,16 @@ fn markdown_projection_with_soft_breaks(
                 explicit.insert(ending.source.end);
             }
         } else if hard {
-            if !preserve_markers {
-                let count = if text.ends_with('\\') {
-                    1
-                } else {
-                    text.len() - text.trim_end_matches(' ').len()
-                };
-                replacements.push((
-                    ending.normalized.start - count..ending.normalized.end,
-                    "\n",
-                    true,
-                ));
-            }
+            let count = if text.ends_with('\\') {
+                1
+            } else {
+                text.len() - text.trim_end_matches(' ').len()
+            };
+            replacements.push((
+                ending.normalized.start - count..ending.normalized.end,
+                "\n",
+                true,
+            ));
             explicit.insert(ending.source.end);
         }
         i += 1;
@@ -295,7 +259,7 @@ fn markdown_projection_with_soft_breaks(
             .is_some_and(|range| range.start <= end && start < range.end);
         if let Some(context) = context
             .as_ref()
-            .filter(|context| !preserve_markers && context.marker.is_none() && !indented && !definition)
+            .filter(|context| context.marker.is_none() && !indented && !definition)
         {
             if context.content_start > lines[index].start
                 && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start))
@@ -304,22 +268,20 @@ fn markdown_projection_with_soft_breaks(
             }
         }
     }
-    if !preserve_markers {
-        for (index, line) in lines.iter().enumerate() {
-            let start = source_at(input, line.start);
-            let end = source_at(input, line.end);
-            let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= start))
-                .is_some_and(|range| range.start <= end && start < range.end);
-            if !definition { continue; }
-            let text = &input.text[line.clone()];
-            let leading = text.len() - text.trim_start_matches([' ', '\t']).len();
-            if leading > 0 && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start)) {
-                replacements.push((line.start..line.start + leading, "", false));
-            }
-            let trailing = text.trim_end_matches([' ', '\t']).len();
-            if trailing < text.len() && input.endings.get(index).is_none_or(|ending| !soft.contains(&ending.normalized.start)) {
-                replacements.push((line.start + trailing..line.end, "", false));
-            }
+    for (index, line) in lines.iter().enumerate() {
+        let start = source_at(input, line.start);
+        let end = source_at(input, line.end);
+        let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= start))
+            .is_some_and(|range| range.start <= end && start < range.end);
+        if !definition { continue; }
+        let text = &input.text[line.clone()];
+        let leading = text.len() - text.trim_start_matches([' ', '\t']).len();
+        if leading > 0 && (index == 0 || !soft.contains(&input.endings[index - 1].normalized.start)) {
+            replacements.push((line.start..line.start + leading, "", false));
+        }
+        let trailing = text.trim_end_matches([' ', '\t']).len();
+        if trailing < text.len() && input.endings.get(index).is_none_or(|ending| !soft.contains(&ending.normalized.start)) {
+            replacements.push((line.start + trailing..line.end, "", false));
         }
     }
     replacements.sort_by_key(|(range, _, _)| range.start);

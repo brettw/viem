@@ -21,33 +21,6 @@ final class EVHTMLExportIntegrationTests: XCTestCase {
         return surface
     }
 
-    func testMarkdownSourceExportsFormattedContentAndPreservesEditingState() async throws {
-        let source = "# Heading\r\n\r\n**bold** & <word>\r\n"
-        let surface = try surface(source, type: EVDocument.markdownSourceType)
-        let backend = surface.backend
-        let session = try XCTUnwrap(surface.session)
-        _ = try session.sendTestKeys("A tail")
-        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-        let before = try backend.recoverySnapshot()
-        let canUndo = surface.canUndo
-        let canRedo = surface.canRedo
-        let cursor = surface.viewPresentation.cursor_utf8_offset
-
-        let data = try await surface.htmlExportData()
-        let html = try XCTUnwrap(String(data: data, encoding: .utf8))
-
-        XCTAssertTrue(html.contains("<!DOCTYPE html>"))
-        XCTAssertTrue(html.contains("<h1"))
-        XCTAssertTrue(html.contains("font-weight: 700"))
-        XCTAssertFalse(html.contains("**bold**"))
-        XCTAssertFalse(html.contains("# Heading"))
-        XCTAssertEqual(try backend.recoverySnapshot(), before)
-        XCTAssertEqual(surface.canUndo, canUndo)
-        XCTAssertEqual(surface.canRedo, canRedo)
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
-        XCTAssertEqual(backend.sourceFormat, .markdownSource)
-    }
-
     func testCodeExportsEscapedLiteralTextWithSyntaxStyles() async throws {
         let source = "fn main() {\n    let text = \"<script>&\";\n}\n"
         let surface = try surface(source, type: EVDocument.codeType, filename: "main.rs")
@@ -66,7 +39,7 @@ final class EVHTMLExportIntegrationTests: XCTestCase {
     }
 
     func testNativeExportCommandUsesTheActivePaneAndHTMLPanel() throws {
-        let surface = try surface("# Export me", type: EVDocument.markdownSourceType)
+        let surface = try surface("# Export me", type: EVDocument.markdownType)
         let document = EVDocument(editorBackend: surface.backend)
         let controller = EVDocumentWindowController(document: document, editorSurface: surface)
         defer { controller.window?.orderOut(nil); document.close() }

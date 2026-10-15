@@ -107,40 +107,6 @@ fn verification_reference_and_indented_code_transfers() {
 }
 
 #[test]
-fn lazy_source_list_continuation_accepts_unicode_then_more_typing() {
-    for source in ["- y\na", "- y\n👩‍💻", "- y\n  a", "- y\né", "- y\nالعربية"] {
-        let (mut core, view) = open(source, Format::MarkdownSource);
-        input(&mut core, view, InputEvent::key('G'));
-        input(&mut core, view, InputEvent::key('A'));
-        input(&mut core, view, InputEvent::text("é"));
-        input(&mut core, view, InputEvent::text("x"));
-        assert_eq!(
-            core.document().source_bytes(),
-            format!("{source}éx").as_bytes()
-        );
-        verify_history(&mut core, view, source);
-    }
-}
-
-#[test]
-fn split_source_table_has_distinct_owners_and_accepts_typing() {
-    let source = "| a | b |\n| - | - |\n| 1 | 2 |\n| a | b |\n| - | - |\n| 1 | 2 |";
-    let (mut core, view) = open(source, Format::MarkdownSource);
-    input(&mut core, view, InputEvent::key('i'));
-    place(&mut core, view, 32);
-    input(&mut core, view, InputEvent::Key(Key::Enter));
-    let tables = core.document().projection().tables();
-    assert_eq!(tables.len(), 2);
-    assert_ne!(tables[0].id, tables[1].id);
-    input(&mut core, view, InputEvent::text("x"));
-    assert_eq!(
-        core.document().source_bytes(),
-        b"| a | b |\n| - | - |\n| 1 | 2 |\n| \n\nxa | b |\n| - | - |\n| 1 | 2 |"
-    );
-    verify_history(&mut core, view, source);
-}
-
-#[test]
 fn emptied_fence_can_be_typed_again() {
     for source in [
         "```\nx\n```",
@@ -739,33 +705,6 @@ fn table_join_after_column_insert_and_native_selection_cannot_reverse_source_sli
 }
 
 #[test]
-fn source_code_typing_inside_emphasis_delimiters_preserves_existing_characters() {
-    use viem_core::document::StyleNamespace;
-    let source = "**bold**";
-    for at in [1, 7] {
-        let (mut core, view) = open(source, Format::MarkdownSource);
-        place(&mut core, view, at);
-        let expected = core.list_selection_identity(view).unwrap();
-        core.handle_with_layout(
-            view,
-            CoreEvent::AssignNamedStyle {
-                expected,
-                style_sheet_revision: core.document().projection().style_sheet().revision,
-                namespace: StyleNamespace::Character,
-                style: "Code".into(),
-            },
-        )
-        .unwrap();
-        input(&mut core, view, InputEvent::text("x"));
-        assert_eq!(
-            core.document().source_bytes(),
-            format!("{}`x`{}", &source[..at], &source[at..]).as_bytes()
-        );
-        verify_history(&mut core, view, source);
-    }
-}
-
-#[test]
 fn pending_emphasis_can_style_new_text_inside_inline_code() {
     use viem_core::document::{SemanticInlineStyle, StyleApplication};
     for source in [
@@ -1053,56 +992,6 @@ fn typing_in_a_blank_paragraph_after_an_unclosed_comment_matches_reopening() {
         input(&mut core, view, InputEvent::text("---"));
         assert_eq!(core.document().text(), format!("{source}\n---"));
         verify_history(&mut core, view, source);
-    }
-}
-
-#[test]
-fn source_pending_styles_are_bounded_inside_strike_delimiters() {
-    use viem_core::document::{
-        FontSlant, FormattedPayloadEdit, FormattedTextPayload, StyleId, StyleProperty,
-        StylePropertyValue,
-    };
-    let source = "~~strike~~";
-    for at in 0..=source.len() {
-        for style in ["Bold", "Italic", "Code"] {
-            let mut document = Document::from_bytes(
-                source.as_bytes().to_vec(),
-                Encoding::Utf8,
-                Format::MarkdownSource,
-            )
-            .unwrap();
-            let payload =
-                FormattedTextPayload::new(&document.hard_line_snapshot(), "x", vec![]).unwrap();
-            let edit = FormattedPayloadEdit::new(at..at, payload)
-                .with_boundary_affinity(BoundaryAffinity::Downstream);
-            let properties = match style {
-                "Bold" => vec![(
-                    StyleProperty::CharacterBold,
-                    StylePropertyValue::Boolean(true),
-                )],
-                "Italic" => vec![(
-                    StyleProperty::CharacterSlant,
-                    StylePropertyValue::FontSlant(FontSlant::Italic),
-                )],
-                _ => vec![],
-            };
-            let named = StyleId::from("Code");
-            document
-                .insert_with_typing_style(edit, (style == "Code").then_some(&named), &properties)
-                .unwrap_or_else(|error| panic!("{style} at {at}: {error:?}"));
-            assert!(document.text().contains('x'));
-            let after = document.source_bytes();
-            assert_eq!(
-                Document::from_bytes(after.clone(), Encoding::Utf8, Format::MarkdownSource)
-                    .unwrap()
-                    .text(),
-                document.text()
-            );
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), source.as_bytes());
-            assert!(document.redo());
-            assert_eq!(document.source_bytes(), after);
-        }
     }
 }
 

@@ -103,7 +103,6 @@ ViemStatus viem_pane_layout_action(uint64_t handle, uint64_t pane, uint32_t oper
 
 #define VIEM_FORMAT_PLAIN_TEXT 1u
 #define VIEM_FORMAT_MARKDOWN 2u
-#define VIEM_FORMAT_MARKDOWN_SOURCE 5u
 #define VIEM_FORMAT_CODE 7u
 
 #define VIEM_FILE_FORMAT_DETECT 0u
@@ -267,9 +266,12 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_PARAGRAPH_START 24u
 #define VIEM_KEY_PARAGRAPH_END 25u
 #define VIEM_KEY_NEXT_PARAGRAPH 26u
-/* Native GUI paste: Vim paste-before placement and cursor-after behavior. */
+/* Native GUI paste: Vim paste-before placement and cursor-after behavior.
+   External text pasted into Markdown Preview is interpreted as Markdown. */
 #define VIEM_KEY_PASTE_CLIPBOARD 27u
 #define VIEM_KEY_ALT_ENTER 28u
+/* Native Paste and Match Style: the same placement with literal text. */
+#define VIEM_KEY_PASTE_CLIPBOARD_MATCHING_STYLE 29u
 #define VIEM_KEY_MODIFIER_SHIFT 1u
 #define VIEM_KEY_MODIFIER_CONTROL 2u
 #define VIEM_KEY_MODIFIER_ALT 4u
@@ -1937,15 +1939,6 @@ typedef struct ViemSetFileFormatV1 {
 #define VIEM_SET_FILE_FORMAT_V1_SIZE \
   ((uint32_t)sizeof(ViemSetFileFormatV1))
 
-/* Switch between Markdown Source and WYSIWYG without changing source bytes. */
-typedef struct ViemSetMarkdownSourceV1 {
-  uint32_t struct_size;
-  uint32_t source;
-  uint64_t document_id;
-  uint64_t document_revision;
-} ViemSetMarkdownSourceV1;
-#define VIEM_SET_MARKDOWN_SOURCE_V1_SIZE ((uint32_t)sizeof(ViemSetMarkdownSourceV1))
-
 typedef struct ViemSetEncodingV1 {
   uint32_t struct_size;
   uint32_t encoding;
@@ -2669,10 +2662,6 @@ ViemStatus viem_core_view_copy_line_number_regions(ViemCoreHandle core, ViemView
 #define VIEM_LINE_MODE_VISUAL 0u
 #define VIEM_LINE_MODE_PHYSICAL_SOURCE 1u
 /* View-local visual or physical source-line command policy. */
-/* Markdown flows structurally; Markdown Source defaults off per view.
-   Setter is supported for Markdown Source only. */
-ViemStatus viem_core_view_paragraph_flow(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
-ViemStatus viem_core_view_set_paragraph_flow(ViemCoreHandle core, ViemViewId view, uint32_t enabled, ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t *out_mode);
 /* Base Paragraph font size with line spacing and this view's zoom applied.
  * Does not perform layout or consult the visible text's styles/font metrics. */
@@ -2813,8 +2802,8 @@ ViemStatus viem_core_prepare_html_export(ViemCoreHandle core,
                                          ViemHtmlExportHandle *out_export);
 /* Render a prepared handle once, then copy its bytes. This may wait for syntax
  * workers and should run on a background thread. It never accesses the live core
- * or invokes its measurement provider. Markdown Source exports semantics; Code
- * analyzes the complete captured snapshot, including offscreen text.
+ * or invokes its measurement provider. Markdown exports its formatted structure;
+ * Code analyzes the complete captured snapshot, including offscreen text.
  * Rendering twice, or copying before render succeeds, returns INVALID_ARGUMENT. */
 ViemStatus viem_html_export_render(ViemHtmlExportHandle export_handle);
 /* Two-pass copy from one owned result. BUFFER_TOO_SMALL reports the exact size
@@ -2900,7 +2889,6 @@ ViemStatus viem_core_view_edit_command_line(ViemCoreHandle core, ViemViewId view
     uint64_t start, uint64_t end, const uint8_t *utf8, uint64_t length,
     ViemCoreOutcomeV1 *out_outcome);
 
-ViemStatus viem_core_view_set_markdown_source_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetMarkdownSourceV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
 ViemStatus viem_core_view_set_encoding_with_effects(ViemCoreHandle core, ViemViewId view, const ViemSetEncodingV1 *request, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
 /* Copy exact half-open source-byte bounds from the named source revision. */
 ViemStatus viem_core_copy_source_range_bytes(ViemCoreHandle core, uint64_t document, uint64_t revision, uint64_t source_start, uint64_t source_end, uint8_t *output, uint64_t capacity, uint64_t *out_required, uint32_t *out_complete);
@@ -2952,8 +2940,6 @@ typedef struct ViemSetDocumentModeV1 {
     uint32_t mode;
     uint64_t document_id;
     uint64_t document_revision;
-    uint32_t formatted_markdown;
-    uint32_t reserved;
 } ViemSetDocumentModeV1;
 #define VIEM_SET_DOCUMENT_MODE_V1_SIZE ((uint32_t)sizeof(ViemSetDocumentModeV1))
 /* Code with an empty language retains the current language selection and always
@@ -2989,7 +2975,7 @@ ViemStatus viem_core_view_edit_link(ViemCoreHandle core, ViemViewId view,
                                    ViemUtf8Slice destination,
                                    ViemCoreOutcomeV1 *outcome);
 /* Image popup has the link-context schema with "image" instead of "link".
- * WYSIWYG range is one atomic U+FFFC object, Source range is full notation.
+ * The range is one atomic U+FFFC object in Markdown Preview.
  * No query fetches resources. Empty alternative text is allowed. */
 ViemStatus viem_core_view_copy_image_context(ViemCoreHandle core, ViemViewId view,
                                             uint8_t *output, uint64_t capacity,

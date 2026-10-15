@@ -182,7 +182,7 @@ fn pointer_words_preserve_visual_policy_and_reject_stale_hits_atomically() {
 
 #[test]
 fn paragraph_navigation_uses_semantic_paragraphs_not_wrapped_or_hard_rows() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let (mut core, view) = fixture(
             "first paragraph with many wrapped words\\\ncontinuation\n\nsecond paragraph\n\nlast",
             format,

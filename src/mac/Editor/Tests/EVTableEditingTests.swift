@@ -20,35 +20,34 @@ final class EVTableEditingTests: XCTestCase {
         func viemWrite(_ content: EVClipboardRepresentations) -> Bool { self.content = content; viemGeneration += 1; return true }
     }
 
-    private func surface(_ text: String, source: Bool = false) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
+    private func surface(_ text: String, code: Bool = false) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-tables-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
-        try backend.read(source: Data(text.utf8), typeName: source ? EVDocument.markdownSourceType : EVDocument.markdownType)
+        try backend.read(source: Data(text.utf8), typeName: code ? EVDocument.codeType : EVDocument.markdownType,
+            filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded(); surface.view.frame = NSRect(x: 0, y: 0, width: 700, height: 400); surface.viewDidLayout()
         return (backend, surface, try XCTUnwrap(surface.session))
     }
 
-    func testInsertTableCountsBodyRowsAndRestoresExactBytesWithUndoInBothViews() throws {
-        for source in [false, true] {
-            let (backend, surface, session) = try surface("Before", source: source)
-            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 6, length: 0))
-            let context = try session.tableContext()
-            XCTAssertNotEqual(context.flags & UInt32(VIEM_TABLE_CAN_INSERT), 0)
-            _ = try session.insertTable(columns: 3, bodyRows: 4, expected: context.selection)
-            surface.refreshPresentation()
-            let after = try session.tableContext()
-            XCTAssertEqual(after.columns, 3); XCTAssertEqual(after.rows, 5)
-            XCTAssertEqual(after.row, 0); XCTAssertEqual(after.column, 0)
-            XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
-            let saved = try backend.serializedSource(typeName: EVDocument.markdownType)
-            XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("| --- | --- | --- |"))
-            _ = try session.undo()
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("Before".utf8))
-            _ = try session.redo()
-            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), saved)
-        }
+    func testInsertTableCountsBodyRowsAndRestoresExactBytesWithUndo() throws {
+        let (backend, surface, session) = try surface("Before")
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 6, length: 0))
+        let context = try session.tableContext()
+        XCTAssertNotEqual(context.flags & UInt32(VIEM_TABLE_CAN_INSERT), 0)
+        _ = try session.insertTable(columns: 3, bodyRows: 4, expected: context.selection)
+        surface.refreshPresentation()
+        let after = try session.tableContext()
+        XCTAssertEqual(after.columns, 3); XCTAssertEqual(after.rows, 5)
+        XCTAssertEqual(after.row, 0); XCTAssertEqual(after.column, 0)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        let saved = try backend.serializedSource(typeName: EVDocument.markdownType)
+        XCTAssertTrue(String(decoding: saved, as: UTF8.self).contains("| --- | --- | --- |"))
+        _ = try session.undo()
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("Before".utf8))
+        _ = try session.redo()
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), saved)
     }
 
     func testNativeStructuralActionsRetainAlignmentAndUndoExactSpelling() throws {
@@ -183,7 +182,7 @@ final class EVTableEditingTests: XCTestCase {
             "Offscreen table geometry cannot activate a widget")
     }
 
-    func testRowHoverDoesNotShowWidgetsInSourceView() throws {
+    func testRowHoverDoesNotShowWidgetsWithPreviewOff() throws {
         let (_, surface, _) = try surface("| A | B |\n| --- | --- |\n| one | two |")
         let editor = surface.editorView
         let interaction = EVTableInteraction(editor: editor)
@@ -324,9 +323,8 @@ final class EVTableEditingTests: XCTestCase {
             + String(repeating: "readable text ", count: 40_000)
             + " | still a separate cell |\n\nAfter the table.\n"
         for warm in [false, true] {
-            let (backend, surface, session) = try surface(text, source: true)
+            let (backend, surface, session) = try surface(text)
             defer { session.detach() }
-            surface.formattingToolbar.formattedView.performClick(nil)
             XCTAssertEqual(backend.sourceFormat, .markdown)
             func finishRefinement() async throws {
                 for _ in 0..<1000 {
@@ -406,5 +404,4 @@ final class EVTableEditingTests: XCTestCase {
                 "Typing must insert Z at the giant cell's end and preserve all other text; warm=\(warm)")
         }
     }
-
 }

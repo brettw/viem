@@ -56,7 +56,6 @@ type Ed = Core<MockTextMeasurementProvider>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 enum Fmt {
     Wysiwyg,
-    Source,
     Code,
     Plain,
 }
@@ -65,7 +64,6 @@ impl Fmt {
     fn format(self) -> Format {
         match self {
             Fmt::Wysiwyg => Format::Markdown,
-            Fmt::Source => Format::MarkdownSource,
             Fmt::Code => Format::Code,
             Fmt::Plain => Format::PlainText,
         }
@@ -82,9 +80,7 @@ struct Seed {
 fn all_seeds(include_files: bool) -> Vec<Seed> {
     let mut seeds = Vec::new();
     for source in corpus::MARKDOWN {
-        for fmt in [Fmt::Wysiwyg, Fmt::Source] {
-            seeds.push(Seed { fmt, source: (*source).into(), filename: None });
-        }
+        seeds.push(Seed { fmt: Fmt::Wysiwyg, source: (*source).into(), filename: None });
     }
     for (name, source) in corpus::CODE {
         seeds.push(Seed { fmt: Fmt::Code, source: (*source).into(), filename: Some((*name).into()) });
@@ -102,9 +98,7 @@ fn all_seeds(include_files: bool) -> Vec<Seed> {
     if include_files {
         for path in ["docs/markdown_demo.md", "MARKDOWN_GAPS.md", "README.md", "docs/markdown-tables.md"] {
             if let Ok(source) = std::fs::read_to_string(path) {
-                for fmt in [Fmt::Wysiwyg, Fmt::Source] {
-                    seeds.push(Seed { fmt, source: source.clone(), filename: None });
-                }
+                seeds.push(Seed { fmt: Fmt::Wysiwyg, source: source.clone(), filename: None });
             }
         }
     }
@@ -123,7 +117,10 @@ enum Act {
     Place { offset: usize, downstream: bool, extend: bool },
     Word { offset: usize, extend: bool },
     Pointer { offset: usize },
+    /// External text, interpreted as Markdown in Preview.
     Paste { text: String },
+    /// Paste and Match Style: external text stays literal.
+    PasteMatchingStyle { text: String },
     Semantic { style: String, enabled: bool },
     CharStyle { style: String },
     ParagraphStyle { style: String },
@@ -135,7 +132,7 @@ enum Act {
     TableColumn { after: bool },
     TableDeleteRow,
     TableDeleteColumn,
-    ToggleSource,
+    TogglePreview,
     Resize { width: f32, height: f32 },
     Scroll { top: f32, left: f32 },
     Wrap { enabled: bool },
@@ -423,7 +420,7 @@ impl H {
                 text_offset: *offset,
                 affinity: BoundaryAffinity::Downstream,
             }),
-            Act::Paste { text } => {
+            Act::Paste { text } | Act::PasteMatchingStyle { text } => {
                 let clipboard = ClipboardCommandContext::new()
                     .with_read(ClipboardSnapshot::new(
                         ClipboardTarget::Clipboard,
@@ -431,7 +428,8 @@ impl H {
                         ClipboardContent::from_plain_text(text),
                     ))
                     .with_write(ClipboardTarget::Clipboard);
-                self.send(CoreEvent::InputWithClipboard { input: InputEvent::Key(Key::PasteClipboard), clipboard })
+                let key = if matches!(act, Act::PasteMatchingStyle { .. }) { Key::PasteClipboardMatchingStyle } else { Key::PasteClipboard };
+                self.send(CoreEvent::InputWithClipboard { input: InputEvent::Key(key), clipboard })
             }
             Act::Semantic { style, enabled } => {
                 let expected = match self.selection_identity() {
@@ -533,12 +531,13 @@ impl H {
                 }),
                 None => Res::Ok,
             },
-            Act::ToggleSource => {
-                let format = self.core.document().format();
-                if !format.is_markdown() {
-                    return Res::Ok;
-                }
-                self.send(CoreEvent::SetMarkdownSource { document: doc_id, revision, source: !format.is_source_view() })
+            Act::TogglePreview => {
+                let mode = match self.core.document().format() {
+                    Format::Markdown => viem_core::DocumentMode::Code("markdown".into()),
+                    Format::Code if self.seed.fmt == Fmt::Wysiwyg => viem_core::DocumentMode::Markdown,
+                    _ => return Res::Ok,
+                };
+                self.send(CoreEvent::SetDocumentMode { document: doc_id, revision, mode })
             }
             Act::Resize { width, height } => {
                 self.width = *width;
@@ -1271,7 +1270,7 @@ fn insert_ops(fmt: Fmt) -> Vec<Vec<Act>> {
     for t in ["x", " ", "é"] {
         ops.push(text_acts(t));
     }
-    if matches!(fmt, Fmt::Wysiwyg | Fmt::Source) {
+    if fmt == Fmt::Wysiwyg {
         for t in ["*", "`", "|", "#", ">", "-", "[", "\\", "<", "1", "_", "~", "!", "&"] {
             ops.push(text_acts(t));
         }
@@ -1300,10 +1299,13 @@ fn insert_ops(fmt: Fmt) -> Vec<Vec<Act>> {
     ops.push(vec![Act::Paste { text: "pasted".into() }]);
     ops.push(vec![Act::Paste { text: "line one\nline two\n".into() }]);
     ops.push(vec![Act::Paste { text: "**md** | x\n\n- y".into() }]);
+    ops.push(vec![Act::Paste { text: "## H\n\n- a\n- b\n\npara".into() }]);
+    ops.push(vec![Act::Paste { text: "> q\n\n1. one\n2. two\n".into() }]);
+    ops.push(vec![Act::PasteMatchingStyle { text: "## H\n  - x\n**y**".into() }]);
     ops.push(vec![Act::Compose { text: "かな".into(), commit: true }]);
     ops.push(vec![Act::Compose { text: "かな".into(), commit: false }]);
     ops.push(vec![Act::ComposeReplacePrev { text: "é".into() }]);
-    if matches!(fmt, Fmt::Wysiwyg | Fmt::Source) {
+    if fmt == Fmt::Wysiwyg {
         ops.push(vec![Act::Semantic { style: "strong".into(), enabled: true }, Act::Text { text: "x".into() }]);
         ops.push(vec![Act::CharStyle { style: "Code".into() }, Act::Text { text: "x".into() }]);
         ops.push(vec![Act::Semantic { style: "emphasis".into(), enabled: true }, Act::Text { text: "x".into() }]);
@@ -1650,7 +1652,7 @@ fn probe_normal(seed: &Seed, sink: &Sink, max_positions: usize) {
             }
             let _ = h.act(&Act::Key { key: "Esc".into() });
             let after = h.bytes();
-            if matches!(seed.fmt, Fmt::Source | Fmt::Plain | Fmt::Code)
+            if matches!(seed.fmt, Fmt::Plain | Fmt::Code)
                 && LINE_PRESERVING_OPS.iter().any(|spec| op_label(&keys(spec)) == op_label(op))
                 && results.iter().all(|r| r.is_ok())
                 && line_count(&after) != line_count(&before_bytes)
@@ -1738,6 +1740,8 @@ fn probe_selection(seed: &Seed, sink: &Sink, max_pairs: usize) {
         vec![Act::Key { key: "Enter".into() }],
         vec![Act::Paste { text: "p".into() }],
         vec![Act::Paste { text: "l1\nl2\n".into() }],
+        vec![Act::Paste { text: "## H\n\npara\n".into() }],
+        vec![Act::PasteMatchingStyle { text: "l1\n  - l2".into() }],
         vec![Act::Key { key: "BS".into() }, Act::Key { key: "BS".into() }],
         vec![Act::Key { key: "BS".into() }, Act::Text { text: "x".into() }],
         vec![Act::Key { key: "Copy".into() }],
@@ -1751,7 +1755,7 @@ fn probe_selection(seed: &Seed, sink: &Sink, max_pairs: usize) {
             Act::Key { key: "l".into() },
         ],
     ];
-    if matches!(seed.fmt, Fmt::Wysiwyg | Fmt::Source) {
+    if seed.fmt == Fmt::Wysiwyg {
         ops.push(vec![Act::Semantic { style: "strong".into(), enabled: true }]);
         ops.push(vec![Act::Semantic { style: "emphasis".into(), enabled: true }]);
         ops.push(vec![Act::CharStyle { style: "Code".into() }]);
@@ -1854,7 +1858,7 @@ fn probe_selection(seed: &Seed, sink: &Sink, max_pairs: usize) {
 /// Native popups, pastes and committed compositions are separate undo units
 /// (AGENTS.md), so an op may need several undos to return to its origin.
 fn undo_units(op: &[Act]) -> usize {
-    1 + op.iter().filter(|a| matches!(a, Act::LinkInsert { .. } | Act::ImageInsert { .. } | Act::Paste { .. }
+    1 + op.iter().filter(|a| matches!(a, Act::LinkInsert { .. } | Act::ImageInsert { .. } | Act::Paste { .. } | Act::PasteMatchingStyle { .. }
         | Act::PasteStored | Act::Compose { commit: true, .. } | Act::ComposeReplacePrev { .. })).count()
 }
 
@@ -2177,7 +2181,7 @@ impl Rng {
 fn random_act(rng: &mut Rng, h: &H) -> Vec<Act> {
     let text = h.text();
     let b = boundaries(text);
-    let markdown = matches!(h.seed.fmt, Fmt::Wysiwyg | Fmt::Source);
+    let markdown = h.seed.fmt == Fmt::Wysiwyg;
     let pick_offset = |rng: &mut Rng| b[rng.below(b.len())];
     match rng.below(118) {
         110 | 111 => vec![Act::Number { enabled: rng.chance(3, 4) }],
@@ -2227,7 +2231,8 @@ fn random_act(rng: &mut Rng, h: &H) -> Vec<Act> {
             key: rng.pick(&["BS", "Del", "Enter", "Tab", "BackTab", "Right", "Left", "Down", "Up"]).to_string(),
         }],
         60..=63 => vec![Act::Paste {
-            text: rng.pick(&["p", "two\nlines", "line\n", "| a | b |\n| - | - |\n| 1 | 2 |", "**b**", "- x\n- y\n", "```\nc\n```", "\n", "é👩‍💻"]).to_string(),
+            text: rng.pick(&["p", "two\nlines", "line\n", "| a | b |\n| - | - |\n| 1 | 2 |", "**b**", "- x\n- y\n", "```\nc\n```", "\n", "é👩‍💻",
+                "## H\n\npara", "> q\n\n- x\n"]).to_string(),
         }],
         64..=73 if markdown => {
             let choices: Vec<Act> = vec![
@@ -2243,7 +2248,7 @@ fn random_act(rng: &mut Rng, h: &H) -> Vec<Act> {
                 Act::TableColumn { after: rng.chance(1, 2) },
                 Act::TableDeleteRow,
                 Act::TableDeleteColumn,
-                Act::ToggleSource,
+                Act::TogglePreview,
                 Act::LinkInsert { text: "t".into(), destination: "https://e.com".into() },
                 Act::LinkRemove,
                 Act::ImageInsert { destination: "pic.png".into() },
@@ -2331,7 +2336,7 @@ fn walk(seed_index: u64, steps: usize, seeds: &[Seed], sink: &Sink) {
                 }
                 let _ = h.act(&Act::Key { key: "Esc".into() });
             }
-            let after_input = matches!(act, Act::Key { .. } | Act::Text { .. } | Act::Paste { .. });
+            let after_input = matches!(act, Act::Key { .. } | Act::Text { .. } | Act::Paste { .. } | Act::PasteMatchingStyle { .. });
             let reproject = h.core.document().source_byte_len() < 20_000 || step % 25 == 0;
             let mut problems = h.check(after_input, reproject);
             problems.extend(h.check_other_views());
@@ -2362,6 +2367,7 @@ fn act_kind(act: &Act) -> &'static str {
         Act::Word { .. } => "word",
         Act::Pointer { .. } => "pointer",
         Act::Paste { .. } => "paste",
+        Act::PasteMatchingStyle { .. } => "paste_matching_style",
         Act::Semantic { .. } => "semantic",
         Act::CharStyle { .. } => "char_style",
         Act::ParagraphStyle { .. } => "paragraph_style",
@@ -2373,7 +2379,7 @@ fn act_kind(act: &Act) -> &'static str {
         Act::TableColumn { .. } => "table_column",
         Act::TableDeleteRow => "table_delete_row",
         Act::TableDeleteColumn => "table_delete_column",
-        Act::ToggleSource => "toggle_source",
+        Act::TogglePreview => "toggle_preview",
         Act::Resize { .. } => "resize",
         Act::Scroll { .. } => "scroll",
         Act::Wrap { .. } => "wrap",

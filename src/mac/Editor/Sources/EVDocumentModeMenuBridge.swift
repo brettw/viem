@@ -17,8 +17,7 @@ extension EVEditorSurfaceController: EVDocumentModeMenuProviding {
         }
         guard acceptCompletionForNativeInput(), let accepted = currentDocumentMode() else { return }
         performInput {
-            _ = try session.setDocumentMode(choice, expected: accepted,
-                formattedMarkdown: backend.configuration.markdownFormattedView)
+            _ = try session.setDocumentMode(choice, expected: accepted)
         }
         view.window?.makeFirstResponder(editorView)
     }

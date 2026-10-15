@@ -44,7 +44,7 @@ impl Document {
         if at.offset() == content.end {
             return Ok((at.offset() < source.end).then_some(at.offset()..source.end));
         }
-        if !self.format().is_source_view() || !hidden || !content.contains(&at.offset()) { return Ok(None); }
+        if !hidden || !content.contains(&at.offset()) { return Ok(None); }
         let width = self.encoding().scalar_source_width(' ');
         let space = self.encoding().encode_fragment(" ")?;
         let tab = self.encoding().encode_fragment("\t")?;
@@ -485,7 +485,7 @@ mod tests {
             for format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
                 let source = format!("- a{0}  \t{0}- b", format.spelling());
                 let document = Document::from_bytes_with_file_format(encoding.encode_fragment(&source).unwrap(),
-                    encoding, Format::MarkdownSource, format).unwrap();
+                    encoding, Format::Markdown, format).unwrap();
                 let (line, content) = document.physical_line_ranges(1).unwrap();
                 let width = encoding.scalar_source_width(' ');
                 for at in [content.start, content.start + width, content.start + width * 2] {
@@ -498,7 +498,7 @@ mod tests {
         }
         for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
             let source = "a\n \u{301}\nb";
-            let document = Document::from_bytes(encoding.encode_fragment(source).unwrap(), encoding, Format::MarkdownSource).unwrap();
+            let document = Document::from_bytes(encoding.encode_fragment(source).unwrap(), encoding, Format::Markdown).unwrap();
             let at = document.physical_line_ranges(1).unwrap().1.start;
             assert_eq!(document.hidden_source_forward_deletion_range(document.source_point(at).unwrap()).unwrap(), None);
         }
@@ -508,7 +508,7 @@ mod tests {
     fn hidden_source_forward_deletion_is_bounded_on_large_blank_rows() {
         for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
             let source = format!("- a\n{}\n- b", " ".repeat(200_000));
-            let document = Document::from_bytes(encoding.encode_fragment(&source).unwrap(), encoding, Format::MarkdownSource).unwrap();
+            let document = Document::from_bytes(encoding.encode_fragment(&source).unwrap(), encoding, Format::Markdown).unwrap();
             let at = document.physical_line_ranges(1).unwrap().1.start + 100_000 * encoding.scalar_source_width(' ');
             let (range, work) = measure_document_work(|| document.hidden_source_forward_deletion_range(document.source_point(at).unwrap()).unwrap());
             assert_eq!(range, Some(at..at + encoding.scalar_source_width(' ')));
@@ -608,9 +608,7 @@ mod tests {
     fn reverse_boundary_index_matches_fresh_projection_across_regional_edits() {
         for (format, original) in [
             (Format::PlainText, "one\ntwo\n"),
-            (Format::MarkdownSource, "# one\nlast"),
             (Format::Markdown, "# one\n**two**"),
-
         ] {
             let mut document =
                 Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();

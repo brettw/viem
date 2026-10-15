@@ -203,8 +203,8 @@ pub(super) fn prepare<R: ExRegisterReader + ?Sized>(
             }
         }
         ExAction::Align { alignment, width } => {
-            if document.format().is_wysiwyg() {
-                return Err(ExExecuteError::UnsupportedCommand("Paragraph alignment is not supported in formatted Markdown; switch to Markdown Source for whitespace alignment".into()));
+            if document.format().is_markdown() {
+                return Err(ExExecuteError::UnsupportedCommand("Paragraph alignment is not supported in Markdown Preview; turn Preview off for whitespace alignment".into()));
             }
             let default = if *alignment == ExAlignment::Left {
                 0
@@ -1005,7 +1005,7 @@ fn verify_mixed_fragment(
     range: &ResolvedExRange,
     source: &Range<usize>,
 ) -> Result<(), ExExecuteError> {
-    if document.format().is_wysiwyg()
+    if document.format().is_markdown()
         && range.start.domain != range.end.domain
         && !document
             .addressed_source_fragment_is_self_contained(range.text.clone(), source.clone())?

@@ -239,7 +239,7 @@ internal sealed partial class EditorPane
     private void RefreshImagePopup()
     {
         if (View is not { } view || !IsActive || (!window.IsWindowActive && !PickingImageLocation) || view.Composing || composing
-            || !view.HasFormattingSelection || Document.State.format is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE))
+            || !view.HasFormattingSelection || Document.State.format != VIEM_FORMAT_MARKDOWN)
         { DismissImagePopup(suppress: false); return; }
         if (!HasImageInteractionFocus()) { DismissImagePopup(suppress: false); return; }
         if (!editingImage && LinkEditorVisible) { DismissImagePopup(suppress: false); return; }

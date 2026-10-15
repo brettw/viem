@@ -33,7 +33,7 @@ fn ex(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, text: &str) ->
 #[test]
 fn numeric_substitute_selects_visible_contributors_from_physical_lines() {
     let original = "**aa** aa\nbb aa\n\ncc aa";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
             let (mut core, view) = editor(original, format, 55.);
             core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();

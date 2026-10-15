@@ -121,11 +121,6 @@ impl Document {
         if self.is_code_at(at, affinity)? {
             return Ok(QuoteContext::Code);
         }
-        if self.format() == Format::MarkdownSource
-            && markdown_source_literal(&self.input_prefix(at)?)
-        {
-            return Ok(QuoteContext::Syntax);
-        }
         Ok(QuoteContext::Prose)
     }
 
@@ -155,34 +150,6 @@ impl Document {
         self.validate_range(&range)?;
         if self.format().is_code() || !text.contains(['\'', '"']) {
             return Ok(text.to_owned());
-        }
-        if self.format().is_source_view() && text.chars().nth(1).is_some() {
-            let mut preview = self.scratch_document();
-            if preview.replace(range.clone(), text).is_ok()
-                && preview
-                    .projection()
-                    .text_tree()
-                    .slice(range.start..range.start + text.len())
-                    .ok()
-                    .as_deref()
-                    == Some(text)
-            {
-                let previous = self.input_prose_previous(range.start)?;
-                return rewrite_quotes_indexed(
-                    text,
-                    previous,
-                    |offset, _| {
-                        preview.quote_context(range.start + offset, BoundaryAffinity::Downstream)
-                    },
-                    &mut quote,
-                )
-                .map(|value| value.0);
-            }
-            let source = self
-                .projection()
-                .source_range(range)
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            return self.transform_source_quote_input(source, text, true, &mut quote);
         }
         let previous = self.input_prose_previous(range.start)?;
         let old = self
@@ -232,7 +199,6 @@ impl Document {
         self.transform_source_quote_input(
             source_range,
             text,
-            false,
             &mut |_, character, previous| quote(character, previous),
         )
     }
@@ -241,22 +207,12 @@ impl Document {
         &self,
         source_range: Range<usize>,
         text: &str,
-        logical_breaks: bool,
         quote: &mut impl FnMut(usize, char, Option<char>) -> char,
     ) -> Result<String, DocumentError> {
         if self.format().is_code() || !text.contains(['\'', '"']) {
             return Ok(text.to_owned());
         }
-        let source_format = match self.format().wysiwyg() {
-            Format::Markdown => Format::MarkdownSource,
-            value => value,
-        };
-        let spelling = if logical_breaks {
-            spell_logical_breaks(text, self.file_format())
-        } else {
-            text.to_owned()
-        };
-        let replacement = self.encoding().encode_fragment(&spelling)?;
+        let replacement = self.encoding().encode_fragment(text)?;
         let source = apply_source_patches(
             &self.state().source,
             &[SourcePatch::primary(source_range.clone(), replacement)],
@@ -266,7 +222,7 @@ impl Document {
         let candidate = build_state_from_decoded(
             source,
             decoded,
-            source_format,
+            self.format(),
             self.file_format(),
             self.state().file_format_origin,
             self.state().line_ending_evidence,
@@ -297,13 +253,7 @@ impl Document {
             if matches!(character, '\'' | '"') {
                 quote_sources.insert(offset, at);
             }
-            let scalar = character.to_string();
-            let spelling = if logical_breaks && character == '\n' {
-                self.file_format().spelling()
-            } else {
-                &scalar
-            };
-            at += self.encoding().encode_fragment(spelling)?.len();
+            at += self.encoding().encode_fragment(&character.to_string())?.len();
         }
         rewrite_quotes_indexed(
             text,
@@ -312,8 +262,12 @@ impl Document {
                 let Some(source_at) = quote_sources.get(&offset).copied() else {
                     return Ok(QuoteContext::Syntax);
                 };
-
-                preview.quote_context(formatted(source_at)?, BoundaryAffinity::Downstream)
+                // A quote inside hidden syntax (for example a link title) has
+                // no visible prose position; it stays straight.
+                let Ok(at) = formatted(source_at) else {
+                    return Ok(QuoteContext::Syntax);
+                };
+                preview.quote_context(at, BoundaryAffinity::Downstream)
             },
             quote,
         )
@@ -371,52 +325,3 @@ fn rewrite_quotes_indexed(
     Ok((output, edits))
 }
 
-fn markdown_source_literal(prefix: &str) -> bool {
-    let line = prefix.rsplit('\n').next().unwrap_or(prefix);
-    line.chars()
-        .rev()
-        .take_while(|value| *value == '\\')
-        .count()
-        % 2
-        == 1
-        || unfinished_code_span(line)
-        || line
-            .rfind("](")
-            .is_some_and(|start| line.rfind(')').map_or(true, |end| start > end))
-        || line.rfind('<').is_some_and(|start| {
-            line.rfind('>').map_or(true, |end| start > end)
-                && line[start + 1..]
-                    .chars()
-                    .next()
-                    .is_some_and(|value| value.is_ascii_alphabetic() || matches!(value, '/' | '!'))
-        })
-}
-
-// A source caret can be inside an unfinished span before the lossless parser
-// has a closing delimiter. Escapes matter only outside literal code bodies.
-fn unfinished_code_span(line: &str) -> bool {
-    let bytes = line.as_bytes();
-    let mut at = 0;
-    let mut delimiter = None;
-    while at < bytes.len() {
-        match bytes[at] {
-            b'\\' if delimiter.is_none() => {
-                at += 2;
-            }
-            b'`' => {
-                let start = at;
-                while bytes.get(at) == Some(&b'`') {
-                    at += 1;
-                }
-                let length = at - start;
-                if delimiter == Some(length) {
-                    delimiter = None;
-                } else if delimiter.is_none() {
-                    delimiter = Some(length);
-                }
-            }
-            _ => at += 1,
-        }
-    }
-    delimiter.is_some()
-}

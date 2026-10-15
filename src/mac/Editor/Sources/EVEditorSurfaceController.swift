@@ -198,9 +198,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             _ = try prepared.setScale(CGFloat(viewport.scale))
             if replacement.sourceFormat == backend.sourceFormat {
                 try prepared.setLineMode(session.lineMode())
-                if replacement.sourceFormat == .markdownSource {
-                    try prepared.setParagraphFlow(session.paragraphFlow())
-                }
             }
             try prepared.restorePosition(from: session)
         }
@@ -777,11 +774,15 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    func setFormattedView(_ enabled: Bool) {
-        guard [.markdown, .markdownSource].contains(backend.sourceFormat),
-              acceptCompletionForNativeInput(), let session else { return }
+    /// Markdown documents: Preview on, or literal Code with the Markdown language.
+    var isMarkdownDocument: Bool {
+        backend.sourceFormat == .markdown || (backend.sourceFormat == .code && backend.codeLanguageIsMarkdown)
+    }
+
+    func setMarkdownPreview(_ enabled: Bool) {
+        guard isMarkdownDocument, acceptCompletionForNativeInput(), let session else { return }
         let expected = documentState
-        performInput { _ = try session.setMarkdownSource(!enabled, expected: expected) }
+        performInput { _ = try session.setMarkdownPreview(enabled, expected: expected) }
     }
 
     public func perform(menuCommand: EVMenuCommand, sender: Any?) {
@@ -871,8 +872,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { _ = try self.sendCommandCharacter("~", session: session) }
         case .wordWrap:
             performInput { _ = try session.setWrap(!self.wrapEnabled) }
-        case .flowParagraphs:
-            performInput { try session.setParagraphFlow(!(try session.paragraphFlow())) }
         case .lineEndingUnix:
             setFileFormat(UInt32(VIEM_FILE_FORMAT_UNIX), session: session)
         case .lineEndingWindows:
@@ -1005,8 +1004,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         case .wordWrap:
             EVMenuItemPresentation(isEnabled: true, state: wrapEnabled ? .on : .off)
-        case .flowParagraphs:
-            EVMenuItemPresentation(isEnabled: backend.sourceFormat == .markdownSource, state: (try? session?.paragraphFlow()) == true ? .on : .off)
         case .lineEndingUnix:
             fileFormatPresentation(UInt32(VIEM_FILE_FORMAT_UNIX))
         case .lineEndingWindows:
@@ -1056,7 +1053,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .underline, .superscript, .subscript:
             inlinePropertyMenuPresentation(menuCommand, session: session)
         case .strikethrough:
-            if [.markdown, .markdownSource].contains(backend.sourceFormat), let session,
+            if backend.sourceFormat == .markdown, let session,
                let state = try? session.strikethroughState() {
                 EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
                     && (try? session.selectedNamedStyles().hasCodeBlock) != true,
@@ -1350,7 +1347,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func inlinePropertyMenuPresentation(_ command: EVMenuCommand, session: EVCoreViewSession?) -> EVMenuItemPresentation {
-        guard [.markdown, .markdownSource].contains(backend.sourceFormat), let session else { return .disabled }
+        guard backend.sourceFormat == .markdown, let session else { return .disabled }
         let property: EVStyleProperty = command == .underline ? .characterUnderline : command == .superscript ? .characterSuperscript : .characterSubscript
         let state = (try? session.inlinePropertyState(property)) ?? UInt32(VIEM_SEMANTIC_STYLE_STATE_OFF)
         return EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
@@ -1461,8 +1458,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             NSSound.beep()
             return
         }
+        // Markdown Preview interprets ordinary pasted text as Markdown; Paste
+        // and Match Style keeps it literal.
+        let key = pasteMatchesStyle ? VIEM_KEY_PASTE_CLIPBOARD_MATCHING_STYLE : VIEM_KEY_PASTE_CLIPBOARD
         performInput {
-            _ = try session.sendKey(kind: UInt32(VIEM_KEY_PASTE_CLIPBOARD))
+            _ = try session.sendKey(kind: UInt32(key))
         }
     }
 

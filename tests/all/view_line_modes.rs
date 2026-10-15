@@ -147,7 +147,6 @@ fn code_views_default_to_physical_source_lines() {
     for (format, expected) in [
         (Format::Code, LineMode::PhysicalSource),
         (Format::PlainText, LineMode::Visual),
-        (Format::MarkdownSource, LineMode::Visual),
     ] {
         let document =
             Document::from_bytes(b"first\nsecond".to_vec(), Encoding::Utf8, format).unwrap();
@@ -688,7 +687,7 @@ fn counted_registered_home_operator_matches_first_nonblank_and_undo() {
 fn counted_g_targets_physical_lines_in_every_selection_and_line_mode() {
     use viem_core::command::Mode;
     let source = "alpha\n  beta\n  gamma\n\nlast";
-    for format in [Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::Markdown] {
         for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
             for mode in [Mode::Normal, Mode::VisualCharacter, Mode::VisualLine, Mode::VisualBlock] {
                 let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
@@ -759,7 +758,7 @@ fn absolute_line_jumps_retain_hidden_physical_destinations() {
 fn numbered_navigation_uses_source_ordinals_in_normal_and_visual_modes() {
     use viem_core::command::Mode;
     let source = "alpha\ncontinuation\n  gamma\n\n```text\nbody\n```\n\nafter\nlast\n";
-    for format in [Format::Markdown, Format::MarkdownSource, Format::PlainText] {
+    for format in [Format::Markdown, Format::PlainText] {
         for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
             for mode in [Mode::Normal, Mode::VisualCharacter, Mode::VisualLine, Mode::VisualBlock] {
                 for (command, needle, ordinal) in [("3gg", "gamma", 2), ("60%", "body", 5), ("100%", "last", 9)] {

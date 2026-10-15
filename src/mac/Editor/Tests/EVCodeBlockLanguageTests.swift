@@ -105,7 +105,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         let source = "before\n\n```rust\nfn main() {}\n```\n\nafter"
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 850, height: 350)
@@ -156,12 +156,12 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
     }
 
-    func testWysiwygLanguageFurnitureAndSourceLocalUndoableSelection() throws {
+    func testPreviewLanguageFurnitureAndLocalUndoableSelection() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-code-block-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         let source = Data("before\n\n```rust\nfn main() {}\n```\n\nafter".utf8)
-        try backend.read(source: source, typeName: EVDocument.markdownSourceType)
+        try backend.read(source: source, typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -292,7 +292,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         let source = String(repeating: "before\n\n", count: 100)
             + "```rust\n" + String(repeating: "fn main() {}\n", count: 12) + "```\n\n"
             + String(repeating: "after\n\n", count: 100)
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownSourceType)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let codeStyles = try EVCodeStyleSession(configuration: configuration)
         XCTAssertEqual(try codeStyles.snapshot().definition(for: EVStyleTestFixtures.character("syntax:Keyword"))?.properties[.characterSize]?.declared, .float(40))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

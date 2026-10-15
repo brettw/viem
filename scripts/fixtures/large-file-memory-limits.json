@@ -601,30 +601,6 @@
     },
     {
       "arguments": [
-        "source",
-        "markdown",
-        4194304,
-        "document"
-      ],
-      "phases": {
-        "opened": {
-          "live_requested_heap_bytes": 153092096,
-          "peak_requested_heap_bytes": 294649856
-        },
-        "one_edit_default_history": {
-          "live_requested_heap_bytes": 153092096,
-          "peak_requested_heap_bytes": 294649856,
-          "can_undo": true
-        },
-        "newline_edit_default_history": {
-          "live_requested_heap_bytes": 153092096,
-          "peak_requested_heap_bytes": 294649856,
-          "can_undo": true
-        }
-      }
-    },
-    {
-      "arguments": [
         "markdown",
         "markdown",
         4194304,
@@ -694,7 +670,7 @@
           "peak_requested_heap_bytes": 440401920
         },
         "switched_back": {
-          "live_requested_heap_bytes": 265289728,
+          "live_requested_heap_bytes": 335544320,
           "peak_requested_heap_bytes": 605028352
         }
       }

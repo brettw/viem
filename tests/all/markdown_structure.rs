@@ -184,35 +184,28 @@ fn list_prose_remains_visible_before_indented_block_starts() {
 
 #[test]
 fn parser_setext_headings_keep_ownership_of_list_like_underlines() {
-    for (source, rendered, source_text) in [
-        ("bbb\n- ", "bbb", "bbb\n- "),
-        ("\nbbb\n- ", "bbb", "\nbbb\n- "),
-        ("\n\nbbb\n- ", "\nbbb", "\nbbb\n- "),
-        ("aaa\n\nbbb\n- ", "aaa\nbbb", "aaa\nbbb\n- "),
-        ("> aaa\n\nbbb\n- ", "aaa\nbbb", "> aaa\nbbb\n- "),
+    for (source, rendered) in [
+        ("bbb\n- ", "bbb"),
+        ("\nbbb\n- ", "bbb"),
+        ("\n\nbbb\n- ", "\nbbb"),
+        ("aaa\n\nbbb\n- ", "aaa\nbbb"),
+        ("> aaa\n\nbbb\n- ", "aaa\nbbb"),
         (
             "> ```\n> aaa\n\nbbb\n- ",
             "aaa\n\nbbb",
-            "> ```\n> aaa\n\nbbb\n- ",
         ),
         (
             "```\naaa\n```\n\nbbb\n- ",
             "aaa\nbbb",
-            "```\naaa\n```\nbbb\n- ",
         ),
     ] {
-        for (format, expected) in [
-            (Format::Markdown, rendered),
-            (Format::MarkdownSource, source_text),
-        ] {
-            let doc =
-                Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-            assert_eq!(doc.text(), expected, "{format:?} {source:?}");
-            let heading = doc.projection().blocks().last().unwrap();
-            assert_eq!(heading.kind, BlockKind::Heading(2), "{format:?} {source:?}");
-            assert_eq!(heading.style.0, "Heading2");
-            assert_eq!(doc.source_bytes(), source.as_bytes());
-        }
+        let doc =
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(doc.text(), rendered, "{source:?}");
+        let heading = doc.projection().blocks().last().unwrap();
+        assert_eq!(heading.kind, BlockKind::Heading(2), "{source:?}");
+        assert_eq!(heading.style.0, "Heading2");
+        assert_eq!(doc.source_bytes(), source.as_bytes());
     }
 }
 
@@ -385,13 +378,6 @@ fn bullet_spellings_project_canonically_and_edits_keep_original_markers() {
         );
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
-        let raw = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        assert_eq!(raw.text(), source);
     }
 }
 
@@ -622,86 +608,6 @@ fn assigning_paragraph_style_retains_list_container_without_source_regeneration(
         .unwrap();
     assert_eq!(document.text(), "First\nsecond\nTail");
     assert_eq!(document.source_bytes(), b"+ ## First\n+ ## second\n\nTail");
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}
-
-#[test]
-fn source_list_edits_keep_enclosing_depth_and_match_fresh_projection() {
-    let source = "- Root\n  3. Child\n     - Grandchild\n       continuation\n  1. Sibling\n\nTail";
-    let mut document = Document::from_bytes(
-        source.as_bytes().to_vec(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    let at = document.text().find("continuation").unwrap();
-    document.replace(at..at + 1, "C").unwrap();
-    let reopened = Document::from_bytes(
-        document.source_bytes(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    assert_eq!(
-        document
-            .projection()
-            .blocks()
-            .iter()
-            .map(|block| (&block.kind, &block.style))
-            .collect::<Vec<_>>(),
-        reopened
-            .projection()
-            .blocks()
-            .iter()
-            .map(|block| (&block.kind, &block.style))
-            .collect::<Vec<_>>()
-    );
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}
-
-#[test]
-fn late_source_list_body_edit_keeps_bounded_work_and_flow_membership() {
-    let source = format!("- Root\n{}", "  continuation body\n".repeat(20_000));
-    let mut document = Document::from_bytes(
-        source.as_bytes().to_vec(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    let at = document.projection().hard_line_range(18_000).unwrap().start + 2;
-    let old_flow = document.projection().presentation_line_count(true);
-    let prepared = document
-        .prepare_model_request(ModelRequest::ApplyTextEdits {
-            document: document.id(),
-            revision: document.revision(),
-            edits: vec![TextEdit::new(at..at + 12, "replacement")],
-        })
-        .unwrap();
-    let work = prepared.summary().projection_work();
-    assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
-    assert!(work.projected_hard_lines() <= 3);
-    assert!(work.projected_formatted_bytes() < 100);
-    document.commit_model_transaction(prepared).unwrap();
-    assert_eq!(
-        document.projection().presentation_line_count(true),
-        old_flow
-    );
-    assert!(matches!(
-        document
-            .projection()
-            .blocks()
-            .iter()
-            .find(|block| block.range.contains(&at))
-            .unwrap()
-            .kind,
-        BlockKind::ListItem {
-            item_start: true,
-            level: 0,
-            ..
-        }
-    ));
     assert!(document.undo());
     assert_eq!(document.source_bytes(), source.as_bytes());
 }

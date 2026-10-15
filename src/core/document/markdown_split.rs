@@ -244,7 +244,13 @@ pub(super) fn patches_with_separator(
             if in_code {
                 syntax.push_str(segment);
             } else {
-                syntax.push_str(&document.escape_markdown_source_text(source.start, segment)?);
+                // A paragraph start strips leading whitespace, and a reopened
+                // delimiter before it would no longer open its scope.
+                let leading = if line_start { segment.len() - segment.trim_start_matches([' ', '\t']).len() } else { 0 };
+                for character in segment[..leading].chars() {
+                    syntax.push_str(if character == ' ' { "&#32;" } else { "&#9;" });
+                }
+                syntax.push_str(&document.escape_markdown_source_text(source.start, &segment[leading..])?);
             }
             line_start = false;
         }

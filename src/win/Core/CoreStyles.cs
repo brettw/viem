@@ -70,7 +70,7 @@ internal sealed unsafe partial class CoreView
         FormattingContextChanged?.Invoke();
     }
     public bool CanFormatStrikethrough => HasFormattingSelection
-        && Document.State.format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE
+        && Document.State.format == VIEM_FORMAT_MARKDOWN
         && !Document.IsReadOnly && !SelectedNamedStyles().HasCodeBlock
         && (LogicalSelection().kind is VIEM_LOGICAL_SELECTION_KIND_CHARACTER or VIEM_LOGICAL_SELECTION_KIND_LINE
             || Presentation.mode is VIEM_MODE_NORMAL or VIEM_MODE_INSERT or VIEM_MODE_REPLACE);
@@ -116,7 +116,6 @@ internal sealed unsafe partial class CoreView
         Apply(o => { var selection = LogicalSelection(); return viem_core_view_insert_list_paragraph(Document.Handle, Id, &selection, o); });
     }
     public uint ListCapabilities() { var selection = LogicalSelection(); uint caps = 0; Check(viem_core_view_list_indent_capabilities(Document.Handle, Id, &selection, &caps), "Read list actions"); return caps; }
-    public void SetMarkdownSource(bool source) => Send((c, o, e) => { var state = Document.State; var r = New<ViemSetMarkdownSourceV1>(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.source = source ? 1u : 0u; return viem_core_view_set_markdown_source_with_effects(Document.Handle, Id, &r, o, e); });
     public void SetEncoding(uint encoding) => Send((c, o, e) => { var state = Document.State; var r = New<ViemSetEncodingV1>(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.encoding = encoding; return viem_core_view_set_encoding_with_effects(Document.Handle, Id, &r, o, e); });
     public void FileFormat(uint format) => Apply(o => { var state = Document.State; var r = New<ViemSetFileFormatV1>(); r.document_id = state.document_id; r.document_revision = state.document_revision; r.file_format = format; return viem_core_view_set_file_format(Document.Handle, Id, &r, o); });
     public ViemStyleSheetIdentityV1 StyleIdentity()

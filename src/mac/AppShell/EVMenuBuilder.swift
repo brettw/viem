@@ -348,11 +348,10 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.delegate = self
         menu.showsStateColumn = true
         menu.addItem(documentModeItem("Plain text", choice: .plainText))
-        menu.addItem(documentModeItem("Markdown", choice: .markdown))
+        menu.addItem(documentModeItem("Markdown Preview", choice: .markdown))
         menu.addItem(documentModeItem("Code", choice: .codeFormat))
         menu.addItem(.separator())
         menu.addItem(coreItem("Word wrap", command: .wordWrap))
-        menu.addItem(coreItem("Flow source paragraphs", command: .flowParagraphs))
         return menu
     }
 

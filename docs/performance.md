@@ -13,8 +13,8 @@ owns standard literal and Markdown opening/editing/views, supplemental encodings
 dense lines, giant words, search/save/history/reclamation, and cold rich-paste
 fixture sets.
 The Markdown cases repeat dense rich blocks (headings, inline markup, lists,
-quotes, tables and fences) in formatted and Source presentation, including a
-switch between them. The checked-in [limits](../scripts/fixtures/large-file-memory-limits.json) are
+quotes, tables and fences) in Markdown Preview and as Code (Preview off),
+including a switch between them. The checked-in [limits](../scripts/fixtures/large-file-memory-limits.json) are
 regression inputs, not recorded results; do not relax them to make a change pass.
 
 Rich projections must not keep per-scalar records. Parser input stores runs of

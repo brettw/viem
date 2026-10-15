@@ -20,7 +20,7 @@ final class EVDocumentExportTests: XCTestCase {
         var sourceDidChange: (() -> Void)?
         var persistenceStateDidChange: ((EVDocumentPersistenceState) -> Void)?
         var persistenceState = EVDocumentPersistenceState(isDirty: true, documentID: 4, documentRevision: 12)
-        var sourceFormat: EVSourceFormat = .markdownSource
+        var sourceFormat: EVSourceFormat = .code
         var source = Data("# Original\r\n".utf8)
         var acknowledgementCount = 0
         func makeEditorSurface() -> any EVEditorSurface { Surface() }
@@ -95,7 +95,7 @@ final class EVDocumentExportTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: original), backend.source)
         XCTAssertEqual(document.fileURL, original)
         XCTAssertEqual(document.fileType, EVDocument.markdownType)
-        XCTAssertEqual(backend.sourceFormat, .markdownSource)
+        XCTAssertEqual(backend.sourceFormat, .code)
         XCTAssertEqual(backend.persistenceState, before)
         XCTAssertEqual(document.isDocumentEdited, edited)
         XCTAssertEqual(document.fileBaseline, baseline)

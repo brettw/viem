@@ -27,7 +27,7 @@ internal static class BidiControlTests
 
         string[] controls = ["\u061c", "\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u202d", "\u202e",
             "\u2066", "\u2067", "\u2068", "\u2069"];
-        foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN_SOURCE, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE })
+        foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE })
         foreach (string family in new[] { "Segoe UI", "Recursive" })
         {
             byte[] original = "ab"u8.ToArray();

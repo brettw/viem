@@ -646,7 +646,6 @@ impl Document {
                         Format::PlainText => "builtin.plain-text",
                         Format::Code => "builtin.code",
                         Format::Markdown => "builtin.markdown",
-                        Format::MarkdownSource => "builtin.markdown-source",
                     },
                     version: 1,
                 },
@@ -871,7 +870,6 @@ mod tests {
             (Format::Markdown, "```\ncode\n```", 0..4, "中", false),
             (Format::Markdown, "a `b`", 0..3, "中", true),
             (Format::Markdown, "a `b`", 0..3, "AA中", false),
-            (Format::MarkdownSource, "**prose**", 2..7, "中", false),
             (Format::PlainText, "prose", 0..5, "中", false),
         ] {
             let mut document =
@@ -1055,7 +1053,6 @@ mod strikethrough_capability_tests {
     fn strikethrough_is_advertised_only_for_markdown() {
         for format in [
             Format::Markdown,
-            Format::MarkdownSource,
             Format::PlainText,
             Format::Code,
         ] {

@@ -66,7 +66,7 @@ fn goto_surfaces_hidden_source_interiors_as_typed_command_errors() {
 #[test]
 fn bare_line_address_past_eof_moves_to_last_file_line_and_reports_vim_diagnostic() {
     use viem_core::command::ex_execute::{ExFrontendRequest, ExInfoRequest};
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         for source in ["a\nb\nc", "a\nb\nc\n"] {
             let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             let mut commands = CommandInterpreter::new();

@@ -53,7 +53,7 @@ pub(super) fn plan(
     let infos = snapshot
         .lines(0..count)
         .map_err(|_| DocumentError::HardLineTransferProjectionMismatch)?;
-    let source_mode = document.format().is_source_view() || document.format().is_code();
+    let source_mode = document.format().is_code();
     let signatures = if source_mode {
         None
     } else {
@@ -64,7 +64,7 @@ pub(super) fn plan(
     };
     let source = document.source_bytes();
     let mut source_patches = match document.format() {
-        Format::PlainText | Format::Code | Format::MarkdownSource => {
+        Format::PlainText | Format::Code => {
             let physical = transfer::physical_hard_lines(document, count)?;
             let mut replacement = Vec::new();
             for (slot, index) in order.iter().enumerate() {

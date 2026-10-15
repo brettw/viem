@@ -56,7 +56,7 @@ fn html_export_validates_pointers_identity_and_owned_result_lifetime() {
         Document::from_bytes(
             b"# Heading\n\n**bold** & text".to_vec(),
             Encoding::Utf8,
-            Format::MarkdownSource,
+            Format::Markdown,
         )
         .unwrap(),
     );

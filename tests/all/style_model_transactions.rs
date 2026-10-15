@@ -507,7 +507,6 @@ fn persisted_style_capabilities_are_explicit_for_plain_and_markdown() {
     for (format, bytes) in [
         (Format::PlainText, b"plain".as_slice()),
         (Format::Markdown, b"markdown".as_slice()),
-        (Format::MarkdownSource, b"markdown".as_slice()),
     ] {
         let mut document = Document::from_bytes(bytes.to_vec(), Encoding::Utf8, format).unwrap();
         let range = whole_document(&document);

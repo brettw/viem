@@ -48,7 +48,7 @@ fn whitespace_references_are_literal_in_source_and_code() {
     assert_eq!(formatted.text(), " \t");
     assert_eq!(formatted.source_bytes(), source.as_bytes());
     for (source, expected, format) in [
-        (source, source, Format::MarkdownSource),
+        (source, source, Format::Code),
         ("`&#32;`", "&#32;", Format::Markdown),
         ("```\n&#32;\n```", "&#32;", Format::Markdown),
     ] {
@@ -124,7 +124,7 @@ fn list_continuation_body_whitespace_matches_reopened_projection() {
 #[test]
 fn october11_empty_parent_indentation_and_tight_list_cleanup() {
     use viem_core::command::Key;
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in ["- \n- ", "1. \n2. "] {
             let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             let mut commands = CommandInterpreter::new();

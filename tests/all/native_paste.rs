@@ -9,7 +9,7 @@ use viem_core::command::{
     RegisterReadError, RegisterValue,
 };
 use viem_core::document::{
-    BoundaryAffinity, Document, Encoding, FileFormat, FontSlant, Format, SemanticInlineStyle,
+    BoundaryAffinity, Document, Encoding, FontSlant, Format, SemanticInlineStyle,
     StyleApplication, StyleNamespace,
 };
 use viem_core::layout::{DocumentLayoutStyles, MockTextMeasurementProvider};
@@ -1307,19 +1307,3 @@ fn native_linewise_rich_donor_replaces_character_selection_above_the_joined_line
     exact_history(&mut commands, &mut document, b"abcdef", expected);
 }
 
-#[test]
-fn native_source_paste_normalizes_external_breaks_and_preserves_unselected_source_bytes() {
-    let original = b"# original\r\n\r\n__untouched__";
-    let mut document = Document::from_bytes_with_file_format(
-        original.to_vec(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-        FileFormat::Dos,
-    )
-    .unwrap();
-    let mut commands = CommandInterpreter::new();
-    paste(&mut commands, &mut document, &external("**new**\r\n"));
-    let expected = b"**new**\r\n# original\r\n\r\n__untouched__";
-    assert_eq!(document.source_bytes(), expected);
-    exact_history(&mut commands, &mut document, original, expected);
-}

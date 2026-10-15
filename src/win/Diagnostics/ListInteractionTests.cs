@@ -182,11 +182,11 @@ internal static class ListInteractionTests
             Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled for a nonempty selection");
             await CloseParagraphMenu();
             view.Key(VIEM_KEY_ESCAPE);
-            view.SetMarkdownSource(true);
+            view.SetMarkdownPreview(false);
             await OpenParagraphMenu();
-            Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled in Markdown Source");
+            Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled with Markdown Preview off");
             await CloseParagraphMenu();
-            view.SetMarkdownSource(false);
+            view.SetMarkdownPreview(true);
             PlaceInSecond();
             document.SetReadOnly(true);
             await OpenParagraphMenu();

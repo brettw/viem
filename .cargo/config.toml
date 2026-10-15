@@ -1,0 +1,7 @@
+# Processes that Cargo starts (tests and `cargo run`) compare every regional
+# Markdown/Text candidate with complete reprojection and panic on a mismatch,
+# so ordinary test suites catch locality bugs. Set the variable to `off` or
+# `log` in the environment to override; see src/core/document/candidate.rs.
+# Measurement tools turn it off themselves.
+[env]
+VIEM_SHADOW_PROJECTION = { value = "panic", force = false }

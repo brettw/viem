@@ -133,12 +133,12 @@ import XCTest
         }
     }
 
-    func testSourceViewCopyAndCopySourceExportOnlyPlainSource() throws {
+    func testCodeCopyAndCopySourceExportOnlyPlainSource() throws {
         let pasteboard = NSPasteboard.withUniqueName()
         defer { pasteboard.releaseGlobally() }
         for (source, sourceType, formattedType) in [
             ("let café = \"👩‍💻\";", EVDocument.codeType, EVDocument.codeType),
-            ("# Title\n\n__café 👩‍💻__", EVDocument.markdownSourceType, EVDocument.markdownType),
+            ("# Title\n\n__café 👩‍💻__", EVDocument.codeType, EVDocument.markdownType),
         ] {
             let (_, sourceView, sourceSession) = try surface(source, type: sourceType, pasteboard: pasteboard)
             try selectAll(session: sourceSession, surface: sourceView)

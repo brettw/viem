@@ -334,11 +334,10 @@ pub(super) fn include_preceding_rows<P: TextMeasurementProvider>(
     mut candidate: LayoutJobCandidate,
     mut required_height: f32,
 ) -> Result<LayoutJobCandidate, CoreError> {
-    let flow = core.presentation_flow(view_id);
     let height = core.views[&view_id].layout.height().max(f32::EPSILON);
     while required_height > 0. && candidate.regional_snapshot().hard_lines().start > 0 {
         let line = candidate.regional_snapshot().hard_lines().start - 1;
-        let range = core.document.projection().presentation_line_range(line, flow)
+        let range = core.document.projection().presentation_line_range(line)
             .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line: line })?;
         let following = candidate.regional_snapshot().clone();
         let mut checkpoint = {
