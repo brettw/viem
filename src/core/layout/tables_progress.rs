@@ -1,7 +1,7 @@
 //! Bounded intrinsic discovery and glyph materialization for very long cells.
 use super::bidi::BidiBandWidths;
 use super::*;
-const PROGRESS_FRAGMENT: usize = 4096;
+pub(super) const PROGRESS_FRAGMENT: usize = 4096;
 const PROGRESS_CACHE_CELLS: usize = 16;
 const CHECKPOINT_BLOCK: usize = 64;
 const CHECKPOINT_BLOCKS: usize = 256;

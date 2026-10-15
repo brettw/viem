@@ -86,7 +86,9 @@ impl SyntaxService {
             let previous = self.runs.replace(&result.range, result.runs.clone());
             changed = previous != result.runs;
             if changed {
-                self.delta.note_replaced(result.range.clone());
+                // Re-analysis of a large region usually changes runs only near
+                // an edit. Publish the differing extent, not the whole request.
+                self.delta.note_replaced(changed_extent(&previous, &result.runs).unwrap_or(result.range.clone()));
             }
         }
         self.cache
@@ -175,3 +177,13 @@ fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// The byte extent covered by runs that differ between two ordered run lists
+/// of the same region, from the first difference to the last.
+fn changed_extent(previous: &[SyntaxRun], next: &[SyntaxRun]) -> Option<Range<usize>> {
+    let prefix = previous.iter().zip(next).take_while(|(a, b)| a == b).count();
+    let suffix = previous[prefix..].iter().rev().zip(next[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+    let changed = previous[prefix..previous.len() - suffix].iter().chain(&next[prefix..next.len() - suffix]);
+    let (start, end) = changed.fold((usize::MAX, 0), |(start, end), run| (start.min(run.range.start), end.max(run.range.end)));
+    (start < end).then_some(start..end)
+}

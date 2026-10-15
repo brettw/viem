@@ -10,7 +10,9 @@ use crate::layout::persistent_map::PersistentMap;
 use progress::CellProgress;
 
 const DISCOVERY_CELLS: usize = 128;
-const CACHE_TABLES: usize = 16;
+/// Measured widths retained per engine. Exact widths let a table row reuse its
+/// retained geometry, so this covers the tables of a pre-rendered document.
+const CACHE_TABLES: usize = 128;
 const CACHE_CELL_CONTRIBUTIONS: usize = 65_536;
 const CACHE_MEASURED_INTERVALS: usize = 4096;
 
@@ -347,6 +349,22 @@ pub(crate) struct TableMeasurementCache {
     pub(super) measured_text_bytes: usize,
 }
 impl TableMeasurementCache {
+    /// Keep, for each table key, the entry with more measured cells. Merged
+    /// entries become the most recent; the table budget still applies.
+    pub(super) fn merge_from(&mut self, other: Self) {
+        for entry in other.entries {
+            match self.entries.iter().position(|existing| existing.key == entry.key) {
+                Some(index) if self.entries[index].measured.count >= entry.measured.count => continue,
+                Some(index) => { self.entries.remove(index); }
+                None => {}
+            }
+            self.entries.push_back(entry);
+        }
+        while self.entries.len() > CACHE_TABLES {
+            self.entries.pop_front();
+        }
+    }
+
     pub(super) fn rebase_document_change(&mut self, change: &DocumentLayoutChange) {
         let DocumentLayoutChange::Local { old_revision, old_hull, .. } = change else {
             self.clear(); return;
@@ -590,6 +608,80 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         Ok(rows)
     }
 
+    /// Whether `cached` geometry for a table row is still exact: the table's
+    /// widths are completely measured, unaffected by later edits, equal to the
+    /// widths the row was positioned with, and every column of the row was
+    /// materialized, so the geometry does not depend on the viewport.
+    pub(super) fn table_line_reusable(
+        &mut self,
+        context: &TableLayoutContext,
+        range: &Range<usize>,
+        document_id: DocumentId,
+        revision: Revision,
+        view: &LayoutJobViewConfiguration,
+        cached: &RegionalHardLineLayout,
+    ) -> bool {
+        let Some((table, row_index)) = context.row(range) else { return false; };
+        let column_count = table.columns.len();
+        // A long cell materializes a vertical band around the viewport.
+        if column_count == 0 || cached.rows.is_empty()
+            || table.rows[row_index].cells.iter().any(|cell| cell.range.len() > progress::PROGRESS_FRAGMENT) {
+            return false;
+        }
+        let key = WidthKey {
+            document: document_id,
+            revision,
+            table: table.id,
+            image_max_width: if context.projection.has_inline_images_in_region(&table.range) { view.width.to_bits() } else { 0 },
+            metrics: self.provider.metrics_generation(),
+            environment: self.provider.measurement_environment_id(),
+            scale: view.scale,
+            style_revision: context.projection.style_sheet().revision,
+            override_style: view.default_style_is_override.then(|| view.default_style.clone()),
+        };
+        let Some(index) = self.table_cache.entries.iter().position(|entry| {
+            let mut previous = entry.key.clone();
+            previous.revision = revision;
+            previous == key
+        }) else {
+            return false;
+        };
+        let entry = &self.table_cache.entries[index];
+        if entry.aggregate_only || entry.measured.count != entry.total
+            || entry.total != table.rows.len() * column_count || entry.widths.len() != column_count {
+            return false;
+        }
+        if entry.key.revision != revision {
+            // Widths measured for an older revision hold while no change
+            // reached this table since; adopt them for this revision, as a
+            // table layout would, so the comparison runs once per table.
+            if let Some((old, _)) = entry.projection.text_tree().changed_extent(context.projection.text_tree()) {
+                let Some(previous) = entry.projection.table_at(entry.source_range_start) else { return false; };
+                if old.start <= previous.range.end && previous.range.start <= old.end {
+                    return false;
+                }
+            }
+            let adopted = Arc::make_mut(&mut self.table_cache.entries[index]);
+            adopted.key = key;
+            adopted.projection = Arc::clone(&context.projection);
+            adopted.source_range_start = table.range.start;
+            adopted.discovery_layout = None;
+        }
+        let entry = &self.table_cache.entries[index];
+        let mut materialized = vec![false; column_count];
+        for row in &cached.rows {
+            if row.table_widths_are_exact != Some(true) {
+                return false;
+            }
+            let Some(cell) = &row.table_cell else { continue; };
+            if cell.table_id != table.id || cell.column >= column_count || cell.rect.width != entry.widths[cell.column] {
+                return false;
+            }
+            materialized[cell.column] = true;
+        }
+        materialized.into_iter().all(|column| column)
+    }
+
     pub(super) fn table_line(
         &mut self,
         context: &TableLayoutContext,
@@ -608,7 +700,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let Some((table, row_index)) = context.row(range) else {
             return Ok(None);
         };
-        let complete_columns = complete_columns || view.complete_horizontal_geometry;
+        let complete_columns = complete_columns || view.complete_horizontal_geometry || view.complete_table_columns;
         if self.table_cache.current_layout != Some(layout_revision) {
             self.table_cache.current_layout = Some(layout_revision);
             self.table_cache.remaining_bytes = 64 * 1024;

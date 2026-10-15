@@ -339,6 +339,97 @@ final class CoreTextImageResourcesTests: XCTestCase {
     XCTAssertEqual(cache.pendingLoadCount, 0)
   }
 
+  /// Counts change notifications, which always arrive on the main thread.
+  private final class Notifications: @unchecked Sendable {
+    var geometry: [[String]] = []
+    var rasters = 0
+  }
+
+  private func observed(_ cache: CoreTextImageResources) -> Notifications {
+    let notifications = Notifications()
+    cache.setResourceChangeHandler { locations in
+      MainActor.assumeIsolated { notifications.geometry.append(locations) }
+    }
+    cache.setRasterChangeHandler { MainActor.assumeIsolated { notifications.rasters += 1 } }
+    return notifications
+  }
+
+  @MainActor
+  func testWorkerProbeMakesDimensionsExactAndLaterDecodeOnlyRepaints() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-probe-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 80, height: 40)
+    let cache = CoreTextImageResources()
+    defer { cache.stop() }
+    let notifications = observed(cache)
+    let probed = cache.image(for: file.path, probe: true)
+    XCTAssertEqual(probed.state, .measured)
+    XCTAssertEqual(probed.size, CGSize(width: 80, height: 40))
+    XCTAssertNil(probed.image, "A probe reads the header without decoding pixels")
+    XCTAssertEqual(cache.dimensionProbeCount, 1)
+    XCTAssertEqual(cache.localLoadCount, 0)
+    XCTAssertEqual(cache.image(for: file.path, probe: true).identity, probed.identity, "Known dimensions are not probed again")
+    XCTAssertEqual(cache.dimensionProbeCount, 1)
+    XCTAssertTrue(cache.setVisibleLocations([file.path], viewportID: 1), "Admission starts the bitmap load itself")
+    drainUntil { cache.pendingLoadCount == 0 && notifications.rasters > 0 }
+    let decoded = cache.image(for: file.path)
+    XCTAssertEqual(decoded.state, .ready)
+    XCTAssertNotNil(decoded.image)
+    XCTAssertEqual(decoded.layoutKey, probed.layoutKey)
+    XCTAssertEqual(decoded.identity, probed.identity, "Unchanged geometry keeps its render identity")
+    XCTAssertTrue(notifications.geometry.isEmpty, "A bitmap with the probed size never reshapes layout")
+    XCTAssertEqual(cache.presentation(matching: probed.withoutRaster())?.image != nil, true, "Drawing finds the current bitmap")
+  }
+
+  @MainActor
+  func testPlaceholderUsedByLayoutReportsOneGeometryChange() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-placeholder-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 120, height: 30)
+    let cache = CoreTextImageResources()
+    defer { cache.stop() }
+    let notifications = observed(cache)
+    _ = cache.setVisibleLocations([file.path], viewportID: 1)
+    let placeholder = cache.image(for: file.path)
+    XCTAssertEqual(placeholder.state, .pending)
+    drainUntil { cache.pendingLoadCount == 0 && !notifications.geometry.isEmpty }
+    XCTAssertEqual(notifications.geometry, [[file.path]])
+    XCTAssertEqual(notifications.rasters, 0)
+    XCTAssertNil(cache.presentation(matching: placeholder), "Stale placeholder geometry never draws the new bitmap")
+    XCTAssertEqual(cache.image(for: file.path).size, CGSize(width: 120, height: 30))
+  }
+
+  @MainActor
+  func testDisplayRastersAreResampledOffTheMainThreadOncePerBitmapAndSize() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-display-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 1000, height: 500)
+    let cache = CoreTextImageResources()
+    defer { cache.stop() }
+    let notifications = observed(cache)
+    _ = cache.setVisibleLocations([file.path], viewportID: 1)
+    drainUntil { cache.pendingLoadCount == 0 && cache.image(for: file.path).image != nil }
+    let image = cache.image(for: file.path)
+    let repaints = notifications.rasters
+    func resampled(_ size: CGSize) throws -> CGImage {
+      XCTAssertTrue(cache.displayRaster(for: image, pixels: size) === image.image, "The original draws until resampling finishes")
+      drainUntil { cache.displayRaster(for: image, pixels: size) !== image.image }
+      return try XCTUnwrap(cache.displayRaster(for: image, pixels: size))
+    }
+    let small = try resampled(CGSize(width: 200, height: 100))
+    XCTAssertEqual(small.width, 200)
+    XCTAssertEqual(small.height, 100)
+    XCTAssertEqual(notifications.rasters, repaints + 1, "A finished resample repaints once")
+    XCTAssertTrue(cache.displayRaster(for: image, pixels: CGSize(width: 200, height: 100)) === small)
+    XCTAssertEqual(cache.scaledRenderCount, 1)
+    XCTAssertEqual(try resampled(CGSize(width: 2000, height: 1000)).width, 2000, "Upscaled drawing is resampled too")
+    XCTAssertEqual(cache.scaledRenderCount, 2)
+    XCTAssertTrue(cache.displayRaster(for: image, pixels: CGSize(width: 1050, height: 520)) === image.image,
+                  "Near-native sizes draw the original bitmap")
+    XCTAssertTrue(cache.displayRaster(for: image, pixels: CGSize(width: 4000, height: 2000)) === image.image,
+                  "Very large drawings are not cached")
+  }
+
   @MainActor
   private func drainUntil(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) {
     let deadline = Date().addingTimeInterval(5)

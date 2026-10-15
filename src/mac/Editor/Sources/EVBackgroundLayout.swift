@@ -22,16 +22,28 @@ final class EVBackgroundLayout {
     private var top: Float = 0
     private var left: Float = 0
     private var direction: Int32 = 1
-    private var remainingChunks = 0
+    /// Results discarded without progress since the last installation. Core
+    /// ends speculation when its window is complete; this only guards against
+    /// repeated stale captures under continuous change.
+    private var consecutiveDiscards = 0
+    private static let maximumConsecutiveDiscards = 8
+    /// Installations since speculation was last idle.
+    private var installedSinceIdle = 0
     var isEnabled = true {
         didSet { if !isEnabled { cancel() } }
     }
     private(set) var workerComputations = 0
+    /// Worker time spent computing results, in seconds, and the longest one.
+    private(set) var workerSeconds = 0.0
+    private(set) var longestWorkerSeconds = 0.0
     private(set) var started = 0
     private(set) var installed = 0
     private(set) var discarded = 0
     private(set) var lastError: UInt32?
     var didInstall: (() -> Void)?
+    /// Viewport speculation finished a window after installing new geometry.
+    /// Exact heights may have changed the scroll extent since the last frame.
+    var didFinish: (() -> Void)?
     var isIdle: Bool { !queued && active == nil }
 
     init(session: EVCoreViewSession, purpose: Purpose) {
@@ -50,13 +62,19 @@ final class EVBackgroundLayout {
             metrics: viewport.metrics_generation, width: layout.viewport_width, height: layout.viewport_height)
         guard next != dependencies || top != viewport.top || left != viewport.left else { return }
         let nextDirection: Int32 = viewport.top > top ? 1 : viewport.top < top ? -1 : direction
-        if next != dependencies || nextDirection != direction || left != viewport.left
-            || abs(viewport.top - top) > layout.viewport_height * 3
-            || purpose == .tableWidths && top != viewport.top {
+        // In-flight viewport speculation stays useful across scrolling and
+        // paint-only configuration changes: core validates its geometry
+        // dependencies and window when it completes.
+        let geometryChanged = dependencies.map {
+            $0.document != next.document || $0.revision != next.revision || $0.environment != next.environment
+                || $0.metrics != next.metrics || $0.width != next.width
+        } ?? true
+        if purpose == .viewport ? geometryChanged || left != viewport.left
+            : next != dependencies || left != viewport.left || top != viewport.top {
             active?.cancel()
         }
         dependencies = next; top = viewport.top; left = viewport.left; direction = nextDirection
-        remainingChunks = 32
+        consecutiveDiscards = 0
         stopped = false; lastError = nil
         queue()
     }
@@ -67,7 +85,7 @@ final class EVBackgroundLayout {
 
     private func queue() {
         guard isEnabled, !queued, active == nil, !stopped, dependencies != nil,
-              purpose == .tableWidths || remainingChunks > 0 else { return }
+              consecutiveDiscards < Self.maximumConsecutiveDiscards else { return }
         queued = true
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -84,13 +102,21 @@ final class EVBackgroundLayout {
             ? viem_core_view_prepare_table_refinement(session.document.core, session.viewID, &request)
             : viem_core_view_prepare_prelayout(session.document.core, session.viewID, direction, &request)
         guard status == UInt32(VIEM_STATUS_OK) else { stopped = true; lastError = status; return }
-        guard request != 0 else { stopped = true; return }
+        guard request != 0 else {
+            stopped = true
+            if purpose == .viewport, installedSinceIdle > 0 {
+                installedSinceIdle = 0
+                didFinish?()
+            }
+            return
+        }
         let work = Work(request: request, provider: session.provider.makeWorkerProvider())
         active = work; started += 1
-        if purpose == .viewport { remainingChunks -= 1 }
         Self.worker.async { [weak self] in
+            let begin = CFAbsoluteTimeGetCurrent()
             var provider = work.provider.makeProviderTable(), result: UInt64 = 0
             let status = viem_layout_work_compute(work.request, &provider, &result)
+            let elapsed = CFAbsoluteTimeGetCurrent() - begin
             let finishedResult = result
             let computedOnWorker = !Thread.isMainThread
             DispatchQueue.main.async { [weak self] in
@@ -98,6 +124,8 @@ final class EVBackgroundLayout {
                     if finishedResult != 0 { _ = viem_layout_work_release(finishedResult) }
                     return
                 }
+                self.workerSeconds += elapsed
+                self.longestWorkerSeconds = max(self.longestWorkerSeconds, elapsed)
                 self.complete(work, result: finishedResult, status: status, computedOnWorker: computedOnWorker)
             }
         }
@@ -109,13 +137,13 @@ final class EVBackgroundLayout {
         if computedOnWorker { workerComputations += 1 }
         guard isEnabled, !work.cancelled, !stopped, let session, session.viewID != 0 else {
             if result != 0 { _ = viem_layout_work_release(result) }
-            discarded += 1; queue(); return
+            discarded += 1; consecutiveDiscards += 1; queue(); return
         }
         guard status == UInt32(VIEM_STATUS_OK) else {
             if result != 0 { _ = viem_layout_work_release(result) }
             stopped = true; lastError = status; return
         }
-        guard result != 0 else { discarded += 1; queue(); return }
+        guard result != 0 else { discarded += 1; consecutiveDiscards += 1; queue(); return }
         var accepted: UInt8 = 0
         let status = purpose == .tableWidths
             ? viem_core_view_install_table_refinement(session.document.core, session.viewID, result, &accepted)
@@ -124,10 +152,10 @@ final class EVBackgroundLayout {
             discarded += 1; stopped = true; lastError = status; return
         }
         // Visible work can supersede a chunk without changing dependencies.
-        // Recapture from current state; preparation stops when the nearby band
-        // or table widths are ready, with bounded viewport retries as a guard.
-        guard accepted != 0 else { discarded += 1; queue(); return }
-        installed += 1
+        // Recapture from current state; preparation stops when the window or
+        // table widths are ready, with bounded stale retries as a guard.
+        guard accepted != 0 else { discarded += 1; consecutiveDiscards += 1; queue(); return }
+        installed += 1; consecutiveDiscards = 0; installedSinceIdle += 1
         if purpose == .tableWidths {
             session.clearPresentationExportCache()
             didInstall?()

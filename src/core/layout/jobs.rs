@@ -328,6 +328,7 @@ pub struct LayoutJobRequest {
     document_id: DocumentId,
     document_revision: Revision,
     configuration_generation: super::engine::ViewConfigurationGeneration,
+    geometry_generation: u64,
     provider_requirements: LayoutProviderRequirements,
     region: LayoutJobRegion,
     cancellation: LayoutCancellationToken,
@@ -406,6 +407,11 @@ impl LayoutJobRequest {
 
     pub fn configuration_generation(&self) -> super::engine::ViewConfigurationGeneration {
         self.configuration_generation
+    }
+
+    /// The view geometry generation this result was computed for.
+    pub(crate) fn geometry_generation(&self) -> u64 {
+        self.geometry_generation
     }
 
     pub fn metrics_generation(&self) -> MetricsGeneration {
@@ -716,9 +722,13 @@ pub(crate) fn prepare_cache_layout_job(
     region: HardLineLayoutRegion,
     cancellation: LayoutCancellationToken,
 ) -> Result<LayoutJobRequest, LayoutJobError> {
-    prepare_layout_job_with_registration_hooks(document, view, requirements, job_id,
+    let mut request = prepare_layout_job_with_registration_hooks(document, view, requirements, job_id,
         LayoutJobPriority::Background, LayoutJobRegion::HardLines(region), cancellation,
-        false, || {}, || {})
+        false, || {}, || {})?;
+    // Speculative rows are retained for any later horizontal scroll, so a
+    // table row materializes every column; callers bound each line's text.
+    request.captured_view.complete_table_columns = true;
+    Ok(request)
 }
 
 /// The callbacks are deterministic test seams around registration. Production
@@ -1003,6 +1013,7 @@ where
         document_id: document.id(),
         document_revision: document.revision(),
         configuration_generation: view.configuration_generation(),
+        geometry_generation: view.geometry_generation(),
         provider_requirements,
         region,
         cancellation,
@@ -1033,6 +1044,7 @@ pub struct LayoutJobCandidate {
     document_id: DocumentId,
     document_revision: Revision,
     configuration_generation: super::engine::ViewConfigurationGeneration,
+    geometry_generation: u64,
     measurement_environment_id: MeasurementEnvironmentId,
     metrics_generation: MetricsGeneration,
     requested_region: LayoutJobRegion,
@@ -1300,6 +1312,7 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
         document_id: request.document_id,
         document_revision: request.document_revision,
         configuration_generation: request.configuration_generation,
+        geometry_generation: request.geometry_generation,
         measurement_environment_id: request.provider_requirements.measurement_environment_id,
         metrics_generation: request.provider_requirements.metrics_generation,
         requested_region: request.region.clone(),
@@ -1401,6 +1414,19 @@ fn install_layout_job_impl(
         });
     }
     let current_configuration = view.configuration_generation();
+    let mut candidate = candidate;
+    let unchanged_geometry = match &candidate.product {
+        LayoutJobProduct::RegionalHardLines(region) | LayoutJobProduct::PartialViewport(region) =>
+            view.geometry_unchanged_since(candidate.geometry_generation, &region.hard_lines()),
+    };
+    if cache_only && candidate.configuration_generation != current_configuration && unchanged_geometry {
+        // Only paint changed since capture: the geometry remains exact.
+        candidate.configuration_generation = current_configuration;
+        match &mut candidate.product {
+            LayoutJobProduct::RegionalHardLines(region) | LayoutJobProduct::PartialViewport(region) =>
+                region.rebind_configuration(current_configuration),
+        }
+    }
     if candidate.configuration_generation != current_configuration {
         return Err(LayoutJobInstallRejection::StaleConfiguration {
             expected: current_configuration,
@@ -2175,6 +2201,7 @@ mod tests {
             document_id: document.id(),
             document_revision: document.revision(),
             configuration_generation: view.configuration_generation(),
+            geometry_generation: view.geometry_generation(),
             provider_requirements: requirements,
             region: hard_lines(FIRST_LINE..FIRST_LINE + 3),
             cancellation: LayoutCancellationToken::new(),
@@ -2240,6 +2267,7 @@ mod tests {
             document_id: document.id(),
             document_revision: document.revision(),
             configuration_generation: view.configuration_generation(),
+            geometry_generation: view.geometry_generation(),
             provider_requirements: requirements,
             region: viewport(FIRST_LINE..FIRST_LINE + 3, FIRST_LINE as f32 * 16.0, 48.0),
             cancellation: LayoutCancellationToken::new(),
@@ -2713,6 +2741,7 @@ mod tests {
             document_id: document.id(),
             document_revision: document.revision(),
             configuration_generation: view.configuration_generation(),
+            geometry_generation: view.geometry_generation(),
             provider_requirements: requirements,
             region: viewport(0..2, 0.0, 100.0),
             cancellation: LayoutCancellationToken::new(),

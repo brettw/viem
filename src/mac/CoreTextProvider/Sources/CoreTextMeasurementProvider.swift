@@ -20,8 +20,17 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   private let imageResources: CoreTextImageResources
   private let ownsImageResources: Bool
   public var imagesDidChange: (@Sendable (UInt64, [String]) -> Void)?
+  /// Bitmaps or placeholder states changed without changing layout geometry.
+  /// Drawing reads them from the shared resources; only a repaint is needed.
+  public var imageRastersDidChange: (@Sendable () -> Void)?
+  /// Worker providers for speculative layout read unknown image dimensions
+  /// from file headers, so the geometry they produce is final.
+  private let probesImageDimensions: Bool
   /// Jobs remain pending until their main-thread resource publication completes.
   var pendingImageLoadCount: Int { imageResources.pendingLoadCount }
+  var localImageLoadCountForTesting: Int { imageResources.localLoadCount }
+  var imageDimensionProbeCountForTesting: Int { imageResources.dimensionProbeCount }
+  var imageScaledRenderCountForTesting: Int { imageResources.scaledRenderCount }
 
   public func setImageDocumentURL(_ url: URL?) {
     if imageResources.setDocumentURL(url) { invalidateMetrics() }
@@ -29,6 +38,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
 
   /// The frontend refreshes metrics after installing its current immutable frame
   /// when new visible locations need admission to the bounded preview queue.
+  @discardableResult
   public func updateVisibleImages(_ renderRuns: [(identifier: UInt64, metricsGeneration: UInt64)],
     viewportID: UInt64) -> Bool {
     imageResources.setVisibleLocations(renderRegistry.inlineImageLocations(in: renderRuns), viewportID: viewportID)
@@ -80,8 +90,10 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     shapingDidBegin: (@Sendable () throws -> Void)?,
     sharedRegistry: CoreTextRenderRegistry? = nil,
     sharedImageResources: CoreTextImageResources? = nil,
-    observeFontChanges: Bool = true
+    observeFontChanges: Bool = true,
+    probesImageDimensions: Bool = false
   ) {
+    self.probesImageDimensions = probesImageDimensions
     self.measurementEnvironmentID = measurementEnvironmentID
     let proposedOwner = measurementEnvironmentID ^ 0x4354_5255_4E53_4554
     renderRunOwner = proposedOwner == 0 ? 0x5649_454D : proposedOwner
@@ -93,6 +105,16 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     if ownsImageResources {
       imageResources.setResourceChangeHandler { [weak self] destinations in
         self?.invalidateImageResources(destinations)
+      }
+      imageResources.setRasterChangeHandler { [weak self] in
+        self?.imageRastersDidChange?()
+      }
+      let resources = imageResources
+      renderRegistry.inlineImagePresentation = { [weak resources] captured in
+        resources?.presentation(matching: captured)
+      }
+      renderRegistry.inlineImageDisplayRaster = { [weak resources] image, pixels in
+        resources?.displayRaster(for: image, pixels: pixels)
       }
     }
 
@@ -127,14 +149,15 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   /// Independent callback storage for one immutable worker request. Metrics are
   /// frozen to the captured generation; stale installation is rejected by core.
   /// Glyph leases share the UI registry so completed rows remain drawable.
-  public func makeWorkerProvider() -> CoreTextMeasurementProvider {
+  public func makeWorkerProvider(probesImageDimensions: Bool = true) -> CoreTextMeasurementProvider {
     CoreTextMeasurementProvider(
       measurementEnvironmentID: measurementEnvironmentID,
       initialMetricsGeneration: metricsGeneration,
       shapingDidBegin: nil,
       sharedRegistry: renderRegistry,
       sharedImageResources: imageResources,
-      observeFontChanges: false)
+      observeFontChanges: false,
+      probesImageDimensions: probesImageDimensions)
   }
 
   public var metricsGeneration: UInt64 {
@@ -329,7 +352,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       guard start >= contextStart, end <= contextEnd,
             let start16 = indexMap.utf16Offset(forUTF8: Int(start - contextStart)),
             let end16 = indexMap.utf16Offset(forUTF8: Int(end - contextStart)) else { throw ProviderError(Status.invalidArgument) }
-      let image = imageResources.image(for: destination)
+      let image = imageResources.image(for: destination, probe: probesImageDimensions)
       let style = styleAt(globalOffset: start, defaultStyle: defaultStyle, runs: styleRuns)
       let size = imageLayoutSize(image, style: style, scale: CGFloat(request.scale))
       let box = InlineImageMetrics(width: size.width, height: size.height)
@@ -416,7 +439,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       var identifier = result.renderIdentifier
       if let (end, destination) = images[result.start] {
         guard end == result.end else { throw ProviderError(Status.providerFailure) }
-        let image = imageResources.image(for: destination)
+        let image = imageResources.image(for: destination, probe: probesImageDimensions)
         let style = styleAt(globalOffset: result.start, defaultStyle: defaultStyle, runs: styleRuns)
         let size = imageLayoutSize(image, style: style, scale: CGFloat(request.scale))
         let width = Float(size.width)
@@ -432,7 +455,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
           CTFontCopyPostScriptName(style.font) as String, String(describing: style.size)].joined(separator: ":")
         let signature = result.renderResource.signature + Array(imageSignature.utf8)
         resource = CoreTextRenderRegistry.Resource(signature: signature, batches: [], isColorGlyph: false,
-          textAttributes: result.renderResource.textAttributes, inlineImage: image, inlineImageFont: style.font)
+          textAttributes: result.renderResource.textAttributes, inlineImage: image.withoutRaster(), inlineImageFont: style.font)
         identifier = stableHash(signature)
       }
 

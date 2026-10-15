@@ -11,6 +11,10 @@ use std::sync::Arc;
 
 pub(super) mod metrics;
 
+/// Editing pause before a pre-rendered document is re-highlighted completely.
+/// Visible text is always analyzed immediately.
+const COMPLETE_SYNTAX_EDIT_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+
 #[cfg(test)]
 mod filename_tests {
     use super::*;
@@ -51,6 +55,9 @@ pub(super) struct CoreSyntax {
     detection_profile: Arc<detection::DetectionProfile>,
     filename: String,
     pub(super) published: Option<(SyntaxInputIdentity, u64)>,
+    /// When the analyzed input last changed. Speculative whole-document
+    /// analysis waits for editing to pause.
+    input_changed: Option<(SyntaxInputIdentity, std::time::Instant)>,
     referenced_names: Vec<String>,
     implicit_limited: bool,
     pub(super) sheet: Arc<crate::document::StyleSheet>,
@@ -73,6 +80,7 @@ impl Default for CoreSyntax {
             detection_profile: detection::bundled_profile(),
             filename: String::new(),
             published: None,
+            input_changed: None,
             referenced_names: Vec::new(),
             implicit_limited: false,
             sheet: code_style::snapshot(),
@@ -298,9 +306,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             let range = self.visible_syntax_range(&input, view);
             if !requests.contains(&range) { requests.push(range); }
         }
-        for range in requests {
-            self.syntax.service.request(input.clone(), range);
+        for range in &requests {
+            self.syntax.service.request(input.clone(), range.clone());
         }
+        self.request_complete_code_syntax(&input, &requests);
         let mut sheet = code_style::snapshot();
         let style_changed = sheet.revision != self.syntax.sheet.revision;
         let publication = (
@@ -322,6 +331,22 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.publish_code_presentation(sheet, &delta);
         self.syntax.published = Some(publication);
         true
+    }
+
+    /// A document within the pre-rendering threshold is highlighted completely
+    /// once every view's visible text is covered and editing has paused, so
+    /// scrolling never reveals unhighlighted text. Larger documents remain
+    /// bounded to their visible requests.
+    fn request_complete_code_syntax(&mut self, input: &SyntaxInputSnapshot, visible: &[std::ops::Range<usize>]) {
+        if !super::prelayout::retains_complete_presentation(&self.document) { return; }
+        let now = std::time::Instant::now();
+        let changed_at = match self.syntax.input_changed {
+            Some((identity, at)) if identity == input.identity() => at,
+            _ => { self.syntax.input_changed = Some((input.identity(), now)); now }
+        };
+        if now.duration_since(changed_at) < COMPLETE_SYNTAX_EDIT_PAUSE { return; }
+        if !visible.iter().all(|range| self.syntax.service.covers(input, range.clone())) { return; }
+        self.syntax.service.request(input.clone(), 0..input.byte_len());
     }
 
     /// Capture the current view's syntax request without waiting under the
@@ -485,7 +510,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         self.syntax.sheet = sheet;
         for (id, view) in &mut self.views {
-            cancel_active_layout_work(view);
+            // Visible jobs carry paint; speculative geometry survives a
+            // paint-only publication and is validated by geometry at install.
+            if metrics_changed {
+                cancel_active_layout_work(view);
+            } else if let Some(active) = view.active_layout_work.take() {
+                active.cancellation.cancel();
+            }
             if metrics_changed {
                 if let Some(anchor) = caret_anchors.get(id) {
                     view.viewport_anchor = Some(*anchor);

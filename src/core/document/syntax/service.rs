@@ -561,6 +561,11 @@ impl SyntaxService {
         }
         Some(range)
     }
+    /// Whether completed analysis of `input` covers `range`, as a request
+    /// would normalize it.
+    pub(crate) fn covers(&self, input: &SyntaxInputSnapshot, range: Range<usize>) -> bool {
+        Self::request_range(input, range).is_some_and(|range| self.has_coverage(input.identity(), &range))
+    }
     fn has_coverage(&self, input: SyntaxInputIdentity, range: &Range<usize>) -> bool {
         self.cache.iter().any(|r| r.input == input
             && r.configuration == self.configuration

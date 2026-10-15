@@ -1,5 +1,6 @@
 import AppKit
 import CViemCore
+import ImageIO
 import ViemAppShell
 import XCTest
 @testable import ViemCoreTextProvider
@@ -26,6 +27,14 @@ final class EVBackgroundLayoutTests: XCTestCase {
         return (backend, surface, session)
     }
 
+    /// Text and screen offset of each row in the viewport.
+    private func visibleRows(_ surface: EVEditorSurfaceController) throws -> [[Int]] {
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let top = surface.viewportState.top
+        return snapshot.rows.filter { $0.y + max($0.line_advance, 1) > top && $0.y < top + snapshot.info.viewport_height }
+            .map { [Int($0.text_start), Int($0.text_end), Int((($0.y - top) * 64).rounded())] }
+    }
+
     private func idle(_ scheduler: EVBackgroundLayout) async throws {
         for _ in 0..<1500 {
             if scheduler.isIdle { break }
@@ -33,6 +42,42 @@ final class EVBackgroundLayoutTests: XCTestCase {
         }
         XCTAssertTrue(scheduler.isIdle)
         XCTAssertNil(scheduler.lastError)
+    }
+
+    func testSmallDocumentIsPreparedCompletelyAndScrollsWithoutShapingOrExtentChanges() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-prepared-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let figure = directory.appendingPathComponent("figure.png")
+        let context = try XCTUnwrap(CGContext(data: nil, width: 640, height: 320, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 640, height: 320))
+        let writer = try XCTUnwrap(CGImageDestinationCreateWithURL(figure as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(writer, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(writer))
+        var source = ""
+        for section in 0..<90 {
+            source += "## Section \(section)\n\nParagraph \(section) with **bold** and *italic* words that wrap across the view.\n\n"
+            source += "| Name | Value | Notes |\n| --- | ---: | --- |\n| one | \(section) | first |\n| two | \(section * 7) | second note |\n\n"
+            if section % 30 == 15 { source += "![figure](\(figure.path))\n\n" }
+        }
+        XCTAssertLessThan(source.utf8.count, 100 * 1024)
+        let (_, surface, session) = try fixture(source: source)
+        try await idle(session.backgroundLayout)
+        // The exact extent is published once preparation is quiet.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        surface.refreshPresentation()
+        XCTAssertGreaterThan(session.provider.imageDimensionProbeCountForTesting, 0, "Figures are measured before they are visible")
+        let maximum = surface.viewportState.maximum_top
+        XCTAssertGreaterThan(maximum, 0)
+        let shapes = session.provider.shapeBatchCallCount
+        var top: CGFloat = 0
+        while top <= CGFloat(maximum) {
+            surface.requestVerticalViewport(top: top)
+            XCTAssertEqual(surface.viewportState.maximum_top, maximum, "The scroll extent stays exact at \(top)")
+            top += 157
+        }
+        XCTAssertEqual(session.provider.shapeBatchCallCount, shapes, "Prepared text, tables and figures never shape on the input thread")
     }
 
     func testQueuedWorkCancelsForEditsMetricsResizeAndClose() async throws {
@@ -55,11 +100,13 @@ final class EVBackgroundLayoutTests: XCTestCase {
         }
         session.provider.invalidateMetrics()
         surface.refreshPresentation()
-        let current = try session.viewportState()
+        let visible = try visibleRows(surface)
         EVBackgroundLayout.worker.resume(); suspended = false
         try await idle(session.backgroundLayout)
         XCTAssertGreaterThan(session.backgroundLayout.discarded, 0)
-        XCTAssertEqual(try session.viewportState().layout_revision, current.layout_revision)
+        // Current work may publish exact extents, never move visible text.
+        surface.refreshPresentation()
+        XCTAssertEqual(try visibleRows(surface), visible)
         XCTAssertEqual(try session.layoutSnapshotInfo().identity.metrics_generation, session.provider.metricsGeneration)
         XCTAssertTrue(try backend.formattedText().hasPrefix("Changed "))
         EVBackgroundLayout.worker.suspend(); suspended = true

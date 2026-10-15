@@ -94,8 +94,10 @@ transaction verification. Retries and degraded work must remain bounded.
 - Work, queues, caches and retained revisions need finite budgets and
   cancellation. Prioritize exact visible interaction over overscan and offscreen
   work; coalesce superseded edits, widths and viewports. Foreground editing must
-  not wait for obsolete offscreen work. Cache-only pre-layout must not change the
-  visible snapshot, caret or viewport, or cancel useful visible work.
+  not wait for obsolete offscreen work. Cache-only pre-layout must not move
+  visible text, the caret or the scroll anchor on screen, or cancel useful
+  visible work. It may publish exact heights, retranslating the visible
+  snapshot so its text keeps its screen position.
 - Never hold locks while parsing, projecting, shaping, wrapping, drawing, doing
   I/O, waiting, invoking callbacks or crossing into providers. Do not nest cache
   or registry locks. Native render resources need explicit ownership and thread
@@ -386,9 +388,12 @@ Deliberate presentation exceptions:
   prose. Missing or invalid local images show their location and a broken-image
   indicator. Reload an image only from an explicit local-resource refresh or a
   changed resource identity; keep prior viewport estimates while its metrics
-  are refreshed, and never fetch a remote destination for presentation. Limit
-  rejections remain stable until Reload or a document resource-identity change;
-  scrolling must not repeatedly read or decode them.
+  are refreshed, and never fetch a remote destination for presentation.
+  Speculative layout workers may read a local image's header for its
+  dimensions before it is visible; bitmaps decode only for visible or nearby
+  images, and a decoded bitmap whose dimensions layout already used repaints
+  without reshaping. Limit rejections remain stable until Reload or a document
+  resource-identity change; scrolling must not repeatedly read or decode them.
 - Comments remain visible with `Comment` styling. Surplus separator lines retain
   editable empty paragraphs rather than collapsing to GitHub's presentation.
 - Thematic rules are non-text furniture with an editable paragraph boundary.
@@ -508,7 +513,10 @@ content when closing syntax appears.
   attribute, and None removes that attribute while preserving the HTML body.
   A shorter block may leave blank canvas after the
   content without adding text or caret rows. Syntax remains
-  disposable and bounded to visible work. List/quote ownership survives a
+  disposable and bounded to visible work, except that a pre-rendered document
+  (see Layout and responsiveness) highlights every block ahead of scrolling,
+  publishing a bounded number of offscreen completions per poll. An edit
+  invalidates only the blocks it changed. List/quote ownership survives a
   contained paragraph's heading or Code Block style.
 - Preview labels and their gaps are layout decorations with no text, register,
   selection or caret positions. The first body grapheme is first editable text.
@@ -695,9 +703,11 @@ holding the core or provider locks. Ready coverage returns immediately; timeout
 or unavailable highlighting preserves ordinary asynchronous display. Repeated
 presentation of the same timed-out request must not restart the wait. Analysis,
 retries and retained state must be bounded, cancellable and shared across views;
-no document/giant-line flattening or whole-document highlighting for an exact
-scrollbar. Exact repair may reach EOF but must yield. Never truncate backend
-coordinates or split arbitrary code into false independent parses. Native
+no document/giant-line flattening. Only a pre-rendered document is highlighted
+completely, in the background once visible text is covered and editing has
+paused; larger documents never request whole-document highlighting. Exact repair
+may reach EOF but must yield. Never truncate backend coordinates or split
+arbitrary code into false independent parses. Native
 callbacks do not promise hard in-process preemption.
 
 Publish only current results. Invalidation includes text predicates, failed
@@ -1855,6 +1865,18 @@ authoritative font resolution, clusters, caret stops and metrics. A string-width
 API is insufficient. Fragmentation must preserve shaping context, bidi, fallback
 and ligatures. Layout geometry is valid only for its exact snapshot and metrics
 generation. Missing visual stops never enlarge a logical edit's grapheme range.
+
+Scrolling must not reveal unprepared presentation in the common case. A
+document whose source is at most one threshold (the single constant
+`FULL_PRELAYOUT_SOURCE_BYTES`, 100 KiB) is pre-rendered in the background:
+every hard line laid out with exact heights, table widths, image dimensions and
+syntax highlighting, and that geometry is retained rather than evicted. Larger
+documents prepare a window of the same amount of text around the viewport and
+discard cached lines farthest from it. Speculation runs on workers at lower
+priority than input, yields to visible work, survives paint-only changes, and
+never shapes on or blocks the input thread. Edits re-prepare only what they
+invalidate; lines that cannot be prepared in one bounded job (giant lines) stay
+demand-laid.
 
 - Line breaking uses the default Unicode 15.0 UAX #14 rules in portable,
   first-party code, without the optional numeric-expression tailoring or an

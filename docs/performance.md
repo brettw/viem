@@ -159,6 +159,21 @@ VIEM_CODE_PIPELINE_REPORT=target/code-pipeline-benchmark.json cargo test --relea
 The optional report uses mock measurement, so it does not establish native draw
 latency or progressive cold loading.
 
+Interactive scrolling and typing with real Core Text shaping and drawing use the
+opt-in [pre-rendering benchmark](../src/mac/Editor/Tests/EVPrelayoutBenchmarkTests.swift).
+Build it optimized; the native-test profile and debug Swift distort timings:
+
+```sh
+VIEM_RUST_PROFILE=release VIEM_PRELAYOUT_BENCHMARK=1 scripts/test-mac.sh -c release -Xswiftc -enable-testing --filter EVPrelayoutBenchmarkTests
+```
+
+Each `PRELAYOUT_BENCH` line names a fixture and mode (`immediate`, `idle` after
+preparation, or `disabled`). Compare `extent_changes`, `main_shapes`, the
+`scroll_core_ms`/`scroll_draw_ms` percentiles and `scroll_busy_ms` (main-thread
+work not caused by input) across builds on identical fixtures. Main-thread busy
+spans include the test window's first display; they are not physical display
+latency.
+
 macOS presentation/cache regression checks use the native test wrapper:
 
 ```sh
@@ -208,6 +223,20 @@ startup trace scopes. See the [Windows development guide](../src/win/README.md)
 for other scenarios and build/profile options.
 
 ## Open work
+
+- **Native shaping throughput:** speculative layout of 95 KB of Markdown costs
+  about 80 ms of core work with mock shaping but about 1 s of worker time with
+  Core Text, roughly 0.3 ms per provider call. Provider overhead bounds how
+  soon a newly opened document is fully prepared, the cost of demand layout
+  when scrolling outruns preparation, and the first frame.
+- **Typing latency:** a keystroke in a 95 KB Markdown document costs about 5 ms
+  of core work with mock shaping, about 30% of it resolving styles for the whole
+  visible region and about 14% Markdown code-block republication, plus native
+  re-shaping of the edited paragraph. Paragraph-local style resolution and
+  shifting unchanged code-block spans across edits are the next steps.
+- **Structural edits at the document end:** continuing a list at the end of a
+  Markdown document reprojects completely, which discards retained geometry and
+  exact heights until speculation prepares them again.
 
 - **Progressive first display:** document construction still decodes and builds
   the initial state before returning. Compact storage does not make opening

@@ -56,7 +56,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var immutablePresentationGeneration: UInt64 = 0
     private var presentedWhitespaceCopyCount: UInt64 = 0
     private var imageViewportID: UInt64 = 0
-    private var imageAdmissionRefreshPending = false
     // The offsets themselves remain scoped to viewPresentation's immutable
     // document revision. This associates that snapshot with its owning view.
     private var selectionPresentationViewID: ViemViewId?
@@ -254,13 +253,41 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         documentState = ViemDocumentStateV1()
     }
 
+    private var speculativeExtentRefresh: DispatchWorkItem?
+
+    /// Speculative layout can make the document extent exact without a frame.
+    /// Publish it once input is quiet; any intervening refresh already did.
+    private func scheduleSpeculativeExtentRefresh() {
+        speculativeExtentRefresh?.cancel()
+        let refresh = DispatchWorkItem { [weak self] in
+            guard let self, let session = self.session, let current = try? session.viewportState() else { return }
+            self.speculativeExtentRefresh = nil
+            guard current.maximum_top != self.viewportState.maximum_top || current.top != self.viewportState.top
+                    || current.layout_revision != self.viewportState.layout_revision else { return }
+            self.refreshPresentation(advancingSearch: false)
+        }
+        speculativeExtentRefresh = refresh
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: refresh)
+    }
+
+    /// Drawing reads current bitmaps through the render registry; geometry,
+    /// layout caches and the scroll extent are unchanged.
+    private func imageRastersDidChange() {
+        immutablePresentationGeneration &+= 1
+        if isViewLoaded { editorView.applyPresentation() }
+    }
+
     func refreshPresentation(advancingSearch: Bool = true) {
         guard let session, !isRefreshingPresentation else { return }
+        speculativeExtentRefresh?.cancel(); speculativeExtentRefresh = nil
         isRefreshingPresentation = true
         EVStartupPerformance.mark("surface.refresh.begin")
         defer { isRefreshingPresentation = false; EVStartupPerformance.mark("surface.refresh.end") }
         do {
             session.provider.setImageDocumentURL(documentHostEffectHandler?.documentURL(for: self))
+            session.provider.imageRastersDidChange = { [weak self] in
+                MainActor.assumeIsolated { self?.imageRastersDidChange() }
+            }
             session.provider.imagesDidChange = { [weak self] previous, destinations in
                 // Cache publication and its metrics acknowledgement form one
                 // main-thread operation; no frame sees a partially installed size.
@@ -474,29 +501,27 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             visualSelection = nextVisualSelection
             presentationRefreshCount &+= 1
             if immutableInputsChanged, let nextLayoutSnapshot {
-                let visible = CGRect(x: CGFloat(nextViewport.left), y: CGFloat(nextViewport.top),
-                    width: CGFloat(nextLayoutSnapshot.info.viewport_width), height: CGFloat(nextLayoutSnapshot.info.viewport_height))
+                // Admit bitmaps a screen beyond each edge as well, so ordinary
+                // scrolling finds them decoded. Admission starts loads itself;
+                // a decoded bitmap is repainted without reshaping.
+                let height = CGFloat(nextLayoutSnapshot.info.viewport_height)
+                let nearby = CGRect(x: CGFloat(nextViewport.left), y: CGFloat(nextViewport.top) - height,
+                    width: CGFloat(nextLayoutSnapshot.info.viewport_width), height: height * 3)
                 let renderRuns = nextLayoutSnapshot.clusters.compactMap { cluster -> (identifier: UInt64, metricsGeneration: UInt64)? in
                     let rect = cluster.typographic_bounds
                     guard cluster.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
-                          visible.intersects(CGRect(x: CGFloat(rect.x), y: CGFloat(rect.y),
+                          nearby.intersects(CGRect(x: CGFloat(rect.x), y: CGFloat(rect.y),
                               width: CGFloat(rect.width), height: CGFloat(rect.height))) else { return nil }
                     return (cluster.render_run.identifier, cluster.render_run.metrics_generation)
                 }
-                if session.provider.updateVisibleImages(renderRuns, viewportID: imageViewportID), !imageAdmissionRefreshPending {
-                    imageAdmissionRefreshPending = true
-                    // Keep this frame's resource generation valid until the next
-                    // synchronous refresh installs the newly admitted previews.
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        self.imageAdmissionRefreshPending = false
-                        self.session?.provider.invalidateImageResources()
-                    }
-                }
+                session.provider.updateVisibleImages(renderRuns, viewportID: imageViewportID)
             }
             synchronizeCompletionPolling()
             synchronizeSearchPolling(pending: nextSearchWorkPending)
             session.tableWidthRefinement.didInstall = { [weak self] in self?.refreshPresentation(advancingSearch: false) }
+            // Publish the exact extent once a speculative window completes;
+            // individual installations never repaint or move visible text.
+            session.backgroundLayout.didFinish = { [weak self] in self?.scheduleSpeculativeExtentRefresh() }
             session.tableWidthRefinement.update()
             session.backgroundLayout.update()
             updateStatusBar()
