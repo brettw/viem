@@ -79,6 +79,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case zoomOut
     case actualSize
     case newWindowForDocument
+    case commentMarkdown = 410
 
     /// Standard text actions must reach native field editors first. The custom
     /// document view implements the same selectors using core intentions.

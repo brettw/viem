@@ -580,6 +580,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         try configureOptional("text width") {
             try checked(viem_core_set_text_width_default(core, configuration.textWidth), operation: "Load text width")
         }
+        try configureOptional("comment Markdown") {
+            try checked(viem_core_set_comment_markdown_default(core, configuration.commentMarkdown ? 1 : 0), operation: "Load comment Markdown")
+        }
         try configureOptional("whitespace settings") {
             try configureWhitespace(indentation: configuration.indentation, presentation: configuration.whitespacePresentation)
         }
@@ -1227,6 +1230,26 @@ final class EVCoreViewSession {
     /// Buffer-owned application default; explicit `:set textwidth` survives.
     func setTextWidthDefault(_ width: UInt32) throws {
         try checked(viem_core_set_text_width_default(document.core, width), operation: "Update text width")
+    }
+
+    /// Buffer-owned application default; explicit `:set commentmarkdown` survives.
+    func setCommentMarkdownDefault(_ enabled: Bool) throws {
+        try checked(viem_core_set_comment_markdown_default(document.core, enabled ? 1 : 0), operation: "Update comment Markdown")
+        document.pollSyntax()
+    }
+
+    /// The buffer's effective `commentmarkdown` and whether its format shows it.
+    func commentMarkdown() throws -> (enabled: Bool, applicable: Bool) {
+        var enabled: UInt8 = 0
+        var applicable: UInt8 = 0
+        try checked(viem_core_comment_markdown(document.core, &enabled, &applicable), operation: "Read comment Markdown")
+        return (enabled != 0, applicable != 0)
+    }
+
+    /// The buffer override shared by every view, as `:set commentmarkdown`.
+    func setCommentMarkdown(_ enabled: Bool) throws {
+        try checked(viem_core_set_comment_markdown(document.core, enabled ? 1 : 0), operation: "Update comment Markdown")
+        document.pollSyntax()
     }
 
     func currentFontEnWidth() throws -> CGFloat {

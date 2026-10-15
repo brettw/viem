@@ -479,6 +479,7 @@ ViemStatus viem_external_file_review_finish(
 #define VIEM_EX_OPTION_AUTOSELECT 23u
 #define VIEM_EX_OPTION_HLSEARCH 19u
 #define VIEM_EX_OPTION_INCSEARCH 20u
+#define VIEM_EX_OPTION_COMMENTMARKDOWN 28u
 
 #define VIEM_EX_JUMP_CURRENT (1u << 0)
 
@@ -3018,6 +3019,13 @@ ViemStatus viem_core_copy_link_destination(ViemCoreHandle core,
     uint8_t *output, uint64_t capacity, uint64_t *required, uint8_t *found);
 /* Application default for textwidth (positive). Buffer :set overrides survive. */
 ViemStatus viem_core_set_text_width_default(ViemCoreHandle core, uint32_t width);
+/* Simplified Markdown in Code comments. The default comes from application
+ * settings; viem_core_set_comment_markdown sets the buffer override shared by
+ * every view, as :set commentmarkdown does. applicable reports whether the
+ * buffer's current format presents it (Code). Poll syntax to refresh. */
+ViemStatus viem_core_set_comment_markdown_default(ViemCoreHandle core, uint8_t enabled);
+ViemStatus viem_core_set_comment_markdown(ViemCoreHandle core, uint8_t enabled);
+ViemStatus viem_core_comment_markdown(ViemCoreHandle core, uint8_t *out_enabled, uint8_t *out_applicable);
 /* Application defaults; JSON is validated before mutation. Ex overrides survive. */
 ViemStatus viem_validate_whitespace_presentation(const uint8_t *json, uint64_t length);
 ViemStatus viem_core_set_indentation_defaults(ViemCoreHandle core, const uint8_t *json, uint64_t length);

@@ -132,9 +132,9 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         fixed (byte* p = associations) Check(viem_core_set_code_filename_associations_json(Handle, p, (ulong)associations.Length), "Set filename associations");
         configurationKey = key;
     }
-    internal void ConfigureEditingDefaults(byte[] indentation, byte[] whitespace, uint width, byte[] associations)
+    internal void ConfigureEditingDefaults(byte[] indentation, byte[] whitespace, uint width, byte[] associations, bool commentMarkdown)
     {
-        string key = Convert.ToBase64String(indentation) + Convert.ToBase64String(whitespace) + width + Convert.ToBase64String(associations);
+        string key = Convert.ToBase64String(indentation) + Convert.ToBase64String(whitespace) + width + Convert.ToBase64String(associations) + commentMarkdown;
         if (key == editingConfigurationKey) return;
         ConfigureForEditing("indentation", () => {
             fixed (byte* p = indentation) Check(viem_core_set_indentation_defaults(Handle, p, (ulong)indentation.Length), "Set indentation defaults");
@@ -143,6 +143,7 @@ internal sealed unsafe partial class CoreDocument : IDisposable
             fixed (byte* p = whitespace) Check(viem_core_set_whitespace_presentation_defaults(Handle, p, (ulong)whitespace.Length), "Set whitespace defaults");
         });
         ConfigureForEditing("text width", () => Check(viem_core_set_text_width_default(Handle, width), "Set text width default"));
+        ConfigureForEditing("comment Markdown", () => Check(viem_core_set_comment_markdown_default(Handle, commentMarkdown ? (byte)1 : (byte)0), "Set comment Markdown default"));
         ConfigureForEditing("filename associations", () => {
             fixed (byte* p = associations) Check(viem_core_set_code_filename_associations_json(Handle, p, (ulong)associations.Length), "Set filename associations");
         });
@@ -174,6 +175,17 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     {
         byte[] filename = Encoding.UTF8.GetBytes(FilePath ?? "");
         fixed (byte* p = filename) Check(viem_core_redetect_code_language(Handle, p, (ulong)filename.Length), "Detect code language");
+    }
+    /// <summary>The buffer's effective <c>commentmarkdown</c> and whether its format shows it.</summary>
+    public (bool Enabled, bool Applicable) CommentMarkdown
+    {
+        get { byte enabled = 0, applicable = 0; Check(viem_core_comment_markdown(Handle, &enabled, &applicable), "Read comment Markdown"); return (enabled != 0, applicable != 0); }
+    }
+    /// <summary>The buffer override shared by every view, as <c>:set commentmarkdown</c>.</summary>
+    public void SetCommentMarkdown(bool enabled)
+    {
+        Check(viem_core_set_comment_markdown(Handle, enabled ? (byte)1 : (byte)0), "Set comment Markdown");
+        PollSyntax();
     }
     public bool PollSyntax()
     {

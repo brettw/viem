@@ -152,9 +152,62 @@ instead of a guessed block state.
 Native blocks use the incremental lexical checkpoints. Unknown state is never
 presented as ordinary code.
 
-Exact native body and delimiter ranges are available for future Markdown in
-comments. Rendering, parsing, and editing Markdown in those bodies remain deferred;
-custom formatting markers are not automatically eligible native comment bodies.
+Native body and delimiter ranges also drive [Markdown in comments](#markdown-in-comments).
+Custom formatting markers are not automatically eligible native comment bodies.
+
+## Markdown in comments
+
+Code presents a small subset of Markdown inside comments. It is on by default.
+**Settings > Editing > Format Markdown in Code comments** sets the application
+default; **View > Markdown in comments** and `:set commentmarkdown` (`cmd`) set an
+override for the document, shared by all of its views.
+`:set nocommentmarkdown`, `:set cmd!`, `:set cmd?` and `:set cmd&` (resume the
+default) work as for other Boolean options. The setting is presentation only:
+it never changes source, dirty state, undo, registers or the clipboard, and
+delimiters stay visible.
+
+Only character syntax is recognized, so a comment leader can never start a list,
+heading, quote or indented code block:
+
+| Syntax | Presentation |
+| --- | --- |
+| `**strong**`, `__strong__` | `Markup.strong` |
+| `*emphasis*`, `_emphasis_` | `Markup.italic` |
+| `~~strikethrough~~` | `Markup.strikethrough` |
+| `[label](destination)`, `<https://…>`, bare `https://` and `www.` URLs | `Markup.link.label`, `Markup.link.url` |
+| `` `code` `` | `Markup.raw`, highlighted as the document's language |
+| `` ``` `` optional language … `` ``` `` | `Markup.raw`, highlighted as the declared language |
+
+Emphasis markers, link punctuation, backticks and a fence's language use
+`Markup.delimiter`. Each role is a sparse Code style layered over the comment's
+own syntax style, so an unchanged comment color, font and size remain unless a
+role declares otherwise. Edit these definitions in the Code style inspector.
+
+A comment's prose is one Markdown paragraph sequence: a span may continue
+across lines, skipping leaders such as `//`, `///` and `#`, block middles such
+as ` * `, and closers. Consecutive full-line comments group when they share
+indentation and leader spelling; a trailing comment after code stands alone;
+a block comment is one group. A blank comment line ends a paragraph. Leaders
+and middles come from the effective `comments` profile and the native lexical
+context described above, never from syntax highlighting.
+
+A line whose body starts with three or more backticks opens a fence. The rest of
+the line is its info string: the first word (before whitespace or a comma)
+names the language, and the document's language is used when it is absent. The
+fence ends at a line holding at least as many backticks, or at the end of the
+comment. Fences are presented as code spans crossing comment lines; they have
+no block layout. Code in spans and fences replaces the comment's syntax
+appearance with that language's highlighting; leaders on fenced lines remain
+comment text. An unrecognized language shows plain code.
+
+Recognition is bounded to the comments around each visible region (512 lines of
+context in each direction and 64 KiB of prose per comment). Larger comments keep
+their ordinary appearance. At most 32 code regions are highlighted at once, by
+the same bounded background services as Markdown Preview code blocks. Languages
+without a lexical provider (literal-leader compatibility) and unknown lexical
+context present no comment Markdown. HTML export does not yet include it.
+[`examples/comment_markdown_demo.rs`](../examples/comment_markdown_demo.rs)
+demonstrates every comment form and Markdown style; open it in Viem to compare.
 
 ## List prefixes and limits
 

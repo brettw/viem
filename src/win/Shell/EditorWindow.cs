@@ -153,7 +153,7 @@ internal sealed partial class EditorWindow : Window
         using var startup = Diagnostics.StartupPerformance.Measure("document.configure");
         try
         {
-            doc.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
+            doc.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations, preferences.CommentMarkdown);
             string[] diagnostics = [];
             doc.ConfigureForEditing("theme styles", () => diagnostics = preferences.AttachThemeDocument(doc));
             if (diagnostics.Length > 0) styleDefaultsWarnings[doc] = string.Join(Environment.NewLine, diagnostics);

@@ -571,6 +571,7 @@ pub const VIEM_EX_OPTION_SELECTMODE: u32 = 22;
 pub const VIEM_EX_OPTION_AUTOSELECT: u32 = 23;
 pub const VIEM_EX_OPTION_HLSEARCH: u32 = 19;
 pub const VIEM_EX_OPTION_INCSEARCH: u32 = 20;
+pub const VIEM_EX_OPTION_COMMENTMARKDOWN: u32 = 28;
 
 pub const VIEM_EX_JUMP_CURRENT: u32 = 1 << 0;
 
@@ -3605,6 +3606,7 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::AutoSelect => VIEM_EX_OPTION_AUTOSELECT,
         ExOptionName::KeyModel => VIEM_EX_OPTION_KEYMODEL,
         ExOptionName::SelectMode => VIEM_EX_OPTION_SELECTMODE,
+        ExOptionName::CommentMarkdown => VIEM_EX_OPTION_COMMENTMARKDOWN,
 
     }
 }
@@ -3631,6 +3633,9 @@ fn export_ex_option(
         ExOptionValue::Indentation(_) | ExOptionValue::VisibleWhitespace(_) | ExOptionValue::Reflow(_) => return Err(ViemStatus::InvalidArgument),
         ExOptionValue::OptionalNumber(value) => {
             (VIEM_EX_OPTION_VALUE_NUMBER, value.unwrap_or(0))
+        }
+        ExOptionValue::OptionalBoolean(value) => {
+            (VIEM_EX_OPTION_VALUE_BOOLEAN, u32::from(value.unwrap_or(false)))
         }
     };
     Ok(ViemExOptionDisplayV1 {
@@ -13964,6 +13969,49 @@ pub extern "C" fn viem_core_set_text_width_default(handle: ViemCoreHandle, width
             core.set_text_width_default(width);
             Ok(())
         })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn viem_core_set_comment_markdown_default(handle: ViemCoreHandle, enabled: u8) -> ViemStatus {
+    ffi_boundary(|| {
+        with_core_mut(handle, |core| {
+            core.set_comment_markdown_default(enabled != 0);
+            Ok(())
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn viem_core_set_comment_markdown(handle: ViemCoreHandle, enabled: u8) -> ViemStatus {
+    ffi_boundary(|| {
+        with_core_mut(handle, |core| {
+            core.set_comment_markdown(enabled != 0);
+            Ok(())
+        })
+    })
+}
+
+/// # Safety
+/// Both outputs point to one writable byte each.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_comment_markdown(
+    handle: ViemCoreHandle,
+    out_enabled: *mut u8,
+    out_applicable: *mut u8,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        if out_enabled.is_null() || out_applicable.is_null() {
+            return Err(ViemStatus::NullPointer);
+        }
+        let (enabled, applicable) = with_core(handle, |core| {
+            Ok((core.comment_markdown().effective(), core.comment_markdown_applicable()))
+        })?;
+        unsafe {
+            *out_enabled = u8::from(enabled);
+            *out_applicable = u8::from(applicable);
+        }
+        Ok(())
     })
 }
 

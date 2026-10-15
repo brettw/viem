@@ -706,6 +706,17 @@ languages leave parent highlighting intact; available children overlay parent
 runs, retaining parent runs in gaps. Test stale results, empty coverage, fallback,
 dependency repair, long lines and large-document locality.
 
+Comment Markdown (`commentmarkdown`, on by default; Settings default plus a
+buffer override shared by views, and a View menu toggle) presents only
+character syntax in lexically known comments: emphasis, strong, strikethrough,
+links and code spans, never block structure. Leaders, middles and closers are
+never prose, and spans continue across a comment's lines. A backtick fence is a
+multi-line code span closed by a closing fence or the end of its comment,
+highlighted as its declared language or the document's; code text replaces the
+comment's syntax appearance, while other roles layer sparse `Markup` styles over
+it. It is presentation only, with visible delimiters, and recognition stays
+bounded to visible comments.
+
 While edited Code awaits asynchronous highlighting, retain styles on surviving
 text and provisionally give new text the immediately preceding character's
 style. A missing/default predecessor stays default. This appearance is not
