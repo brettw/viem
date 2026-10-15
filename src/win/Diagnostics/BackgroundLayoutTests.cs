@@ -62,10 +62,12 @@ internal static class BackgroundLayoutTests
         await Idle(view);
         Check(view.Provider.BackgroundShapedCharacters > 0 && view.Provider.BackgroundShapingThread != uiThread,
             "large Markdown pre-layout shapes on an independent worker");
-        Check(view.Provider.BackgroundShapedCharacters < 30_000 && view.BackgroundLayout.Started <= 32,
-            "background work stops after a bounded band, not the whole file");
-        Check(view.Viewport.top == original.top && view.Viewport.layout_revision == original.layout_revision && view.Presentation.cursor_utf8_offset == caret,
-            "background cache installation preserves viewport, caret and visible layout");
+        // Beyond the 100 KiB retention threshold, speculation covers a window
+        // of that much text around the viewport, not the whole file.
+        Check(view.Provider.BackgroundShapedCharacters < 150_000 && view.BackgroundLayout.Started <= 64,
+            "background work stops after a bounded window, not the whole file");
+        Check(view.Viewport.top == original.top && view.Presentation.cursor_utf8_offset == caret,
+            "background cache installation preserves viewport and caret");
         int started = view.BackgroundLayout.Started;
         view.Command("l"); await Task.Delay(100);
         Check(view.BackgroundLayout.Started == started, "caret-only movement does not schedule idle pre-layout");

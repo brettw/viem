@@ -52,6 +52,11 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
 
   private let lock = NSLock()
   private var generation: UInt64
+  /// Current bitmap/state for an inline image whose geometry matches the
+  /// captured one. Supplied by the owning provider's image resources.
+  var inlineImagePresentation: ((CoreTextInlineImage) -> CoreTextInlineImage?)?
+  /// The bitmap resampled to a device-pixel size, cached by the provider.
+  var inlineImageDisplayRaster: ((CoreTextInlineImage, CGSize) -> CGImage?)?
   private var resources: [UInt64: Resource] = [:]
   private var references: [UInt64: Int] = [:]
 
@@ -349,15 +354,18 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     lock.lock()
     let resource = generation == metricsGeneration ? resources[identifier] : nil
     lock.unlock()
-    guard let resource, let image = resource.inlineImage else { return false }
+    guard let resource, let captured = resource.inlineImage else { return false }
+    let image = inlineImagePresentation?(captured) ?? captured
     context.saveGState()
     defer { context.restoreGState() }
     context.clip(to: rect)
     if let raster = image.image {
-      context.interpolationQuality = .high
+      let device = context.convertToDeviceSpace(rect).standardized.size
+      let source = inlineImageDisplayRaster?(image, device) ?? raster
+      context.interpolationQuality = source === raster ? .high : .medium
       context.translateBy(x: rect.minX, y: rect.maxY)
       context.scaleBy(x: 1, y: -1)
-      context.draw(raster, in: CGRect(origin: .zero, size: rect.size))
+      context.draw(source, in: CGRect(origin: .zero, size: rect.size))
     } else {
       let font = resource.inlineImageFont ?? CTFontCreateWithName("Helvetica" as CFString, 14, nil)
       var labelLeft = rect.minX + 4

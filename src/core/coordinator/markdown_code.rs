@@ -10,8 +10,22 @@ use crate::document::{
 use std::collections::BTreeMap;
 
 const MAX_VISIBLE_CODE_BLOCKS: usize = 32;
+/// Blocks of a pre-rendered document highlighted ahead of scrolling, after
+/// its visible blocks.
+const MAX_RETAINED_CODE_BLOCKS: usize = 512;
+/// Offscreen blocks whose completed analysis one poll publishes. Each needs a
+/// metrics comparison; the rest stay ready for later polls, so a burst of
+/// speculative results cannot stall input.
+const MAX_OFFSCREEN_PUBLICATIONS: usize = 4;
 pub(super) struct MarkdownCodeSyntax {
     pub(super) services: BTreeMap<u64, MarkdownCodeService>,
+    /// Code blocks of a pre-rendered document, per revision.
+    document_blocks: Option<(Revision, Vec<crate::document::Block>)>,
+    /// The layout sheet merged from the document and Code sheets. Its
+    /// revision is part of every line's layout inputs, so an unchanged pair
+    /// of sources must keep it, or each publication would invalidate all
+    /// retained geometry.
+    merged_sheet: Option<(crate::document::StyleSheetRevision, crate::document::StyleSheetRevision, std::sync::Arc<crate::document::StyleSheet>)>,
     revision: Option<Revision>,
     sheet_revision: Option<crate::document::StyleSheetRevision>,
     document_sheet_revision: Option<crate::document::StyleSheetRevision>,
@@ -121,6 +135,96 @@ mod tests {
                 continuation: false,
             }
         }
+    }
+
+    /// One token over each requested region, immediately.
+    struct WholeRegionToken;
+    impl SyntaxProvider for WholeRegionToken {
+        fn analyze(&mut self, request: &SyntaxRequest, _: &AtomicBool) -> SyntaxResult {
+            SyntaxResult {
+                input: request.input.identity(),
+                configuration: request.configuration.clone(),
+                range: request.range.clone(),
+                runs: vec![SyntaxRun {
+                    range: request.range.clone(),
+                    name: SyntaxStyleName("FixtureLargeCodeToken".into()),
+                    origin: "fixture".into(),
+                    priority: 0,
+                }],
+                coverage: Coverage::Exact,
+                diagnostics: Vec::new(),
+                continuation: false,
+            }
+        }
+    }
+
+    fn poll_until_settled(core: &mut Core<MockTextMeasurementProvider>) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut quiet = 0;
+        while quiet < 20 && Instant::now() < deadline {
+            // Merged layout sheets take revisions from the top half of the range.
+            let busy = core.poll_syntax()
+                || core.syntax.markdown.services.values().any(|entry| entry.service.has_pending_work())
+                || core.document.projection().layout_style_sheet().revision.0 < 1 << 63;
+            quiet = if busy { 0 } else { quiet + 1 };
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(quiet >= 20, "syntax settles");
+    }
+
+    #[test]
+    fn pre_rendered_markdown_highlights_every_block_and_keeps_its_layout_sheet() {
+        let source = (0..60).map(|index| format!("Paragraph {index}.\n\n```rust\nfn item_{index}() {{}}\n```\n\n")).collect::<String>();
+        let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        core.syntax.markdown.code_sheet = Some(fixture_code_sheet(14.));
+        core.set_syntax_provider_factory(Arc::new(|| Box::new(WholeRegionToken)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 120.);
+        poll_until_settled(&mut core);
+        assert_eq!(core.syntax.markdown.services.len(), 60, "offscreen blocks are highlighted ahead of scrolling");
+        let revision = core.document.projection().layout_style_sheet().revision;
+        // Republishing after an edit keeps the merged sheet: its revision is
+        // an input of every retained line's geometry.
+        for key in ":4\rAx".chars() {
+            let key = if key == '\r' { Key::Enter } else { Key::Char(key) };
+            core.handle(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+        poll_until_settled(&mut core);
+        assert!(core.document.source_bytes().starts_with(b"Paragraph 0.\n\n```rust\nfn item_0() {}x"));
+        assert_eq!(core.document.projection().layout_style_sheet().revision, revision);
+    }
+
+    #[test]
+    fn typing_in_prose_keeps_retained_geometry_of_unedited_code_blocks() {
+        let source = (0..60).map(|index| format!("Paragraph {index}.\n\n```rust\nfn item_{index}() {{}}\nlet value = {index};\n```\n\n")).collect::<String>();
+        let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        // A token size different from the body makes every highlight a metric change.
+        core.syntax.markdown.code_sheet = Some(fixture_code_sheet(20.));
+        core.set_syntax_provider_factory(Arc::new(|| Box::new(WholeRegionToken)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 120.);
+        poll_until_settled(&mut core);
+        let fill = |core: &mut Core<MockTextMeasurementProvider>| {
+            // Frontends present the publication before speculating again.
+            core.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(0.) }).unwrap();
+            let mut worker = crate::layout::LayoutEngine::new(MockTextMeasurementProvider::new());
+            while let Some(request) = core.prepare_view_prelayout(view, true).unwrap() {
+                let candidate = crate::layout::compute_layout_job(&mut worker, &request, LayoutExecutionContext::WorkerPool).unwrap();
+                core.install_view_prelayout(view, true, candidate).unwrap();
+            }
+        };
+        fill(&mut core);
+        let lines = core.document.projection().presentation_line_count();
+        assert_eq!(core.views[&view].layout.regional_cached_line_count(), lines);
+        for key in ":1\rAx".chars() {
+            let key = if key == '\r' { Key::Enter } else { Key::Char(key) };
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        poll_until_settled(&mut core);
+        assert!(core.document.source_bytes().starts_with(b"Paragraph 0.x"));
+        let cached = core.views[&view].layout.regional_cached_line_count();
+        assert!(cached + 8 >= lines, "only lines near the edit leave the cache: {cached} of {lines}");
     }
 
     #[test]
@@ -487,6 +591,8 @@ impl Default for MarkdownCodeSyntax {
     fn default() -> Self {
         Self {
             services: BTreeMap::new(),
+            document_blocks: None,
+            merged_sheet: None,
             revision: None,
             sheet_revision: None,
             document_sheet_revision: None,
@@ -601,6 +707,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         let full = self.syntax_input();
         let mut requests: BTreeMap<u64, (crate::document::Block, Vec<std::ops::Range<usize>>)> =
             BTreeMap::new();
+        // Visible blocks are requested first so they reach the shared worker
+        // queue ahead of speculative blocks.
+        let mut order = Vec::new();
         for view in self.views.values() {
             let visible = self.visible_syntax_range(&full, view);
             for block in self.document.projection().blocks_for_region(&visible) {
@@ -618,6 +727,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if requests.len() >= MAX_VISIBLE_CODE_BLOCKS && !requests.contains_key(&block.id) {
                     continue;
                 }
+                if !requests.contains_key(&block.id) {
+                    order.push(block.id);
+                }
                 requests
                     .entry(block.id)
                     .or_insert_with(|| (block, Vec::new()))
@@ -625,7 +737,32 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .push(request);
             }
         }
+        let visible_blocks = order.len();
         let revision = self.document.revision();
+        // A pre-rendered document highlights every block ahead of scrolling.
+        if super::prelayout::retains_complete_presentation(&self.document) {
+            if self.syntax.markdown.document_blocks.as_ref().is_none_or(|(at, _)| *at != revision) {
+                let projection = self.document.projection();
+                let blocks = projection
+                    .blocks_for_region(&(0..projection.text_tree().byte_len()))
+                    .into_iter()
+                    .filter(|block| {
+                        block.style.0 == "Code Block" && block.code_language.is_some() && !block.range.is_empty()
+                    })
+                    .take(MAX_RETAINED_CODE_BLOCKS)
+                    .collect();
+                self.syntax.markdown.document_blocks = Some((revision, blocks));
+            }
+            for block in &self.syntax.markdown.document_blocks.as_ref().expect("blocks computed above").1 {
+                if requests.contains_key(&block.id) {
+                    continue;
+                }
+                order.push(block.id);
+                requests.insert(block.id, (block.clone(), vec![block.range.clone()]));
+            }
+        } else {
+            self.syntax.markdown.document_blocks = None;
+        }
         let retain_scroll =
             self.syntax.markdown.language_change == Some((self.document.id(), revision));
         if !retain_scroll {
@@ -640,20 +777,26 @@ impl<P: TextMeasurementProvider> Core<P> {
             .clone()
             .unwrap_or(code_sheet);
         let document_sheet_revision = self.document.projection().style_sheet().revision;
-        let mut changed = self.syntax.markdown.revision != Some(revision)
+        let sheets_changed = self.syntax.markdown.revision.is_none()
             || self.syntax.markdown.sheet_revision != Some(code_sheet.revision)
-            || self.syntax.markdown.document_sheet_revision != Some(document_sheet_revision)
-            || self.syntax.markdown.services.keys().ne(requests.keys());
+            || self.syntax.markdown.document_sheet_revision != Some(document_sheet_revision);
+        let presentation_changed = sheets_changed || self.syntax.markdown.revision != Some(revision);
+        let mut changed =
+            presentation_changed || self.syntax.markdown.services.keys().ne(requests.keys());
         let mut invalidated = Vec::new();
-        for entry in self.syntax.markdown.services.values() {
-            if let Some((start, end)) = entry.anchors {
-                if let (Ok(start), Ok(end)) = (
-                    self.document.resolve_text_anchor(start),
-                    self.document.resolve_text_anchor(end),
-                ) {
-                    if let (Some(start), Some(end)) = (start.value(), end.value()) {
-                        if start.offset() <= end.offset() {
-                            invalidated.push(start.offset()..end.offset());
+        if changed {
+            // A block that is no longer requested loses its highlighting where
+            // it now is. Requested blocks are compared at their current range.
+            for (_, entry) in self.syntax.markdown.services.iter().filter(|(id, _)| sheets_changed || !requests.contains_key(id)) {
+                if let Some((start, end)) = entry.anchors {
+                    if let (Ok(start), Ok(end)) = (
+                        self.document.resolve_text_anchor(start),
+                        self.document.resolve_text_anchor(end),
+                    ) {
+                        if let (Some(start), Some(end)) = (start.value(), end.value()) {
+                            if start.offset() <= end.offset() {
+                                invalidated.push(start.offset()..end.offset());
+                            }
                         }
                     }
                 }
@@ -663,8 +806,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .markdown
             .services
             .retain(|id, _| requests.contains_key(id));
-        let mut runs = Vec::new();
-        for (id, (block, regions)) in requests {
+        // Blocks that are new, edited, or completed analysis during this poll.
+        let mut changed_blocks = Vec::new();
+        let mut inputs = Vec::new();
+        let mut offscreen_publications = 0;
+        for (position, id) in order.into_iter().enumerate() {
+            let (block, regions) = &requests[&id];
             let Ok(text) = full.text_tree().subrope(block.range.clone()) else {
                 continue;
             };
@@ -676,6 +823,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 },
                 text,
             );
+            let new_entry = !self.syntax.markdown.services.contains_key(&id);
             let entry =
                 self.syntax
                     .markdown
@@ -686,30 +834,34 @@ impl<P: TextMeasurementProvider> Core<P> {
                         anchors: None,
                         input: None,
                     });
-            let anchor = |at, association| {
-                self.document.text_point(at).ok().and_then(|point| {
-                    self.document
-                        .text_anchor(
-                            point,
-                            association,
-                            BoundaryAffinity::Downstream,
-                            crate::document::DeletionRecovery::PreferFollowingThenPreceding,
-                        )
-                        .ok()
-                })
-            };
-            entry.anchors = anchor(
-                block.range.start,
-                crate::document::Association::AfterInsertion,
-            )
-            .zip(anchor(
-                block.range.end,
-                crate::document::Association::BeforeInsertion,
-            ));
+            // Anchors follow a block across edits; the same revision keeps them.
+            if new_entry || presentation_changed {
+                let anchor = |at, association| {
+                    self.document.text_point(at).ok().and_then(|point| {
+                        self.document
+                            .text_anchor(
+                                point,
+                                association,
+                                BoundaryAffinity::Downstream,
+                                crate::document::DeletionRecovery::PreferFollowingThenPreceding,
+                            )
+                            .ok()
+                    })
+                };
+                entry.anchors = anchor(
+                    block.range.start,
+                    crate::document::Association::AfterInsertion,
+                )
+                .zip(anchor(
+                    block.range.end,
+                    crate::document::Association::BeforeInsertion,
+                ));
+            }
             entry.service.set_language(block.code_language.clone());
             entry.service.set_filename(None);
             let mut map = None;
             let mut hull = None;
+            let mut edited = new_entry;
             if let Some(old) = &entry.input {
                 match old.text_tree().changed_extent(input.text_tree()) {
                     None => {
@@ -719,6 +871,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         input = old.clone();
                     }
                     Some((old_range, new_range)) => {
+                        edited = true;
                         if let Ok(splice) =
                             crate::document::Splice::new(old_range.clone(), new_range.len())
                         {
@@ -742,13 +895,32 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .service
                 .rebase_input(input.clone(), map.as_ref(), hull);
             entry.input = Some(input.clone());
-            changed |= entry.service.poll(input.identity());
+            let deferred = position >= visible_blocks && offscreen_publications >= MAX_OFFSCREEN_PUBLICATIONS;
+            let completed = !deferred && entry.service.poll(input.identity());
+            if completed && position >= visible_blocks {
+                offscreen_publications += 1;
+            }
+            changed |= completed;
+            if completed || edited {
+                changed_blocks.push(block.range.clone());
+            }
             for region in regions {
                 entry.service.request(
                     input.clone(),
                     region.start - block.range.start..region.end - block.range.start,
                 );
             }
+            inputs.push((id, input));
+        }
+        if !changed {
+            self.finish_code_language_refresh();
+            return false;
+        }
+        // Runs are rebuilt only for a publication, never on an idle poll.
+        inputs.sort_by_key(|(id, _)| *id);
+        let mut runs = Vec::new();
+        for (id, input) in &inputs {
+            let block = &requests[id].0;
             runs.push(SyntaxRun {
                 range: block.range.clone(),
                 name: SyntaxStyleName("ViemCodeBase".into()),
@@ -756,7 +928,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 priority: -1,
             });
             runs.extend(
-                entry
+                self.syntax.markdown.services[id]
                     .service
                     .runs(input.identity())
                     .into_iter()
@@ -766,15 +938,23 @@ impl<P: TextMeasurementProvider> Core<P> {
                         run
                     }),
             );
-            invalidated.push(block.range.clone());
         }
-        if !changed {
-            self.finish_code_language_refresh();
-            return false;
+        // Unedited blocks keep identical runs at shifted positions; their
+        // retained geometry is rebased and revalidated by its inputs.
+        if sheets_changed {
+            invalidated.extend(requests.values().map(|(block, _)| block.range.clone()));
+        } else {
+            invalidated.extend(changed_blocks);
         }
         let previous = self.document.projection().clone();
-        let sheet =
-            code_style::markdown_sheet(self.document.projection().style_sheet(), &code_sheet);
+        let sheet = match &self.syntax.markdown.merged_sheet {
+            Some((document, code, sheet)) if *document == document_sheet_revision && *code == code_sheet.revision => sheet.clone(),
+            _ => {
+                let sheet = code_style::markdown_sheet(self.document.projection().style_sheet(), &code_sheet);
+                self.syntax.markdown.merged_sheet = Some((document_sheet_revision, code_sheet.revision, sheet.clone()));
+                sheet
+            }
+        };
         let viewport_origins = retain_scroll.then(|| {
             self.views
                 .iter()

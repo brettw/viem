@@ -19,7 +19,8 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$viem_repo_root/.build/clang-module-cache"
 export MACOSX_DEPLOYMENT_TARGET=26.0
 # Match Rust's test optimization without removing debug assertions or overflow
 # checks. The dedicated archive cannot replace the normal debug app's core.
-export VIEM_RUST_PROFILE=native-test
+# Measurements may select `release` together with `-c release -Xswiftc -enable-testing`.
+export VIEM_RUST_PROFILE="${VIEM_RUST_PROFILE:-native-test}"
 cargo run --locked --profile "$VIEM_RUST_PROFILE" --example check_c_abi
 "$viem_repo_root/scripts/build-mac-app.sh"
 swift test --disable-sandbox "$@"

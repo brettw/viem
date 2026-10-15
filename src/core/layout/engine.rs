@@ -54,6 +54,11 @@ const DEFAULT_ESTIMATED_HARD_LINE_HEIGHT: f64 = 16.0;
 const DEFAULT_REGIONAL_CACHE_HARD_LINES: usize = 2048;
 const DEFAULT_REGIONAL_CACHE_VISUAL_ROWS: usize = 8192;
 const DEFAULT_REGIONAL_CACHE_ESTIMATED_BYTES: usize = 32 * 1024 * 1024;
+/// Guard for a cache retaining every line of a small document. Ordinary
+/// documents within the retention threshold use a small fraction of it.
+const RETAINED_REGIONAL_CACHE_ESTIMATED_BYTES: usize = 256 * 1024 * 1024;
+/// Geometry changes recorded for validating in-flight speculative results.
+const MAX_GEOMETRY_CHANGES: usize = 64;
 pub(super) const MAX_CANCELLABLE_SHAPE_BATCH_FRAGMENTS: usize = 32;
 pub(super) const CANCELLATION_CLUSTER_BATCH: usize = 256;
 const CANCELLATION_TEXT_SCAN_BYTES: usize = 64 * 1024;
@@ -115,7 +120,6 @@ impl LongLineLayoutCheckpoint {
     pub fn configuration_generation(&self) -> ViewConfigurationGeneration {
         self.configuration_generation
     }
-
     pub fn measurement_environment_id(&self) -> MeasurementEnvironmentId {
         self.measurement_environment_id
     }
@@ -813,6 +817,12 @@ pub struct RegionalLayoutSnapshot {
 }
 
 impl RegionalLayoutSnapshot {
+    /// A cache-only result computed before a paint-only configuration change
+    /// has unchanged geometry; adopt the current configuration identity.
+    pub(super) fn rebind_configuration(&mut self, configuration: ViewConfigurationGeneration) {
+        self.configuration_generation = configuration;
+    }
+
     pub fn revision(&self) -> LayoutRevision {
         self.revision
     }
@@ -828,7 +838,6 @@ impl RegionalLayoutSnapshot {
     pub fn configuration_generation(&self) -> ViewConfigurationGeneration {
         self.configuration_generation
     }
-
     pub fn measurement_environment_id(&self) -> MeasurementEnvironmentId {
         self.measurement_environment_id
     }
@@ -1262,7 +1271,6 @@ struct CachedRegionalLine {
     /// rebasing and eviction account for it without walking its rows.
     bytes: usize,
 }
-
 impl CachedRegionalLine {
     fn unshifted(line: Arc<RegionalHardLineLayout>) -> Self {
         let bytes = estimated_regional_line_bytes(&line);
@@ -1294,20 +1302,19 @@ struct RegionalLayoutCache {
     identity: Option<RegionalCacheIdentity>,
     latest_revision: Option<LayoutRevision>,
     lines: BTreeMap<usize, CachedRegionalLine>,
-    /// Installation-recency order. Regional reads are immutable, so installing
-    /// or refreshing a line is the cache's LRU-equivalent touch operation.
-    recency: VecDeque<usize>,
+    /// Hard line nearest the most recently published viewport. Eviction
+    /// removes the cached line farthest from it, so a scroll position keeps
+    /// its neighborhood regardless of the order in which lines were laid out.
+    focus: Option<usize>,
     visual_row_count: usize,
     estimated_bytes: usize,
     eviction_count: u64,
 }
 
 impl RegionalLayoutCache {
-    fn with_identity(identity: RegionalCacheIdentity) -> Self {
-        Self {
-            identity: Some(identity),
-            ..Self::default()
-        }
+    /// A replacement cache keeps the eviction focus of its predecessor.
+    fn replacement(&self, identity: Option<RegionalCacheIdentity>) -> Self {
+        Self { identity, focus: self.focus, ..Self::default() }
     }
 
     fn insert(&mut self, line: RegionalHardLineLayout) {
@@ -1321,35 +1328,63 @@ impl RegionalLayoutCache {
     fn insert_cached(&mut self, hard_line: usize, cached: CachedRegionalLine) {
         if let Some(previous) = self.lines.remove(&hard_line) {
             self.remove_accounting(&previous);
-            self.recency.retain(|index| *index != hard_line);
         }
         self.add_accounting(&cached);
         self.lines.insert(hard_line, cached);
-        self.recency.push_back(hard_line);
     }
 
-    /// Remove the given lines, keeping accounting and recency consistent.
+    /// Remove the given lines, keeping accounting consistent.
     fn remove_lines(&mut self, indices: &BTreeSet<usize>) {
-        if indices.is_empty() {
-            return;
-        }
         for index in indices {
             if let Some(removed) = self.lines.remove(index) {
                 self.remove_accounting(&removed);
             }
         }
-        self.recency.retain(|index| !indices.contains(index));
     }
 
+    fn remove_range(&mut self, range: Range<usize>) {
+        let removed: BTreeSet<usize> = self.lines.range(range).map(|(index, _)| *index).collect();
+        self.remove_lines(&removed);
+    }
+
+    /// Lines farthest from the focus go first; without a focus, the first.
     fn enforce_limits(&mut self, limits: RegionalLayoutCacheLimits) {
         while self.lines.len() > limits.max_hard_lines
             || self.visual_row_count > limits.max_visual_rows
             || self.estimated_bytes > limits.max_estimated_bytes
         {
-            let Some(oldest) = self.recency.pop_front() else {
+            let (Some((&first, _)), Some((&last, _))) = (self.lines.first_key_value(), self.lines.last_key_value()) else {
                 break;
             };
-            if let Some(evicted) = self.lines.remove(&oldest) {
+            let victim = match self.focus {
+                Some(focus) if focus.abs_diff(last) > focus.abs_diff(first) => last,
+                _ => first,
+            };
+            if let Some(evicted) = self.lines.remove(&victim) {
+                self.remove_accounting(&evicted);
+                self.eviction_count = self.eviction_count.saturating_add(1);
+            }
+        }
+    }
+
+    /// Evict lines outside `keep`, farthest from it first, until every
+    /// dimension is at most `fraction` of its limit.
+    fn evict_outside(&mut self, keep: &Range<usize>, limits: RegionalLayoutCacheLimits, fraction: f64) {
+        let over = |cache: &Self| {
+            cache.lines.len() as f64 > limits.max_hard_lines as f64 * fraction
+                || cache.visual_row_count as f64 > limits.max_visual_rows as f64 * fraction
+                || cache.estimated_bytes as f64 > limits.max_estimated_bytes as f64 * fraction
+        };
+        while over(self) {
+            let first = self.lines.first_key_value().map(|(index, _)| *index).filter(|index| *index < keep.start);
+            let last = self.lines.last_key_value().map(|(index, _)| *index).filter(|index| *index >= keep.end);
+            let victim = match (first, last) {
+                (Some(first), Some(last)) => if keep.start - first >= last + 1 - keep.end { first } else { last },
+                (Some(first), None) => first,
+                (None, Some(last)) => last,
+                (None, None) => break,
+            };
+            if let Some(evicted) = self.lines.remove(&victim) {
                 self.remove_accounting(&evicted);
                 self.eviction_count = self.eviction_count.saturating_add(1);
             }
@@ -1399,11 +1434,14 @@ fn estimated_regional_line_bytes(line: &RegionalHardLineLayout) -> usize {
     bytes
 }
 
+/// A validated installation. The cache is updated only at commit, from the
+/// region's own lines, so preparing never copies an entire retained cache.
 struct PreparedRegionalInstall {
     installed_revision: LayoutRevision,
     region: RegionalLayoutSnapshot,
     height_index: ViewHeightIndex,
-    cache: RegionalLayoutCache,
+    cache_identity: RegionalCacheIdentity,
+    reset_cache: bool,
 }
 
 impl LayoutSnapshot {
@@ -1931,6 +1969,9 @@ pub(crate) struct LayoutJobViewConfiguration {
     pub(super) horizontal_anchor_offset: Option<usize>,
     pub(super) horizontal_desired_x: Option<f32>,
     pub(super) complete_horizontal_geometry: bool,
+    /// Materialize every table column. A hard-line region is not bound to a
+    /// viewport, so its rows remain reusable at any horizontal scroll.
+    pub(super) complete_table_columns: bool,
     pub(super) regional_viewport_top: f32,
     insets: EdgeInsets,
     wrap: bool,
@@ -1974,6 +2015,13 @@ pub struct ViewLayout {
     wrap: bool,
     scale: f32,
     configuration_generation: ViewConfigurationGeneration,
+    /// Advances only with changes that can alter positioned hard-line
+    /// geometry, not with paint-only configuration. Cache-only speculative
+    /// results remain installable across paint changes.
+    geometry_generation: u64,
+    /// Recent geometry changes and the hard lines they affected (`None`:
+    /// every line), so speculative results for unaffected lines survive.
+    geometry_changes: std::collections::VecDeque<(u64, Option<Range<usize>>)>,
     default_style: ResolvedTextStyle,
     default_style_is_override: bool,
     style_runs: Vec<ShapeStyleRun>,
@@ -1982,6 +2030,9 @@ pub struct ViewLayout {
     height_index: ViewHeightIndex,
     regional_cache: RegionalLayoutCache,
     regional_cache_limits: RegionalLayoutCacheLimits,
+    /// The coordinator's speculative-layout policy retains every hard line of
+    /// a small document. Nonzero limits then only guard estimated bytes.
+    regional_cache_retains_document: bool,
     last_error: Option<LayoutError>,
     active_layout_job: Option<LayoutJobId>,
     last_installed_layout_job: Option<LayoutJobId>,
@@ -2028,6 +2079,8 @@ impl ViewLayout {
             wrap: true,
             scale: 1.0,
             configuration_generation: ViewConfigurationGeneration(1),
+            geometry_generation: 1,
+            geometry_changes: std::collections::VecDeque::new(),
             default_style: ResolvedTextStyle::default(),
             default_style_is_override: false,
             style_runs: Vec::new(),
@@ -2037,6 +2090,7 @@ impl ViewLayout {
                 .expect("the built-in hard-line height estimate is valid"),
             regional_cache: RegionalLayoutCache::default(),
             regional_cache_limits: RegionalLayoutCacheLimits::default(),
+            regional_cache_retains_document: false,
             last_error: None,
             active_layout_job: None,
             last_installed_layout_job: None,
@@ -2138,22 +2192,19 @@ impl ViewLayout {
                     cached.document_revision = Some(*new_revision);
                     cache.lines.insert(new_index, cached);
                 }
-                cache.recency.retain(|index| !removed.contains(index));
-                for index in cache.recency.iter_mut() {
-                    if *index >= old_invalidated.end {
-                        *index = (*index as i128 + line_delta) as usize;
-                    }
+                if let Some(focus) = cache.focus.as_mut().filter(|focus| **focus >= old_invalidated.end) {
+                    *focus = usize::try_from(*focus as i128 + line_delta).unwrap_or(0);
                 }
             }
         } else {
-            self.regional_cache = RegionalLayoutCache::default();
+            self.regional_cache = self.regional_cache.replacement(None);
         }
         self.rebased_document_revision = Some(*new_revision);
     }
 
     fn discard_for_document_change(&mut self) {
         self.invalidate_all_heights();
-        self.regional_cache = RegionalLayoutCache::default();
+        self.regional_cache = self.regional_cache.replacement(None);
         self.rebased_document_revision = None;
     }
 
@@ -2473,6 +2524,32 @@ impl ViewLayout {
         self.configuration_generation
     }
 
+    pub(crate) fn geometry_generation(&self) -> u64 {
+        self.geometry_generation
+    }
+
+    fn advance_geometry(&mut self, lines: Option<Range<usize>>) {
+        self.geometry_generation = self.geometry_generation.wrapping_add(1).max(1);
+        self.geometry_changes.push_back((self.geometry_generation, lines));
+        while self.geometry_changes.len() > MAX_GEOMETRY_CHANGES {
+            self.geometry_changes.pop_front();
+        }
+    }
+
+    /// Whether geometry computed at `generation` for `lines` is still exact:
+    /// every later change was confined to other lines. Changes older than the
+    /// retained record count as affecting every line.
+    pub(crate) fn geometry_unchanged_since(&self, generation: u64, lines: &Range<usize>) -> bool {
+        if generation == self.geometry_generation {
+            return true;
+        }
+        let mut later = self.geometry_changes.iter().filter(|(changed, _)| *changed > generation).peekable();
+        if later.peek().is_none_or(|(first, _)| *first != generation.wrapping_add(1)) {
+            return false;
+        }
+        later.all(|(_, changed)| changed.as_ref().is_some_and(|changed| changed.end <= lines.start || lines.end <= changed.start))
+    }
+
     pub fn snapshot(&self) -> Option<&LayoutSnapshot> {
         self.snapshot.as_ref()
     }
@@ -2551,18 +2628,15 @@ impl ViewLayout {
         }
     }
 
-    /// Whether the cache's running accounting and recency order agree with
-    /// its entries, and every entry's pending shift is well formed.
+    /// Whether the cache's running accounting agrees with its entries, and
+    /// every entry's pending shift is well formed.
     #[cfg(test)]
     pub(crate) fn regional_cache_is_consistent(&self) -> bool {
         let cache = &self.regional_cache;
         let bytes = cache.lines.values().map(|cached| estimated_regional_line_bytes(&cached.line)).sum::<usize>();
         let rows = cache.lines.values().map(|cached| cached.line.rows.len()).sum::<usize>();
-        let recency = cache.recency.iter().copied().collect::<BTreeSet<_>>();
         bytes == cache.estimated_bytes
             && rows == cache.visual_row_count
-            && recency.len() == cache.recency.len()
-            && recency == cache.lines.keys().copied().collect()
             && cache.lines.iter().all(|(index, cached)| {
                 cached.line.hard_line_index as i128 + cached.line_delta == *index as i128
             })
@@ -2577,7 +2651,91 @@ impl ViewLayout {
     /// viewport snapshot and height index remain installed and exact.
     pub fn set_regional_cache_limits(&mut self, limits: RegionalLayoutCacheLimits) {
         self.regional_cache_limits = limits;
-        self.regional_cache.enforce_limits(limits);
+        self.regional_cache.enforce_limits(self.effective_regional_cache_limits());
+    }
+
+    /// Retain every hard line (bounded only by a byte guard) instead of
+    /// evicting by distance from the viewport. A zero limit still disables
+    /// retention entirely.
+    pub fn set_regional_cache_retains_document(&mut self, retains: bool) {
+        if self.regional_cache_retains_document == retains { return; }
+        self.regional_cache_retains_document = retains;
+        self.regional_cache.enforce_limits(self.effective_regional_cache_limits());
+    }
+
+    pub fn regional_cache_retains_document(&self) -> bool {
+        self.regional_cache_retains_document
+    }
+
+    pub(crate) fn effective_regional_cache_limits(&self) -> RegionalLayoutCacheLimits {
+        let limits = self.regional_cache_limits;
+        let disabled = limits.max_hard_lines == 0 || limits.max_visual_rows == 0 || limits.max_estimated_bytes == 0;
+        if !self.regional_cache_retains_document || disabled { return limits; }
+        RegionalLayoutCacheLimits {
+            max_hard_lines: usize::MAX,
+            max_visual_rows: usize::MAX,
+            max_estimated_bytes: limits.max_estimated_bytes.max(RETAINED_REGIONAL_CACHE_ESTIMATED_BYTES),
+        }
+    }
+
+    /// Hard lines with complete cached geometry.
+    pub(crate) fn regional_cached_line_count(&self) -> usize {
+        self.regional_cache.lines.len()
+    }
+
+    /// Whether `hard_line` has complete cached geometry. A pending rebase
+    /// shift still counts: it is applied on the next hit.
+    pub(crate) fn regional_line_is_cached(&self, hard_line: usize) -> bool {
+        self.regional_cache.lines.contains_key(&hard_line)
+    }
+
+    pub(crate) fn regional_cache_identity_matches(&self, document_id: DocumentId, document_revision: Revision,
+        document_hard_line_count: usize) -> bool {
+        self.regional_cache.identity.is_some_and(|identity| identity.document_id == document_id
+            && identity.document_revision == document_revision
+            && identity.configuration_generation == self.configuration_generation
+            && identity.document_hard_line_count == document_hard_line_count)
+    }
+
+    /// First hard line in `range`, scanning forward or backward, without
+    /// cached geometry. Iterates only cached keys.
+    pub(crate) fn first_uncached_regional_line(&self, range: Range<usize>, forward: bool) -> Option<usize> {
+        if range.is_empty() { return None; }
+        let cache = &self.regional_cache;
+        if forward {
+            let mut expected = range.start;
+            for index in cache.lines.range(range.clone()).map(|(index, _)| *index) {
+                if index != expected { return Some(expected); }
+                expected += 1;
+            }
+            (expected < range.end).then_some(expected)
+        } else {
+            let mut expected = range.end - 1;
+            for index in cache.lines.range(range.clone()).rev().map(|(index, _)| *index) {
+                if index != expected { return Some(expected); }
+                if expected == range.start { return None; }
+                expected -= 1;
+            }
+            Some(expected)
+        }
+    }
+
+    /// Usage relative to the effective budget, as the largest fraction of
+    /// any dimension.
+    pub(crate) fn regional_cache_usage(&self) -> f64 {
+        let limits = self.effective_regional_cache_limits();
+        let cache = &self.regional_cache;
+        let ratio = |used: usize, limit: usize| if limit == 0 { f64::INFINITY } else { used as f64 / limit as f64 };
+        ratio(cache.lines.len(), limits.max_hard_lines)
+            .max(ratio(cache.visual_row_count, limits.max_visual_rows))
+            .max(ratio(cache.estimated_bytes, limits.max_estimated_bytes))
+    }
+
+    /// Discard cached lines outside `keep`, farthest first, until usage is at
+    /// most `fraction`. Lines inside `keep` are never discarded here.
+    pub(crate) fn evict_regional_lines_outside(&mut self, keep: Range<usize>, fraction: f64) {
+        let limits = self.effective_regional_cache_limits();
+        self.regional_cache.evict_outside(&keep, limits, fraction);
     }
 
     /// Inspect one exact cached hard-line layout without materializing the
@@ -2635,7 +2793,7 @@ impl ViewLayout {
     pub fn invalidate_text_metrics(&mut self) {
         self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
             .expect("retiring certainty preserves valid measurements");
-        self.regional_cache = RegionalLayoutCache::default();
+        self.regional_cache = self.regional_cache.replacement(None);
     }
 
     /// Resource publication retires every old-generation render handle. Keep
@@ -2662,11 +2820,11 @@ impl ViewLayout {
             self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
                 .expect("retiring certainty preserves valid measurements");
         }
-        self.regional_cache = identity.map_or_else(RegionalLayoutCache::default, |mut identity| {
+        self.regional_cache = self.regional_cache.replacement(identity.map(|mut identity| {
             identity.measurement_environment_id = environment;
             identity.metrics_generation = generation;
-            RegionalLayoutCache::with_identity(identity)
-        });
+            identity
+        }));
     }
 
     pub(crate) fn height_metrics_match(&self, environment: MeasurementEnvironmentId, generation: MetricsGeneration) -> bool {
@@ -2676,38 +2834,28 @@ impl ViewLayout {
 
     /// A syntax/settings presentation revision is independent of text. Retain
     /// immutable old geometry until replacement; generation rejects stale jobs.
-    /// Metrics changed only within `lines`: their exact heights and cached
-    /// geometry are dropped, and every other line is retained as for a
-    /// paint-only publication.
+    /// Metrics changed only within `lines`: their cached geometry is dropped
+    /// and their heights become estimates retaining the measured values, so a
+    /// style that keeps line heights cannot move the scroll extent. Every other
+    /// line is retained as for a paint-only publication.
     pub(crate) fn invalidate_syntax_presentation_lines(&mut self, lines: Range<usize>) {
         let count = self.height_index.hard_line_count();
         let lines = lines.start.min(count)..lines.end.min(count);
-        if self.height_index.invalidate(lines.clone()).is_err() {
+        if self.height_index.invalidate_retaining_estimates(lines.clone()).is_err() {
             self.bump_configuration(true);
             return;
         }
         self.invalidate_syntax_presentation(false);
-        let evicted: Vec<usize> = self.regional_cache.lines.range(lines).map(|(index, _)| *index).collect();
-        for index in evicted {
-            if let Some(cached) = self.regional_cache.lines.remove(&index) {
-                self.regional_cache.remove_accounting(&cached);
-                self.regional_cache.recency.retain(|candidate| *candidate != index);
-            }
-        }
+        // Results computed before this publication may hold the old metrics.
+        self.advance_geometry(Some(lines.clone()));
+        self.regional_cache.remove_range(lines);
     }
 
     pub fn invalidate_syntax_presentation(&mut self, metrics_changed: bool) {
-        if metrics_changed {
-            self.bump_configuration(true);
-            return;
-        }
-        // A paint-only publication changes no geometry. Cached hard lines
-        // carry their shaping inputs, so a line whose runs did change is
-        // re-laid on its next hit while the rest of the viewport is reused.
-        self.configuration_generation.0 = self.configuration_generation.0.wrapping_add(1).max(1);
-        if let Some(identity) = self.regional_cache.identity.as_mut() {
-            identity.configuration_generation = self.configuration_generation;
-        }
+        // A paint-only publication changes no geometry. Paint is resolved when
+        // a viewport is assembled, and cached hard lines carry their shaping
+        // inputs, so a line whose shaping did change is re-laid on its next hit.
+        self.bump_configuration(metrics_changed);
     }
 
     /// Prepare the compact height index for a newly observed document shape
@@ -2722,7 +2870,7 @@ impl ViewLayout {
         reconcile_height_index_count(&mut self.height_index, hard_line_count)?;
         if invalidate_exact {
             self.invalidate_all_heights();
-            self.regional_cache = RegionalLayoutCache::default();
+            self.regional_cache = self.regional_cache.replacement(None);
         }
         Ok(())
     }
@@ -2751,6 +2899,7 @@ impl ViewLayout {
             horizontal_focus_offset: None,
             horizontal_anchor_offset: None,
             complete_horizontal_geometry: false,
+            complete_table_columns: false,
             horizontal_desired_x: None,
             regional_viewport_top: 0.0,
             insets: self.insets,
@@ -2808,17 +2957,58 @@ impl ViewLayout {
         self.last_installed_layout_job
     }
 
-    /// Speculation populates the bounded geometry cache without rebinding the
-    /// visible snapshot or refining heights above its scroll anchor. Demand
-    /// layout incorporates the cached exact heights when assembling a viewport.
+    /// Speculation populates the geometry cache and publishes its exact
+    /// heights, so the scroll extent converges before the lines are visible.
+    /// It does not rebind the visible snapshot; the coordinator realigns that
+    /// snapshot so its text keeps its screen position.
     pub(crate) fn cache_layout_job_region(
         &mut self,
         region: RegionalLayoutSnapshot,
     ) -> Result<LayoutRevision, ViewHeightIndexError> {
         let prepared = self.prepare_layout_job_region(region)?;
-        self.regional_cache = prepared.cache;
+        self.commit_regional_cache(&prepared, false);
+        self.height_index = prepared.height_index;
         // Foreground job ordering is independent of speculative completion.
         Ok(prepared.installed_revision)
+    }
+
+    /// Speculative installation can make heights outside the visible snapshot
+    /// exact. Keep its text at the same screen position by translating it, and
+    /// publish the new extent, under a new revision. Returns whether the
+    /// visible snapshot or viewport changed.
+    pub(crate) fn realign_snapshot_with_heights(&mut self) -> Result<bool, ViewHeightIndexError> {
+        let Some(snapshot) = self.snapshot.as_ref() else { return Ok(false); };
+        let LayoutCoverage::PartialHardLines { hard_lines, text_ranges, prefix_is_exact, .. } = &snapshot.coverage else {
+            return Ok(false);
+        };
+        let matches = self.regional_cache.identity.is_some_and(|identity|
+            identity.document_id == snapshot.document_id
+                && identity.document_revision == snapshot.document_revision
+                && identity.configuration_generation == snapshot.configuration_generation
+                && identity.measurement_environment_id == snapshot.measurement_environment_id
+                && identity.metrics_generation == snapshot.metrics_generation
+                && identity.document_hard_line_count == snapshot_hard_line_count(snapshot));
+        // A long-line continuation starts inside its hard line; its prefix
+        // cannot be translated exactly (see the visible refinement path).
+        if !matches || snapshot.rows.first().is_some_and(|row| text_ranges.first() != Some(&row.hard_line_range)) {
+            return Ok(false);
+        }
+        let prefix = self.height_index.prefix_height(hard_lines.start)?;
+        let total = self.height_index.total_extent();
+        let start = snapshot.coverage.vertical_range().expect("partial coverage always has a vertical range").start;
+        let delta = height_as_layout_unit(prefix.height())? - start;
+        if delta == 0.0 && prefix.is_exact() == *prefix_is_exact
+            && height_as_layout_unit(total.height())? == snapshot.total_height
+            && total.is_exact() == snapshot.total_height_is_exact {
+            return Ok(false);
+        }
+        let newest = snapshot.revision.max(self.regional_cache.latest_revision.unwrap_or(snapshot.revision));
+        let revision = LayoutRevision(newest.0.wrapping_add(1).max(1));
+        let refreshed = translate_partial_snapshot(snapshot, &self.height_index, revision)?;
+        self.snapshot = Some(refreshed);
+        self.regional_cache.latest_revision = Some(revision);
+        self.viewport_top = self.clamp_viewport_top(self.viewport_top + delta);
+        Ok(true)
     }
 
     pub(crate) fn publish_layout_job_region(
@@ -2849,9 +3039,9 @@ impl ViewLayout {
             _ => self.viewport_top,
         };
 
+        self.commit_regional_cache(&prepared, true);
         self.snapshot = next_snapshot;
         self.height_index = prepared.height_index;
-        self.regional_cache = prepared.cache;
         self.viewport_top = self.clamp_viewport_top(adjusted_viewport_top);
         self.viewport_left = self.clamp_viewport_left(self.viewport_left);
         self.last_error = None;
@@ -2906,9 +3096,9 @@ impl ViewLayout {
             }
         }
 
+        self.commit_regional_cache(&prepared, true);
         self.snapshot = Some(snapshot);
         self.height_index = prepared.height_index;
-        self.regional_cache = prepared.cache;
         self.viewport_top = self.clamp_viewport_top(requested_viewport_top);
         self.viewport_left = self.clamp_viewport_left(self.viewport_left);
         self.last_error = None;
@@ -2946,9 +3136,8 @@ impl ViewLayout {
             document_hard_line_count: region.document_hard_line_count,
         };
         let mut next_index = self.height_index.clone();
-        let mut next_cache = self.regional_cache.clone();
-        if next_cache.identity != Some(identity) {
-            next_cache = RegionalLayoutCache::with_identity(identity);
+        let reset_cache = self.regional_cache.identity != Some(identity);
+        if reset_cache {
             let installed_snapshot_matches = self.snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot.document_id == identity.document_id
                     && snapshot.document_revision == identity.document_revision
@@ -2991,44 +3180,62 @@ impl ViewLayout {
                     end.max(f64::from(row.reveal_bounds().end + region.content_insets.bottom)));
                 next_index.set_exact_heights_with_extents(line.hard_line_index, &[(line.height, extent)])?;
             }
-            if line.text_coverage == line.hard_line_range && region.horizontal_materialization.is_none() {
-                next_cache.insert(line.clone());
-            }
         }
-        next_cache.enforce_limits(self.regional_cache_limits);
-        next_cache.latest_revision = Some(installed_revision);
         Ok(PreparedRegionalInstall {
             installed_revision,
             region,
             height_index: next_index,
-            cache: next_cache,
+            cache_identity: identity,
+            reset_cache,
         })
+    }
+
+    /// Infallible half of an installation: retain the region's complete
+    /// lines, move the eviction focus for a visible publication, and apply
+    /// the current budget.
+    fn commit_regional_cache(&mut self, prepared: &PreparedRegionalInstall, visible: bool) {
+        if prepared.reset_cache {
+            self.regional_cache = self.regional_cache.replacement(Some(prepared.cache_identity));
+        }
+        let region = &prepared.region;
+        if region.horizontal_materialization.is_none() {
+            for line in &region.lines {
+                if line.text_coverage == line.hard_line_range {
+                    self.regional_cache.insert(line.clone());
+                }
+            }
+        }
+        if visible && !region.hard_lines.is_empty() {
+            self.regional_cache.focus = Some(region.hard_lines.start + region.hard_lines.len() / 2);
+        }
+        self.regional_cache.enforce_limits(self.effective_regional_cache_limits());
+        self.regional_cache.latest_revision = Some(prepared.installed_revision);
     }
 
     fn bump_configuration(&mut self, invalidates_heights: bool) {
         self.configuration_generation.0 = self.configuration_generation.0.wrapping_add(1).max(1);
         if invalidates_heights {
-            self.regional_cache = RegionalLayoutCache::default();
+            self.advance_geometry(None);
+            self.regional_cache = self.regional_cache.replacement(None);
             self.invalidate_all_heights();
+        } else if let Some(identity) = self.regional_cache.identity.as_mut() {
+            // A height-only resize or paint change leaves measured flow,
+            // painted extents and cached geometry valid: paint is resolved when
+            // a viewport is assembled, and each cached line is reused only
+            // when its shaping inputs still match. Keep the cache current.
+            identity.configuration_generation = self.configuration_generation;
         } else {
-            // The new configuration retires cached rows, but a height-only
-            // resize or paint change leaves measured flow and painted extents
-            // valid. Keep their identity current so the next regional install
-            // does not mistake those measurements for another configuration.
-            let identity = self.regional_cache.identity.or_else(|| {
-                self.snapshot.as_ref().map(|snapshot| RegionalCacheIdentity {
-                    document_id: snapshot.document_id,
-                    document_revision: snapshot.document_revision,
-                    configuration_generation: snapshot.configuration_generation,
-                    measurement_environment_id: snapshot.measurement_environment_id,
-                    metrics_generation: snapshot.metrics_generation,
-                    document_hard_line_count: snapshot_hard_line_count(snapshot),
-                })
+            // Keep measured heights under the new identity so the next
+            // regional install does not mistake them for another configuration.
+            let identity = self.snapshot.as_ref().map(|snapshot| RegionalCacheIdentity {
+                document_id: snapshot.document_id,
+                document_revision: snapshot.document_revision,
+                configuration_generation: self.configuration_generation,
+                measurement_environment_id: snapshot.measurement_environment_id,
+                metrics_generation: snapshot.metrics_generation,
+                document_hard_line_count: snapshot_hard_line_count(snapshot),
             });
-            self.regional_cache = identity.map_or_else(RegionalLayoutCache::default, |mut identity| {
-                identity.configuration_generation = self.configuration_generation;
-                RegionalLayoutCache::with_identity(identity)
-            });
+            self.regional_cache = self.regional_cache.replacement(identity);
         }
     }
 
@@ -3288,6 +3495,19 @@ fn refresh_partial_snapshot_after_height_change(
         return Ok(None);
     }
 
+    translate_partial_snapshot(snapshot, height_index, revision).map(Some)
+}
+
+/// Move a partial snapshot to the y given by `height_index` for its first
+/// hard line, refreshing its document extent, under a new revision.
+fn translate_partial_snapshot(
+    snapshot: &LayoutSnapshot,
+    height_index: &ViewHeightIndex,
+    revision: LayoutRevision,
+) -> Result<LayoutSnapshot, ViewHeightIndexError> {
+    let LayoutCoverage::PartialHardLines { hard_lines, .. } = &snapshot.coverage else {
+        return Ok(snapshot.clone());
+    };
     let prefix = height_index.prefix_height(hard_lines.start)?;
     let new_start = height_as_layout_unit(prefix.height())?;
     let old_range = snapshot
@@ -3319,7 +3539,7 @@ fn refresh_partial_snapshot_after_height_change(
     refreshed.total_height = height_as_layout_unit(total.height())?;
     refreshed.total_height_is_exact = total.is_exact();
     refreshed.rebind_revision(revision);
-    Ok(Some(refreshed))
+    Ok(refreshed)
 }
 
 fn height_as_layout_unit(height: f64) -> Result<f32, ViewHeightIndexError> {
@@ -3975,6 +4195,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
     }
     pub(crate) fn table_measurements(&self) -> tables::TableMeasurementCache { self.table_cache.clone() }
     pub(crate) fn install_table_measurements(&mut self, cache: tables::TableMeasurementCache) { self.table_cache = cache; }
+    /// Adopt a speculative worker's table measurements without discarding
+    /// more complete entries this engine has measured since the capture.
+    pub(crate) fn merge_table_measurements(&mut self, cache: tables::TableMeasurementCache) { self.table_cache.merge_from(cache); }
     pub fn new(provider: P) -> Self {
         Self {
             provider,
@@ -4333,16 +4556,32 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 )
             })
             .collect::<Vec<_>>();
-        let cached_line = |offset: usize, slice: &HardLineLayoutSlice| {
+        let cached_any_line = |offset: usize, slice: &HardLineLayoutSlice| {
             view.cached_lines.get(&slice.hard_line_index).filter(|cached| {
-                !document_styles.table_context.as_ref().is_some_and(|context| context.contains_line(&slice.full_range))
-                    && cached.render_run_policy == render_run_policy
+                cached.render_run_policy == render_run_policy
                     && cached.hard_line_range == slice.full_range
                     && cached.text_coverage == slice.work_range
                     && slice.checkpoint.is_none()
                     && cached.inputs == line_inputs[offset]
             })
         };
+        // Table rows depend on the whole table's widths and are validated
+        // separately against the current measurements.
+        let cached_line = |offset: usize, slice: &HardLineLayoutSlice| {
+            if document_styles.table_context.as_ref().is_some_and(|context| context.contains_line(&slice.full_range)) {
+                return None;
+            }
+            cached_any_line(offset, slice)
+        };
+        let mut reused_table_lines = vec![false; line_slices.len()];
+        if let Some(context) = &document_styles.table_context {
+            for (offset, slice) in line_slices.iter().enumerate() {
+                if let Some(cached) = cached_any_line(offset, slice).filter(|_| context.contains_line(&slice.full_range)) {
+                    reused_table_lines[offset] = self.table_line_reusable(context, &slice.full_range,
+                        document_id, document_revision, view, cached);
+                }
+            }
+        }
         let fragment_ranges: Vec<Vec<Range<usize>>> = local_line_ranges
             .iter()
             .zip(line_slices)
@@ -4440,7 +4679,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         // later visible maximum cannot leave earlier cells at stale widths.
         if let Some(context) = &document_styles.table_context {
             for (index, slice) in line_slices.iter().enumerate() {
-                if context.contains_line(&slice.full_range) {
+                if context.contains_line(&slice.full_range) && !reused_table_lines[index] {
                     self.table_line(context, &slice.full_range, document_id, document_revision, view,
                         slice.hard_line_index, layout_revision, content_insets, &line_paragraphs[index].style, 0., false, &control)?;
                 }
@@ -4452,7 +4691,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         for (line_offset, line_slice) in line_slices.iter().enumerate() {
             control.checkpoint()?;
             let hard_line_index = line_slice.hard_line_index;
-            if let Some(context) = &document_styles.table_context {
+            let cached = if reused_table_lines[line_offset] { cached_any_line(line_offset, line_slice) }
+                else { cached_line(line_offset, line_slice) };
+            if let Some(context) = document_styles.table_context.as_ref().filter(|_| !reused_table_lines[line_offset]) {
                 let paragraph = &line_paragraphs[line_offset];
                 let origin = if hard_line_index == 0 {
                     (content_insets.top + block_box::before(&paragraph.style) * view.scale).max(0.)
@@ -4474,7 +4715,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     continue;
                 }
             }
-            if let Some(cached) = cached_line(line_offset, line_slice) {
+            if let Some(cached) = cached {
                 let mut line = cached.as_ref().clone();
                 line.layout_revision = layout_revision;
                 for row in &mut line.rows {
@@ -5488,7 +5729,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         self.next_layout_revision = layout_revision.0.wrapping_add(1).max(1);
         view.snapshot = Some(snapshot);
         view.height_index = height_index;
-        view.regional_cache = RegionalLayoutCache::default();
+        view.regional_cache = view.regional_cache.replacement(None);
         view.viewport_top = view.clamp_viewport_top(view.viewport_top);
         view.viewport_left = view.clamp_viewport_left(view.viewport_left);
         view.last_error = None;

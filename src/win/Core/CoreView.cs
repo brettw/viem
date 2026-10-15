@@ -159,6 +159,8 @@ internal sealed unsafe partial class CoreView : IDisposable
         if (outcome.command_status == VIEM_COMMAND_STATUS_ERROR) throw new InvalidOperationException(diagnostic ?? "The command could not be completed.");
     }
     internal void TableWidthsChanged() { Changed?.Invoke(); TableWidthRefinement.Update(); }
+    // Speculative layout completed a window and published an exact extent.
+    internal void SpeculativeLayoutFinished() => Changed?.Invoke();
     public void RestorePosition(CoreView previous)
     {
         var state = New<ViemViewRestorationV1>();

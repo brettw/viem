@@ -890,6 +890,9 @@ struct ActiveLayoutWork {
     cancellation: LayoutCancellationToken,
     document_revision: Revision,
     configuration_generation: ViewConfigurationGeneration,
+    /// Set for cache-only speculation over these hard lines, which survives
+    /// paint-only configuration changes and geometry changes to other lines.
+    geometry: Option<(u64, std::ops::Range<usize>)>,
     measurement_environment_id: MeasurementEnvironmentId,
     metrics_generation: MetricsGeneration,
 }
@@ -898,12 +901,16 @@ impl ActiveLayoutWork {
     fn is_obsolete(
         &self,
         document_revision: Revision,
-        configuration_generation: ViewConfigurationGeneration,
+        layout: &ViewLayout,
         measurement_environment_id: MeasurementEnvironmentId,
         metrics_generation: MetricsGeneration,
     ) -> bool {
+        let configuration_obsolete = match &self.geometry {
+            Some((generation, lines)) => !layout.geometry_unchanged_since(*generation, lines),
+            None => self.configuration_generation != layout.configuration_generation(),
+        };
         self.document_revision != document_revision
-            || self.configuration_generation != configuration_generation
+            || configuration_obsolete
             || self.measurement_environment_id != measurement_environment_id
             || self.metrics_generation != metrics_generation
     }
@@ -1927,6 +1934,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             commands.install_startup_view_options(options);
             layout.set_wrap(options.0);
         }
+        layout.set_regional_cache_retains_document(prelayout::retains_complete_presentation(&self.document));
         let engine = LayoutEngine::new(provider);
         let observed_metrics_generation = inspect_layout_provider(&engine).metrics_generation;
         self.views.insert(
@@ -2308,6 +2316,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             cancellation: tracked_cancellation,
             document_revision: request.document_revision(),
             configuration_generation: request.configuration_generation(),
+            geometry: None,
             measurement_environment_id: request.measurement_environment_id(),
             metrics_generation: request.metrics_generation(),
         };
@@ -7871,10 +7880,10 @@ fn cancel_obsolete_layout_work<P: TextMeasurementProvider>(
     document_revision: Revision,
     requirements: LayoutProviderRequirements,
 ) -> bool {
-    let configuration = view.layout.configuration_generation();
+    let layout = &view.layout;
     let mut cancelled = false;
     for slot in [&mut view.active_layout_work, &mut view.active_prelayout_work] {
-        if slot.as_ref().is_some_and(|active| active.is_obsolete(document_revision, configuration,
+        if slot.as_ref().is_some_and(|active| active.is_obsolete(document_revision, layout,
             requirements.measurement_environment_id, requirements.metrics_generation)) {
             slot.take().expect("obsolete job exists").cancellation.cancel();
             cancelled = true;

@@ -8,16 +8,23 @@ namespace Viem.Windows.Core;
 
 // One speculative chunk per view and one computing worker across the app.
 // No timer, unbounded backlog, mutable core access or UI callback on the worker.
+// Core decides the speculative window (the whole of a small document) and
+// returns no request once it is complete.
 internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher, bool tableRefinement = false) : IDisposable
 {
     private static readonly SemaphoreSlim workerSlot = new(1, 1);
-    private readonly record struct Dependencies(ulong Document, ulong Revision, ulong Configuration, ulong Environment, ulong Metrics);
+    private readonly record struct Dependencies(ulong Document, ulong Revision, ulong Configuration, ulong Environment, ulong Metrics, float Width);
     private Dependencies? dependencies;
     private float top, left, height;
     private int direction = 1;
     private bool queued, disposed, failed;
-    // Also bound retries when a deliberately tiny cache cannot retain a band.
-    private int remainingChunks;
+    // Bound stale captures under continuous change, and retries when a
+    // deliberately tiny cache cannot retain a window.
+    private const int MaximumConsecutiveDiscards = 8;
+    private int consecutiveDiscards;
+    private int installedSinceIdle;
+    private float publishedMaximumTop;
+    private ulong publishedLayoutRevision;
     private Work? active;
     public bool IsIdle => !queued && active == null;
     public string? LastError { get; private set; }
@@ -37,22 +44,26 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
         var state = view.Viewport;
         if ((state.flags & VIEM_VIEWPORT_STATE_HAS_LAYOUT) == 0)
         { active?.Cancel(); dependencies = null; return; }
+        var layout = view.LayoutInfo();
         var next = new Dependencies(state.document_id, state.document_revision, state.configuration_generation,
-            state.measurement_environment_id, state.metrics_generation);
+            state.measurement_environment_id, state.metrics_generation, layout.viewport_width);
         if (dependencies == next && top == state.top && (!tableRefinement || left == state.left)) return;
         int nextDirection = state.top > top ? 1 : state.top < top ? -1 : direction;
-        if (dependencies != next || nextDirection != direction || Math.Abs(state.top - top) > height * 3
-            || tableRefinement && (top != state.top || left != state.left))
+        // Viewport speculation survives scrolling and paint-only configuration
+        // changes: core validates its geometry and window at installation.
+        bool geometryChanged = dependencies is not { } previous || previous with { Configuration = next.Configuration } != next;
+        if (tableRefinement ? dependencies != next || top != state.top || left != state.left : geometryChanged || left != state.left)
             active?.Cancel();
-        dependencies = next; top = state.top; left = state.left; height = view.LayoutInfo().viewport_height; direction = nextDirection;
-        remainingChunks = 32;
+        dependencies = next; top = state.top; left = state.left; height = layout.viewport_height; direction = nextDirection;
+        publishedMaximumTop = state.maximum_top; publishedLayoutRevision = state.layout_revision;
+        consecutiveDiscards = 0;
         failed = false; LastError = null;
         Queue();
     }
 
     private void Queue()
     {
-        if (disposed || !Enabled || queued || active != null || failed || (!tableRefinement && remainingChunks == 0)) return;
+        if (disposed || !Enabled || queued || active != null || failed || consecutiveDiscards >= MaximumConsecutiveDiscards) return;
         queued = dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => {
             queued = false;
             if (disposed || !Enabled || active != null || failed) return;
@@ -67,10 +78,21 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
         using (Diagnostics.InputPerformance.Measure("prelayout.capture"))
             Check(tableRefinement ? viem_core_view_prepare_table_refinement(view.Document.Handle, view.Id, &request)
                 : viem_core_view_prepare_prelayout(view.Document.Handle, view.Id, direction, &request), "Prepare background layout");
-        if (request == 0) return;
+        if (request == 0)
+        {
+            // A completed window may have made the document extent exact
+            // without a frame; publish it behind any pending input.
+            if (!tableRefinement && installedSinceIdle > 0)
+            {
+                installedSinceIdle = 0;
+                var state = view.Viewport;
+                if (state.maximum_top != publishedMaximumTop || state.layout_revision != publishedLayoutRevision)
+                    dispatcher.TryEnqueue(DispatcherQueuePriority.Low, () => { if (!disposed) view.SpeculativeLayoutFinished(); });
+            }
+            return;
+        }
         try { active = new Work(request, view.Provider.CaptureWorkerFactory()); }
         catch { viem_layout_work_release(request); throw; }
-        if (!tableRefinement) remainingChunks--;
         Started++;
         _ = Run(active);
     }
@@ -124,10 +146,14 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
                         : viem_core_view_install_prelayout(view.Document.Handle, view.Id, direction, result, &installed);
                 result = 0; // Installation consumes the result, including stale rejection.
                 Check(status, "Install background layout");
-                if (installed != 0) { Installed++; if (tableRefinement) view.TableWidthsChanged(); }
-                else Discarded++; // A newer viewport can reject work without making discovery fail.
+                if (installed != 0)
+                {
+                    Installed++; consecutiveDiscards = 0; installedSinceIdle++;
+                    if (tableRefinement) view.TableWidthsChanged();
+                }
+                else { Discarded++; consecutiveDiscards++; } // A newer viewport can reject work without making discovery fail.
             }
-            else Discarded++;
+            else { Discarded++; consecutiveDiscards++; }
         }
         catch (Exception error) { failed = true; LastError = error.ToString(); }
         finally
@@ -136,7 +162,7 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
             work.Dispose();
         }
         // Capture the next nearest gap from the current viewport, not a saved
-        // queue. Stop as soon as the bounded band is ready; idle schedules nothing.
+        // queue. Stop as soon as the window is ready; idle schedules nothing.
         Queue();
     }
 
