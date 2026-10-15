@@ -259,7 +259,7 @@ final class EVVisibleWhitespaceStyleEditor: NSWindowController, NSWindowDelegate
     func windowWillClose(_ notification: Notification) { session.endGroup() }
 
     private func build() {
-        let explanation = NSTextField(wrappingLabelWithString: "This character style applies to visible whitespace in Text, Code, and source views. Unchecked properties inherit the surrounding text. The preview uses a sample text style.")
+        let explanation = NSTextField(wrappingLabelWithString: "This character style applies to visible whitespace in Text and Code. Unchecked properties inherit the surrounding text. The preview uses a sample text style.")
         explanation.textColor = .secondaryLabelColor
         languageOverride.target = self
         languageOverride.action = #selector(changeLanguageOverride(_:))

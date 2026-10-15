@@ -8,7 +8,6 @@ fn selected_inline_style_queries_only_read_local_contributors() {
     for count in [32, 4_000] {
         for (format, source) in [
             (Format::Markdown, format!("Words\n\n{}", "A **bold** paragraph.\n\n".repeat(count))),
-            (Format::MarkdownSource, format!("Words\n\n{}", "A **bold** paragraph.\n\n".repeat(count))),
 
         ] {
             let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, format).unwrap();
@@ -27,7 +26,7 @@ fn selected_inline_style_queries_only_read_local_contributors() {
 
 #[test]
 fn markdown_inline_toggles_reparse_only_the_selected_paragraph() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = format!("- First\n- Target words\n\n{}", "Unrelated **bold** paragraph.\n\n".repeat(4_000));
         let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let at = document.text().find("Target").unwrap();
@@ -46,27 +45,3 @@ fn markdown_inline_toggles_reparse_only_the_selected_paragraph() {
     }
 }
 
-#[test]
-fn source_selection_style_command_retains_bounded_document_work() {
-    let source = format!("Target\n\n{}",
-        "A paragraph with **bold** and `code` text.\n\n".repeat(4_000));
-    let at = source.find("Target").unwrap();
-    let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-    let mut core = Core::new(document);
-    let view = core.add_view(MockTextMeasurementProvider::new(), 900., 350.);
-    core.handle(view, CoreEvent::PlaceCursor {
-        document_revision: core.document().revision(), text_offset: at,
-        affinity: BoundaryAffinity::Downstream, extend_selection: false,
-    }).unwrap();
-    for key in "v5l".chars() {
-        core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
-    }
-    let expected = core.selection_semantic_style_presentation(view, SemanticInlineStyle::Strong)
-        .unwrap().selection().unwrap().clone();
-    assert_eq!(expected.range(), at..at + 6);
-    let (_, work) = measure_document_work(|| core.handle(view, CoreEvent::SetSelectionSemanticStyle {
-        expected, style: SemanticInlineStyle::Strong, enabled: true,
-    }).unwrap());
-    assert!(work.source_decoded_bytes < 16384, "{work:?}");
-    assert!(work.source_full_materialized_bytes < 16384, "{work:?}");
-}

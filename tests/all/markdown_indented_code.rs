@@ -85,18 +85,6 @@ fn gfm_indented_code_preserves_literal_body_and_source() {
             "{source:?}"
         );
         assert_eq!(doc.source_bytes(), source.as_bytes());
-        let source_doc = open(source, Format::MarkdownSource);
-        assert_eq!(
-            source_doc
-                .projection()
-                .blocks()
-                .iter()
-                .filter(|b| b.style.0 == "Code Block")
-                .count(),
-            code_count,
-            "source: {source:?}"
-        );
-        assert_eq!(source_doc.source_bytes(), source.as_bytes());
         if source.starts_with("- ") && code_count > 0 {
             assert!(doc
                 .projection()
@@ -186,7 +174,7 @@ fn indented_code_typing_breaks_deletion_and_toolbar_reopen_exactly() {
                 assert_eq!(doc.text(), expected);
             }
         }
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut doc = open(source, format);
             doc.set_paragraph_style(0..0, StyleId::from("Paragraph"))
                 .unwrap();
@@ -200,7 +188,7 @@ fn indented_code_typing_breaks_deletion_and_toolbar_reopen_exactly() {
 #[test]
 fn clearing_indented_code_in_containers_removes_the_code_treatment() {
     for source in [">     code\n>     next", "-     code", "> -     code"] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut doc = open(source, format);
             let kind = doc.projection().blocks()[0].kind.clone();
             let quote_depth = doc.projection().blocks()[0].quote_depth;
@@ -237,7 +225,7 @@ fn indented_code_after_grammar_block_boundaries_stays_literal_and_editable() {
         ("  # title\n    *code*", "title\n*code*"),
         ("#\ttitle\n    *code*", "title\n*code*"),
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut document = open(source, format);
             if format == Format::Markdown { assert_eq!(document.text(), expected, "{source:?}"); }
             assert_eq!(document.projection().blocks().last().unwrap().style.0, "Code Block", "{source:?} {format:?}");

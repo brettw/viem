@@ -10,7 +10,6 @@ use viem_core::{Core, CoreEvent};
 fn marked_text_commits_pending_style_atomically_and_retains_it_for_subsequent_typing() {
     for (format, source, at) in [
         (Format::Markdown, "word", 0),
-        (Format::MarkdownSource, "word", 0),
 
     ] {
         let mut core = Core::new(
@@ -101,7 +100,7 @@ fn marked_text_commits_pending_style_atomically_and_retains_it_for_subsequent_ty
 #[test]
 fn consecutive_compositions_over_native_selection_keep_separate_valid_history() {
     use viem_core::document::HistoryNavigationRequest;
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         let mut core = Core::new(Document::from_bytes(b"hello world".to_vec(), Encoding::Utf8, format).unwrap());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300., 160.);
         for (offset, extend) in [(0, false), (5, true)] {

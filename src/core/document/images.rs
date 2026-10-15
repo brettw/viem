@@ -202,13 +202,7 @@ impl Document {
             };
             self.encoding().encode_fragment(&spelling)?
         };
-        let expected = if self.format().is_source_view() {
-            super::line_endings::normalize(
-                &self.encoding().decode_region(&replacement, source.start)?,
-                self.file_format(),
-            )
-            .text
-        } else if remove {
+        let expected = if remove {
             String::new()
         } else {
             "\u{fffc}".into()
@@ -216,7 +210,7 @@ impl Document {
         let prepared = self.prepare_text_edits_with_patch_policy(
             vec![TextEdit::new(range.clone(), expected.clone())],
             if remove
-                && self.format().is_wysiwyg()
+                && self.format().is_markdown()
                 && existing.as_ref().is_some_and(|image| image.html)
             {
                 // HTML whitespace may need local protection after removing an
@@ -358,7 +352,7 @@ impl Document {
         &self,
         range: Range<usize>,
     ) -> Result<Option<String>, DocumentError> {
-        if !self.format().is_wysiwyg() {
+        if !self.format().is_markdown() {
             return Ok(None);
         }
         let images = self.projection().inline_images_for_region(&range);

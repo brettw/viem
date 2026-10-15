@@ -25,7 +25,7 @@ internal sealed partial class EditorWindow
         toolbarToggle.Content = icon;
         AutomationProperties.SetName(toolbarToggle, "Formatting toolbar");
         toolbarToggle.Click += (_, _) => Safe(() => {
-            if (ActivePane != null) preferences.SetFormattingToolbar(ActivePane.Document.State.format, toolbarToggle.IsChecked == true);
+            if (ActivePane != null) preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, toolbarToggle.IsChecked == true);
             SynchronizeFormattingToolbar(); RestoreEditorFocusAfterControl(); return Task.CompletedTask;
         });
     }
@@ -43,9 +43,10 @@ internal sealed partial class EditorWindow
         return toolbar;
     }
 
-    private void PrepareFormattingToolbar(uint format)
+    // Markdown documents keep one toolbar, including with Preview off.
+    private void PrepareFormattingToolbar(CoreDocument document)
     {
-        bool visible = (format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE) && preferences.ShowFormattingToolbar(format);
+        bool visible = document.IsMarkdownDocument && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
         if (visible) EnsureFormattingToolbar();
         if (formattingToolbar != null) formattingToolbar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -62,9 +63,8 @@ internal sealed partial class EditorWindow
     private void SynchronizeFormattingToolbar()
     {
         if (closed) return;
-        uint format = ActivePane?.Document.State.format ?? VIEM_FORMAT_PLAIN_TEXT;
-        bool available = format is VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE;
-        bool visible = available && preferences.ShowFormattingToolbar(format);
+        bool available = ActivePane?.Document.IsMarkdownDocument == true;
+        bool visible = available && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
         toolbarToggle.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
         toolbarToggle.IsChecked = visible;
         ToolTipService.SetToolTip(toolbarToggle, visible ? "Hide Formatting Toolbar" : "Show Formatting Toolbar");
@@ -75,7 +75,7 @@ internal sealed partial class EditorWindow
     {
         if (ActivePane is not { CanUseFormattingCommands: true } pane) return;
         var toolbar = EnsureFormattingToolbar();
-        toolbar.Synchronize(pane, preferences.ShowFormattingToolbar(pane.Document.State.format));
+        toolbar.Synchronize(pane, preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN));
         toolbar.Execute(action);
     }
 #if DEBUG

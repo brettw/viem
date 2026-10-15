@@ -138,7 +138,7 @@ impl CommandInterpreter {
             || !output.cursor_moved
             || self.cursor == before.cursor
             || document.revision() != revision
-            || !document.format().is_wysiwyg()
+            || !document.format().is_markdown()
             || !matches!(self.mode, Mode::Insert | Mode::Replace)
         {
             return Ok(());

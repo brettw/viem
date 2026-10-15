@@ -50,17 +50,10 @@ impl Document {
         for name in names {
             let open = self.encoding().encode_fragment(&format!("<{name}>"))?;
             let close = self.encoding().encode_fragment(&format!("</{name}>"))?;
-            let (opening, closing) = if self.format().is_source_view() {
-                (
-                    full.start..full.start + open.len(),
-                    full.end.saturating_sub(close.len())..full.end,
-                )
-            } else {
-                (
-                    full.start.saturating_sub(open.len())..full.start,
-                    full.end..full.end + close.len(),
-                )
-            };
+            let (opening, closing) = (
+                full.start.saturating_sub(open.len())..full.start,
+                full.end..full.end + close.len(),
+            );
             if self.state().source.bytes_in(opening.clone()).as_ref() == Some(&open)
                 && self.state().source.bytes_in(closing.clone()).as_ref() == Some(&close)
             {
@@ -98,18 +91,14 @@ impl Document {
             };
             let before = scan(
                 full.start.saturating_sub(4096),
-                if self.format().is_source_view() {
-                    full.end.min(full.start.saturating_add(4096))
-                } else {
-                    full.start
-                },
+                full.start
+            
+,
             )?;
             let after = scan(
-                if self.format().is_source_view() {
-                    full.start.max(full.end.saturating_sub(4096))
-                } else {
-                    full.end
-                },
+                full.end
+            
+,
                 self.source_byte_len().min(full.end.saturating_add(4096)),
             )?;
             let opening = super::super::html::tokenize(&before.text)
@@ -124,11 +113,7 @@ impl Document {
                     }
                     let range = before.source_boundary(token.range.start)?
                         ..before.source_boundary(token.range.end)?;
-                    if self.format().is_source_view() && range.start != full.start
-                        || !self.format().is_source_view()
-                            && boundary(range.end, BoundaryAffinity::Downstream)
-                                != Some(scope.start)
-                    {
+                    if boundary(range.end, BoundaryAffinity::Downstream) != Some(scope.start) {
                         return None;
                     }
                     Some((tag.name, range))
@@ -145,11 +130,7 @@ impl Document {
                         }
                         let range = after.source_boundary(token.range.start)?
                             ..after.source_boundary(token.range.end)?;
-                        if self.format().is_source_view() && range.end != full.end
-                            || !self.format().is_source_view()
-                                && boundary(range.start, BoundaryAffinity::Upstream)
-                                    != Some(scope.end)
-                        {
+                        if boundary(range.start, BoundaryAffinity::Upstream) != Some(scope.end) {
                             return None;
                         }
                         Some(range)
@@ -485,62 +466,57 @@ impl Document {
                 patches.push(SourcePatch::primary(source.end..source.end, boundary));
             }
         }
-        let prepared = if self.format().is_source_view() {
-            self.prepare_visible_source_patches(patches)?
-        } else {
-            self.prepare_text_edits_with_patch_policy(Vec::new(), Some(patches), true)?
-        };
-        if !self.format().is_source_view() {
-            if let PreparedPublication::State(candidate) = &prepared.publication {
-                let spans = candidate.projection.style_spans_for_region(&range);
-                let mut boundaries = BTreeSet::from([range.start, range.end]);
-                for span in &spans {
-                    boundaries.insert(span.range.start.max(range.start));
-                    boundaries.insert(span.range.end.min(range.end));
+        let prepared = self.prepare_text_edits_with_patch_policy(Vec::new(), Some(patches), true)?;
+        if let PreparedPublication::State(candidate) = &prepared.publication {
+            let spans = candidate.projection.style_spans_for_region(&range);
+            let mut boundaries = BTreeSet::from([range.start, range.end]);
+            for span in &spans {
+                boundaries.insert(span.range.start.max(range.start));
+                boundaries.insert(span.range.end.min(range.end));
+            }
+            let before = self.projection().style_spans_for_region(&range);
+            for span in before {
+                boundaries.insert(span.range.start.max(range.start));
+                boundaries.insert(span.range.end.min(range.end));
+            }
+            let boundaries: Vec<_> = boundaries.into_iter().collect();
+            for pair in boundaries.windows(2).filter(|pair| pair[0] < pair[1]) {
+                let old = crate::layout::DocumentLayoutStyles::semantic_character_at(
+                    self.projection(),
+                    pair[0],
+                    false,
+                )
+                .map_err(|_| DocumentError::VerificationFailed)?;
+                let mut new = crate::layout::DocumentLayoutStyles::semantic_character_at(
+                    &candidate.projection,
+                    pair[0],
+                    false,
+                )
+                .map_err(|_| DocumentError::VerificationFailed)?;
+                match property {
+                    StyleProperty::CharacterUnderline => new.underline = old.underline,
+                    StyleProperty::CharacterSuperscript => new.superscript = old.superscript,
+                    StyleProperty::CharacterSubscript => new.subscript = old.subscript,
+                    _ => {}
                 }
-                let before = self.projection().style_spans_for_region(&range);
-                for span in before {
-                    boundaries.insert(span.range.start.max(range.start));
-                    boundaries.insert(span.range.end.min(range.end));
-                }
-                let boundaries: Vec<_> = boundaries.into_iter().collect();
-                for pair in boundaries.windows(2).filter(|pair| pair[0] < pair[1]) {
-                    let old = crate::layout::DocumentLayoutStyles::semantic_character_at(
-                        self.projection(),
-                        pair[0],
-                        false,
-                    )
-                    .map_err(|_| DocumentError::VerificationFailed)?;
-                    let mut new = crate::layout::DocumentLayoutStyles::semantic_character_at(
-                        &candidate.projection,
-                        pair[0],
-                        false,
-                    )
-                    .map_err(|_| DocumentError::VerificationFailed)?;
-                    match property {
-                        StyleProperty::CharacterUnderline => new.underline = old.underline,
-                        StyleProperty::CharacterSuperscript => new.superscript = old.superscript,
-                        StyleProperty::CharacterSubscript => new.subscript = old.subscript,
-                        _ => {}
-                    }
-                    if old != new {
-                        return Err(DocumentError::VerificationFailed.into());
-                    }
-                }
-                if enabled
-                    && boundaries.windows(2).any(|pair| {
-                        pair[0] < pair[1]
-                            && spans.iter().any(|span| {
-                                span.range.contains(&pair[0])
-                                    && matches!(&span.application,
-                        StyleApplication::Direct(p) if inline_boolean(p, property) == Some(true))
-                            }) != enabled
-                    })
-                {
+                if old != new {
                     return Err(DocumentError::VerificationFailed.into());
                 }
             }
+            if enabled
+                && boundaries.windows(2).any(|pair| {
+                    pair[0] < pair[1]
+                        && spans.iter().any(|span| {
+                            span.range.contains(&pair[0])
+                                && matches!(&span.application,
+                    StyleApplication::Direct(p) if inline_boolean(p, property) == Some(true))
+                        }) != enabled
+                })
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
         }
+    
         Ok(prepared)
     }
 }

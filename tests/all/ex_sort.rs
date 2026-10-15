@@ -244,12 +244,6 @@ fn source_delimiters_encoding_and_literal_lf_are_preserved() {
     assert_eq!(doc.source_bytes(), bytes);
 }
 #[test]
-fn markdown_source_reorders_literal_syntax() {
-    let mut doc = source("__z__\n**a**\nplain", Format::MarkdownSource);
-    run(&mut doc, ":sort");
-    assert_eq!(doc.source_bytes(), b"**a**\n__z__\nplain");
-}
-#[test]
 fn markdown_rich_paragraphs_keep_delimiters_and_styles() {
     let mut doc = source("__z__\n\n**a**\n\nplain", Format::Markdown);
     run(&mut doc, ":.,$sort");
@@ -387,12 +381,6 @@ fn coordinator_obeys_sort_cursor_even_when_new_ordinal_equals_old_zero() {
             "pear\nApple\nbanana\napple\n10\n2\n",
             ":sort iu",
             0,
-        ),
-        (
-            Format::MarkdownSource,
-            "outside\n  zebra\n apple\ntail",
-            ":2,3sort / */",
-            9,
         ),
     ] {
         let mut core = Core::new(source(before, format));

@@ -39,7 +39,7 @@ fn invalid_saved_defaults_keep_valid_styles_and_builtin_markdown_containers_usab
     use viem_core::document::{BlockRole, FontSize};
     use viem_core::layout::EdgeInsets;
     let source = b"> Quoted paragraph.\n>\n> ~~~\n> code\n> ~~~\n";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for (name, expected) in [("Block quote", BlockRole::Quote), ("Code Block", BlockRole::CodeBlock)] {
             let defaults = serde_json::json!({"version":1,"block_styles":[
                 {"id":"Heading1","name":"Changed heading","role":"Paragraph","based_on":"Paragraph",
@@ -70,12 +70,11 @@ fn invalid_saved_defaults_keep_valid_styles_and_builtin_markdown_containers_usab
 fn code_background_changes_refresh_cached_boxes_in_both_markdown_views() {
     use viem_core::document::{Color, StyleNamespace, StyleDefinitionFieldEdit, StyleProperty, StylePropertyValue};
     let source = "Before\n\n```\nfirst line\n\nlast line\n```\n\nAfter";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for flow in [false, true] {
             let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             let mut core = Core::new(document);
             let view = core.add_view(MockTextMeasurementProvider::new(), 500., 500.);
-            if format.is_source_view() { core.handle(view, CoreEvent::SetParagraphFlow(flow)).unwrap(); }
             assert!(core.layout(view).unwrap().snapshot().is_some());
             for alpha in [1., 0.5, 0.] {
                 let color = Color { red: 1., green: 0., blue: 0., alpha };

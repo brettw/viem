@@ -33,7 +33,7 @@ fn assert_continuation_margin(snapshot: &LayoutSnapshot, margin: f32) {
 
 #[test]
 fn leading_whitespace_stays_with_the_first_word_even_when_it_overflows() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for prefix in ["        ", "\t \t"] {
             for tail in ["", " next"] {
                 let text = format!("{prefix}longidentifier{tail}");
@@ -324,7 +324,6 @@ fn wrapped_indent_does_not_change_other_formats_or_unwrapped_code_geometry() {
     let text = "  aa bb cc dd ee ff gg hh ii jj kk ll mm nn";
     for (format, wrapped) in [
         (Format::PlainText, true),
-        (Format::MarkdownSource, true),
         (Format::Code, false),
     ] {
         let (document, mut engine, mut view) = fixture(text, format, 120.0);

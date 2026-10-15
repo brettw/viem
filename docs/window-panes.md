@@ -36,7 +36,7 @@ sizes and current visible rows do not change these units.
 line numbers in the current view; `:set nonumber` hides them. The menu checkmark
 reflects that view's setting. A split copies this option, then each view
 can change it independently. Soft wrapping does not add line numbers. In
-Markdown WYSIWYG, hidden syntax keeps its source ordinal without a separate
+Markdown Preview, hidden syntax keeps its source ordinal without a separate
 number. When several source lines share a rendered row, only its first source
 ordinal is displayed. Current-line styling follows that displayed number.
 

@@ -8,7 +8,7 @@ import XCTest
 @MainActor
 final class EVPendingTypingStyleTests: XCTestCase {
   func testCommandFormattingShortcutsWorkWithoutMenuItemsAndRespectFocus() throws {
-    for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+    for type in [EVDocument.markdownType] {
       var shortcuts: [(String, String, UInt16, NSEvent.ModifierFlags, EVMenuCommand)] = [
         ("b", "b", 11, [.command], .bold), ("i", "i", 34, [.command], .italic),
       ]
@@ -112,7 +112,6 @@ final class EVPendingTypingStyleTests: XCTestCase {
   func testUnavailableFormattingAcceleratorsDoNotMutateSourceOrInvokeHeadings() throws {
     for (type, source, readOnly, command) in [
       (EVDocument.markdownType, "word", true, EVMenuCommand.characterCode),
-      (EVDocument.markdownSourceType, "word", true, .bold),
       (EVDocument.markdownType, "```\nword\n```", false, .superscript),
       (EVDocument.plainTextType, "word", false, .bulletedList),
       (EVDocument.codeType, "word", false, .characterCode),
@@ -176,7 +175,7 @@ final class EVPendingTypingStyleTests: XCTestCase {
 
   func testOptionItalicKeepsSourceCleanUntilTypedContentAndUndoIsExact() throws {
     for (type, source) in [
-      (EVDocument.markdownType, "word"), (EVDocument.markdownSourceType, "word"),
+      (EVDocument.markdownType, "word"),
     ] {
       let backend = EVCoreDocumentBackend()
       try backend.read(source: Data(source.utf8), typeName: type)
@@ -205,5 +204,4 @@ final class EVPendingTypingStyleTests: XCTestCase {
       XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8), type)
     }
   }
-
 }

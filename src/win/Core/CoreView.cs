@@ -139,7 +139,9 @@ internal sealed unsafe partial class CoreView : IDisposable
         if (plain) ClipboardFragment = "";
         try
         {
-            Key(VIEM_KEY_PASTE_CLIPBOARD);
+            // Markdown Preview interprets ordinary pasted text as Markdown;
+            // Paste and Match Style keeps it literal.
+            Key(plain ? VIEM_KEY_PASTE_CLIPBOARD_MATCHING_STYLE : VIEM_KEY_PASTE_CLIPBOARD);
         }
         finally { ClipboardFragment = rich; }
     }
@@ -192,8 +194,6 @@ internal sealed unsafe partial class CoreView : IDisposable
     });
     public void RevealSelection() => Apply(o => viem_core_view_reveal_selection(Document.Handle, Id, o));
     public void Wrap(bool value) => Apply(o => viem_core_view_set_wrap(Document.Handle, Id, value ? 1u : 0u, o));
-    public void ParagraphFlow(bool value) => Apply(o => viem_core_view_set_paragraph_flow(Document.Handle, Id, value ? 1u : 0u, o));
-    public bool ParagraphFlowEnabled { get { uint value = 0; Check(viem_core_view_paragraph_flow(Document.Handle, Id, &value), "Read paragraph flow"); return value != 0; } }
     public uint CurrentLineMode { get { uint value = 0; Check(viem_core_view_line_mode(Document.Handle, Id, &value), "Read line mode"); return value; } }
     public float DefaultColumnWidth { get { float width = 0; Check(viem_core_view_default_column_width(Document.Handle, Id, &width), "Read default column width"); return width; } }
     public float DefaultLineHeight { get { float height = 0; Check(viem_core_view_default_line_height(Document.Handle, Id, &height), "Read default line height"); return height; } }

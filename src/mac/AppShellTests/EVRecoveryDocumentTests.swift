@@ -61,7 +61,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
         let canonical = target.resolvingSymlinksInPath()
         let url = canonical.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).viem\(suffix).swp")
-        let snapshot = EVRecoverySnapshot(source: Data(text.utf8), format: .markdownSource,
+        let snapshot = EVRecoverySnapshot(source: Data(text.utf8), format: .code,
             encoding: 2, fileFormat: 3, documentID: 7, documentRevision: 3)
         let record = EVRecoveryRecord(version: 1, owner: UUID(), processID: Int32.max,
             host: ProcessInfo.processInfo.hostName, targetPath: canonical.path,
@@ -195,7 +195,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
     func testRecoverLoadsUnsavedBytesAndLeavesOriginalAndOtherOwnerUntouched() throws {
         let target = try fixture()
         let old = try EVRecoveryStore.claim(for: target)
-        let snapshot = EVRecoverySnapshot(source: Data("unsaved".utf8), format: .markdownSource, encoding: 2, fileFormat: 3, documentID: 7, documentRevision: 3)
+        let snapshot = EVRecoverySnapshot(source: Data("unsaved".utf8), format: .code, encoding: 2, fileFormat: 3, documentID: 7, documentRevision: 3)
         old.write(snapshot); old.drainForTesting()
         let backend = Backend()
         let recovered = EVDocument(editorBackend: backend)

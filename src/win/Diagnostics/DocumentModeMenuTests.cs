@@ -101,8 +101,8 @@ internal static class DocumentModeMenuTests
                 "native obscure language selection updates its check and the document mode");
             await Close();
             await Choose(markdown);
-            Check(markdown.IsChecked && document.State.format == (preferences.MarkdownFormattedView ? VIEM_FORMAT_MARKDOWN : VIEM_FORMAT_MARKDOWN_SOURCE),
-                "Markdown choice uses the remembered formatted view");
+            Check(markdown.IsChecked && document.State.format == VIEM_FORMAT_MARKDOWN,
+                "Markdown Preview choice selects formatted Markdown");
             await Choose(codeMode);
             Check(codeMode.IsChecked && !markdown.IsChecked && document.State.format == VIEM_FORMAT_CODE
                 && DocumentModes.Read(document).Language == obscureLanguage.Id && obscureChoice.IsChecked

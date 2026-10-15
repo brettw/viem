@@ -7,57 +7,6 @@ import XCTest
 @MainActor
 final class EVBlockBackgroundDrawingTests: XCTestCase {
 
-    func testTypingQuoteBeforeFenceKeepsSiblingCodeBackgroundsSeparate() throws {
-        let prior = EVThemeStore.shared.theme
-        EVThemeStore.shared.update(.paper)
-        defer { EVThemeStore.shared.update(prior) }
-        let source = "```mermaid\ngraph LR\n    Writing --> Editing\n    Editing --> Saving\n```\n\n### Other GitHub features\n\nFollowing prose."
-        func configured(_ source: String) throws -> EVEditorSurfaceController {
-            let surface = try makeSurface(source, typeName: EVDocument.markdownSourceType)
-            surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 600)
-            surface.viewDidLayout()
-            let session = try XCTUnwrap(surface.session)
-            let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))
-            try session.editStyle(key: key, expected: surface.backend.styleSheetSnapshot().identity,
-                mutation: .setDeclaration(.blockBackground, .color(.init(red: 1, green: 0, blue: 0, alpha: 0.5))))
-            surface.refreshPresentation()
-            return surface
-        }
-        func codeBoxes(_ surface: EVEditorSurfaceController) throws -> [CGRect] {
-            try XCTUnwrap(surface.layoutSnapshot).decorations.filter {
-                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0
-                    && $0.paint.foreground.red == 1 && $0.paint.foreground.green == 0
-                    && $0.paint.foreground.blue == 0 && $0.paint.foreground.alpha == 0.5
-            }.map { surface.editorView.viewRect($0.typographic_bounds) }
-        }
-        let surface = try configured(source)
-        let session = try XCTUnwrap(surface.session)
-        surface.performInput { _ = try session.sendText("i"); _ = try session.sendText(">") }
-        XCTAssertNil(surface.commandOutput)
-        let boxes = try codeBoxes(surface)
-        XCTAssertGreaterThan(boxes.count, 1)
-        for (index, rect) in boxes.enumerated() {
-            for other in boxes.dropFirst(index + 1) {
-                XCTAssertLessThanOrEqual(rect.intersection(other).height, 0.01, "Distinct code backgrounds must not overlap")
-            }
-        }
-        let text = try surface.backend.formattedText() as NSString
-        let graph = UInt64(text.range(of: "graph LR").location)
-        let row = try XCTUnwrap(try session.layoutExport().rows.first { $0.text_start <= graph && graph < $0.text_end })
-        XCTAssertFalse(boxes.contains { $0.minY < CGFloat(row.baseline - surface.viewportState.top) && CGFloat(row.baseline - surface.viewportState.top) < $0.maxY })
-        let fresh = try configured(">" + source)
-        XCTAssertEqual(boxes, try codeBoxes(fresh), "Editing must agree with a fresh parse and layout")
-        if let path = ProcessInfo.processInfo.environment["VIEM_FENCE_PREVIEW"] {
-            let png = try XCTUnwrap(try bitmap(surface.editorView).representation(using: .png, properties: [:]))
-            try png.write(to: URL(fileURLWithPath: path))
-        }
-        surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.markdownSourceType), Data(source.utf8))
-        surface.perform(menuCommand: .redo, sender: nil)
-        XCTAssertEqual(try surface.backend.serializedSource(typeName: EVDocument.markdownSourceType), Data((">" + source).utf8))
-        XCTAssertEqual(try codeBoxes(surface), try codeBoxes(fresh))
-    }
-
     func testQuotedTableHasOneContinuousOuterBorderAndBackground() throws {
         let prior = EVThemeStore.shared.theme
         EVThemeStore.shared.update(.paper)
@@ -217,7 +166,7 @@ final class EVBlockBackgroundDrawingTests: XCTestCase {
         EVThemeStore.shared.update(.paper)
         defer { EVThemeStore.shared.update(prior) }
         let source = "Before\n\n```\nfirst line\n\nlast line\n```\n\nAfter"
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             let surface = try makeSurface(source, typeName: type)
             let editor = EVStyleEditorViewController()
             let key = EVStyleKey(namespace: .block, id: EVStyleID(rawValue: "Code Block"))

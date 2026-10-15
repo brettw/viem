@@ -100,11 +100,10 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         let top = view.layout.viewport_top();
         let bottom = top + view.layout.height();
-        let flow = view.layout.paragraph_flow();
         let line_at = |offset| {
             self.document
                 .projection()
-                .presentation_line_at_offset(offset, flow)
+                .presentation_line_at_offset(offset)
                 .ok_or(LayoutError::InvalidTextOffset(offset))
         };
         let cursor = line_at(view.commands.cursor())?;

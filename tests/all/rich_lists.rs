@@ -17,7 +17,6 @@ fn numbered_list_enter_replays_semantically_for_counted_dot() {
     for (source, format) in [
         ("First", Format::PlainText),
         ("First", Format::Markdown),
-        ("First", Format::MarkdownSource),
 
     ] {
         let mut document =
@@ -40,7 +39,7 @@ fn numbered_list_enter_replays_semantically_for_counted_dot() {
         }
         assert_eq!(
             document.text(),
-            if matches!(format, Format::PlainText | Format::MarkdownSource) {
+            if format == Format::PlainText {
                 "1. First\n2. Next\n3. Next\n4. Next"
             } else {
                 "First\nNext\nNext\nNext"
@@ -55,7 +54,7 @@ fn numbered_list_enter_replays_semantically_for_counted_dot() {
             .unwrap();
         assert_eq!(
             document.text(),
-            if matches!(format, Format::PlainText | Format::MarkdownSource) {
+            if format == Format::PlainText {
                 "1. First\n2. Next"
             } else {
                 "First\nNext"

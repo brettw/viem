@@ -67,7 +67,7 @@ use super::format_options::{BlockCommentSyntax, CommentProfile, CommentStart, Li
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReflowError {
-    /// Markdown source and formatted views need format-aware semantics.
+    /// Markdown Preview needs format-aware semantics.
     UnsupportedFormat(Format),
     InvalidLineRange {
         start: usize,
@@ -1390,7 +1390,6 @@ mod tests {
         let snapshot = document.hard_line_snapshot();
         for format in [
             Format::Markdown,
-            Format::MarkdownSource,
         ] {
             assert_eq!(
                 reflow_edits(&ReflowRequest {

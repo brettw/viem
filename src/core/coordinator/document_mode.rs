@@ -39,12 +39,11 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub(super) fn set_document_mode(&mut self, view: ViewId, document: DocumentId, revision: Revision,
-                                   mode: DocumentMode, formatted_markdown: bool) -> Result<CoreOutcome, CoreError> {
+                                   mode: DocumentMode) -> Result<CoreOutcome, CoreError> {
         let automatic = self.detect_code_language(&LanguageSelection::Automatic);
-        let markdown = if formatted_markdown { Format::Markdown } else { Format::MarkdownSource };
         let target = match &mode {
             DocumentMode::PlainText => Format::PlainText,
-            DocumentMode::Markdown => markdown,
+            DocumentMode::Markdown => Format::Markdown,
             DocumentMode::CodeFormat => Format::Code,
             DocumentMode::Code(id) => {
                 if !languages::supported_languages().iter().any(|language| &language.id == id) {

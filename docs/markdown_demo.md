@@ -1,29 +1,34 @@
 # Viem Markdown demo
 
-Open this file in Markdown Source, then switch to Markdown WYSIWYG. The original source is preserved when switching views and when saving without edits.
+Open this file, then turn on Markdown Preview in the toolbar. With Preview off, the same source is edited literally as Code with Markdown syntax highlighting. The original source is preserved when switching views and when saving without edits.
 
 In Settings > Editing, **Automatically format typed Markdown** is on by default.
-In WYSIWYG, type `*italic*`, `**bold**`, `***bold italic***`, `~~strike~~`,
+In Markdown Preview, type `*italic*`, `**bold**`, `***bold italic***`, `~~strike~~`,
 backtick-delimited code, or `[label](https://example.com)` to complete a formatted
 span. At a paragraph's start, a space after `#` through `######`, `>`, `-`, `*`,
 `+`, or a decimal list marker activates that structure. Three backticks or tildes
 immediately make a literal paragraph a Code Block and put the caret at its start.
 `---`, or `___ ` and `*** ` with a trailing space, create thematic rules.
 Control-Q before a character keeps it literal, including after
-saving and reopening. Disabling the option restores literal WYSIWYG input;
-Source, Text and Code input are unaffected.
+saving and reopening. Disabling the option restores literal Preview input;
+Text and Code input are unaffected.
+
+Paste interprets copied text as Markdown: pasted headings, lists and paragraphs
+keep their own structure even when the caret is inside a list or quote, and
+code keeps pasted text literal. Paste and Match Style inserts the text exactly
+as written.
 
 ## Paragraphs and line breaks
 
 This sentence is written across
-several source lines. In WYSIWYG they form one flowing paragraph.
+several source lines. In Preview they form one flowing paragraph.
 
 This is a separate paragraph, with **bold**, *italic*, ***bold italic***, and ~~strikethrough~~ text. Nested formatting includes **This text is _extremely_ important** and *italic with **bold inside***.
 
 The toolbar also authors <ins>underlined text</ins>, superscripts such as x<sup>2</sup>, and subscripts such as H<sub>2</sub>O. The two script buttons form a group between strikeout and Code.
 
 Hover over a toolbar button to see its keyboard shortcut. Formatting shortcuts
-work in both Source and WYSIWYG, including when the toolbar is hidden:
+work in Preview, including when the toolbar is hidden:
 
 | Action | macOS | Windows |
 | --- | --- | --- |
@@ -89,7 +94,7 @@ number stays visible as continuation text:
   4. This is a numbered child after a blank separator.
   5. Its sibling continues the run.
 
-In WYSIWYG, use Option-Enter on macOS or Alt-Enter on Windows to add a paragraph
+In Preview, use Option-Enter on macOS or Alt-Enter on Windows to add a paragraph
 within a list item. The same action is available in Style > Paragraph. Enter
 starts the next item; Shift-Enter adds a line break within the paragraph.
 
@@ -125,13 +130,12 @@ starts the next item; Shift-Enter adds a line break within the paragraph.
 
 ## Links, images and visible references
 
-An ordinary [inline link](https://example.com "Example title") hides its destination in WYSIWYG and uses the Link style. A [**formatted link label**](https://example.com/path) can contain emphasis.
+An ordinary [inline link](https://example.com "Example title") hides its destination in Preview and uses the Link style. A [**formatted link label**](https://example.com/path) can contain emphasis.
 
 Use the toolbar's Insert Link button to link selected text, or enter Text and
 Destination at the caret. Leaving Text blank uses the destination as its label.
 Placing the caret in an inline link shows its
-destination with Open, Copy, Edit and Remove actions. In Source view, the full
-`[text](destination)` notation activates that popup.
+destination with Open, Copy, Edit and Remove actions.
 
 Try [jumping to Literal code](#literal-code), opening the
 [Markdown compatibility notes](../MARKDOWN_GAPS.md) in Viem, or opening the
@@ -143,18 +147,18 @@ Angle autolinks: <https://example.com> and <writer@example.com>.
 
 Automatic links: https://example.com/path, www.example.com, and writer@example.com.
 
-Insert Image sits beside Code Block in the toolbar. In WYSIWYG, local images
+Insert Image sits beside Code Block in the toolbar. In Preview, local images
 preview at their intrinsic size or shrink proportionally to fit the content
 width. Click an image or move the caret onto it to see its selection
 outline and location popup; Edit expands that popup to change its location and
-alternative text. Source exposes the complete image notation.
+alternative text. With Preview off, Code shows the complete image notation.
 The folder button beside Location chooses a local file and fills the draft with
 a relative path where possible. Apply commits the change.
 
 Standalone images use the **Image** paragraph style. Edit that style to change
-margins, borders and padding; its font also applies to image location labels and
-image notation in Source. Inline images keep the surrounding paragraph layout.
-In WYSIWYG, Reload (beside Delete) rereads a local image after it changes on disk.
+margins, borders and padding; its font also applies to image location labels.
+Inline images keep the surrounding paragraph layout.
+In Preview, Reload (beside Delete) rereads a local image after it changes on disk.
 
 This screenshot uses a same-directory path containing a space:
 
@@ -195,7 +199,7 @@ light-purple Markdown reference style. Resolved reference images still preview:
 Inline `code` is monospaced and dark green. Double backticks allow a literal backtick: ``code with a ` backtick``. Code does not interpret *emphasis*, &amp;, or links.
 
 ```rust
-// WYSIWYG highlights this Rust block with the shared Code syntax styles.
+// Preview highlights this Rust block with the shared Code syntax styles.
 fn main() {
     println!("Hello, Viem!");
 }
@@ -284,8 +288,7 @@ This paragraph follows that empty paragraph. GitHub collapses surplus blank sepa
 
 ## Tables
 
-Columns grow to fit their contents. Explicit breaks add lines inside a cell;
-Source view keeps the markup visible and aligns it without changing its bytes.
+Columns grow to fit their contents. Explicit breaks add lines inside a cell.
 
 | Feature | Example | Count |
 | :--- | :---: | ---: |

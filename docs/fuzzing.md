@@ -123,7 +123,7 @@ complete, replayable findings for newly failing cases in `<probe>-new.jsonl`.
 `--quick` uses eight positions per seed and the insert, normal, selection and
 copy/paste probes. It takes roughly a quarter of a full run and is the feedback
 pass after changing shared transaction or projection code. Narrow further with
-`--filter TEXT` (seed source), `--fmt wysiwyg|source|code|plain`,
+`--filter TEXT` (seed source), `--fmt wysiwyg|code|plain`,
 `--op-filter LABEL` and `--probes`. Workers default to all available cores and
 start with the largest seeds. Per-case cost is dominated by real editing and
 layout, so more threads than cores do not help.

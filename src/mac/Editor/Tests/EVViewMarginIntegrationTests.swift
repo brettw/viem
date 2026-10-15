@@ -38,6 +38,8 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
                 let initial = EVConfigurationStore(directory: directory)
+                // Open Markdown in Preview so its stylesheet applies.
+                try initial.setMarkdownFormattedView(true)
                 let settings = try XCTUnwrap(initial.selectedThemeURL)
                 if defaults == nil || defaults == "valid" { try saveMarkdownSize(21, configuration: initial) }
                 else if let defaults { try Data(defaults.utf8).write(to: settings) }
@@ -50,7 +52,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                     let url = directory.appendingPathComponent("markdown_demo.md")
                     try source.write(to: url)
                     try document.read(from: url, ofType: EVDocument.plainTextType)
-                    XCTAssertEqual(backend.sourceFormat, .markdownSource)
+                    XCTAssertEqual(backend.sourceFormat, .markdown)
                 } else {
                     try backend.read(source: source, typeName: EVDocument.markdownType)
                     XCTAssertEqual(backend.sourceFormat, .markdown)
@@ -84,8 +86,8 @@ final class EVViewMarginIntegrationTests: XCTestCase {
                     let fallback = EVConfigurationStore(directory: fallbackDirectory)
                     try fallback.selectTheme(named: nil)
                     let fallbackBackend = EVCoreDocumentBackend(configuration: fallback)
-                    try fallbackBackend.read(source: source, typeName: backend.sourceFormat == .markdownSource
-                        ? EVDocument.markdownSourceType : EVDocument.markdownType)
+                    try fallbackBackend.read(source: source, typeName: backend.sourceFormat == .code
+                        ? EVDocument.codeType : EVDocument.markdownType)
                     XCTAssertEqual(styles.definitions, try fallbackBackend.styleSheetSnapshot().definitions)
                 }
                 XCTAssertNil(quote.nextStyleID)
@@ -120,8 +122,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         try saveMarkdownSize(21, configuration: configuration)
         let defaults = try Data(contentsOf: settings)
         let source = try markdownDemo()
-        try backend.read(source: source, typeName: EVDocument.markdownSourceType,
-            filename: "markdown_demo.md", allowAutomaticCode: false)
+        try backend.read(source: source, typeName: EVDocument.markdownType)
         XCTAssertNil(backend.configurationWarning)
         XCTAssertNil(surface.commandOutput)
         XCTAssertNotNil(surface.session)

@@ -36,14 +36,14 @@ final class EVMarkdownSwitchIntegrationTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-markdown-switch-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
-        try backend.read(source: source, typeName: EVDocument.markdownSourceType)
+        try backend.read(source: source, typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
         _ = try session.resize(width: 900, height: 600)
         surface.refreshPresentation()
 
-        for format: EVSourceFormat in [.markdown, .markdownSource, .markdown, .markdownSource] {
+        for format: EVSourceFormat in [.markdown, .code] {
             backend.resetFormattedAccessCounters()
             let refreshes = surface.presentationRefreshCount
             let start = ContinuousClock.now
@@ -53,7 +53,7 @@ final class EVMarkdownSwitchIntegrationTests: XCTestCase {
 
             XCTAssertEqual(backend.sourceFormat, format)
             XCTAssertNil(surface.commandOutput)
-            XCTAssertEqual(surface.presentationRefreshCount, refreshes + 1)
+            XCTAssertEqual(surface.presentationRefreshCount, refreshes + 1, "switch to \(format)")
             XCTAssertEqual(backend.formattedAccessCounters.fullRangeReadCalls, 0)
             XCTAssertLessThan(backend.formattedAccessCounters.requestedUTF8Bytes, UInt64(source.count / 4))
             XCTAssertFalse(try session.layoutExport().rows.isEmpty)

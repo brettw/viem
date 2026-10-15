@@ -253,7 +253,13 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Bounded publication and immutable request capture only. No provider
     /// function, parsing, or wait occurs under the coordinator's serial lock.
     pub fn poll_syntax(&mut self) -> bool {
-        if self.document.format() == Format::Markdown { return self.poll_markdown_code_syntax(); }
+        if self.document.format() == Format::Markdown {
+            // Whole-document Code analysis is obsolete in Preview; only code
+            // blocks use their own bounded services.
+            self.syntax.service.cancel();
+            self.syntax.published = None;
+            return self.poll_markdown_code_syntax();
+        }
         self.syntax.markdown = Default::default();
         if !self.document.format().is_code() {
             self.syntax.service.cancel();
@@ -454,10 +460,10 @@ impl<P: TextMeasurementProvider> Core<P> {
         let changed_lines = match &change {
             metrics::MetricChange::Local(range) => {
                 let projection = self.document.projection();
-                let count = projection.presentation_line_count(false);
+                let count = projection.presentation_line_count();
                 match (
-                    projection.presentation_line_at_offset(range.start, false),
-                    projection.presentation_line_at_offset(range.end, false),
+                    projection.presentation_line_at_offset(range.start),
+                    projection.presentation_line_at_offset(range.end),
                 ) {
                     (Some(first), Some(last)) => Some(first.saturating_sub(1)..(last + 2).min(count)),
                     _ => None,

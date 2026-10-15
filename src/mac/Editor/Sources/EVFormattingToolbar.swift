@@ -3,7 +3,8 @@ import CViemCore
 import ViemAppShell
 
 extension EVEditorSurfaceController: EVFormattingToolbarProviding {
-  public var formattingToolbarFormat: EVSourceFormat { backend.sourceFormat }
+  /// Markdown documents keep one toolbar, including with Preview off.
+  public var formattingToolbarFormat: EVSourceFormat { isMarkdownDocument ? .markdown : backend.sourceFormat }
   public var formattingToolbarView: NSView { formattingToolbar }
   public func refreshFormattingToolbar() { formattingToolbar.refresh() }
 }
@@ -107,11 +108,11 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     controlsViewport.clipsToBounds = true
     controlsViewport.addSubview(row)
     addSubview(controlsViewport)
-    configure(formattedView, title: "Formatted view", toggle: true)
+    configure(formattedView, title: "Markdown Preview", toggle: true)
     formattedView.image = Self.formattedViewImage()
     formattedView.allowsMixedState = false
-    formattedView.toolTip = "Formatted view (WYSIWYG)"
-    formattedView.action = #selector(toggleFormattedView(_:))
+    formattedView.toolTip = "Markdown Preview"
+    formattedView.action = #selector(toggleMarkdownPreview(_:))
     addSubview(formattedView)
     refresh()
     needsLayout = true
@@ -228,9 +229,11 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   func refresh() {
     guard let surface else { return }
-    formattedView.state = surface.backend.sourceFormat == .markdown ? .on : .off
-    formattedView.isEnabled = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
-    let markdown = [.markdown, .markdownSource].contains(surface.backend.sourceFormat)
+    let markdown = surface.backend.sourceFormat == .markdown
+    formattedView.state = markdown ? .on : .off
+    formattedView.isEnabled = surface.isMarkdownDocument
+    // With Preview off the document is literal Code: only the toggle remains.
+    controlsViewport.isHidden = !markdown
     setHidden(!markdown, for: insertTable)
     setHidden(!markdown, for: insertLink)
     let link = surface.linkPopover.toolbarPresentation
@@ -380,14 +383,14 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     guard let surface, let session = surface.session,
           let selected = try? session.selectedNamedStyles(), !selected.hasTable, !selected.hasCodeBlock,
           let selection = try? session.listSelection(),
-          surface.backend.sourceFormat == .markdown || surface.backend.sourceFormat == .markdownSource else { refresh(); return }
+          surface.backend.sourceFormat == .markdown else { refresh(); return }
     surface.performInput { _ = try session.setBlockQuote(selected.quoteState != .on, expected: selection) }
     finishAction()
   }
-  @objc func toggleFormattedView(_ sender: NSButton) {
+  @objc func toggleMarkdownPreview(_ sender: NSButton) {
     guard let surface else { return }
     let editorWindow = window
-    surface.setFormattedView(surface.backend.sourceFormat != .markdown)
+    surface.setMarkdownPreview(surface.backend.sourceFormat != .markdown)
     refresh()
     // The target mode may remember a hidden toolbar and detach this view.
     editorWindow?.makeFirstResponder(surface.editorView)

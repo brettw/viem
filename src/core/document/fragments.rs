@@ -40,7 +40,7 @@ impl Document {
         let mut payloads = Vec::new();
         let mut captures = Vec::new();
         let mut capture_groups = Vec::new();
-        let keep_styles = self.format().is_wysiwyg();
+        let keep_styles = self.format().is_markdown();
         for edit in &edits {
             let capture_start = captures.len();
             let mut text = String::new();

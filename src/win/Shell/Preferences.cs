@@ -52,8 +52,7 @@ internal sealed partial class Preferences
     { try { var node = section == "theme" ? activeTheme["theme"]?[key] : root[section]?[key]; return node == null ? fallback : node.GetValue<T>(); } catch { return fallback; } }
     public bool ShowMenu => Get("windows", "showMenu", true);
     private static string ToolbarFormatKey(uint format) => format switch {
-        Native.VIEM_FORMAT_MARKDOWN => "markdown", Native.VIEM_FORMAT_MARKDOWN_SOURCE => "markdownSource",
-
+        Native.VIEM_FORMAT_MARKDOWN => "markdown",
         Native.VIEM_FORMAT_CODE => "code", _ => "plainText"
     };
     public bool ShowFormattingToolbar(uint format) => Get("formattingToolbar", ToolbarFormatKey(format), true);
@@ -124,7 +123,7 @@ internal sealed partial class Preferences
         if (value["editing"] is JsonObject editing && editing.ContainsKey("markdownFormattedView"))
             _ = editing["markdownFormattedView"]?.GetValue<bool>() ?? throw new InvalidDataException("markdownFormattedView must be a boolean.");
         if (value["formattingToolbar"] is JsonObject toolbar)
-            foreach (string key in new[] { "plainText", "code", "markdown", "markdownSource" })
+            foreach (string key in new[] { "plainText", "code", "markdown" })
                 if (toolbar[key] is JsonNode visible) _ = visible.GetValue<bool>();
         if (value["windows"] is JsonObject windows && windows.ContainsKey("documentFrame") && WindowFrame.Read(windows["documentFrame"]) == null)
             throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");

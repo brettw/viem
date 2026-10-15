@@ -129,7 +129,7 @@ fn mapping_and_literal_next_keep_alt_enter_identity() {
 
 #[test]
 fn stale_and_unsupported_native_requests_leave_state_unchanged() {
-    for (source, format) in [("ordinary", Format::Markdown), ("- item", Format::MarkdownSource),
+    for (source, format) in [("ordinary", Format::Markdown), ("- item", Format::Code),
         ("- item", Format::PlainText), ("- ```\n  code\n  ```", Format::Markdown)] {
         let (mut core, view) = editor(source, format);
         let expected = core.list_selection_identity(view).unwrap();

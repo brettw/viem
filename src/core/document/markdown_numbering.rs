@@ -10,6 +10,13 @@ pub(super) struct NumberingScope {
     continue_list: bool,
 }
 
+impl NumberingScope {
+    /// Renumber ordered runs touched by an edit of this text region.
+    pub(super) fn for_range(range: Range<usize>) -> Self {
+        Self { range, continue_list: false }
+    }
+}
+
 pub(super) fn scope(request: &ModelRequest) -> Option<NumberingScope> {
     let range = match request {
         ModelRequest::SetListStyle { range, .. }
@@ -247,29 +254,7 @@ impl Document {
             unreachable!()
         };
         scratch.history = super::super::history::History::transient(state);
-        let edits = if self.format().is_source_view() {
-            patches
-                .iter()
-                .map(|patch| {
-                    let boundary = |at, affinity| {
-                        scratch
-                            .projection()
-                            .map_source_boundary(scratch.revision(), at, affinity)
-                            .map(|point| point.formatted_offset)
-                            .map_err(|_| DocumentError::AmbiguousProjection)
-                    };
-                    let start = boundary(patch.range.start, BoundaryAffinity::Downstream)?;
-                    let end = boundary(patch.range.end, BoundaryAffinity::Upstream)?;
-                    let text = scratch
-                        .encoding()
-                        .decode_region(&patch.replacement, patch.range.start)?
-                        .text;
-                    Ok(TextEdit::new(start..end, text))
-                })
-                .collect::<Result<Vec<_>, DocumentError>>()?
-        } else {
-            Vec::new()
-        };
+        let edits = Vec::new();
         let renumbered = if literal_overflow {
             // Ten-digit ordinals have no list meaning in CommonMark. This is
             // an explicit source-syntax change, including the now-visible

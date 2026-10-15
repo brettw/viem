@@ -123,9 +123,9 @@ internal static class TableInteractionTests
             Check(!document.FormattedText().Contains("First", StringComparison.Ordinal)
                 && document.FormattedText().Contains("Second", StringComparison.Ordinal),
                 "right row toolbar action deletes its targeted row without retargeting to the caret");
-            view.SetMarkdownSource(true); pane.Refresh();
+            view.SetMarkdownPreview(false); pane.Refresh();
             pane.HoverTableForTest(Hover(1, true));
-            Check(pane.VisibleTableWidgetForTest == null, "Source view does not show right or left row widgets");
+            Check(pane.VisibleTableWidgetForTest == null, "Markdown Preview off does not show right or left row widgets");
             if (pane.LastError != null) throw pane.LastError;
         }
         finally { App.Instance.Windows.Remove(window); window.Close(); }

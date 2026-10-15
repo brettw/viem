@@ -442,7 +442,6 @@ second
 #[test]
 fn unsupported_formats_return_a_non_destructive_error() {
     for format in [
-        Format::MarkdownSource,
         Format::Markdown,
     ] {
         let mut d = Document::from_bytes(b"aaa\nbbb\n".to_vec(), viem_core::Encoding::Utf8, format).unwrap();

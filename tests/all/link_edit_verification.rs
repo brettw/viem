@@ -7,7 +7,6 @@ use viem_core::layout::DocumentLayoutStyles;
 fn link_queries_survive_deleted_appearance_and_text_reprojection() {
     for (source, format) in [
         ("[link](https://example.test/) tail", Format::Markdown),
-        ("[link](https://example.test/) tail", Format::MarkdownSource),
     ] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();

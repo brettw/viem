@@ -195,7 +195,7 @@ internal sealed partial class EditorWindow : Window
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         // Include any visible toolbar before attaching a canvas that can start
         // its native resources and first document layout immediately.
-        PrepareFormattingToolbar(doc.State.format);
+        PrepareFormattingToolbar(doc);
         if (!savedSources.ContainsKey(doc))
         {
             var owner = App.Instance.Windows.FirstOrDefault(w => !w.closed

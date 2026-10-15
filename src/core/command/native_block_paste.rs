@@ -7,6 +7,7 @@ impl CommandInterpreter {
         &mut self,
         document: &mut Document,
         value: &RegisterValue,
+        key: Key,
     ) -> Result<CommandOutput, DocumentError> {
         if value.kind != RegisterKind::Characterwise
             || value.text.contains('\n')
@@ -48,7 +49,7 @@ impl CommandInterpreter {
         let before_flush_revision = document.revision();
         let model_checkpoint = document.begin_command_checkpoint();
         let result = (|| {
-            self.record_event(&InputEvent::Key(Key::PasteClipboard));
+            self.record_event(&InputEvent::Key(key));
             let separate_unit = !self.replaying && self.compound_replay_depth == 0;
             if separate_unit {
                 document.end_edit_group();
@@ -117,7 +118,7 @@ impl CommandInterpreter {
             let before_paste_revision = document.revision();
             let recording_suppressed = self.set_macro_recording_suppressed(true);
             let (pasted, paste_map) = document
-                .capture_position_maps(|document| self.paste_platform_clipboard(document, None));
+                .capture_position_maps(|document| self.paste_platform_clipboard(document, None, key));
             self.set_macro_recording_suppressed(recording_suppressed);
             let pasted = pasted?;
             if pasted.status != CommandStatus::Complete {

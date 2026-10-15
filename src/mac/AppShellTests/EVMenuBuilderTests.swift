@@ -58,12 +58,11 @@ final class EVMenuBuilderTests: XCTestCase {
         ])
         let format = try submenu("Format", of: menu)
         XCTAssertEqual(tokens(in: format), [
-            "Plain text", "Markdown", "Code", "-", "Word wrap", "Flow source paragraphs",
+            "Plain text", "Markdown Preview", "Code", "-", "Word wrap",
         ])
         XCTAssertTrue(format.showsStateColumn)
         XCTAssertNil(format.item(withTitle: "Code")?.submenu)
         XCTAssertEqual(format.item(withTitle: "Word wrap")?.tag, EVMenuCommand.wordWrap.rawValue)
-        XCTAssertEqual(format.item(withTitle: "Flow source paragraphs")?.tag, EVMenuCommand.flowParagraphs.rawValue)
         let view = try submenu("View", of: menu)
         XCTAssertEqual(tokens(in: view), [
             "Show Status Bar", "-", "Show line numbers", "Show Invisible Characters", "-",

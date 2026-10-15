@@ -19,7 +19,7 @@ fn fixture(format: Format, source: &str) -> (Core<MockTextMeasurementProvider>, 
 fn literal_code_block_character_controls_reject_without_entering_insert_or_changing_source() {
     use viem_core::command::Mode;
     use viem_core::document::StyleProperty;
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in ["```\nword\n```", "    word", "> ```\n> word\n> ```"] {
             let (mut core, view) = fixture(format, source);
             let at = core.document().text().find("word").unwrap();
@@ -95,7 +95,7 @@ fn literal_code_block_character_controls_reject_without_entering_insert_or_chang
 
 #[test]
 fn pending_code_remains_presentable_after_read_only_policy_change() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let (mut core, view) = fixture(format, "word");
         let expected = core.list_selection_identity(view).unwrap();
         core.handle(
@@ -133,26 +133,6 @@ fn pending_code_remains_presentable_after_read_only_policy_change() {
             .is_err());
         assert_eq!(core.document().source_bytes(), b"word");
     }
-}
-#[test]
-fn source_italic_input_before_existing_strong_word_keeps_unicode_and_whitespace() {
-    let source = "A **word** and more prose.\nA continuation.\n\nLast paragraph.";
-    let (mut core, view) = fixture(Format::MarkdownSource, source);
-    core.handle(view, key(Key::Char('i'))).unwrap();
-    core.handle(
-        view,
-        CoreEvent::PlaceCursor {
-            document_revision: core.document().revision(),
-            text_offset: source.find("word").unwrap(),
-            affinity: BoundaryAffinity::Downstream,
-            extend_selection: false,
-        },
-    )
-    .unwrap();
-    toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
-    core.handle(view, CoreEvent::Input(InputEvent::text("é👩🏽‍💻 ")))
-        .unwrap();
-    assert!(String::from_utf8_lossy(&core.document().source_bytes()).contains("é👩🏽‍💻 "));
 }
 #[test]
 fn wys_italic_cycle_before_existing_strong_word_in_flowed_paragraph() {
@@ -205,7 +185,6 @@ fn toggle(
 fn pending_italic_is_clean_until_text_and_undo_restores_exact_source() {
     for (format, source, at) in [
         (Format::Markdown, "word", 0),
-        (Format::MarkdownSource, "word", 0),
     ] {
         let (mut core, view) = fixture(format, source);
         core.handle(view, key(Key::Char('i'))).unwrap();
@@ -279,7 +258,6 @@ fn escape_and_pointer_cancel_pending_without_source_changes() {
 fn typing_can_disable_existing_style_and_continue_inherited_run() {
     for (format, source, at) in [
         (Format::Markdown, "**word**", 2),
-        (Format::MarkdownSource, "**word**", 4),
     ] {
         let (mut core, view) = fixture(format, source);
         core.handle(view, key(Key::Char('i'))).unwrap();
@@ -324,7 +302,7 @@ fn typing_can_disable_existing_style_and_continue_inherited_run() {
 }
 #[test]
 fn combined_bold_italic_repeats_and_is_one_insert_undo() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = match format {
             _ => "x",
         };
@@ -417,14 +395,14 @@ fn pending_state_is_view_local_and_external_reprojection_cancels_it() {
 }
 #[test]
 fn whitespace_does_not_create_empty_markdown_spans_and_counts_replay_style() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let (mut core, view) = fixture(format, "x");
         core.handle(view, key(Key::Char('3'))).unwrap();
         core.handle(view, key(Key::Char('i'))).unwrap();
         toggle(&mut core, view, SemanticInlineStyle::Emphasis, true);
         core.handle(view, CoreEvent::Input(InputEvent::Text(" ".into())))
             .unwrap();
-        assert_eq!(core.document().source_bytes(), if format.is_source_view() { b" x".as_slice() } else { b"&#32;x".as_slice() });
+        assert_eq!(core.document().source_bytes(), b"&#32;x".as_slice());
         assert_eq!(core.document().text(), " x");
         core.handle(view, CoreEvent::Input(InputEvent::Text("é".into())))
             .unwrap();

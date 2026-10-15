@@ -27,13 +27,13 @@ internal static class FormatMenuTests
             Check(window.Menu.Items[formatIndex - 1].Title == "Edit" && window.Menu.Items[formatIndex + 1].Title == "Style",
                 "Format sits between Edit and Style");
             Check(formatMenu.Items.OfType<ToggleMenuFlyoutItem>().Select(item => item.Text)
-                    .SequenceEqual(new[] { "Plain text", "Markdown", "Code", "Word wrap", "Flow source paragraphs" })
-                && formatMenu.Items.Count == 6 && formatMenu.Items[3] is MenuFlyoutSeparator,
-                "Format groups checked document types before wrapping and source paragraph flow");
+                    .SequenceEqual(new[] { "Plain text", "Markdown Preview", "Code", "Word wrap" })
+                && formatMenu.Items.Count == 5 && formatMenu.Items[3] is MenuFlyoutSeparator,
+                "Format groups checked document types before wrapping");
             var view = window.Menu.Items.Single(m => m.Title == "View");
-            Check(!view.Items.OfType<ToggleMenuFlyoutItem>().Any(item => item.Text is "Plain text" or "Markdown" or "Code" or "Word wrap" or "Flow source paragraphs")
+            Check(!view.Items.OfType<ToggleMenuFlyoutItem>().Any(item => item.Text is "Plain text" or "Markdown Preview" or "Code" or "Word wrap")
                 && !view.Items.OfType<MenuFlyoutSubItem>().Any(item => item.Text is "Code" or "Code language"),
-                "View no longer contains document types, languages, wrapping or paragraph flow");
+                "View no longer contains document types, languages or wrapping");
             Check(styles.Items.OfType<MenuFlyoutSubItem>().Any(i => i.Text == "Paragraph"),
                 "paragraph style and list actions remain in the Style menu");
             foreach (string title in new[] { "Convert to", "Reinterpret as" })

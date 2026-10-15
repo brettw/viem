@@ -84,7 +84,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     entries.insert(EVStyleMenuEntry(
       role: .character, stableID: "", displayName: "Default Paragraph", isBase: true,
       presentation: EVMenuItemPresentation(
-        isEnabled: characterAssignmentsAvailable && [.markdown, .markdownSource].contains(backend.sourceFormat),
+        isEnabled: characterAssignmentsAvailable && backend.sourceFormat == .markdown,
         state: selectedStyles?.identity == snapshot.identity
           && selectedStyles?.characterMixed == false && selectedStyles?.character == nil ? .on : .off)
     ), at: 0)
@@ -178,7 +178,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   private func standardHeadingLevel(for id: String) -> UInt32? {
-    guard [.markdown, .markdownSource].contains(backend.sourceFormat) else {
+    guard backend.sourceFormat == .markdown else {
       return nil
     }
     if id == "Paragraph" { return 0 }

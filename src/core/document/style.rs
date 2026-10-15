@@ -3675,7 +3675,6 @@ mod tests {
             else if cfg!(target_os = "windows") { "Segoe UI" } else { "system-ui" };
         assert_eq!(DEFAULT_FONT_FAMILY, expected);
         for format in [crate::document::Format::PlainText, crate::document::Format::Markdown,
-            crate::document::Format::MarkdownSource,
 ] {
             let sheet = StyleSheet::for_format(format);
             assert_eq!(sheet.block_style(&sheet.base_paragraph).unwrap().character.font_families,
@@ -3691,7 +3690,7 @@ mod tests {
     #[test]
     fn pane_line_units_use_base_size_and_spacing_without_font_metrics() {
         for format in [crate::document::Format::PlainText, crate::document::Format::Code,
-            crate::document::Format::Markdown, crate::document::Format::MarkdownSource] {
+            crate::document::Format::Markdown] {
             let mut sheet = StyleSheet::for_format(format);
             let base = sheet.block_styles.get_mut(&sheet.base_paragraph).unwrap();
             base.character.size = Some(FontSize::Points(20.0));
@@ -4883,7 +4882,7 @@ mod chrome_tests {
     #[test]
     fn chrome_styles_are_available_in_every_format_with_fixed_sparse_inheritance() {
         for format in [super::super::Format::PlainText, super::super::Format::Code,
-            super::super::Format::Markdown, super::super::Format::MarkdownSource] {
+            super::super::Format::Markdown] {
             let sheet = StyleSheet::for_format(format);
             let line = sheet.resolve_paragraph_style(&sheet.base_paragraph, &"Builtin line number".into(), None,
                 &BlockProperties::default(), &CharacterProperties::default()).unwrap();
@@ -4923,8 +4922,7 @@ mod chrome_tests {
                 entry["block"] = serde_json::json!({"padding_left":7,"border_right_width":2});
             }
         }
-        for format in [crate::document::Format::PlainText, crate::document::Format::Markdown,
-            crate::document::Format::MarkdownSource] {
+        for format in [crate::document::Format::PlainText, crate::document::Format::Markdown] {
             let (loaded, diagnostics) = StyleSheet::for_format(format)
                 .with_default_json(&serde_json::to_vec(&saved).unwrap()).unwrap();
             assert!(diagnostics.is_empty(), "{format:?}: {diagnostics:?}");

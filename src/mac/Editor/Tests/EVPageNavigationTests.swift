@@ -25,7 +25,10 @@ import XCTest
             let nextCursor = view.viewPresentation.cursor_utf8_offset
             let nextTop = try session.viewportState().top
             let snapshot = try XCTUnwrap(view.layoutSnapshot)
-            guard session.lastOutcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE) else {
+            // Code may publish asynchronous syntax after the key, replacing the
+            // last outcome with a presentation-only (NONE) result.
+            guard [UInt32(VIEM_COMMAND_STATUS_COMPLETE), UInt32(VIEM_COMMAND_STATUS_NONE)]
+                .contains(session.lastOutcome.command_status) else {
                 XCTFail("\(label) down=\(down) step=\(step) status=\(session.lastOutcome.command_status) cursor=\(cursor)→\(nextCursor) top=\(top)→\(nextTop) coverage=\(snapshot.info.coverage_hard_line_start)..<\(snapshot.info.coverage_hard_line_end)/\(snapshot.info.document_hard_line_count)")
                 return
             }
@@ -47,7 +50,7 @@ import XCTest
         XCTFail("\(label): repeated page navigation did not reach the document boundary")
     }
 
-    private func check(type: String, flow: Bool, width: CGFloat, height: CGFloat, entry: String) throws {
+    private func check(type: String, width: CGFloat, height: CGFloat, entry: String) throws {
         let configuration = EVConfigurationStore(directory: FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-page-\(UUID().uuidString)"), legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
@@ -60,14 +63,13 @@ import XCTest
         // Exercise continuing Visual navigation explicitly; the native default
         // stopsel policy intentionally ends selection on an unshifted Page key.
         if entry == "v" { _ = try session.sourceLine("set keymodel-=stopsel", depth: 1) }
-        if type == EVDocument.markdownSourceType { try session.setParagraphFlow(flow) }
         if !entry.isEmpty { _ = try session.sendText(entry) }
         view.refreshPresentation()
         let revision = try backend.revision()
         let mode = view.viewPresentation.mode
         let first = try XCTUnwrap(view.layoutSnapshot)
         XCTAssertLessThan(first.info.coverage_hard_line_end, first.info.document_hard_line_count)
-        let label = "type=\(type) flow=\(flow) size=\(width)x\(height) entry=\(entry)"
+        let label = "type=\(type) size=\(width)x\(height) entry=\(entry)"
         try traverse(view, session: session, down: true, label: label)
         try traverse(view, session: session, down: false, label: label)
         XCTAssertEqual(view.viewPresentation.mode, mode, label)
@@ -78,17 +80,17 @@ import XCTest
         XCTAssertFalse(view.canRedo)
     }
 
-    func testRepeatedPhysicalPageKeysTraverseMarkdownAndSourceFlowBeyondPartialLayouts() throws {
-        for (type, flow) in [(EVDocument.markdownType, false), (EVDocument.markdownSourceType, false), (EVDocument.markdownSourceType, true)] {
+    func testRepeatedPhysicalPageKeysTraverseMarkdownAndCodeBeyondPartialLayouts() throws {
+        for type in [EVDocument.markdownType, EVDocument.codeType] {
             for (width, height): (CGFloat, CGFloat) in [(340, 180), (720, 420)] {
-                try check(type: type, flow: flow, width: width, height: height, entry: "")
+                try check(type: type, width: width, height: height, entry: "")
             }
         }
     }
 
     func testRepeatedPageKeysPreserveInsertReplaceAndVisualModes() throws {
         for entry in ["i", "R", "v"] {
-            try check(type: EVDocument.markdownType, flow: false, width: 420, height: 220, entry: entry)
+            try check(type: EVDocument.markdownType, width: 420, height: 220, entry: entry)
         }
     }
 }

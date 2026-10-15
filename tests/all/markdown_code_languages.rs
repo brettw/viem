@@ -92,7 +92,7 @@ fn language_mutation_is_local_verified_undoable_and_snapshot_checked() {
 
 #[test]
 fn first_code_block_has_none_and_new_blocks_inherit_nearest_existing_language() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for (source, needle, expected) in [
             ("first", "first", "```\nfirst\n```"),
             (
@@ -550,52 +550,6 @@ fn shrinking_final_code_block_keeps_scroll_origin_and_real_blank_tail() {
 }
 
 #[test]
-fn source_language_metadata_includes_code_closing_lines() {
-    for (source, ending) in [
-        ("```rust\ncode\n```\n\nplain", "```"),
-        ("> ```rust\n> code\n> ```\n\nplain", "```"),
-        ("```rust\n```\n\nplain", "```"),
-        ("<pre lang=rust>code\n</pre>\n\nplain", "</pre>"),
-        ("> <pre lang='rust'>\n> code\n> </pre>\n\nplain", "</pre>"),
-    ] {
-        let document = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        let closing = document.text().rfind(ending).unwrap();
-        let owner = document
-            .projection()
-            .blocks()
-            .iter()
-            .find(|block| block.range.contains(&closing))
-            .unwrap();
-        assert_eq!(owner.style.0, "Code Block", "{source}");
-        assert_eq!(owner.code_language.as_deref(), Some("rust"), "{source}");
-    }
-    let source = "<div>\n<p>before</p>\n<pre lang=rust>fn main() {}</pre>\n<p>after</p>\n</div>";
-    for format in [Format::Markdown, Format::MarkdownSource] {
-        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        for (needle, language) in [("before", None), ("fn main", Some("rust")), ("after", None)] {
-            let at = document.text().find(needle).unwrap();
-            let owner = document.projection().blocks().iter().find(|block| block.range.contains(&at)).unwrap();
-            assert_eq!(owner.code_language.as_deref(), language, "{needle}, {format:?}");
-            assert_eq!(owner.style.0 == "Code Block", language.is_some(), "{needle}, {format:?}");
-        }
-        assert_eq!(document.source_bytes(), source.as_bytes());
-        assert!(!document.is_dirty());
-        let unclosed = "<pre lang=rust>code\n";
-        let document = Document::from_bytes(unclosed.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
-        let final_owner = document.projection().blocks().last().unwrap();
-        assert_eq!(final_owner.style.0, "Code Block", "terminal pre row, {format:?}");
-        assert_eq!(final_owner.code_language.as_deref(), Some("rust"), "terminal pre row, {format:?}");
-        assert!(document.text().ends_with('\n'));
-        assert_eq!(document.source_bytes(), unclosed.as_bytes());
-    }
-}
-
-#[test]
 fn language_labels_are_nontext_furniture_inside_code_border_including_empty_blocks() {
     for (source, compact) in [
         ("```rust\nlet x = 1;\n```", false),
@@ -681,7 +635,7 @@ fn language_labels_are_nontext_furniture_inside_code_border_including_empty_bloc
     }
     for source in ["```rust\nx\n```", "<pre lang=rust>x</pre>"] {
         let mut core = Core::new(
-            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap(),
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap(),
         );
         let view = core.add_view(MockTextMeasurementProvider::new(), 500., 200.);
         assert!(!core.layout(view).unwrap().snapshot().unwrap().rows.iter()
@@ -972,7 +926,7 @@ fn passive_html_language_edits_preserve_attribute_spelling_body_and_history() {
             let at = document.projection().blocks().iter()
                 .find(|block| block.style.0 == "Code Block").unwrap().range.start;
             let check = |bytes: Vec<u8>, expected: Option<&str>| {
-                for format in [Format::Markdown, Format::MarkdownSource] {
+                for format in [Format::Markdown] {
                     let reopened = Document::from_bytes_with_file_format(
                         bytes.clone(), encoding, format, FileFormat::Dos,
                     ).unwrap();
@@ -1059,7 +1013,7 @@ fn passive_html_language_edits_preserve_attribute_spelling_body_and_history() {
         assert_eq!(document.text(), text);
         let block = document.projection().blocks().iter().find(|block| block.style.0 == "Code Block").unwrap();
         assert_eq!((block.kind.clone(), block.quote_depth), ownership);
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let reopened = Document::from_bytes_with_file_format(
                 document.source_bytes(), Encoding::Utf8, format, FileFormat::Dos,
             ).unwrap();

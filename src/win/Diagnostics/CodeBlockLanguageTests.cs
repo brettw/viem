@@ -175,9 +175,9 @@ internal static class CodeBlockLanguageTests
         catch (CoreException error) when (error.Status == VIEM_STATUS_UNSUPPORTED_OPERATION) { readOnlyRejected = true; }
         check(readOnlyRejected && Source() == source, "Windows read-only policy rejects code language authoring without changing source");
         document.SetReadOnly(false);
-        view.SetMarkdownSource(true);
+        view.SetMarkdownPreview(false);
         check(!view.Layout().Decorations.Any(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0),
-            "Markdown Source retains literal fences without WYSIWYG language furniture");
+            "Markdown Preview off retains literal fences without language furniture");
         CheckScrolledLanguageChange(device, dispatcher, check);
     }
 

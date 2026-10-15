@@ -68,7 +68,7 @@ fn terminal_paragraph_motion_clamps_to_final_grapheme_but_operator_consumes_eof(
 fn literal_final_terminator_is_not_an_extra_normal_or_ex_line() {
     use viem_core::command::LineMode;
     use viem_core::document::{Encoding, FileFormat, Format};
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
             for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
                 let ending = match file_format { FileFormat::Unix => "\n", FileFormat::Dos => "\r\n", FileFormat::Mac => "\r" };
@@ -127,7 +127,7 @@ fn literal_empty_last_content_line_remains_addressable_and_insert_can_add_one() 
 fn literal_normal_vertical_motions_skip_the_final_insertion_boundary() {
     use viem_core::command::LineMode;
     use viem_core::document::{Encoding, Format};
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
             for motion in [vec![Key::Down], vec![Key::Char('j')], vec![Key::Char('g'), Key::Char('j')]] {
                 let mut core = Core::new(Document::from_bytes(b"abc\ndef\n".to_vec(), Encoding::Utf8, format).unwrap());
@@ -152,7 +152,7 @@ fn literal_normal_vertical_motions_skip_the_final_insertion_boundary() {
 fn ex_relative_visual_addresses_cannot_reach_a_final_terminator_row() {
     use viem_core::command::LineMode;
     use viem_core::document::{Encoding, Format};
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for command in ["$+1d", ".+1d"] {
             let mut core = Core::new(Document::from_bytes(b"abc\ndef\n".to_vec(), Encoding::Utf8, format).unwrap());
             let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
@@ -171,7 +171,7 @@ fn ex_relative_visual_addresses_cannot_reach_a_final_terminator_row() {
 fn counted_line_end_change_retains_the_final_file_terminator() {
     use viem_core::command::LineMode;
     use viem_core::document::{Encoding, Format};
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
             let mut core = Core::new(Document::from_bytes(b"abc\ndef\n".to_vec(), Encoding::Utf8, format).unwrap());
             let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
@@ -186,24 +186,12 @@ fn counted_line_end_change_retains_the_final_file_terminator() {
 }
 
 #[test]
-fn markdown_source_keeps_authored_empty_paragraphs_addressable() {
-    use viem_core::document::{Encoding, Format};
-    for (source, cursor) in [("\n", 0), ("a\n\n", 2), ("a\n\n\n", 2), ("a\n\n\n\n", 3)] {
-        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap());
-        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
-        keys(&mut core, view, "G");
-        assert_eq!(core.command_state(view).unwrap().cursor(), cursor, "{source:?}");
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
 fn interpreter_line_motions_resolve_the_last_content_row_before_its_column() {
     use viem_core::command::CommandInterpreter;
     use viem_core::document::{Encoding, Format};
 
     // No layout is installed here: this exercises the public interpreter fallback.
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for visual in [None, Some('v'), Some('V')] {
             for (motion, expected) in [
                 ("jjj", 6),
@@ -254,7 +242,7 @@ fn interpreter_line_motions_keep_insertion_rows_and_explicit_source_paragraphs()
     use viem_core::command::CommandInterpreter;
     use viem_core::document::{Encoding, Format};
 
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for insert in ['i', 'R'] {
             let source = b"abc\ndef\n";
             let mut document = Document::from_bytes(source.to_vec(), Encoding::Utf8, format).unwrap();
@@ -264,17 +252,6 @@ fn interpreter_line_motions_keep_insertion_rows_and_explicit_source_paragraphs()
             commands.handle(&mut document, InputEvent::Key(Key::Down)).unwrap();
             assert_eq!(commands.cursor(), document.text().len(), "{format:?}, {insert}");
             assert_eq!(document.source_bytes(), source);
-        }
-    }
-    for source in ["a\n\n", "a\n\n\n", "a\n\n\n\n"] {
-        for visual in [None, Some('v'), Some('V')] {
-            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-            let mut commands = CommandInterpreter::new();
-            for character in visual.into_iter().chain("99j".chars()) {
-                commands.handle(&mut document, InputEvent::key(character)).unwrap();
-            }
-            assert_eq!(commands.cursor(), document.text().len(), "{source:?}, {visual:?}");
-            assert_eq!(document.source_bytes(), source.as_bytes());
         }
     }
 }

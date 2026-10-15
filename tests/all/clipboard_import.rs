@@ -28,7 +28,6 @@ fn normalized_html_styles_survive_real_clipboard_paste_and_undo() {
     ));
     for format in [
         Format::Markdown,
-        Format::MarkdownSource,
         Format::PlainText,
         Format::Code,
     ] {
@@ -53,7 +52,7 @@ fn normalized_html_styles_survive_real_clipboard_paste_and_undo() {
         let saved = core.document().source_bytes();
         let reopened = open(&saved, format);
         for document in [core.document(), &reopened] {
-            if format.is_wysiwyg() {
+            if format.is_markdown() {
                 assert!(
                     DocumentLayoutStyles::semantic_character_at(document.projection(), 0, false)
                         .unwrap()
@@ -167,7 +166,7 @@ fn private_whitespace_paste_keeps_literal_destinations_and_code_sources_literal(
     let donor = open(b"line  \n  \nafter **double** space", Format::Markdown);
     let copied = "  \nafter double spac";
     let fragment = donor.clipboard_fragment(4..4 + copied.len()).unwrap();
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         let mut document = open(b"", format);
         let mut commands = paste_private_fragment(&mut document, &fragment, 0);
         let saved = document.source_bytes();

@@ -158,22 +158,18 @@ final class EVDocumentReplacementTests: XCTestCase {
         XCTAssertEqual(try backend.recoverySnapshot().source, before.source)
     }
 
-    func testReplacementPreservesEachSourceViewsFlowAndLineMode() throws {
+    func testReplacementPreservesEachSourceViewsLineMode() throws {
         let (backend, surfaces) = try makeDocumentWithTwoViews()
-        try backend.read(source: Data("first\nsecond".utf8), typeName: EVDocument.markdownSourceType)
+        try backend.read(source: Data("first\nsecond".utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let sessions = try surfaces.map { try XCTUnwrap($0.session) }
-        try sessions[0].setParagraphFlow(true)
         try sessions[0].setLineMode(.physicalSource)
-        try sessions[1].setParagraphFlow(false)
         try sessions[1].setLineMode(.visual)
 
-        try backend.read(source: Data("first\nchanged".utf8), typeName: EVDocument.markdownSourceType)
+        try backend.read(source: Data("first\nchanged".utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
 
         let first = try XCTUnwrap(surfaces[0].session)
         let second = try XCTUnwrap(surfaces[1].session)
-        XCTAssertTrue(try first.paragraphFlow())
         XCTAssertEqual(try first.lineMode(), .physicalSource)
-        XCTAssertFalse(try second.paragraphFlow())
         XCTAssertEqual(try second.lineMode(), .visual)
     }
 

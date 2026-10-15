@@ -73,8 +73,7 @@ pub(super) fn is_fenced_block(
     if block.style.0 != "Block quote" && block.quote_depth == 0 {
         return Ok(false);
     }
-    if !document.format().is_source_view()
-        && !block.range.is_empty()
+    if !block.range.is_empty()
         && !document
             .projection()
             .style_spans_for_region(&block.range)
@@ -97,9 +96,7 @@ pub(super) fn is_fenced_block(
         .ok_or(super::DocumentError::AmbiguousProjection)?;
     for line in [
         Some(index),
-        index
-            .checked_sub(1)
-            .filter(|_| !document.format().is_source_view()),
+        index.checked_sub(1),
     ]
     .into_iter()
     .flatten()

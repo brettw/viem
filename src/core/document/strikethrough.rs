@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn markdown_strike_selection_persists_and_undoes_in_both_views() {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut document =
                 Document::from_bytes(b"word".to_vec(), Encoding::Utf8, format).unwrap();
             strike(&mut document, 0..4, true);
@@ -110,7 +110,7 @@ mod tests {
             assert!(document.undo());
             assert_eq!(document.source_bytes(), b"word");
             assert!(document.redo());
-            let range = if format.is_source_view() { 0..8 } else { 0..4 };
+            let range = 0..4;
             strike(&mut document, range, false);
             assert_eq!(document.source_bytes(), b"word");
             assert!(document.undo());
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn markdown_strike_typing_and_turning_off_preserve_caret_and_history() {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut document = Document::from_bytes(Vec::new(), Encoding::Utf8, format).unwrap();
             let payload =
                 FormattedTextPayload::new(&document.hard_line_snapshot(), "word", vec![]).unwrap();
@@ -134,7 +134,7 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(document.source_bytes(), b"~~word~~");
-            assert_eq!(at, if format.is_source_view() { 6 } else { 4 });
+            assert_eq!(at, 4);
             let payload =
                 FormattedTextPayload::new(&document.hard_line_snapshot(), "X", vec![]).unwrap();
             document
@@ -158,10 +158,10 @@ mod tests {
 
     #[test]
     fn partial_and_mixed_strike_selections_preserve_unselected_text() {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut document =
                 Document::from_bytes(b"~~word~~".to_vec(), Encoding::Utf8, format).unwrap();
-            let range = if format.is_source_view() { 3..5 } else { 1..3 };
+            let range = 1..3;
             strike(&mut document, range, false);
             assert_eq!(document.source_bytes(), b"~~w~~or~~d~~", "{format:?}");
             let partial = document.source_bytes();

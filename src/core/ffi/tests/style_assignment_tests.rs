@@ -5,7 +5,7 @@ use crate::document::{ConfigurationStyleIntent, ModelRequest, StyleDefinitionEdi
 
 #[test]
 fn markdown_paragraph_assignment_capabilities_match_model_support() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut document = Document::from_bytes(b"plain".to_vec(), Encoding::Utf8, format).unwrap();
         let mut custom = document.projection().style_sheet()
             .block_style(&"Paragraph".into()).unwrap().clone();

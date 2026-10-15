@@ -342,7 +342,6 @@ impl Document {
             }
         } else {
             let syntax = match self.format() {
-                Format::MarkdownSource => self.markdown_source_replacement(edit)?,
                 Format::PlainText | Format::Code => edit.replacement.clone(),
                 Format::Markdown if in_code && !edit.replacement.contains('`') => {
                     edit.replacement.clone()
@@ -472,7 +471,7 @@ impl Document {
         &self,
         edits: &[TextEdit],
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if !self.format().is_wysiwyg()
+        if !self.format().is_markdown()
             || edits.len() < 2
             || !edits.iter().any(|edit| {
                 !super::super::edit_boundary::merged_paragraphs(self, &edit.range).is_empty()

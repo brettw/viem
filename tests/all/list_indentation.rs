@@ -181,35 +181,8 @@ fn complete_item_continuations_and_code_move_with_the_selection() {
     }
 }
 #[test]
-fn source_modes_use_the_same_structural_policy_and_exact_history() {
-    for (source, format) in [
-        ("- A\n- B", Format::MarkdownSource),
-    ] {
-        let mut document = open(source, format);
-        let at = document.text().find('B').unwrap();
-        assert_eq!(
-            document.list_indent_capabilities(at..at),
-            (true, false),
-            "{format:?}"
-        );
-        apply(&mut document, at..at, false).unwrap();
-        let saved = document.source_bytes();
-        let at = document.text().find('B').unwrap();
-        assert_eq!(
-            document.list_indent_capabilities(at..at),
-            (false, true),
-            "{format:?}"
-        );
-        apply(&mut document, at..at, true).unwrap();
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), saved);
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-}
-#[test]
 fn quoted_markdown_list_indentation_preserves_every_quote_marker() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "> - parent\n> - **child**\n> - tail";
         let mut document = open(source, format);
         let at = document.text().find("child").unwrap();
@@ -294,7 +267,7 @@ fn toolbar_capabilities_do_not_prepare_edits_or_scan_large_lists() {
     for count in [32, 12_000] {
         let markdown = format!("- Parent\n{}  - Target\n- Following", "  - Child\n".repeat(count));
         for (source, format) in [
-            (&markdown, Format::Markdown), (&markdown, Format::MarkdownSource),
+            (&markdown, Format::Markdown),
         ] {
             let document = open(source, format);
             let at = document.text().find("Target").unwrap();
@@ -315,7 +288,6 @@ fn toolbar_capabilities_do_not_prepare_edits_or_scan_large_lists() {
 fn capability_index_follows_local_edits_structure_changes_and_history() {
     for (source, format) in [
         ("- A\n- Target\n\nOutside", Format::Markdown),
-        ("- A\n- Target\n\nOutside", Format::MarkdownSource),
     ] {
         let mut document = open(source, format);
         let at = document.text().find("Target").unwrap();

@@ -30,7 +30,7 @@ pub use whitespace::{ListChars, ListCharsError, VisibleWhitespaceOptions, Whites
 pub(crate) use composition::capture_range as capture_composition_range;
 pub(crate) use engine::{affinity_rank, hard_line_ranges, nearest_caret, DocumentLayoutChange, HardLineLayoutSlice};
 
-pub(crate) use jobs::{ascii_indentation_end, flow_paragraph_styles, resolve_flow_paragraph_styles};
+pub(crate) use jobs::ascii_indentation_end;
 pub(crate) use jobs::{install_layout_job_cache, prepare_cache_layout_job};
 pub(crate) use long_line_cache::LongLineCheckpointCache;
 

@@ -1,9 +1,9 @@
 //! Isolated large-file memory probe. See docs/performance.md.
-//! Arguments: plain|code|markdown|source lines|short|long|markdown|richpaste|richpaste-list SOURCE_BYTES
+//! Arguments: plain|code|markdown lines|short|long|markdown|richpaste|richpaste-list SOURCE_BYTES
 //! [open|document|views|switch|flat|exercise|search|richpaste] [utf8|utf16le|utf16be|latin1].
 //! Supplemental shapes include crlf and invalid (all invalid UTF-8 bytes). The
-//! markdown shape repeats rich blocks; `source` opens it in Markdown Source and
-//! `switch` toggles a view between Source and formatted presentation.
+//! markdown shape repeats rich blocks; `switch` turns Markdown Preview off (Code
+//! with the Markdown language) and back on.
 //! `richpaste` pastes a whitespace-rich fragment into cold dense Markdown,
 //! reports the operation's additional heap/work, then exercises undo and redo.
 //! Run each case in a fresh release process; syntax providers are disabled.
@@ -214,19 +214,18 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     assert!(
         args.len() >= 4,
-        "plain|code|markdown|source lines|short|long|markdown|richpaste|richpaste-list SOURCE_BYTES [open|document|views|switch|flat|richpaste]"
+        "plain|code|markdown lines|short|long|markdown|richpaste|richpaste-list SOURCE_BYTES [open|document|views|switch|flat|richpaste]"
     );
     let format = match args[1].as_str() {
         "plain" => Format::PlainText,
         "code" => Format::Code,
         "markdown" => Format::Markdown,
-        "source" => Format::MarkdownSource,
         _ => panic!("unknown format"),
     };
     let size: usize = args[3].parse().unwrap();
     let operation = args.get(4).map(String::as_str).unwrap_or("document");
     assert!(size > 0 && matches!(operation, "open" | "document" | "views" | "switch" | "flat" | "exercise" | "search" | "richpaste"));
-    assert!(operation != "switch" || format.is_markdown());
+    assert!(operation != "switch" || format.is_markdown() || format.is_code());
     assert!(operation != "richpaste" || (format == Format::Markdown && matches!(args[2].as_str(), "richpaste" | "richpaste-list")));
     let encoding_name = args.get(5).map(String::as_str).unwrap_or("utf8");
     let encoding = match encoding_name {
@@ -391,8 +390,12 @@ fn main() {
         sample("first_view", started, Some(core.document()));
         for phase in ["switched", "switched_back"] {
             let document = core.document();
-            let source = !document.format().is_source_view();
-            core.handle(view, CoreEvent::SetMarkdownSource { document: document.id(), revision: document.revision(), source })
+            let mode = if document.format().is_markdown() {
+                viem_core::DocumentMode::Code("markdown".into())
+            } else {
+                viem_core::DocumentMode::Markdown
+            };
+            core.handle(view, CoreEvent::SetDocumentMode { document: document.id(), revision: document.revision(), mode })
                 .unwrap();
             sample(phase, started, Some(core.document()));
         }

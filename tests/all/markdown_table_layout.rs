@@ -31,7 +31,7 @@ fn audit_caret(core: &viem_core::Core<MockTextMeasurementProvider>, view: viem_c
 
 #[test]
 fn audit_ligature_interiors_support_vertical_and_row_edge_motion() {
-    for format in [Format::PlainText, Format::Markdown, Format::MarkdownSource, Format::Code] {
+    for format in [Format::PlainText, Format::Markdown, Format::Code] {
         for key in [Key::Down, Key::Up, Key::Home, Key::End, Key::Char('j'), Key::Char('k')] {
             let mut core = viem_core::Core::new(document("office\nnext line here", format));
             let view = core.add_view(MockTextMeasurementProvider::new(), 300., 200.);
@@ -191,7 +191,7 @@ fn audit_block_edit_and_resize_keep_large_table_materialization_bounded() {
 #[test]
 fn audit_short_viewports_keep_styled_caret_geometry_after_escape() {
     for (format, source) in [(Format::Markdown, "**`code in bold`**"),
-        (Format::MarkdownSource, "```\na\n\nb\n```\ntext")] {
+        ] {
         let mut core = viem_core::Core::new(document(source, format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 120., 30.);
         audit_key(&mut core, view, Key::Char('i'));
@@ -258,37 +258,6 @@ fn rich_cells_share_columns_and_rows_without_wrapping() {
     }
     assert_eq!(document.source_bytes(), source.as_bytes());
 }
-#[test]
-fn source_alignment_changes_only_geometry_and_disables_wrap_and_flow() {
-    let source = "| A | B |\n| --- | ---: |\n| small | **wide spelling** |\n| Q | R |";
-    let document = document(source, Format::MarkdownSource);
-    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
-    let mut view = ViewLayout::new(60., 500.);
-    view.set_paragraph_flow(true);
-    engine.relayout(&document, &mut view).unwrap();
-    let snapshot = view.snapshot().unwrap();
-    assert_eq!(snapshot.rows.len(), 4);
-    assert!(snapshot.table_cells().is_empty());
-    assert!(snapshot
-        .rows
-        .iter()
-        .all(|row| !row.wraps_to_next && !row.wrapped_from_previous));
-    let pipe_x = snapshot
-        .rows
-        .iter()
-        .map(|row| {
-            row.clusters
-                .iter()
-                .filter(|cluster| document.text().get(cluster.text_range.clone()) == Some("|"))
-                .map(|cluster| cluster.x)
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    for pipes in &pipe_x[1..] {
-        assert_eq!(pipes, &pipe_x[0]);
-    }
-    assert_eq!(document.source_bytes(), source.as_bytes());
-}
 use viem_core::layout::{
     compute_layout_job, inspect_layout_provider, prepare_layout_job, HardLineLayoutRegion,
     LayoutCancellationToken, LayoutExecutionContext, LayoutJobId, LayoutJobPriority,
@@ -320,13 +289,13 @@ fn region(
 #[test]
 fn regional_table_rows_match_complete_geometry_in_both_views() {
     let source = "| A | B |\n| --- | ---: |\n| X<br>Y | several words |\n| Z | |";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let document = document(source, format);
         let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
         let mut view = ViewLayout::new(100., 500.);
         engine.relayout(&document, &mut view).unwrap();
         let full = view.snapshot().unwrap().clone();
-        for index in 0..document.projection().presentation_line_count(false) {
+        for index in 0..document.projection().presentation_line_count() {
             let candidate = region(
                 &document,
                 &mut engine,
@@ -352,43 +321,6 @@ fn regional_table_rows_match_complete_geometry_in_both_views() {
             }
         }
     }
-}
-
-#[test]
-fn optional_source_pipes_align_without_inventing_glyphs() {
-    let source = "A | B\n--- | ---:\n| X | very wide value |\nshort | R |";
-    let document = document(source, Format::MarkdownSource);
-    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
-    let mut view = ViewLayout::new(80., 500.);
-    engine.relayout(&document, &mut view).unwrap();
-    let snapshot = view.snapshot().unwrap();
-    let table = &document.projection().tables()[0];
-    let mut boundaries = Vec::new();
-    for (source_row, row) in table.source_rows.iter().zip(snapshot.rows.iter()) {
-        let separator = source_row
-            .pipes
-            .iter()
-            .copied()
-            .find(|pipe| *pipe >= source_row.cells[0].end)
-            .unwrap();
-        boundaries.push(
-            row.clusters
-                .iter()
-                .find(|cluster| cluster.text_range.start == separator)
-                .unwrap()
-                .x,
-        );
-        let actual = row
-            .clusters
-            .iter()
-            .map(|cluster| document.text().get(cluster.text_range.clone()).unwrap())
-            .collect::<String>();
-        assert_eq!(actual, &document.text()[row.text_range.clone()]);
-    }
-    assert!(
-        boundaries.iter().all(|x| (*x - boundaries[0]).abs() < 0.01),
-        "{boundaries:?}"
-    );
 }
 
 #[test]
@@ -559,7 +491,7 @@ fn cell_padding_borders_and_nearby_pixels_preserve_hit_column() {
 
 #[test]
 fn idle_width_refinement_survives_fresh_worker_engines_in_both_views() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "| H | V |\n| - | - |\n".to_owned()
             + &"| row | value |\n".repeat(180)
             + "| last | a much wider final offscreen value |";
@@ -613,7 +545,7 @@ fn idle_width_refinement_survives_fresh_worker_engines_in_both_views() {
 #[test]
 fn late_styled_and_punctuation_edits_parse_only_the_affected_table_row() {
     use viem_core::document::{ModelRequest, TextEdit};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "before\n\n| A | B |\n| - | - |\n".to_owned()
             + &"| **word** | value |\n".repeat(10000)
             + "\nafter";
@@ -656,7 +588,7 @@ fn late_styled_and_punctuation_edits_parse_only_the_affected_table_row() {
 
 #[test]
 fn giant_cells_discover_width_in_bounded_worker_slices_and_keep_native_glyphs_bounded() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let following = "\n\nFollowing prose.".repeat(50);
         for tail in ["", following.as_str()] {
             let source = format!(
@@ -710,11 +642,7 @@ fn giant_cells_discover_width_in_bounded_worker_slices_and_keep_native_glyphs_bo
                 .unwrap()
                 .has_provisional_table_widths());
             let table = &core.document().projection().tables()[0];
-            let cell = if format == Format::Markdown {
-                table.rows[1].cells[0].range.clone()
-            } else {
-                table.source_rows[2].cells[0].clone()
-            };
+            let cell = table.rows[1].cells[0].range.clone();
             core.handle(
                 view,
                 viem_core::CoreEvent::PlaceCursor {
@@ -928,7 +856,7 @@ fn progressive_explicit_cell_lines_retain_maximum_width_and_complete_height() {
 
 #[test]
 fn very_wide_tables_only_shape_visible_columns_plus_bounded_discovery() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = format!(
             "|{}\n|{}\n|{}",
             " header |".repeat(1000),

@@ -128,7 +128,7 @@ fn resolved_vim_terminal_enter_restores_exact_source_and_continues_typing() {
         }
     }
     for source in ["body\n", "body\n\n"] {
-        for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+        for format in [Format::PlainText, Format::Code] {
             let (mut core, view) = editor(source, format);
             keys(&mut core, view, "GA");
             let before = core.document().source_bytes();
@@ -186,7 +186,7 @@ fn resolved_vim_counted_terminal_enter_repeats_semantic_breaks_only() {
 #[test]
 fn resolved_vim_insert_word_and_line_delete_join_at_line_start() {
     use viem_core::command::Mode;
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         let source = if format.is_markdown() { "aé\n\n👩‍💻b" } else { "aé\n👩‍💻b" };
         for input in [Key::Ctrl('w'), Key::Ctrl('u')] {
             let (mut core, view) = editor(source, format);
@@ -223,7 +223,7 @@ fn resolved_vim_insert_word_and_line_delete_join_at_line_start() {
 #[test]
 fn resolved_vim_visual_uppercase_operators_are_linewise_and_repeatable() {
     use viem_core::command::{Mode, RegisterKind};
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for entry in ["lvjl", "lVj", "jlvkl"] {
             for operator in ['X', 'D', 'C', 'S', 'R'] {
                 let source = "  abc\n  defg\n  hijkl\ntail";
@@ -335,7 +335,7 @@ fn resolved_vim_number_changes_follow_default_bases_width_sign_cursor_and_overfl
         ("1\u{301}", 0, Key::Ctrl('a'), "2\u{301}", 0),
         ("1", 0, Key::Ctrl('a'), "2", 0),
     ] {
-        for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+        for format in [Format::PlainText, Format::Code, Format::Markdown] {
             let (mut core, view) = editor(source, format);
             core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
                 text_offset: at, affinity: viem_core::layout::BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
@@ -392,7 +392,7 @@ fn resolved_vim_number_counts_dot_registers_and_missing_targets() {
 
 #[test]
 fn jump_operator_rebases_retained_multibyte_locations_before_deduplicating() {
-    for format in [Format::PlainText, Format::MarkdownSource] {
+    for format in [Format::PlainText] {
         let (mut core, view) = editor(" 中文", format);
         keys(&mut core, view, "$gg=G");
         assert_eq!(core.document().text(), "中文");
@@ -404,62 +404,8 @@ fn jump_operator_rebases_retained_multibyte_locations_before_deduplicating() {
 }
 
 #[test]
-fn source_line_put_after_empty_terminal_line_keeps_unicode_caret_valid() {
-    for word in ["é", "か", "中文", "👩‍💻"] {
-        let source = format!("{word}\nb");
-        let (mut core, view) = editor(&source, Format::MarkdownSource);
-        keys(&mut core, view, "yyGo");
-        key(&mut core, view, Key::Escape);
-        keys(&mut core, view, "p");
-        assert!(core
-            .document()
-            .text_point(core.command_state(view).unwrap().cursor())
-            .is_ok());
-        keys(&mut core, view, "u");
-    }
-}
-
-#[test]
-fn source_open_below_last_table_row_keeps_valid_cursor() {
-    for source in [
-        "| a | b |\n| - | - |\n| 1 | 2 |",
-        "> | a | b |\n> | - | - |\n> | 1 | 2 |",
-        "- | a | b |\n  | - | - |\n  | 1 | 2 |",
-    ] {
-        let (mut core, view) = editor(source, Format::MarkdownSource);
-        let cursor = core.document().text().find('1').unwrap();
-        core.handle(
-            view,
-            CoreEvent::PlaceCursor {
-                document_revision: core.document().revision(),
-                text_offset: cursor,
-                affinity: viem_core::layout::BoundaryAffinity::Downstream,
-                extend_selection: false,
-            },
-        )
-        .unwrap();
-        keys(&mut core, view, "o");
-        assert!(core
-            .document()
-            .text_point(core.command_state(view).unwrap().cursor())
-            .is_ok());
-        keys(&mut core, view, "x");
-        assert!(
-            String::from_utf8(core.document().source_bytes())
-                .unwrap()
-                .contains("\nx")
-                || source.starts_with(['>', '-']),
-            "typing follows the newly opened physical row"
-        );
-        key(&mut core, view, Key::Escape);
-        keys(&mut core, view, "u");
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-}
-
-#[test]
 fn terminal_line_changes_keep_valid_ranges_and_literal_final_terminators() {
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Code] {
+    for format in [Format::PlainText, Format::Code] {
         for change in ["cc", "S", "Vc"] {
             let (mut core, view) = editor("a\nb\n", format);
             keys(&mut core, view, &format!("G{change}x"));
@@ -477,7 +423,7 @@ fn terminal_line_changes_keep_valid_ranges_and_literal_final_terminators() {
 
 #[test]
 fn selecting_generated_indentation_accepts_it_before_navigation() {
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Code] {
+    for format in [Format::PlainText, Format::Code] {
         for nav in [
             NavigationKey::Left,
             NavigationKey::Right,
@@ -508,7 +454,6 @@ fn selecting_generated_indentation_accepts_it_before_navigation() {
 fn word_end_advances_from_word_end_and_operators_include_next_word() {
     for format in [
         Format::PlainText,
-        Format::MarkdownSource,
         Format::Code,
         Format::Markdown,
     ] {
@@ -547,7 +492,6 @@ fn whitespace_word_objects_preserve_adjacent_line_breaks() {
 fn replace_backspace_and_word_delete_never_remove_preexisting_prefix() {
     for format in [
         Format::PlainText,
-        Format::MarkdownSource,
         Format::Code,
         Format::Markdown,
     ] {
@@ -562,25 +506,6 @@ fn replace_backspace_and_word_delete_never_remove_preexisting_prefix() {
         key(&mut core, view, Key::Ctrl('w'));
         key(&mut core, view, Key::Escape);
         assert_eq!(core.document().text(), "First paragraph.");
-    }
-}
-
-#[test]
-fn source_replace_restores_exact_markup_that_changes_projection() {
-    for (source, prefix) in [("*it*", "l"), ("ab\n\nb", ""), ("a\nb\n\nc", "j")] {
-        let (mut core, view) = editor(source, Format::MarkdownSource);
-        keys(&mut core, view, &format!("{prefix}R "));
-        key(&mut core, view, Key::Backspace);
-        key(&mut core, view, Key::Escape);
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-    for (source, prefix) in [("```\n\n\n```", "ll"), ("    a\n\n    b", "jl")] {
-        let (mut core, view) = editor(source, Format::MarkdownSource);
-        keys(&mut core, view, &format!("{prefix}Rxy"));
-        key(&mut core, view, Key::Backspace);
-        key(&mut core, view, Key::Backspace);
-        key(&mut core, view, Key::Escape);
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
     }
 }
 
@@ -605,7 +530,7 @@ fn command_text_with_multiple_mutations_is_rejected_without_changing_history() {
 
 #[test]
 fn change_line_preserves_indentation_and_undo() {
-    for format in [Format::PlainText, Format::MarkdownSource, Format::Code] {
+    for format in [Format::PlainText, Format::Code] {
         for command in ["cc", "S", "Vc"] {
             let (mut core, view) = editor("if a {\n    b();\n}\n", format);
             keys(&mut core, view, &format!("j{command}x"));
@@ -645,7 +570,7 @@ fn layout_line_indentation_uses_buffer_options() {
 
 #[test]
 fn insert_indentation_changes_keep_ctrl_u_floor_and_history_valid() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for indent in [4, 8] {
             for actions in [
                 vec![Key::Ctrl('d')],
@@ -810,8 +735,6 @@ fn visual_join_reaches_its_handler_in_physical_line_mode() {
 #[test]
 fn line_case_changes_only_letters_and_keeps_source_break_spelling() {
     for (format, source, keys_value, expected) in [
-        (Format::MarkdownSource, "a\n\nb", "gUU", "A\n\nb"),
-        (Format::MarkdownSource, "a\n\nb", "gUj", "A\n\nB"),
         (Format::Markdown, "x\ny\n\nb", "gUU", "X\nY\n\nb"),
         (
             Format::Markdown,
@@ -836,7 +759,7 @@ fn line_case_changes_only_letters_and_keeps_source_break_spelling() {
 fn replace_structural_enter_and_tab_restore_original_source() {
     for source in ["*it*", "**bold**", "a\nb\n\nc", "\n", "   \n  \n"] {
         for replacement in [Key::Enter, Key::Tab] {
-            let (mut core, view) = editor(source, Format::MarkdownSource);
+            let (mut core, view) = editor(source, Format::Code);
             if source.starts_with('*') {
                 keys(&mut core, view, "l");
             }
@@ -855,7 +778,7 @@ fn replace_structural_enter_and_tab_restore_original_source() {
         }
     }
     for (source, prefix) in [("- a\n  b\n  c", "j2l"), ("> a\n>\n> b", "j")] {
-        let (mut core, view) = editor(source, Format::MarkdownSource);
+        let (mut core, view) = editor(source, Format::Code);
         keys(&mut core, view, &format!("{prefix}R"));
         key(&mut core, view, Key::Tab);
         key(&mut core, view, Key::Backspace);
@@ -915,7 +838,7 @@ fn global_literal_line_deletions_publish_one_bounded_transaction() {
 
 #[test]
 fn editing_last_nonempty_line_preserves_existing_final_terminator() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         for (command, expected) in [
             ("jjdd", "a\nb\n"),
             ("jdj", "a\n"),
@@ -971,10 +894,10 @@ fn whitespace_objects_and_insert_word_delete_keep_session_and_line_boundaries() 
         key(&mut core, view, Key::Ctrl('w'));
         assert_eq!(core.document().text(), "raph");
     }
-    let (mut core, view) = editor("x\n\n   y", Format::MarkdownSource);
-    keys(&mut core, view, "j0diw");
+    let (mut core, view) = editor("x\n\n   y", Format::Code);
+    keys(&mut core, view, "2j0diw");
     assert_eq!(core.document().source_bytes(), b"x\n\ny");
-    let (mut core, view) = editor("a<br>b", Format::MarkdownSource);
+    let (mut core, view) = editor("a<br>b", Format::Code);
     keys(&mut core, view, "3lRxyz");
     key(&mut core, view, Key::Ctrl('w'));
     key(&mut core, view, Key::Escape);
@@ -1173,7 +1096,6 @@ fn global_independent_edits_batch_once_and_preserve_registers_history() {
     for (format, separator, body, expected_word) in [
         (Format::PlainText, "\n", "d", "beta"),
         (Format::Code, "\n", "d", "beta"),
-        (Format::MarkdownSource, "\n", "d", "beta"),
         (Format::Markdown, "\n\n", "d", "beta"),
         (Format::PlainText, "\n", "s/a/z/g", "zlphz"),
     ] {
@@ -1262,7 +1184,7 @@ fn rich_linewise_put_inside_multiline_code_retains_the_code_owner() {
 
 #[test]
 fn fix_verification_word_changes_keep_the_current_word_and_line_ending() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         for (source, command, expected) in [
             ("I saw a cat.\n", "wwcwx", "I saw x cat.\n"),
             ("ab\ncd\nef\n", "lcwx", "ax\ncd\nef\n"),
@@ -1305,7 +1227,7 @@ fn fix_verification_literal_operators_preserve_paragraph_and_eof_boundaries() {
 
 #[test]
 fn fix_verification_ex_unicode_global_and_jump_targets() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         for command in [":d", ":.,$d", ":t0", ":m0"] {
             let (mut core, view) = editor("a\n\nbé", format);
             keys(&mut core, view, "G");
@@ -1335,7 +1257,7 @@ fn fix_verification_ex_unicode_global_and_jump_targets() {
 fn fix_verification_replace_enter_keeps_indentation_and_source_cursor() {
     for (source, format, command, expected) in [
         (" * star\n", Format::PlainText, "lr", " \n star\n"),
-        ("a\né👩‍💻", Format::MarkdownSource, "G0r", "a\n\n👩‍💻"),
+        ("a\né👩‍💻", Format::Code, "G0r", "a\n\n👩‍💻"),
     ] {
         let (mut core, view) = editor(source, format);
         keys(&mut core, view, command);
@@ -1350,7 +1272,7 @@ fn fix_verification_replace_enter_keeps_indentation_and_source_cursor() {
 #[test]
 fn fix_verification_markdown_paragraph_objects_use_semantic_owners() {
     let source = "# Title\n\nFirst para line one\nline two.\n\n- item a\n- item b\n\nLast para.";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for command in ["dap", "dip", "cipX", "d}", ">ap", "yap", "}"] {
             let (mut core, view) = editor(source, format);
             let at = core.document().text().find("First").unwrap();
@@ -1368,7 +1290,7 @@ fn fix_verification_markdown_paragraph_objects_use_semantic_owners() {
 
 #[test]
 fn fix_verification_global_reveals_its_last_affected_line() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         let source = if format == Format::Markdown { "alpha\n\nbeta\n\n".repeat(100) }
             else { "alpha\nbeta\n".repeat(100) };
         let (mut core, view) = editor(&source, format);
@@ -1384,7 +1306,7 @@ fn fix_verification_global_reveals_its_last_affected_line() {
 
 #[test]
 fn fix_verification_page_keys_move_when_document_fits_the_viewport() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
         for insert in [false, true] {
             let (mut core, view) = editor("a\n\nb\n\nc", format);
             if insert { keys(&mut core, view, "i"); }
@@ -1440,7 +1362,7 @@ fn fix_verification_wide_table_ex_endpoints_finish_layout_resolution() {
 
 #[test]
 fn markdown_counted_paragraph_objects_keep_exact_undo_units() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for command in ["2dap", "d2ap"] {
             let source = "one\n\ntwo\n\nthree";
             let (mut core, view) = editor(source, format);

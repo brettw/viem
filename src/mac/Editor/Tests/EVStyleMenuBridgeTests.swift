@@ -87,7 +87,6 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   @MainActor
   func testHeadingMenuWritesFormatMarkersAndRejectsStaleActions() throws {
     for (type, source, expected) in [
-      (EVDocument.markdownSourceType, "Paragraph", "## Paragraph"),
       (EVDocument.markdownType, "Paragraph", "## Paragraph"),
     ] {
       let backend = EVCoreDocumentBackend()

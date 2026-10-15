@@ -21,7 +21,6 @@ fn defaults_are_visible_declarations_and_source_declarations_override_them() {
     for (format, source, offset, expected) in [
         (Format::PlainText, "Text", 0, 31.),
         (Format::Markdown, "Text", 0, 31.),
-        (Format::MarkdownSource, "Text", 0, 31.),
 
     ] {
         let mut doc = open(source, format);

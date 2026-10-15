@@ -447,7 +447,7 @@ extension EVSourceFormat {
   public var defaultStyleName: String {
     switch self {
     case .plainText: "text"
-    case .markdown, .markdownSource: "markdown"
+    case .markdown: "markdown"
     case .code: "code"
     }
   }

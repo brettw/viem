@@ -68,7 +68,6 @@ impl WrapBreakState {
 pub(super) fn first_line_break(
     tree: &FormattedTextTree,
     range: Range<usize>,
-    paragraph_flow: bool,
     state: &mut WrapBreakState,
     cancellation: &dyn LayoutCancellationProbe,
 ) -> Result<usize, LayoutJobError> {
@@ -100,11 +99,6 @@ pub(super) fn first_line_break(
                 }
                 next_checkpoint = offset.saturating_add(CANCELLATION_SCAN_BYTES);
             }
-            let character = if paragraph_flow && character == '\n' {
-                ' '
-            } else {
-                character
-            };
             // Unicode line-break opportunities can occur inside an extended
             // grapheme (for example after a space followed by a combining
             // mark). A captured/streamed row must end at a legal text boundary.
@@ -142,9 +136,7 @@ mod tests {
         let mut streamed = WrapBreakState::new(true);
         let mut offset = 0;
         for expected in expected {
-            offset = first_line_break(
-                &tree, offset..text.len(), false, &mut streamed, &LayoutCancellationToken::new(),
-            ).unwrap();
+            offset = first_line_break(&tree, offset..text.len(), &mut streamed, &LayoutCancellationToken::new()).unwrap();
             assert_eq!(offset, expected);
         }
         assert_eq!(whole, streamed);
@@ -155,9 +147,7 @@ mod tests {
         let text = format!("{}{}++tail", " ".repeat(80_000), "a".repeat(100_000));
         let document = Document::new(text);
         let tree = document.projection().text_tree();
-        let end = first_line_break(
-            tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(true), &LayoutCancellationToken::new(),
-        ).unwrap();
+        let end = first_line_break(tree, 0..tree.byte_len(), &mut WrapBreakState::new(true), &LayoutCancellationToken::new()).unwrap();
         assert_eq!(end, 180_002);
         assert!(!document.projection().compatibility_text_is_materialized());
     }
@@ -166,7 +156,7 @@ mod tests {
     fn streamed_breaks_do_not_split_a_space_with_combining_marks() {
         let tree = FormattedTextTree::try_from_text(" \u{301}x next").unwrap();
         assert_eq!(
-            first_line_break(&tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &LayoutCancellationToken::default()).unwrap(),
+            first_line_break(&tree, 0..tree.byte_len(), &mut WrapBreakState::new(false), &LayoutCancellationToken::default()).unwrap(),
             5,
         );
     }
@@ -179,21 +169,21 @@ mod tests {
         let tree = document.projection().text_tree();
         let cancellation = LayoutCancellationToken::default();
         assert_eq!(
-            first_line_break(tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation).unwrap(),
+            first_line_break(tree, 0..tree.byte_len(), &mut WrapBreakState::new(false), &cancellation).unwrap(),
             7
         );
         assert_eq!(
-            first_line_break(tree, 7..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation).unwrap(),
+            first_line_break(tree, 7..tree.byte_len(), &mut WrapBreakState::new(false), &cancellation).unwrap(),
             8 + length
         );
         assert_eq!(
-            first_line_break(tree, 8 + length..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation).unwrap(),
+            first_line_break(tree, 8 + length..tree.byte_len(), &mut WrapBreakState::new(false), &cancellation).unwrap(),
             tree.byte_len()
         );
         assert!(!document.projection().compatibility_text_is_materialized());
         cancellation.cancel();
         assert!(matches!(
-            first_line_break(tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation),
+            first_line_break(tree, 0..tree.byte_len(), &mut WrapBreakState::new(false), &cancellation),
             Err(LayoutJobError::Cancelled)
         ));
     }
@@ -207,13 +197,7 @@ mod tests {
         ] {
             let tree = FormattedTextTree::try_from_text(text.as_str()).unwrap();
             assert_eq!(
-                first_line_break(
-                    &tree,
-                    0..text.len(),
-                    false,
-                    &mut WrapBreakState::new(false),
-                    &LayoutCancellationToken::default()
-                )
+                first_line_break(&tree, 0..text.len(), &mut WrapBreakState::new(false), &LayoutCancellationToken::default())
                 .unwrap(),
                 expected
             );
@@ -221,13 +205,7 @@ mod tests {
         let text = "abc\ndef";
         let tree = FormattedTextTree::try_from_text(text).unwrap();
         assert_eq!(
-            first_line_break(
-                &tree,
-                0..text.len(),
-                true,
-                &mut WrapBreakState::new(false),
-                &LayoutCancellationToken::default()
-            )
+            first_line_break(&tree, 0..text.len(), &mut WrapBreakState::new(false), &LayoutCancellationToken::default())
             .unwrap(),
             4
         );
@@ -248,7 +226,7 @@ mod tests {
         assert_eq!(tree.byte_len(), 200_001);
         let cancellation = CancelAfterThreeChecks(std::cell::Cell::new(0));
         assert!(matches!(
-            first_line_break(&tree, 0..tree.byte_len(), false, &mut WrapBreakState::new(false), &cancellation),
+            first_line_break(&tree, 0..tree.byte_len(), &mut WrapBreakState::new(false), &cancellation),
             Err(LayoutJobError::Cancelled)
         ));
         assert_eq!(cancellation.0.get(), 4);

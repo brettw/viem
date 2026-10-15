@@ -183,7 +183,7 @@ fn deleting_a_continuation_lines_last_character_keeps_its_folded_space() {
 #[test]
 fn overflowing_ordered_continuations_follow_commonmark_literal_text() {
     let source = "999999999. big";
-    for format in [Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::Markdown] {
         for above in [false, true] {
             let (mut core, view) = open(source, format);
             input(&mut core, view, InputEvent::key(if above { 'O' } else { 'o' }));
@@ -192,9 +192,7 @@ fn overflowing_ordered_continuations_follow_commonmark_literal_text() {
             assert_eq!(core.document().source_bytes(), saved.as_bytes(), "{format:?} above={above}");
             assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
             let cursor = core.command_state(view).unwrap().cursor();
-            let expected = if format == Format::MarkdownSource {
-                if above { 11 } else { saved.len() }
-            } else if above { 0 } else { core.document().text().len() };
+            let expected = if above { 0 } else { core.document().text().len() };
             assert_eq!(cursor, expected, "{format:?} above={above}");
             reopen_and_history(&mut core, view, source.as_bytes());
         }
@@ -312,7 +310,6 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
     }
     for (format, source) in [
         (Format::PlainText, "abc"),
-        (Format::MarkdownSource, "**abc**"),
     ] {
         let (mut core, view) = open(source, format);
         insert_at(&mut core, view, 2);
@@ -714,67 +711,3 @@ fn list_indentation_is_replayed_as_structure_by_dot_and_macros() {
     }
 }
 
-#[test]
-fn source_list_body_uses_structural_tab_anywhere_and_preserves_literal_backspace() {
-    use viem_core::document::BlockKind;
-    for (format, source) in [
-        (Format::MarkdownSource, "- parent\n- **body**\n- tail"),
-    ] {
-        let (mut core, view) = open(source, format);
-        let at = core.document().text().find("body").unwrap() + 2;
-        insert_at(&mut core, view, at);
-        for key in [Key::Tab, Key::BackTab] {
-            input(&mut core, view, InputEvent::Key(key));
-            let semantic = Document::from_bytes(
-                core.document().source_bytes(),
-                Encoding::Utf8,
-                {
-                    Format::Markdown
-                },
-            )
-            .unwrap();
-            assert_eq!(semantic.text(), "parent\nbody\ntail");
-            let block = &semantic.projection().blocks()[1];
-            assert!(
-                matches!(block.kind, BlockKind::ListItem { level, .. } if level == if key == Key::Tab { 1 } else { 0 }),
-                "{format:?}: {block:?}"
-            );
-            assert_eq!(
-                core.command_state(view).unwrap().cursor(),
-                core.document().text().find("body").unwrap() + 2
-            );
-        }
-        input(&mut core, view, InputEvent::text("new "));
-        input(&mut core, view, InputEvent::Key(Key::Escape));
-        reopen_and_history(&mut core, view, source.as_bytes());
-
-        let (mut core, view) = open(source, format);
-        let at = core.document().text().find("body").unwrap() + 2;
-        insert_at(&mut core, view, at);
-        input(&mut core, view, InputEvent::Key(Key::Backspace));
-        let mut expected = source.to_owned();
-        expected.remove(at - 1);
-        assert_eq!(core.document().source_bytes(), expected.as_bytes());
-    }
-}
-
-#[test]
-fn markdown_source_tab_recognizes_marker_start_and_body_boundary() {
-    use viem_core::document::BlockKind;
-    let source = "- parent\n- **body**\n- tail";
-    for at in [9, 11] {
-        let (mut core, view) = open(source, Format::MarkdownSource);
-        insert_at(&mut core, view, at);
-        input(&mut core, view, InputEvent::Key(Key::Tab));
-        let semantic = Document::from_bytes(
-            core.document().source_bytes(),
-            Encoding::Utf8,
-            Format::Markdown,
-        )
-        .unwrap();
-        assert!(matches!(
-            semantic.projection().blocks()[1].kind,
-            BlockKind::ListItem { level: 1, .. }
-        ));
-    }
-}

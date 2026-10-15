@@ -49,52 +49,38 @@ fn select_all_reaches_final_wrapped_paragraph_in_every_format_and_line_policy() 
     for (source, format) in [
         (format!("first\nsecond\n{tail}"), Format::PlainText),
         (format!("# first\n\nsecond\n\n{tail}"), Format::Markdown),
-        (
-            format!("# first\n\nsecond\n\n{tail}"),
-            Format::MarkdownSource,
-        ),
-
     ] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
-            for flow in [false, true] {
-                let (mut core, view) = opened(&source, format);
-                if format.is_source_view() {
-                    core.handle(view, CoreEvent::SetParagraphFlow(flow))
-                        .unwrap();
-                }
-                core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
-                key(&mut core, view, 'V');
-                let before = core.document().source_bytes();
-                select(&mut core, view);
-                assert_eq!(core.document().source_bytes(), before);
-                special(&mut core, view, Key::Ctrl('o'));
-                for value in ['"', '+'] {
-                    key(&mut core, view, value);
-                }
-                let clipboard =
-                    ClipboardCommandContext::default().with_write(ClipboardTarget::Clipboard);
-                let out = core
-                    .handle_with_layout(
-                        view,
-                        CoreEvent::InputWithClipboard {
-                            input: InputEvent::key('y'),
-                            clipboard,
-                        },
-                    )
-                    .unwrap();
-                let output = out.command.unwrap();
-                assert_eq!(output.status, CommandStatus::Complete);
-                let expected = if format.is_source_view() {
-                    source.as_str()
-                } else {
-                    core.document().text()
-                };
-                assert_eq!(
-                    output.clipboard_writes[0].content().plain_text(),
-                    expected,
-                    "{format:?} {mode:?} flow={flow}"
-                );
+            let (mut core, view) = opened(&source, format);
+            core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+            key(&mut core, view, 'V');
+            let before = core.document().source_bytes();
+            select(&mut core, view);
+            assert_eq!(core.document().source_bytes(), before);
+            special(&mut core, view, Key::Ctrl('o'));
+            for value in ['"', '+'] {
+                key(&mut core, view, value);
             }
+            let clipboard =
+                ClipboardCommandContext::default().with_write(ClipboardTarget::Clipboard);
+            let out = core
+                .handle_with_layout(
+                    view,
+                    CoreEvent::InputWithClipboard {
+                        input: InputEvent::key('y'),
+                        clipboard,
+                    },
+                )
+                .unwrap();
+            let output = out.command.unwrap();
+            assert_eq!(output.status, CommandStatus::Complete);
+            let expected = core.document().text();
+            assert_eq!(
+                output.clipboard_writes[0].content().plain_text(),
+                expected,
+                "{format:?} {mode:?}"
+            );
+        
         }
     }
 }

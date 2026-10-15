@@ -24,7 +24,7 @@ fn apply(
 
 #[test]
 fn underline_and_scripts_preserve_source_locality_and_history_in_both_views() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for (property, tag) in [
             (StyleProperty::CharacterUnderline, "ins"),
             (StyleProperty::CharacterSuperscript, "sup"),
@@ -54,14 +54,10 @@ fn underline_and_scripts_preserve_source_locality_and_history_in_both_views() {
             assert_eq!(document.source_bytes(), expected.as_bytes());
             let start = document
                 .text()
-                .find(if format.is_source_view() { "<" } else { "word" })
+                .find("word")
                 .unwrap();
             let end = start
-                + if format.is_source_view() {
-                    4 + tag.len() * 2 + 5
-                } else {
-                    4
-                };
+                + 4;
             apply(&mut document, start..end, property, false);
             assert_eq!(document.source_bytes(), original);
             assert!(document.undo());
@@ -184,7 +180,7 @@ fn gfm_combined_and_nested_emphasis_project_and_native_formatting_adds_each_role
         ("*foo*", SemanticInlineStyle::Strong),
         ("**foo**", SemanticInlineStyle::Emphasis),
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut document =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             let start = document.text().find("foo").unwrap();

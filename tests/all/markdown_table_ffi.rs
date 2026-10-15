@@ -126,7 +126,7 @@ fn action(c: ViemTableContextV1, action: u32) -> ViemTableActionV1 {
 
 #[test]
 fn insertion_rejects_invalid_sizes_and_stale_picker_without_changes() {
-    for format in [VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE] {
+    for format in [VIEM_FORMAT_MARKDOWN] {
         let f = table_ffi_fixture(b"alpha beta", format);
         let original = context(&f);
         assert_eq!(original.flags, VIEM_TABLE_CAN_INSERT);

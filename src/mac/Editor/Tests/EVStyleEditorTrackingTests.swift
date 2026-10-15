@@ -117,7 +117,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     }
 
     func testMarkdownCodeModeTransitionRetargetsOpenInspectorAndKeepsFollowing() async throws {
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             let source = Data("# Title\n\n**bold** plain\n".utf8)
             let backend = EVCoreDocumentBackend(configuration: configuration())
             try backend.read(source: source, typeName: type, filename: "tracking.md", allowAutomaticCode: false)
@@ -163,7 +163,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
             XCTAssertEqual(try EVCoreStyleBridge.copyStyleSheet(core: nil).definition(for: selected)?
                 .properties[.characterSize]?.declared, .float(27))
             surface.perform(menuCommand: .undo, sender: nil)
-            XCTAssertEqual(backend.sourceFormat, type == EVDocument.markdownType ? .markdown : .markdownSource)
+            XCTAssertEqual(backend.sourceFormat, .markdown)
             XCTAssertTrue(window.title.contains("Markdown"), window.title)
             XCTAssertEqual(try backend.serializedSource(typeName: type), source)
             XCTAssertFalse(backend.persistenceState.isDirty)
@@ -355,7 +355,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
 
         [ref]: docs/next.md
         """
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             for mode in [UInt32(VIEM_MODE_NORMAL), UInt32(VIEM_MODE_INSERT)] {
                 let backend = EVCoreDocumentBackend(configuration: configuration())
                 try backend.read(source: Data(source.utf8), typeName: type)
@@ -403,7 +403,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     }
 
     func testLinkStyleSelectionAndMixedCharacterStylesUseTheSameInspectorPolicy() throws {
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             let backend = EVCoreDocumentBackend(configuration: configuration())
             let source = "plain [linked](https://example.com) and `code`"
             try backend.read(source: Data(source.utf8), typeName: type)
@@ -433,7 +433,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
 
     func testPendingCharacterChangesFollowWithoutMovingTheInsertCaret() throws {
         let source = "plain [linked](target.md) ~~strike~~ tail"
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             let backend = EVCoreDocumentBackend(configuration: configuration())
             try backend.read(source: Data(source.utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -515,7 +515,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
     }
 
     func testCollapsedCaretModeChangeResumesFollowingTheInsertionStyle() throws {
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             let backend = EVCoreDocumentBackend(configuration: configuration())
             try backend.read(source: Data("plain `code` tail".utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

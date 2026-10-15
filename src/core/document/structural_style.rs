@@ -75,7 +75,7 @@ impl Document {
         range: Range<usize>,
         assignment: Assignment,
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if !matches!(self.format(), Format::Markdown | Format::MarkdownSource) {
+        if self.format() != Format::Markdown {
             return Ok(None);
         }
         self.validate_range(&range)?;

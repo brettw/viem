@@ -73,15 +73,16 @@ final class EVStyleEditorTests: XCTestCase {
         try configuration.selectTheme(named: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let source = Data("# Heading".utf8)
-        try backend.read(source: source, typeName: EVDocument.markdownSourceType)
+        try backend.read(source: source, typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let coordinator = EVStyleEditorCoordinator()
         coordinator.show(document: surface, sender: nil)
         defer { coordinator.close() }
         let window = try XCTUnwrap(coordinator.styleWindow)
-        XCTAssertEqual(window.title, "Theme styles — Markdown — Default")
-        surface.setFormattedView(true)
+        // Markdown with Preview off is literal Code and uses the Code stylesheet.
+        XCTAssertEqual(window.title, "Theme styles — Code — Default")
+        surface.setMarkdownPreview(true)
         XCTAssertEqual(window.title, "Theme styles — Markdown — Default")
         try configuration.createTheme(named: "MyTheme")
         XCTAssertEqual(window.title, "Theme styles — Markdown — MyTheme")
@@ -106,7 +107,7 @@ final class EVStyleEditorTests: XCTestCase {
     func testDocumentPickerKeepsSameNamedStyleAndFallsBackOnlyWhenMissing() throws {
         let configuration = try styleConfiguration()
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("# Heading\n\nBody".utf8), typeName: EVDocument.markdownSourceType)
+        try backend.read(source: Data("# Heading\n\nBody".utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let coordinator = EVStyleEditorCoordinator()
@@ -133,7 +134,7 @@ final class EVStyleEditorTests: XCTestCase {
         let configuration = try styleConfiguration()
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let source = Data("# Heading\n\nBody".utf8)
-        try backend.read(source: source, typeName: EVDocument.markdownSourceType)
+        try backend.read(source: source, typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let coordinator = EVStyleEditorCoordinator()
@@ -181,8 +182,8 @@ final class EVStyleEditorTests: XCTestCase {
             window.undoManager?.redo()
             XCTAssertEqual(editor.inspection.preview.effectiveValues[.characterSize], .float(Float(32 + index)))
         }
-        XCTAssertEqual(backend.sourceFormat, .markdownSource)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), source)
+        XCTAssertEqual(backend.sourceFormat, .markdown)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertFalse(surface.canUndo)
         coordinator.show(document: surface, sender: nil)
@@ -719,7 +720,6 @@ final class EVStyleEditorTests: XCTestCase {
         ])
         return configuration
     }
-
 }
 
 private extension UInt64 {

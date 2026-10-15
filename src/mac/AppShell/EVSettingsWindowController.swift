@@ -272,7 +272,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       markdown.state = editingPreferences.markdownAutodetect ? .on : .off
       markdown.setAccessibilityLabel("Automatically format typed Markdown")
       markdownAutodetectCheckbox = markdown
-      let markdownExplanation = NSTextField(wrappingLabelWithString: "In Markdown Formatted view, completed Markdown spans and block prefixes become formatting. Use Control-Q before a character to keep it literal.")
+      let markdownExplanation = NSTextField(wrappingLabelWithString: "In Markdown Preview, completed Markdown spans and block prefixes become formatting. Use Control-Q before a character to keep it literal.")
       markdownExplanation.textColor = .secondaryLabelColor
       markdownExplanation.font = .systemFont(ofSize: 12)
       let group = section("Typing assistance", views: [checkbox, explanation, markdown, markdownExplanation])

@@ -317,7 +317,7 @@ impl ClipboardFragment {
         let appended_line_break = original.register_kind == 2
             && original.plain_text == format!("{}\n", original.source_plain_text);
         if original.plain_text == original.source_plain_text || appended_line_break {
-            // Source-view yanks use normalized visible text even when the
+            // Literal yanks use normalized visible text even when the
             // fragment's persisted source retains CRLF or CR spelling.
             transformed.plain_text = transformed.source_plain_text.clone();
         }
@@ -382,7 +382,7 @@ impl ClipboardFragment {
 impl Export {
     fn can_insert_rich_source(&self, format: Format, text: &str) -> bool {
         self.is_rich
-            && format.is_wysiwyg()
+            && format.is_markdown()
             && self
                 .pipeline()
                 .is_ok_and(|(source, _, _)| source == format || source == Format::PlainText)
@@ -394,7 +394,6 @@ impl Export {
         let format = match self.source_format {
             1 => Format::PlainText,
             2 => Format::Markdown,
-            5 => Format::MarkdownSource,
             7 => Format::Code,
             _ => return Err(DocumentError::UnsupportedFormatting),
         };
@@ -427,7 +426,7 @@ impl Document {
             .hard_line_snapshot()
             .capture(range.clone())
             .map_err(|_| DocumentError::AmbiguousProjection)?;
-        let is_rich = self.format().is_wysiwyg();
+        let is_rich = self.format().is_markdown();
         // Only a whole-document selection copies the whole source; a part
         // reads and interprets just the source lines around it.
         let source_bytes = if range == (0..self.projection().text_tree().byte_len()) {
@@ -493,7 +492,6 @@ impl Document {
             source_format: match self.format() {
                 Format::PlainText => 1,
                 Format::Markdown => 2,
-                Format::MarkdownSource => 5,
                 Format::Code => 7,
             },
             encoding: match self.encoding() {
@@ -607,7 +605,7 @@ impl Document {
             .map_err(|_| DocumentError::UnsupportedFormatting)?;
         if export.is_rich
             && export.source_format == 1
-            && self.format().is_wysiwyg()
+            && self.format().is_markdown()
             && text == export.source_plain_text
             && export.source_segments.is_empty()
         {
@@ -796,8 +794,32 @@ impl Document {
     }
 
     /// Put complete rich rows through paragraph openings so the new source
-    /// owners never inherit a retained heading, link or code delimiter.
+    /// owners never inherit a retained heading, link or code delimiter. A row
+    /// that cannot join the neighboring owner (a paragraph beside a list or
+    /// table) is put as its own top-level Markdown block instead.
     pub(crate) fn prepare_rich_linewise_put(
+        &self,
+        origin: usize,
+        before: bool,
+        fragment: &ClipboardFragment,
+        count: usize,
+    ) -> Result<Option<(PreparedModelTransaction, usize, usize)>, ModelTransactionError> {
+        let result = self.prepare_rich_linewise_put_in_owner(origin, before, fragment, count);
+        if result.is_err() && count == 1 && self.format() == Format::Markdown {
+            let export: Export = serde_json::from_str(fragment.json())
+                .map_err(|_| DocumentError::UnsupportedFormatting)?;
+            if export.register_kind == 2 && export.is_rich
+                && export.pipeline().is_ok_and(|(format, _, _)| format == Format::Markdown)
+            {
+                if let Ok(Some(put)) = self.prepare_markdown_block_put(origin, before, &export.source_text, &export.source_plain_text) {
+                    return Ok(Some(put));
+                }
+            }
+        }
+        result
+    }
+
+    fn prepare_rich_linewise_put_in_owner(
         &self,
         origin: usize,
         before: bool,
@@ -1894,28 +1916,6 @@ mod tests {
     }
 
     #[test]
-    fn source_mode_exports_unformatted_original_source_spelling() {
-        for format in [Format::MarkdownSource] {
-            let source = b"**one**\r\n\r\n<p>two</p>";
-            let original = Document::from_bytes_with_file_format(
-                source.to_vec(),
-                Encoding::Utf8,
-                format,
-                FileFormat::Dos,
-            )
-            .unwrap();
-            let fragment = original
-                .clipboard_fragment(0..original.text().len())
-                .unwrap();
-            let value: Export = serde_json::from_str(fragment.json()).unwrap();
-            assert!(!value.is_rich);
-            assert_eq!(value.plain_text, std::str::from_utf8(source).unwrap());
-            assert_eq!(value.source_bytes, source);
-            assert!(value.character_runs.is_empty());
-        }
-    }
-
-    #[test]
     fn passive_html_import_retains_inline_styles_without_html_document_mode() {
         let (fragment, text) = ClipboardFragment::from_html_utf8(
             b"<style>p{color:green}</style><script>bad()</script><p><b>A&amp;B</b> <span style='color:#ff0000'>red</span></p>",
@@ -2023,7 +2023,7 @@ mod tests {
 
 impl Document {
     pub fn table_clipboard_fragment(&self,table:u64,rows:Range<usize>,columns:Range<usize>)->Result<(ClipboardFragment,String),DocumentError>{
-        if !self.format().is_wysiwyg(){return Err(DocumentError::UnsupportedFormatting);}
+        if !self.format().is_markdown(){return Err(DocumentError::UnsupportedFormatting);}
         let table=self.projection().tables().iter().find(|value|value.id==table).ok_or(DocumentError::UnsupportedTableEdit("The table changed."))?;
         if rows.is_empty()||columns.is_empty()||rows.end>table.rows.len()||columns.end>table.columns.len(){return Err(DocumentError::UnsupportedTableEdit("The cell selection changed."));}
         let mut cells=Vec::new();let mut texts=Vec::new();

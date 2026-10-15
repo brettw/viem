@@ -433,7 +433,6 @@ fn guarded_structural_edits_stay_regional_and_restore_exact_source() {
         ("HTML split", "<div>\n<p>EDITME html words</p>\n</div>\n\n", Format::Markdown, 3, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
         ("after list", "- first item\n- second item\n\nEDITME paragraph after list\n\n", Format::Markdown, 3, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
         ("heading start", "## EDITME heading words\n\nFollowing paragraph\n\n", Format::Markdown, 0, vec![InputEvent::key('i'), InputEvent::Key(Key::Enter)]),
-        ("Source dip", "EDITME source paragraph words\n\nFollowing paragraph\n\n", Format::MarkdownSource, 3, vec![InputEvent::key('d'), InputEvent::key('i'), InputEvent::key('p')]),
     ] {
         for blocks in [20, 400] {
             let source = document(blocks, middle);
@@ -482,8 +481,6 @@ fn guarded_structural_edits_stay_regional_and_restore_exact_source() {
 #[test]
 fn structural_reprojection_keeps_separator_pairing_and_empty_owner_carets() {
     for (source, format, at, keys) in [
-        ("a\n \n \n \nb", Format::MarkdownSource, 0, vec![InputEvent::Key(Key::Delete), InputEvent::Key(Key::Delete)]),
-        ("a\n\t\n \n\n\nb", Format::MarkdownSource, 0, vec![InputEvent::Key(Key::Delete), InputEvent::Key(Key::Delete)]),
         ("```\n\n\n```", Format::Markdown, 1, vec![InputEvent::Key(Key::Backspace), InputEvent::Text("x".into())]),
         ("```\n\n\n```", Format::Markdown, 0, vec![InputEvent::Key(Key::Delete), InputEvent::Text("x".into())]),
         ("```\n\n\n```", Format::Markdown, 1, vec![InputEvent::Key(Key::Backspace), InputEvent::Key(Key::Backspace), InputEvent::Text("x".into())]),

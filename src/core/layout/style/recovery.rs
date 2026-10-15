@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn missing_automatic_style_recovers_structure_without_changing_source_or_styles() {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let source =
                 b"# Heading\n\n> - [link](https://example.com) with **bold**\n\n```rs\ncode\n```\n"
                     .to_vec();
@@ -132,20 +132,9 @@ mod tests {
             let projection = damaged_projection(&document);
             assert!(DocumentLayoutStyles::resolve(&projection).is_err());
             let region = 0..projection.text_tree().byte_len();
-            let fallback = DocumentLayoutStyles::resolve_region_for_presentation(
-                &projection,
-                region.clone(),
-                false,
-                &[],
-                format,
-            )
+            let fallback = DocumentLayoutStyles::resolve_region_for_presentation(&projection, region.clone(), &[], format)
             .unwrap();
-            let expected = DocumentLayoutStyles::resolve_region_with_search(
-                document.projection(),
-                region,
-                false,
-                &[],
-            )
+            let expected = DocumentLayoutStyles::resolve_region_with_search(document.projection(), region, &[])
             .unwrap();
             assert!(fallback
                 .recovery_diagnostic
@@ -175,23 +164,11 @@ mod tests {
         let document =
             Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
         let projection = damaged_projection(&document);
-        let fallback = DocumentLayoutStyles::resolve_region_for_presentation(
-            &projection,
-            0..4,
-            false,
-            &[],
-            Format::Markdown,
-        )
+        let fallback = DocumentLayoutStyles::resolve_region_for_presentation(&projection, 0..4, &[], Format::Markdown)
         .unwrap();
         assert_eq!(fallback.paragraphs.len(), 1);
         assert_eq!(fallback.recovery_diagnostic.unwrap().text_range, 0..4);
-        let corrected = DocumentLayoutStyles::resolve_region_for_presentation(
-            document.projection(),
-            0..4,
-            false,
-            &[],
-            Format::Markdown,
-        )
+        let corrected = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), 0..4, &[], Format::Markdown)
         .unwrap();
         assert!(corrected.recovery_diagnostic.is_none());
     }
@@ -206,13 +183,7 @@ mod tests {
         .unwrap();
         let projection = damaged_projection(&document);
         for region in [1..2, 0..99] {
-            assert!(DocumentLayoutStyles::resolve_region_for_presentation(
-                &projection,
-                region,
-                false,
-                &[],
-                Format::Markdown
-            )
+            assert!(DocumentLayoutStyles::resolve_region_for_presentation(&projection, region, &[], Format::Markdown)
             .is_err());
         }
     }

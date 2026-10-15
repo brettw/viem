@@ -21,7 +21,7 @@ fn defaults() -> Vec<u8> {
 #[test]
 fn image_only_paragraphs_use_image_style_in_both_views_without_rewriting_source() {
     let source = "![alone](local.png)\n\nProse ![inline](remote.png) text\n\n# ![heading](a.png)\n\n- ![list](a.png)\n\n![multiline\nalt](a.png)";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc = document(source, format);
         let styles = doc.projection().blocks().iter().map(|block|block.style.0.as_str()).collect::<Vec<_>>();
         assert_eq!(styles, ["Image","Paragraph","Heading1","BulletedList1","Image"], "{format:?}");
@@ -47,7 +47,7 @@ fn image_only_paragraphs_use_image_style_in_both_views_without_rewriting_source(
 fn link_and_emphasis_wrappers_keep_image_paragraph_appearance_in_both_views() {
     for source in ["[![alt](a.png)](https://example.invalid)","**![alt](a.png)**",
         "~~![alt](a.png)~~", "![one](a.png) ![two](b.png)"] {
-        for format in [Format::Markdown,Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc=document(source,format);
             assert_eq!(doc.projection().blocks()[0].style.0,"Image","{source} {format:?}");
             assert_eq!(doc.source_bytes(),source.as_bytes());
@@ -58,7 +58,7 @@ fn link_and_emphasis_wrappers_keep_image_paragraph_appearance_in_both_views() {
 #[test]
 fn image_font_and_paint_cover_only_objects_and_complete_source_syntax() {
     let source="Before [![alt](image.png)](https://example.invalid) after\n\n![alone](image.png)";
-    for format in [Format::Markdown,Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc=document(source,format);
         doc.initialize_style_defaults(&defaults()).unwrap();
         let projection=doc.projection();
@@ -90,7 +90,7 @@ fn image_font_and_paint_cover_only_objects_and_complete_source_syntax() {
 
 #[test]
 fn image_style_configuration_tracks_inline_dependencies_and_undo_without_source_changes() {
-    for format in [Format::Markdown,Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source="Before ![inline](a.png) after\n\n![alone](b.png)\n\nUnaffected";
         let mut doc=document(source,format);
         let images=doc.projection().inline_images_for_region(&(0..doc.text().len()));
@@ -131,7 +131,7 @@ fn configured_image_style_does_not_leak_into_replacement_prose() {
 #[test]
 fn live_image_border_changes_refresh_cached_boxes_in_both_views() {
     let source="Before\n\n![image](a.png)\n\nAfter";
-    for format in [Format::Markdown,Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut doc=document(source,format);
         doc.initialize_style_defaults(&defaults()).unwrap();
         let mut core=Core::new(doc);

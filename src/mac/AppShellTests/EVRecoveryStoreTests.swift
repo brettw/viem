@@ -13,7 +13,7 @@ final class EVRecoveryStoreTests: XCTestCase {
         return (directory, target)
     }
     private func snapshot(_ text: String, revision: UInt64 = 1) -> EVRecoverySnapshot {
-        EVRecoverySnapshot(source: Data(text.utf8), format: .markdownSource, encoding: 2, fileFormat: 3, documentID: 19, documentRevision: revision)
+        EVRecoverySnapshot(source: Data(text.utf8), format: .code, encoding: 2, fileFormat: 3, documentID: 19, documentRevision: revision)
     }
     private func staleRecord(for target: URL) -> EVRecoveryRecord {
         XCTAssertEqual(kill(Int32.max, 0), -1)

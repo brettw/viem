@@ -73,7 +73,7 @@ final class EVImageTests: XCTestCase {
 
     func testImageFolderButtonUpdatesOnlyItsDraftAndApplyPreservesTitleAndUndoInBothViews() throws {
         let source = "before ![keep](<old.png> \"title\") after"
-        for type in [EVDocument.markdownSourceType, EVDocument.markdownType] {
+        for type in [EVDocument.markdownType] {
             let (backend, surface, window) = try editor(source, type: type)
             defer { surface.imagePopover.close(); window.close() }
             let document = URL(fileURLWithPath: "/tmp/viem-image-picker/docs/document.md")
@@ -201,7 +201,7 @@ final class EVImageTests: XCTestCase {
     }
 
     func testInsertEditRemoveAndUndoPreserveImageSourceInBothViews() throws {
-        for type in [EVDocument.markdownSourceType, EVDocument.markdownType] {
+        for type in [EVDocument.markdownType] {
             let (backend, surface, window) = try editor("before  after", type: type)
             defer { surface.imagePopover.close(); window.close() }
             surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
@@ -217,7 +217,7 @@ final class EVImageTests: XCTestCase {
             XCTAssertEqual(String(decoding: inserted, as: UTF8.self), "before ![](<local.png>) after")
             surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
             popup.refresh(); XCTAssertTrue(popup.isOpen)
-            XCTAssertEqual(popup.reloadButton.isHidden, type == EVDocument.markdownSourceType)
+            XCTAssertFalse(popup.reloadButton.isHidden)
             popup.editButton.performClick(nil)
             popup.destinationField.stringValue = "https://example.invalid/new.png"
             popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
@@ -327,7 +327,7 @@ final class EVImageTests: XCTestCase {
 
     func testRemoteHTMLImageUsesExistingPopupAndPreservesAttributes() throws {
         let source = "before <img src='https://example.invalid/photo.png' width='240' height='120' alt='A picture' title='Original'> after"
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             let (backend, surface, window) = try editor(source, type: type)
             defer { surface.imagePopover.close(); window.close() }
             if type == EVDocument.markdownType {
@@ -339,7 +339,7 @@ final class EVImageTests: XCTestCase {
             surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
             surface.imagePopover.refresh()
             XCTAssertTrue(surface.imagePopover.isOpen)
-            XCTAssertEqual(surface.imagePopover.reloadButton.isHidden, type == EVDocument.markdownSourceType)
+            XCTAssertFalse(surface.imagePopover.reloadButton.isHidden)
             XCTAssertFalse(surface.imagePopover.reloadButton.isEnabled)
             var opened: [URL] = []
             surface.editorView.openLinkURL = { url, completion in opened.append(url); completion(nil) }
@@ -429,7 +429,7 @@ final class EVImageTests: XCTestCase {
     }
 
     func testImageParagraphStyleControlsNativeLabelAndSourceFontsAndBoxes() throws {
-        for type in [EVDocument.markdownType, EVDocument.markdownSourceType] {
+        for type in [EVDocument.markdownType] {
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-image-style-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: directory) }
             let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
@@ -540,7 +540,7 @@ final class EVImageTests: XCTestCase {
     }
 
     func testImageBesideCombiningTextKeepsAtomicGeometryAndSourceModeLiteral() throws {
-        for type in [EVDocument.markdownSourceType, EVDocument.markdownType] {
+        for type in [EVDocument.markdownType] {
             let source = "![alt](https://example.invalid/a.png)\u{0301}after"
             let (backend, surface, window) = try editor(source, type: type)
             defer { surface.imagePopover.close(); window.close() }

@@ -1962,7 +1962,6 @@ pub struct ViewLayout {
     search_matches: Option<(DocumentId, Revision, Vec<Range<usize>>)>,
     whitespace: WhitespaceConfiguration,
     whitespace_bounds: std::cell::RefCell<super::whitespace::WhitespaceBoundsCache>,
-    paragraph_flow: bool,
     width: f32,
     height: f32,
     viewport_left: f32,
@@ -2020,7 +2019,6 @@ impl ViewLayout {
             search_matches: None,
             whitespace: WhitespaceConfiguration::default(),
             whitespace_bounds: Default::default(),
-            paragraph_flow: false,
             width: finite_nonnegative(width),
             height: finite_nonnegative(height),
             viewport_left: 0.0,
@@ -2183,7 +2181,7 @@ impl ViewLayout {
     /// restore options changed while the prompt was open. Ignore only scroll,
     /// search decorations and disposable cache/job state in this comparison.
     pub(crate) fn same_presentation_configuration(&self, other: &Self) -> bool {
-        self.whitespace == other.whitespace && self.paragraph_flow == other.paragraph_flow
+        self.whitespace == other.whitespace
             && self.width == other.width && self.height == other.height && self.insets == other.insets
             && self.wrap == other.wrap && self.scale == other.scale
             && self.default_style == other.default_style && self.default_style_is_override == other.default_style_is_override
@@ -2259,17 +2257,6 @@ impl ViewLayout {
         }
         if self.wrap != wrap {
             self.wrap = wrap;
-            self.bump_configuration(true);
-        }
-    }
-
-    pub fn paragraph_flow(&self) -> bool {
-        self.paragraph_flow
-    }
-
-    pub fn set_paragraph_flow(&mut self, enabled: bool) {
-        if self.paragraph_flow != enabled {
-            self.paragraph_flow = enabled;
             self.bump_configuration(true);
         }
     }
@@ -4055,25 +4042,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         document: &Document,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
-        let mut document_styles = DocumentLayoutStyles::resolve_region_for_presentation(
-            document.projection(), 0..document.projection().text_tree().byte_len(), view.paragraph_flow(), view.search_matches(document.id(), document.revision()), document.format(),
-        )?;
-        document_styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
-        let hard_lines = (0..document.projection().presentation_line_count(view.paragraph_flow()))
-            .filter_map(|index| document.projection().presentation_line_range(index, view.paragraph_flow()))
+        let document_styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), 0..document.projection().text_tree().byte_len(), view.search_matches(document.id(), document.revision()), document.format())?;
+        let hard_lines = (0..document.projection().presentation_line_count())
+            .filter_map(|index| document.projection().presentation_line_range(index))
             .collect::<Vec<_>>();
-        let flowed;
-        let text = if view.paragraph_flow() {
-            flowed = super::jobs::flow_text(document.text().to_owned(), 0, &hard_lines);
-            super::jobs::resolve_flow_paragraph_styles(document.projection(), &mut document_styles, &hard_lines)?;
-            &flowed
-        } else {
-            document.text()
-        };
         self.relayout_text_with_document_styles_and_hard_lines(
             document.id(),
             document.revision(),
-            text,
+            document.text(),
             &hard_lines,
             view,
             Some(document_styles),
@@ -5080,7 +5056,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             return Err(LayoutError::InvalidStyle.into());
         }
 
-        validate_hard_line_ranges(text, hard_lines, view.paragraph_flow(), control)?;
+        validate_hard_line_ranges(text, hard_lines, control)?;
         let measurement_environment_id = self.provider.measurement_environment_id();
         let metrics_generation = self.provider.metrics_generation();
         let mut line_paragraphs = Vec::with_capacity(hard_lines.len());
@@ -6622,16 +6598,14 @@ fn resolve_flow_line_paragraph(
     let Some((table, row)) = context.row(line) else {
         return Ok(paragraph);
     };
-    let (first_cell, last_cell, row_count) = if context.source {
-        let cells = &table.source_rows[row].cells;
-        (cells.first(), cells.last(), table.source_rows.len())
-    } else {
+    let (first_cell, last_cell, row_count) = {
         let cells = &table.rows[row].cells;
         (
             cells.first().map(|cell| &cell.range),
             cells.last().map(|cell| &cell.range),
             table.rows.len(),
         )
+    
     };
     if let Some(first) = first_cell {
         paragraph = resolve_line_paragraph(first, paragraphs, fallback_style);
@@ -7187,7 +7161,6 @@ fn boundaries_in_ordered_ranges(
 fn validate_hard_line_ranges(
     text: &str,
     lines: &[Range<usize>],
-    paragraph_flow: bool,
     control: &LayoutRunControl<'_>,
 ) -> Result<(), LayoutComputationError> {
     control.checkpoint()?;
@@ -7217,8 +7190,7 @@ fn validate_hard_line_ranges(
         let separator = pair[0].end..pair[1].start;
         if separator.start > separator.end
             || separator.end > text.len()
-            || !(text.get(separator.clone()) == Some("\n")
-                || paragraph_flow && separator.is_empty())
+            || text.get(separator.clone()) != Some("\n")
         {
             return Err(LayoutError::MalformedMeasurement(
                 "adjacent hard lines lack one explicit U+000A break item",
@@ -7902,33 +7874,6 @@ mod tests {
         assert!((snapshot.rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
         assert!((snapshot.rows[1].ascent - 14.0 * 0.78).abs() < 0.001);
         assert_eq!(snapshot.rows[0].clusters[0].fallback_font.as_ref(), crate::document::DEFAULT_FONT_FAMILY);
-    }
-
-    #[test]
-    fn markdown_source_marker_edits_invalidate_heading_and_list_layout() {
-        let mut document = Document::from_bytes(
-            "body text\n".repeat(10_000).into_bytes(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
-        let mut view = ViewLayout::new(500.0, 200.0);
-        engine.relayout(&document, &mut view).unwrap();
-        assert!((view.snapshot().unwrap().rows[0].ascent - 14.0 * 0.78).abs() < 0.001);
-        document.insert(0, "# ").unwrap();
-        engine.relayout(&document, &mut view).unwrap();
-        assert!((view.snapshot().unwrap().rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
-        assert!((view.snapshot().unwrap().rows[1].ascent - 14.0 * 0.78).abs() < 0.001);
-        document
-            .set_list_style(0..0, Some(crate::document::ListStyle::Bullet))
-            .unwrap();
-        engine.relayout(&document, &mut view).unwrap();
-        assert!((view.snapshot().unwrap().rows[0].ascent - 24.0 * 0.78).abs() < 0.001);
-        assert_eq!(
-            document.projection().blocks()[0].style,
-            crate::document::StyleId::from("Heading1")
-        );
     }
 
     #[test]

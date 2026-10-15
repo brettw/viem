@@ -82,7 +82,7 @@ fn assert_split_fences(document: &Document) {
 
 #[test]
 fn a_quote_on_only_the_opening_fence_ends_before_unquoted_body() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for marker in [">", "> ", "> > "] {
             for ending in ["\n", "\r\n"] {
                 let source = format!("{marker}{ORIGINAL}").replace('\n', ending);
@@ -94,31 +94,8 @@ fn a_quote_on_only_the_opening_fence_ends_before_unquoted_body() {
 }
 
 #[test]
-fn typing_a_quote_before_a_fence_matches_reopening_and_exact_history() {
-    let document = Document::from_bytes(ORIGINAL.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-    let mut core = Core::new(document);
-    let view = core.add_view(MockTextMeasurementProvider::new(), 700., 500.);
-    core.handle(view, CoreEvent::PlaceCursor {
-        document_revision: core.document().revision(), text_offset: 0,
-        affinity: BoundaryAffinity::Downstream, extend_selection: false,
-    }).unwrap();
-    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('i')))).unwrap();
-    core.handle_with_layout(view, CoreEvent::Input(InputEvent::text(">"))).unwrap();
-    assert_eq!(core.document().source_bytes(), format!(">{ORIGINAL}").as_bytes());
-    assert_split_fences(core.document());
-    for format in [Format::Markdown, Format::MarkdownSource] {
-        assert_split_fences(&Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, format).unwrap());
-    }
-    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
-    assert_eq!(core.document().source_bytes(), ORIGINAL.as_bytes());
-    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
-    assert_eq!(core.document().source_bytes(), format!(">{ORIGINAL}").as_bytes());
-    assert_split_fences(core.document());
-}
-
-#[test]
 fn an_indented_block_after_an_unclosed_quoted_fence_has_its_own_owner() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = ">```\n    code\n```\n# literal heading";
         let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let at = document.text().find("code").unwrap();
@@ -134,7 +111,7 @@ fn an_indented_block_after_an_unclosed_quoted_fence_has_its_own_owner() {
 
 #[test]
 fn quoting_a_fence_preserves_trailing_blank_code_lines() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for blank_lines in 0..=2 {
             for ending in ["\n", "\r\n"] {
                 let body = format!("code{}", "\n".repeat(blank_lines));

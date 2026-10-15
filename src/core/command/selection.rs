@@ -637,7 +637,7 @@ impl CommandInterpreter {
         }
         if self.is_native_selection() && self.mode != Mode::VisualBlock
             && matches!(event, InputEvent::Key(Key::Tab | Key::BackTab))
-            && document.format().has_structural_lists()
+            && document.format().is_markdown()
         {
             let range = self.visual_extent(document).range;
             let unindent = matches!(event, InputEvent::Key(Key::BackTab));

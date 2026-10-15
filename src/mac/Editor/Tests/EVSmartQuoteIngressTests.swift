@@ -48,8 +48,6 @@ final class EVSmartQuoteIngressTests: XCTestCase {
             ("X", EVDocument.codeType),
             ("`X`", EVDocument.markdownType),
             ("```\nX\n```", EVDocument.markdownType),
-            ("`X`", EVDocument.markdownSourceType),
-            ("```\nX\n```", EVDocument.markdownSourceType),
         ] {
             for route in InputRoute.allCases {
                 let (backend, surface, session) = try makeSurface(source, type: type)
@@ -93,7 +91,6 @@ final class EVSmartQuoteIngressTests: XCTestCase {
             ("X", EVDocument.plainTextType, "“word”"),
             ("X", EVDocument.codeType, "\"word\""),
             ("`X`", EVDocument.markdownType, "\"word\""),
-            ("`X`", EVDocument.markdownSourceType, "\"word\""),
         ] {
             let (backend, surface, session) = try makeSurface(source, type: type)
             let original = try backend.formattedText()

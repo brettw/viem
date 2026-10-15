@@ -123,8 +123,8 @@ internal static class FrontendSmokeTests
     {
         var checks = new List<string>(UiChecks);
         void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException(name); checks.Add(name); }
-        Check(CoreDocument.FormatForPath("document.md") == VIEM_FORMAT_MARKDOWN_SOURCE
-            && CoreDocument.FormatForPath("document.markdown") == VIEM_FORMAT_MARKDOWN_SOURCE
+        Check(CoreDocument.FormatForPath("document.md") == VIEM_FORMAT_MARKDOWN
+            && CoreDocument.FormatForPath("document.markdown") == VIEM_FORMAT_MARKDOWN
             && CoreDocument.FormatForPath("document.html") == VIEM_FORMAT_CODE
             && CoreDocument.FormatForPath("document.htm") == VIEM_FORMAT_CODE
             && CoreDocument.FormatForPath("document.XHTML") == VIEM_FORMAT_CODE,
@@ -257,7 +257,7 @@ internal static class FrontendSmokeTests
             Check(layout.Clusters.Any(c => (c.bidi_level & 1) != 0), "DirectWrite bidi levels");
             Check(layout.PaintRuns.Length > 0 || view.Styles().Styles.Length > 1, "stylesheet export");
             view.Zoom(1.25f); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "zoom is presentation-only");
-            view.SetMarkdownSource(true); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "source-view switch preserves source bytes");
+            view.SetMarkdownPreview(false); Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Markdown Preview switch preserves source bytes");
         });
         Scenario("# Heading\n\nHello **office** and مرحبا 👩‍💻.\n", 2, (doc, view) => {
             var layout = view.Layout();

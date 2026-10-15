@@ -19,8 +19,7 @@ internal sealed partial class StyleWindow
     private void CreateThemeSession(uint? requestedFormat = null)
     {
         themeSessionNeedsRefresh = true;
-        uint sourceFormat = requestedFormat ?? styleDocument.State.format;
-        uint format = sourceFormat == VIEM_FORMAT_MARKDOWN_SOURCE ? VIEM_FORMAT_MARKDOWN : sourceFormat;
+        uint format = requestedFormat ?? styleDocument.State.format;
         var document = new CoreDocument([], format: format);
         CoreView? next = null;
         try

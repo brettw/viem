@@ -44,7 +44,6 @@ mod markdown_syntax;
 mod markdown_code;
 mod markdown_indented_code;
 mod markdown_quotes;
-mod markdown_source_edit;
 mod paragraph_flow;
 mod rich_text;
 pub(crate) use transaction::resolved_inline_boolean;
@@ -690,9 +689,9 @@ pub(crate) struct LayoutChangeRecord {
 pub(crate) struct LocalFormattedChange {
     pub(crate) old: Range<usize>,
     pub(crate) new: Range<usize>,
-    /// Presentation line counts before and after, for hard lines and flow lines.
-    pub(crate) old_line_counts: [usize; 2],
-    pub(crate) new_line_counts: [usize; 2],
+    /// Presentation line counts before and after.
+    pub(crate) old_line_count: usize,
+    pub(crate) new_line_count: usize,
 }
 
 const RETAINED_LAYOUT_CHANGES: usize = 16;
@@ -1632,9 +1631,6 @@ impl Document {
     /// Continue the current list; a second Enter on an empty item ends it.
     pub(crate) fn list_enter_edit(&self, at: usize) -> Result<Option<TextEdit>, DocumentError> {
         self.validate_range(&(at..at))?;
-        if let Some(edit) = self.markdown_source_list_edit(at, at, None)? {
-            return Ok(Some(edit));
-        }
         if let Some(edit) = self.markdown_quote_enter_edit(at)? {
             return Ok(Some(edit));
         }
@@ -1651,7 +1647,7 @@ impl Document {
             .text_tree()
             .slice(line.clone())
             .map_err(DocumentError::FormattedTextStorage)?;
-        if self.format().is_wysiwyg() {
+        if self.format().is_markdown() {
             let block = self
                 .projection()
                 .blocks_for_region(&(at..at))
@@ -1679,44 +1675,25 @@ impl Document {
             // Enter inserts only a logical item boundary into editable text.
             return Ok(Some(TextEdit::new(at..at, "\n")));
         }
-        if self.markdown_source_code_enter(at)? {
-            return Ok(None);
-        }
-        if let Some(edit) = self.markdown_source_empty_enter_edit(at)? {
-            return Ok(Some(edit));
-        }
         let (prefix_len, kind) = projection::markdown_block_prefix(&text, 0, text.len());
         let BlockKind::ListItem {
             ordered, ordinal, ..
         } = kind
         else {
-            return Ok((self.format() == Format::MarkdownSource)
-                .then(|| TextEdit::new(at..at, "\n")));
+            return Ok(None);
         };
         if at < line.start + prefix_len {
             return Ok(None);
         }
         let indent = text.bytes().take_while(|byte| *byte == b' ').count();
         if text[prefix_len..].trim().is_empty() {
-            return Ok(Some(TextEdit::new(
-                line.clone(),
-                if self.format() == Format::MarkdownSource {
-                    String::new()
-                } else {
-                    " ".repeat(indent)
-                },
-            )));
+            return Ok(Some(TextEdit::new(line.clone(), " ".repeat(indent))));
         }
         let marker = if ordered {
             let next = ordinal
                 .checked_add(1)
                 .ok_or(DocumentError::VerificationFailed)?;
-            if self.format().is_markdown() {
-                let digits = text[indent..].bytes().take_while(u8::is_ascii_digit).count();
-                format!("{}{next}{}", &text[..indent], &text[indent + digits..prefix_len])
-            } else {
-                format!("{}{next}. ", " ".repeat(indent))
-            }
+            format!("{}{next}. ", " ".repeat(indent))
         } else {
             text[..prefix_len].to_owned()
         };
@@ -2111,10 +2088,11 @@ impl Document {
         })
     }
 
-    /// Switch between Markdown source and formatted presentation as one undo unit.
-    pub fn set_markdown_source(&mut self, source: bool) -> Result<(), DocumentError> {
-        self.execute_compat_request(ModelRequest::SetMarkdownSource {
-            document: self.id, revision: self.revision(), source,
+    /// Reproject the same source in another format (for example Markdown
+    /// Preview and Code) as one undo unit, without changing its bytes.
+    pub fn set_view_format(&mut self, target: Format) -> Result<(), DocumentError> {
+        self.execute_compat_request(ModelRequest::SetViewFormat {
+            document: self.id, revision: self.revision(), target,
         })
     }
 
@@ -2162,21 +2140,6 @@ impl Document {
     pub fn addressable_hard_line_count(&self) -> usize {
         if self.format().is_literal() {
             self.physical_source_line_number_count()
-        } else if self.format().is_source_view() {
-            let count = self.line_count();
-            let lines = self.hard_line_snapshot();
-            let terminal = lines.line(count.saturating_sub(1));
-            // Source paragraph separators can combine several physical endings
-            // into one displayed break. Only a single final ending is trivia;
-            // the boundary of an authored empty paragraph remains addressable.
-            let continuation = count > 1
-                && terminal.is_some_and(|line| line.content_range().is_empty())
-                && lines.line(count - 2).and_then(|line| line.separator_range())
-                    .and_then(|range| self.projection().source_range(range))
-                    .is_some_and(|source| !source.is_empty() && source.end == self.source_byte_len()
-                        && self.state().source_hard_lines.line_at_offset(source.start)
-                            == self.state().source_hard_lines.line_at_offset(source.end - 1));
-            if continuation { count.saturating_sub(1).max(1) } else { count }
         } else {
             self.line_count()
         }
@@ -2539,7 +2502,6 @@ mod tests {
             (super::Format::PlainText, "Text"),
             (super::Format::Code, "Text"),
             (super::Format::Markdown, "Text"),
-            (super::Format::MarkdownSource, "Text"),
 
         ] {
             let mut document = super::Document::from_bytes(
@@ -3127,70 +3089,8 @@ mod tests {
     }
 
     #[test]
-    fn markdown_source_keeps_syntax_visible_and_reparses_marker_edits() {
-        let bytes = b"## Heading\r\n__bold__ and \\*literal\\*".to_vec();
-        let mut document =
-            Document::from_bytes(bytes.clone(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-        assert_eq!(document.text(), "## Heading\n__bold__ and \\*literal\\*");
-        assert_eq!(document.source_bytes(), bytes);
-        assert_eq!(
-            document.projection().blocks()[0].kind,
-            BlockKind::Heading(2)
-        );
-        assert!(document
-            .projection()
-            .style_spans()
-            .iter()
-            .any(|span| span.range == (11..19)
-                && span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
-        document.replace(11..13, "**").unwrap();
-        assert!(!document.projection().style_spans().iter().any(
-            |span| span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)
-        ));
-        document.replace(17..19, "**").unwrap();
-        assert!(document
-            .projection()
-            .style_spans()
-            .iter()
-            .any(|span| span.range == (11..19)
-                && span.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
-        assert!(document.undo());
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), bytes);
-    }
-
-    #[test]
-    fn markdown_source_format_actions_edit_markers_atomically() {
-        for encoding in [
-            Encoding::Utf8,
-            Encoding::Latin1,
-            Encoding::Utf16Le,
-            Encoding::Utf16Be,
-        ] {
-            let bytes = encoding.encode_fragment("alpha beta").unwrap();
-            let mut document =
-                Document::from_bytes(bytes.clone(), encoding, Format::MarkdownSource).unwrap();
-            document
-                .set_semantic_style(0..5, SemanticInlineStyle::Strong, true)
-                .unwrap();
-            assert_eq!(document.text(), "**alpha** beta");
-            assert_eq!(document.projection().style_spans()[0].range, 0..9);
-            document
-                .set_semantic_style(2..7, SemanticInlineStyle::Strong, false)
-                .unwrap();
-            assert_eq!(document.text(), "alpha beta");
-            assert!(document.undo());
-            assert_eq!(document.text(), "**alpha** beta");
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), bytes);
-            assert!(document.redo());
-            assert_eq!(document.text(), "**alpha** beta");
-        }
-    }
-
-    #[test]
     fn list_actions_change_all_selected_paragraphs_and_undo_exact_source() {
-        for format in [Format::PlainText, Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::PlainText, Format::Markdown] {
             let bytes = if format == Format::Markdown {
                 b"alpha\r\n\r\nbeta\r\n\r\nthird".to_vec()
             } else {
@@ -3295,30 +3195,6 @@ mod tests {
             document.source_bytes(),
             b"- **bold**\n\n  1. child\n\n- # Heading"
         );
-    }
-
-    #[test]
-    fn markdown_source_marker_change_in_large_document_projects_only_neighboring_lines() {
-        let bytes = "unchanged line\n".repeat(20_000).into_bytes();
-        let mut document =
-            Document::from_bytes(bytes, Encoding::Utf8, Format::MarkdownSource).unwrap();
-        let prepared = document
-            .prepare_model_request(ModelRequest::ApplyTextEdits {
-                document: document.id(),
-                revision: document.revision(),
-                edits: vec![TextEdit::new(0..0, "# ")],
-            })
-            .unwrap();
-        assert_eq!(
-            prepared.summary().projection_work().projected_hard_lines(),
-            2
-        );
-        document.commit_model_transaction(prepared).unwrap();
-        assert_eq!(
-            document.projection().blocks()[0].kind,
-            BlockKind::Heading(1)
-        );
-        assert_eq!(document.projection().blocks()[1].kind, BlockKind::Paragraph);
     }
 
     #[test]

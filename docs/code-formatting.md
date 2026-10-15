@@ -2,7 +2,7 @@
 
 `gq` and `gw` reflow selected hard lines in Text and Code. `textwidth` defaults
 to 80 logical columns; changing it does not enable automatic wrapping. Markdown
-Source and WYSIWYG reflow remain unsupported. Fonts and soft wrapping do not
+Preview reflow remains unsupported. Fonts and soft wrapping do not
 change reflow boundaries or widths.
 
 Code buffers additionally use Vim's `formatoptions`, `comments`, and

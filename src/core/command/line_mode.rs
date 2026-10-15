@@ -224,17 +224,41 @@ impl CommandInterpreter {
     pub fn line_mode(&self) -> LineMode {
         self.line_mode
     }
+    /// Explicitly choose this view's line mode. Choosing its format's default
+    /// keeps the view following that default across format changes.
     pub fn set_line_mode(
         &mut self,
-        _document: &Document,
+        document: &Document,
         mode: LineMode,
     ) -> Result<(), DocumentError> {
+        self.line_mode_explicit = mode != LineMode::default_for(document.format());
+        self.install_line_mode(mode);
+        Ok(())
+    }
+
+    /// Adopt the default line mode of a newly selected format unless the view
+    /// explicitly chose another mode.
+    pub(crate) fn follow_format_line_mode(&mut self, format: crate::document::Format) {
+        let mode = LineMode::default_for(format);
+        if !self.line_mode_explicit && self.line_mode != mode {
+            self.install_line_mode(mode);
+        }
+    }
+
+    fn install_line_mode(&mut self, mode: LineMode) {
         self.line_mode = mode;
         self.physical_cursor = None;
         self.clear_pending();
         self.preferred_column = None;
         self.desired_x = None;
-        Ok(())
+    }
+}
+
+impl LineMode {
+    /// Code counts physical source lines; formatted and plain text count
+    /// displayed rows.
+    pub const fn default_for(format: crate::document::Format) -> Self {
+        if format.is_code() { Self::PhysicalSource } else { Self::Visual }
     }
 }
 
@@ -932,7 +956,7 @@ impl CommandInterpreter {
         }
         if operator == Operator::Yank && register == Some('*') && self.clipboard_copy_as_seen {
             let value = if let Some(source) =
-                extent.source.as_ref().filter(|_| !document.format().is_wysiwyg())
+                extent.source.as_ref().filter(|_| !document.format().is_markdown())
             {
                 let bytes = document.source_bytes();
                 RegisterValue::characterwise(document.encoding().decode(&bytes[source.clone()])?.text)
@@ -1115,20 +1139,6 @@ impl CommandInterpreter {
                 document.apply_edits(edits)?;
             } else if operator == Operator::Delete && extent.whole {
                 document.delete_visual_text(range.clone())?;
-            } else if matches!(operator, Operator::Change | Operator::Delete) && document.format().is_source_view() {
-                let source = document.projection().source_insertion_point(range.start, true)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let at = document.source_point(source).map_err(|_| DocumentError::AmbiguousProjection)?;
-                let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
-                    document: document.id(), revision: document.revision(),
-                    edits: vec![TextEdit::new(range.clone(), "")],
-                }).map_err(command_document_error)?;
-                changed_cursor = Some(prepared_cursor(document, &prepared, range.start, Association::BeforeInsertion)?);
-                physical_change_at = prepared.text_position_map().source_position_map()
-                    .and_then(|map| map.map_source_point(at, Association::BeforeInsertion,
-                        DeletionRecovery::PreferFollowingThenPreceding).ok())
-                    .and_then(|mapped| mapped.value().copied());
-                document.commit_model_transaction(prepared).map_err(command_document_error)?;
             } else if operator == Operator::Change {
                 changed_cursor = Some(delete_with_cursor(document, range.clone())?);
             } else if matches!(operator, Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase) {

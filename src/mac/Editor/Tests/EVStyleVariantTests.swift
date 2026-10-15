@@ -138,7 +138,7 @@ final class EVStyleVariantTests: XCTestCase {
                           mutation: .setParentVariant(.plainText))
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let source = Data("# Heading\n\nBody".utf8)
-        try backend.read(source: source, typeName: EVDocument.markdownSourceType)
+        try backend.read(source: source, typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: lineNumber)?.properties[.characterSize]?.effective, .float(15))
@@ -148,7 +148,7 @@ final class EVStyleVariantTests: XCTestCase {
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: lineNumber)?.properties[.characterSize]?.effective, .float(22))
         text.undoManager.undo()
         XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: lineNumber)?.properties[.characterSize]?.effective, .float(15))
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), source)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
         XCTAssertFalse(backend.persistenceState.isDirty)
         XCTAssertFalse(surface.canUndo)
     }

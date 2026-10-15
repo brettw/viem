@@ -18,7 +18,7 @@ fn collapsed_reference_images_consume_the_complete_source_construct() {
         ("^1", "^1", "^1"),
     ] {
         let source = format!("First ![{label}][] Second\n\n[{definition}]: /url\n");
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(&source, format);
             if format == Format::Markdown {
                 assert_eq!(
@@ -32,12 +32,6 @@ fn collapsed_reference_images_consume_the_complete_source_construct() {
             assert_eq!(images.len(), 1);
             assert_eq!(images[0].text, alt);
             assert_eq!(images[0].destination, "/url");
-            if format == Format::MarkdownSource {
-                assert_eq!(
-                    &doc.text()[images[0].range.clone()],
-                    format!("![{label}][]")
-                );
-            }
             assert_eq!(doc.source_bytes(), source.as_bytes());
             if label == "foo" && format == Format::Markdown {
                 let mut edited = doc;
@@ -59,7 +53,7 @@ fn collapsed_reference_images_consume_the_complete_source_construct() {
 
 #[test]
 fn inline_links_follow_raw_html_autolink_reference_and_line_ending_precedence() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for source in [
             "[a <b x=\"](c)\">",
             "[link](<foo\nbar>)",
@@ -104,7 +98,7 @@ fn markdown_reference_decoding_is_strict_in_prose_and_link_destinations() {
         ("foo&#0000123;&#x00007B;", "foo{{"),
     ] {
         let source = format!("[a]({raw})");
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(&source, format);
             assert_eq!(
                 destination(&doc, "a"),
@@ -118,7 +112,7 @@ fn markdown_reference_decoding_is_strict_in_prose_and_link_destinations() {
 #[test]
 fn parenthesized_link_titles_reject_unescaped_nested_openers() {
     for source in ["[a](url (tit(le))", "[a](url (tit(le)))"] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(source, format);
             assert_eq!(doc.text(), source);
             assert_eq!(destination(&doc, "a"), None);
@@ -187,7 +181,7 @@ fn comment_replacement_breaks_preserve_adjacent_visible_spaces() {
 #[test]
 fn extended_email_autolinks_allow_digits_and_internal_domain_underscores() {
     for address in ["a@b.c1", "a@foo_bar.baz", "a@foo.b_ar", "a@foo.bar_"] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = document(address, format);
             let expected = (!address.ends_with('_')).then(|| format!("mailto:{address}"));
             assert_eq!(destination(&doc, "a"), expected, "{address:?} {format:?}");
@@ -199,7 +193,7 @@ fn extended_email_autolinks_allow_digits_and_internal_domain_underscores() {
 fn unmatched_url_parentheses_are_trimmed_in_bounded_opening_time() {
     let source = format!("http://example.com/{}", ")".repeat(128_000));
     let started = std::time::Instant::now();
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let doc = document(&source, format);
         assert_eq!(
             destination(&doc, "http"),

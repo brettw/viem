@@ -94,14 +94,6 @@ fn native_inline_breaks_preserve_paragraph_ownership_and_literal_contexts() {
         assert_eq!(document.projection().blocks()[0].style.0, style);
         assert_eq!(document.line_count(), 2);
         assert_eq!(document.source_bytes(), source.as_bytes());
-        let source_view = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        assert_eq!(source_view.text(), source);
-        assert_eq!(source_view.line_count(), 1);
     }
     let source = "\\<br> `<br>` <bracket> <br data-x='keep'>";
     let document =

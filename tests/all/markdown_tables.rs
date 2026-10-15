@@ -14,7 +14,7 @@ fn action(document: &mut Document, intent: TableEditIntent) -> usize {
 #[test]
 fn gfm_alignment_ragged_extra_and_source_fidelity() {
     let source = "| a | b | c | d |\n| - | :- | :-: | -: |\n| x |\n| 1 | 2 | 3 | 4 | ignored |\n";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let document = doc(source, format);
         assert_eq!(document.source_bytes(), source.as_bytes());
         let table = &document.projection().tables()[0];
@@ -65,7 +65,7 @@ fn gfm_invalid_header_and_literal_contexts() {
 }
 #[test]
 fn insert_empty_header_body_then_edit_and_undo_exactly() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut document = doc("", format);
         let caret = action(
             &mut document,
@@ -217,7 +217,7 @@ fn rectangle_clear_retains_shape_and_reversed_replacement_anchor() {
 }
 #[test]
 fn export_semantic_tables_in_both_views() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let document = doc("a | b\n- | -:\nx | y<br>z\n", format);
         let html = String::from_utf8(document.prepare_html_export().render().unwrap()).unwrap();
         assert!(html.contains("<table"));
@@ -246,27 +246,8 @@ fn gfm_owned_tables_and_termination() {
     assert!(document.text().ends_with("Heading"));
 }
 #[test]
-fn source_invalidation_and_both_view_switches_keep_bytes() {
-    let source = "a | b\n- | -\nx | y\n";
-    let mut document = doc(source, Format::MarkdownSource);
-    document.set_markdown_source(false).unwrap();
-    document.set_markdown_source(true).unwrap();
-    assert_eq!(document.source_bytes(), source.as_bytes());
-    let at = document.text().find("- | -").unwrap();
-    document
-        .apply_model_request(ModelRequest::ApplyTextEdits {
-            document: document.id(),
-            revision: document.revision(),
-            edits: vec![TextEdit::new(at..at + 1, "q")],
-        })
-        .unwrap();
-    assert!(document.projection().tables().is_empty());
-    assert!(document.undo());
-    assert_eq!(document.projection().tables().len(), 1);
-}
-#[test]
 fn cell_local_typing_keeps_ids_and_bounded_projection_work_in_both_views() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = format!("a | b\n- | -\n{}", "word | value\n".repeat(2000));
         let mut document = doc(&source, format);
         let table = &document.projection().tables()[0];
@@ -595,7 +576,7 @@ fn official_gfm_table_examples_198_through_205() {
         (205, "| abc | def |\n| --- | --- |\n", Some((1, "abc\ndef"))),
     ];
     for (number, source, expected) in cases {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let document = doc(source, format);
             assert_eq!(document.source_bytes(), source.as_bytes(), "{number}");
             if let Some((rows, text)) = expected {
@@ -841,7 +822,7 @@ fn whole_table_text_replacement_removes_hidden_owner_and_retains_neighboring_pro
 
 #[test]
 fn structural_table_action_does_not_reparse_unrelated_document() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = "paragraph\n\n".repeat(2000) + "| A | B |\n| - | - |\n| x | y |\n\nafter";
         let document = doc(&source, format);
         let table = document.projection().tables()[0].id;
@@ -867,7 +848,7 @@ fn structural_table_action_does_not_reparse_unrelated_document() {
 #[test]
 fn local_table_row_edit_preserves_unselected_malformed_bytes_and_diagnostics() {
     let bytes = b"| H | V |\n| - | - |\n| a\xffz | safe |\n\nafter";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut document = Document::from_bytes(bytes.to_vec(), Encoding::Utf8, format).unwrap();
         assert_eq!(document.decoding_diagnostics().len(), 1);
         let range = document.projection().tables()[0].rows[1].cells[1]
@@ -962,38 +943,6 @@ fn table_following_prose_has_independent_block_ownership_and_header_inherits_cel
 }
 
 #[test]
-fn source_rows_ending_in_hard_break_spaces_remain_separate_and_editable() {
-    fn rows(document: &Document) -> Vec<&str> {
-        document
-            .projection()
-            .blocks()
-            .iter()
-            .map(|block| &document.text()[block.range.clone()])
-            .collect()
-    }
-    let document = doc("| a |  \n| - |\n| c | d |  \n| e |\n", Format::MarkdownSource);
-    assert_eq!(rows(&document), ["| a |  ", "| - |", "| c | d |  ", "| e |", ""]);
-    for (source, edit) in [
-        // Deleting a closing pipe leaves trailing hard-break spaces on the row.
-        ("| a  |\n| -- |\n", TextEdit::new(5..6, "")),
-        ("| f\\|oo  |\n| ------ |\n| b `\\|` az |\n", TextEdit::new(9..10, "")),
-        ("| a |  \n| - |\n| c |\n", TextEdit::new(2..2, "x")),
-    ] {
-        let mut document = doc(source, Format::MarkdownSource);
-        document
-            .apply_model_request(ModelRequest::ApplyTextEdits {
-                document: document.id(),
-                revision: document.revision(),
-                edits: vec![edit],
-            })
-            .unwrap();
-        let fresh = doc(std::str::from_utf8(&document.source_bytes()).unwrap(), Format::MarkdownSource);
-        assert_eq!(document.text(), fresh.text(), "{source:?}");
-        assert_eq!(rows(&document), rows(&fresh), "{source:?}");
-    }
-}
-
-#[test]
 fn literal_carriage_returns_are_line_content_rather_than_grammar_breaks() {
     // Bare LF selects Unix endings, so each CR is content of its physical line.
     for source in [
@@ -1003,9 +952,6 @@ fn literal_carriage_returns_are_line_content_rather_than_grammar_breaks() {
         "|a|\r|-|",
         "a\r# b",
     ] {
-        let source_view = doc(source, Format::MarkdownSource);
-        assert_eq!(source_view.text().trim_end_matches('\n'), source.trim_end_matches('\n'), "{source:?}");
-        assert!(source_view.projection().tables().is_empty(), "{source:?}");
         let wysiwyg = doc(source, Format::Markdown);
         assert!(wysiwyg.projection().tables().is_empty(), "{source:?}");
         assert!(wysiwyg.text().contains('\r'), "{source:?}");

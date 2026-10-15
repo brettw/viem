@@ -55,7 +55,6 @@ final class EVLinkPopoverTests: XCTestCase {
         for (type, source, selectionLength, text, destination) in [
             (EVDocument.markdownType, "word", 0, "", ""),
             (EVDocument.markdownType, "word", 4, "word", ""),
-            (EVDocument.markdownSourceType, "[label](next.md \"title\") tail", 0, "label", "next.md"),
         ] {
             let (backend, surface, window) = try editor(source, type: type)
             defer { surface.linkPopover.close(); window.close() }
@@ -175,7 +174,7 @@ final class EVLinkPopoverTests: XCTestCase {
     }
 
     func testToolbarUsesSelectedTextAndAppliesOneUndoableLinkInBothViews() throws {
-        for type in [EVDocument.markdownSourceType, EVDocument.markdownType] {
+        for type in [EVDocument.markdownType] {
             let (backend, surface, window) = try editor("before words after", type: type)
             defer { surface.linkPopover.close(); window.close() }
             surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 5))
@@ -202,7 +201,7 @@ final class EVLinkPopoverTests: XCTestCase {
     }
 
     func testCaretToolbarOpensEmptyDraftAndHeadingComboUsesExactFragments() throws {
-        for type in [EVDocument.markdownSourceType, EVDocument.markdownType] {
+        for type in [EVDocument.markdownType] {
             for insert in [false, true] {
                 let source = "plain\n\n# A **heading**\n\n# A **heading**"
                 let (backend, surface, window) = try editor(source, type: type)
@@ -248,61 +247,6 @@ final class EVLinkPopoverTests: XCTestCase {
         }
         XCTAssertLessThan(widths[0], widths[1])
         XCTAssertLessThanOrEqual(widths[1], 374)
-        let (_, surface, window) = try editor("[](https://example.com)", type: EVDocument.markdownSourceType)
-        defer { surface.linkPopover.close(); window.close() }
-        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
-        surface.linkPopover.refresh()
-        XCTAssertTrue(surface.linkPopover.isOpen)
-        XCTAssertEqual(surface.linkPopover.destinationButton.title, "empty")
-        let font = try XCTUnwrap(surface.linkPopover.destinationButton.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
-        XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.italicFontMask))
-    }
-
-    func testSourcePopupIncludesDestinationSyntaxAndCopyEditRemoveActions() throws {
-        let original = "before [**label**](https://example.com/a%20b) after"
-        let (backend, surface, window) = try editor(original, type: EVDocument.markdownSourceType)
-        defer { surface.linkPopover.close(); window.close() }
-        let session = try XCTUnwrap(surface.session)
-        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 25, length: 0))
-        window.makeFirstResponder(surface.editorView)
-        surface.linkPopover.refresh()
-        let popup = surface.linkPopover
-        let context = try session.inlineContentContext(.link)
-        XCTAssertEqual(context.item?.start, 7)
-        XCTAssertEqual(context.item?.text, "label")
-        XCTAssertTrue(popup.isOpen)
-        XCTAssertFalse(popup.isEditing)
-        XCTAssertTrue(window.firstResponder === surface.editorView)
-        let pasteboard = Pasteboard()
-        surface.pasteboard = pasteboard
-        try preview("link-toolbar", view: try XCTUnwrap(popup.copyButton.window?.contentView))
-        popup.copyButton.performClick(nil)
-        XCTAssertEqual(pasteboard.text, "https://example.com/a%20b")
-        popup.editButton.performClick(nil)
-        XCTAssertTrue(popup.isEditing)
-        XCTAssertEqual(popup.textField.stringValue, "label")
-        XCTAssertEqual(popup.destinationField.stringValue, pasteboard.text)
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.2))
-        let formContent = try XCTUnwrap(popup.textField.window?.contentView)
-        formContent.layoutSubtreeIfNeeded()
-        for control in [popup.textField, popup.destinationField, popup.applyButton] {
-            XCTAssertTrue(formContent.bounds.insetBy(dx: 1, dy: 1).contains(control.convert(control.bounds, to: formContent)),
-                          "Native fields and footer must retain margins inside the fitted popup: content \(formContent.bounds), popup \(popup.popupFrame), control \(control.convert(control.bounds, to: formContent))")
-        }
-        try preview("link-editor", view: formContent)
-        popup.destinationField.stringValue = "#heading"
-        popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
-        popup.applyButton.performClick(nil)
-        XCTAssertNil(surface.commandOutput)
-        let edited = try backend.serializedSource(typeName: EVDocument.markdownSourceType)
-        XCTAssertTrue(String(decoding: edited, as: UTF8.self).contains("**label**"))
-        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 10, length: 0))
-        popup.refresh()
-        popup.removeButton.performClick(nil)
-        XCTAssertNil(surface.commandOutput)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), Data("before **label** after".utf8))
-        surface.perform(menuCommand: .undo, sender: nil)
-        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownSourceType), edited)
     }
 
     func testOpeningDestinationDismissesPopupBeforeRouting() throws {

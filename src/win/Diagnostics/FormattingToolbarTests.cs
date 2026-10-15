@@ -74,7 +74,7 @@ internal static class FormattingToolbarTests
 
     private static async Task KeyboardShortcuts(Preferences preferences)
     {
-        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN })
         {
             const string source = "alpha beta";
             var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
@@ -107,7 +107,6 @@ internal static class FormattingToolbarTests
                 view.SelectAll(); await InputRoutingTests.Key(VirtualKey.K, control: true, shift: true);
                 Check(pane.LinkEditorVisible && pane.LinkTextValue == source, $"native link shortcut opens the selected text in format {format}");
                 pane.DismissLinkPopup(); pane.FocusEditor();
-                if (format == VIEM_FORMAT_MARKDOWN_SOURCE) continue;
                 view.EditLink(view.LinkContext(), source, "https://example.test");
                 view.Key(VIEM_KEY_ESCAPE); view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
                 await InputRoutingTests.Key(VirtualKey.K, control: true, shift: true);
@@ -228,7 +227,7 @@ internal static class FormattingToolbarTests
             var initialStyles = view.Styles(view.SelectedNamedStyles().Identity);
             var supportedStyles = initialStyles.Styles.Where(s => s.Namespace == 1 && s.Has(VIEM_STYLE_CAPABILITY_ASSIGN)).Select(s => s.Key).ToHashSet();
             Check(((MenuFlyout)toolbar.Paragraph.Flyout).Items.Select(i => (StyleKey)i.Tag).ToHashSet().SetEquals(supportedStyles),
-                "WYSIWYG paragraph selector lists only styles supported for source assignment");
+                "Markdown Preview paragraph selector lists only styles supported for source assignment");
             foreach (var listStyle in initialStyles.Styles.Where(s => (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) != 0 || s.Native.role == VIEM_STYLE_ROLE_LIST))
                 Check(StyleIcons.Kind(listStyle) == StyleIconKind.Paragraph, "list definitions use paragraph style icons: " + listStyle.Name);
             foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers })
@@ -260,9 +259,9 @@ internal static class FormattingToolbarTests
                 .All(pair => Math.Abs(Gap(pair.First, pair.Second) - standardGap) < 1),
                 "every toolbar group uses the same gap as Link to Bulleted List");
             Check(toolbar.FormattedView.IsChecked == true && !toolbar.FormattedView.IsThreeState
-                && AutomationProperties.GetName(toolbar.FormattedView) == "Formatted view"
-                && ToolTipService.GetToolTip(toolbar.FormattedView) as string == "Formatted view (WYSIWYG)",
-                "formatted-view toggle has a stable accessible label and WYSIWYG pressed state");
+                && AutomationProperties.GetName(toolbar.FormattedView) == "Markdown Preview"
+                && ToolTipService.GetToolTip(toolbar.FormattedView) as string == "Markdown Preview",
+                "Markdown Preview toggle has a stable accessible label and pressed state");
             object viewIcon = toolbar.FormattedView.Content;
             byte[] beforeSwitch = document.Source(document.State.document_revision);
             ulong caret = (ulong)document.FormattedText().IndexOf("plain", StringComparison.Ordinal) + 2;
@@ -270,21 +269,20 @@ internal static class FormattingToolbarTests
             ulong placedCaret = view.Presentation.cursor_utf8_offset;
             await SwitchView(toolbar);
             // Presentation offsets are in the current logical projection;
-            // Source view keeps syntax but folds a paragraph separator to LF.
+            // Code shows the complete literal source.
             ulong sourceCaret = (ulong)document.FormattedText().IndexOf("plain", StringComparison.Ordinal) + 2;
-            Check(document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && toolbar.FormattedView.IsChecked == false
+            Check(document.State.format == VIEM_FORMAT_CODE && toolbar.FormattedView.IsChecked == false
                 && view.Presentation.cursor_utf8_offset == sourceCaret
                 && beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
-                "toolbar switches to Markdown Source while preserving source and semantic caret",
+                "toolbar turns Markdown Preview off while preserving source and semantic caret",
                 $"format={document.State.format}, checked={toolbar.FormattedView.IsChecked}, caret={view.Presentation.cursor_utf8_offset}, expected={sourceCaret}, placed={placedCaret}, requested={caret}, sourceEqual={beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision))}, mode={view.Presentation.mode}, error={pane.LastError}");
-            var sourceStyleIds = ((MenuFlyout)toolbar.Paragraph.Flyout).Items.Select(i => ((StyleKey)i.Tag).Id).ToHashSet();
-            Check(new[] { "Table", "Table cell", "Table header", "Image" }.All(sourceStyleIds.Contains),
-                "Source paragraph catalogue retains structural presentation styles");
+            Check(toolbar.Viewport.Visibility == Visibility.Collapsed && toolbar.FormattedView.Visibility == Visibility.Visible,
+                "with Preview off the toolbar shows only its Preview toggle");
             view.Undo();
             Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true,
                 "undoing a view switch synchronizes the formatted-view toggle");
             view.Redo();
-            Check(document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && toolbar.FormattedView.IsChecked == false,
+            Check(document.State.format == VIEM_FORMAT_CODE && toolbar.FormattedView.IsChecked == false,
                 "redoing a view switch synchronizes the formatted-view toggle");
             await SwitchView(toolbar);
             Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true
@@ -422,17 +420,16 @@ internal static class FormattingToolbarTests
             md.Key(VIEM_KEY_ESCAPE); md.Command("gg0");
             await Click(toolbar, ToolbarAction.Bullets); Check(State(toolbar, ToolbarAction.Bullets) == false, "active bulleted list toolbar action removes the list");
             await Click(toolbar, ToolbarAction.Numbers); Check(State(toolbar, ToolbarAction.Numbers) == true, "numbered list toolbar action applies structural numbering");
-            md.SetMarkdownSource(true);
+            md.SetMarkdownPreview(false);
             Check(toolbar.Visibility == Visibility.Visible && toolbar.FormattedView.IsChecked == false,
-                "Markdown Source has its own visible toolbar and an unpressed formatted-view toggle");
-            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, false);
-            md.SetMarkdownSource(false); Check(toolbar.Visibility == Visibility.Visible, "Source and WYSIWYG toolbar preferences are independent");
+                "Markdown Preview off keeps the Markdown toolbar with an unpressed Preview toggle");
+            md.SetMarkdownPreview(true); Check(toolbar.Visibility == Visibility.Visible, "Preview on and off share one toolbar preference");
             pane.FocusEditor(); await Task.Delay(80);
             Check(toolbar.Visibility == Visibility.Visible, "returning to Markdown restores its own toolbar preference");
-            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true); preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, true);
+            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
             await CloseFixture(markdown);
 
-            foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+            foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN })
             {
                 const string inner = "# Heading";
                 var quotedPane = window.AddPane(new CoreDocument(Encoding.UTF8.GetBytes(inner), format: format));
@@ -496,19 +493,6 @@ internal static class FormattingToolbarTests
                 Check(toolbar.Buttons[ToolbarAction.BlockQuote].IsEnabled, "quote toggle re-enables outside code");
                 await CloseFixture(codePane);
             }
-            var tablePane = window.AddPane(new CoreDocument("> | H | V |\n> | --- | ---: |\n> | body | 7 |"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN_SOURCE));
-            var tableView = await tablePane.Ready;
-            ulong delimiter = (ulong)tablePane.Document.FormattedText().IndexOf("---", StringComparison.Ordinal);
-            tableView.Place(delimiter, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, tablePane.Document.State.document_revision);
-            toolbar.Refresh();
-            Check(!toolbar.Paragraph.IsEnabled && !toolbar.Buttons[ToolbarAction.Bullets].IsEnabled && !toolbar.Buttons[ToolbarAction.Numbers].IsEnabled,
-                "source table delimiter disables paragraph and list formatting");
-            Check(toolbar.Buttons[ToolbarAction.BlockQuote].Visibility == Visibility.Visible && !toolbar.Buttons[ToolbarAction.BlockQuote].IsEnabled,
-                "source table delimiter keeps the quote toggle visible but disabled");
-            Check(toolbar.Buttons[ToolbarAction.CodeBlock].Visibility == Visibility.Collapsed,
-                "source table delimiter omits the code block toggle");
-            await CloseFixture(tablePane);
-
             foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE })
             {
                 var literal = window.AddPane(new CoreDocument("text"u8.ToArray(), format: format)); await literal.Ready;
@@ -525,11 +509,9 @@ internal static class FormattingToolbarTests
     private static async Task LazyConstruction(Preferences preferences)
     {
         bool formatted = preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
-        bool source = preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE);
         try {
-            foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE }) {
+            foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE, VIEM_FORMAT_MARKDOWN }) {
                 preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, false);
-                preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, false);
                 var document = new CoreDocument("Text"u8.ToArray(), format: format);
                 var window = new EditorWindow(preferences, document);
                 App.Instance.Windows.Add(window);
@@ -540,7 +522,7 @@ internal static class FormattingToolbarTests
                     view.Command("i"); view.Text("X"); view.Key(VIEM_KEY_ESCAPE);
                     Check(!window.ToolbarCreated && document.FormattedText() == "XText" && pane.LastError == null,
                         "first editing commands work without constructing hidden formatting controls: " + format);
-                    if (format is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_MARKDOWN_SOURCE)) {
+                    if (format != VIEM_FORMAT_MARKDOWN) {
                         Check(window.ToolbarToggle.Visibility == Visibility.Collapsed, "literal startup omits the formatting toggle: " + format);
                         continue;
                     }
@@ -572,14 +554,13 @@ internal static class FormattingToolbarTests
             } finally { App.Instance.Windows.Remove(visibleWindow); visibleWindow.Close(); }
         } finally {
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, formatted);
-            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN_SOURCE, source);
         }
     }
 
     private static async Task Performance(Preferences preferences)
     {
         string md = "# Heading\n\n- First item\n- Second item\n\n" + string.Concat(Enumerable.Repeat("A paragraph with **bold** and `code` text.\n\n", 4000));
-        foreach (var (format, source) in new[] { (VIEM_FORMAT_MARKDOWN, md), (VIEM_FORMAT_MARKDOWN_SOURCE, md) })
+        foreach (var (format, source) in new[] { (VIEM_FORMAT_MARKDOWN, md) })
         {
             var doc = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
             var window = new EditorWindow(preferences, doc); App.Instance.Windows.Add(window); window.Activate();

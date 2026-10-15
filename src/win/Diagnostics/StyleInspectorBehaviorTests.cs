@@ -156,7 +156,7 @@ internal static class StyleInspectorBehaviorTests
         uint[] formats = [VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_CODE];
         byte[][] original = formats.Select(preferences.ThemeStyleDefaults).ToArray();
         byte[] source = "# Heading\n\nBody"u8.ToArray();
-        using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN_SOURCE);
+        using var document = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
         preferences.AttachThemeDocument(document);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var inspector = new StyleWindow(view, preferences);
@@ -206,7 +206,7 @@ internal static class StyleInspectorBehaviorTests
                 inspector.RedoThemeForTesting();
                 Check(Size() == 32 + index, "Document stylesheet Redo restores the edit");
             }
-            Check(document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE && !document.IsDirty
+            Check(document.State.format == VIEM_FORMAT_MARKDOWN && !document.IsDirty
                 && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "Document stylesheet selection and editing preserve the open source and format");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(style => style.Id == "Builtin line number");
@@ -589,7 +589,7 @@ internal static class StyleInspectorBehaviorTests
     private static async Task MarkdownCharacterFollowing(EditorPane pane, Preferences preferences)
     {
         byte[] source = "plain [link](other.md) ~~strike~~ `code` <!--comment-->\n\n[label][ref]\n\n[ref]: other.md"u8.ToArray();
-        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN })
         {
             byte[] originalStyles = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
             using var document = new CoreDocument(source, "following.md", format);
@@ -614,7 +614,7 @@ internal static class StyleInspectorBehaviorTests
                 Check(Selected(inspector).Key == new StyleKey(2, "Link"),
                     "moving onto a link updates the open style inspector after the caret settles: " + format);
                 ulong linkStart = view.LinkContext().Link!.Start;
-                Check(linkStart == (ulong)document.FormattedText().IndexOf(format == VIEM_FORMAT_MARKDOWN_SOURCE ? "[link]" : "link", StringComparison.Ordinal),
+                Check(linkStart == (ulong)document.FormattedText().IndexOf("link", StringComparison.Ordinal),
                     "the mode-change fixture uses the complete projected Link span boundary: " + format);
                 view.Place(linkStart, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
                 inspector.Retarget(view);
@@ -670,7 +670,7 @@ internal static class StyleInspectorBehaviorTests
     }
     internal static async Task MarkdownCodeFollowing(EditorPane pane, Preferences preferences)
     {
-        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN, VIEM_FORMAT_MARKDOWN_SOURCE })
+        foreach (uint format in new[] { VIEM_FORMAT_MARKDOWN })
         foreach (bool explicitChoice in new[] { false, true })
         {
             byte[] source = "# Heading\n\n**words**\n"u8.ToArray();

@@ -89,7 +89,7 @@ impl CommandInterpreter {
     }
 
     pub(super) fn literal_indentation(&self, document: &Document) -> bool {
-        document.format().is_literal() || document.format().is_source_view()
+        document.format().is_literal()
     }
 
     fn commit_indent_edit(
@@ -349,10 +349,10 @@ impl CommandInterpreter {
                 .expect("Enter contains one semantic break");
             let edit = FormattedPayloadEdit::new(start..start + removed_len, payload)
                 .with_boundary_affinity(self.markdown_typing_affinity(document));
-            let use_markdown_typing = document.format().is_wysiwyg() && !self.typing_style.link_disabled
+            let use_markdown_typing = document.format().is_markdown() && !self.typing_style.link_disabled
                 && self.markdown_autodetect();
             let mut exit_source = None;
-            let heading_enter = document.format().is_wysiwyg() && prefix.text.is_empty()
+            let heading_enter = document.format().is_markdown() && prefix.text.is_empty()
                 && document.projection().blocks_for_region(&(start..start)).iter()
                     .any(|block| matches!(block.kind, crate::document::BlockKind::Heading(_))
                         && block.range.start <= start && start <= block.range.end);

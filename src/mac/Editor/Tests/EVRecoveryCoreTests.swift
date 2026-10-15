@@ -11,19 +11,19 @@ final class EVRecoveryCoreTests: XCTestCase {
     let backend = EVCoreDocumentBackend()
     let bytes = Data([0x23, 0x20, 0xe9, 0x0d, 0x62, 0x6f, 0x64, 0x79])
     let recovery = EVRecoverySnapshot(
-      source: bytes, format: .markdownSource,
+      source: bytes, format: .code,
       encoding: UInt32(VIEM_ENCODING_LATIN1), fileFormat: UInt32(VIEM_FILE_FORMAT_MAC),
       documentID: 800, documentRevision: 200)
     try backend.restoreRecovery(recovery)
     XCTAssertEqual(try backend.formattedText(), "# é\nbody")
-    XCTAssertEqual(backend.sourceFormat, .markdownSource)
+    XCTAssertEqual(backend.sourceFormat, .code)
     XCTAssertEqual(backend.currentDocumentState.encoding, UInt32(VIEM_ENCODING_LATIN1))
     XCTAssertEqual(backend.currentDocumentState.file_format, UInt32(VIEM_FILE_FORMAT_MAC))
     XCTAssertTrue(backend.persistenceState.isDirty)
     XCTAssertTrue(backend.persistenceState.isRecovered)
     let restored = try backend.recoverySnapshot()
     XCTAssertEqual(restored.source, bytes)
-    XCTAssertEqual(restored.format, .markdownSource)
+    XCTAssertEqual(restored.format, .code)
     XCTAssertEqual(restored.encoding, recovery.encoding)
     XCTAssertEqual(restored.fileFormat, recovery.fileFormat)
     XCTAssertNotEqual(restored.documentID, recovery.documentID)

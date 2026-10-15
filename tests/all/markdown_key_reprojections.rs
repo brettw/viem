@@ -216,30 +216,6 @@ fn typing_into_an_empty_fenced_code_row_keeps_its_literal_boundary() {
 }
 
 #[test]
-fn source_backspace_after_a_table_reprojects_the_joined_row() {
-    let source = "| a | b |\n| - | - |\n| c | d |\n> q\n";
-    check(
-        source,
-        Format::MarkdownSource,
-        source.find("> q").unwrap(),
-        InputEvent::Key(Key::Backspace),
-        "| a | b |\n| - | - |\n| c | d |> q\n",
-    );
-}
-
-#[test]
-fn table_terminal_source_ending_deletion_matches_reopening() {
-    let source = "| a | b |\n| - | - |\n| c | d |\n";
-    check(
-        source,
-        Format::MarkdownSource,
-        source.len(),
-        InputEvent::Key(Key::Backspace),
-        source.trim_end_matches('\n'),
-    );
-}
-
-#[test]
 fn typing_before_an_indented_setext_neighbor_matches_reopening() {
     let source = "# Heading\n    foo\nHeading\n------\n    foo\n----\n";
     let document =
@@ -281,37 +257,6 @@ fn typing_before_an_indented_setext_neighbor_matches_reopening() {
         );
         assert_reopened(&document);
     }
-}
-
-#[test]
-fn source_typing_a_setext_marker_after_a_quoted_fence_matches_reopening() {
-    let source = "> ```\n> aaa\n\nbbb\n";
-    let document = Document::from_bytes(
-        source.as_bytes().to_vec(),
-        Encoding::Utf8,
-        Format::MarkdownSource,
-    )
-    .unwrap();
-    let mut expected = document.text().to_owned();
-    let at = expected.len();
-    expected.push_str("- ");
-    check(
-        source,
-        Format::MarkdownSource,
-        at,
-        InputEvent::text("- "),
-        &expected,
-    );
-    let mut document = document;
-    document.insert(at, "- ").unwrap();
-    assert_eq!(document.text(), expected);
-    assert_reopened(&document);
-    let saved = document.source_bytes();
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source.as_bytes());
-    assert!(document.redo());
-    assert_eq!(document.source_bytes(), saved);
-    assert_reopened(&document);
 }
 
 #[test]
@@ -360,21 +305,6 @@ fn october11_list_prefixes_and_authored_rules_reopen() {
             input(&mut core, view, InputEvent::key('r'));
             input(&mut core, view, InputEvent::key('-'));
         }
-        assert_reopened(core.document());
-    }
-}
-
-#[test]
-fn october11_source_partial_table_rows_do_not_gain_phantom_breaks() {
-    for (source, at) in [("| a |\n| - |\n| 1 |", 10), ("| a | b |\n| - | - |\n| 1 | 2 |", 28)] {
-        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap());
-        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
-        input(&mut core, view, InputEvent::key('i'));
-        core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
-            text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
-        input(&mut core, view, InputEvent::Key(Key::ShiftEnter));
-        assert_reopened(core.document());
-        input(&mut core, view, InputEvent::text("x"));
         assert_reopened(core.document());
     }
 }
@@ -495,62 +425,6 @@ fn october11_removing_quote_preserves_literal_code_prefixes() {
         assert!(document.redo());
         assert_eq!(document.source_bytes(), expected.as_bytes());
     }
-}
-
-#[test]
-fn source_emptying_prose_before_a_fence_reparses_separator_context() {
-    use viem_core::document::FileFormat;
-    for (file_format, ending) in [(FileFormat::Unix, "\n"), (FileFormat::Dos, "\r\n"), (FileFormat::Mac, "\r")] {
-        for fence in ["```", "~~~"] {
-            for suffix in [String::new(), format!("\nbody\n{fence}\n\nafter")] {
-                for key in [Key::Backspace, Key::Delete] {
-                    let source = format!("a\n\nb\n{fence}{suffix}").replace('\n', ending);
-                    let expected = format!("a\n\n\n{fence}{suffix}").replace('\n', ending);
-                    let document = Document::from_bytes_with_file_format(
-                        source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource, file_format,
-                    ).unwrap();
-                    let mut core = Core::new(document);
-                    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
-                    input(&mut core, view, InputEvent::key('i'));
-                    core.handle(view, CoreEvent::PlaceCursor {
-                        document_revision: core.document().revision(),
-                        text_offset: if key == Key::Backspace { 3 } else { 2 },
-                        affinity: BoundaryAffinity::Downstream, extend_selection: false,
-                    }).unwrap();
-                    input(&mut core, view, InputEvent::Key(key));
-                    assert_eq!(core.document().source_bytes(), expected.as_bytes());
-                    assert_reopened(core.document());
-                    input(&mut core, view, InputEvent::Key(Key::Escape));
-                    input(&mut core, view, InputEvent::key('u'));
-                    assert_eq!(core.document().source_bytes(), source.as_bytes());
-                    input(&mut core, view, InputEvent::Key(Key::Ctrl('r')));
-                    assert_eq!(core.document().source_bytes(), expected.as_bytes());
-                    assert_reopened(core.document());
-                }
-            }
-        }
-    }
-}
-
-#[test]
-fn source_nonempty_deletion_beside_a_fence_keeps_bounded_projection() {
-    let source = format!("{}a\n\nbc\n```\ncode\n```\n\n{}",
-        "before\n\n".repeat(2_000), "after\n\n".repeat(2_000));
-    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-    let at = document.text().find("bc\n```").unwrap();
-    let unchanged = document.projection().blocks()[100].id;
-    let prepared = document.prepare_model_request(ModelRequest::ApplyTextEdits {
-        document: document.id(), revision: document.revision(), edits: vec![TextEdit::new(at..at + 1, "")],
-    }).unwrap();
-    let work = prepared.summary().projection_work();
-    assert_eq!(work.scope(), ProjectionWorkScope::RegionalHardLines);
-    assert!(work.decoded_source_bytes() < 128, "{work:?}");
-    document.commit_model_transaction(prepared).unwrap();
-    assert_eq!(document.source_bytes(), source.replacen("bc\n```", "c\n```", 1).as_bytes());
-    assert_eq!(document.projection().blocks()[100].id, unchanged);
-    assert_reopened(&document);
-    assert!(document.undo());
-    assert_eq!(document.source_bytes(), source.as_bytes());
 }
 
 #[test]

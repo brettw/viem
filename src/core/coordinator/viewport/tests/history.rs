@@ -57,7 +57,7 @@ fn mermaid_fixture(format: Format) -> (Core<MockTextMeasurementProvider>, ViewId
 
 #[test]
 fn history_keeps_a_visible_code_block_stationary() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for native in [true, false] {
             let (mut core, view) = mermaid_fixture(format);
             let expected = core.list_selection_identity(view).unwrap();

@@ -64,7 +64,7 @@ final class EVPresentationCacheIntegrationTests: XCTestCase {
         var root = URL(fileURLWithPath: #filePath)
         for _ in 0..<5 { root.deleteLastPathComponent() }
         let text = try String(contentsOf: root.appendingPathComponent("AGENTS.md"), encoding: .utf8)
-        try assertSelectionsReuseExports(text, label: "AGENTS.md", type: EVDocument.markdownSourceType)
+        try assertSelectionsReuseExports(text, label: "AGENTS.md", type: EVDocument.codeType)
     }
 
     func testRepeatedVisibleSelectionsInTwentyThousandLinesReusePresentationExports() throws {

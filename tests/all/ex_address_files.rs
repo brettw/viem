@@ -60,7 +60,7 @@ fn complete(
 #[test]
 fn numeric_read_uses_physical_source_boundary_and_restores_exact_bytes() {
     let original = "first\r\nsecond\r\n\r\nlast";
-    let (mut core, view) = editor(original, Format::MarkdownSource, 55.);
+    let (mut core, view) = editor(original, Format::Code, 55.);
     let after = read_request(&mut core, view, ":1read imported.txt");
     assert_eq!(
         after,

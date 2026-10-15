@@ -69,7 +69,7 @@ import XCTest
             let activeBackend = try XCTUnwrap(window.activeDocument?.editorBackend as? EVCoreDocumentBackend)
             _ = try await perform(window, backend: activeBackend, kind: .edit, path: target.path).get()
             let opened = try XCTUnwrap(window.activeDocument)
-            XCTAssertEqual(opened.editorBackend.sourceFormat, enabled ? .markdown : .markdownSource)
+            XCTAssertEqual(opened.editorBackend.sourceFormat, enabled ? .markdown : .code)
             XCTAssertFalse(opened.editorBackend.persistenceState.isDirty)
         }
     }

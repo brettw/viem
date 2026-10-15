@@ -106,8 +106,8 @@ impl Document {
         let local = super::super::projection::project_band(&input, self.format(), self.revision(),
             start, end, start == self.projection().source_content_start());
         if local.text() != self.projection().text_tree().slice(formatted.clone()).map_err(DocumentError::FormattedTextStorage)?
-            || markdown_source_region_signature(self.projection(), &formatted)
-                != markdown_source_region_signature(&local, &(0..local.text_tree().byte_len())) {
+            || markdown_region_signature(self.projection(), &formatted)
+                != markdown_region_signature(&local, &(0..local.text_tree().byte_len())) {
             return Ok(None);
         }
         Ok(Some(input))
@@ -282,8 +282,8 @@ impl Document {
         if guarded {
             // Matching the original standalone parse establishes the captured
             // owners' full context, including HTML scopes and list looseness.
-            if markdown_source_region_signature(self.projection(), &block_range)
-                != markdown_source_region_signature(&old_local, &(0..old_local.text_tree().byte_len())) {
+            if markdown_region_signature(self.projection(), &block_range)
+                != markdown_region_signature(&old_local, &(0..old_local.text_tree().byte_len())) {
                 return candidate::decline(Strategy::IndependentParagraph, "guarded owner context differs");
             }
             for guard in guards {
@@ -294,8 +294,8 @@ impl Document {
                 };
                 if old_local.text_tree().slice(old.clone()).map_err(DocumentError::FormattedTextStorage)?
                     != regional.text_tree().slice(new.clone()).map_err(DocumentError::FormattedTextStorage)?
-                    || markdown_source_region_signature(&old_local, &old)
-                        != markdown_source_region_signature(&regional, &new) {
+                    || markdown_region_signature(&old_local, &old)
+                        != markdown_region_signature(&regional, &new) {
                     return candidate::decline(Strategy::IndependentParagraph, "a guard paragraph changed");
                 }
             }
@@ -315,7 +315,7 @@ impl Document {
         let mut next_id = self.next_projected_block_id;
         let (projection, range_work) = splice_line_local_projection(self.projection(), regional, revision,
             first_hard..last_hard + 1, block_range.clone(), old_source, new_source,
-            target_text, source.len(), self.format().is_source_view(), true, &edits, patches, None, &mut next_id)
+            target_text, source.len(), false, true, &edits, patches, None, &mut next_id)
             .map_err(super::super::block_identity_document_error)?;
         let (source_hard_lines, source_work) = self.state().source_hard_lines
             .replace_ranges_with_stats(first_line..if end == self.source_byte_len() {
@@ -358,7 +358,7 @@ impl Document {
             return candidate::decline(Strategy::ListParagraph, "not formatted Markdown or no patches");
         }
         let point = self.visible_point_for_source(patches[0].range.start, true)?;
-        let blocks = self.projection().list_indentation_blocks(false);
+        let blocks = self.projection().list_indentation_blocks();
         let Some(index) = blocks.index_touching_point(point) else { return candidate::decline(Strategy::ListParagraph, "edit is not in a list"); };
         let Some(block) = blocks.get(index) else { return candidate::decline(Strategy::ListParagraph, "edit is not in a list"); };
         // Enclosing quotes and HTML may extend beyond the list. They require

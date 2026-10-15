@@ -18,7 +18,6 @@ final class EVIncrementalMatchStyleTests: XCTestCase {
         for (type, source) in [
             (EVDocument.plainTextType, "one two"),
             (EVDocument.markdownType, "one **two**"),
-            (EVDocument.markdownSourceType, "one **two**"),
             (EVDocument.codeType, "one two"),
         ] {
             let configuration = configuration()

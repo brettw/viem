@@ -132,7 +132,6 @@ pub const VIEM_ENCODING_UTF16_BE: u32 = 4;
 
 pub const VIEM_FORMAT_PLAIN_TEXT: u32 = 1;
 pub const VIEM_FORMAT_MARKDOWN: u32 = 2;
-pub const VIEM_FORMAT_MARKDOWN_SOURCE: u32 = 5;
 pub const VIEM_FORMAT_CODE: u32 = 7;
 
 pub const VIEM_CLIPBOARD_FORMAT_HTML: u32 = 1;
@@ -413,6 +412,7 @@ pub const VIEM_KEY_PARAGRAPH_END: u32 = 25;
 pub const VIEM_KEY_NEXT_PARAGRAPH: u32 = 26;
 pub const VIEM_KEY_PASTE_CLIPBOARD: u32 = 27;
 pub const VIEM_KEY_ALT_ENTER: u32 = 28;
+pub const VIEM_KEY_PASTE_CLIPBOARD_MATCHING_STYLE: u32 = 29;
 pub const VIEM_KEY_MODIFIER_SHIFT: u32 = 1;
 pub const VIEM_KEY_MODIFIER_CONTROL: u32 = 2;
 pub const VIEM_KEY_MODIFIER_ALT: u32 = 4;
@@ -2191,17 +2191,6 @@ pub struct ViemSetFileFormatV1 {
 
 pub const VIEM_SET_FILE_FORMAT_V1_SIZE: u32 = size_of::<ViemSetFileFormatV1>() as u32;
 
-/// Markdown source visibility bound to one exact document snapshot.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ViemSetMarkdownSourceV1 {
-    pub struct_size: u32,
-    pub source: u32,
-    pub document_id: u64,
-    pub document_revision: u64,
-}
-pub const VIEM_SET_MARKDOWN_SOURCE_V1_SIZE: u32 = size_of::<ViemSetMarkdownSourceV1>() as u32;
-
 /// Revision-bound source-preserving document view selection.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -2210,8 +2199,6 @@ pub struct ViemSetDocumentModeV1 {
     pub mode: u32,
     pub document_id: u64,
     pub document_revision: u64,
-    pub formatted_markdown: u32,
-    pub reserved: u32,
 }
 pub const VIEM_SET_DOCUMENT_MODE_V1_SIZE: u32 = size_of::<ViemSetDocumentModeV1>() as u32;
 pub const VIEM_DOCUMENT_MODE_AUTO: u32 = 0;
@@ -2510,7 +2497,6 @@ fn parse_format(raw: u32) -> Result<Format, ViemStatus> {
     match raw {
         VIEM_FORMAT_PLAIN_TEXT => Ok(Format::PlainText),
         VIEM_FORMAT_MARKDOWN => Ok(Format::Markdown),
-        VIEM_FORMAT_MARKDOWN_SOURCE => Ok(Format::MarkdownSource),
         VIEM_FORMAT_CODE => Ok(Format::Code),
         _ => Err(ViemStatus::InvalidFormat),
     }
@@ -2543,9 +2529,6 @@ fn format_to_ffi(format: Format) -> u32 {
     match format {
         Format::PlainText => VIEM_FORMAT_PLAIN_TEXT,
         Format::Markdown => VIEM_FORMAT_MARKDOWN,
-
-        Format::MarkdownSource => VIEM_FORMAT_MARKDOWN_SOURCE,
-
         Format::Code => VIEM_FORMAT_CODE,
     }
 }
@@ -4444,6 +4427,7 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
         VIEM_KEY_ESCAPE => special(Key::Escape),
         VIEM_KEY_COPY_SELECTION => special(Key::CopySelection),
         VIEM_KEY_PASTE_CLIPBOARD => special(Key::PasteClipboard),
+        VIEM_KEY_PASTE_CLIPBOARD_MATCHING_STYLE => special(Key::PasteClipboardMatchingStyle),
         VIEM_KEY_ENTER => special(Key::Enter),
         VIEM_KEY_SHIFT_ENTER => special(Key::ShiftEnter),
         VIEM_KEY_ALT_ENTER => special(Key::AltEnter),
@@ -11522,9 +11506,6 @@ mod tests {
         use crate::document::Revision;
         for (format, source) in [
             (Format::Markdown, "# Heading"),
-            (Format::MarkdownSource, "# Heading"),
-
-
         ] {
             let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             document.initialize_style_defaults(br#"{"version":1}"#).unwrap();
@@ -13592,57 +13573,6 @@ pub unsafe extern "C" fn viem_core_view_set_line_mode(
     })
 }
 
-/// Read effective structural paragraph flow. WYSIWYG Markdown/HTML always
-/// flow; source modes have an independent per-view option, initially false.
-/// # Safety
-/// `out_enabled` must identify one aligned writable u32.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_paragraph_flow(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    out_enabled: *mut u32,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if out_enabled.is_null() || (out_enabled as usize) % std::mem::align_of::<u32>() != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let enabled = with_core_mut(handle, |core| {
-            core.paragraph_flow(ViewId(view)).map_err(core_status)
-        })?;
-        unsafe {
-            out_enabled.write(u32::from(enabled));
-        }
-        Ok(())
-    })
-}
-
-/// Change source-mode paragraph flow without changing source, undo, or other views.
-/// # Safety
-/// `out_outcome` must identify one aligned writable outcome.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_paragraph_flow(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    enabled: u32,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        unsafe {
-            clear_outcome(out_outcome)?;
-        }
-        if enabled > 1 {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let outcome = with_core_mut(handle, |core| {
-            dispatch_event(core, view, CoreEvent::SetParagraphFlow(enabled != 0))
-        })?;
-        unsafe {
-            out_outcome.write(outcome);
-        }
-        Ok(())
-    })
-}
-
 /// Set the application smart-quotes preference for one existing view. This is
 /// presentation/input policy only and never changes source or undo state.
 #[no_mangle]
@@ -14392,69 +14322,6 @@ pub unsafe extern "C" fn viem_core_view_edit_command_line(
     })
 }
 
-/// Switch Markdown source visibility and return an owned immutable effect batch.
-/// # Safety
-/// All request/output regions must be aligned, valid and disjoint.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_markdown_source_with_effects(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    request: *const ViemSetMarkdownSourceV1,
-    out_outcome: *mut ViemCoreOutcomeV1,
-    out_effects: *mut ViemEffectBatchHandle,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        let regions = [
-            typed_pointer_region(request, 1)?,
-            typed_pointer_region(out_outcome, 1)?,
-            typed_pointer_region(out_effects, 1)?,
-        ];
-        validate_disjoint_regions(&regions)?;
-        let request = unsafe { request.read() };
-        if request.struct_size < VIEM_SET_MARKDOWN_SOURCE_V1_SIZE || request.source > 1 {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        unsafe {
-            clear_outcome(out_outcome)?;
-            out_effects.write(0);
-        }
-        let source = request.source != 0;
-        let reservation = reserve_effect_batch()?;
-        let (summary, effects) = with_core_mut(handle, |core| {
-            let view = ViewId(view);
-            let outcome = core
-                .handle(
-                    view,
-                    CoreEvent::SetMarkdownSource {
-                        document: DocumentId(request.document_id),
-                        revision: Revision(request.document_revision),
-                        source,
-                    },
-                )
-                .map_err(core_status)?;
-            let summary = summarize_core_outcome(core, view, Some(&outcome))?;
-            let effects = OwnedEffectBatch::from_command(
-                core.document(),
-                core.command_state(view).ok_or(ViemStatus::InvalidView)?,
-                &ClipboardCommandContext::default(),
-                outcome.command,
-            );
-            Ok((summary, effects))
-        })?;
-        let effects = if let Some(effects) = effects {
-            reservation.commit(effects)?
-        } else {
-            drop(reservation);
-            0
-        };
-        unsafe {
-            out_outcome.write(summary);
-            out_effects.write(effects);
-        }
-        Ok(())
-    })
-}
-
 /// Change encoding and return an owned immutable warning/effect batch.
 /// # Safety
 /// All request/output regions must be aligned, valid and disjoint.
@@ -14728,7 +14595,7 @@ pub unsafe extern "C" fn viem_core_view_set_document_mode_with_effects(
         ];
         validate_disjoint_regions(&regions)?;
         let request = unsafe { request.read() };
-        if request.struct_size < VIEM_SET_DOCUMENT_MODE_V1_SIZE || request.formatted_markdown > 1 || request.reserved != 0 || length > 128 {
+        if request.struct_size < VIEM_SET_DOCUMENT_MODE_V1_SIZE || length > 128 {
             return Err(ViemStatus::InvalidArgument);
         }
         unsafe {
@@ -14754,7 +14621,6 @@ pub unsafe extern "C" fn viem_core_view_set_document_mode_with_effects(
                         document: DocumentId(request.document_id),
                         revision: Revision(request.document_revision),
                         mode,
-                        formatted_markdown: request.formatted_markdown != 0,
                     },
                 )
                 .map_err(core_status)?;

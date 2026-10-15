@@ -34,13 +34,7 @@ pub(crate) fn capture_range(
         // A byte-limited prefix of one indivisible word contains no row the
         // layout engine can publish. Match ordinary long-line capture: extend
         // through its first real break and stream an overflow row if needed.
-        end = end.max(super::line_breaks::first_line_break(
-            tree,
-            start..full.end,
-            view.paragraph_flow(),
-            &mut checkpoint.map_or_else(|| view.initial_wrap_break_state(), |c| c.wrap_break_state),
-            cancellation,
-        )?);
+        end = end.max(super::line_breaks::first_line_break(tree, start..full.end, &mut checkpoint.map_or_else(|| view.initial_wrap_break_state(), |c| c.wrap_break_state), cancellation)?);
     }
     let mut context_start = start;
     let mut context_end = end;
@@ -67,27 +61,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capture_reaches_real_break_with_flow_and_preserves_unicode_boundaries() {
+    fn capture_reaches_real_break_and_preserves_unicode_boundaries() {
         let prefix = "a".repeat(MAX_LONG_LINE_LAYOUT_SLICE_BYTES + 64);
         let tree = FormattedTextTree::try_from_text(format!("{prefix} \u{301}next\nend")).unwrap();
-        for flow in [false, true] {
-            let mut view = ViewLayout::new(100.0, 100.0);
-            view.set_paragraph_flow(flow);
-            let (end, capture) = capture_range(
-                &tree,
-                0,
-                0..tree.byte_len(),
-                &view,
-                None,
-                &LayoutCancellationToken::new(),
-            )
-            .unwrap();
-            // The opportunity after the first space lies inside its combining
-            // grapheme and is suppressed; the next real boundary follows next.
-            assert_eq!(end, prefix.len() + " \u{301}next\n".len());
-            assert!(tree.is_grapheme_boundary(end).unwrap());
-            assert!(tree.is_grapheme_boundary(capture.end).unwrap());
-        }
+        let view = ViewLayout::new(100.0, 100.0);
+        let (end, capture) = capture_range(
+            &tree,
+            0,
+            0..tree.byte_len(),
+            &view,
+            None,
+            &LayoutCancellationToken::new(),
+        )
+        .unwrap();
+        // The opportunity after the first space lies inside its combining
+        // grapheme and is suppressed; the next real boundary follows next.
+        assert_eq!(end, prefix.len() + " \u{301}next\n".len());
+        assert!(tree.is_grapheme_boundary(end).unwrap());
+        assert!(tree.is_grapheme_boundary(capture.end).unwrap());
         let cancelled = LayoutCancellationToken::new();
         cancelled.cancel();
         assert!(matches!(

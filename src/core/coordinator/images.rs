@@ -99,7 +99,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .into());
         }
         self.views.get(&view).ok_or(CoreError::UnknownView(view))?;
-        if !self.document.format().is_wysiwyg() {
+        if !self.document.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         let image = self

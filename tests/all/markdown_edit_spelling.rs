@@ -345,7 +345,7 @@ fn necessary_escaping_and_untouched_literal_modes_are_preserved() {
         assert!(document.undo());
         assert_source(&document, source);
     }
-    for format in [Format::MarkdownSource, Format::Code, Format::PlainText] {
+    for format in [Format::Code, Format::PlainText] {
         let mut document =
             Document::from_bytes(b"a&#32;".to_vec(), Encoding::Utf8, format).unwrap();
         document.insert(6, "x").unwrap();

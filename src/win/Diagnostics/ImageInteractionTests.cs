@@ -84,16 +84,6 @@ internal static class ImageInteractionTests
             pane.ImageDestinationValue = "missing.png"; pane.ImageTextValue = ""; pane.ApplyImageEditor();
             Check(Source().StartsWith("![](<missing.png>)", StringComparison.Ordinal), "an empty image alt text remains empty when editing its location");
             view.Undo(); Check(Source() == source, "image edit undo restores exact original source spelling");
-            view.SetMarkdownSource(true);
-            foreach (ulong offset in new ulong[] { 0, 1, 8, 15, 37 })
-            {
-                view.Place(offset, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-                Check(view.ImageContext().Image?.Destination == "https://example.invalid/a.png" && pane.ImagePopupVisible
-                    && window.Toolbar.InsertImage.IsChecked == true && !window.Toolbar.InsertImage.IsEnabled,
-                    "Source image markup activates the location popup at offset " + offset);
-                Check(!pane.ImageReloadVisible, "Source image popups omit the preview reload action");
-            }
-            view.SetMarkdownSource(false);
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             var previous = view.ImageContext();
             view.Command("G0");
@@ -173,7 +163,7 @@ internal static class ImageInteractionTests
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, "picked #%.png");
         const string source = "![old](https://example.invalid/old.png)\n\nbody";
-        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "note.md"), format: VIEM_FORMAT_MARKDOWN_SOURCE);
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "note.md"), format: VIEM_FORMAT_CODE);
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window); window.Activate();
         var pane = window.ActivePane!; var view = await pane.Ready;
@@ -471,9 +461,9 @@ internal static class ImageInteractionTests
                         "HTML image dimensions scale, preserve one-sided proportions, and obey the display cap: " + attributes);
                     Check(view.Provider.ImageDestination(image.render_run) == "sized.bmp",
                         "HTML images expose the decoded source to existing native image controls");
-                    view.SetMarkdownSource(true);
+                    view.SetMarkdownPreview(false);
                     Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
-                        "HTML dimensions and unrelated attributes survive native image loading and Source view: " + attributes);
+                        "HTML dimensions and unrelated attributes survive native image loading and Markdown Preview off: " + attributes);
                 }
                 finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
             }
@@ -627,10 +617,6 @@ internal static class ImageInteractionTests
             var cluster = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
             Check(Math.Abs(view.Provider.ImageLocationFontSize(cluster.render_run) - 23 * view.Viewport.scale) < .01,
                 "image URL labels inherit the Image style's resolved font rather than a fixed system size");
-            view.SetMarkdownSource(true);
-            var sourceCluster = view.Layout().Clusters.First(c => c.text_start == 0);
-            Check(Math.Abs(view.Provider.ImageLocationFontSize(sourceCluster.render_run) - 23 * view.Viewport.scale) < .01,
-                "Source image notation uses the same Image style font");
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "Image style presentation retains the authored source spelling");
         }

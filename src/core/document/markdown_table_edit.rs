@@ -691,7 +691,7 @@ impl Document {
         let mut prefix = String::new();
         if let Some(block) = &block {
             prefix = "> ".repeat(block.quote_depth);
-            if self.format() == Format::Markdown && range.is_empty()
+            if range.is_empty()
                 && range.start == block.range.start && matches!(block.kind, BlockKind::Heading(_))
             {
                 let line = self.state().source_hard_lines.line_at_offset(source.start)
@@ -720,12 +720,8 @@ impl Document {
         let physical = self.state().source_hard_lines.line_at_offset(source.start)
             .and_then(|index| self.state().source_hard_lines.get(index))
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let source_prefix = if self.format().is_source_view() && !prefix.is_empty() {
-            let raw = self.table_source_text(physical.start..source.start)?;
-            super::super::markdown_quotes::prefix(&raw) == raw.len()
-        } else { false };
         let at_paragraph_start = block.as_ref().is_some_and(|block|
-            range.is_empty() && (range.start == block.range.start || source_prefix)
+            range.is_empty() && range.start == block.range.start
                 && matches!(block.kind, BlockKind::Paragraph | BlockKind::Heading(_)));
         let mut body = String::new();
         let needs_before = !at_paragraph_start && source.start
@@ -760,27 +756,19 @@ impl Document {
         body.push_str(newline);
         body.push_str(&prefix);
         body.push_str(newline);
-        if !(self.format().is_source_view() && source.end == physical_start) {
-            if self.format() == Format::Markdown
-                && range.end == self.projection().text_tree().byte_len()
-                && block.as_ref().is_some_and(|block| matches!(block.kind, BlockKind::ListItem { .. }))
-            {
-                // No following item body owns terminal indentation. Emitting
-                // it here would turn an editable empty boundary into spaces.
-                body.push_str(&"> ".repeat(block.as_ref().unwrap().quote_depth));
-            } else {
-                body.push_str(&prefix);
-            }
+        if range.end == self.projection().text_tree().byte_len()
+            && block.as_ref().is_some_and(|block| matches!(block.kind, BlockKind::ListItem { .. }))
+        {
+            // No following item body owns terminal indentation. Emitting
+            // it here would turn an editable empty boundary into spaces.
+            body.push_str(&"> ".repeat(block.as_ref().unwrap().quote_depth));
+        } else {
+            body.push_str(&prefix);
         }
         let edit = TextEdit::new(range.clone(), "\n");
-        let mut patches = if self.format() == Format::Markdown {
-            markdown_split::patches_with_separator(self, &range, "\n", &body, Some(source.start))?
-                .unwrap_or(vec![SourcePatch::primary(source.clone(),
-                    self.encoding().encode_fragment(&spell_logical_breaks(&body, self.file_format()))?)])
-        } else {
-            vec![SourcePatch::primary(source.clone(),
-                self.encoding().encode_fragment(&spell_logical_breaks(&body, self.file_format()))?)]
-        };
+        let mut patches = markdown_split::patches_with_separator(self, &range, "\n", &body, Some(source.start))?
+            .unwrap_or(vec![SourcePatch::primary(source.clone(),
+                self.encoding().encode_fragment(&spell_logical_breaks(&body, self.file_format()))?)]);
         self.preserve_markdown_edit_boundaries(std::slice::from_ref(&edit),
             std::iter::once(&edit.range), &mut patches)?;
         patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
@@ -809,38 +797,35 @@ impl Document {
         if table.columns.len() != columns || table.rows.len() != body_rows + 1 {
             return Err(DocumentError::VerificationFailed.into());
         }
-        if self.format() == Format::Markdown {
-            // Only the intersected paragraphs can change around these local
-            // patches. Comparing the entire document prefix/suffix would make
-            // inserting a small table scale with unrelated document length.
-            let before_start = block.as_ref().map_or(range.start, |block| block.range.start);
-            let after_end = self.projection().blocks_for_region(&(range.end..range.end))
-                .into_iter().find(|block| block.range.start <= range.end && range.end <= block.range.end)
-                .map_or(range.end, |block| block.range.end);
-            let mapped = |at, association| -> Result<usize, ModelTransactionError> {
-                Ok(prepared.text_position_map().map_text_point(self.text_point(at)?, association,
-                    BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding)?
-                    .value().ok_or(DocumentError::AmbiguousProjection)?.offset())
-            };
-            let slice = |projection: &FormattedDocument, range| projection.text_tree().slice(range)
-                .map_err(DocumentError::FormattedTextStorage);
-            let before = slice(self.projection(), before_start..range.start)?;
-            let after = slice(self.projection(), range.end..after_end)?;
-            let candidate_before = slice(&state.projection,
-                mapped(before_start, Association::BeforeInsertion)?..table.range.start)?;
-            let candidate_after = slice(&state.projection,
-                table.range.end..mapped(after_end, Association::AfterInsertion)?)?;
-            if candidate_before.trim_end_matches('\n') != before.trim_end_matches('\n')
-                || candidate_after.trim_start_matches('\n') != after.trim_start_matches('\n')
-            {
-                return Err(unsupported(
-                    "This insertion cannot preserve the surrounding inline structure.",
-                ));
-            }
+        // Only the intersected paragraphs can change around these local
+        // patches. Comparing the entire document prefix/suffix would make
+        // inserting a small table scale with unrelated document length.
+        let before_start = block.as_ref().map_or(range.start, |block| block.range.start);
+        let after_end = self.projection().blocks_for_region(&(range.end..range.end))
+            .into_iter().find(|block| block.range.start <= range.end && range.end <= block.range.end)
+            .map_or(range.end, |block| block.range.end);
+        let mapped = |at, association| -> Result<usize, ModelTransactionError> {
+            Ok(prepared.text_position_map().map_text_point(self.text_point(at)?, association,
+                BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding)?
+                .value().ok_or(DocumentError::AmbiguousProjection)?.offset())
+        };
+        let slice = |projection: &FormattedDocument, range| projection.text_tree().slice(range)
+            .map_err(DocumentError::FormattedTextStorage);
+        let before = slice(self.projection(), before_start..range.start)?;
+        let after = slice(self.projection(), range.end..after_end)?;
+        let candidate_before = slice(&state.projection,
+            mapped(before_start, Association::BeforeInsertion)?..table.range.start)?;
+        let candidate_after = slice(&state.projection,
+            table.range.end..mapped(after_end, Association::AfterInsertion)?)?;
+        if candidate_before.trim_end_matches('\n') != before.trim_end_matches('\n')
+            || candidate_after.trim_start_matches('\n') != after.trim_start_matches('\n')
+        {
+            return Err(unsupported(
+                "This insertion cannot preserve the surrounding inline structure.",
+            ));
         }
         let caret = table.rows[0].cells[0].range.start;
-        let heading = block.filter(|block| self.format() == Format::Markdown
-            && matches!(block.kind, BlockKind::Heading(_)));
+        let heading = block.filter(|block| matches!(block.kind, BlockKind::Heading(_)));
         if let Some(block) = heading {
             let mut points = Vec::new();
             if block.range.start < range.start {
@@ -909,6 +894,18 @@ impl Document {
             return Ok(None);
         }
         let Some((table, row, cell)) = self.projection().table_cell_at(edit.range.start) else {
+            // Removing only the boundary before a table would join the
+            // retained text of the preceding paragraph with its first row.
+            if !edit.range.is_empty()
+                && self.projection().table_cell_at(edit.range.end)
+                    .is_some_and(|(table, _, _)| edit.range.end == table.range.start)
+                && self.projection().blocks_for_region(&(edit.range.start..edit.range.start)).iter()
+                    .any(|block| block.range.start < edit.range.start && edit.range.start <= block.range.end)
+            {
+                return Err(unsupported(
+                    "Editing across a table boundary requires a row action.",
+                ));
+            }
             return self.table_following_literal_pipe_patches(edit, affinity);
         };
         if edit.range == table.range && edit.range != cell.range && !edit.range.is_empty() {

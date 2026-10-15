@@ -260,7 +260,6 @@ internal sealed partial class EditorPane : Grid, IDisposable
             prepared.Zoom(viewport.scale);
             prepared.LineMode(View.CurrentLineMode);
             prepared.Number(View.NumberEnabled);
-            if (document.State.format == VIEM_FORMAT_MARKDOWN_SOURCE) prepared.ParagraphFlow(View.ParagraphFlowEnabled);
             prepared.MarkdownAutodetect(preferences.MarkdownAutodetect);
             prepared.SmartQuotes(preferences.SmartQuotes);
             prepared.ClipboardText = View.ClipboardText;

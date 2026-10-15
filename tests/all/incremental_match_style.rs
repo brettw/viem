@@ -4,7 +4,6 @@ fn documents() -> Vec<Document> {
     [
         (Format::PlainText, "one two"),
         (Format::Markdown, "one **two**"),
-        (Format::MarkdownSource, "one **two**"),
 
         (Format::Code, "one two"),
     ]

@@ -187,7 +187,7 @@ final class EVLineNumberGutterTests: XCTestCase {
                 (.baseParagraph, .blockMarginLeft, .float(64)),
             ])
             defer { session.detach() }
-            surface.setFormattedView(true)
+            surface.setMarkdownPreview(true)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
             window.contentViewController = surface
             defer { window.contentViewController = nil }
@@ -221,7 +221,7 @@ final class EVLineNumberGutterTests: XCTestCase {
             (.baseParagraph, .blockMarginRight, .float(64)),
         ])
         defer { session.detach() }
-        surface.setFormattedView(true)
+        surface.setMarkdownPreview(true)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentViewController = surface
         defer { window.contentViewController = nil }
@@ -404,7 +404,7 @@ final class EVLineNumberGutterTests: XCTestCase {
             (EVStyleTestFixtures.block("Builtin current line number"), .characterSize, .float(19)),
         ])
         defer { session.detach() }
-        surface.setFormattedView(true)
+        surface.setMarkdownPreview(true)
         let before = try backend.recoverySnapshot()
         surface.performInput {
             try session.setNumber(true)
@@ -475,7 +475,7 @@ final class EVLineNumberGutterTests: XCTestCase {
         let source = "first\nsecond\n\n## Heading\n\n" + String(repeating: "body words ", count: 150)
         let (backend, surface, session) = try makeSurface(source, format: .markdown)
         defer { session.detach() }
-        surface.setFormattedView(true)
+        surface.setMarkdownPreview(true)
         surface.performInput {
             _ = try session.setViewportOrigin(left: 0, top: 0)
             try session.setNumber(true)

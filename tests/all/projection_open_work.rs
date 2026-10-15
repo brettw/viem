@@ -89,13 +89,12 @@ fn large_open_reports_one_linear_decode_pass() {
 fn markdown_view_switch_accounts_for_one_candidate_decode() {
     for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
         let source = encode_with_bom("# alpha\n\nbeta", encoding);
-        let document = Document::from_bytes(source, encoding, Format::MarkdownSource).unwrap();
+        let document = Document::from_bytes(source, encoding, Format::Code).unwrap();
         let prepared = document
-            .prepare_model_request(ModelRequest::SetMarkdownSource {
+            .prepare_model_request(ModelRequest::SetViewFormat {
                 document: document.id(),
                 revision: document.revision(),
-                source: false,
-
+                target: Format::Markdown,
             })
             .unwrap();
         let summary = prepared.summary();

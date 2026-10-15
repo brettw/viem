@@ -1,7 +1,7 @@
 //! Passive HTML embedded in Markdown. Attributes cannot install CSS, execute
 //! scripts, or load resources. Comments intentionally retain syntax.
 use super::*;
-use crate::document::{html::{self, TokenKind}, ContainerAttributes, ContainerKind, ContainerMembership};
+use crate::document::html::{self, TokenKind};
 
 #[cfg(test)]
 thread_local! {
@@ -43,21 +43,13 @@ pub(super) fn pre_owners(source: &str, excluded: &[Range<usize>]) -> Vec<html::P
         } else if !html::void(&tag.name) {
             let owner = if tag.name == "pre" && !stack.iter().any(|(name, _)| name == "pre") {
                 let owner = owners.len();
-                owners.push(html::PreOwner { opening: token.range.clone(), range: token.range.start..source.len(), tag: tag.clone() });
+                owners.push(html::PreOwner { opening: token.range.clone(), range: token.range.start..source.len() });
                 Some(owner)
             } else { None };
             stack.push((tag.name, owner));
         }
     }
     owners
-}
-
-pub(super) fn image_only_html(source: &str) -> bool {
-    html::tokenize(source).into_iter().all(|token| match token.kind {
-        TokenKind::Tag(tag) => allowed(&tag.name) && (!html::block(&tag.name) || matches!(tag.name.as_str(), "p" | "div")),
-        TokenKind::Text => source[token.range].chars().all(|ch| ch == '\u{fffc}' || ch.is_whitespace()),
-        _ => false,
-    })
 }
 
 pub(super) fn contains_table(source: &str) -> bool {
@@ -98,7 +90,7 @@ impl MarkdownBuilder<'_> {
             let removed = html::without_ranges(&self.source_text[first..last], &excluded);
             let tokens = html::tokenize(&removed.text);
             let Some(html::Token { kind: TokenKind::Tag(tag), .. }) = tokens.first() else { continue; };
-            if let Some(image) = html::image_metadata(tag, first..last, source, self.preserve_markers) { return Some(image); }
+            if let Some(image) = html::image_metadata(tag, first..last, source) { return Some(image); }
         }
         None
     }
@@ -121,16 +113,10 @@ impl MarkdownBuilder<'_> {
         // metadata was already parsed without those prefixes by the owning
         // paragraph; parsing the raw spelling again would duplicate it or
         // include quote markers in an attribute value.
-        if self.preserve_markers && self.inline_images.last().is_some_and(|image| image.source == source) {
-            self.emit_range(range.start, range.end);
-            return;
-        }
-        if let Some(mut image) = html::image_metadata(tag, output..output, source.clone(), self.preserve_markers)
+        if let Some(mut image) = html::image_metadata(tag, output..output, source.clone())
             .filter(|_| self.source_syntax.recognizes_inline_html(&source)) {
-            if self.preserve_markers { self.emit_range(range.start, range.end); } else {
-                self.output.push('\u{fffc}');
-                self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source });
-            }
+            self.output.push('\u{fffc}');
+            self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source });
             image.range.end = self.output.len();
             self.inline_images.push(image);
             return;
@@ -141,7 +127,7 @@ impl MarkdownBuilder<'_> {
             if tag.name == "img" { self.styles.push(StyleSpan { range: start..self.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) }); }
             return;
         }
-        if !tag.end && tag.name == "hr" && !self.preserve_markers {
+        if !tag.end && tag.name == "hr" {
             if self.output.len() > self.inline_paragraph_start && !self.output.ends_with('\n') {
                 let at = self.output.len();
                 self.inline_hard_breaks.push(at);
@@ -161,7 +147,7 @@ impl MarkdownBuilder<'_> {
         if tag.end {
             if let Some(index) = self.html_stack.iter().rposition(|(name, _, _, _)| name == &tag.name) {
                 let entries: Vec<_> = self.html_stack.drain(index..).collect();
-                let finish = self.output.len() + if self.preserve_markers { range.len() } else { 0 };
+                let finish = self.output.len();
                 for (_, start, application, slot) in entries {
                     self.finish_html_scope(start, finish, application, slot);
                 }
@@ -191,7 +177,6 @@ impl MarkdownBuilder<'_> {
                 self.html_stack.push((tag.name.clone(), self.output.len(), application, slot));
             }
         }
-        if self.preserve_markers { self.emit_range(range.start, range.end); }
     }
 
     pub(super) fn finish_html_scope(
@@ -208,69 +193,6 @@ impl MarkdownBuilder<'_> {
         }
     }
 
-    /// HTML blocks remain literal in Source, including physical newlines,
-    /// while image actions and style queries use the complete tag interval.
-    pub(super) fn source_html_images(&mut self, range: Range<usize>, output: usize, quotes: &[super::super::markdown_quotes::QuoteLine]) {
-        let excluded = quote_prefix_ranges(self.input, &range, quotes);
-        for token in html::tokenize_without_ranges(&self.source_text[range.clone()], &excluded) {
-            let TokenKind::Tag(tag) = token.kind else { continue; };
-            let start = range.start + token.range.start;
-            let end = range.start + token.range.end;
-            let source = self.unit_at(start).unwrap().source.start..self.unit_at(end - 1).unwrap().source.end;
-            if let Some(image) = html::image_metadata(&tag,
-                output + token.range.start..output + token.range.end, source, true) {
-                self.inline_images.push(image);
-            }
-        }
-    }
-
-    /// Source keeps its physical rows and literal HTML. Preformatted owners
-    /// acquire code metadata on those rows without interpreting other HTML prose.
-    pub(super) fn source_html_blocks(
-        &self, range: Range<usize>, output: usize, kind: BlockKind, quote_depth: usize,
-        quotes: &[super::super::markdown_quotes::QuoteLine],
-    ) -> Vec<Block> {
-        let text = &self.source_text[range.clone()];
-        let excluded = quote_prefix_ranges(self.input, &range, quotes);
-        let owners = pre_owners(text, &excluded);
-        let endings: Vec<_> = text.match_indices('\n').map(|(at, _)| at).collect();
-        let rows: Vec<_> = owners.iter().map(|owner| {
-            let first = endings.partition_point(|at| *at < owner.opening.start);
-            let start = first.checked_sub(1).map_or(0, |index| endings[index] + 1);
-            let last = endings.partition_point(|at| *at < owner.range.end);
-            let end = endings.get(last).copied().unwrap_or(text.len());
-            (start..end, html::pre_language(&owner.tag))
-        }).collect();
-        let mut blocks = Vec::new();
-        let mut at = 0;
-        let mut push = |range: Range<usize>, language: Option<String>, code: bool| {
-            let mut block = Block::new(0, output + range.start..output + range.end, kind.clone(),
-                if code { "Code Block" } else { "Paragraph" }.into(), None);
-            block.quote_depth = quote_depth;
-            block.markdown_html = code;
-            block.code_language = language;
-            if code {
-                block.containers = vec![ContainerMembership {
-                    container: Arc::new(ContainerAttributes {
-                        id: super::super::containers::provisional_identity(), kind: ContainerKind::CodeBlock,
-                        style: "Code Block".into(), direct_formatting: None,
-                    }), starts_here: true, ends_here: true,
-                }].into();
-            }
-            blocks.push(block);
-        };
-        for (index, (row, language)) in rows.iter().enumerate() {
-            // Multiple owners on one physical row cannot supply independent
-            // Source code contexts; retain that row's ordinary literal owner.
-            if index.checked_sub(1).is_some_and(|previous| rows[previous].0.end >= row.start)
-                || rows.get(index + 1).is_some_and(|next| row.end >= next.0.start) { continue; }
-            if at < row.start { push(at..row.start - 1, None, false); }
-            push(row.clone(), language.clone(), true);
-            at = (row.end + usize::from(row.end < text.len())).min(text.len());
-        }
-        if at < text.len() || at == 0 { push(at..text.len(), None, false); }
-        blocks
-    }
 }
 
 pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revision) -> FormattedDocument {
@@ -293,7 +215,7 @@ pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revis
                 token.kind = TokenKind::MappedText { text: fragment.text[token.range.clone()].to_owned(), mapped: true };
             }
             TokenKind::Opaque => { token.kind = TokenKind::MappedText { text: fragment.text[token.range.clone()].to_owned(), mapped: true }; }
-            TokenKind::Tag(tag) if html::image_metadata(tag, 0..0, 0..0, false).is_some() => {
+            TokenKind::Tag(tag) if html::image_metadata(tag, 0..0, 0..0).is_some() => {
                 tag.attributes.retain(|(name, _)| matches!(name.as_str(), "src" | "alt" | "width" | "height"));
             }
             TokenKind::Tag(tag) if allowed(&tag.name) => {
@@ -350,10 +272,15 @@ mod tests {
         assert_eq!(owners.len(), 2);
         assert_eq!(&source[owners[0].opening.clone()], "<PRE LANG='c&#43;&#43;' lang=rust>");
         assert_eq!(owners[0].range.end, source.find("</div>").unwrap() + "</div>".len());
-        assert_eq!(html::pre_language(&owners[0].tag).as_deref(), Some("cpp"));
+        let tag = |owner: &html::PreOwner| match &html::tokenize(&source[owner.opening.clone()])[0].kind {
+            TokenKind::Tag(tag) => tag.clone(),
+            _ => panic!("pre owner opens with a tag"),
+        };
+        assert_eq!(html::pre_language(&tag(&owners[0])).as_deref(), Some("cpp"));
         assert_eq!(owners[1].range.end, source.len());
-        assert_eq!(html::pre_language(&owners[1].tag).as_deref(), Some("unknown"));
-        let attribute = owners[0].tag.attribute_range("lang").unwrap();
+        assert_eq!(html::pre_language(&tag(&owners[1])).as_deref(), Some("unknown"));
+        let attribute = tag(&owners[0]).attribute_range("lang").unwrap();
+        let attribute = owners[0].opening.start + attribute.start..owners[0].opening.start + attribute.end;
         assert_eq!(&source[attribute], "'c&#43;&#43;'");
     }
 

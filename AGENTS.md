@@ -17,11 +17,13 @@ the macOS presentation and behavior with platform controls. A terminal frontend,
 a Vimscript runtime, and pixel-for-pixel gVim emulation are outside scope.
 
 Text, Code, and Markdown are the source formats. Code is literal text with
-optional syntax highlighting; HTML files use Code. Only Markdown has Source and
-WYSIWYG views. Switching those views preserves source bytes, encoding, BOM, line
-endings, anchors, and undo restoration. View mode overrides also reproject the
-same source without converting it. There is no format-conversion or HTML editing
-mode. Every opening path must admit
+optional syntax highlighting; HTML files use Code. Markdown is presented as
+formatted Markdown Preview. Turning Preview off edits the same source literally
+as Code with the Markdown language; there is no separate Markdown source view.
+Switching preserves source bytes, encoding, BOM, line endings, anchors, and undo
+restoration. View mode overrides also reproject the same source without
+converting it. There is no format-conversion or HTML editing mode. Every opening
+path must admit
 unrecognized files, including extensionless files and dotfiles, through the
 lossless Text fallback; native file filters must not reject them first.
 Recognized and explicitly selected formats retain their precedence.
@@ -179,8 +181,8 @@ needed, unrelated malformed bytes stay untouched, and undo restores exact bytes.
 Use the original encoding for new text when representable. Otherwise use a
 semantically exact format escape or return an explicit encoding policy/rejection;
 never silently substitute or change encoding during ordinary input. Markdown
-prose may use numeric references; code spans/fences and literal/source views
-must retain literal semantics. Explicit encoding conversion is separately
+prose may use numeric references; code spans/fences and literal views must
+retain literal semantics. Explicit encoding conversion is separately
 undoable and verifies the new projection. Conversion to Latin-1 may replace
 unrepresentable scalars with `?`, reporting the count; ordinary Latin-1 input
 remains strict, and undo restores exact original bytes.
@@ -328,9 +330,6 @@ other character formatting, preserving unrelated source and nested treatments.
   menu opens a blank quote after it, reusing an empty final paragraph where
   possible, atomically.
   Enter continues nonempty quotes and removes treatment from empty quotes.
-  Source Enter after a completed quote marker, including before its optional
-  following space, keeps the following body inside the quote. Splitting at
-  that prefix creates one empty quoted line before the body, including a table.
   Backspace at quote start follows structural joining; quote removal preserves
   inner treatments. Whole-document deletion leaves an empty ordinary paragraph
   and preserves document metadata.
@@ -345,25 +344,23 @@ movement uses visual order/affinity. Row metrics account for all fragments.
 
 Target GitHub's rendering of repository Markdown, using the
 [GFM specification](https://github.github.com/gfm/) and GitHub's documented
-rendering features. Source and WYSIWYG share interpretation; Source exposes the
-markup. Missing constructs are compatibility gaps, not alternative rules. Keep
-[MARKDOWN_GAPS.md](MARKDOWN_GAPS.md) and
+rendering features. Missing constructs are compatibility gaps, not alternative
+rules. Keep [MARKDOWN_GAPS.md](MARKDOWN_GAPS.md) and
 [the feature demo](docs/markdown_demo.md) current. The gap inventory is the
 reference for deferred constructs and known incompatibilities.
 
-GFM table behavior follows [the Markdown table specification](docs/markdown-tables.md),
-including insertion, cell editing, styles, source-only visual alignment, and
-portable validation. Cell rectangles are semantic selections, not contiguous
-source ranges or Vim Visual Block selections. Keep remaining compatibility and
-platform-validation limitations explicit in the compatibility inventory.
-WYSIWYG table borders honor resolved edge colors; Source structural border
-characters use explicit cell border colors and otherwise retain their text color.
+GFM table behavior follows [the Markdown table
+specification](docs/markdown-tables.md), including insertion, cell editing,
+styles, and portable validation. Cell rectangles are semantic selections, not
+contiguous source ranges or Vim Visual Block selections. Keep remaining
+compatibility and platform-validation limitations explicit in the compatibility
+inventory. Preview table borders honor resolved edge colors.
 
 Deliberate presentation exceptions:
 
 - Reference links and reference definitions retain literal bracket syntax in
-  WYSIWYG with the light-purple `Markdown reference` style (`#A673D1`). Images
-  are atomic inline objects in WYSIWYG; Source retains their full notation.
+  Preview with the light-purple `Markdown reference` style (`#A673D1`). Images
+  are atomic inline objects in Preview; Code retains their full notation.
   Only local image files may be decoded for previews. Never fetch remote image
   resources; show a box containing their location instead. Local previews keep
   intrinsic aspect ratio and shrink to the available content width without
@@ -381,7 +378,7 @@ Deliberate presentation exceptions:
 - Image-only ordinary paragraphs use the editable Image paragraph style for
   margins, borders and padding. Inline images keep their surrounding paragraph
   geometry. Image's font and text appearance apply to remote or unavailable
-  image labels and complete image notation in Source; these presentation
+  image labels; these presentation
   choices never modify Markdown bytes or become formatting on replacement
   prose. Missing or invalid local images show their location and a broken-image
   indicator. Reload an image only from an explicit local-resource refresh or a
@@ -425,27 +422,26 @@ Markdown image insertion and location editing use native caret popups, with the
 image button beside Code Block. Selecting an image shows its location, explicit
 open/copy/edit/remove actions, and an outline matching the open-box caret. The
 edit transition follows the link popup's native controls and reduced-motion
-behavior. Clicking a WYSIWYG image selects its entire atomic range independently
-of automatic text-selection preferences. Source syntax remains ordinary editable
-text. Explicit Insert/Replace navigation onto an image selects its atomic range;
-subsequent arrow movement leaves that selection and resumes its typing mode.
-Normal-mode motion keeps Vim's mode and outlines the image cell. Native Left and
-Right arrow keys cross hard-line boundaries, including image-only paragraphs;
-Vim `h`/`l` and operator motions keep their line-boundary rules. Image authoring
-preserves unrelated source, titles and undo; empty
-alternative text is valid. Resolved reference images render as objects, and
-editing one occurrence may replace only that occurrence with inline image syntax.
-The image Location field offers a native file picker that updates only the draft.
-Picked files use document-relative destinations when this does not ascend through
-the filesystem root; otherwise retain an absolute file destination, including
-unsaved documents and different Windows drives or shares. Encode filename
-punctuation as path content rather than fragments or queries. Cancellation or a
-stale draft cannot change source or a later draft.
-Opening an image location is explicit native URL interaction, never a resource
-fetch for a preview. Clipboard plain-text image fallbacks and HTML export retain
-passive location text rather than creating automatic remote loads.
+behavior. Clicking a Preview image selects its entire atomic range independently
+of automatic text-selection preferences. Explicit Insert/Replace navigation onto
+an image selects its atomic range; subsequent arrow movement leaves that
+selection and resumes its typing mode. Normal-mode motion keeps Vim's mode and
+outlines the image cell. Native Left and Right arrow keys cross hard-line
+boundaries, including image-only paragraphs; Vim `h`/`l` and operator motions
+keep their line-boundary rules. Image authoring preserves unrelated source,
+titles and undo; empty alternative text is valid. Resolved reference images
+render as objects, and editing one occurrence may replace only that occurrence
+with inline image syntax. The image Location field offers a native file picker
+that updates only the draft. Picked files use document-relative destinations
+when this does not ascend through the filesystem root; otherwise retain an
+absolute file destination, including unsaved documents and different Windows
+drives or shares. Encode filename punctuation as path content rather than
+fragments or queries. Cancellation or a stale draft cannot change source or a
+later draft. Opening an image location is explicit native URL interaction, never
+a resource fetch for a preview. Clipboard plain-text image fallbacks and HTML
+export retain passive location text rather than creating automatic remote loads.
 
-Markdown Source and WYSIWYG share native link insertion, editing and removal.
+Markdown Preview provides native link insertion, editing and removal.
 The caret popup uses Text and Destination fields, defaulting Text to the selected
 text; an unlinked caret opens both fields empty. Destination is an editable
 combobox whose explicit expansion lists current document headings using the
@@ -453,38 +449,35 @@ same fragment identities as navigation. A link's compact toolbar fits its label
 within its maximum width, showing an italic `empty` for an empty label. It sits
 below its text, aligned to its left edge, and offers explicit open, copy
 destination, edit and remove actions. Edit expands
-into the same fields with a transition that honors reduced motion. In Source,
-the complete inline link notation belongs to the popup's active range. Link
+into the same fields with a transition that honors reduced motion. Link
 mutations verify the retained selection and source revision before publication,
 share ordinary undo, and preserve unselected text and label formatting.
 
 ## Markdown authoring and structural editing
 
-Markdown opens in Source view. Source and WYSIWYG share one serialization;
-switching is an undoable buffer transaction that preserves bytes and recovers
-each view's caret and viewport through provenance. It must not reset scrolling
-or become quadratic; test first switches in both directions on large documents.
-Insert/Replace affinity follows the adjacent content when closing syntax appears.
+Turning Markdown Preview on or off is an undoable buffer transaction that
+preserves bytes and recovers each view's caret and viewport through provenance.
+It must not reset scrolling or become quadratic; test first switches in both
+directions on large documents. Insert/Replace affinity follows the adjacent
+content when closing syntax appears.
 
-- WYSIWYG prose folds ordinary source endings to spaces. Pairs of separator
+- Preview prose folds ordinary source endings to spaces. Pairs of separator
   endings create paragraphs; surplus pairs retain editable empty paragraphs,
-  and an unmatched terminal ending is trivia. Source exposes markup and ordinary
-  continuation endings but represents paragraph separators without extra raw
-  blank rows. Continuations share paragraph style and spacing. Code endings and
-  whitespace remain literal in both views.
+  and an unmatched terminal ending is trivia. Continuations share paragraph
+  style and spacing. Code endings and whitespace remain literal.
   Splitting at a folded source ending consumes its corresponding space; deleting
   the last character on a continuation line retains that folded space.
 - Enter in prose creates a paragraph with two current-fileformat endings.
-  Shift-Enter creates an internal hard break in WYSIWYG (Markdown backslash
+  Shift-Enter creates an internal hard break in Preview (Markdown backslash
   break, or inline `<br>` where a physical ending would alter structure).
-  Source Shift-Enter and preformatted/Text/Code input use literal line endings.
+  Preformatted/Text/Code input uses literal line endings.
   Keep breaks within their quote/list owner.
 - New emphasis uses `**`/`*`; new headings use ATX `#` plus a space. Preserve
   untouched alternative spellings. Removing heading, quote, list or Code Block
   treatment must preserve paragraph boundaries with minimal supporting syntax.
-  Preserve body-leading WYSIWYG spaces/tabs with numeric references when literal
+  Preserve body-leading Preview spaces/tabs with numeric references when literal
   whitespace would become structural indentation. Escape typed reference syntax;
-  code and source views retain their literal spelling.
+  code retains its literal spelling.
 - Prefer literal characters when their Markdown meaning is unchanged. Text
   edits may simplify authored escapes and adjacent space/tab references that
   have become safe, including references already present before the edit.
@@ -496,7 +489,7 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   boundaries through supporting escapes/breaks. An indented block may become a
   fence when needed to express empty or leading/trailing blank code lines.
 - A code block is one container with one literal paragraph, internal hard breaks
-  and spacing around the whole block. WYSIWYG code blocks expose a language
+  and spacing around the whole block. Preview code blocks expose a language
   selector inside their upper-right border, using the Code Block foreground.
   It paints beneath the code text without reserving space or changing code,
   caret or container geometry. Its opacity is 25% while idle and 100% while
@@ -513,16 +506,16 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   content without adding text or caret rows. Syntax remains
   disposable and bounded to visible work. List/quote ownership survives a
   contained paragraph's heading or Code Block style.
-- WYSIWYG labels and their gaps are layout decorations with no text, register,
+- Preview labels and their gaps are layout decorations with no text, register,
   selection or caret positions. The first body grapheme is first editable text.
   Label gutters are independent of body indentation; hanging labels must not
   shift body alignment when an ordinal gains a digit. Tight/loose spacing follows
-  structure. Source markers remain literal and editable.
+  structure.
 - List actions affect whole items and their descendants. Indent requires a
   preceding sibling and cannot create nesting beyond four levels; unindent
   requires a parent, but imported deeper lists can be unindented. Enter and
-  `o`/`O` continue semantic items, including Source continuations; Enter on an
-  empty item exits to an independent ordinary paragraph. In WYSIWYG prose,
+  `o`/`O` continue semantic items; Enter on an empty item exits to an
+  independent ordinary paragraph. In Preview prose,
   Option-Enter on macOS / Alt-Enter on Windows and Insert Paragraph in List Item
   split at a collapsed caret into another paragraph within the same item. The
   new paragraph has no label and retains list/quote ownership, including while
@@ -533,8 +526,8 @@ Insert/Replace affinity follows the adjacent content when closing syntax appears
   Shift-Enter remains an internal hard break.
   Splitting inside a visible prefix edits that syntax rather than duplicating it.
 - Insert-mode Tab/Shift-Tab anywhere in an item, including continuation
-  paragraphs and Source marker boundaries, invoke structural indent/unindent.
-  An unavailable action leaves it unchanged. Backspace at a WYSIWYG item start
+  paragraphs, invoke structural indent/unindent.
+  An unavailable action leaves it unchanged. Backspace at a Preview item start
   unindents nested items or removes top-level list treatment. A continuation
   paragraph start joins the previous visible paragraph, even across a child
   list; it is not another label boundary.
@@ -566,7 +559,7 @@ quotes.
 ### Authored input and caret formatting
 
 Automatically formatting typed Markdown defaults on and is configurable in
-Settings > Editing. It applies only to Markdown WYSIWYG committed input.
+Settings > Editing. It applies only to Markdown Preview committed input.
 Incomplete delimiters remain visible; completed emphasis, strong, strike, code
 and inline-link spans become semantic formatting. ATX headings, list markers
 and quote prefixes activate on their following space; three backticks or tildes
@@ -594,23 +587,23 @@ is unavailable within a bounded query or conversion cannot be encoded. Quote
 conversion and insertion are one undoable edit.
 
 With no selection in Normal, character-formatting actions enter Insert at the
-caret with the requested sparse typing override. With no selection in Insert/Replace,
-character-formatting actions set a sparse view-local typing override at the exact
-caret without changing source or history.
-The next insertion applies text and formatting atomically; repeated typing keeps
-it, explicit movement/mode exit/projection change retires it. UI reports inherited
+caret with the requested sparse typing override. With no selection in
+Insert/Replace, character-formatting actions set a sparse view-local typing
+override at the exact caret without changing source or history. The next
+insertion applies text and formatting atomically; repeated typing keeps it,
+explicit movement/mode exit/projection change retires it. UI reports inherited
 style plus pending overrides, excluding automatic syntax colors. Turning off a
-property at its closing boundary exits that context (crossing closing markup in
-Source); doing so inside text splits subsequent formatting without skipping text
-or losing unrelated nested styles. IME commit includes the override.
-The Link toggle follows this typing policy: switching it off splits the link
-around subsequent inserted text, preserving retained label formatting and source.
-With a supported selection it removes link treatment; unsupported selections
-disable the action. Character controls report the current Normal-mode character
-or the Insert/Replace typing context, including link state. The Image button is
-active and disabled for the current Normal-mode image or an exact selected image.
-An Insert/Replace caret without a selection keeps Image inactive and inserts a
-new image rather than editing the adjacent image.
+property at its closing boundary exits that context; doing so inside text splits
+subsequent formatting without skipping text or losing unrelated nested styles.
+IME commit includes the override. The Link toggle follows this typing policy:
+switching it off splits the link around subsequent inserted text, preserving
+retained label formatting and source. With a supported selection it removes link
+treatment; unsupported selections disable the action. Character controls report
+the current Normal-mode character or the Insert/Replace typing context,
+including link state. The Image button is active and disabled for the current
+Normal-mode image or an exact selected image. An Insert/Replace caret without a
+selection keeps Image inactive and inserts a new image rather than editing the
+adjacent image.
 
 Replace Backspace restores original local source patches, including formatting
 and delimiters, rather than reconstructing plain text or saving a whole document
@@ -632,14 +625,15 @@ clipboard payloads, registers, dirty state or document undo.
 Explicit format selection wins on open; existing Markdown defaults remain.
 Otherwise recognized code filenames or load-time markers may select Code instead
 of Text. Language and format are independent: detecting Markdown inside Code
-must not switch to WYSIWYG. Automatic detection uses safe modelines, user then
-bundled filename rules, shebangs, then bounded content signatures; an explicit
-language override (including None) wins. Unknown explicit markers remain
-unavailable selections instead of falling through. Detection runs on load,
-explicit redetection and relevant filename changes, never on ordinary edits,
-scrolling or highlighting completion. Markers are data, not executable Vimscript
-or arbitrary option settings. See the [detection profile](src/core/document/syntax/detection/PROFILE.md)
-for bounded sampling, supported marker syntax and registered rules.
+must not switch to Markdown Preview. Automatic detection uses safe modelines,
+user then bundled filename rules, shebangs, then bounded content signatures; an
+explicit language override (including None) wins. Unknown explicit markers
+remain unavailable selections instead of falling through. Detection runs on
+load, explicit redetection and relevant filename changes, never on ordinary
+edits, scrolling or highlighting completion. Markers are data, not executable
+Vimscript or arbitrary option settings. See the [detection
+profile](src/core/document/syntax/detection/PROFILE.md) for bounded sampling,
+supported marker syntax and registered rules.
 
 When adding, removing, renaming or updating bundled languages, keep the shared
 catalogue, canonical/provider aliases, filename extensions and special basenames
@@ -665,7 +659,7 @@ detected language in the label, independent of any forced language. Choosing
 Code language > Auto keeps detected Markdown in literal Code with Markdown
 highlighting. Without a detected
 language it uses Plain text and reads Auto (Plain Text). Opening still uses the
-existing format detection; choosing Markdown uses the remembered formatted view.
+existing format detection; opening Markdown uses the remembered Preview choice.
 Detection uses physical source, including when the current view hides markup.
 
 Use the pinned bundled Vim runtime, with confined includes and no installed-Vim,
@@ -785,7 +779,9 @@ work even after estimates reset. Test fresh-layout equivalence, invalidation and
 large documents.
 
 Each view independently selects Visual or Physical Source line meaning,
-initially Physical Source in Code and Visual elsewhere. The status location
+initially Physical Source in Code and Visual elsewhere. A view that has not
+chosen a different meaning adopts the new format's default when the document
+format changes, including Preview toggles and their undo. The status location
 always reports physical source lines and grapheme columns without forcing layout;
 its eye/file button toggles command line meaning independently of those coordinates.
 Visual counts displayed rows; Physical
@@ -806,8 +802,7 @@ Navigation counts beyond the file clamp to its last numbered line, excluding the
 zero-byte boundary after a final terminator. A bare numeric Ex navigation past
 EOF moves to the last file line and reports Vim's invalid-range diagnostic;
 out-of-range addresses used by editing commands still reject atomically.
-In Text, Code and Markdown Source, a final delimiter outside an explicit empty
-Markdown paragraph terminates the last line: Normal motions
+In Text and Code, a final delimiter terminates the last line: Normal motions
 and Ex commands must not treat its following insertion boundary as another line.
 Enter or opening a line at an unterminated Text/Code EOF supplies the delimiter
 needed to keep the new empty line editable after Escape and reopening. Place
@@ -831,8 +826,7 @@ source lines contribute to one visual row, display only its first ordinal.
 Current-line appearance follows that displayed representative. Table cells on
 one source line share one number, and wrapped lines retain their full vertical
 region while scrolling. Markdown's editable empty paragraphs retain numbers;
-Text, Code and Markdown Source do not number a final terminator's zero-byte
-boundary when it is not an explicit Markdown paragraph.
+Text and Code do not number a final terminator's zero-byte boundary.
 Center numbers vertically and shrink typography to fit short regions. The
 builtin line-number paragraph styles are editable presentation only; the current
 line style inherits the ordinary style without default overrides. Their display
@@ -1047,16 +1041,16 @@ notation consumes only one original grapheme in Replace. Reject invalid Unicode
 scalars. Undo, repeat, macros and Replace Backspace retain literal intent.
 
 Native formatting accelerators use the same semantic actions and availability
-as native formatting controls in Markdown Source and WYSIWYG, including with
+as native formatting controls in Markdown Preview, including with
 the toolbar hidden. Pending Vim grammar, prompts, literal input and active IME
 composition retain input priority. Windows formatting bindings preserve the
 unshifted Vim control commands and AltGr text input. Link accelerators open the
 native insert/edit popup rather than removing the link or exiting its context.
 
-Text, Code and Markdown Source use logical indentation columns with defaults
+Text and Code use logical indentation columns with defaults
 `autoindent`, `tabstop=2`, `shiftwidth=2`, `softtabstop=2`, `expandtab`, `smarttab`.
 Options inherit application defaults independently per buffer field; explicit
-overrides are shared across views and never enter document undo. WYSIWYG breaks
+overrides are shared across views and never enter document undo. Preview breaks
 retain format-aware structure. `=` copies preceding nonblank indentation; it
 never invokes a language formatter, `cindent`, `indentexpr` or external process.
 Vim tab/soft-stop, Ctrl-T/D and temporary-indent behavior must preserve counts,
@@ -1119,8 +1113,8 @@ long-line layout must agree and avoid rescanning arbitrarily long prefixes.
 Visible whitespace follows Vim 9.2 `listchars` semantics and validation, with
 view-local `list`/`listchars` overrides of live application defaults. Initially
 markers are enabled with `tab:>-,trail:*,extends:>,precedes:<`. The menu toggle
-uses the same option. Markers appear only in Text, Code and source views, never
-WYSIWYG (including rich Code blocks). They use the application-owned **Visible
+uses the same option. Markers appear only in Text and Code, never Markdown
+Preview (including rich Code blocks). They use the application-owned **Visible
 whitespace** style, initially dark blue `#00008B`, with application-settings undo.
 It cannot become authored/typing style. Marker ink fits existing geometry and
 changes no text, caret stops, wrapping, height, search, clipboard, accessibility
@@ -1132,12 +1126,12 @@ and bounded large-document work.
 ### Hard-line reflow
 
 `gq` and `gw` are internal portable reflow operators for Text and Code only.
-Markdown Source/WYSIWYG return non-destructive unsupported-format errors until
+Markdown Preview returns non-destructive unsupported-format errors until
 format-aware semantics exist. No implicit external formatter or Vimscript runs.
 `textwidth` defaults to 80 positive Unicode columns and inherits per buffer from
 application settings; zero/window-width fallback is unsupported. Changing it
-neither reformats text nor enables automatic hard wrapping. Soft wrap and source
-Paragraph Flow remain independent.
+neither reformats text nor enables automatic hard wrapping. Soft wrap remains
+independent.
 
 Resolve normal checked Vim motion/selection endpoints, then expand only to their
 intersected hard lines. Visual Block formats each touched hard line once. Doubled
@@ -1332,12 +1326,12 @@ memory-only; future persistence must reject source/configuration mismatches.
 ## Clipboard and HTML export
 
 Internal registers preserve portable rich structure where the destination can
-translate it. WYSIWYG Copy publishes plain text, native rich text, and a versioned
+translate it. Preview Copy publishes plain text, native rich text, and a versioned
 private fragment retaining selected source, pipeline metadata, and resolved
 styles. Compatible contiguous private paste uses verified local transactions.
 Rectangular copies retain each selected source segment separately, exclude
 intervening unselected text, and keep plain-text rectangular paste semantics.
-Source/Code copy literal selected source only; automatic syntax styles never
+Code copies literal selected source only; automatic syntax styles never
 enter Code registers or clipboard payloads. Copy Source publishes source markup
 as plain text; Paste and Match Style ignores private data. Malformed optional
 private data must not break ordinary commands/plain paste. Windows `+` and `*`
@@ -1366,13 +1360,27 @@ when the original final source line did not. Do not rewrite the clipboard or
 ask modal questions. Internal exact registers, literal-input/command prompts,
 and representable NUL retain their own semantics.
 
+In Markdown Preview, native Paste interprets external text without private
+data as Markdown at the native paste position. Complete pasted blocks keep
+their own structure outside the destination's lists and quotes: pasted
+headings are top-level headings, destination content after the caret resumes
+below them, and a split ordered run restarts at one. A leading pasted
+paragraph joins the text before the caret, a trailing unterminated paragraph
+joins the text after it, and a single partial paragraph pastes inline. Lists
+of the same kind that CommonMark joins stay tight. Code spans, code blocks
+and tables keep pasted text literal, although a table cell accepts one inline
+paragraph. Text this cannot represent, and Paste and Match Style, insert
+literally without typing assistance, protecting block syntax and leading
+whitespace at every line start. Pending typing choices keep a single inline
+paste literal so they apply to it.
+
 Export writes a separate standalone UTF-8 styled HTML document from any format,
 without changing source, format, path, dirty state, history, or saved baseline,
 including on cancellation/failure. Never overwrite any open document's source;
-HTML source gets a distinct suggested export name. Markdown Source and WYSIWYG
-export the same interpreted structure and presentation exceptions. Code exports
-escaped literal whitespace/text with whole-snapshot syntax coverage, or default
-Code styling when highlighting is unavailable/disabled.
+HTML source gets a distinct suggested export name. Markdown Preview exports its
+interpreted structure and presentation exceptions. Code, including Markdown with
+Preview off, exports escaped literal whitespace/text with whole-snapshot syntax
+coverage, or default Code styling when highlighting is unavailable/disabled.
 
 Reuse the normalized style cascade and CSS serializers. Export resolved content
 styling and structure, exclude editor furniture, escape source/CSS so authored
@@ -1454,7 +1462,7 @@ Keep these deliberate restrictions and differences:
   `:source!`, and general Vimscript remain unsupported.
 - Sort is a source-preserving permutation, retaining encoding, final terminator,
   delimiter slots and moved position identities. Numeric ranges sort physical
-  source lines and reproject in either Markdown view. Contextual ranges use exact
+  source lines and reproject in Markdown Preview. Contextual ranges use exact
   displayed boundaries; complete Markdown paragraphs retain their syntax/styles,
   while unsupported split or ambiguous owners fail atomically. Float/locale
   sorting and command chaining remain unsupported.
@@ -1623,7 +1631,7 @@ while loading or resolving uses direct built-in defaults without recursing throu
 Base Paragraph. Imported cyclic edges remain preserved for correction.
 
 Defaults remain sparse and source assignments/direct declarations take precedence.
-Source/WYSIWYG share defaults. Loading or changing themes never writes inherited
+Loading or changing themes never writes inherited
 values into source, changes dirty state, or adds document history. Reject the
 smallest independently invalid saved declaration/definition with diagnostics,
 retaining valid settings; invalid JSON/unsupported versions retain existing
@@ -1662,36 +1670,35 @@ Preserve AppKit Home/End bindings with Viem's line policy and distinct document-
 edge selectors. Consume preference-adjusted wheel direction once. Provide native
 contextual clipboard access; never make bare Vim keys global menu equivalents.
 
-Format sits between Edit and Style and groups document type, Word wrap, and
-Flow source paragraphs. Code language is in File before Text Encoding.
-Supported inline formatting lives in the toolbar; Style retains named styles,
-lists, and independent definition editing.
-Document-formatting actions are capability-limited, not an arbitrary property-
-editing API. Menus and toolbar describe the focused document's actual
-named/structural/inline state, including mixed values; Code style inspection
-uses current cached syntax runs without parsing or whole-document scans.
-Native menu tracking must retain item identity while the user holds a button.
-The Block Quote toolbar toggle precedes Code Block, reports structural quote
-membership (including mixed selections), and adds/removes quote treatment while
-preserving inner paragraph/list treatments. It stays visible but disabled
-when unavailable, including carets or selections in Markdown code blocks.
-Source table delimiter rows and prefixes disable block-formatting controls just
-like table cell text.
-Windows Heading 6 remains menu-only because Control-6 belongs to Vim Control-^.
+Format sits between Edit and Style and groups document type (Plain text,
+Markdown Preview, Code) and Word wrap. Code language is in File before Text
+Encoding. Supported inline formatting lives in the toolbar; Style retains named
+styles, lists, and independent definition editing. Document-formatting actions
+are capability-limited, not an arbitrary property-editing API. Menus and
+toolbar describe the focused document's actual named/structural/inline state,
+including mixed values; Code style inspection uses current cached syntax runs
+without parsing or whole-document scans. Native menu tracking must retain item
+identity while the user holds a button. The Block Quote toolbar toggle precedes
+Code Block, reports structural quote membership (including mixed selections),
+and adds/removes quote treatment while preserving inner paragraph/list
+treatments. It stays visible but disabled when unavailable, including carets or
+selections in Markdown code blocks. Windows Heading 6 remains menu-only because
+Control-6 belongs to Vim Control-^.
 
-The toolbar is absent in Text/Code and remembers visibility per Markdown format.
+The toolbar is absent in Text and non-Markdown Code and remembers visibility for
+Markdown documents. With Preview off it shows only the Markdown Preview toggle.
 Toolbar groups use the standard extra gap, without divider lines. Paragraph and
 character style selectors follow the indent controls so they clip first in a
 narrow window; earlier formatting controls retain precedence on both platforms.
 The toolbar never scrolls or shows scrollbars. Keep controls at their natural
 widths and clip excess controls; focus, wheel, touch and accessibility requests
 must not pan the row.
-Its Formatted view toggle uses source-preserving Markdown switching, stays
-reachable in narrow windows, and follows shared changes/history. Remember the
-last successful Markdown view choice across launches, including undo/redo of a
-view switch. Newly opened Markdown documents use that choice; without a saved
-choice, Formatted view is off. Text/Code documents and passive refreshes do not
-change the choice, and existing or recovered documents retain their own view.
+Its Markdown Preview toggle uses source-preserving switching, stays reachable
+in narrow windows, and follows shared changes/history. Remember the last
+successful Preview choice across launches, including undo/redo of a switch.
+Newly opened Markdown documents use that choice; without a saved choice,
+Preview is off. Text and non-Markdown Code documents and passive refreshes do
+not change the choice, and existing or recovered documents retain their own view.
 The status line
 has no format popup/label; its caret widget remains right-aligned beside prompts/
 output. Show each view's file path relative to cwd, using an absolute path when
@@ -1704,9 +1711,7 @@ The filename context menu copies its full path or its cwd-relative path,
 independent of truncation and the display's root fallback. After a divider,
 “Change directory to here” changes cwd to the file's containing directory using
 ordinary `:cd` behavior. Disable file actions for unnamed documents, and relative
-copying across Windows drives/shares. Flow Source Paragraphs
-is initially-off Markdown Source layout only,
-never a text-coordinate, serialization, or history change.
+copying across Windows drives/shares.
 
 Choosing/rechoosing a named character style clears direct declarations and
 inline traits in the same undoable transaction; a caret changes future typing
@@ -1739,7 +1744,7 @@ nonempty section remains.
 Style names and type labels carry consistent role icons: ¶ for paragraphs,
 a bold serif `a` for characters, a square drawn from separated corners for
 blocks, and a gear for internal built-in definitions.
-Structural list choices use the paragraph icon. The Markdown WYSIWYG toolbar's
+Structural list choices use the paragraph icon. The Markdown Preview toolbar's
 paragraph selector offers only styles its formatting operations can apply;
 presentation-only image and table styles remain available in the inspector.
 [`docs/Word style.png`](<docs/Word style.png>) is a density/composition reference,

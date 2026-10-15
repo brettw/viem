@@ -58,8 +58,9 @@ is disabled. The inline grammar is an injection helper, not a separate menu
 language or filename target. Existing Markdown catalogue and filename rules
 (`.md`, `.markdown`, `.mdown`, `.mdwn`, `.mkd`, `.mkdn`) are unchanged. Selecting
 Code > Auto for a Markdown file, or Code > Markdown, uses these grammars solely
-for literal Code highlighting. Native Markdown Source and WYSIWYG retain their
-existing parser and presentation; ordinary Markdown opening remains unchanged.
+for literal Code highlighting, including Markdown with Preview off. Markdown
+Preview retains its own parser and presentation; ordinary Markdown opening
+remains unchanged.
 
 Queries may request child languages such as `comment`, `doxygen`, `printf`,
 `regex`, or `jsdoc`. A child is used only when a compatible Tree-sitter package

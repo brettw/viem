@@ -88,7 +88,7 @@ fn autolinks_resolve_and_stop_at_punctuation() {
         ("Email me@example.com.", "me@example.com", "mailto:me@example.com"),
         (r"\[label](https://example.test/)", "https://example.test/", "https://example.test/"),
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let doc = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             let at = doc.text().find(label).unwrap();
             assert_eq!(doc.link_at(doc.text_point(at).unwrap()).unwrap().as_deref(), Some(destination), "{source:?} {format:?}");
@@ -151,10 +151,10 @@ fn reference_style_is_light_purple_and_definition_edits_refresh_other_paragraphs
     let doc = open("[alt][reference]\n\n[reference]: x.png");
     let color = DocumentLayoutStyles::character_at(doc.projection(), 2, false).unwrap().foreground;
     assert_eq!((color.red, color.green, color.blue), (0.65, 0.45, 0.82));
-    let mut doc = Document::from_bytes(b"[label]\n\n[label]: /url".to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+    let mut doc = Document::from_bytes(b"[label]\n\n[label]: /url".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let at = doc.text().rfind("label").unwrap();
     doc.replace(at..at + 5, "other").unwrap();
-    let fresh = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, Format::MarkdownSource).unwrap();
+    let fresh = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
     assert_eq!(doc.projection().style_spans(), fresh.projection().style_spans());
 }
 
@@ -177,7 +177,7 @@ fn demo_loads_in_both_views_and_lays_out_without_changing_source() {
     use viem_core::Core;
     use viem_core::layout::MockTextMeasurementProvider;
     let source = include_str!("../../docs/markdown_demo.md");
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap());
         let view = core.add_view(MockTextMeasurementProvider::new(), 800., 600.);
         let snapshot = core.layout(view).unwrap().snapshot().unwrap();
@@ -186,12 +186,6 @@ fn demo_loads_in_both_views_and_lays_out_without_changing_source() {
         assert!(core.document().text().contains("Unsupported GitHub features"));
         let images = core.document().projection().inline_images_for_region(&(0..core.document().text().len()));
         assert!(!images.is_empty());
-        if format.is_source_view() {
-            assert!(images.iter().all(|image| {
-                let notation = &core.document().text()[image.range.clone()];
-                notation.starts_with("![") || notation.starts_with("<img")
-            }));
-        }
     }
 }
 

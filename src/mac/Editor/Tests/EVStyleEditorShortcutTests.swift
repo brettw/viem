@@ -11,7 +11,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("text".utf8), typeName: EVDocument.markdownSourceType)
+        try backend.read(source: Data("text".utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
@@ -28,8 +28,8 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         for item in [paragraph, character, edit] {
             item.target = controller.documentContentController
         }
-        for format: EVSourceFormat in [.markdown, .markdownSource, .markdown] {
-            surface.setFormattedView(format == .markdown)
+        for format: EVSourceFormat in [.markdown, .markdown] {
+            surface.setMarkdownPreview(format == .markdown)
             styles.update()
             XCTAssertTrue(paragraph.isEnabled, "\(format)")
             XCTAssertTrue(character.isEnabled, "\(format)")

@@ -84,7 +84,7 @@ impl LongLineCheckpointCache {
             self.entries.remove(&oldest);
         }
     }
-    pub(crate) fn rebase(&mut self, document: &Document, map: &PositionMap, flow: bool) {
+    pub(crate) fn rebase(&mut self, document: &Document, map: &PositionMap) {
         self.entries.retain(|_, entry| {
             let Some(dependency) = &mut entry.dependency else {
                 return false;
@@ -115,7 +115,7 @@ impl LongLineCheckpointCache {
             let checkpoint = &mut entry.checkpoint;
             let Some(line) = document
                 .projection()
-                .presentation_line_range(checkpoint.hard_line_index, flow)
+                .presentation_line_range(checkpoint.hard_line_index)
             else {
                 return false;
             };

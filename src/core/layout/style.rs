@@ -16,7 +16,6 @@ use std::collections::BTreeSet;
 use std::ops::Range;
 
 mod recovery;
-mod source_table_paint;
 
 fn lower_alpha(mut ordinal: u64) -> Option<String> {
     if ordinal == 0 {
@@ -250,22 +249,6 @@ impl From<FormattedTextError> for DocumentStyleError {
 }
 
 impl DocumentLayoutStyles {
-    pub(crate) fn apply_source_quote_policy(&mut self, format: crate::document::Format, flow: bool) {
-        if format == crate::document::Format::MarkdownSource && !flow {
-            for paragraph in &mut self.paragraphs {
-                paragraph.containers = paragraph.containers.iter().filter(|c|
-                    !matches!(c.kind, crate::document::ContainerKind::Quote)).cloned().collect();
-                paragraph.quote_depth = 0;
-                if paragraph.quote_border {
-                    paragraph.quote_border = false;
-                    paragraph.quote_depth = 0;
-                    paragraph.leading_indent = 0.0;
-                    paragraph.trailing_indent = 0.0;
-                    paragraph.first_line_indent = 0.0;
-                }
-            }
-        }
-    }
 
     /// Resolve the content associated with one current logical boundary in
     /// logarithmic plus local style-run work; empty paragraphs need no shaping.
@@ -354,25 +337,6 @@ impl DocumentLayoutStyles {
         Self::resolve_region(document, 0..document.text_tree().byte_len())
     }
 
-    pub(crate) fn source_flow_styles(
-        document: &FormattedDocument,
-        range: Range<usize>,
-    ) -> Result<Option<Self>, DocumentStyleError> {
-        let Some(blocks) = document.flow_blocks_for_region(&range) else {
-            return Ok(None);
-        };
-        let images = document.inline_images_for_region(&range);
-        let resolved = Self::resolve_for_presentation(StyleCascadeInput {
-            blocks: &blocks,
-            style_spans: &[],
-            inline_images: &images,
-            style_sheet: document.style_sheet(),
-            document_style: document.document_style(),
-            search_matches: &[],
-        }, crate::document::Format::MarkdownSource)?;
-        Ok(Some(resolved))
-    }
-
     /// Resolve only blocks and character spans that can affect a contiguous
     /// formatted-text region. Document-root values are still resolved from the
     /// immutable style sheet, while paragraph/run work is proportional to the
@@ -381,40 +345,29 @@ impl DocumentLayoutStyles {
         document: &FormattedDocument,
         text_range: Range<usize>,
     ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_with_flow(document, text_range, false)
-    }
-
-    pub(crate) fn resolve_region_with_flow(
-        document: &FormattedDocument,
-        text_range: Range<usize>,
-        flow: bool,
-    ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_with_search(document, text_range, flow, &[])
+        Self::resolve_region_with_search(document, text_range, &[])
     }
 
     pub(crate) fn resolve_region_with_search(
         document: &FormattedDocument,
         text_range: Range<usize>,
-        flow: bool,
         search_matches: &[Range<usize>],
     ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_impl(document, text_range, flow, search_matches, None)
+        Self::resolve_region_impl(document, text_range, search_matches, None)
     }
 
     pub(crate) fn resolve_region_for_presentation(
         document: &FormattedDocument,
         text_range: Range<usize>,
-        flow: bool,
         search_matches: &[Range<usize>],
         format: crate::document::Format,
     ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_impl(document, text_range, flow, search_matches, Some(format))
+        Self::resolve_region_impl(document, text_range, search_matches, Some(format))
     }
 
     fn resolve_region_impl(
         document: &FormattedDocument,
         text_range: Range<usize>,
-        flow: bool,
         search_matches: &[Range<usize>],
         recovery_format: Option<crate::document::Format>,
     ) -> Result<Self, DocumentStyleError> {
@@ -426,12 +379,7 @@ impl DocumentLayoutStyles {
         {
             return Err(DocumentStyleError::InvalidBlockRange { index: 0 });
         }
-        let flow_blocks = flow
-            .then(|| document.flow_blocks_for_region(&text_range))
-            .flatten();
-        let structural_flow = flow_blocks.is_some();
-        let regional_blocks =
-            flow_blocks.unwrap_or_else(|| document.blocks_for_region(&text_range));
+        let regional_blocks = document.blocks_for_region(&text_range);
         let regional_spans = document.layout_style_spans_for_region(&text_range);
         let regional_images = document.inline_images_for_region(&text_range);
         validate_blocks_in_tree(text, &regional_blocks)?;
@@ -449,18 +397,14 @@ impl DocumentLayoutStyles {
             None => Self::resolve_validated(input),
         }?;
         for (paragraph, block) in styles.paragraphs.iter_mut().zip(&regional_blocks) {
-            if !structural_flow {
-                paragraph.list_marker_range = document
-                    .list_marker_range_for_block(block)
-                    .filter(|range| !range.is_empty());
-            }
+            paragraph.list_marker_range = document
+                .list_marker_range_for_block(block)
+                .filter(|range| !range.is_empty());
         }
         if !document.tables().is_empty() {
-            source_table_paint::apply(document, &text_range, &mut styles)?;
-            styles.table_context = Some(super::engine::tables::TableLayoutContext::new(document, recovery_format.is_some_and(|format| format.is_source_view())));
+            styles.table_context = Some(super::engine::tables::TableLayoutContext::new(document));
         }
         styles.inline_images = regional_images.into_iter()
-            .filter(|image| !image.source_view)
             .map(|image| super::ShapeInlineImage {
                 text_range: image.range, destination: image.destination,
                 width: image.width, height: image.height,

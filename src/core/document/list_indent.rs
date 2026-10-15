@@ -112,7 +112,9 @@ fn targets(
                     && blocks[*candidate].list_item_owner() == Some(owner))
         });
     if unindent {
-        if base == 0 || parent.is_none() {
+        // Without a parent paragraph the item may still share its line with
+        // an empty parent's marker (`- - b`); the source patch decides.
+        if base == 0 {
             return Err(DocumentError::UnsupportedFormatting);
         }
     } else if previous.is_none()
@@ -133,14 +135,14 @@ fn targets(
 
 impl Document {
     pub fn list_indent_capabilities(&self, range: Range<usize>) -> (bool, bool) {
-        if !(self.format().is_wysiwyg() || self.format().is_source_view())
+        if !self.format().is_markdown()
             || self.validate_range(&range).is_err()
         {
             return (false, false);
         }
         let blocks = self
             .projection()
-            .list_indentation_blocks(self.format().is_source_view());
+            .list_indentation_blocks();
         let Some(mut selected) = blocks.index_touching_point(range.start) else {
             return (false, false);
         };
@@ -200,11 +202,13 @@ impl Document {
             .and_then(|index| blocks.get(index))
             .is_some_and(|block| level(&block).map(|level| u16::from(level) + 1) == Some(base)
                 && same_list_parent(&block, &current));
+        // A nested item without a parent paragraph shares its line with an
+        // empty parent's marker (`- - b`) and can still be lifted.
         let parent = base > 1
             && blocks
                 .find_navigation(0..first, true, lower)
                 .and_then(|index| blocks.get(index))
-                .is_some_and(|block| {
+                .is_none_or(|block| {
                     level(&block).map(|level| u16::from(level) + 1) == Some(base - 1)
                 });
         let indent = previous
@@ -225,39 +229,24 @@ impl Document {
         range: Range<usize>,
         unindent: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        self.validate_range(&range)?;
-        if self.format().is_source_view() {
-            let visible = Document::from_bytes_with_file_format(
-                self.source_bytes(),
-                self.encoding(),
-                Format::Markdown,
-                self.file_format(),
-            )?;
-            let raw = self
-                .projection()
-                .source_range(range.clone())
-                .or_else(|| {
-                    self.projection()
-                        .source_insertion_point(range.start, true)
-                        .map(|at| at..at)
-                })
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let start = visible.visible_point_for_source(raw.start, true)?;
-            let end = if range.is_empty() {
-                start
-            } else {
-                visible.visible_point_for_source(raw.end, false)?
-            };
-            // A selection entirely inside hidden syntax can map its inward
-            // edges past one another. It selects no visible list body.
-            if start > end {
-                return Err(DocumentError::UnsupportedFormatting.into());
-            }
-            let prepared = visible.prepare_list_indent(start..end, unindent)?;
-            return self
-                .prepare_visible_source_patches(prepared.summary().source_patches().to_vec());
+        let parentless = unindent && self.format().is_markdown()
+            && targets(self.projection().blocks(), &range, unindent).is_ok_and(|target| target.parent.is_none());
+        let prepared = self.prepare_list_indent_in_place(range, unindent);
+        // Lifting out of an empty parent is only an alternative spelling; when
+        // it cannot be verified the item simply has no unindent available.
+        if parentless && prepared.is_err() {
+            return Err(DocumentError::UnsupportedFormatting.into());
         }
-        if !self.format().is_wysiwyg() {
+        prepared
+    }
+
+    fn prepare_list_indent_in_place(
+        &self,
+        range: Range<usize>,
+        unindent: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.validate_range(&range)?;
+        if !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         let blocks = self.projection().blocks();
@@ -433,11 +422,11 @@ fn markdown_patches(
             })
     };
     let reference = if unindent {
-        target.parent.unwrap()
+        target.parent
     } else {
-        target.previous.unwrap()
+        target.previous
     };
-    let reference_line = line_for(&blocks[reference])?;
+    let reference_line = reference.map(|reference| line_for(&blocks[reference])).transpose()?;
     // An item can share its first line with an empty parent's marker
     // (`- - b`). Lifting it removes that outer marker rather than whitespace,
     // so its indentation runs through every column before its own marker.
@@ -455,8 +444,15 @@ fn markdown_patches(
         None => columns(start_text),
     };
     let desired_indent = if unindent {
-        columns(&input.text[lines[reference_line].clone()])
+        match (reference_line, shared_marker_prefix) {
+            (Some(line), _) => columns(&input.text[lines[line].clone()]),
+            // Lifting out of an empty parent with no paragraph puts the item
+            // at that parent's marker column.
+            (None, Some(_)) => columns(start_text),
+            (None, None) => return Err(DocumentError::UnsupportedFormatting),
+        }
     } else {
+        let reference_line = reference_line.ok_or(DocumentError::UnsupportedFormatting)?;
         let context = contexts[reference_line]
             .as_ref()
             .ok_or(DocumentError::AmbiguousProjection)?;
@@ -488,12 +484,12 @@ fn markdown_patches(
     // root marker in the run: these lines already belong to the structural
     // edit, while unrelated source marker spelling remains untouched.
     let mut ordered_next = if unindent {
-        match blocks[target.parent.unwrap()].kind {
-            BlockKind::ListItem {
+        match target.parent.map(|parent| &blocks[parent].kind) {
+            Some(BlockKind::ListItem {
                 ordered: true,
                 ordinal,
                 ..
-            } => Some(ordinal.saturating_add(1)),
+            }) => Some(ordinal.saturating_add(1)),
             _ => None,
         }
     } else {
@@ -523,28 +519,30 @@ fn markdown_patches(
         ordered_next = Some(ordinal.saturating_add(1));
     }
     let mut patches = Vec::new();
-    if !unindent && blocks[reference].range.is_empty()
+    let empty_reference = |reference: usize| blocks[reference].range.is_empty()
         && blocks[reference + 1..target.first].iter().any(|block|
-            level(block).is_none() && navigation_level(block).is_some())
-    {
-        // A bare empty marker ends before surplus blank lines, so indentation
-        // alone would leave the moved item at the top level. Give that empty
-        // parent a passive body to retain its new child across the separator.
-        let row = &lines[reference_line];
-        let text = &input.text[row.clone()];
-        let marker = super::super::markdown_blocks::marker_prefix_length(text)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        if text[marker..].trim().is_empty() {
-            let body = if text.ends_with([' ', '\t']) { "<span></span>" } else { " <span></span>" };
-            // Quote stripping removes source contributors at the next row's
-            // boundary. Address this physical row's ending directly rather
-            // than giving an empty cooked range that neighboring ownership.
-            let at = original.endings.get(reference_line).map(|ending| ending.source.start)
+            level(block).is_none() && navigation_level(block).is_some());
+    if let (false, Some(reference), Some(reference_line)) = (unindent, reference, reference_line) {
+        if empty_reference(reference) {
+            // A bare empty marker ends before surplus blank lines, so indentation
+            // alone would leave the moved item at the top level. Give that empty
+            // parent a passive body to retain its new child across the separator.
+            let row = &lines[reference_line];
+            let text = &input.text[row.clone()];
+            let marker = super::super::markdown_blocks::marker_prefix_length(text)
                 .ok_or(DocumentError::AmbiguousProjection)?;
-            patches.push(SourcePatch::primary(
-                at..at,
-                document.encoding().encode_fragment(body)?,
-            ));
+            if text[marker..].trim().is_empty() {
+                let body = if text.ends_with([' ', '\t']) { "<span></span>" } else { " <span></span>" };
+                // Quote stripping removes source contributors at the next row's
+                // boundary. Address this physical row's ending directly rather
+                // than giving an empty cooked range that neighboring ownership.
+                let at = original.endings.get(reference_line).map(|ending| ending.source.start)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                patches.push(SourcePatch::primary(
+                    at..at,
+                    document.encoding().encode_fragment(body)?,
+                ));
+            }
         }
     }
     for (line_index, line) in lines.iter().enumerate().take(end).skip(start) {
@@ -564,7 +562,7 @@ fn markdown_patches(
         let mut indentation = " ".repeat(next);
         if !unindent && line_index == start && blocks[target.first].range.is_empty()
             && line_index > 0 && !input.text[lines[line_index - 1].clone()].trim().is_empty()
-            && !blocks[reference].range.is_empty()
+            && reference.is_some_and(|reference| !blocks[reference].range.is_empty())
         {
             // An empty nested bullet cannot interrupt its parent's paragraph
             // in GFM (and '-' may instead become a setext underline). A blank

@@ -10,7 +10,7 @@ use viem_core::{Core, CoreError, CoreEvent, ViewId};
 fn nested_container_markers_on_one_row_measure_prefixes_linearly() {
     for marker in ["- ", "* ", "1. ", "> ", ">", "> - ", "- > "] {
         let source = format!("{}a\n", marker.repeat(4_000));
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let (document, work) = measure_document_work(|| {
                 Document::from_bytes_detect_encoding(source.clone().into_bytes(), format)
             });
@@ -46,10 +46,10 @@ fn replay(source: &[u8], width: f32, resize: bool, events: Vec<CoreEvent>) {
     }
     for event in events {
         let event = match event {
-            CoreEvent::SetMarkdownSource { source, .. } => CoreEvent::SetMarkdownSource {
+            CoreEvent::SetDocumentMode { mode, .. } => CoreEvent::SetDocumentMode {
                 document: core.document().id(),
                 revision: core.document().revision(),
-                source,
+                mode,
             },
             event => event,
         };
@@ -107,10 +107,10 @@ fn spelling_context_bands_tolerate_an_owner_after_the_edited_line() {
         key(Key::Enter),
         text(" "),
         key(Key::Escape),
-        vec![CoreEvent::SetMarkdownSource {
+        vec![CoreEvent::SetDocumentMode {
             document: viem_core::document::DocumentId(0),
             revision: viem_core::Revision(0),
-            source: true,
+            mode: viem_core::DocumentMode::Code("markdown".into()),
         }],
     ];
     replay(b"<pre\n\n\n\n>", 300., false, events.concat());
@@ -125,7 +125,7 @@ fn deeply_nested_source_rows_lay_out_and_reach_the_end() {
         "- ".repeat(3_000) + "a\n",
         format!("x{}y{}\n", "<b>".repeat(3_000), "</b>".repeat(3_000)),
     ] {
-        for format in [Format::MarkdownSource, Format::Markdown] {
+        for format in [Format::Markdown] {
             let document = Document::from_bytes_detect_encoding(source.clone().into_bytes(), format).unwrap();
             let mut core = Core::new(document);
             let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);

@@ -475,85 +475,6 @@ impl LayoutJobRequest {
     }
 }
 
-/// Source-flow shaping substitutes only classified internal source breaks.
-/// UTF-8 byte positions remain identical to the editable source projection.
-pub(super) fn flow_text(text: String, origin: usize, lines: &[Range<usize>]) -> String {
-    let mut bytes = text.into_bytes();
-    for line in lines {
-        let start = line.start.max(origin) - origin;
-        let end = line.end.saturating_sub(origin).min(bytes.len());
-        for byte in &mut bytes[start.min(end)..end] {
-            if *byte == b'\n' {
-                *byte = b' ';
-            }
-        }
-    }
-    String::from_utf8(bytes).expect("ASCII whitespace replacement preserves UTF-8")
-}
-
-pub(crate) fn flow_paragraph_styles(styles: &mut DocumentLayoutStyles, lines: &[Range<usize>]) {
-    let mut paragraphs: Vec<super::ParagraphLayoutStyle> = Vec::new();
-    for line in lines {
-        if let Some(paragraph) = styles.paragraphs.iter().find(|paragraph| {
-            paragraph.text_range.start <= line.start && line.start < paragraph.text_range.end
-                || paragraph.text_range.is_empty() && paragraph.text_range.start == line.start
-        }) {
-            // A Source paragraph can retain explicit hard breaks while its soft
-            // breaks flow. Keep its original start/identity so continuation
-            // lines neither repeat paragraph spacing nor first-line indent.
-            // Older source projections may use several physical blocks for one
-            // flow line; extend their first block only as far as that line.
-            if let Some(previous) = paragraphs
-                .last_mut()
-                .filter(|previous| previous.block_id == paragraph.block_id)
-            {
-                previous.text_range.end = previous.text_range.end.max(line.end);
-            } else {
-                let mut paragraph = paragraph.clone();
-                paragraph.text_range.start = paragraph.text_range.start.min(line.start);
-                paragraph.text_range.end = paragraph.text_range.end.max(line.end);
-                paragraphs.push(paragraph);
-            }
-        }
-    }
-    styles.paragraphs = paragraphs;
-}
-
-/// A bounded long-line capture may start after the first physical block in a
-/// flowed source paragraph. Fetch only that block's cascade before extending
-/// its paragraph geometry over the complete presentation line.
-pub(crate) fn resolve_flow_paragraph_styles(
-    projection: &crate::document::FormattedDocument,
-    styles: &mut DocumentLayoutStyles,
-    lines: &[Range<usize>],
-) -> Result<(), DocumentStyleError> {
-    if let (Some(first), Some(last)) = (lines.first(), lines.last()) {
-        if let Some(flow_styles) =
-            DocumentLayoutStyles::source_flow_styles(projection, first.start..last.end)?
-        {
-            styles.paragraphs = flow_styles.paragraphs;
-            if flow_styles.recovery_diagnostic.is_some() { styles.recovery_diagnostic = flow_styles.recovery_diagnostic; }
-            return Ok(());
-        }
-    }
-    for line in lines {
-        if !styles.paragraphs.iter().any(|paragraph| {
-            paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
-        }) {
-            let origin = DocumentLayoutStyles::resolve_region_for_presentation(projection,
-                line.start..line.start, false, &[], crate::document::Format::MarkdownSource)?;
-            if origin.recovery_diagnostic.is_some() { styles.recovery_diagnostic = origin.recovery_diagnostic; }
-            if let Some(paragraph) = origin.paragraphs.into_iter().find(|paragraph| {
-                paragraph.text_range.start <= line.start && line.start <= paragraph.text_range.end
-            }) {
-                styles.paragraphs.push(paragraph);
-            }
-        }
-    }
-    flow_paragraph_styles(styles, lines);
-    Ok(())
-}
-
 fn retain_regional_styles(
     mut styles: DocumentLayoutStyles,
     line_ranges: &[Range<usize>],
@@ -612,11 +533,10 @@ fn paragraph_matches_line(paragraph: Range<usize>, line: &Range<usize>) -> bool 
 fn document_line_range(
     document: &Document,
     hard_line: usize,
-    flow: bool,
 ) -> Result<Range<usize>, LayoutJobError> {
     document
         .projection()
-        .presentation_line_range(hard_line, flow)
+        .presentation_line_range(hard_line)
         .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line })
 }
 
@@ -648,7 +568,6 @@ fn bounded_long_line_work_end(
     document: &Document,
     start: usize,
     hard_line_end: usize,
-    paragraph_flow: bool,
     mut break_state: super::line_breaks::WrapBreakState,
     cancellation: &LayoutCancellationToken,
 ) -> Result<usize, LayoutJobError> {
@@ -656,9 +575,7 @@ fn bounded_long_line_work_end(
     if bounded_end == hard_line_end {
         return Ok(bounded_end);
     }
-    let first_break = super::line_breaks::first_line_break(
-        document.projection().text_tree(), start..hard_line_end, paragraph_flow, &mut break_state, cancellation,
-    )?;
+    let first_break = super::line_breaks::first_line_break(document.projection().text_tree(), start..hard_line_end, &mut break_state, cancellation)?;
     // Ordinary text keeps a bounded work slice. An oversized first word must
     // reach its actual break so the worker can publish a complete overflow row.
     Ok(bounded_end.max(first_break))
@@ -839,7 +756,7 @@ where
     }
     let hard_line_count = document
         .projection()
-        .presentation_line_count(view.paragraph_flow());
+        .presentation_line_count();
     let requested_lines = region.hard_lines();
     if requested_lines.end > hard_line_count {
         return Err(LayoutJobError::RegionOutsideDocument { hard_line_count });
@@ -851,7 +768,7 @@ where
             if cancellation.is_cancelled() {
                 return Err(LayoutJobError::Cancelled);
             }
-            document_line_range(document, hard_line, view.paragraph_flow())
+            document_line_range(document, hard_line)
         })
         .collect::<Result<Vec<_>, LayoutJobError>>()?;
     let checkpoint = match &region {
@@ -874,18 +791,17 @@ where
     let giant_line = line_ranges.iter().any(|line| line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
     let stream_wrapped_region = view.wrap() && checkpoint.is_none()
         && (line_ranges.len() > 1 || (giant_line
-            && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), false, &mut view.initial_wrap_break_state(), &cancellation)? == line_ranges[0].end));
-    let use_unwrapped_viewport = giant_line && (has_table_line || ((!view.wrap() || stream_wrapped_region) && !view.paragraph_flow()
+            && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), &mut view.initial_wrap_break_state(), &cancellation)? == line_ranges[0].end));
+    let use_unwrapped_viewport = giant_line && (has_table_line || ((!view.wrap() || stream_wrapped_region)
         && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)));
     let (input, mut captured_view) = if use_unwrapped_viewport {
         let text_origin = line_ranges.first().unwrap().start;
         let text_end = line_ranges.last().unwrap().end;
         let following_line_range = if range.end < hard_line_count {
-            Some(document_line_range(document, range.end, view.paragraph_flow())?)
+            Some(document_line_range(document, range.end)?)
         } else { None };
         let style_end = following_style_end(document, following_line_range.as_ref(), text_end)?;
-        let mut styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, false, view.search_matches(document.id(), document.revision()), document.format())?;
-        styles.apply_source_quote_policy(document.format(), false);
+        let styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, view.search_matches(document.id(), document.revision()), document.format())?;
         let styles = retain_regional_styles(styles, &line_ranges, following_line_range.as_ref());
         (
             CapturedLayoutInput::UnwrappedViewport { text: document.projection().text_tree().clone(), line_ranges,
@@ -914,25 +830,18 @@ where
         let mut break_state = checkpoint.as_ref().map_or_else(
             || view.initial_wrap_break_state(), |checkpoint| checkpoint.wrap_break_state,
         );
-        let work_end = bounded_long_line_work_end(
-            document, work_start, full_range.end, view.paragraph_flow(), break_state, &cancellation,
-        )?;
+        let work_end = bounded_long_line_work_end(document, work_start, full_range.end, break_state, &cancellation)?;
         let context_start = bounded_context_start(document, work_start, full_range.start);
         let context_end = bounded_context_end(document, work_end, full_range.end);
         let capture_range = context_start..context_end;
-        let stream_overflow = !view.paragraph_flow()
-            && matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)
+        let stream_overflow = matches!(&region, LayoutJobRegion::Viewport(viewport) if !viewport.complete_horizontal_geometry)
             && work_end - work_start > MAX_LONG_LINE_LAYOUT_SLICE_BYTES
-            && super::line_breaks::first_line_break(document.projection().text_tree(), work_start..full_range.end, false, &mut break_state, &cancellation)? == work_end;
+            && super::line_breaks::first_line_break(document.projection().text_tree(), work_start..full_range.end, &mut break_state, &cancellation)? == work_end;
         let text = if stream_overflow { None } else {
             Some(document.projection().text_tree().slice(capture_range.clone())?)
         };
         let following_line_range = if (work_end == full_range.end || stream_overflow) && range.end < hard_line_count {
-            Some(document_line_range(
-                document,
-                range.end,
-                view.paragraph_flow(),
-            )?)
+            Some(document_line_range(document, range.end)?)
         } else {
             None
         };
@@ -954,24 +863,11 @@ where
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
-        let mut styles =
-            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), context_start..style_end, view.paragraph_flow(), view.search_matches(document.id(), document.revision()), document.format())?;
-        styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
+        let styles =
+            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), context_start..style_end, view.search_matches(document.id(), document.revision()), document.format())?;
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
-        let (text, styles) = if view.paragraph_flow() {
-            let mut styles = styles;
-            let mut style_ranges = vec![full_range.clone()];
-            style_ranges.extend(following_line_range.clone());
-            resolve_flow_paragraph_styles(document.projection(), &mut styles, &style_ranges)?;
-            (
-                Some(flow_text(text.expect("flow uses captured text"), context_start, std::slice::from_ref(&full_range))),
-                styles,
-            )
-        } else {
-            (text, styles)
-        };
         let styles = retain_regional_styles(
             styles,
             std::slice::from_ref(&style_capture_range),
@@ -1019,11 +915,7 @@ where
             .text_tree()
             .slice(text_origin..text_end)?;
         let following_line_range = if range.end < hard_line_count {
-            Some(document_line_range(
-                document,
-                range.end,
-                view.paragraph_flow(),
-            )?)
+            Some(document_line_range(document, range.end)?)
         } else {
             None
         };
@@ -1034,21 +926,11 @@ where
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
-        let mut styles =
-            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, view.paragraph_flow(), view.search_matches(document.id(), document.revision()), document.format())?;
-        styles.apply_source_quote_policy(document.format(), view.paragraph_flow());
+        let styles =
+            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, view.search_matches(document.id(), document.revision()), document.format())?;
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
-        let (text, styles) = if view.paragraph_flow() {
-            let mut styles = styles;
-            let mut ranges = line_ranges.clone();
-            ranges.extend(following_line_range.clone());
-            resolve_flow_paragraph_styles(document.projection(), &mut styles, &ranges)?;
-            (flow_text(text, text_origin, &line_ranges), styles)
-        } else {
-            (text, styles)
-        };
         let styles = retain_regional_styles(styles, &line_ranges, following_line_range.as_ref());
         let captured_view = view.capture_for_regional_layout_job(text_origin..text_end);
         (

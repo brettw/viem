@@ -28,16 +28,12 @@ fn progressive_cells_match_complete_shaping_across_fragment_boundaries() {
         ),
     ];
     for (name, text) in cases {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let source = format!("| H | N |\n| - | - |\n| {text} | next |");
             let document =
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
             let table = &document.projection().tables()[0];
-            let range = if format == Format::Markdown {
-                table.rows[1].cells[0].range.clone()
-            } else {
-                table.source_rows[2].cells[0].clone()
-            };
+            let range = table.rows[1].cells[0].range.clone();
             let spelling = document.text()[range.clone()].to_owned();
             // The ordinary unwrapped text path produces a complete reference;
             // it does not use table measurement or table fragment placement.
@@ -155,45 +151,3 @@ fn progressive_cells_match_complete_shaping_across_fragment_boundaries() {
     }
 }
 
-#[test]
-fn source_pipes_share_column_boundaries_across_header_and_body_font_sizes() {
-    for long in [false, true] {
-        let text = if long {
-            "body ".repeat(1000)
-        } else {
-            "body".into()
-        };
-        let source = format!("| Head | Second |\n| --- | --- |\n| {text} | End |");
-        let mut document = Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap();
-        let diagnostics = document.replace_style_defaults(br#"{"version":1,"block_styles":[{"id":"Table header","name":"Table header","role":"Paragraph","based_on":"Table cell","character":{"size":28},"block":{}}]}"#).unwrap();
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let mut view = ViewLayout::new(100_000., 300.);
-        LayoutEngine::new(MockTextMeasurementProvider::new())
-            .relayout(&document, &mut view)
-            .unwrap();
-        let snapshot = view.snapshot().unwrap();
-        let pipes = snapshot
-            .rows
-            .iter()
-            .map(|row| {
-                row.clusters
-                    .iter()
-                    .filter(|cluster| document.text().get(cluster.text_range.clone()) == Some("|"))
-                    .map(|cluster| cluster.x)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        for row in &pipes[1..] {
-            assert_eq!(row.len(), pipes[0].len());
-            for (actual, expected) in row.iter().zip(&pipes[0]) {
-                assert!((actual - expected).abs() < 0.01, "{actual} != {expected}");
-            }
-        }
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
-}

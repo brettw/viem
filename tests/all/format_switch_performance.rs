@@ -9,11 +9,11 @@ fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
     let mut document = Document::from_bytes(
         source.as_bytes().to_vec(),
         Encoding::Utf8,
-        Format::MarkdownSource,
+        Format::Code,
     )
     .unwrap();
     let token = "Continuation 1499";
-    for format in [Format::Markdown, Format::MarkdownSource, Format::Markdown] {
+    for format in [Format::Markdown, Format::Code, Format::Markdown] {
         let at = document.text().find(token).unwrap();
         let anchor = document
             .text_anchor(
@@ -24,11 +24,10 @@ fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
             )
             .unwrap();
         let prepared = document
-            .prepare_model_request(ModelRequest::SetMarkdownSource {
+            .prepare_model_request(ModelRequest::SetViewFormat {
                 document: document.id(),
                 revision: document.revision(),
-                source: format == Format::MarkdownSource,
-
+                target: format,
             })
             .unwrap();
         assert!(prepared.summary().source_patches().is_empty());
@@ -53,14 +52,10 @@ fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
     let at = document.text().find(token).unwrap();
     document.insert(at, "Authored ").unwrap();
     let edited_source = document.source_bytes();
-    document
-        .set_markdown_source(Format::MarkdownSource == Format::MarkdownSource)
-        .unwrap();
+    document.set_view_format(Format::Code).unwrap();
     assert!(document.text().contains("Authored Continuation 1499"));
     assert_eq!(document.source_bytes(), edited_source);
-    document
-        .set_markdown_source(Format::Markdown == Format::MarkdownSource)
-        .unwrap();
+    document.set_view_format(Format::Markdown).unwrap();
     assert!(document.text().contains("Authored Continuation 1499"));
     for _ in 0..3 {
         assert!(document.undo());
@@ -75,7 +70,7 @@ fn large_switches_preserve_source_anchors_styles_and_refresh_after_edit() {
 }
 
 #[test]
-fn same_source_mode_switch_keeps_encoding_and_grapheme_boundaries() {
+fn preview_and_code_switches_keep_encoding_and_grapheme_boundaries() {
     for encoding in [
         Encoding::Utf8,
         Encoding::Latin1,
@@ -89,16 +84,11 @@ fn same_source_mode_switch_keeps_encoding_and_grapheme_boundaries() {
             Encoding::Utf16Le => source.encode_utf16().flat_map(u16::to_le_bytes).collect(),
             Encoding::Utf16Be => source.encode_utf16().flat_map(u16::to_be_bytes).collect(),
         };
-        let mut document =
-            Document::from_bytes(bytes.clone(), encoding, Format::MarkdownSource).unwrap();
-        document
-            .set_markdown_source(Format::Markdown == Format::MarkdownSource)
-            .unwrap();
+        let mut document = Document::from_bytes(bytes.clone(), encoding, Format::Code).unwrap();
+        document.set_view_format(Format::Markdown).unwrap();
         assert_eq!(document.text(), "café\ntail and text");
-        document
-            .set_markdown_source(Format::MarkdownSource == Format::MarkdownSource)
-            .unwrap();
-        assert_eq!(document.text(), "# café\n__tail__ and text\n");
+        document.set_view_format(Format::Code).unwrap();
+        assert_eq!(document.text(), "# café\n\n__tail__ and text\n");
         assert_eq!(document.source_bytes(), bytes);
         assert!(document.undo());
         assert!(document.undo());

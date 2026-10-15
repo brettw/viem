@@ -96,7 +96,7 @@ fn empty_owners_keep_a_real_editable_leaf() {
 #[test]
 fn ordinary_edits_keep_container_paths_and_projection_work_local() {
     use viem_core::document::{ModelRequest, TextEdit};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let source = format!("> first\n>\n{}> target\n>\n> > inner", "> body\n>\n".repeat(10_000));
         let mut doc = open(&source, format);
         let at = doc.text().find("target").unwrap() + 2;
@@ -108,20 +108,6 @@ fn ordinary_edits_keep_container_paths_and_projection_work_local() {
         doc.commit_model_transaction(prepared).unwrap();
         assert_eq!(doc.projection().blocks().iter().find(|block| block.range.contains(&at)).unwrap().containers[0].container.id, before);
         assert_eq!(doc.projection().container_structure().containers.len(), 2, "{format:?} {:?}", doc.projection().blocks().last());
-    }
-}
-
-#[test]
-fn changing_a_container_kind_never_aliases_a_surviving_sibling_owner() {
-    let mut doc = open("> - first\n>\n>   continued\n> - tail", Format::MarkdownSource);
-    let quote = doc.projection().blocks()[0].containers[0].container.id;
-    doc.delete(0..1).unwrap();
-    assert_eq!(doc.projection().blocks()[1].containers[0].container.id, quote);
-    assert_ne!(doc.projection().blocks()[0].containers[0].container.id, quote);
-    doc.insert(0, "z").unwrap();
-    let fresh = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-    for (actual, expected) in doc.projection().blocks().iter().zip(fresh.projection().blocks()) {
-        assert_eq!(actual.attributes, expected.attributes);
     }
 }
 
@@ -146,15 +132,6 @@ fn plain_style_clears_the_active_leaf_or_one_quote_level() {
         assert!(doc.undo()); assert!(doc.undo());
         assert_eq!(doc.source_bytes(), source.as_bytes());
     }
-}
-
-#[test]
-fn source_code_unwrap_keeps_literal_quote_characters_inside_outer_quotes() {
-    let mut doc = open("> ```\n> > literal\n> ```", Format::MarkdownSource);
-    doc.set_paragraph_style(0..0, "Paragraph".into()).unwrap();
-    let visible = Document::from_bytes(doc.source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
-    assert_eq!(visible.text(), "> literal");
-    assert_eq!(visible.projection().blocks()[0].quote_depth, 1);
 }
 
 #[test]

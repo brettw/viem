@@ -35,7 +35,6 @@ impl Tag {
 pub(super) struct PreOwner {
     pub opening: Range<usize>,
     pub range: Range<usize>,
-    pub tag: Tag,
 }
 
 pub(super) fn pre_language(tag: &Tag) -> Option<String> {
@@ -49,7 +48,6 @@ pub(super) fn image_metadata(
     tag: &Tag,
     range: Range<usize>,
     source: Range<usize>,
-    source_view: bool,
 ) -> Option<super::InlineImage> {
     if tag.end || tag.name != "img" { return None; }
     let destination = tag.attribute("src")?.trim_matches(|ch: char| ch.is_ascii_whitespace());
@@ -62,7 +60,7 @@ pub(super) fn image_metadata(
     };
     Some(super::InlineImage {
         range, text: tag.attribute("alt").unwrap_or_default().to_owned(), destination: destination.to_owned(),
-        width: dimension("width"), height: dimension("height"), source_view, source, inline: false, html: true,
+        width: dimension("width"), height: dimension("height"), source, inline: false, html: true,
     })
 }
 #[derive(Clone, Debug)]
@@ -780,8 +778,7 @@ fn project_tokens(
                         &stack.last().unwrap().character,
                     );
                     if markdown_references {
-                        if let Some(image) = image_metadata(&tag, output_start..builder.text.len(),
-                            builder.source_range(token.range.clone()), false) {
+                        if let Some(image) = image_metadata(&tag, output_start..builder.text.len(), builder.source_range(token.range.clone())) {
                             inline_images.push(image);
                         }
                     }

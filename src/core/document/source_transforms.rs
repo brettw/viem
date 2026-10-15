@@ -19,7 +19,7 @@ impl Document {
     pub(crate) fn prepare_independent_paragraph_deletions(
         &self, ranges: Vec<Range<usize>>,
     ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if !self.format().is_wysiwyg() || !self.projection().style_spans().is_empty()
+        if !self.format().is_markdown() || !self.projection().style_spans().is_empty()
             || self.projection().blocks().iter().any(|block| block.style.0 != "Paragraph"
                 || block.kind != BlockKind::Paragraph || block.quote_depth != 0
                 || !block.containers.is_empty() || block.markdown_html || block.thematic_break) {

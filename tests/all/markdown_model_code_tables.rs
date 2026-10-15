@@ -240,22 +240,6 @@ fn typing_beside_a_lone_pipe_after_a_table_keeps_it_in_prose() {
 }
 
 #[test]
-fn source_header_pipe_deletion_reparses_the_preceding_prose_context() {
-    let source = "Hello World\n| abc | def |\n| --- | --- |\n| bar | baz |\n";
-    edit_and_history(
-        source,
-        Format::MarkdownSource,
-        12..13,
-        "",
-        "Hello World\n abc | def |\n| --- | --- |\n| bar | baz |\n",
-        12..13,
-    );
-    let mut document = open(source, Format::MarkdownSource);
-    document.replace(12..13, "").unwrap();
-    assert!(document.projection().tables().is_empty());
-}
-
-#[test]
 fn typing_after_literal_table_backslashes_and_escaped_pipes_reopens() {
     // Valid GFM cases from pulldown-cmark's escaped-pipe table fixtures.
     for body in [
@@ -397,11 +381,5 @@ fn table_pipe_escape_is_applied_before_ordinary_inline_escape_pairs() {
             format!("{}|", "\\".repeat((count - 1) / 2))
         );
         assert_reopened(&document, Format::Markdown);
-        let source_document = open(&source, Format::MarkdownSource);
-        assert_eq!(source_document.source_bytes(), source.as_bytes());
-        assert_eq!(
-            source_document.projection().tables()[0].rows[1].cells.len(),
-            2
-        );
     }
 }

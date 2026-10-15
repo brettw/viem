@@ -292,11 +292,7 @@ impl Document {
             // Source-visible formatting inserts closing delimiters beyond the
             // presentation caret. The next Replace consumes the next original
             // item after those owned delimiters, preserving the generated pair.
-            let next_target = if self.format().is_source_view() {
-                map_after(&scratch, &prepared, end)?
-            } else {
-                after_cursor
-            };
+            let next_target = after_cursor;
             let mut source_delta = 0isize;
             let mut inverse_source = Vec::new();
             for patch in prepared.summary.source_patches.iter() {

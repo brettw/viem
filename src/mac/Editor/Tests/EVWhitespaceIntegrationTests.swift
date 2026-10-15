@@ -107,10 +107,9 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         XCTAssertFalse(first.canUndo || second.canUndo)
     }
 
-    func testWhitespaceMarkersAreSuppressedInWYSIWYGAndShownInSourceViews() throws {
+    func testWhitespaceMarkersAreSuppressedInMarkdownPreviewAndShownInCode() throws {
         let fixtures = [
             (EVDocument.markdownType, "A  \n\nB", false),
-            (EVDocument.markdownSourceType, "A  \n\nB", true),
             (EVDocument.codeType, "A  \nB", true),
         ]
         for (type, source, visible) in fixtures {

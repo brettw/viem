@@ -34,7 +34,7 @@ fn same_table_positions(document: &Document, reopened: &Document) {
 
 #[test]
 fn prose_edits_shift_table_suffix_with_bounded_work_and_exact_history() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
             let source = source(4096);
             let encode = |text: &str| match encoding {
@@ -107,31 +107,6 @@ fn identities_in_tables(tables: &viem_core::document::TableRows<viem_core::docum
             (row.id, row.cells.iter().map(|cell| cell.id).collect())
         }).collect())
     }).collect()
-}
-
-#[test]
-fn source_full_reprojection_retains_all_shifted_table_identities() {
-    for (range, replacement) in [(1..1, "λ"), (1..2, "")] {
-        let original = source(3);
-        let mut document = Document::from_bytes(original.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-        let identities = table_identities(&document);
-        let mut expected = original.clone();
-        expected.replace_range(range.clone(), replacement);
-        let (result, work) = measure_document_work(|| document.replace(range, replacement));
-        result.unwrap();
-        assert!(work.full_projection_candidates > 0, "exercise the complete Source reconciliation: {work:?}");
-        assert_eq!(table_identities(&document), identities);
-        assert_eq!(document.source_bytes(), expected.as_bytes());
-        let reopened = Document::from_bytes(expected.as_bytes().to_vec(), Encoding::Utf8, Format::MarkdownSource).unwrap();
-        same_table_positions(&document, &reopened);
-        document.try_undo().unwrap();
-        assert_eq!(table_identities(&document), identities);
-        assert_eq!(document.source_bytes(), original.as_bytes());
-        document.try_redo().unwrap();
-        assert_eq!(table_identities(&document), identities);
-        assert_eq!(document.source_bytes(), expected.as_bytes());
-        same_table_positions(&document, &reopened);
-    }
 }
 
 fn encode_fixture(text: &str, encoding: Encoding) -> Vec<u8> {
@@ -409,7 +384,7 @@ fn empty_paragraph_put_and_enter_keep_whitespace_boundary_work_regional() {
 #[test]
 fn opening_shares_one_block_grammar_pass_across_projection_classifiers() {
     let source = "# Heading\n\n- list one\n- list two\n\n> quoted **text**\n> next line\n\n    indented code\n\n```rust\nlet x = 1;\n```\n\n| a | b |\n| - | - |\n| x | y |\n\n<div>passive</div>\n\n".repeat(256);
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let (document, work) = measure_document_work(|| Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format));
         let document = document.unwrap();
         assert_eq!(work.markdown_block_parse_calls, 1, "{work:?}");

@@ -45,7 +45,6 @@ fn plain_clipboard_line_endings_become_semantic_breaks_in_each_format() {
     for (format, source) in [
         (Format::PlainText, "AB"),
         (Format::Code, "AB"),
-        (Format::MarkdownSource, "AB"),
         (Format::Markdown, "AB"),
 
     ] {

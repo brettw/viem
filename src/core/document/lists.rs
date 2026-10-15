@@ -15,8 +15,8 @@ pub struct ListItemNode {
     pub paragraph_id: u64,
     pub paragraph_ids: Vec<u64>,
     pub ordinal: u64,
-    /// Literal marker text in source modes; an empty body-start boundary for
-    /// layout decorations. Decorations never contribute editable characters.
+    /// An empty body-start boundary for layout decorations. Decorations never
+    /// contribute editable characters.
     pub marker_range: Range<usize>,
     pub marker_is_synthetic: bool,
     pub child_lists: Vec<ListIdentity>,
@@ -74,7 +74,6 @@ impl Block {
 
 impl FormattedDocument {
     /// The label is a short prefix even when its paragraph spans megabytes.
-    /// Source modes can retain indentation and alternate marker spelling.
     pub(crate) fn list_marker_range_for_block(&self, block: &super::Block) -> Option<Range<usize>> {
         let BlockKind::ListItem {
             ordered,

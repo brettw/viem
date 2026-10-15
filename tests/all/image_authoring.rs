@@ -10,7 +10,7 @@ fn apply(doc: &mut Document, intent: ImageEditIntent) {
 }
 #[test]
 fn html_image_location_edits_preserve_dimensions_and_other_attribute_bytes() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for (source, expected) in [
             ("before <IMG width='0240' SRC = 'old.png' height=80 alt='a &amp; b' title=kept data-extra='x'> after",
              "before <IMG width='0240' SRC = \"new file.png?a=1&amp;b=2\" height=80 alt='a &amp; b' title=kept data-extra='x'> after"),
@@ -134,7 +134,7 @@ fn html_image_private_clipboard_retains_authored_dimensions() {
 
 #[test]
 fn html_image_location_edits_preserve_multiline_quote_owners_and_endings() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for (file_format, ending) in [(FileFormat::Unix, "\n"), (FileFormat::Dos, "\r\n"), (FileFormat::Mac, "\r")] {
             for source in [
                 "> <img\n> src='old.png'\n> width=240\n> height=80>",
@@ -172,21 +172,10 @@ fn images_are_atomic_and_source_remains_literal_without_loading_resources() {
     assert_eq!(image.destination, "https://never-fetch.invalid/cat.png");
     assert!(rich.text_point(8).is_err());
     assert_eq!(rich.source_bytes(), source.as_bytes());
-    let raw = document(source, Format::MarkdownSource);
-    assert_eq!(raw.text(), source);
-    for at in 7..source.len() - 6 {
-        assert_eq!(
-            raw.image_snapshot_at(raw.text_point(at).unwrap())
-                .unwrap()
-                .unwrap()
-                .range,
-            7..source.len() - 6
-        );
-    }
 }
 #[test]
 fn image_insertion_edit_removal_and_undo_preserve_unrelated_bytes_and_title() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let original = "before ![a **bold** cat](old.png 'kept title') after";
         let mut doc = document(original, format);
         let image = doc
@@ -233,7 +222,7 @@ fn image_insertion_edit_removal_and_undo_preserve_unrelated_bytes_and_title() {
 }
 #[test]
 fn reference_images_resolve_without_changing_definitions_and_edit_only_occurrence() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let original = "![first][img] and ![second][img]\n\n[img]: file.png \"title\"";
         let mut doc = document(original, format);
         let image = doc
@@ -385,7 +374,7 @@ fn images_form_object_boundaries_next_to_combining_and_prepend_characters() {
 #[test]
 fn multiline_images_have_complete_source_popup_ranges() {
     let source = "![a\ncat](file.png)";
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let doc = document(source, format);
         let image = doc
             .image_snapshot_at(doc.text_point(0).unwrap())
@@ -394,11 +383,8 @@ fn multiline_images_have_complete_source_popup_ranges() {
         assert_eq!(image.text, "a cat");
         assert_eq!(
             image.range,
-            if format.is_source_view() {
-                0..source.len()
-            } else {
-                0..3
-            }
+            0..3
+        
         );
     }
 }
@@ -540,7 +526,7 @@ fn clicking_an_image_ignores_autoselect_and_backspace_removes_only_that_image() 
 }
 #[test]
 fn literal_object_replacement_characters_retain_unicode_grapheme_boundaries() {
-    for format in [Format::PlainText, Format::Code, Format::MarkdownSource] {
+    for format in [Format::PlainText, Format::Code] {
         let doc = document("\u{fffc}\u{301}", format);
         assert!(!doc.hard_line_snapshot().is_grapheme_boundary(3));
     }
@@ -674,7 +660,7 @@ fn image_navigation_keeps_source_normal_and_plain_insert_entry_semantics() {
     use viem_core::command::{InputEvent, Key, Mode};
     use viem_core::layout::MockTextMeasurementProvider;
     use viem_core::{Core, CoreEvent};
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         let mut core = Core::new(document("A![alt](image.png)B", format));
         let view = core.add_view(MockTextMeasurementProvider::new(), 600., 200.);
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Right)))
@@ -684,11 +670,6 @@ fn image_navigation_keeps_source_normal_and_plain_insert_entry_semantics() {
             .unwrap();
         assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
         assert!(!core.command_state(view).unwrap().is_native_selection());
-        if format.is_source_view() {
-            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Right)))
-                .unwrap();
-            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
-        }
     }
 }
 
@@ -722,7 +703,7 @@ fn dragging_from_a_selected_image_retains_the_whole_origin_object() {
 
 #[test]
 fn prose_edits_near_html_images_keep_projection_work_bounded_as_documents_grow() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
+    for format in [Format::Markdown] {
         for paragraphs in [10, 10_000] {
             let source = format!(
                 "before <img src='cat.png' width=240 height=80> after\n\n{}",

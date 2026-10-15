@@ -11,36 +11,31 @@ fn input(core: &mut Core<MockTextMeasurementProvider>, view: viem_core::ViewId, 
 
 #[test]
 fn markdown_off_exits_exact_closing_markers_and_preserves_nested_emphasis() {
-    for (source, disabled, expected_exit, bold, italic) in [
-        ("**word**", SemanticInlineStyle::Strong, 8, false, false),
-        ("__word__", SemanticInlineStyle::Strong, 8, false, false),
-        ("*word*", SemanticInlineStyle::Emphasis, 6, false, false),
-        ("_word_", SemanticInlineStyle::Emphasis, 6, false, false),
-        ("**_word_**", SemanticInlineStyle::Strong, 10, false, true),
-        ("_**word**_", SemanticInlineStyle::Strong, 9, false, true),
-        ("**_word_**", SemanticInlineStyle::Emphasis, 8, true, false),
-        ("_**word**_", SemanticInlineStyle::Emphasis, 10, true, false),
-        ("***word***", SemanticInlineStyle::Strong, 10, false, true),
-        ("___word___", SemanticInlineStyle::Emphasis, 10, true, false),
+    for (source, disabled, bold, italic) in [
+        ("**word**", SemanticInlineStyle::Strong, false, false),
+        ("__word__", SemanticInlineStyle::Strong, false, false),
+        ("*word*", SemanticInlineStyle::Emphasis, false, false),
+        ("_word_", SemanticInlineStyle::Emphasis, false, false),
+        ("**_word_**", SemanticInlineStyle::Strong, false, true),
+        ("_**word**_", SemanticInlineStyle::Strong, false, true),
+        ("**_word_**", SemanticInlineStyle::Emphasis, true, false),
+        ("_**word**_", SemanticInlineStyle::Emphasis, true, false),
+        ("***word***", SemanticInlineStyle::Strong, false, true),
+        ("___word___", SemanticInlineStyle::Emphasis, true, false),
         (
             "**__word__**",
             SemanticInlineStyle::Strong,
-            12,
             false,
             false,
         ),
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut core = Core::new(
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
             );
             let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
             input(&mut core, view, InputEvent::key('i'));
-            let at = if format == Format::MarkdownSource {
-                source.find("word").unwrap() + 4
-            } else {
-                4
-            };
+            let at = 4;
             core.handle(
                 view,
                 CoreEvent::PlaceCursor {
@@ -65,11 +60,9 @@ fn markdown_off_exits_exact_closing_markers_and_preserves_nested_emphasis() {
             .unwrap_or_else(|error| panic!("toggle {format:?} {source}: {error:?}"));
             assert_eq!(
                 core.command_state(view).unwrap().cursor(),
-                if format == Format::MarkdownSource {
-                    expected_exit
-                } else {
-                    at
-                },
+                at
+            
+,
                 "{format:?} {source}"
             );
             assert_eq!(core.document().revision(), revision);
@@ -130,17 +123,13 @@ fn markdown_off_in_middle_does_not_skip_text_or_remove_suffix_emphasis() {
         "**__word__**",
         "***word***",
     ] {
-        for format in [Format::Markdown, Format::MarkdownSource] {
+        for format in [Format::Markdown] {
             let mut core = Core::new(
                 Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap(),
             );
             let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
             input(&mut core, view, InputEvent::key('i'));
-            let at = if format == Format::MarkdownSource {
-                source.find("word").unwrap() + 2
-            } else {
-                2
-            };
+            let at = 2;
             core.handle(
                 view,
                 CoreEvent::PlaceCursor {
@@ -217,146 +206,6 @@ fn markdown_off_in_middle_does_not_skip_text_or_remove_suffix_emphasis() {
             .unwrap();
             assert_eq!(core.document().source_bytes(), saved);
         }
-    }
-}
-
-#[test]
-fn source_exit_uses_marker_boundaries_next_to_unicode_and_ignores_literal_marker_text() {
-    for (source, at, expected) in [
-        ("*👩🏽‍💻*", "*👩🏽‍💻".len(), "*👩🏽‍💻*".len()),
-        ("_é_", "_é".len(), "_é_".len()),
-        ("`*literal*`", 9, 9),
-        ("\\*literal\\*", 9, 9),
-        ("*unclosed", 9, 9),
-        ("", 0, 0),
-    ] {
-        let mut core = Core::new(
-            Document::from_bytes(
-                source.as_bytes().to_vec(),
-                Encoding::Utf8,
-                Format::MarkdownSource,
-            )
-            .unwrap(),
-        );
-        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
-        input(&mut core, view, InputEvent::key('i'));
-        core.handle(
-            view,
-            CoreEvent::PlaceCursor {
-                document_revision: core.document().revision(),
-                text_offset: at,
-                affinity: BoundaryAffinity::Upstream,
-                extend_selection: false,
-            },
-        )
-        .unwrap();
-        let selection = core.list_selection_identity(view).unwrap();
-        core.handle(
-            view,
-            CoreEvent::SetSelectionSemanticStyle {
-                expected: selection,
-                style: SemanticInlineStyle::Emphasis,
-                enabled: false,
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            core.command_state(view).unwrap().cursor(),
-            expected,
-            "{source}"
-        );
-        assert_eq!(core.document().source_bytes(), source.as_bytes());
-    }
-    let source = "*word*\u{301}";
-    let mut core = Core::new(
-        Document::from_bytes(
-            source.as_bytes().to_vec(),
-            Encoding::Utf8,
-            Format::MarkdownSource,
-        )
-        .unwrap(),
-    );
-    let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
-    input(&mut core, view, InputEvent::key('i'));
-    core.handle(
-        view,
-        CoreEvent::PlaceCursor {
-            document_revision: core.document().revision(),
-            text_offset: 5,
-            affinity: BoundaryAffinity::Upstream,
-            extend_selection: false,
-        },
-    )
-    .unwrap();
-    let expected = core.list_selection_identity(view).unwrap();
-    assert!(core
-        .handle(
-            view,
-            CoreEvent::SetSelectionSemanticStyle {
-                expected,
-                style: SemanticInlineStyle::Emphasis,
-                enabled: false
-            }
-        )
-        .is_err());
-    assert_eq!(core.command_state(view).unwrap().cursor(), 5);
-    assert_eq!(core.document().source_bytes(), source.as_bytes());
-}
-
-#[test]
-fn source_exit_is_recorded_by_counted_insert_and_dot_as_one_undo_unit() {
-    for format in [Format::Markdown, Format::MarkdownSource] {
-        let mut core =
-            Core::new(Document::from_bytes(b"**word**".to_vec(), Encoding::Utf8, format).unwrap());
-        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
-        let at = if format == Format::MarkdownSource {
-            5
-        } else {
-            3
-        };
-        core.handle(
-            view,
-            CoreEvent::PlaceCursor {
-                document_revision: core.document().revision(),
-                text_offset: at,
-                affinity: BoundaryAffinity::Downstream,
-                extend_selection: false,
-            },
-        )
-        .unwrap();
-        input(&mut core, view, InputEvent::key('2'));
-        input(&mut core, view, InputEvent::key('a'));
-        let expected = core.list_selection_identity(view).unwrap();
-        core.handle(
-            view,
-            CoreEvent::SetSelectionSemanticStyle {
-                expected,
-                style: SemanticInlineStyle::Strong,
-                enabled: false,
-            },
-        )
-        .unwrap();
-        input(&mut core, view, InputEvent::text("X"));
-        input(&mut core, view, InputEvent::Key(Key::Escape));
-        assert_eq!(core.document().source_bytes(), b"**word**XX", "{format:?}");
-        input(&mut core, view, InputEvent::key('.'));
-        assert_eq!(
-            core.document().source_bytes(),
-            b"**word**XXXX",
-            "{format:?}"
-        );
-        core.handle(
-            view,
-            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-        )
-        .unwrap();
-        assert_eq!(core.document().source_bytes(), b"**word**XX");
-        core.handle(
-            view,
-            CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo),
-        )
-        .unwrap();
-        assert_eq!(core.document().source_bytes(), b"**word**");
     }
 }
 

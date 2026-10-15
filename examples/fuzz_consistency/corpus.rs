@@ -1,6 +1,6 @@
 //! Seed documents for the consistency fuzzer. Markdown seeds deliberately
 //! include degenerate, malformed and ambiguous spellings; every entry is opened
-//! both as Markdown WYSIWYG and as Markdown Source.
+//! in Markdown Preview.
 
 pub const MARKDOWN: &[&str] = &[
     // Empty and whitespace-only documents.

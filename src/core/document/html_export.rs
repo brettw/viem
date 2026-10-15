@@ -3,7 +3,7 @@
 use super::{
     syntax::{service::SyntaxService, SyntaxInputSnapshot},
     BlockKind, BlockProperties, CharacterProperties, ContainerKind, Document, DocumentError,
-    Encoding, FileFormat, FontSize, Format, FormattedDocument, Revision, WritingDirection,
+    Encoding, FileFormat, FontSize, Format, FormattedDocument, WritingDirection,
 };
 use crate::layout::{
     BlockBoxStyle, ContainerLayoutStyle, DocumentLayoutStyles, DocumentStyleError,
@@ -40,7 +40,6 @@ pub struct HtmlExport {
         super::source::SourceSnapshot,
         Encoding,
         FileFormat,
-        Revision,
     )>,
     syntax: Option<(SyntaxService, SyntaxInputSnapshot)>,
     tabstop: u32,
@@ -55,7 +54,6 @@ impl Document {
                     self.state().source.clone(),
                     self.encoding(),
                     self.file_format(),
-                    self.revision(),
                 )
             }),
             syntax: None,
@@ -79,25 +77,10 @@ impl HtmlExport {
 
     pub fn render(mut self) -> Result<Vec<u8>, HtmlExportError> {
         let mut links = Vec::new();
-        if let Some((source, encoding, endings, revision)) = &self.source {
+        if let Some((source, encoding, endings)) = &self.source {
             let bytes = source.bytes();
             let decoded = encoding.decode(&bytes).map_err(DocumentError::from)?;
             let input = super::line_endings::normalize(&decoded, *endings);
-            if self.format.is_source_view() {
-                let mut semantic = super::projection::project(
-                    &input,
-                    self.format.wysiwyg(),
-                    *revision,
-                    decoded.bom_len,
-                    bytes.len(),
-                );
-                semantic.install_configuration_styles(
-                    *revision,
-                    self.projection.style_sheet().clone(),
-                    self.projection.document_style().clone(),
-                );
-                self.projection = semantic;
-            }
             links = export_links(&self.projection, &input);
         }
         if let Some((service, input)) = self.syntax.take() {
@@ -666,29 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn markdown_source_exports_the_same_semantic_styles_and_structure() {
-        let source = "# A styled heading\n\nA **bold** and *italic* paragraph with ~~old~~ words & <literal>.\n\n> A quote\n>\n> 3. third\n> 4. fourth\n\n---\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\n![image](never-fetch.png)\n";
-        let visual = open(source, Format::Markdown);
-        let source_view = open(source, Format::MarkdownSource);
-        let output = html(&visual);
-        assert_eq!(output, html(&source_view));
-        assert!(output.starts_with("<!DOCTYPE html>"));
-        assert!(output.contains("<h1 dir=\"auto\" style="));
-        assert!(output.contains("<blockquote"));
-        assert!(output.contains("<ol start=\"3\""));
-        assert!(output.contains("<li value=\"4\""));
-        assert!(output.contains("<hr dir=\"auto\" style="));
-        assert!(output.contains("font-weight: 700"));
-        assert!(output.contains("font-style: italic"));
-        assert!(output.contains("line-through"));
-        assert!(output.contains("![image](never-fetch.png)"));
-        assert!(!output.contains("<img"));
-        assert!(!output.contains("**bold**"));
-        assert_eq!(visual.source_bytes(), source.as_bytes());
-        assert!(!visual.is_dirty());
-    }
-
-    #[test]
     fn export_uses_the_layout_cascade_and_safe_css_strings() {
         let document = open("# Heading\n\nA **bold** paragraph", Format::Markdown);
         let mut sheet = document.projection().style_sheet().clone();
@@ -883,7 +843,7 @@ mod tests {
         let output = html(&open(source, Format::PlainText));
         let decoded = Encoding::Utf8.decode(output.as_bytes()).unwrap();
         let input = super::super::line_endings::normalize(&decoded, FileFormat::Unix);
-        let reopened = super::super::html::project_fragment(&input, Revision(0), 0, output.len());
+        let reopened = super::super::html::project_fragment(&input, super::super::Revision(0), 0, output.len());
         assert_eq!(reopened.text(), source);
     }
 
@@ -919,7 +879,6 @@ mod tests {
     fn links_keep_destinations_while_images_references_and_unsafe_schemes_stay_passive() {
         let source = "[**site** & label](https://example.com/?a=1&b=2) <mailto:writer@example.com> <reader@example.com> https://example.org/page [bad](javascript:alert) [relative](other.html#part) ![img](image.png) [ref][id]\n\n[id]: https://example.net/";
         let output = html(&open(source, Format::Markdown));
-        assert_eq!(output, html(&open(source, Format::MarkdownSource)));
         assert!(
             output.contains("href=\"https://example.com/?a=1&amp;b=2\""),
             "{output}"
