@@ -76,16 +76,6 @@ the list (`- `, `* `, `2. `), and Enter on the empty continued item ends it.
 says Code never runs it, but doesn't mention Plain Text. Should Plain Text
 continue lists, and if so, should `o` match Enter?
 
-### Q21. A leading content U+FEFF after an edit
-
-Deleting `a` from `a\u{feff}b` leaves a visible content U+FEFF in the live
-projection, but reopening interprets its bytes as a BOM and shows only `b`.
-The incremental and reopened documents must agree. Preview can preserve the
-character with a numeric reference; literal Text/Code cannot use that
-spelling without changing visible text. Should those views add a BOM before
-the retained U+FEFF (changing BOM metadata), reject this edit with an encoding
-explanation, or deliberately turn the leading character into a BOM?
-
 ### Q22. Joining soft-wrapped rows
 
 Under Visual line meaning, `J`, `gJ` and Visual `J` on rows within one hard

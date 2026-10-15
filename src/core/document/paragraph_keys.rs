@@ -137,6 +137,11 @@ impl Document {
             if !quote || !self.text()[block.range.clone()].trim().is_empty() {
                 return Ok(None);
             }
+            // An empty quoted list item leaves its list one level at a time
+            // before the quote itself is removed.
+            if matches!(block.kind, super::super::BlockKind::ListItem { item_start: true, .. }) {
+                return Ok(None);
+            }
         } else if at != block.range.start {
             return Ok(None);
         }

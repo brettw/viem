@@ -177,6 +177,9 @@ diagnostics tied to their original bytes; a no-op save must not substitute U+FFF
 An insertion immediately after a dangling UTF-16 byte may locally encode U+FFFD
 to restore code-unit alignment, as part of that insertion; no modal prompt is
 needed, unrelated malformed bytes stay untouched, and undo restores exact bytes.
+Decoding reads a leading encoded U+FEFF as a BOM, so an edit that leaves visible
+U+FEFF content first in a document without one also writes a BOM before it, in
+the same verified, undoable transaction.
 
 Use the original encoding for new text when representable. Otherwise use a
 semantically exact format escape or return an explicit encoding policy/rejection;
@@ -446,7 +449,8 @@ The caret popup uses Text and Destination fields, defaulting Text to the selecte
 text; an unlinked caret opens both fields empty. Destination is an editable
 combobox whose explicit expansion lists current document headings using the
 same fragment identities as navigation. A link's compact toolbar fits its label
-within its maximum width, showing an italic `empty` for an empty label. It sits
+within its maximum width, showing an italic `empty` for an empty label; such a
+link has no text, so its toolbar appears at the caret boundary holding it. It sits
 below its text, aligned to its left edge, and offers explicit open, copy
 destination, edit and remove actions. Edit expands
 into the same fields with a transition that honors reduced motion. Link
@@ -513,9 +517,12 @@ content when closing syntax appears.
   structure.
 - List actions affect whole items and their descendants. Indent requires a
   preceding sibling and cannot create nesting beyond four levels; unindent
-  requires a parent, but imported deeper lists can be unindented. Enter and
-  `o`/`O` continue semantic items; Enter on an empty item exits to an
-  independent ordinary paragraph. In Preview prose,
+  requires a parent or an empty parent marker on the item's own line, but
+  imported deeper lists can be unindented. Enter and `o`/`O` continue semantic
+  items. Enter on an empty nested item lifts it one level, like Backspace; on an
+  empty top-level item it exits to an independent ordinary paragraph (still
+  inside an enclosing quote, which a further Enter removes). That blank
+  paragraph is not an item continuation. In Preview prose,
   Option-Enter on macOS / Alt-Enter on Windows and Insert Paragraph in List Item
   split at a collapsed caret into another paragraph within the same item. The
   new paragraph has no label and retains list/quote ownership, including while

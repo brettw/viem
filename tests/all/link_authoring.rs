@@ -1636,3 +1636,31 @@ fn source_label_fields_share_inline_context_and_gfm_strikethrough_with_rich_view
         }
     }
 }
+
+#[test]
+fn an_empty_label_link_is_reachable_at_its_boundary_and_editable() {
+    // Preview shows nothing for `[](…)`; its toolbar appears at the boundary
+    // holding the hidden link, so it can be labelled or removed.
+    let source = "a[](https://example.test/x)b";
+    let mut doc = document(source, Format::Markdown);
+    assert_eq!(doc.text(), "ab");
+    let link = doc.empty_link_at(1).unwrap().unwrap();
+    assert_eq!((link.range.clone(), link.text.as_str(), link.destination.as_str()), (1..1, "", "https://example.test/x"));
+    assert!(link.editable);
+    assert!(doc.empty_link_at(0).unwrap().is_none());
+    // Typing context does not treat the boundary as inside a link.
+    assert!(doc.link_snapshot_at(doc.text_point(1).unwrap()).unwrap().is_none());
+
+    apply(&mut doc, LinkEditIntent::Edit { range: link.range.clone(), text: "label".into(), destination: "https://example.test/y".into() });
+    assert_eq!(doc.text(), "alabelb");
+    let labelled = doc.link_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap();
+    assert_eq!((labelled.text.as_str(), labelled.destination.as_str()), ("label", "https://example.test/y"));
+    assert!(doc.undo());
+    assert_eq!(doc.source_bytes(), source.as_bytes());
+
+    let link = doc.empty_link_at(1).unwrap().unwrap();
+    apply(&mut doc, LinkEditIntent::Remove { range: link.range });
+    assert_eq!(doc.source_bytes(), b"ab");
+    assert!(doc.undo());
+    assert_eq!(doc.source_bytes(), source.as_bytes());
+}

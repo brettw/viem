@@ -103,6 +103,11 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
                     range.is_empty()
                         || (link.range.start <= range.start && range.end <= link.range.end)
                 });
+            // An empty-label link has no text; its popup sits at the caret.
+            let link = match link {
+                None if range.is_empty() => document.empty_link_at(cursor).map_err(document_status)?,
+                link => link,
+            };
             let linear = matches!(
                 selection.kind(),
                 LogicalSelectionKind::None

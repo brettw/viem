@@ -374,7 +374,10 @@ pub(super) fn deletion_patches(
             .and_then(|line| document.state().source.bytes_in(line))
             .map(|bytes| document.encoding().decode_region(&bytes, 0).is_ok_and(|text| text.text.trim().is_empty()))
             .unwrap_or(true);
-        if last_end < next_start && !separated_above && retained_empty.is_none() { last_end } else { next_start }
+        let only_blank_between = last_end < next_start && document.state().source.bytes_in(last_end..next_start)
+            .map(|bytes| document.encoding().decode_region(&bytes, last_end).is_ok_and(|text| text.text.trim().is_empty()))
+            .unwrap_or(false);
+        if only_blank_between && !separated_above && retained_empty.is_none() { last_end } else { next_start }
     } else {
         source_line(last, true)?.end
     };

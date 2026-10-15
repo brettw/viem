@@ -744,6 +744,64 @@ impl Document {
         self.link_snapshot_at(self.text_point(sample)?)
     }
 
+    /// An inline link with an empty label has no text to carry the caret.
+    /// Report it at the visible boundary whose hidden syntax contains it, so
+    /// its popup can still open, edit or remove it in Preview. Typing context
+    /// deliberately ignores such links.
+    fn edited_link(&self, range: &Range<usize>) -> Result<LinkSnapshot, DocumentError> {
+        let link = if range.is_empty() {
+            self.empty_link_at(range.start)?
+        } else {
+            self.link_snapshot_at(self.text_point(range.start)?)?
+        };
+        link.filter(|link| link.editable && link.range == *range)
+            .ok_or(DocumentError::UnsupportedFormatting)
+    }
+
+    pub fn empty_link_at(&self, at: usize) -> Result<Option<LinkSnapshot>, DocumentError> {
+        self.text_point(at)?;
+        if !self.format().is_markdown() {
+            return Ok(None);
+        }
+        let projection = self.projection();
+        let (Some(first), Some(last)) = (
+            projection.source_insertion_point(at, false),
+            projection.source_insertion_point(at, true),
+        ) else {
+            return Ok(None);
+        };
+        if first >= last || last - first > MAX_LINK_QUERY_BYTES {
+            return Ok(None);
+        }
+        let bytes = self.state().source.bytes_in(first..last).ok_or(DocumentError::VerificationFailed)?;
+        let decoded = self.encoding().decode_region(&bytes, first)?;
+        let input = super::line_endings::normalize(&decoded, self.file_format());
+        let source_range = |range: &Range<usize>| -> Option<Range<usize>> {
+            input.source_hull(range).or_else(|| range.is_empty().then(|| {
+                input.unit(input.unit_partition_point(|unit| unit.normalized.end <= range.start))
+                    .map_or(last..last, |unit| unit.source.start..unit.source.start)
+            }))
+        };
+        for link in markdown_links_in(&input.text, 0..input.text.len()) {
+            if !link.label.is_empty() {
+                continue;
+            }
+            let (Some(source), Some(label_source)) = (source_range(&link.range), source_range(&link.label)) else {
+                continue;
+            };
+            return Ok(Some(LinkSnapshot {
+                range: at..at,
+                text: String::new(),
+                destination: link.destination,
+                editable: true,
+                source,
+                label_source,
+                destination_source: link.destination_range.as_ref().and_then(source_range),
+            }));
+        }
+        Ok(None)
+    }
+
     pub(crate) fn can_exit_link_typing(&self, at: usize, affinity: BoundaryAffinity) -> bool {
         if self.is_read_only() || !self.format().is_markdown() {
             return false;
@@ -1264,17 +1322,11 @@ impl Document {
                 text,
                 destination,
             } => {
-                let link = self
-                    .link_snapshot_at(self.text_point(range.start)?)?
-                    .filter(|link| link.editable && link.range == range)
-                    .ok_or(DocumentError::UnsupportedFormatting)?;
+                let link = self.edited_link(&range)?;
                 (range, text, destination, false, Some(link))
             }
             LinkEditIntent::Remove { range } => {
-                let link = self
-                    .link_snapshot_at(self.text_point(range.start)?)?
-                    .filter(|link| link.editable && link.range == range)
-                    .ok_or(DocumentError::UnsupportedFormatting)?;
+                let link = self.edited_link(&range)?;
                 (range, link.text.clone(), String::new(), true, Some(link))
             }
             LinkEditIntent::RemoveSelection { .. } => unreachable!("handled above"),

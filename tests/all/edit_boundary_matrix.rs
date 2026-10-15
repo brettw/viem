@@ -29,6 +29,7 @@ const SEEDS: &[&str] = &[
     // List and quote boundaries.
     "- a\n\n- b",
     "- a\n- b\n\nc",
+    "- a\n  ```\n  code\n  ```\n- b",
     "1. a\n2. b",
     "text\n- item",
     "> a\n>\n> b",
