@@ -105,7 +105,7 @@ fn initial(rng: &mut Rng) -> Action {
         ("plain","First paragraph.\nSecond line.\n\nLast line."),
         ("plain","e\u{301} 👩\u{200d}💻 🇨🇦 العربية עברית 中文\n\tTabs\0NUL\n"),
         ("markdown","# Heading\n\nA **bold** paragraph with _emphasis_.\ncontinued prose.\n\n1. First item\n   continued\n2. Second\n\n```rust\nfn main() {}\n\n```\n\nEnd."),
-        ("markdown_source","- first\n  continuation\n- second\n\n> quote\n\nA [link](https://example.test).\n"),
+        ("code","- first\n  continuation\n- second\n\n> quote\n\nA [link](https://example.test).\n"),
         ("markdown",""),("plain",""),
     ];
     let (format, source) = cases[rng.usize(cases.len())];

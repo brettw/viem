@@ -407,11 +407,47 @@ impl Document {
         if self.projection().table_cell_at(at).is_some() {return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);}
         let block =
             edit_boundary::paragraph_at(self, at)?.ok_or(DocumentError::VerificationFailed)?;
-        if block.list_level().is_some() {
+        if block.list_level().is_some() && !self.is_trailing_blank_list_paragraph(&block)? {
             self.prepare_markdown_list_split(at, false)
         } else {
             self.prepare_markdown_paragraph_enter(at, &block)
         }
+    }
+
+    /// Enter on an empty nested item lifts it one level, as Backspace does;
+    /// only an empty top-level item exits the list.
+    pub(super) fn prepare_empty_nested_item_lift(
+        &self,
+        at: usize,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        let Some(block) = edit_boundary::paragraph_at(self, at)? else { return Ok(None) };
+        if !block.range.is_empty() || !matches!(block.kind, BlockKind::ListItem { level: 1.., item_start: true, .. }) {
+            return Ok(None);
+        }
+        Ok(self.prepare_list_indent(at..at, true).ok())
+    }
+
+    /// An empty paragraph spelled only by blank lines after a list's last
+    /// item: exiting an item leaves it, and the parser still assigns it to
+    /// that item. It is an independent paragraph, not an item continuation.
+    fn is_trailing_blank_list_paragraph(&self, block: &crate::document::Block) -> Result<bool, DocumentError> {
+        if !block.range.is_empty() || block.kind != BlockKind::Paragraph {
+            return Ok(false);
+        }
+        let projection = self.projection();
+        let next = block.range.end + 1;
+        if next <= projection.text_tree().byte_len()
+            && projection.blocks_for_region(&(next..next)).iter()
+                .any(|following| following.range.start == next && following.list_level().is_some()
+                    && !matches!(following.kind, BlockKind::ListItem { container_start: true, level: 0, .. }))
+        {
+            return Ok(false);
+        }
+        let Some(source) = projection.source_insertion_point(block.range.start, true) else { return Ok(false) };
+        let lines = &self.state().source_hard_lines;
+        let Some(line) = lines.line_at_offset(source).and_then(|index| lines.get(index)) else { return Ok(false) };
+        let bytes = self.state().source.bytes_in(line.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+        Ok(self.encoding().decode_region(&bytes, line.start)?.text.trim().is_empty())
     }
 
     fn prepare_markdown_paragraph_enter(

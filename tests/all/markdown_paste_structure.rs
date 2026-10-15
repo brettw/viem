@@ -325,3 +325,46 @@ fn markdown_paste_into_a_large_document_stays_regional() {
     assert_report_structure(&editor, "large");
     assert!(editor.source().contains(&format!("target \n\n{}\n\nhere", REPORT.trim_end())));
 }
+
+#[test]
+fn zz_scratch_one() {
+    for (src, op) in [("\t", "type"), ("\t", "x"), ("\t", "a\nb"), ("  ", "a\nb"), ("\t\n\na", "a\nb"), ("a\n\n\t\n\nb", "a\nb")] {
+        let mut editor = Editor::open(src, Format::Markdown);
+        editor.key(Key::Char('i'));
+        let at = if src.starts_with('a') { 2 } else { 0 };
+        editor.place(at);
+        let r = if op == "type" { editor.core.handle(editor.view, viem_core::CoreEvent::Input(viem_core::command::InputEvent::key('x'))).map(|_| ()) } else {
+            let clipboard = viem_core::command::clipboard::ClipboardCommandContext::new().with_read(viem_core::command::clipboard::ClipboardSnapshot::new(
+                viem_core::command::clipboard::ClipboardTarget::Clipboard,
+                viem_core::command::clipboard::ClipboardGeneration(1),
+                viem_core::command::clipboard::ClipboardContent::from_plain_text(op),
+            ));
+            editor.core.handle(editor.view, viem_core::CoreEvent::InputWithClipboard { input: viem_core::command::InputEvent::Key(Key::PasteClipboardMatchingStyle), clipboard }).map(|_| ())
+        };
+        eprintln!("RES {src:?} {op:?} -> {r:?} {:?}", editor.source());
+    }
+}
+
+#[test]
+fn zz_scratch_matching_style() {
+    for source in ["", "\t", "#", "- a", "a*b*c", "<div>", "`` ` ``", "999999999. big", "<script>alert(1)</script>"] {
+        for (key, text) in [("m", "## H\n  - x\n**y**"), ("p", "## H\n\n- a\n- b\n\npara"), ("p", "**md** | x\n\n- y"), ("p", "> q\n\n1. one\n2. two\n"), ("p", "line one\nline two\n")] {
+            let len = source.len();
+            for at in 0..=len.min(25) {
+                let mut editor = Editor::open(source, Format::Markdown);
+                let text_len = editor.document().text().len();
+                if at > text_len { continue; }
+                editor.key(Key::Char('i'));
+                editor.place(at);
+                let clipboard = viem_core::command::clipboard::ClipboardCommandContext::new().with_read(viem_core::command::clipboard::ClipboardSnapshot::new(
+                    viem_core::command::clipboard::ClipboardTarget::Clipboard,
+                    viem_core::command::clipboard::ClipboardGeneration(1),
+                    viem_core::command::clipboard::ClipboardContent::from_plain_text(text),
+                ));
+                let k = if key == "m" { Key::PasteClipboardMatchingStyle } else { Key::PasteClipboard };
+                let r = editor.core.handle(editor.view, viem_core::CoreEvent::InputWithClipboard { input: viem_core::command::InputEvent::Key(k), clipboard });
+                if let Err(e) = r { eprintln!("FAIL {source:?} @{at} {key} {text:?}: {e:?}"); }
+            }
+        }
+    }
+}

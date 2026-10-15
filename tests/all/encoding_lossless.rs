@@ -298,3 +298,48 @@ fn attempts_to_split_an_opaque_item_are_structured_and_non_destructive() {
     assert_eq!(document.revision(), revision);
     assert_eq!(document.decoding_diagnostics().len(), 1);
 }
+
+#[test]
+fn an_edit_exposing_leading_feff_content_adds_a_bom_in_the_same_undoable_edit() {
+    use crate::support::Editor;
+    use viem_core::command::{InputEvent, Key};
+    use viem_core::document::HistoryNavigationRequest;
+    use viem_core::CoreEvent;
+    // Decoding reads a leading encoded U+FEFF as a BOM. Keeping the visible
+    // character therefore also writes a BOM before it, in every encoding.
+    for format in [Format::Markdown, Format::PlainText, Format::Code] {
+        for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+            // A Markdown paragraph owns its separating blank line.
+            let lines = if format.is_markdown() { "a\n\n\u{feff}b" } else { "a\n\u{feff}b" };
+            let range = if format.is_markdown() { ":1,2d\n" } else { ":1d\n" };
+            for (text, keys, expected) in [
+                ("a\u{feff}b", "x", "\u{feff}b"),
+                (lines, "dd", "\u{feff}b"),
+                ("a\u{feff}b", ":s/a//\n", "\u{feff}b"),
+                (lines, range, "\u{feff}b"),
+            ] {
+                let bytes: Vec<u8> = match encoding {
+                    Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                    Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+                    _ => text.as_bytes().to_vec(),
+                };
+                let mut editor = Editor::open("", format);
+                editor.core = viem_core::Core::new(Document::from_bytes(bytes.clone(), encoding, format).unwrap());
+                editor.view = editor.core.add_view(viem_core::layout::MockTextMeasurementProvider::new(), 600., 400.);
+                for key in keys.chars() {
+                    let event = if key == '\n' { InputEvent::Key(Key::Enter) } else { InputEvent::key(key) };
+                    editor.core.handle(editor.view, CoreEvent::Input(event)).unwrap();
+                }
+                let context = format!("{format:?} {encoding:?} {text:?} {keys:?}");
+                let document = editor.core.document();
+                assert_eq!(document.text(), expected, "{context}");
+                assert!(document.has_bom(), "{context}");
+                let reopened = Document::from_bytes(document.source_bytes(), encoding, format).unwrap();
+                assert_eq!(reopened.text(), expected, "{context}");
+                editor.core.handle(editor.view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+                assert_eq!(editor.core.document().source_bytes(), bytes, "{context}");
+                assert!(!editor.core.document().has_bom(), "{context}");
+            }
+        }
+    }
+}

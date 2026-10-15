@@ -332,7 +332,8 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
               snapshot.info.identity.document_id == surface.viewPresentation.document_id,
               snapshot.info.identity.document_revision == surface.viewPresentation.document_revision else { return nil }
         let editor = surface.editorView
-        if let link {
+        // An empty-label link has no glyphs; anchor at its caret boundary.
+        if let link, link.start < link.end {
             let clusters = snapshot.clusters.filter { $0.text_start < link.end && link.start < $0.text_end }
             // Pick the first visible row, then its leftmost glyph (including bidi labels).
             for row in snapshot.rows {
@@ -343,7 +344,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
             }
             return nil
         }
-        guard let geometry = try? session.caretGeometry(offset: surface.viewPresentation.cursor_utf8_offset,
+        guard let geometry = try? session.caretGeometry(offset: link?.start ?? surface.viewPresentation.cursor_utf8_offset,
                 affinity: surface.viewPresentation.cursor_affinity, in: snapshot.info) else { return nil }
         let rect = editor.viewRect(geometry.rect)
         return rect.intersects(editor.textViewportRect) ? rect : nil

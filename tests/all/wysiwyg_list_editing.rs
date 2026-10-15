@@ -496,3 +496,31 @@ fn empty_list_boundary_repair_keeps_unrelated_suffix_work_bounded() {
         assert_list_reopens(&document);
     }
 }
+
+#[test]
+fn enter_on_empty_items_leaves_one_level_at_a_time() {
+    use crate::support::{assert_exact_undo_redo, assert_reopens_as_displayed, Editor};
+    // Each Enter on the empty item: a nested item lifts one level, a top-level
+    // item leaves its list, and a quoted paragraph then leaves its quote.
+    for (source, steps) in [
+        ("- a\n  - b\n  - \n\nafter", ["- a\n  - b\n- \n\nafter", "- a\n  - b\n\n\n\nafter", "- a\n  - b\n\n\n\n\n\nafter"]),
+        ("- a\n  - b\n    - c\n    - \n\nafter", ["- a\n  - b\n    - c\n  - \n\nafter", "- a\n  - b\n    - c\n- \n\nafter", "- a\n  - b\n    - c\n\n\n\nafter"]),
+        ("1. a\n   1. b\n   2. \n2. d", ["1. a\n   1. b\n2. \n3. d", "1. a\n   1. b\n\n\n\n1. d", "1. a\n   1. b\n\n      <span></span>\n   2. \n\n1. d"]),
+        ("> - a\n>   - b\n>   - ", ["> - a\n>   - b\n> - ", "> - a\n>   - b\n\n> ", "> - a\n>   - b\n\n"]),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.type_keys("i");
+        let at = editor.document().projection().blocks().iter()
+            .find(|block| block.range.is_empty()).unwrap().range.start;
+        editor.place(at);
+        let mut before = source.to_owned();
+        for expected in steps {
+            editor.key(Key::Enter);
+            assert_eq!(editor.source(), expected, "{source:?}");
+            assert_reopens_as_displayed(editor.document(), expected);
+            assert_exact_undo_redo(&mut editor, &before, expected, expected);
+            editor.type_keys("i");
+            before = expected.to_owned();
+        }
+    }
+}

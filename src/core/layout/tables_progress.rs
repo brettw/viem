@@ -167,6 +167,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .table_cache
                 .progress
                 .iter()
+                .rev()
                 .find(|cell| cell.range == *range && cell.key.revision == revision)
                 .is_some_and(|cell| cell.next == range.end)
     }
@@ -174,6 +175,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         self.table_cache
             .progress
             .iter()
+            .rev()
             .find(|cell| cell.range == *range && cell.key.revision == revision)
             .map(|cell| cell.width)
     }
@@ -185,6 +187,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         self.table_cache
             .progress
             .iter()
+            .rev()
             .find(|cell| cell.range == *range && cell.key.revision == revision)
             .map(|cell| cell.height)
     }
@@ -667,6 +670,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             }
             row.paragraph_content_width = row.width;
         }
+        // Progress measured under an older style, metrics or scale key can
+        // never resume; it would otherwise answer the cell's queries.
+        self.table_cache.progress.retain(|cell| cell.range != progress.range);
         self.table_cache.progress.push_back(Arc::new(progress));
         while self.table_cache.progress.len() > PROGRESS_CACHE_CELLS {
             self.table_cache.progress.pop_front();

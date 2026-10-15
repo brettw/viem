@@ -666,3 +666,47 @@ fn unchanged_resize_reuses_table_geometry_but_rebuilds_changed_metrics() {
         );
     }
 }
+
+#[test]
+fn giant_cell_refinement_converges_after_a_preview_switch_and_style_change() {
+    use viem_core::layout::{compute_layout_job, LayoutEngine, LayoutExecutionContext};
+    // Turning Preview on applies the Markdown theme, changing the stylesheet
+    // while a giant cell's measurement is in progress. Progress measured under
+    // the old style must not answer the cell's completeness or width queries.
+    let source = format!(
+        "# Long cell\n\n| Text | Neighbor |\n| --- | --- |\n| {} | still a separate cell |\n\nAfter the table.\n",
+        "readable text ".repeat(20_000)
+    );
+    let mut core = Core::new(Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Code).unwrap());
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
+    core.handle_with_layout(view, CoreEvent::SetDocumentMode {
+        document: core.document().id(),
+        revision: core.document().revision(),
+        mode: viem_core::DocumentMode::Markdown,
+    })
+    .unwrap();
+    let step = |core: &mut Editor| {
+        let Some(request) = core.prepare_view_table_refinement(view).unwrap() else { return false };
+        let candidate = compute_layout_job(
+            &mut LayoutEngine::new(MockTextMeasurementProvider::new()),
+            &request,
+            LayoutExecutionContext::WorkerPool,
+        )
+        .unwrap();
+        core.install_view_table_refinement(view, candidate).unwrap();
+        true
+    };
+    assert!(step(&mut core));
+    core.replace_style_defaults(br#"{"version":1,"block_styles":[
+        {"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","block":{"margin_top":3}}]}"#)
+        .unwrap();
+    // Present the restyled view again, as the frontend does after a change.
+    core.handle_with_layout(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(0.) }).unwrap();
+    let mut iterations = 0;
+    while step(&mut core) {
+        iterations += 1;
+        assert!(iterations < 40, "table width refinement did not converge");
+    }
+    assert!(iterations > 0);
+    assert!(!core.layout(view).unwrap().snapshot().unwrap().has_provisional_table_widths());
+}

@@ -262,6 +262,8 @@ internal sealed partial class EditorPane
     {
         anchor = caretRect;
         if (context.Link is not { } link) return anchor.Height > 0;
+        // An empty-label link has no glyphs; it sits at the caret boundary.
+        if (link.Start == link.End) return anchor.Height > 0;
         if (snapshot == null || snapshot.Info.identity.document_revision != context.Selection.document_revision) return false;
         // Use the first visible row of a wrapped link, taking its leftmost
         // cluster for bidi text. Geometry always belongs to the exact snapshot.

@@ -247,6 +247,15 @@ final class EVLinkPopoverTests: XCTestCase {
         }
         XCTAssertLessThan(widths[0], widths[1])
         XCTAssertLessThanOrEqual(widths[1], 374)
+        // An empty-label link has no text; its boundary carries the popup.
+        let (_, surface, window) = try editor("a[](https://example.com)b", type: EVDocument.markdownType)
+        defer { surface.linkPopover.close(); window.close() }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
+        surface.linkPopover.refresh()
+        XCTAssertTrue(surface.linkPopover.isOpen)
+        XCTAssertEqual(surface.linkPopover.destinationButton.title, "empty")
+        let font = try XCTUnwrap(surface.linkPopover.destinationButton.attributedTitle.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+        XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.italicFontMask))
     }
 
     func testOpeningDestinationDismissesPopupBeforeRouting() throws {

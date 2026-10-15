@@ -323,8 +323,10 @@ final class EVTableEditingTests: XCTestCase {
             + String(repeating: "readable text ", count: 40_000)
             + " | still a separate cell |\n\nAfter the table.\n"
         for warm in [false, true] {
-            let (backend, surface, session) = try surface(text)
+            // Turning Preview on applies the Markdown stylesheet mid-measurement.
+            let (backend, surface, session) = try surface(text, code: true)
             defer { session.detach() }
+            surface.formattingToolbar.formattedView.performClick(nil)
             XCTAssertEqual(backend.sourceFormat, .markdown)
             func finishRefinement() async throws {
                 for _ in 0..<1000 {

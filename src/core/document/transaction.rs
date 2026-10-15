@@ -2251,6 +2251,7 @@ impl Document {
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
+        let added_bom = self.protect_leading_feff(&mut source_patches)?;
 
         let persistent_edits = edits
             .iter()
@@ -2264,16 +2265,33 @@ impl Document {
 
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
-        let built = self.build_verified_text_edit_candidate(
-            source,
-            after_revision,
-            &target_text,
-            text_splice_work,
-            &edits,
-            &source_patches,
-            authored_syntax,
-            None,
-        );
+        let built = if added_bom {
+            // A new BOM shifts every content offset; verify it completely.
+            self.build_verified_candidate(source, self.file_format(), self.state().file_format_origin,
+                after_revision, CandidateVerification {
+                    expected_text: target_text.slice(0..target_text.byte_len())
+                        .map_err(DocumentError::FormattedTextStorage)?,
+                    expected_hard_breaks: None,
+                    mismatch_error: DocumentError::VerificationFailed,
+                }).map(|state| TextEditCandidate {
+                    work: ProjectionWorkStatistics::full(&state),
+                    state,
+                    reprojected_region: None,
+                    block_ids_already_reconciled: false,
+                    next_projected_block_id: self.next_projected_block_id,
+                })
+        } else {
+            self.build_verified_text_edit_candidate(
+                source,
+                after_revision,
+                &target_text,
+                text_splice_work,
+                &edits,
+                &source_patches,
+                authored_syntax,
+                None,
+            )
+        };
         let TextEditCandidate {
             state: mut candidate,
             work: projection_work,
@@ -2801,6 +2819,7 @@ impl Document {
             self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
+        if std::env::var_os("VIEM_DBG").is_some() { eprintln!("DBG payload patches {:?} target {:?}", source_patches.iter().map(|p| (p.range.clone(), String::from_utf8_lossy(&p.replacement).into_owned())).collect::<Vec<_>>(), target_text.byte_len()); }
         let after_revision = Revision(self.next_revision);
         let built = self.build_verified_text_edit_candidate(
             source,
@@ -2812,8 +2831,9 @@ impl Document {
             false,
             Some(&edits),
         ).map_err(|error| match error {
-            ModelTransactionError::Document(DocumentError::VerificationFailed) =>
-                ModelTransactionError::Document(DocumentError::FormattedPayloadCannotReproject),
+            ModelTransactionError::Document(DocumentError::VerificationFailed) => {
+                if std::env::var_os("VIEM_DBG").is_some() { eprintln!("DBG verify failed"); }
+                ModelTransactionError::Document(DocumentError::FormattedPayloadCannotReproject) }
             error => error,
         })?;
         // Text equality alone cannot distinguish literal LF from logical
@@ -2831,6 +2851,7 @@ impl Document {
                 &new_region,
             )?;
             if built.state.projection.hard_breaks_for_region(&new_region) != expected_hard_breaks {
+                if std::env::var_os("VIEM_DBG").is_some() { eprintln!("DBG hard breaks {:?} vs expected {:?} text {:?}", built.state.projection.hard_breaks_for_region(&new_region), expected_hard_breaks, built.state.projection.text()); }
                 return Err(DocumentError::FormattedPayloadCannotReproject.into());
             }
         }
@@ -2989,6 +3010,35 @@ impl Document {
             next_projected_block_id,
             PreparedPublication::State(candidate),
         ))
+    }
+
+    /// Decoding treats an encoded U+FEFF at the start of the source as a BOM.
+    /// When an edit leaves visible U+FEFF content first in a document without
+    /// a BOM, also write a BOM so that character reopens as displayed.
+    fn protect_leading_feff(&self, patches: &mut Vec<SourcePatch>) -> Result<bool, ModelTransactionError> {
+        let bom = self.encoding().bom_bytes();
+        if bom.is_empty() || self.state().has_bom
+            || !patches.iter().any(|patch| patch.part == SourcePartId::PRIMARY && patch.range.start < bom.len())
+        {
+            return Ok(false);
+        }
+        let mut ordered = patches.clone();
+        if validate_source_patches(&mut ordered).is_err() {
+            return Ok(false);
+        }
+        let Ok(source) = apply_source_patches(&self.state().source, &ordered) else { return Ok(false) };
+        if source.bytes_in(0..bom.len().min(source.len())).as_deref() != Some(bom) {
+            return Ok(false);
+        }
+        match patches.iter_mut().find(|patch| patch.part == SourcePartId::PRIMARY && patch.range.start == 0) {
+            Some(first) => {
+                let mut replacement = bom.to_vec();
+                replacement.extend_from_slice(&first.replacement);
+                first.replacement = replacement;
+            }
+            None => patches.insert(0, SourcePatch::primary(0..0, bom.to_vec())),
+        }
+        Ok(true)
     }
 
     fn prepare_source_only_patches(
@@ -3550,6 +3600,11 @@ impl Document {
     fn prepare_structural_list_enter(
         &self, at: usize,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if self.format() == Format::Markdown {
+            if let Some(prepared) = self.prepare_empty_nested_item_lift(at)? {
+                return Ok(prepared);
+            }
+        }
         if let Some(prepared) = self.prepare_enter_at_folded_ending(at)? {
             return Ok(prepared);
         }
@@ -4023,8 +4078,10 @@ impl Document {
         if self.format().is_literal() {
             self.prepare_visible_source_patches(patches)
         } else {
-            if let Ok(Some(prepared)) = self.prepare_regional_wysiwyg_prose_patches(patches.clone()) {
-                return Ok(prepared);
+            if !self.protect_leading_feff(&mut patches.clone())? {
+                if let Ok(Some(prepared)) = self.prepare_regional_wysiwyg_prose_patches(patches.clone()) {
+                    return Ok(prepared);
+                }
             }
             self.prepare_reprojected_source_patches(patches)
         }
@@ -4125,6 +4182,11 @@ impl Document {
         let mut prepared = self.prepare_physical_source_patches(patches)?;
         if prepared.before_revision == prepared.after_revision { return Ok(prepared); }
         let candidate = self.prepared_candidate_document(&prepared)?;
+        // A BOM added for leading U+FEFF content shifts every destination.
+        let bom_shift = if candidate.has_bom() && !self.has_bom() { self.encoding().bom_bytes().len() } else { 0 };
+        let relocations = relocations.into_iter()
+            .map(|(source, destination)| (source, destination + bom_shift))
+            .collect::<Vec<_>>();
         for (source, destination) in &relocations {
             let destination_end = destination.checked_add(source.len()).ok_or(PositionError::ArithmeticOverflow)?;
             if candidate.source_bytes_in(*destination..destination_end)? != self.source_bytes_in(source.clone())? {
@@ -4254,20 +4316,24 @@ impl Document {
         validate_source_patches(&mut patches)?;
         // A source intention has no expected formatted text: the bounded
         // reprojection is the result, and complete reprojection is the
-        // fallback. Errors from a bounded attempt only decline it.
-        if let Attempt::Verified(prepared) = Attempt::optional_or_declined(Strategy::TableLocal,
-            self.prepare_table_local_reprojection(&patches), "table reprojection failed")
-            .record(Strategy::TableLocal)
-        {
-            self.shadow_check_source_candidate(Strategy::TableLocal, &prepared, &patches);
-            return Ok(prepared);
-        }
-        if let Attempt::Verified((prepared, _, _)) = Attempt::optional_or_declined(Strategy::IndependentParagraph,
-            self.prepare_independent_paragraph_reprojection(&patches), "paragraph reprojection failed")
-            .record(Strategy::IndependentParagraph)
-        {
-            self.shadow_check_source_candidate(Strategy::IndependentParagraph, &prepared, &patches);
-            return Ok(prepared);
+        // fallback. Errors from a bounded attempt only decline it. A new BOM
+        // shifts every content offset, so it uses complete reprojection.
+        let added_bom = self.protect_leading_feff(&mut patches)?;
+        if !added_bom {
+            if let Attempt::Verified(prepared) = Attempt::optional_or_declined(Strategy::TableLocal,
+                self.prepare_table_local_reprojection(&patches), "table reprojection failed")
+                .record(Strategy::TableLocal)
+            {
+                self.shadow_check_source_candidate(Strategy::TableLocal, &prepared, &patches);
+                return Ok(prepared);
+            }
+            if let Attempt::Verified((prepared, _, _)) = Attempt::optional_or_declined(Strategy::IndependentParagraph,
+                self.prepare_independent_paragraph_reprojection(&patches), "paragraph reprojection failed")
+                .record(Strategy::IndependentParagraph)
+            {
+                self.shadow_check_source_candidate(Strategy::IndependentParagraph, &prepared, &patches);
+                return Ok(prepared);
+            }
         }
         let _ = Attempt::Verified(()).record(Strategy::Complete);
         let source = apply_source_patches(&self.state().source, &patches)?;
