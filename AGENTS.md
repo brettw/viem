@@ -1876,7 +1876,10 @@ discard cached lines farthest from it. Speculation runs on workers at lower
 priority than input, yields to visible work, survives paint-only changes, and
 never shapes on or blocks the input thread. Edits re-prepare only what they
 invalidate; lines that cannot be prepared in one bounded job (giant lines) stay
-demand-laid.
+demand-laid. Each view retains its own geometry, including inactive documents
+and panes (about 25 MiB of live memory per view of 95 KB of Markdown). This is
+accepted, not a defect; future memory work may drop inactive views to the
+incremental window if needed.
 
 - Line breaking uses the default Unicode 15.0 UAX #14 rules in portable,
   first-party code, without the optional numeric-expression tailoring or an
