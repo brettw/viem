@@ -205,6 +205,9 @@ impl Document {
         let new_source = start..rebase_source_boundary(end, patches, Association::AfterInsertion)?;
         if new_source.len() > 65536 { return candidate::decline(Strategy::IndependentParagraph, "new owner source exceeds the regional limit"); }
         let revision = Revision(self.next_revision);
+        // Whether the original band ends with the document's terminal ending
+        // and every patch ends at or before it, recorded by the first parse.
+        let retains_terminal = std::cell::Cell::new(false);
         let parse = |source: &super::super::source::SourceSnapshot, range: Range<usize>|
             -> Result<(FormattedDocument, Vec<Range<usize>>, usize), ModelTransactionError> {
             let bytes = source.bytes_in(range.clone()).ok_or(DocumentError::VerificationFailed)?;
@@ -213,10 +216,24 @@ impl Document {
             // Terminal trivia shares insertion ownership with the final body.
             // Compound split/style edits require the complete boundary proof;
             // this optimization handles only independently delimited bodies.
-            if range.end == source.len() && normalized.endings.last()
-                .is_some_and(|ending| ending.source.end == range.end)
+            // A guarded structural band may retain the terminal ending when its
+            // patches all end before it and a nonblank row precedes it before
+            // and after the edit: the ending stays the same untouched trivia
+            // after the band's final row, as when continuing a list. A blank
+            // row would pair it into a separator instead.
+            if let Some(terminal) = normalized.endings.last()
+                .filter(|ending| range.end == source.len() && ending.source.end == range.end)
             {
-                return Err(DocumentError::UnsupportedFormatting.into());
+                let row_start = normalized.endings.len().checked_sub(2)
+                    .map_or(0, |index| normalized.endings[index].normalized.end);
+                let nonblank = !normalized.text[row_start..terminal.normalized.start].trim().is_empty();
+                if std::ptr::eq(source, &self.state().source) {
+                    retains_terminal.set(guarded && nonblank
+                        && patches.iter().all(|patch| patch.range.end <= terminal.source.start));
+                }
+                if !retains_terminal.get() || !nonblank {
+                    return Err(DocumentError::UnsupportedFormatting.into());
+                }
             }
             // A newly blank edge row joins the retained separator outside
             // this band. Its endings must be paired with that separator, not

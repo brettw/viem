@@ -30,6 +30,9 @@ pub(super) struct MarkdownCodeSyntax {
     sheet_revision: Option<crate::document::StyleSheetRevision>,
     document_sheet_revision: Option<crate::document::StyleSheetRevision>,
     language_change: Option<(DocumentId, Revision)>,
+    /// The last published presentation and its block identifiers, in order.
+    /// The next publication splices its spans across intervening edits.
+    published: Option<(crate::document::FormattedDocument, Vec<u64>)>,
     #[cfg(test)]
     code_sheet: Option<std::sync::Arc<crate::document::StyleSheet>>,
 }
@@ -597,6 +600,7 @@ impl Default for MarkdownCodeSyntax {
             sheet_revision: None,
             document_sheet_revision: None,
             language_change: None,
+            published: None,
             #[cfg(test)]
             code_sheet: None,
         }
@@ -606,6 +610,10 @@ pub(super) struct MarkdownCodeService {
     service: SyntaxService,
     anchors: Option<(crate::document::TextAnchor, crate::document::TextAnchor)>,
     input: Option<SyntaxInputSnapshot>,
+    /// The block language at the last publication; `None` before one.
+    published_language: Option<Option<String>>,
+    /// The block's range in the last publication, whose text `input` holds.
+    published_range: Option<std::ops::Range<usize>>,
 }
 
 impl<P: TextMeasurementProvider> Core<P> {
@@ -808,21 +816,44 @@ impl<P: TextMeasurementProvider> Core<P> {
             .retain(|id, _| requests.contains_key(id));
         // Blocks that are new, edited, or completed analysis during this poll.
         let mut changed_blocks = Vec::new();
+        // Their identifiers, and blocks whose language changed since publication.
+        let mut republish = std::collections::BTreeSet::new();
         let mut inputs = Vec::new();
         let mut offscreen_publications = 0;
+        // Text changes since the last publication, whose block text every
+        // published entry's input holds. A block outside them is unchanged.
+        let published_hull = self.syntax.markdown.published.as_ref()
+            .map(|(previous, _)| previous.text_tree().changed_extent(full.text_tree()));
         for (position, id) in order.into_iter().enumerate() {
             let (block, regions) = &requests[&id];
-            let Ok(text) = full.text_tree().subrope(block.range.clone()) else {
-                continue;
+            let unchanged = published_hull.as_ref().and_then(|hull| {
+                let entry = self.syntax.markdown.services.get(&id)?;
+                let previous = match hull {
+                    Some((_, new)) if block.range.start < new.end && new.start < block.range.end => return None,
+                    Some((old, new)) if block.range.start >= new.end => {
+                        block.range.start - new.end + old.end..block.range.end - new.end + old.end
+                    }
+                    _ => block.range.clone(),
+                };
+                (entry.published_range.as_ref() == Some(&previous)).then(|| entry.input.clone()).flatten()
+            });
+            let reused = unchanged.is_some();
+            let mut input = match unchanged {
+                Some(input) => input,
+                None => {
+                    let Ok(text) = full.text_tree().subrope(block.range.clone()) else {
+                        continue;
+                    };
+                    SyntaxInputSnapshot::new(
+                        SyntaxInputIdentity {
+                            document: self.document.id().0,
+                            revision: revision.0,
+                            generation: id,
+                        },
+                        text,
+                    )
+                }
             };
-            let mut input = SyntaxInputSnapshot::new(
-                SyntaxInputIdentity {
-                    document: self.document.id().0,
-                    revision: revision.0,
-                    generation: id,
-                },
-                text,
-            );
             let new_entry = !self.syntax.markdown.services.contains_key(&id);
             let entry =
                 self.syntax
@@ -833,6 +864,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                         service: self.syntax.service.for_export(),
                         anchors: None,
                         input: None,
+                        published_language: None,
+                        published_range: None,
                     });
             // Anchors follow a block across edits; the same revision keeps them.
             if new_entry || presentation_changed {
@@ -857,12 +890,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                     crate::document::Association::BeforeInsertion,
                 ));
             }
+            if entry.published_language.as_ref() != Some(&block.code_language) {
+                republish.insert(id);
+            }
             entry.service.set_language(block.code_language.clone());
             entry.service.set_filename(None);
             let mut map = None;
             let mut hull = None;
             let mut edited = new_entry;
-            if let Some(old) = &entry.input {
+            if let Some(old) = entry.input.as_ref().filter(|_| !reused) {
                 match old.text_tree().changed_extent(input.text_tree()) {
                     None => {
                         // Isolated parsing depends only on complete body text and
@@ -903,6 +939,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             changed |= completed;
             if completed || edited {
                 changed_blocks.push(block.range.clone());
+                republish.insert(id);
             }
             for region in regions {
                 entry.service.request(
@@ -918,27 +955,22 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         // Runs are rebuilt only for a publication, never on an idle poll.
         inputs.sort_by_key(|(id, _)| *id);
-        let mut runs = Vec::new();
-        for (id, input) in &inputs {
+        let services = &self.syntax.markdown.services;
+        let block_runs = |id: &u64, input: &SyntaxInputSnapshot| {
             let block = &requests[id].0;
-            runs.push(SyntaxRun {
+            let mut runs = vec![SyntaxRun {
                 range: block.range.clone(),
                 name: SyntaxStyleName("ViemCodeBase".into()),
                 origin: "markdown-code".into(),
                 priority: -1,
-            });
-            runs.extend(
-                self.syntax.markdown.services[id]
-                    .service
-                    .runs(input.identity())
-                    .into_iter()
-                    .map(|mut run| {
-                        run.range =
-                            run.range.start + block.range.start..run.range.end + block.range.start;
-                        run
-                    }),
-            );
-        }
+            }];
+            runs.extend(services[id].service.runs(input.identity()).into_iter().map(|mut run| {
+                run.range = run.range.start + block.range.start..run.range.end + block.range.start;
+                run
+            }));
+            runs
+        };
+        let all_runs = || inputs.iter().flat_map(|(id, input)| block_runs(id, input)).collect::<Vec<_>>();
         // Unedited blocks keep identical runs at shifted positions; their
         // retained geometry is rebased and revalidated by its inputs.
         if sheets_changed {
@@ -966,8 +998,42 @@ impl<P: TextMeasurementProvider> Core<P> {
         } else {
             self.caret_anchors_for_publication()
         };
-        self.document
-            .install_markdown_code_presentation(sheet.clone(), &runs);
+        // Spans of unchanged blocks shift across the edit; only blocks whose
+        // text, language or analysis changed, or that the edit touches, are
+        // rebuilt. A different block set or sheet installs every run.
+        let block_ids: Vec<u64> = inputs.iter().map(|(id, _)| *id).collect();
+        let published = self.syntax.markdown.published.take()
+            .filter(|(_, ids)| !sheets_changed && inputs.len() == requests.len() && *ids == block_ids);
+        let incremental = published.as_ref().is_some_and(|(previous, _)| {
+            let hull = previous.text_tree().changed_extent(self.document.projection().text_tree());
+            let touched = |range: &std::ops::Range<usize>| hull.as_ref()
+                .is_some_and(|(_, new)| range.start <= new.end && new.start <= range.end);
+            let replaced: Vec<_> = inputs.iter()
+                .map(|(id, _)| (id, &requests[id].0.range))
+                .filter(|(id, range)| republish.contains(*id) || touched(range))
+                .map(|(_, range)| range.clone())
+                .collect();
+            let runs_in = |region: &std::ops::Range<usize>| inputs.iter()
+                .find(|(id, _)| requests[id].0.range == *region)
+                .map_or_else(Vec::new, |(id, input)| block_runs(id, input));
+            self.document.install_markdown_code_presentation_incrementally(
+                sheet.clone(), previous, hull.as_ref(), &replaced, &runs_in)
+        });
+        if incremental {
+            #[cfg(debug_assertions)]
+            assert!(self.document.projection().markdown_code_styles_match(&sheet, &all_runs()),
+                "incremental Markdown code presentation differs from a complete installation");
+        } else {
+            self.document.install_markdown_code_presentation(sheet.clone(), &all_runs());
+        }
+        self.syntax.markdown.published = self.document.code_presentation_projection().cloned()
+            .map(|projection| (projection, block_ids));
+        for (id, _) in &inputs {
+            if let Some(entry) = self.syntax.markdown.services.get_mut(id) {
+                entry.published_language = Some(requests[id].0.code_language.clone());
+                entry.published_range = Some(requests[id].0.range.clone());
+            }
+        }
         invalidated.sort_by_key(|range| (range.start, range.end));
         invalidated.dedup();
         let mut changed_metrics = false;

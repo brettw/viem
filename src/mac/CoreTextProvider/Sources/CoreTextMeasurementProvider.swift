@@ -374,15 +374,34 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     )
     let line = CTLineCreateWithAttributedString(attributed)
     let caretOffsets = CoreTextLineCaretOffsets(line)
-    let glyphRecords = extractGlyphRecords(line)
-    let glyphRecordsByClusterStart = Dictionary(grouping: glyphRecords) { record in
-      indexMap.graphemeStart(containingUTF16: record.stringIndex)
+    var fonts = ShapedFonts()
+    let glyphRecords = extractGlyphRecords(line, fonts: &fonts)
+    let clusterStarts = glyphRecords.map { indexMap.graphemeStart(containingUTF16: $0.stringIndex) }
+    // Each cluster's records, in shaped order. Starts are usually already
+    // ordered; right-to-left runs need the stable sort.
+    var recordOrder = Array(glyphRecords.indices)
+    if zip(clusterStarts, clusterStarts.dropFirst()).contains(where: { $0 > $1 }) {
+      recordOrder.sort { clusterStarts[$0] != clusterStarts[$1] ? clusterStarts[$0] < clusterStarts[$1] : $0 < $1 }
     }
-    let clusterBoundaries = Array(Set(clusterBoundaries(for: glyphRecords, map: indexMap))
-      .union(objectBoundaries.compactMap { indexMap.utf16Offset(forUTF8: $0) })).sorted()
+    var boundaryValues = clusterStarts
+    boundaryValues.append(0)
+    boundaryValues.append(indexMap.utf16Length)
+    boundaryValues.append(contentsOf: objectBoundaries.compactMap { indexMap.utf16Offset(forUTF8: $0) })
+    boundaryValues.sort()
+    var clusterBoundaries: [Int] = []
+    clusterBoundaries.reserveCapacity(boundaryValues.count)
+    for value in boundaryValues where clusterBoundaries.last != value { clusterBoundaries.append(value) }
 
     var clusters: [ClusterResult] = []
+    clusters.reserveCapacity(clusterBoundaries.count)
     var diagnostics: [DiagnosticResult] = []
+    var cursor = 0
+    // Records of the returned clusters, in cluster order, and their render
+    // signatures in one buffer. Render resources are built only for new ones.
+    var clusterRecords: [GlyphRecord] = []
+    clusterRecords.reserveCapacity(glyphRecords.count)
+    var signatures = RenderSignatures(capacity: glyphRecords.count * 24 + clusterBoundaries.count * 64)
+    var clusterFonts: [ShapedFont] = []
     for boundaryIndex in 0..<max(clusterBoundaries.count - 1, 0) {
       let start16 = clusterBoundaries[boundaryIndex]
       let end16 = clusterBoundaries[boundaryIndex + 1]
@@ -396,22 +415,36 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       else { throw ProviderError(Status.invalidArgument) }
       guard request.text_start <= globalStart, globalStart < request.text_end else { continue }
 
-      let records = glyphRecordsByClusterStart[start16] ?? []
+      while cursor < recordOrder.count, clusterStarts[recordOrder[cursor]] < start16 { cursor += 1 }
+      let recordStart = clusterRecords.count
+      clusterFonts.removeAll(keepingCapacity: true)
+      while cursor < recordOrder.count, clusterStarts[recordOrder[cursor]] == start16 {
+        let record = glyphRecords[recordOrder[cursor]]
+        clusterRecords.append(record)
+        let font = fonts.fonts[record.font]
+        if !clusterFonts.contains(where: { $0 === font }) { clusterFonts.append(font) }
+        cursor += 1
+      }
       let style = styleAt(globalOffset: globalStart, defaultStyle: defaultStyle, runs: styleRuns)
+      if clusterFonts.isEmpty { clusterFonts.append(fonts.font(for: style.font)) }
       let result = makeCluster(
         globalStart: globalStart,
         globalEnd: globalEnd,
         utf16Start: start16,
         utf16End: end16,
         caretOffsets: caretOffsets,
-        records: records,
+        records: clusterRecords,
+        recordRange: recordStart..<clusterRecords.count,
+        fonts: fonts.fonts,
+        clusterFonts: clusterFonts,
         style: style,
         bidiLevel: bidiLevels[start16],
-        request: request
+        request: request,
+        signatures: &signatures
       )
       clusters.append(result)
 
-      if images[globalStart] == nil && records.contains(where: { $0.glyph == 0 }) {
+      if images[globalStart] == nil && clusterRecords[recordStart...].contains(where: { $0.glyph == 0 }) {
         diagnostics.append(
           DiagnosticResult(
             start: globalStart,
@@ -421,7 +454,25 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       }
     }
 
-    let ffiClusters = try clusters.map { result -> ViemShapedClusterV1 in
+    guard
+      request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_ONLY)
+        || request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
+      request.purpose != UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
+        || (request.has_render_run_policy == 1
+          && request.render_run_owner == renderRunOwner
+          && request.render_run_threading == UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN))
+    else { throw ProviderError(Status.invalidArgument) }
+    let installsRenderRuns = request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
+      && request.has_render_run_policy == 1
+
+    var ffiClusters: [ViemShapedClusterV1] = []
+    ffiClusters.reserveCapacity(clusters.count)
+    var caretStops: [ViemClusterCaretStopV1] = []
+    caretStops.reserveCapacity(clusters.count * 2)
+    // Inline images carry their own resource; text clusters are looked up by
+    // signature first.
+    var inlineImageResources: [Int: (resource: CoreTextRenderRegistry.Resource, preferredIdentifier: UInt64)] = [:]
+    for result in clusters {
       var cluster = ViemShapedClusterV1()
       cluster.struct_size = UInt32(MemoryLayout<ViemShapedClusterV1>.size)
       cluster.reserved = 0
@@ -433,10 +484,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       cluster.ink_bounds = result.inkBounds.ffi
       cluster.bidi_level = UInt32(result.bidiLevel)
       cluster.fallback_font = arena.storeUTF8(result.fallbackFont)
-      cluster.caret_stops = arena.storeCarets(result.carets)
-      cluster.caret_stop_count = UInt64(result.carets.count)
-      var resource = result.renderResource
-      var identifier = result.renderIdentifier
+      var startCaret = result.startCaret
+      var endCaret = result.endCaret
       if let (end, destination) = images[result.start] {
         guard end == result.end else { throw ProviderError(Status.providerFailure) }
         let image = imageResources.image(for: destination, probe: probesImageDimensions)
@@ -448,50 +497,42 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
         cluster.metrics.ascent = height; cluster.metrics.descent = 0; cluster.metrics.leading = 0
         cluster.typographic_bounds = ViemShapedBoundsV1(x: 0, y: -height, width: width, height: height)
         cluster.ink_bounds = cluster.typographic_bounds
-        var first = ViemClusterCaretStopV1(); first.text_offset = result.start; first.inline_offset = result.bidiLevel % 2 == 0 ? 0 : width; first.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
-        var last = ViemClusterCaretStopV1(); last.text_offset = result.end; last.inline_offset = result.bidiLevel % 2 == 0 ? width : 0; last.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
-        cluster.caret_stops = arena.storeCarets([first, last]); cluster.caret_stop_count = 2
-        let imageSignature = ["image", image.identity.uuidString, String(request.scale),
-          CTFontCopyPostScriptName(style.font) as String, String(describing: style.size)].joined(separator: ":")
-        let signature = result.renderResource.signature + Array(imageSignature.utf8)
-        resource = CoreTextRenderRegistry.Resource(signature: signature, batches: [], isColorGlyph: false,
-          textAttributes: result.renderResource.textAttributes, inlineImage: image.withoutRaster(), inlineImageFont: style.font)
-        identifier = stableHash(signature)
+        startCaret = ViemClusterCaretStopV1(); startCaret.text_offset = result.start; startCaret.inline_offset = result.bidiLevel % 2 == 0 ? 0 : width; startCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        endCaret = ViemClusterCaretStopV1(); endCaret.text_offset = result.end; endCaret.inline_offset = result.bidiLevel % 2 == 0 ? width : 0; endCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
+        if installsRenderRuns {
+          let imageSignature = ["image", image.identity.uuidString, String(request.scale),
+            CTFontCopyPostScriptName(style.font) as String, String(describing: style.size)].joined(separator: ":")
+          let signature = Array(signatures.bytes[result.signature]) + Array(imageSignature.utf8)
+          inlineImageResources[ffiClusters.count] = (CoreTextRenderRegistry.Resource(signature: signature, batches: [],
+            isColorGlyph: false, textAttributes: result.style.renderAttributes, inlineImage: image.withoutRaster(),
+            inlineImageFont: style.font), stableHash(signature))
+        }
       }
-
-      if request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
-        request.has_render_run_policy == 1
-      {
-        guard
-          let identifier = renderRegistry.install(
-            resource,
-            preferredIdentifier: identifier,
-            generation: callbackGeneration,
-            pin: true
-          )
-        else { throw ProviderError(Status.providerFailure) }
-        arena.retainInstalledResource(identifier)
-        cluster.has_render_run = 1
-        cluster.render_run.owner = request.render_run_owner
-        cluster.render_run.identifier = identifier
-        cluster.render_run.metrics_generation = callbackGeneration
-        cluster.render_run.threading = request.render_run_threading
-        cluster.render_run.reserved = 0
-      } else {
-        cluster.has_render_run = 0
-        cluster.render_run = ViemRenderRunHandleV1()
-      }
-      return cluster
+      caretStops.append(startCaret)
+      caretStops.append(endCaret)
+      cluster.has_render_run = 0
+      cluster.render_run = ViemRenderRunHandleV1()
+      ffiClusters.append(cluster)
     }
-
-    guard
-      request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_ONLY)
-        || request.purpose == UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA),
-      request.purpose != UInt32(VIEM_SHAPE_PURPOSE_METRICS_AND_RENDER_DATA)
-        || (request.has_render_run_policy == 1
-          && request.render_run_owner == renderRunOwner
-          && request.render_run_threading == UInt32(VIEM_RENDER_THREADING_FRONTEND_MAIN))
-    else { throw ProviderError(Status.invalidArgument) }
+    // One allocation holds every cluster's start and end caret stops.
+    let caretBase = arena.storeCarets(caretStops)
+    for index in ffiClusters.indices {
+      ffiClusters[index].caret_stops = caretBase.map { $0 + 2 * index }
+      ffiClusters[index].caret_stop_count = 2
+    }
+    if installsRenderRuns {
+      let identifiers = try installRenderResources(clusters, imageResources: inlineImageResources,
+        records: clusterRecords, fonts: fonts.fonts, signatures: signatures, generation: callbackGeneration)
+      for (index, identifier) in identifiers.enumerated() {
+        arena.retainInstalledResource(identifier)
+        ffiClusters[index].has_render_run = 1
+        ffiClusters[index].render_run.owner = request.render_run_owner
+        ffiClusters[index].render_run.identifier = identifier
+        ffiClusters[index].render_run.metrics_generation = callbackGeneration
+        ffiClusters[index].render_run.threading = request.render_run_threading
+        ffiClusters[index].render_run.reserved = 0
+      }
+    }
 
     let order = visualOrder(for: clusters.map(\.bidiLevel))
     let ffiDiagnostics = diagnostics.map { diagnostic -> ViemShapingDiagnosticV1 in
@@ -517,11 +558,63 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     response.cluster_count = UInt64(ffiClusters.count)
     response.visual_order = arena.storeVisualOrder(order.map(UInt64.init))
     response.visual_order_count = UInt64(order.count)
-    response.default_metrics =
-      metrics(for: defaultStyle.font).ffi
+    response.default_metrics = fontMetrics(defaultStyle.font).ffi
     response.diagnostics = arena.storeDiagnostics(ffiDiagnostics)
     response.diagnostic_count = UInt64(ffiDiagnostics.count)
     return response
+  }
+}
+
+extension CoreTextMeasurementProvider {
+  /// Pins one render resource per cluster, in cluster order. Most clusters
+  /// repeat glyphs already registered, so text clusters are matched by
+  /// signature first; glyph arrays are built only for new signatures, once per
+  /// distinct signature in the response.
+  fileprivate func installRenderResources(
+    _ clusters: [ClusterResult],
+    imageResources: [Int: (resource: CoreTextRenderRegistry.Resource, preferredIdentifier: UInt64)],
+    records: [GlyphRecord],
+    fonts: [ShapedFont],
+    signatures: RenderSignatures,
+    generation: UInt64
+  ) throws -> [UInt64] {
+    var lookups: [(preferredIdentifier: UInt64, signature: Range<Int>)] = []
+    var lookupClusters: [Int] = []
+    lookups.reserveCapacity(clusters.count)
+    lookupClusters.reserveCapacity(clusters.count)
+    for (index, cluster) in clusters.enumerated() where imageResources[index] == nil {
+      lookups.append((cluster.renderIdentifier, cluster.signature))
+      lookupClusters.append(index)
+    }
+    guard let existing = renderRegistry.pinExisting(lookups, signatures: signatures.bytes, generation: generation)
+    else { throw ProviderError(Status.providerFailure) }
+    var identifiers = [UInt64](repeating: 0, count: clusters.count)
+    var missing = imageResources
+    var built: [UInt64: [(signature: Range<Int>, resource: CoreTextRenderRegistry.Resource)]] = [:]
+    for (lookup, cluster) in zip(existing, lookupClusters) {
+      if let identifier = lookup {
+        identifiers[cluster] = identifier
+        continue
+      }
+      let result = clusters[cluster]
+      let candidates = built[result.renderIdentifier] ?? []
+      if let match = candidates.first(where: { signatures.bytes[$0.signature] == signatures.bytes[result.signature] }) {
+        missing[cluster] = (match.resource, result.renderIdentifier)
+      } else {
+        let resource = makeRenderResource(result, records: records, fonts: fonts, signatures: signatures)
+        built[result.renderIdentifier, default: []].append((result.signature, resource))
+        missing[cluster] = (resource, result.renderIdentifier)
+      }
+    }
+    if !missing.isEmpty {
+      let order = missing.keys.sorted()
+      // A generation change between the lookup and installation retired
+      // every pin, including the matches above.
+      guard let installed = renderRegistry.install(order.map { missing[$0]! }, generation: generation, pin: true)
+      else { throw ProviderError(Status.providerFailure) }
+      for (cluster, identifier) in zip(order, installed) { identifiers[cluster] = identifier }
+    }
+    return identifiers
   }
 }
 
@@ -586,7 +679,9 @@ private func imageLayoutSize(_ image: CoreTextInlineImage, style: ResolvedStyle,
   return CGSize(width: size.width, height: max(size.height, CTFontGetAscent(style.font) + CTFontGetDescent(style.font) + 16 * scale))
 }
 
-private struct ResolvedStyle {
+/// A class: clusters look up their style by offset, and copying a struct of
+/// arrays and strings per cluster retained each member.
+private final class ResolvedStyle {
   let fontFamilies: [String]
   let font: CTFont
   let size: CGFloat
@@ -599,6 +694,7 @@ private struct ResolvedStyle {
   let direction: UInt32
   let features: [(String, UInt32)]
   let syntheticBold: Bool
+  let renderAttributes: CoreTextRenderAttributes
 
   init(_ source: ViemResolvedTextStyleV1, scale: CGFloat) throws {
     guard source.struct_size >= UInt32(MemoryLayout<ViemResolvedTextStyleV1>.size),
@@ -658,22 +754,38 @@ private struct ResolvedStyle {
     direction = source.direction
     features = decodedFeatures
     let faceName = try decode(source.font_face)
-    font = resolveFont(
-      families: families,
-      size: size,
-      cssWeight: weight,
-      slant: slant,
-      features: decodedFeatures,
-      relativeBold: source.reserved & 1 != 0,
-      axes: EVFontVariations.decode(try decode(source.font_axes)),
-      faceName: faceName
-    )
-    let baseWeight = EVFontCatalog.face(in: families.first ?? "", named: faceName)?.weight
-    let target =
-      source.reserved & 1 != 0
-      ? min(Int(baseWeight ?? UInt16(max(1, min(1000, source.weight - 300)))) + 300, 1000)
-      : Int(source.weight)
-    syntheticBold = !EVFontVariations.info(font: font).axes.contains(where: { $0.tag == "wght" }) && target >= 500 && Int(EVFontCatalog.weight(of: font)) < target
+    let axes = try decode(source.font_axes)
+    let relativeBold = source.reserved & 1 != 0
+    let key = ResolvedFontKey(
+      families: families, size: size, weight: source.weight, slant: slant,
+      features: decodedFeatures.map { ResolvedFontKey.Feature(tag: $0.0, value: $0.1) },
+      relativeBold: relativeBold, axes: axes, faceName: faceName)
+    let resolved = ResolvedFontCache.shared.value(for: key) {
+      let font = resolveFont(
+        families: families,
+        size: key.size,
+        cssWeight: CGFloat(source.weight),
+        slant: source.slant,
+        features: decodedFeatures,
+        relativeBold: relativeBold,
+        axes: EVFontVariations.decode(axes),
+        faceName: faceName
+      )
+      let baseWeight = EVFontCatalog.face(in: families.first ?? "", named: faceName)?.weight
+      let target =
+        relativeBold
+        ? min(Int(baseWeight ?? UInt16(max(1, min(1000, source.weight - 300)))) + 300, 1000)
+        : Int(source.weight)
+      return ResolvedFontCache.Value(font: font, syntheticBold:
+        !EVFontVariations.info(font: font).axes.contains(where: { $0.tag == "wght" }) && target >= 500
+          && Int(EVFontCatalog.weight(of: font)) < target)
+    }
+    font = resolved.font
+    syntheticBold = resolved.syntheticBold
+    renderAttributes = CoreTextRenderAttributes(letterSpacing: letterSpacing, language: language,
+      writingDirection: direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT) ? .rightToLeft
+        : direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? .leftToRight : .natural,
+      baselineOffset: baselineOffset)
   }
 
   var attributes: [NSAttributedString.Key: Any] {
@@ -700,6 +812,64 @@ private struct ResolvedStyle {
       ]
     }
     return result
+  }
+}
+
+/// Every font input of a resolved text style, at its scaled size.
+private struct ResolvedFontKey: Hashable {
+  struct Feature: Hashable {
+    let tag: String
+    let value: UInt32
+  }
+  let families: [String]
+  let size: CGFloat
+  let weight: Float
+  let slant: UInt32
+  let features: [Feature]
+  let relativeBold: Bool
+  let axes: String
+  let faceName: String
+}
+
+/// Shaping requests repeat the same few document styles for every paragraph,
+/// and constructing their Core Text fonts dominated each request. Resolved
+/// fonts are immutable, so retain them for the current font catalogue
+/// generation. The lock covers only dictionary access: resolution runs
+/// unlocked, never under the catalogue lock, and a result resolved across an
+/// invalidation is returned without being retained.
+private final class ResolvedFontCache: @unchecked Sendable {
+  struct Value {
+    let font: CTFont
+    let syntheticBold: Bool
+  }
+
+  static let shared = ResolvedFontCache()
+  /// Documents use few styles; zoom and theme edits add sizes. Clearing on
+  /// overflow keeps the bound without per-hit bookkeeping.
+  private static let capacity = 512
+  private let lock = NSLock()
+  private var generation: UInt64 = 0
+  private var values: [ResolvedFontKey: Value] = [:]
+
+  func value(for key: ResolvedFontKey, resolve: () -> Value) -> Value {
+    let current = EVFontCatalog.cacheGeneration
+    lock.lock()
+    if generation != current {
+      values.removeAll()
+      generation = current
+    }
+    let cached = values[key]
+    lock.unlock()
+    if let cached { return cached }
+    let value = resolve()
+    let after = EVFontCatalog.cacheGeneration
+    lock.lock()
+    if after == current, generation == current {
+      if values.count >= Self.capacity { values.removeAll(keepingCapacity: true) }
+      values[key] = value
+    }
+    lock.unlock()
+    return value
   }
 }
 
@@ -965,36 +1135,80 @@ private final class TextIndexMap {
   }
 }
 
-private struct GlyphRecord {
-  let run: Int
+/// Font facts shared by every glyph shaped with one Core Text font.
+private final class ShapedFont {
   let font: CTFont
-  let glyph: CGGlyph
-  let position: CGPoint
-  let advance: CGSize
-  let stringIndex: Int
+  let postScriptName: String
+  let metrics: Metrics
+  let obliqueness: CGFloat
+  let isColorGlyph: Bool
+
+  init(_ font: CTFont) {
+    self.font = font
+    postScriptName = CTFontCopyPostScriptName(font) as String
+    metrics = fontMetrics(font)
+    obliqueness = CTFontGetMatrix(font).c
+    isColorGlyph = CTFontGetSymbolicTraits(font).rawValue & (1 << 13) != 0
+  }
 }
 
-private func extractGlyphRecords(_ line: CTLine) -> [GlyphRecord] {
+/// The distinct fonts of one shape request, each queried once.
+private struct ShapedFonts {
+  private(set) var fonts: [ShapedFont] = []
+  private var indices: [ObjectIdentifier: Int] = [:]
+
+  mutating func index(of font: CTFont) -> Int {
+    let key = ObjectIdentifier(font)
+    if let index = indices[key] { return index }
+    fonts.append(ShapedFont(font))
+    indices[key] = fonts.count - 1
+    return fonts.count - 1
+  }
+
+  mutating func font(for font: CTFont) -> ShapedFont { fonts[index(of: font)] }
+}
+
+private struct GlyphRecord {
+  let run: Int
+  /// Index in the request's `ShapedFonts`.
+  let font: Int
+  let glyph: CGGlyph
+  let position: CGPoint
+  let advance: CGFloat
+  let stringIndex: Int
+  /// The glyph's bounding rectangle in its font.
+  let bounds: CGRect
+}
+
+private func extractGlyphRecords(_ line: CTLine, fonts: inout ShapedFonts) -> [GlyphRecord] {
   let runs = CTLineGetGlyphRuns(line) as! [CTRun]
   var result: [GlyphRecord] = []
+  result.reserveCapacity(CTLineGetGlyphCount(line))
   for runIndex in 0..<runs.count {
     let run = runs[runIndex]
     let count = CTRunGetGlyphCount(run)
     guard count > 0 else { continue }
+    let attributes = CTRunGetAttributes(run) as NSDictionary
+    guard let fontValue = attributes[kCTFontAttributeName] else { continue }
+    let font = fontValue as! CTFont
+    let fontIndex = fonts.index(of: font)
     var glyphs = Array(repeating: CGGlyph(), count: count)
     var positions = Array(repeating: CGPoint.zero, count: count)
     var advances = Array(repeating: CGSize.zero, count: count)
     var indices = Array(repeating: CFIndex(), count: count)
+    var bounds = Array(repeating: CGRect.zero, count: count)
     glyphs.withUnsafeMutableBufferPointer { CTRunGetGlyphs(run, CFRange(), $0.baseAddress!) }
     positions.withUnsafeMutableBufferPointer { CTRunGetPositions(run, CFRange(), $0.baseAddress!) }
     advances.withUnsafeMutableBufferPointer { CTRunGetAdvances(run, CFRange(), $0.baseAddress!) }
     indices.withUnsafeMutableBufferPointer {
       CTRunGetStringIndices(run, CFRange(), $0.baseAddress!)
     }
+    glyphs.withUnsafeBufferPointer { glyphBuffer in
+      bounds.withUnsafeMutableBufferPointer {
+        _ = CTFontGetBoundingRectsForGlyphs(font, .default, glyphBuffer.baseAddress!, $0.baseAddress!, count)
+      }
+    }
 
-    let attributes = CTRunGetAttributes(run) as NSDictionary
-    guard let fontValue = attributes[kCTFontAttributeName] else { continue }
-    let font = fontValue as! CTFont
     let runRange = CTRunGetStringRange(run)
     for glyphIndex in 0..<count {
       let rawIndex = indices[glyphIndex]
@@ -1002,23 +1216,16 @@ private func extractGlyphRecords(_ line: CTLine) -> [GlyphRecord] {
       result.append(
         GlyphRecord(
           run: runIndex,
-          font: font,
+          font: fontIndex,
           glyph: glyphs[glyphIndex],
           position: positions[glyphIndex],
-          advance: advances[glyphIndex],
-          stringIndex: max(stringIndex, 0)
+          advance: advances[glyphIndex].width,
+          stringIndex: max(stringIndex, 0),
+          bounds: bounds[glyphIndex]
         ))
     }
   }
   return result
-}
-
-private func clusterBoundaries(for records: [GlyphRecord], map: TextIndexMap) -> [Int] {
-  var values = Set([0, map.utf16Length])
-  for record in records {
-    values.insert(map.graphemeStart(containingUTF16: record.stringIndex))
-  }
-  return values.sorted()
 }
 
 private struct Metrics {
@@ -1035,7 +1242,7 @@ private struct Metrics {
   }
 }
 
-private func metrics(for font: CTFont) -> Metrics {
+private func fontMetrics(_ font: CTFont) -> Metrics {
   Metrics(
     ascent: CTFontGetAscent(font),
     descent: CTFontGetDescent(font),
@@ -1068,9 +1275,98 @@ private struct ClusterResult {
   let inkBounds: Bounds
   let bidiLevel: UInt8
   let fallbackFont: String
-  let carets: [ViemClusterCaretStopV1]
-  let renderResource: CoreTextRenderRegistry.Resource
+  let startCaret: ViemClusterCaretStopV1
+  let endCaret: ViemClusterCaretStopV1
+  /// Render data, materialized only for a resource not already registered.
+  let style: ResolvedStyle
+  let recordRange: Range<Int>
+  let visualLeft: CGFloat
+  let isColorGlyph: Bool
+  let signature: Range<Int>
   let renderIdentifier: UInt64
+}
+
+/// One response's render signatures, contiguous.
+private struct RenderSignatures {
+  private(set) var bytes: [UInt8] = []
+
+  init(capacity: Int) { bytes.reserveCapacity(capacity) }
+
+  /// Appends exactly `count` bytes written by `body` and returns their range
+  /// and `stableHash`.
+  mutating func append(count: Int, _ body: (inout SignatureWriter) -> Void) -> (Range<Int>, UInt64) {
+    let start = bytes.count
+    bytes.append(contentsOf: repeatElement(0, count: count))
+    return bytes.withUnsafeMutableBytes { raw in
+      var writer = SignatureWriter(raw.baseAddress!, offset: start)
+      body(&writer)
+      precondition(writer.offset == start + count, "render signature size")
+      var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+      for byte in UnsafeRawBufferPointer(rebasing: raw[start..<start + count]) {
+        hash = (hash ^ UInt64(byte)) &* 0x0000_0100_0000_01b3
+      }
+      return (start..<start + count, hash == 0 ? 1 : hash)
+    }
+  }
+}
+
+/// Writes the stable little-endian signature format into reserved storage.
+private struct SignatureWriter {
+  private let base: UnsafeMutableRawPointer
+  private(set) var offset: Int
+
+  init(_ base: UnsafeMutableRawPointer, offset: Int) {
+    self.base = base
+    self.offset = offset
+  }
+
+  mutating func write<T: FixedWidthInteger>(_ value: T) {
+    var little = value.littleEndian
+    withUnsafeBytes(of: &little) { (base + offset).copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+    offset += MemoryLayout<T>.size
+  }
+
+  static func size(of value: String) -> Int { value.utf8.count + 1 }
+
+  mutating func write(_ value: String) {
+    for byte in value.utf8 {
+      base.storeBytes(of: byte, toByteOffset: offset, as: UInt8.self)
+      offset += 1
+    }
+    base.storeBytes(of: 0, toByteOffset: offset, as: UInt8.self)
+    offset += 1
+  }
+}
+
+/// Visits the adjacent records of each Core Text run within one cluster.
+private func forEachGlyphBatch(_ records: ArraySlice<GlyphRecord>, _ body: (ArraySlice<GlyphRecord>) -> Void) {
+  var batchStart = records.startIndex
+  while batchStart < records.endIndex {
+    let run = records[batchStart].run
+    var batchEnd = batchStart
+    while batchEnd < records.endIndex, records[batchEnd].run == run { batchEnd += 1 }
+    body(records[batchStart..<batchEnd])
+    batchStart = batchEnd
+  }
+}
+
+private func makeRenderResource(_ result: ClusterResult, records: [GlyphRecord], fonts: [ShapedFont],
+  signatures: RenderSignatures) -> CoreTextRenderRegistry.Resource {
+  let style = result.style
+  let strokeWidth = style.syntheticBold ? style.size * 0.03 : 0
+  var batches: [CoreTextRenderRegistry.GlyphBatch] = []
+  forEachGlyphBatch(records[result.recordRange]) { batch in
+    batches.append(CoreTextRenderRegistry.GlyphBatch(
+      font: fonts[batch.first!.font].font,
+      strokeWidth: strokeWidth,
+      glyphs: batch.map(\.glyph),
+      positions: batch.map { CGPoint(x: $0.position.x - result.visualLeft, y: $0.position.y) }))
+  }
+  return CoreTextRenderRegistry.Resource(
+    signature: Array(signatures.bytes[result.signature]),
+    batches: batches,
+    isColorGlyph: result.isColorGlyph,
+    textAttributes: style.renderAttributes)
 }
 
 private struct DiagnosticResult {
@@ -1093,15 +1389,18 @@ struct CoreTextLineCaretOffsets {
 
   private let line: CTLine
   private let range: CFRange
-  private let values: [Int: Pair]
+  /// Edges by UTF-16 boundary, relative to the line's string range.
+  private let values: [Pair?]
 
   init(_ line: CTLine) {
     self.line = line
-    range = CTLineGetStringRange(line)
-    var edges: [Int: Pair] = [:]
+    let range = CTLineGetStringRange(line)
+    self.range = range
+    var edges = [Pair?](repeating: nil, count: max(range.length + 1, 0))
     CTLineEnumerateCaretOffsets(line) { offset, index, leadingEdge, _ in
       // A trailing edge names the final UTF-16 unit of its character.
-      let boundary = leadingEdge ? index : index + 1
+      let boundary = (leadingEdge ? index : index + 1) - range.location
+      guard edges.indices.contains(boundary) else { return }
       if let previous = edges[boundary] {
         if previous.primary != offset {
           edges[boundary] = Pair(primary: previous.primary, secondary: offset)
@@ -1115,7 +1414,8 @@ struct CoreTextLineCaretOffsets {
 
   func offsets(at index: Int) -> Pair {
     if index != range.location, index != range.location + range.length,
-      let pair = values[index], pair.primary == pair.secondary { return pair }
+      values.indices.contains(index - range.location),
+      let pair = values[index - range.location], pair.primary == pair.secondary { return pair }
     var secondary: CGFloat = 0
     let primary = CTLineGetOffsetForStringIndex(line, index, &secondary)
     return Pair(primary: primary, secondary: secondary)
@@ -1128,11 +1428,16 @@ private func makeCluster(
   utf16Start: Int,
   utf16End: Int,
   caretOffsets: CoreTextLineCaretOffsets,
-  records: [GlyphRecord],
+  records allRecords: [GlyphRecord],
+  recordRange: Range<Int>,
+  fonts: [ShapedFont],
+  clusterFonts: [ShapedFont],
   style: ResolvedStyle,
   bidiLevel: UInt8,
-  request: ViemShapeRequestV1
+  request: ViemShapeRequestV1,
+  signatures: inout RenderSignatures
 ) -> ClusterResult {
+  let records = allRecords[recordRange]
   let start = caretOffsets.offsets(at: utf16Start)
   let end = caretOffsets.offsets(at: utf16End)
   let startOffset = start.primary
@@ -1144,23 +1449,28 @@ private func makeCluster(
   // subtracting them can measure an entire run instead of this cluster.
   // Signed glyph advances identify the matching pair without measuring
   // across the opposite bidi caret. Preserve negative positioning advances.
-  let offsets = [startOffset, secondaryStart].flatMap { left in
-    [endOffset, secondaryEnd].map { right in (left, right) }
+  let estimate = abs(records.reduce(0) { $0 + $1.advance })
+  var endpoints = (startOffset, endOffset)
+  var closest = CGFloat.infinity
+  for left in [startOffset, secondaryStart] {
+    for right in [endOffset, secondaryEnd] {
+      let distance = abs(abs(right - left) - estimate)
+      if distance < closest {
+        closest = distance
+        endpoints = (left, right)
+      }
+    }
   }
-  let estimate = abs(records.reduce(0) { $0 + $1.advance.width })
-  let endpoints = offsets.min {
-    abs(abs($0.1 - $0.0) - estimate) < abs(abs($1.1 - $1.0) - estimate)
-  }!
   var advance = abs(endpoints.1 - endpoints.0)
   if records.isEmpty { advance = abs(endOffset - startOffset) }
   advance = max(advance, 0)
   let visualLeft = min(endpoints.0, endpoints.1)
 
-  let fonts = records.map(\.font)
-  let allFonts = fonts.isEmpty ? [style.font] : fonts
+  // The distinct fonts of the cluster's glyphs, or the style's font when it
+  // has none.
   var clusterMetrics = Metrics(ascent: 0, descent: 0, leading: 0)
-  for font in allFonts {
-    let candidate = metrics(for: font)
+  for font in clusterFonts {
+    let candidate = font.metrics
     clusterMetrics = Metrics(
       ascent: max(clusterMetrics.ascent, candidate.ascent),
       descent: max(clusterMetrics.descent, candidate.descent),
@@ -1173,9 +1483,7 @@ private func makeCluster(
 
   var inkRect = CGRect.null
   for record in records {
-    var glyph = record.glyph
-    var bounds = CGRect.zero
-    _ = CTFontGetBoundingRectsForGlyphs(record.font, .default, &glyph, &bounds, 1)
+    let bounds = record.bounds
     let rect = CGRect(
       x: record.position.x + bounds.minX - visualLeft,
       y: -(record.position.y + bounds.maxY),
@@ -1205,53 +1513,42 @@ private func makeCluster(
   endCaret.inline_offset = Float(endInline)
   endCaret.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_UPSTREAM)
 
-  let grouped = Dictionary(grouping: records, by: \.run).keys.sorted().map {
-    run -> CoreTextRenderRegistry.GlyphBatch in
-    let members = records.filter { $0.run == run }
-    return CoreTextRenderRegistry.GlyphBatch(
-      font: members[0].font,
-      strokeWidth: style.syntheticBold ? style.size * 0.03 : 0,
-      glyphs: members.map(\.glyph),
-      positions: members.map { CGPoint(x: $0.position.x - visualLeft, y: $0.position.y) }
-    )
+  // A cluster's records are in shaped order, so each run's glyphs are adjacent.
+  let strokeWidth = style.syntheticBold ? style.size * 0.03 : 0
+  var signatureSize = 41 + (style.language.map(SignatureWriter.size(of:)) ?? 0)
+  forEachGlyphBatch(records) { batch in
+    signatureSize += SignatureWriter.size(of: fonts[batch.first!.font].postScriptName) + 8 + batch.count * 16
   }
-  var signature = StableBytes()
-  signature.append(globalEnd - globalStart)
-  signature.append(request.metrics_generation)
-  signature.append(Float(advance).bitPattern)
-  signature.append(UInt64(bidiLevel))
-  // Identical whitespace glyphs can carry distinct marker inheritance even
-  // when their shaping geometry is equal (for example, language alone).
-  signature.append(Float(style.letterSpacing).bitPattern)
-  signature.append(Float(style.baselineOffset).bitPattern)
-  signature.append(style.direction)
-  signature.append(UInt8(style.language == nil ? 0 : 1))
-  if let language = style.language { signature.append(language) }
-  for batch in grouped {
-    signature.append(CTFontCopyPostScriptName(batch.font) as String)
-    signature.append(Float(batch.strokeWidth).bitPattern)
-    signature.append(Float(CTFontGetMatrix(batch.font).c).bitPattern)
-    for (glyph, position) in zip(batch.glyphs, batch.positions) {
-      signature.append(UInt64(glyph))
-      signature.append(Float(position.x).bitPattern)
-      signature.append(Float(position.y).bitPattern)
+  let (signature, renderIdentifier) = signatures.append(count: signatureSize) { writer in
+    writer.write(globalEnd - globalStart)
+    writer.write(request.metrics_generation)
+    writer.write(Float(advance).bitPattern)
+    writer.write(UInt64(bidiLevel))
+    // Identical whitespace glyphs can carry distinct marker inheritance even
+    // when their shaping geometry is equal (for example, language alone).
+    writer.write(Float(style.letterSpacing).bitPattern)
+    writer.write(Float(style.baselineOffset).bitPattern)
+    writer.write(style.direction)
+    writer.write(UInt8(style.language == nil ? 0 : 1))
+    if let language = style.language { writer.write(language) }
+    forEachGlyphBatch(records) { batch in
+      let font = fonts[batch.first!.font]
+      writer.write(font.postScriptName)
+      writer.write(Float(strokeWidth).bitPattern)
+      writer.write(Float(font.obliqueness).bitPattern)
+      for record in batch {
+        writer.write(UInt64(record.glyph))
+        writer.write(Float(record.position.x - visualLeft).bitPattern)
+        writer.write(Float(record.position.y).bitPattern)
+      }
     }
   }
-  let bytes = signature.bytes
-  let resource = CoreTextRenderRegistry.Resource(
-    signature: bytes,
-    batches: grouped,
-    isColorGlyph: allFonts.contains { CTFontGetSymbolicTraits($0).rawValue & (1 << 13) != 0 },
-    textAttributes: .init(letterSpacing: style.letterSpacing, language: style.language,
-      writingDirection: style.direction == UInt32(VIEM_TEXT_DIRECTION_RIGHT_TO_LEFT) ? .rightToLeft
-        : style.direction == UInt32(VIEM_TEXT_DIRECTION_LEFT_TO_RIGHT) ? .leftToRight : .natural,
-      baselineOffset: style.baselineOffset)
-  )
-  let fallback = allFonts.map { CTFontCopyPostScriptName($0) as String }
-    .reduce(into: [String]()) { names, name in
-      if !names.contains(name) { names.append(name) }
-    }
-    .joined(separator: ", ")
+  var fallback = clusterFonts[0].postScriptName
+  if clusterFonts.count > 1 {
+    var names: [String] = []
+    for font in clusterFonts where !names.contains(font.postScriptName) { names.append(font.postScriptName) }
+    fallback = names.joined(separator: ", ")
+  }
 
   return ClusterResult(
     start: globalStart,
@@ -1272,9 +1569,14 @@ private func makeCluster(
     ),
     bidiLevel: bidiLevel,
     fallbackFont: fallback.isEmpty ? CoreTextMeasurementProvider.defaultFontFamily : fallback,
-    carets: [startCaret, endCaret],
-    renderResource: resource,
-    renderIdentifier: stableHash(bytes)
+    startCaret: startCaret,
+    endCaret: endCaret,
+    style: style,
+    recordRange: recordRange,
+    visualLeft: visualLeft,
+    isColorGlyph: clusterFonts.contains { $0.isColorGlyph },
+    signature: signature,
+    renderIdentifier: renderIdentifier
   )
 }
 
@@ -1351,20 +1653,6 @@ private func visualOrder(for levels: [UInt8]) -> [Int] {
   return order
 }
 
-private struct StableBytes {
-  private(set) var bytes: [UInt8] = []
-
-  mutating func append<T: FixedWidthInteger>(_ value: T) {
-    var little = value.littleEndian
-    withUnsafeBytes(of: &little) { bytes.append(contentsOf: $0) }
-  }
-
-  mutating func append(_ value: String) {
-    bytes.append(contentsOf: value.utf8)
-    bytes.append(0)
-  }
-}
-
 private func stableHash(_ bytes: [UInt8]) -> UInt64 {
   var result: UInt64 = 0xcbf2_9ce4_8422_2325
   for byte in bytes {
@@ -1412,7 +1700,17 @@ private final class ResponseArena {
     }
   }
 
+  /// Clusters repeat the same few font names; responses share one copy.
+  private var storedStrings: [String: ViemUtf8Slice] = [:]
+
   func storeUTF8(_ value: String) -> ViemUtf8Slice {
+    if let stored = storedStrings[value] { return stored }
+    let slice = copyUTF8(value)
+    storedStrings[value] = slice
+    return slice
+  }
+
+  private func copyUTF8(_ value: String) -> ViemUtf8Slice {
     let values = Array(value.utf8)
     guard !values.isEmpty else { return ViemUtf8Slice() }
     let pointer = UnsafeMutablePointer<UInt8>.allocate(capacity: values.count)

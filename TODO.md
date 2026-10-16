@@ -30,50 +30,44 @@ Windows toolchain and have never been compiled. Build and run them with
 `scripts/test-win.ps1` first. Add tests mirroring
 `src/mac/CoreTextProvider/Tests/CoreTextImageResourcesTests.swift`.
 
-## Speed up the Core Text shaping provider
+The macOS Core Text provider now caches resolved fonts and builds render
+resources only for new glyph signatures; the Windows provider may have the same
+per-request font resolution cost.
 
-Pre-layout of a 95 KB Markdown document costs about 80 ms of core work with
-mock shaping but about 1 s of worker time with Core Text: roughly 0.3 ms per
-provider shape call, about 2,900 calls. This bounds how soon a newly opened
-document is fully prepared, demand layout when scrolling outruns preparation,
-the ~90 ms first frame, and per-keystroke re-shaping of the edited paragraph.
+## Remaining per-keystroke cost
 
-Profile outside the hardened `xctest` host (`sample` gets no stacks there):
-attributed-string construction, `TextIndexMap`, typesetter/line creation,
-glyph and caret extraction, render-resource installation, arenas. Reduce the
-dominant costs with identical rendering. Measure with the opt-in benchmark in
-[docs/performance.md](docs/performance.md) (`worker_ms`, `first_frame_ms`,
-`typing_ms`).
+A keystroke in the 95 KB Markdown benchmark costs about 9.4 ms natively, about
+4.9 ms of it in core input handling and the rest drawing the damaged region;
+`viem-shape-bench` measures about 3 ms of core work with Core Text shaping.
+Remaining costs, in order of size:
 
-## Cut per-keystroke core cost in Markdown
-
-Typing costs about 11–13 ms per keystroke natively in a 95 KB Markdown
-document, and about 5 ms of core work with mock shaping (`editor_perf`
-`type_char` is ~2.3 ms on its own fixture). This predates pre-rendering: typing
-with it disabled is no faster. Core profile:
-
-- ~30% `DocumentLayoutStyles::resolve_region` for the whole visible region on
-  every keystroke (from `prepare_layout_job` in
-  `materialize_immediate_viewport`). Resolve only lines whose inputs can have
-  changed; reuse resolved styles for unchanged cached lines.
-- ~14% `poll_markdown_code_syntax` reinstalling every code block's runs after
-  each edit. Shift unchanged code-block spans across an edit instead (a Code
-  analog exists: `install_code_styles_incrementally`).
-- ~21% `compute_layout_job`, ~14% viewport installation.
+- History commits walk every source-rope piece (`collect_retained_buffers`) and
+  recount every retained node's buffers (`enforce_retention`,
+  `buffer_reference_counts`). Every typed character adds pieces, so the median
+  keystroke grows by about 0.1 ms per 1,000 keystrokes in a session (2.2 → 3.0 ms
+  over 8,000 in `viem-shape-bench --typing 8000`). Keep the accounting
+  incremental instead of recomputing it per commit.
+- Reusing a cached line deep-copies its rows, because caret points embed the
+  layout and document revisions; publication copies them again into the flat
+  snapshot rows. Stamping identity at export would let unchanged lines be shared.
+- Markdown list editing (Enter, renumbering, removing list treatment) builds
+  `list_structure()` from the complete block store, retaining a block-record
+  copy with each edited snapshot (see "Remaining flat-text consumers" in
+  [docs/performance.md](docs/performance.md)).
 
 ## Smaller items
 
-- Continuing a list at the very end of a Markdown document reprojects
-  completely (no local change). That discards retained geometry and exact
-  heights until speculation prepares them again.
-- Retained geometry costs about 21 MB of core estimate for a 95 KB document
-  (~220× source), plus native glyph resources, per view. Measure whole-app
-  memory with several documents and split views open, and decide whether
-  inactive documents should drop to the incremental window.
-- Hard lines larger than one speculative job (16 KiB) are left to demand
+- Retained geometry costs about 25 MiB of live memory per fully pre-rendered
+  view of the 95 KB Markdown benchmark (about 265× source, including native
+  glyph resources); three such documents with two views each use about 160 MiB
+  live, 200 MiB footprint (`viem-shape-bench --memory 3,2`). Decide whether
+  inactive documents or panes should drop to the incremental window.
+- Hard lines larger than the long-line slice size (64 KiB) are left to demand
   layout, so a document containing them never reports "complete" and can still
-  shift the scroll extent when they are reached.
+  shift the scroll extent when they are reached. Lines up to 64 KiB are now
+  prepared as single-line jobs.
 - Comment Markdown in Code documents is still recognized only for visible
   comments (an `AGENTS.md` requirement), so it can arrive after scrolling.
-- Scrolling immediately after opening can still produce one ~30 ms core frame
-  while the first syntax publication and visible relayout land.
+- Continuing a list at the end of a Markdown document stays regional only when a
+  nonblank row precedes the terminal line ending. With a blank final row the
+  terminator pairs into a separator and the edit reprojects completely.

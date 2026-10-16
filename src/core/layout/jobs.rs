@@ -495,15 +495,20 @@ fn retain_regional_styles(
     styles
         .paint_runs
         .retain(|run| run.text_range.start < text_end && text_start < run.text_range.end);
+    // Table membership is a lookup per line, not per paragraph and line.
+    let table_lines: Vec<bool> = line_ranges.iter().chain(following_line_range)
+        .map(|line| styles.table_context.as_ref().is_some_and(|context| context.contains_line(line)))
+        .collect();
     styles.paragraphs.retain(|paragraph| {
         line_ranges
             .iter()
             .chain(following_line_range)
-            .any(|line| {
+            .zip(&table_lines)
+            .any(|(line, &table_line)| {
                 paragraph_matches_line(paragraph.text_range.clone(), line)
                     // A table presentation row contains several paragraph
                     // leaves. Keep their owner paths as well as cell metrics.
-                    || styles.table_context.as_ref().is_some_and(|context| context.contains_line(line))
+                    || table_line
                         && paragraph.text_range.start <= line.end
                         && line.start <= paragraph.text_range.end
             })
@@ -936,8 +941,16 @@ where
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
-        let styles =
-            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, view.search_matches(document.id(), document.revision()), document.format())?;
+        // Successive viewport captures share most paragraphs; speculative
+        // regions elsewhere would only displace them.
+        let styles = if matches!(region, LayoutJobRegion::Viewport(_)) {
+            let (search_matches, cache) = view.style_resolution_inputs(document.id(), document.revision());
+            DocumentLayoutStyles::resolve_region_for_presentation_cached(document.projection(),
+                text_origin..style_end, search_matches, document.format(), cache)?
+        } else {
+            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end,
+                view.search_matches(document.id(), document.revision()), document.format())?
+        };
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }

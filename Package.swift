@@ -21,6 +21,7 @@ let package = Package(
         .executable(name: "blocking-viem", targets: ["BlockingViem"]),
         .library(name: "ViemAppShell", targets: ["ViemAppShell"]),
         .library(name: "ViemCoreTextProvider", targets: ["ViemCoreTextProvider"]),
+        .executable(name: "viem-shape-bench", targets: ["ViemShapeBench"]),
     ],
     targets: [
         .target(name: "ViemBlockingTransport", path: "src/mac/BlockingTransport"),
@@ -63,6 +64,13 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreText"),
             ]
+        ),
+        // Native shaping profile outside the hardened xctest host; see
+        // docs/performance.md.
+        .executableTarget(
+            name: "ViemShapeBench",
+            dependencies: ["CViemCore", "ViemCoreTextProvider"],
+            path: "src/mac/ShapeBench"
         ),
         .target(
             name: "ViemAppShell",

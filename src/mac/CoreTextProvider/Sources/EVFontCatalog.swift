@@ -88,6 +88,13 @@ public enum EVFontCatalog {
     var descriptors: [String: CTFontDescriptor] = [:]
   }
   private static let cache = Cache()
+  /// Advances whenever discovered faces may change. Callers that retain values
+  /// derived from the catalogue compare it before reusing them.
+  static var cacheGeneration: UInt64 {
+    cache.lock.lock()
+    defer { cache.lock.unlock() }
+    return cache.generation
+  }
   public static func invalidate() {
     cache.lock.lock()
     cache.generation += 1

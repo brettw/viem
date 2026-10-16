@@ -353,7 +353,7 @@ impl DocumentLayoutStyles {
         text_range: Range<usize>,
         search_matches: &[Range<usize>],
     ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_impl(document, text_range, search_matches, None)
+        Self::resolve_region_impl(document, text_range, search_matches, None, None)
     }
 
     pub(crate) fn resolve_region_for_presentation(
@@ -362,7 +362,30 @@ impl DocumentLayoutStyles {
         search_matches: &[Range<usize>],
         format: crate::document::Format,
     ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_impl(document, text_range, search_matches, Some(format))
+        Self::resolve_region_impl(document, text_range, search_matches, Some(format), None)
+    }
+
+    /// As [`Self::resolve_region_for_presentation`], reusing the appearance of
+    /// paragraphs whose inputs are unchanged since the view's previous
+    /// resolution.
+    pub(crate) fn resolve_region_for_presentation_cached(
+        document: &FormattedDocument,
+        text_range: Range<usize>,
+        search_matches: &[Range<usize>],
+        format: crate::document::Format,
+        cache: &mut ParagraphStyleCache,
+    ) -> Result<Self, DocumentStyleError> {
+        let styles = Self::resolve_region_impl(document, text_range.clone(), search_matches, Some(format), Some(cache))?;
+        // Debug builds verify every reuse against a complete resolution.
+        #[cfg(debug_assertions)]
+        {
+            let mut fresh = Self::resolve_region_impl(document, text_range, search_matches, Some(format), None)?;
+            // Each resolution captures its own table context for one projection.
+            assert_eq!(styles.table_context.is_some(), fresh.table_context.is_some());
+            fresh.table_context = styles.table_context.clone();
+            assert!(styles == fresh, "reused paragraph styles differ from a complete resolution");
+        }
+        Ok(styles)
     }
 
     fn resolve_region_impl(
@@ -370,6 +393,7 @@ impl DocumentLayoutStyles {
         text_range: Range<usize>,
         search_matches: &[Range<usize>],
         recovery_format: Option<crate::document::Format>,
+        mut cache: Option<&mut ParagraphStyleCache>,
     ) -> Result<Self, DocumentStyleError> {
         let text = document.text_tree();
         if text_range.start > text_range.end
@@ -392,9 +416,12 @@ impl DocumentLayoutStyles {
             document_style: document.document_style(),
             search_matches,
         };
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.prepare(document.layout_style_sheet_arc(), document.document_style());
+        }
         let mut styles = match recovery_format {
-            Some(format) => Self::resolve_for_presentation(input, format),
-            None => Self::resolve_validated(input),
+            Some(format) => Self::resolve_for_presentation(input, format, cache),
+            None => Self::resolve_validated(input, cache),
         }?;
         for (paragraph, block) in styles.paragraphs.iter_mut().zip(&regional_blocks) {
             paragraph.list_marker_range = document
@@ -416,10 +443,11 @@ impl DocumentLayoutStyles {
     pub fn resolve_input(input: DocumentStyleInput<'_>) -> Result<Self, DocumentStyleError> {
         validate_blocks(input.text, input.blocks)?;
         validate_spans(input.text, input.style_spans)?;
-        Self::resolve_validated(input.into())
+        Self::resolve_validated(input.into(), None)
     }
 
-    fn resolve_validated(input: StyleCascadeInput<'_>) -> Result<Self, DocumentStyleError> {
+    fn resolve_validated(input: StyleCascadeInput<'_>, cache: Option<&mut ParagraphStyleCache>)
+        -> Result<Self, DocumentStyleError> {
         let sheet = input.style_sheet;
         let resolved_document = sheet.resolve_document_assignment(input.document_style)?;
         let default_shaping_style = shaping_style(&resolved_document.character)?;
@@ -445,23 +473,41 @@ impl DocumentLayoutStyles {
         let mut shaping_runs = Vec::new();
         let mut paint_runs = Vec::new();
         let mut paragraphs = Vec::with_capacity(input.blocks.len());
+        let mut cascades = CharacterCascadeMemo::new(resolved_document.character.size);
+        let mut retained = cache.as_ref().map(|_| std::collections::HashMap::with_capacity(input.blocks.len()));
         for block in input.blocks {
+            if let Some(cached) = cache.as_ref().and_then(|cache| cache.paragraphs.get(&block.id))
+                .filter(|cached| cached.matches(&input, block))
+            {
+                let start = block.range.start;
+                let mut paragraph = cached.paragraph.clone();
+                paragraph.text_range = start..start + paragraph.text_range.end;
+                paragraph.list_marker_range = paragraph.list_marker_range.map(|range| start + range.start..start + range.end);
+                paragraphs.push(paragraph);
+                for run in &cached.shaping_runs {
+                    push_shape_run(&mut shaping_runs, start + run.text_range.start..start + run.text_range.end, run.style.clone());
+                }
+                for run in &cached.paint_runs {
+                    push_paint_run(&mut paint_runs, start + run.text_range.start..start + run.text_range.end, run.paint.clone());
+                }
+                if let Some(retained) = retained.as_mut() { retained.insert(block.id, std::sync::Arc::clone(cached)); }
+                continue;
+            }
             let mut container_character = CharacterProperties::default();
             let mut container_font_size = resolved_document.character.size;
             let mut container_paragraph = crate::document::BlockProperties::default();
             let mut containers = Vec::with_capacity(block.containers.len());
             for membership in block.containers.iter() {
                 let container = &membership.container;
-                let direct = container.direct_formatting.as_deref().cloned().unwrap_or_default();
-                let mut resolved = sheet.resolve_assigned_container_style(input.document_style,
-                    &container.style, &direct.direct_paragraph, &direct.direct_default_character)?;
+                let declarations = cascades.container(sheet, input.document_style, container)?;
+                let mut resolved = declarations.resolved.clone();
                 merge_container_character_properties(&mut container_character, &mut container_font_size,
-                    sheet.container_character_declarations(&container.style, &direct.direct_default_character)?);
+                    declarations.character.clone());
                 if let Some(color) = container_character.foreground {
                     resolved.character.foreground = color;
                     resolved.character.foreground_is_default = false;
                 }
-                let defaults = sheet.container_paragraph_declarations(&container.style, &direct.direct_paragraph)?;
+                let defaults = &declarations.paragraph;
                 if defaults.line_spacing.is_some() { container_paragraph.line_spacing = defaults.line_spacing; }
                 if defaults.alignment.is_some() { container_paragraph.alignment = defaults.alignment; }
                 if defaults.base_direction.is_some() { container_paragraph.base_direction = defaults.base_direction; }
@@ -490,7 +536,8 @@ impl DocumentLayoutStyles {
             quote_border &= block.containers.is_empty();
             let container_body = block.containers.iter().any(|membership| membership.container.style == block.style)
                 && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
-            let mut paragraph = sheet.resolve_assigned_paragraph_style_in_container(
+            let paragraph = cascades.paragraph(
+                sheet,
                 input.document_style,
                 if container_body {
                     &sheet.base_paragraph
@@ -500,11 +547,8 @@ impl DocumentLayoutStyles {
                 &block.direct_paragraph,
                 &container_character,
                 &block.direct_default_character,
-                None,
-                &CharacterProperties::default(),
+                Some(&container_paragraph),
             )?;
-            sheet.apply_container_paragraph_defaults(if container_body { &sheet.base_paragraph } else { &block.style },
-                &block.direct_paragraph, &container_paragraph, &mut paragraph)?;
             // A heading or code paragraph inside an item keeps its own style
             // plus the containing list's inset. List-role paragraphs already
             // declare that inset themselves.
@@ -531,14 +575,15 @@ impl DocumentLayoutStyles {
                 if inherits_list || sheet.block_style(&id).is_none() {
                     extra
                 } else {
-                    sheet
-                        .resolve_assigned_paragraph_style(
+                    cascades
+                        .paragraph(
+                            sheet,
                             input.document_style,
                             &id,
                             &Default::default(),
                             &Default::default(),
-                            None,
                             &Default::default(),
+                            None,
                         )?
                         .leading_indent
                         + extra
@@ -611,14 +656,27 @@ impl DocumentLayoutStyles {
                 base_direction: paragraph.base_direction,
                 default_shaping_style: shaping_style(&paragraph.character)?,
             });
+            let mut block_shaping = Vec::new();
+            let mut block_paint = Vec::new();
             resolve_block_runs(
                 input,
                 block,
                 &default_shaping_style,
                 &default_paint,
-                &mut shaping_runs,
-                &mut paint_runs,
+                &mut block_shaping,
+                &mut block_paint,
+                &mut cascades,
             )?;
+            if let Some(retained) = retained.as_mut() {
+                retained.insert(block.id, std::sync::Arc::new(CachedParagraphStyle::new(&input, block,
+                    paragraphs.last().expect("pushed above"), &block_shaping, &block_paint)));
+            }
+            // Appending through the same merge reproduces runs pushed directly.
+            for run in block_shaping { push_shape_run(&mut shaping_runs, run.text_range, run.style); }
+            for run in block_paint { push_paint_run(&mut paint_runs, run.text_range, run.paint); }
+        }
+        if let (Some(cache), Some(retained)) = (cache, retained) {
+            cache.paragraphs = retained;
         }
 
         Ok(Self {
@@ -711,10 +769,13 @@ fn resolve_block_runs(
     default_paint: &ResolvedTextPaint,
     shaping_runs: &mut Vec<ShapeStyleRun>,
     paint_runs: &mut Vec<PaintStyleRun>,
+    memo: &mut CharacterCascadeMemo,
 ) -> Result<(), DocumentStyleError> {
     if block.range.is_empty() {
         return Ok(());
     }
+    // Resolved on the block's first styled segment, as each segment would.
+    let mut context = None;
 
     let mut boundaries = BTreeSet::from([block.range.start, block.range.end]);
     let first_image = input.inline_images.partition_point(|image| image.range.end <= block.range.start);
@@ -782,7 +843,11 @@ fn resolve_block_runs(
                 cascades.push((index, cascade.clone()));
             }
             changed_from = usize::MAX;
-            cascade.resolve(input, block)?
+            let context = match &mut context {
+                Some(context) => context,
+                None => context.insert(BlockCharacterContext::new(input, block, memo)?),
+            };
+            cascade.resolve(input, block, context, memo)?
         };
         while match_index < search_matches.len() && search_matches[match_index].end <= range.start {
             match_index += 1;
@@ -828,7 +893,292 @@ fn resolve_character_spans_at<'a>(
     for span in active {
         cascade.apply(input.style_sheet, span, &range)?;
     }
-    cascade.resolve(input, block)
+    let document_font_size = input.style_sheet.resolve_document_assignment(input.document_style)?.character.size;
+    let mut memo = CharacterCascadeMemo::new(document_font_size);
+    let context = BlockCharacterContext::new(input, block, &mut memo)?;
+    cascade.resolve(input, block, &context, &mut memo)
+}
+
+/// The appearance of each paragraph of a view's previous resolution. A
+/// paragraph's style and runs are reused while all of their inputs are
+/// unchanged: its shared block attributes and length, and the spans, inline
+/// objects and search matches within it relative to its start, under the same
+/// layout style sheet and document style. Only the latest resolution's
+/// paragraphs are retained, so the cache is bounded by one region.
+#[derive(Clone, Default)]
+pub(crate) struct ParagraphStyleCache {
+    identity: Option<(std::sync::Arc<StyleSheet>, DocumentStyleAssignment)>,
+    paragraphs: std::collections::HashMap<u64, std::sync::Arc<CachedParagraphStyle>>,
+}
+
+impl ParagraphStyleCache {
+    fn prepare(&mut self, sheet: &std::sync::Arc<StyleSheet>, document_style: &DocumentStyleAssignment) {
+        let current = self.identity.as_ref()
+            .is_some_and(|(cached, style)| std::sync::Arc::ptr_eq(cached, sheet) && style == document_style);
+        if !current {
+            self.identity = Some((std::sync::Arc::clone(sheet), document_style.clone()));
+            self.paragraphs.clear();
+        }
+    }
+}
+
+/// A disposable cache never distinguishes otherwise equal views.
+impl PartialEq for ParagraphStyleCache {
+    fn eq(&self, _: &Self) -> bool { true }
+}
+
+impl std::fmt::Debug for ParagraphStyleCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ParagraphStyleCache").field("paragraphs", &self.paragraphs.len()).finish()
+    }
+}
+
+/// One paragraph's resolved appearance in coordinates relative to its start,
+/// with the inputs that produced it.
+struct CachedParagraphStyle {
+    block: Block,
+    spans: Vec<(Range<usize>, StyleApplication)>,
+    images: Vec<(isize, isize)>,
+    search: Vec<Range<usize>>,
+    paragraph: ParagraphLayoutStyle,
+    shaping_runs: Vec<ShapeStyleRun>,
+    paint_runs: Vec<PaintStyleRun>,
+}
+
+/// The spans, inline objects and search matches intersecting `block`,
+/// relative to its start, in the order the cascade consumes them.
+fn paragraph_inputs<'a>(input: &'a StyleCascadeInput<'_>, block: &'a Block) -> (
+    impl Iterator<Item = (Range<usize>, &'a StyleApplication)> + 'a,
+    impl Iterator<Item = (isize, isize)> + 'a,
+    impl Iterator<Item = Range<usize>> + 'a,
+) {
+    let range = block.range.clone();
+    let start = range.start;
+    let spans = input.style_spans.iter().filter_map(move |span| {
+        let clipped = span.range.start.max(range.start)..span.range.end.min(range.end);
+        (clipped.start < clipped.end).then(|| (clipped.start - start..clipped.end - start, &span.application))
+    });
+    let first_image = input.inline_images.partition_point(|image| image.range.end <= block.range.start);
+    let images = input.inline_images[first_image..].iter().take_while(move |image| image.range.start < block.range.end)
+        .map(move |image| (image.range.start as isize - start as isize, image.range.end as isize - start as isize));
+    let first_match = input.search_matches.partition_point(|matched| matched.end <= block.range.start);
+    let search = input.search_matches[first_match..].iter().take_while(move |matched| matched.start < block.range.end)
+        .map(move |matched| matched.start.max(block.range.start) - start..matched.end.min(block.range.end) - start);
+    (spans, images, search)
+}
+
+impl CachedParagraphStyle {
+    fn new(input: &StyleCascadeInput<'_>, block: &Block, paragraph: &ParagraphLayoutStyle,
+        shaping_runs: &[ShapeStyleRun], paint_runs: &[PaintStyleRun]) -> Self {
+        let start = block.range.start;
+        let (spans, images, search) = paragraph_inputs(input, block);
+        let mut paragraph = paragraph.clone();
+        paragraph.text_range = 0..block.range.len();
+        paragraph.list_marker_range = paragraph.list_marker_range.map(|range| range.start - start..range.end - start);
+        Self {
+            block: block.clone(),
+            spans: spans.map(|(range, application)| (range, application.clone())).collect(),
+            images: images.collect(),
+            search: search.collect(),
+            paragraph,
+            shaping_runs: shaping_runs.iter().map(|run| ShapeStyleRun {
+                text_range: run.text_range.start - start..run.text_range.end - start, style: run.style.clone() }).collect(),
+            paint_runs: paint_runs.iter().map(|run| PaintStyleRun {
+                text_range: run.text_range.start - start..run.text_range.end - start, paint: run.paint.clone() }).collect(),
+        }
+    }
+
+    fn matches(&self, input: &StyleCascadeInput<'_>, block: &Block) -> bool {
+        if !std::sync::Arc::ptr_eq(&self.block.attributes, &block.attributes)
+            || self.block.range.len() != block.range.len()
+        {
+            return false;
+        }
+        let (spans, images, search) = paragraph_inputs(input, block);
+        spans.eq(self.spans.iter().map(|(range, application)| (range.clone(), application)))
+            && images.eq(self.images.iter().copied())
+            && search.eq(self.search.iter().cloned())
+    }
+}
+
+/// Block-level inputs of every character cascade in one paragraph, resolved
+/// once rather than for each styled segment.
+struct BlockCharacterContext<'a> {
+    paragraph_style: &'a StyleId,
+    container_character: CharacterProperties,
+}
+
+impl<'a> BlockCharacterContext<'a> {
+    fn new(input: StyleCascadeInput<'a>, block: &'a Block, memo: &mut CharacterCascadeMemo)
+        -> Result<Self, DocumentStyleError> {
+        let sheet = input.style_sheet;
+        let mut container_character = CharacterProperties::default();
+        let mut container_font_size = memo.document_font_size;
+        for member in block.containers.iter() {
+            let character = memo.container_character(sheet, &member.container)?;
+            merge_container_character_properties(&mut container_character, &mut container_font_size, character);
+        }
+        let container_body = block.containers.iter().any(|member| member.container.style == block.style)
+            && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
+        Ok(Self {
+            paragraph_style: if container_body { &sheet.base_paragraph } else { &block.style },
+            container_character,
+        })
+    }
+}
+
+/// Cascades already resolved during one style resolution. Styled segments
+/// repeat a few combinations within and across paragraphs, paragraphs repeat
+/// a few styles, and blocks share their container allocations. Every cascade
+/// is pure in its inputs.
+struct CharacterCascadeMemo {
+    document_font_size: f32,
+    entries: Vec<(CharacterCascadeKey, ResolvedCharacterStyle)>,
+    last_hit: usize,
+    paragraphs: Vec<(ParagraphCascadeKey, crate::document::ResolvedParagraphStyle)>,
+    /// Keyed by the shared container allocation, alive for the resolution.
+    containers: Vec<(*const crate::document::ContainerAttributes, ContainerDeclarations)>,
+    container_characters: Vec<(*const crate::document::ContainerAttributes, CharacterProperties)>,
+}
+
+/// Sheet lookups for one container, independent of its ancestors.
+struct ContainerDeclarations {
+    resolved: crate::document::ResolvedParagraphStyle,
+    character: CharacterProperties,
+    paragraph: crate::document::BlockProperties,
+}
+
+#[derive(PartialEq)]
+struct ParagraphCascadeKey {
+    paragraph_style: StyleId,
+    direct_paragraph: crate::document::BlockProperties,
+    container_character: CharacterProperties,
+    default_character: CharacterProperties,
+    /// Container paragraph defaults applied after the cascade, if any.
+    container_paragraph: Option<crate::document::BlockProperties>,
+}
+
+struct CharacterCascadeKey {
+    paragraph_style: StyleId,
+    direct_paragraph: crate::document::BlockProperties,
+    container_character: CharacterProperties,
+    direct_default_character: CharacterProperties,
+    named: Option<StyleId>,
+    semantic: CharacterProperties,
+}
+
+impl CharacterCascadeKey {
+    fn matches(&self, paragraph_style: &StyleId, direct_paragraph: &crate::document::BlockProperties,
+        container_character: &CharacterProperties, direct_default_character: &CharacterProperties,
+        named: Option<&StyleId>, semantic: &CharacterProperties) -> bool {
+        self.paragraph_style == *paragraph_style && self.named.as_ref() == named && self.semantic == *semantic
+            && self.direct_default_character == *direct_default_character
+            && self.container_character == *container_character && self.direct_paragraph == *direct_paragraph
+    }
+}
+
+impl CharacterCascadeMemo {
+    /// Bounds each lookup's linear scan; a region with more combinations
+    /// simply starts over.
+    const CAPACITY: usize = 64;
+
+    fn new(document_font_size: f32) -> Self {
+        Self { document_font_size, entries: Vec::new(), last_hit: 0, paragraphs: Vec::new(),
+            containers: Vec::new(), container_characters: Vec::new() }
+    }
+
+    /// The paragraph cascade, followed by container paragraph defaults when
+    /// they are supplied.
+    #[allow(clippy::too_many_arguments)]
+    fn paragraph(&mut self, sheet: &StyleSheet, document: &DocumentStyleAssignment, paragraph_style: &StyleId,
+        direct_paragraph: &crate::document::BlockProperties, container_character: &CharacterProperties,
+        default_character: &CharacterProperties, container_paragraph: Option<&crate::document::BlockProperties>)
+        -> Result<crate::document::ResolvedParagraphStyle, DocumentStyleError> {
+        if let Some((_, resolved)) = self.paragraphs.iter().find(|(key, _)| key.paragraph_style == *paragraph_style
+            && key.direct_paragraph == *direct_paragraph && key.container_character == *container_character
+            && key.default_character == *default_character && key.container_paragraph.as_ref() == container_paragraph)
+        {
+            return Ok(resolved.clone());
+        }
+        let mut resolved = sheet.resolve_assigned_paragraph_style_in_container(document, paragraph_style,
+            direct_paragraph, container_character, default_character, None, &CharacterProperties::default())?;
+        if let Some(defaults) = container_paragraph {
+            sheet.apply_container_paragraph_defaults(paragraph_style, direct_paragraph, defaults, &mut resolved)?;
+        }
+        if self.paragraphs.len() == Self::CAPACITY { self.paragraphs.clear(); }
+        self.paragraphs.push((ParagraphCascadeKey {
+            paragraph_style: paragraph_style.clone(),
+            direct_paragraph: direct_paragraph.clone(),
+            container_character: container_character.clone(),
+            default_character: default_character.clone(),
+            container_paragraph: container_paragraph.cloned(),
+        }, resolved.clone()));
+        Ok(resolved)
+    }
+
+    fn container(&mut self, sheet: &StyleSheet, document: &DocumentStyleAssignment,
+        container: &std::sync::Arc<crate::document::ContainerAttributes>)
+        -> Result<&ContainerDeclarations, DocumentStyleError> {
+        let key = std::sync::Arc::as_ptr(container);
+        if let Some(index) = self.containers.iter().position(|(entry, _)| *entry == key) {
+            return Ok(&self.containers[index].1);
+        }
+        let direct = container.direct_formatting.as_deref().cloned().unwrap_or_default();
+        let resolved = sheet.resolve_assigned_container_style(document,
+            &container.style, &direct.direct_paragraph, &direct.direct_default_character)?;
+        let character = sheet.container_character_declarations(&container.style, &direct.direct_default_character)?;
+        let paragraph = sheet.container_paragraph_declarations(&container.style, &direct.direct_paragraph)?;
+        if self.containers.len() == Self::CAPACITY { self.containers.clear(); }
+        self.containers.push((key, ContainerDeclarations { resolved, character, paragraph }));
+        Ok(&self.containers.last().expect("pushed above").1)
+    }
+
+    /// Only the container's character declarations, as a styled segment needs.
+    fn container_character(&mut self, sheet: &StyleSheet,
+        container: &std::sync::Arc<crate::document::ContainerAttributes>)
+        -> Result<CharacterProperties, DocumentStyleError> {
+        let key = std::sync::Arc::as_ptr(container);
+        if let Some((_, declarations)) = self.containers.iter().find(|(entry, _)| *entry == key) {
+            return Ok(declarations.character.clone());
+        }
+        if let Some((_, character)) = self.container_characters.iter().find(|(entry, _)| *entry == key) {
+            return Ok(character.clone());
+        }
+        let direct = container.direct_formatting.as_deref().map(|direct| &direct.direct_default_character)
+            .cloned().unwrap_or_default();
+        let character = sheet.container_character_declarations(&container.style, &direct)?;
+        if self.container_characters.len() == Self::CAPACITY { self.container_characters.clear(); }
+        self.container_characters.push((key, character.clone()));
+        Ok(character)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn resolve(&mut self, sheet: &StyleSheet, document: &DocumentStyleAssignment, paragraph_style: &StyleId,
+        direct_paragraph: &crate::document::BlockProperties, container_character: &CharacterProperties,
+        direct_default_character: &CharacterProperties, named: Option<&StyleId>, semantic: &CharacterProperties)
+        -> Result<ResolvedCharacterStyle, DocumentStyleError> {
+        let matches = |key: &CharacterCascadeKey| key.matches(paragraph_style, direct_paragraph,
+            container_character, direct_default_character, named, semantic);
+        let hit = self.entries.get(self.last_hit).filter(|(key, _)| matches(key)).map(|_| self.last_hit)
+            .or_else(|| self.entries.iter().position(|(key, _)| matches(key)));
+        if let Some(index) = hit {
+            self.last_hit = index;
+            return Ok(self.entries[index].1.clone());
+        }
+        let resolved = sheet.resolve_assigned_paragraph_style_in_container(document, paragraph_style,
+            direct_paragraph, container_character, direct_default_character, named, semantic)?.character;
+        if self.entries.len() == Self::CAPACITY { self.entries.clear(); }
+        self.entries.push((CharacterCascadeKey {
+            paragraph_style: paragraph_style.clone(),
+            direct_paragraph: direct_paragraph.clone(),
+            container_character: container_character.clone(),
+            direct_default_character: direct_default_character.clone(),
+            named: named.cloned(),
+            semantic: semantic.clone(),
+        }, resolved.clone()));
+        self.last_hit = self.entries.len() - 1;
+        Ok(resolved)
+    }
 }
 
 /// The Image paragraph definition also owns labels on inline image objects
@@ -904,9 +1254,8 @@ impl<'a> SpanCascade<'a> {
         Ok(())
     }
 
-    fn resolve(self, input: StyleCascadeInput<'_>, block: &Block)
-        -> Result<ResolvedCharacterStyle, DocumentStyleError> {
-        let sheet = input.style_sheet;
+    fn resolve(self, input: StyleCascadeInput<'_>, block: &Block, context: &BlockCharacterContext<'_>,
+        memo: &mut CharacterCascadeMemo) -> Result<ResolvedCharacterStyle, DocumentStyleError> {
         let Self { named, mut semantic, direct, automatic, link_defaults } = self;
         // Semantic markup is a sparse convenience layer. Explicit direct
         // formatting wins property-by-property, independent of source-span order.
@@ -915,32 +1264,17 @@ impl<'a> SpanCascade<'a> {
         // Link is a content-derived default. Authored character styles and direct
         // formatting still win; source/code syntax overlays retain their existing
         // priority. Keep it out of the authored typing-style cascade.
-        let mut direct_default_character = block.direct_default_character.clone();
-        if link_defaults != CharacterProperties::default() {
-            merge_character_properties(&mut direct_default_character, &link_defaults);
-        }
-
-        let mut container_character = CharacterProperties::default();
-        let mut container_font_size = sheet.resolve_document_assignment(input.document_style)?.character.size;
-        for member in block.containers.iter() {
-            let character = member.container.direct_formatting.as_deref().map(|direct| &direct.direct_default_character).cloned().unwrap_or_default();
-            merge_container_character_properties(&mut container_character, &mut container_font_size,
-                sheet.container_character_declarations(&member.container.style, &character)?);
-        }
-        let container_body = block.containers.iter().any(|member| member.container.style == block.style)
-            && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
-        sheet
-            .resolve_assigned_paragraph_style_in_container(
-                input.document_style,
-                if container_body { &sheet.base_paragraph } else { &block.style },
-                &block.direct_paragraph,
-                &container_character,
-                &direct_default_character,
-                named,
-                &semantic,
-            )
-            .map(|paragraph| paragraph.character)
-            .map_err(Into::into)
+        let linked;
+        let direct_default_character = if link_defaults != CharacterProperties::default() {
+            let mut value = block.direct_default_character.clone();
+            merge_character_properties(&mut value, &link_defaults);
+            linked = value;
+            &linked
+        } else {
+            &block.direct_default_character
+        };
+        memo.resolve(input.style_sheet, input.document_style, context.paragraph_style, &block.direct_paragraph,
+            &context.container_character, direct_default_character, named, &semantic)
     }
 }
 
@@ -1121,7 +1455,7 @@ mod tests {
         }).collect::<Vec<_>>();
         let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans, inline_images: &[],
             style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
-        let actual = DocumentLayoutStyles::resolve_validated(input).unwrap();
+        let actual = DocumentLayoutStyles::resolve_validated(input, None).unwrap();
         let mut shapes = Vec::new();
         let mut paints = Vec::new();
         for at in 0..257 {
@@ -1158,7 +1492,7 @@ mod tests {
                 strikethrough: Some(index % 2 == 0), ..Default::default() }) }));
         let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans, inline_images: &[],
             style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
-        let actual = DocumentLayoutStyles::resolve_validated(input).unwrap();
+        let actual = DocumentLayoutStyles::resolve_validated(input, None).unwrap();
         let mut shapes = Vec::new();
         let mut paints = Vec::new();
         for at in 0..400 {

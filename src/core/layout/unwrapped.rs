@@ -401,7 +401,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             };
             add_statistics(&mut statistics, part.work_statistics);
             diagnostics.extend(part.diagnostics.iter().cloned());
-            let line = &mut part.lines[0];
+            let line = Arc::make_mut(&mut part.lines[0]);
             if let Some(focus_row) = focus.and_then(|focus| {
                 line.rows
                     .iter()
@@ -612,7 +612,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         } else {
             continuation
         };
-        let line = &mut region.lines[0];
+        let line = Arc::make_mut(&mut region.lines[0]);
         let row = &mut line.rows[0];
         translate_row_vertically(row, delta).map_err(LayoutError::from)?;
         row.hard_line_range = slice.full_range.clone();
@@ -735,7 +735,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     cancellation,
                 )?;
                 add_statistics(&mut statistics, region.work_statistics);
-                lines.extend(region.lines);
+                lines.extend(region.lines.into_iter().map(Arc::unwrap_or_clone));
                 diagnostics.extend(region.diagnostics);
                 continue;
             }
@@ -766,7 +766,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     .lines
                     .last()
                     .is_some_and(|line| !line.height_is_exact);
-                lines.extend(region.lines);
+                lines.extend(region.lines.into_iter().map(Arc::unwrap_or_clone));
                 diagnostics.extend(region.diagnostics);
                 if partial {
                     break;
@@ -1355,7 +1355,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 canvas_background_is_default: styles.canvas_background_is_default,
                 default_paint: styles.default_paint.clone(),
                 paint_runs,
-                lines,
+                lines: lines.into_iter().map(RegionalHardLineLayout::into_retained).collect(),
                 diagnostics,
                 grapheme_boundaries: Vec::new(),
                 work_statistics: statistics,
