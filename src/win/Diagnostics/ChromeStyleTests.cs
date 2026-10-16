@@ -207,7 +207,12 @@ internal static class ChromeStyleTests
                 void Changed(object sender, RoutedEventArgs args) => pane.DispatcherQueue.TryEnqueue(() => changed.TrySetResult());
                 if (open) numberItem.Loaded += Changed; else numberItem.Unloaded += Changed;
                 try {
-                    if (open) menuPeer.Expand(); else menuPeer.Collapse();
+                    // An expansion requested while the previous flyout is still
+                    // closing is ignored, so retry until the flyout loads.
+                    if (open)
+                        for (int attempt = 0; attempt < 16 && !changed.Task.IsCompleted; attempt++)
+                        { menuPeer.Expand(); await Task.WhenAny(changed.Task, Task.Delay(300)); }
+                    else menuPeer.Collapse();
                     await changed.Task.WaitAsync(TimeSpan.FromSeconds(5));
                 } finally { if (open) numberItem.Loaded -= Changed; else numberItem.Unloaded -= Changed; }
             }

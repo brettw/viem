@@ -1,4 +1,4 @@
-param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
+param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip', 'preview')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $optimizedOutput = Join-Path $projectRoot $(if ($NativeAot) { 'target/windows-native-tests' } else { 'target/windows-profile' })

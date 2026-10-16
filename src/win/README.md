@@ -147,7 +147,10 @@ fullscreen bounds do not replace the saved normal frame.
   Code, Markdown, or Plain Text stylesheet and the selected theme.
 - Markdown's right-aligned **Markdown Preview** toolbar toggle switches between
   formatted Markdown and literal Code with the Markdown language while retaining
-  source bytes. Its document/Aa icon is pressed while Preview is on. The last choice
+  source bytes. Its document/Aa icon is pressed while Preview is on. The toolbar
+  exists only in Preview; with Preview off the title bar shows the same Preview
+  button in place of the toolbar toggle, and Text or other Code shows neither.
+  The last choice
   is saved as `editing.markdownFormattedView` in `config.json` and used for
   subsequent Markdown opens, including Ex commands. With no saved choice, Markdown
   opens with Preview off.
@@ -274,6 +277,8 @@ Set `VIEM_TEST_SELECTION_ONLY=1` for native keyboard selection, line/block modes
 clipboard preservation, and block-IME rejection checks.
 Set `VIEM_TEST_SCROLL_ONLY=horizontal` for scrollbar overlay geometry and
 cached-versus-fresh overflow painting.
+Set `VIEM_TEST_IMAGES_ONLY=resources` for local image previews, background
+dimension probes, resampled bitmaps and preview limits, which need no native input.
 Set `VIEM_TEST_TOOLBAR_ONLY=1` to run just the formatting-toolbar native controls,
 visibility, selection/undo, formatted-view switching, overflow, and large-document latency checks.
 The toolbar uses the active pane's core selection, the shared style catalogue,
@@ -319,6 +324,10 @@ mouse-to-photon latency. The source file is never changed.
 Add `-ProfileScenario resize` to measure 100 width changes through the same
 core resize, presentation refresh, and drawing path. This reports CPU work for
 reflow and rendering; it does not measure native window-manager presentation.
+`-ProfileScenario preview` switches Markdown Preview off and on 20 times from
+the middle of the document, letting speculation settle between switches; its
+report splits shaping font setup, native capture, cluster extraction and the
+Code syntax wait. Use `-Optimized`: Debug Rust is not representative.
 The default scenario is `drag`.
 
 To measure empty-editor startup, run `scripts/test-win-startup.ps1` (add

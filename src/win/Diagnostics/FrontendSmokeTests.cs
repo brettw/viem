@@ -56,7 +56,7 @@ internal static class FrontendSmokeTests
         using (var doc = new CoreDocument("exact source"u8.ToArray()))
         using (var view = new CoreView(doc, device, dispatcher, 500, 200))
         {
-            doc.ConfigureEditingDefaults("{\"tabstop\":0}"u8.ToArray(), "{}"u8.ToArray(), 0, "{}"u8.ToArray());
+            doc.ConfigureEditingDefaults("{\"tabstop\":0}"u8.ToArray(), "{}"u8.ToArray(), 0, "{}"u8.ToArray(), true);
             Check(doc.ConfigurationDiagnostics.Contains("indentation"), "invalid optional settings warn without losing the document");
             bool strictRejected = false;
             try { doc.ConfigureDefaults("{\"tabstop\":0}"u8.ToArray(), "{}"u8.ToArray(), 0, "{}"u8.ToArray()); }

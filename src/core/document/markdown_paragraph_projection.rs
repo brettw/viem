@@ -208,6 +208,7 @@ impl Document {
         // Whether the original band ends with the document's terminal ending
         // and every patch ends at or before it, recorded by the first parse.
         let retains_terminal = std::cell::Cell::new(false);
+        let terminal_row_nonblank = std::cell::Cell::new(false);
         let parse = |source: &super::super::source::SourceSnapshot, range: Range<usize>|
             -> Result<(FormattedDocument, Vec<Range<usize>>, usize), ModelTransactionError> {
             let bytes = source.bytes_in(range.clone()).ok_or(DocumentError::VerificationFailed)?;
@@ -217,10 +218,12 @@ impl Document {
             // Compound split/style edits require the complete boundary proof;
             // this optimization handles only independently delimited bodies.
             // A guarded structural band may retain the terminal ending when its
-            // patches all end before it and a nonblank row precedes it before
-            // and after the edit: the ending stays the same untouched trivia
-            // after the band's final row, as when continuing a list. A blank
-            // row would pair it into a separator instead.
+            // patches all end before it and the row preceding it stays blank or
+            // nonblank, as when continuing a list. After a nonblank row the
+            // ending stays untouched trivia; after a blank row it pairs with
+            // the preceding ending into a separator, and the band parses every
+            // ending to the end exactly as the complete parse does. An edit
+            // changing that role changes the terminal paragraph's ownership.
             if let Some(terminal) = normalized.endings.last()
                 .filter(|ending| range.end == source.len() && ending.source.end == range.end)
             {
@@ -228,10 +231,11 @@ impl Document {
                     .map_or(0, |index| normalized.endings[index].normalized.end);
                 let nonblank = !normalized.text[row_start..terminal.normalized.start].trim().is_empty();
                 if std::ptr::eq(source, &self.state().source) {
-                    retains_terminal.set(guarded && nonblank
+                    retains_terminal.set(guarded
                         && patches.iter().all(|patch| patch.range.end <= terminal.source.start));
+                    terminal_row_nonblank.set(nonblank);
                 }
-                if !retains_terminal.get() || !nonblank {
+                if !retains_terminal.get() || nonblank != terminal_row_nonblank.get() {
                     return Err(DocumentError::UnsupportedFormatting.into());
                 }
             }

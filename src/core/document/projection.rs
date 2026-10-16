@@ -3206,6 +3206,23 @@ impl FormattedDocument {
         self.styles.compatibility_slice()
     }
 
+    /// Every block in order, streamed in bounded chunks that this snapshot
+    /// does not retain, for complete verification passes.
+    pub(crate) fn block_items(&self) -> impl Iterator<Item = Block> + '_ {
+        self.blocks.items()
+    }
+
+    /// Every style span in order, streamed without a retained copy.
+    pub(crate) fn style_span_items(&self) -> impl Iterator<Item = StyleSpan> + '_ {
+        self.styles.items()
+    }
+
+    /// Whether both snapshots present the same formatted text, compared
+    /// without flattening or retaining a compatibility copy of either.
+    pub(crate) fn same_text(&self, other: &Self) -> bool {
+        self.text.content_eq(&other.text)
+    }
+
     /// A one-off copy of every block that this snapshot does not retain, for
     /// small temporary projections such as a regional parse.
     pub(crate) fn block_records(&self) -> Vec<Block> {
@@ -4182,6 +4199,33 @@ impl FormattedDocument {
                 .map(|span| span.source.end);
             (following, preceding)
         };
+        // Literal projections map each boundary through the first touching
+        // contributor, independently of side. Keep the touching contributors
+        // as an ordered window and reuse a grapheme's end for the next start,
+        // rather than querying the interval tree twice per grapheme.
+        let literal_streaming = self.literal_encoding.is_some() && ordered_ends && has_spans;
+        let mut upcoming = self.provenance.spans(&self.text).peekable();
+        let mut window = std::collections::VecDeque::<ProvenanceSpan>::new();
+        let mut last_boundary: Option<(usize, Option<usize>)> = None;
+        let mut literal_boundary = move |at: usize| -> Option<usize> {
+            if let Some((cached, value)) = last_boundary {
+                if cached == at {
+                    return value;
+                }
+            }
+            while let Some(span) = upcoming.next_if(|span| span.formatted.start <= at) {
+                window.push_back(span);
+            }
+            while window.front().is_some_and(|span| span.formatted.end < at) {
+                window.pop_front();
+            }
+            let value = window
+                .iter()
+                .filter(|span| span.formatted.start <= at && at <= span.formatted.end)
+                .find_map(|span| self.literal_source_in_span(span, at));
+            last_boundary = Some((at, value));
+            value
+        };
         let text = self.text();
         let mut at = 0;
         // ASCII pairs cannot join across a grapheme boundary except CRLF.
@@ -4218,6 +4262,12 @@ impl FormattedDocument {
                 start
                     .zip(end)
                     .and_then(|(start, end)| (start <= end).then_some(start..end))
+            } else if literal_streaming {
+                let range = literal_boundary(offset)
+                    .zip(literal_boundary(offset + item.len()))
+                    .and_then(|(start, end)| (start <= end).then_some(start..end));
+                debug_assert_eq!(range, self.source_range(offset..offset + item.len()));
+                range
             } else {
                 self.source_range(offset..offset + item.len())
             };

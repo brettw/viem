@@ -1,6 +1,8 @@
 #if DEBUG
 using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Controls.Primitives;
 using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Windows.Foundation;
@@ -9,6 +11,49 @@ namespace Viem.Windows.Diagnostics;
 
 internal static class ScrollbarOverlayTests
 {
+    private static FrameworkElement? Part(DependencyObject root, string name)
+    {
+        if (root is FrameworkElement { Name: var found } element && found == name) return element;
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            if (Part(VisualTreeHelper.GetChild(root, i), name) is { } match) return match;
+        return null;
+    }
+
+    /// A standalone WinUI ScrollBar draws nothing in its default NoIndicator
+    /// state. Scrollable content must show the native bar; content that fits
+    /// shows none while its gutter stays reserved.
+    internal static async Task Indicators(EditorPane pane)
+    {
+        void Check(bool value, string name, string? details = null)
+        { if (!value) throw new InvalidOperationException(details == null ? name : $"{name} ({details})"); FrontendSmokeTests.UiChecks.Add(name); }
+        var view = await pane.Ready;
+        pane.Refresh(); pane.UpdateLayout(); await Task.Delay(50);
+        foreach (var (bar, prefix, scrollable) in new[] {
+            (pane.VerticalScrollControl, "Vertical", view.Viewport.maximum_top > 0),
+            (pane.HorizontalScrollControl, "Horizontal", view.Viewport.maximum_left > 0) })
+        {
+            if (!scrollable)
+            {
+                Check(bar.IndicatorMode == ScrollingIndicatorMode.None && !bar.IsEnabled,
+                    $"{prefix.ToLowerInvariant()} scrollbar shows no indicator when the content fits");
+                continue;
+            }
+            var root = Part(bar, prefix + "Root"); var thumb = Part(bar, prefix + "Thumb");
+            Check(bar.IndicatorMode == ScrollingIndicatorMode.MouseIndicator && bar.IsEnabled && bar.Visibility == Visibility.Visible
+                && root?.Visibility == Visibility.Visible && thumb is { Opacity: > 0, Visibility: Visibility.Visible },
+                $"{prefix.ToLowerInvariant()} scrollbar shows the native thumb when the content can scroll",
+                $"mode={bar.IndicatorMode}, enabled={bar.IsEnabled}, root={root?.Visibility}, thumb={thumb?.Opacity}/{thumb?.Visibility}");
+            pane.AutoHideScrollBarsForTesting = false;
+            pane.UpdateScrollbarIndicatorsForTesting(); await Task.Delay(800);
+            var track = Part(bar, prefix + "TrackRect");
+            Check(track?.Opacity == 1, $"{prefix.ToLowerInvariant()} scrollbar stays expanded when Windows always shows scroll bars",
+                $"track={track?.Opacity}");
+            pane.AutoHideScrollBarsForTesting = null;
+            pane.UpdateScrollbarIndicatorsForTesting();
+        }
+        Check(pane.VerticalScrollControl.ActualWidth > 0, "the vertical scrollbar gutter stays reserved in every state");
+    }
+
     internal static async Task Run(EditorPane pane)
     {
         void Check(bool value, string name)

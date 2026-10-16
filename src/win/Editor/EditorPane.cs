@@ -578,7 +578,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             // its geometry and colors together after syntax publication.
             try { _ = View.LayoutInfo(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); }
-            try { View.WaitForSyntax(); }
+            try { using (Diagnostics.InputPerformance.Measure("syntax.wait")) View.WaitForSyntax(); }
             catch (CoreException error) { PresentationWarning("syntax highlighting", error); }
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
@@ -602,6 +602,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             vertical.Maximum = viewport.maximum_top; vertical.ViewportSize = Math.Max(1, snapshot.Info.viewport_height); vertical.LargeChange = Math.Max(1, snapshot.Info.viewport_height * .9); vertical.Value = viewport.top;
             horizontal.Maximum = viewport.maximum_left; horizontal.ViewportSize = Math.Max(1, Canvas.ActualWidth); horizontal.Value = viewport.left;
             horizontal.Visibility = viewport.maximum_left > 0 ? Visibility.Visible : Visibility.Collapsed;
+            UpdateScrollbarIndicators();
             scrollUpdating = false;
             try { caretRect = CalculateCaret(); }
             catch (CoreException error) { caretRect = new(); PresentationWarning("caret", error); }
@@ -814,6 +815,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         ResetImagePreviews(); imageCancellation.Dispose();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; ClipboardFormats.ContentChanged -= ClipboardChanged;
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362)) scrollbarSettings.AutoHideScrollBarsChanged -= ScrollBarPreferenceChanged;
         InvalidateDrawingCache();
         pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
         statusPointer = null; statusPointerSource = null; statusDragging = statusSelectingOutput = false;

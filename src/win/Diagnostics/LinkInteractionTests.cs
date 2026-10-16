@@ -13,8 +13,8 @@ namespace Viem.Windows.Diagnostics;
 
 internal static class LinkInteractionTests
 {
-    private static void Check(bool condition, string name)
-    { if (!condition) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+    private static void Check(bool condition, string name, string? details = null)
+    { if (!condition) throw new InvalidOperationException(details == null ? name : $"{name} ({details})"); FrontendSmokeTests.UiChecks.Add(name); }
 
     private static IEnumerable<T> Children<T>(DependencyObject root) where T : DependencyObject
     {
@@ -192,7 +192,8 @@ internal static class LinkInteractionTests
                         "links focus the existing document pane without creating another window");
                     Check(linkedPane.Document.IsDirty && unsavedSource.AsSpan().SequenceEqual(linkedPane.Document.Source(linkedPane.Document.State.document_revision))
                         && linkedView.Presentation.cursor_utf8_offset == 0,
-                        "existing document links preserve unsaved source and navigate fragments after the backing file is removed");
+                        "existing document links preserve unsaved source and navigate fragments after the backing file is removed",
+                        $"dirty={linkedPane.Document.IsDirty}, same={unsavedSource.AsSpan().SequenceEqual(linkedPane.Document.Source(linkedPane.Document.State.document_revision))}, cursor={linkedView.Presentation.cursor_utf8_offset}, format={linkedPane.Document.State.format}, error={linkedPane.LastError?.Message}");
                     linkedView.Padding(17, 10, 29, 10);
                     foreach (bool sourceView in new[] { true, false })
                     {

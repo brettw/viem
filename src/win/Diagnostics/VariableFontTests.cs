@@ -415,6 +415,9 @@ internal static class VariableFontTests
     }
     private static async Task SegoeVariable(EditorPane pane, Preferences preferences, uint format)
     {
+        // Segoe UI Variable ships with Windows 11; Windows 10 relies on the
+        // bundled and Bahnschrift variable-font checks.
+        if (!FontCatalog.Faces("Segoe UI Variable Text").Any()) return;
         byte[] original = preferences.ThemeStyleDefaults(format);
         byte[] source = "Variable fonts remain visible. **Bold** and *italic*.\n\nAnother paragraph with مرحبا and 👩‍💻."u8.ToArray();
         using var doc = new CoreDocument(source, format: format);

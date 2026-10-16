@@ -359,6 +359,15 @@ internal static class FontCatalog
         var face = selected ?? RenderingFace(family, weight, slant, stretch);
         return face?.Source == null ? family : face.Source.AbsoluteUri + "#" + face.Family;
     }
+    /// The native family name and, for an app-local design, the face whose
+    /// packaged collection supplies it. Shaping selects these through cached
+    /// DirectWrite collections: Win2D re-resolves a font URI on every use.
+    internal static (string Family, FontFace? Packaged) RenderingSource(string family, uint weight, FontStyle slant, FontStretch stretch, FontFace? selected = null)
+    {
+        if (!BundledFonts.Families.Contains(family)) return (family, null);
+        var face = selected ?? RenderingFace(family, weight, slant, stretch);
+        return face?.Source == null ? (family, null) : (face.Family, face);
+    }
     internal static FontFace? RenderingFace(string family, uint weight, FontStyle slant, FontStretch stretch, bool discoverSystem = false)
     {
         // Ordinary system-family rendering is handled by DirectWrite. Only

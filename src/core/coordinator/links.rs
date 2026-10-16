@@ -25,7 +25,16 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             .into());
         }
-        let Some(offset) = self.document.find_link_fragment(fragment)? else {
+        let found = match self.document.find_link_fragment(fragment)? {
+            None if self.document.format().is_code()
+                && Document::link_fragment_source_line(fragment).is_none()
+                && self.reflow_language().as_deref() == Some("markdown") =>
+            {
+                self.document.find_markdown_source_fragment(fragment)?
+            }
+            found => found,
+        };
+        let Some(offset) = found else {
             return Ok(None);
         };
         let outcome = self.handle(

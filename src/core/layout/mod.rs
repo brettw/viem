@@ -39,7 +39,7 @@ pub use zoom::{adjacent_zoom_scale, valid_zoom_scale, ZOOM_STOPS};
 pub use engine::{
     TableCellGeometry, TableGeometry, CaretGeometry, CaretPoint, EdgeInsets, LayoutCancellationProbe, LayoutComputationError,
     LayoutCoverage, LayoutEngine, LayoutError, LayoutPoint, LayoutRect, LayoutRevision,
-    LayoutSnapshot, LayoutWorkStatistics, LongLineLayoutCheckpoint, PositionedCaret,
+    LayoutSnapshot, LayoutWorkStatistics, LongLineLayoutCheckpoint, PositionedCaret, CaretStop,
     DecorationKind, DecorationOwner, PositionedCluster, PositionedDecoration, RegionalHardLineLayout, RegionalLayoutCacheLimits,
     RegionalLayoutCacheStatistics, RegionalLayoutSnapshot, SelectionRectangle,
     ShapingCacheStatistics,

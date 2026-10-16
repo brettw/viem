@@ -405,6 +405,35 @@ fn line_fragment_navigation_centers_and_clamps_without_editing_or_moving_other_v
 }
 
 #[test]
+fn literal_markdown_heading_fragments_navigate_from_source() {
+    use viem_core::document::syntax::detection::LanguageSelection;
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::Core;
+    let source = "# Intro\n\ntext\n\n## Repeat\n\nbody\n\n## Repeat\n\nmore *x*\n\n> ### Quoted `code`\n\nSetext *title*\n---\n";
+    let names: Vec<_> = document(source, Format::Markdown).link_headings().unwrap()
+        .headings.into_iter().map(|heading| heading.destination).collect();
+    assert_eq!(names, ["#intro", "#repeat", "#repeat-1", "#quoted-code", "#setext-title"]);
+    let mut core = Core::new(document(source, Format::Code));
+    core.set_code_language(LanguageSelection::Language("markdown".into()));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 180.);
+    let id = core.document().id();
+    let revision = core.document().revision();
+    for (fragment, line) in [("intro", "# Intro"), ("repeat", "## Repeat\n\nbody"),
+        ("repeat-1", "## Repeat\n\nmore"), ("quoted-code", "> ###"), ("setext-title", "Setext")]
+    {
+        // Literal Markdown resolves the same names as Preview, at the start
+        // of the heading's first physical source line.
+        assert!(core.navigate_to_link_fragment(view, id, revision, fragment).unwrap().is_some(), "{fragment}");
+        assert_eq!(core.command_state(view).unwrap().cursor(), core.document().text().find(line).unwrap(), "{fragment}");
+    }
+    assert!(core.navigate_to_link_fragment(view, id, revision, "missing").unwrap().is_none());
+    core.set_code_language(LanguageSelection::Language("rust".into()));
+    assert!(core.navigate_to_link_fragment(view, id, revision, "intro").unwrap().is_none(),
+        "only Markdown-language Code interprets heading fragments");
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+}
+
+#[test]
 fn distant_line_fragment_navigation_is_indexed_and_materializes_only_a_viewport() {
     use viem_core::command::InputEvent;
     use viem_core::layout::{LayoutCoverage, MockTextMeasurementProvider};

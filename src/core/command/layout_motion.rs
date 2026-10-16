@@ -587,14 +587,25 @@ fn full_page_motion(
     // a single oversized object even if its text baseline is outside the view.
     let choices = if !inside.is_empty() { &inside }
         else if !baselines.is_empty() { &baselines } else { &visible };
-    let y = located.filter(|(index, _)| old_visible.contains(index))
-        .map_or_else(|| if down { next.top } else { next.top + next.height },
-            |(index, _)| {
-                let baseline = next.top + snapshot.rows[index].baseline - viewport.top;
-                if next.top == viewport.top {
-                    baseline + advance * count.max(1) as f32 * if down { 1. } else { -1. }
-                } else { baseline }
-            });
+    // Already resting at a proven document edge, a further page moves the
+    // caret to the extreme row in its direction, as ordinary editors do.
+    let at_edge = next.top == viewport.top && if down {
+        snapshot.maximum_viewport_top(next.height) == Some(next.top)
+    } else {
+        next.top == 0. && snapshot.contains_document_start()
+    };
+    let y = if at_edge {
+        if down { next.top + next.height * 4. } else { next.top - next.height * 4. }
+    } else {
+        located.filter(|(index, _)| old_visible.contains(index))
+            .map_or_else(|| if down { next.top } else { next.top + next.height },
+                |(index, _)| {
+                    let baseline = next.top + snapshot.rows[index].baseline - viewport.top;
+                    if next.top == viewport.top {
+                        baseline + advance * count.max(1) as f32 * if down { 1. } else { -1. }
+                    } else { baseline }
+                })
+    };
     // A table's side-by-side cells share a vertical band. Choose the cell at
     // desired x before choosing its nearest text baseline, including padding
     // and explicit multiline cells. Array order is not vertical distance.

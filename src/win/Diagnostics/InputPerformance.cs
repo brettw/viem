@@ -27,8 +27,11 @@ internal static class InputPerformance
         bool page = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "page";
         bool roundtrip = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "roundtrip";
         bool scroll = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "scroll";
-        string scenario = roundtrip ? "roundtrip" : scroll ? "scroll" : page ? "page" : resize ? "resize" : "drag";
-        int count = roundtrip ? 120 : 100;
+        // Markdown Preview on/off from a caret in the middle of the document,
+        // as the toolbar and title-bar buttons do.
+        bool preview = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "preview";
+        string scenario = preview ? "preview" : roundtrip ? "roundtrip" : scroll ? "scroll" : page ? "page" : resize ? "resize" : "drag";
+        int count = preview ? 20 : roundtrip ? 120 : 100;
         var steps = new List<InputPerformanceStep>();
         float width = (float)pane.Canvas.ActualWidth, height = (float)pane.Canvas.ActualHeight;
         using var surface = new Microsoft.Graphics.Canvas.CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
@@ -39,8 +42,9 @@ internal static class InputPerformance
             else view.Place(50f + i * 10, 60f, true);
             using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing);
         }
-        if (page || scroll || roundtrip) view.Key(Interop.Native.VIEM_KEY_ESCAPE);
-        if (page || scroll || roundtrip) await BackgroundLayoutTests.Idle(view);
+        if (page || scroll || roundtrip || preview) view.Key(Interop.Native.VIEM_KEY_ESCAPE);
+        if (preview) view.Command("50%");
+        if (page || scroll || roundtrip || preview) await BackgroundLayoutTests.Idle(view);
         int interval = int.TryParse(Environment.GetEnvironmentVariable("VIEM_PERF_INTERVAL_MS"), out var delay) ? delay : 16;
         samples.Clear(); Enabled = true;
         long shaped = view.Provider.ShapedCharacters;
@@ -54,7 +58,7 @@ internal static class InputPerformance
             var random = new Random(42);
             for (int i = 0; i < count; i++)
             {
-                string phase = roundtrip ? new[] { "down.cold", "up.cached", "down.revisit", "up.revisit" }[i / 30] : (i < 75 ? "down" : "up");
+                string phase = preview ? (i % 2 == 0 ? "code" : "preview") : roundtrip ? new[] { "down.cold", "up.cached", "down.revisit", "up.revisit" }[i / 30] : (i < 75 ? "down" : "up");
                 long started = Stopwatch.GetTimestamp(), beforeShape = view.Provider.ShapedCharacters;
                 var beforePause = GC.GetTotalPauseDuration();
                 long beforeAllocation = GC.GetAllocatedBytesForCurrentThread();
@@ -63,7 +67,8 @@ internal static class InputPerformance
                 {
                     using (Measure(scenario + ".turn"))
                     {
-                        if (scroll) { var origin = view.Viewport; view.Scroll(origin.left, Math.Max(0, origin.top + (i < 75 ? 60 : -60))); }
+                        if (preview) view.SetMarkdownPreview(i % 2 != 0);
+                        else if (scroll) { var origin = view.Viewport; view.Scroll(origin.left, Math.Max(0, origin.top + (i < 75 ? 60 : -60))); }
                         else if (page || roundtrip) view.Key((roundtrip ? (i / 30) % 2 == 0 : i < 75) ? Interop.Native.VIEM_KEY_PAGE_DOWN : Interop.Native.VIEM_KEY_PAGE_UP);
                         else if (resize) view.Resize(width - (i < 50 ? i : 99 - i) * 5, height);
                         else view.Place((float)(30 + random.NextDouble() * (pane.Canvas.ActualWidth - 60)), (float)(30 + random.NextDouble() * (pane.Canvas.ActualHeight - 60)), true);
@@ -76,6 +81,9 @@ internal static class InputPerformance
                     view.Provider.ShapedCharacters - beforeShape, pane.DrawingCacheBuilds - beforeBuild,
                     view.Viewport.top, view.Viewport.layout_revision));
                 peakRenderResources = Math.Max(peakRenderResources, view.Provider.LiveResourceCount);
+                // Let speculation settle between toggles so each is measured
+                // from the state a reader would toggle from.
+                if (preview) { Enabled = false; await BackgroundLayoutTests.Idle(view); await Task.Delay(200); Enabled = true; }
                 await Task.Delay(interval);
             }
         }

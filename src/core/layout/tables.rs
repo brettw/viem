@@ -1158,9 +1158,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             row.hard_line_range = range.clone();
             row.wrapped_from_previous = false;
             row.wraps_to_next = false;
-            for caret in &mut row.carets {
-                caret.point.layout_revision = layout_revision;
-            }
         }
         rows.sort_by(|a, b| {
             a.y.total_cmp(&b.y)

@@ -18,6 +18,7 @@ internal static class ScrollDrawingTests
         var view = await pane.Ready;
         view.Key(VIEM_KEY_ESCAPE);
         await BackgroundLayoutTests.Idle(view);
+        await ScrollbarOverlayTests.Indicators(pane);
         using var surface = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
         byte[] Draw() { using (var drawing = surface.CreateDrawingSession()) pane.Draw(drawing); return surface.GetPixelBytes(); }
         pane.InvalidateDrawingCache();

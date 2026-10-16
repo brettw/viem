@@ -49,6 +49,18 @@ internal static class FormattingToolbarTests
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
         await Task.Delay(40);
     }
+    private static async Task PreviewFromTitleBar(EditorWindow window)
+    {
+        Check(window.PreviewToggle.Focus(FocusState.Programmatic), "title-bar Markdown Preview button takes keyboard focus");
+        await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+        await Task.Delay(40);
+    }
+    private static bool PreviewChrome(EditorWindow window, FormattingToolbar toolbar, bool toolbarVisible) =>
+        window.ToolbarToggle.Visibility == Visibility.Visible && window.PreviewToggle.Visibility == Visibility.Collapsed
+        && toolbar.Visibility == (toolbarVisible ? Visibility.Visible : Visibility.Collapsed);
+    private static bool LiteralMarkdownChrome(EditorWindow window, FormattingToolbar toolbar) =>
+        window.ToolbarToggle.Visibility == Visibility.Collapsed && window.PreviewToggle.Visibility == Visibility.Visible
+        && toolbar.Visibility == Visibility.Collapsed;
 
     internal static async Task RunStartup(Preferences preferences)
     {
@@ -276,15 +288,18 @@ internal static class FormattingToolbarTests
                 && beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "toolbar turns Markdown Preview off while preserving source and semantic caret",
                 $"format={document.State.format}, checked={toolbar.FormattedView.IsChecked}, caret={view.Presentation.cursor_utf8_offset}, expected={sourceCaret}, placed={placedCaret}, requested={caret}, sourceEqual={beforeSwitch.AsSpan().SequenceEqual(document.Source(document.State.document_revision))}, mode={view.Presentation.mode}, error={pane.LastError}");
-            Check(toolbar.Viewport.Visibility == Visibility.Collapsed && toolbar.FormattedView.Visibility == Visibility.Visible,
-                "with Preview off the toolbar shows only its Preview toggle");
+            Check(LiteralMarkdownChrome(window, toolbar)
+                && Grid.GetColumn(window.PreviewToggle) == Grid.GetColumn(window.ToolbarToggle)
+                && AutomationProperties.GetName(window.PreviewToggle) == "Markdown Preview",
+                "with Preview off the toolbar is hidden and the title bar offers Markdown Preview in its toggle's place");
             view.Undo();
-            Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true,
-                "undoing a view switch synchronizes the formatted-view toggle");
+            Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true && PreviewChrome(window, toolbar, true),
+                "undoing a view switch restores the toolbar and its title-bar toggle");
             view.Redo();
-            Check(document.State.format == VIEM_FORMAT_CODE && toolbar.FormattedView.IsChecked == false,
-                "redoing a view switch synchronizes the formatted-view toggle");
-            await SwitchView(toolbar);
+            Check(document.State.format == VIEM_FORMAT_CODE && LiteralMarkdownChrome(window, toolbar),
+                "redoing a view switch hides the toolbar again");
+            await PreviewFromTitleBar(window);
+            Check(PreviewChrome(window, toolbar, true), "the title-bar Preview button restores the visible toolbar and toolbar toggle");
             Check(document.State.format == VIEM_FORMAT_MARKDOWN && toolbar.FormattedView.IsChecked == true
                 && view.Presentation.cursor_utf8_offset == caret
                 && ReferenceEquals(viewIcon, toolbar.FormattedView.Content)
@@ -421,9 +436,15 @@ internal static class FormattingToolbarTests
             await Click(toolbar, ToolbarAction.Bullets); Check(State(toolbar, ToolbarAction.Bullets) == false, "active bulleted list toolbar action removes the list");
             await Click(toolbar, ToolbarAction.Numbers); Check(State(toolbar, ToolbarAction.Numbers) == true, "numbered list toolbar action applies structural numbering");
             md.SetMarkdownPreview(false);
-            Check(toolbar.Visibility == Visibility.Visible && toolbar.FormattedView.IsChecked == false,
-                "Markdown Preview off keeps the Markdown toolbar with an unpressed Preview toggle");
-            md.SetMarkdownPreview(true); Check(toolbar.Visibility == Visibility.Visible, "Preview on and off share one toolbar preference");
+            Check(LiteralMarkdownChrome(window, toolbar), "Markdown Preview off hides the toolbar and shows the title-bar Preview button");
+            md.SetMarkdownPreview(true); Check(PreviewChrome(window, toolbar, true), "Preview on restores the remembered visible toolbar");
+            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, false);
+            md.SetMarkdownPreview(false);
+            Check(LiteralMarkdownChrome(window, toolbar), "literal Markdown offers Preview whatever the toolbar preference");
+            await PreviewFromTitleBar(window);
+            Check(markdown.Document.State.format == VIEM_FORMAT_MARKDOWN && PreviewChrome(window, toolbar, false) && window.ToolbarToggle.IsChecked == false,
+                "Preview from the title bar keeps a hidden toolbar hidden and shows the unchecked toolbar toggle");
+            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
             pane.FocusEditor(); await Task.Delay(80);
             Check(toolbar.Visibility == Visibility.Visible, "returning to Markdown restores its own toolbar preference");
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
@@ -496,7 +517,8 @@ internal static class FormattingToolbarTests
             foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE })
             {
                 var literal = window.AddPane(new CoreDocument("text"u8.ToArray(), format: format)); await literal.Ready;
-                Check(toolbar.Visibility == Visibility.Collapsed && window.ToolbarToggle.Visibility == Visibility.Collapsed, "literal format omits toolbar and title-bar toggle: " + format);
+                Check(toolbar.Visibility == Visibility.Collapsed && window.ToolbarToggle.Visibility == Visibility.Collapsed
+                    && window.PreviewToggle.Visibility == Visibility.Collapsed, "literal format omits toolbar and both title-bar toggles: " + format);
                 await CloseFixture(literal);
             }
             Check(window.Panes.All(p => p.LastError == null), "toolbar scenarios leave no presentation errors");
@@ -523,7 +545,8 @@ internal static class FormattingToolbarTests
                     Check(!window.ToolbarCreated && document.FormattedText() == "XText" && pane.LastError == null,
                         "first editing commands work without constructing hidden formatting controls: " + format);
                     if (format != VIEM_FORMAT_MARKDOWN) {
-                        Check(window.ToolbarToggle.Visibility == Visibility.Collapsed, "literal startup omits the formatting toggle: " + format);
+                        Check(window.ToolbarToggle.Visibility == Visibility.Collapsed && window.PreviewToggle.Visibility == Visibility.Collapsed,
+                            "literal startup omits the formatting and Preview toggles: " + format);
                         continue;
                     }
                     await Task.Delay(80);
@@ -540,6 +563,17 @@ internal static class FormattingToolbarTests
             }
 
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
+            // Markdown opened with Preview off is literal Code: no toolbar is
+            // reserved or built, and the title bar offers Preview instead.
+            var literalMarkdown = new EditorWindow(preferences, new CoreDocument("# Notes"u8.ToArray(), "notes.md", markdownFormattedView: false));
+            App.Instance.Windows.Add(literalMarkdown);
+            try {
+                literalMarkdown.Activate();
+                var literalPane = literalMarkdown.ActivePane!; await literalPane.Ready; await Task.Delay(80);
+                Check(literalPane.Document.State.format == VIEM_FORMAT_CODE && !literalMarkdown.ToolbarCreated
+                    && literalMarkdown.PreviewToggle.Visibility == Visibility.Visible && literalMarkdown.ToolbarToggle.Visibility == Visibility.Collapsed,
+                    "literal Markdown starts without a toolbar and shows the title-bar Preview button");
+            } finally { App.Instance.Windows.Remove(literalMarkdown); literalMarkdown.Close(); }
             var visibleWindow = new EditorWindow(preferences, new CoreDocument("# Heading\n\nText"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN));
             App.Instance.Windows.Add(visibleWindow);
             try {

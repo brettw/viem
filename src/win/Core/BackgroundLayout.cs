@@ -31,6 +31,11 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
     public int Started { get; private set; }
     public int Installed { get; private set; }
     public int Discarded { get; private set; }
+    // Cumulative worker timing: waiting for the shared worker slot, computing,
+    // and waiting for the UI thread to install a finished result.
+    public double WaitMilliseconds { get; private set; }
+    public double ComputeMilliseconds { get; private set; }
+    public double InstallDelayMilliseconds { get; private set; }
     public bool Enabled { get; set; } =
 #if DEBUG
         Environment.GetEnvironmentVariable("VIEM_TEST_DISABLE_PRELAYOUT") != "1";
@@ -101,14 +106,23 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
     {
         ulong result = 0;
         Exception? failure = null;
+        long queued = System.Diagnostics.Stopwatch.GetTimestamp(), computed = queued;
         try
         {
             await workerSlot.WaitAsync(work.Cancellation.Token).ConfigureAwait(false);
+            long started = System.Diagnostics.Stopwatch.GetTimestamp();
             try { result = await Task.Run(() => Compute(work)).ConfigureAwait(false); }
-            finally { workerSlot.Release(); }
+            finally
+            {
+                workerSlot.Release();
+                computed = System.Diagnostics.Stopwatch.GetTimestamp();
+                work.WaitMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(queued, started).TotalMilliseconds;
+                work.ComputeMilliseconds = System.Diagnostics.Stopwatch.GetElapsedTime(started, computed).TotalMilliseconds;
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception error) { failure = error; }
+        work.Computed = computed;
         // Publish completed cache entries ahead of later input. Leaving this
         // at Low can make the next Page Down synchronously shape work that is
         // already finished. Capture remains low priority; installation is a
@@ -133,6 +147,8 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
     private unsafe void Complete(Work work, ulong result, Exception? failure)
     {
         active = null;
+        WaitMilliseconds += work.WaitMilliseconds; ComputeMilliseconds += work.ComputeMilliseconds;
+        InstallDelayMilliseconds += System.Diagnostics.Stopwatch.GetElapsedTime(work.Computed).TotalMilliseconds;
         try
         {
             if (failure != null && !work.Cancellation.IsCancellationRequested && !disposed)
@@ -177,6 +193,8 @@ internal sealed class BackgroundLayout(CoreView view, DispatcherQueue dispatcher
         public ulong Request { get; } = request;
         public Func<DirectWriteProvider> Provider { get; } = provider;
         public CancellationTokenSource Cancellation { get; } = new();
+        public double WaitMilliseconds, ComputeMilliseconds;
+        public long Computed;
         public void Cancel() { Cancellation.Cancel(); viem_layout_work_cancel(Request); }
         public void Dispose() { viem_layout_work_release(Request); Cancellation.Dispose(); }
     }

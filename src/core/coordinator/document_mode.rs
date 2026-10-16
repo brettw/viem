@@ -2,6 +2,10 @@
 use super::*;
 use crate::document::syntax::{detection::LanguageSelection, languages};
 
+/// Editing must pause this long before the other Markdown view is prepared,
+/// so typing never reprojects the whole document in the background.
+const VIEW_FORMAT_PREFETCH_PAUSE: std::time::Duration = std::time::Duration::from_millis(400);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DocumentMode {
     Automatic,
@@ -35,6 +39,34 @@ impl<P: TextMeasurementProvider> Core<P> {
             language: match &self.syntax.selection { LanguageSelection::Language(id) => Some(id.clone()), _ => None },
             detected_name: detected.as_deref().map(languages::display_name).unwrap_or_else(|| "Plain Text".into()),
             detected_language: detected,
+        }
+    }
+
+    /// Markdown Preview and literal Markdown (Code with the Markdown language)
+    /// prepare a switch to each other once editing pauses. Other formats and
+    /// any change retire the preparation immediately.
+    pub(super) fn poll_view_format_prefetch(&mut self) {
+        let target = match self.document.format() {
+            Format::Markdown => Some(Format::Code),
+            Format::Code if self.reflow_language().as_deref() == Some("markdown") => Some(Format::Markdown),
+            _ => None,
+        };
+        let Some(target) = target else {
+            if self.syntax.view_format_changed.take().is_some() { self.document.cancel_view_format_prefetch(); }
+            return;
+        };
+        let identity = (self.document.id(), self.document.revision());
+        let now = std::time::Instant::now();
+        let changed_at = match self.syntax.view_format_changed {
+            Some((current, at)) if current == identity => at,
+            _ => {
+                self.document.cancel_view_format_prefetch();
+                self.syntax.view_format_changed = Some((identity, now));
+                now
+            }
+        };
+        if now.duration_since(changed_at) >= VIEW_FORMAT_PREFETCH_PAUSE {
+            self.document.prefetch_view_format(target);
         }
     }
 

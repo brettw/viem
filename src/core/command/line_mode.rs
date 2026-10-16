@@ -1730,13 +1730,14 @@ impl CommandInterpreter {
             .filter(|size| *size <= 1_000_000)
             .ok_or(DocumentError::UnsupportedFormatting)?;
         let mut edits = Vec::new();
+        let lists = document.projection().list_window(&range).structure.lists;
         for row in snapshot.rows.iter() {
             if row.text_range.start >= range.end || row.text_range.end <= range.start {
                 continue;
             }
             let mut start = row.text_range.start;
-            for list in document.projection().list_structure().lists {
-                for item in list.items {
+            for list in &lists {
+                for item in &list.items {
                     if item.marker_is_synthetic && item.marker_range.start == start {
                         start = item.marker_range.end;
                     }

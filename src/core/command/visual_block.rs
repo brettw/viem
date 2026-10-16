@@ -10,7 +10,7 @@ use std::ops::Range;
 
 use crate::document::{Document, DocumentError, DocumentId, HardLineSnapshot, Revision, TextEdit};
 use crate::layout::{
-    affinity_rank, nearest_caret, BoundaryAffinity, CaretPoint, LayoutRevision, LayoutSnapshot,
+    affinity_rank, nearest_caret, BoundaryAffinity, CaretPoint, CaretStop, LayoutRevision, LayoutSnapshot,
     PositionedCaret, PositionedCluster, VisualRow,
 };
 
@@ -131,8 +131,8 @@ impl BlockSelection {
             .ok_or(VisualBlockError::EmptyLayout)?;
         let new_active = nearest_caret(&snapshot.rows[active_row], self.anchor_x)
             .ok_or(VisualBlockError::EmptyLayout)?;
-        self.anchor = new_anchor.point;
-        self.active = new_active.point;
+        self.anchor = snapshot.stamp(new_anchor.point);
+        self.active = snapshot.stamp(new_active.point);
         self.anchor_x = new_anchor.x;
         self.active_x = new_active.x;
         Ok(())
@@ -317,11 +317,11 @@ fn resolve_block_selection_impl(
             row_index,
             hard_line_index: row.hard_line_index,
             visual_left: BlockEdge {
-                point: left.point,
+                point: snapshot.stamp(left.point),
                 x: left.x,
             },
             visual_right: BlockEdge {
-                point: right.point,
+                point: snapshot.stamp(right.point),
                 x: right.x,
             },
             ranges,
@@ -512,7 +512,7 @@ fn endpoint_item_span(row: &VisualRow, point: CaretPoint, stored_x: f32) -> (f32
     let Some(caret) = row
         .carets
         .iter()
-        .filter(|caret| caret.point == point)
+        .filter(|caret| caret.point == CaretStop::from(point))
         .min_by(|left, right| {
             (left.x - stored_x)
                 .abs()
@@ -532,7 +532,8 @@ fn endpoint_item_span(row: &VisualRow, point: CaretPoint, stored_x: f32) -> (f32
     (first.min(second), first.max(second))
 }
 
-fn associated_cluster(row: &VisualRow, point: CaretPoint) -> Option<&PositionedCluster> {
+fn associated_cluster(row: &VisualRow, point: impl Into<CaretStop>) -> Option<&PositionedCluster> {
+    let point = point.into();
     row.clusters.iter().find(|cluster| match point.affinity {
         BoundaryAffinity::Downstream => {
             cluster.text_range.start <= point.text_offset
@@ -552,7 +553,7 @@ fn locate_endpoint(
     snapshot
         .rows
         .iter()
-        .position(|row| row.carets.iter().any(|caret| caret.point == endpoint))
+        .position(|row| row.carets.iter().any(|caret| caret.point == CaretStop::from(endpoint)))
         .ok_or_else(|| VisualBlockError::EndpointNotInLayout(endpoint.into()))
 }
 
@@ -660,8 +661,8 @@ mod tests {
         (document, view.snapshot().unwrap().clone())
     }
 
-    fn endpoint(row: &VisualRow) -> CaretPoint {
-        row.carets.first().unwrap().point
+    fn endpoint(snapshot: &LayoutSnapshot, row: &VisualRow) -> CaretPoint {
+        snapshot.stamp(row.carets.first().unwrap().point)
     }
 
     #[test]
@@ -672,7 +673,7 @@ mod tests {
         let left = first.clusters[1].x;
         let right = first.clusters[3].x + first.clusters[3].advance;
         let selection =
-            BlockSelection::new(endpoint(first), endpoint(second), left, right).unwrap();
+            BlockSelection::new(endpoint(&snapshot, first), endpoint(&snapshot, second), left, right).unwrap();
         let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
         assert_eq!(resolved.rows.len(), 2);
         assert_eq!(resolved.rows[0].ranges, vec![1..4]);
@@ -687,7 +688,7 @@ mod tests {
         let width = row.clusters[0].advance;
         for (fraction, expected) in [(0.49, vec![0..1]), (0.51, vec![1..1])] {
             let selection =
-                BlockSelection::new(endpoint(row), endpoint(row), width * fraction, width * 1.49)
+                BlockSelection::new(endpoint(&snapshot, row), endpoint(&snapshot, row), width * fraction, width * 1.49)
                     .unwrap();
             let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
             assert_eq!(resolved.rows[0].ranges, expected);
@@ -709,8 +710,8 @@ mod tests {
             .find(|cluster| cluster.text_range == (4..6))
             .unwrap();
         let selection = BlockSelection::new(
-            endpoint(row),
-            endpoint(row),
+            endpoint(&snapshot, row),
+            endpoint(&snapshot, row),
             latin.x,
             hebrew.x + hebrew.advance,
         )
@@ -728,8 +729,8 @@ mod tests {
     fn short_and_empty_rows_produce_legal_empty_ranges() {
         let (document, snapshot) = layout("long row\nx\n\ntail", 500.0);
         let selection = BlockSelection::new(
-            endpoint(&snapshot.rows[0]),
-            endpoint(&snapshot.rows[2]),
+            endpoint(&snapshot, &snapshot.rows[0]),
+            endpoint(&snapshot, &snapshot.rows[2]),
             500.0,
             600.0,
         )
@@ -747,8 +748,8 @@ mod tests {
         assert!(snapshot.rows.len() >= 3);
         let last = snapshot.rows.len() - 1;
         let selection = BlockSelection::new(
-            endpoint(&snapshot.rows[0]),
-            endpoint(&snapshot.rows[last]),
+            endpoint(&snapshot, &snapshot.rows[0]),
+            endpoint(&snapshot, &snapshot.rows[last]),
             0.0,
             30.0,
         )
@@ -767,8 +768,8 @@ mod tests {
         let (document, snapshot) = layout("אבג", 500.0);
         let row = &snapshot.rows[0];
         let selection = BlockSelection::new(
-            endpoint(row),
-            endpoint(row),
+            endpoint(&snapshot, row),
+            endpoint(&snapshot, row),
             row.clusters.first().unwrap().x,
             row.clusters.last().unwrap().x + row.clusters.last().unwrap().advance,
         )
@@ -829,8 +830,8 @@ mod tests {
         let first = &snapshot.rows[0];
         let second = &snapshot.rows[1];
         let selection = BlockSelection::new(
-            endpoint(first),
-            endpoint(second),
+            endpoint(&snapshot, first),
+            endpoint(&snapshot, second),
             first.clusters[0].x,
             second.clusters[0].x + second.clusters[0].advance * 0.51,
         )
@@ -848,7 +849,7 @@ mod tests {
         let left = first.clusters[1].x;
         let right = first.clusters[2].x + first.clusters[2].advance;
         let selection =
-            BlockSelection::new(endpoint(first), endpoint(second), left, right).unwrap();
+            BlockSelection::new(endpoint(&snapshot, first), endpoint(&snapshot, second), left, right).unwrap();
         let resolved = resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()).unwrap();
 
         apply_block_edits(&mut document, replace_text_edits(&resolved, "X").unwrap()).unwrap();
@@ -875,8 +876,8 @@ mod tests {
         let (mut document, snapshot) = layout("ab", 500.0);
         let row = &snapshot.rows[0];
         let selection = BlockSelection::new(
-            endpoint(row),
-            endpoint(row),
+            endpoint(&snapshot, row),
+            endpoint(&snapshot, row),
             row.clusters[0].x,
             row.clusters[0].x + row.clusters[0].advance,
         )
@@ -896,8 +897,8 @@ mod tests {
     fn stale_layout_and_wrong_document_are_rejected() {
         let (document, snapshot) = layout("one\ntwo", 500.0);
         let selection = BlockSelection::new(
-            endpoint(&snapshot.rows[0]),
-            endpoint(&snapshot.rows[1]),
+            endpoint(&snapshot, &snapshot.rows[0]),
+            endpoint(&snapshot, &snapshot.rows[1]),
             0.0,
             10.0,
         )
@@ -927,16 +928,16 @@ mod tests {
         let (document, snapshot) = layout("text", 500.0);
         assert_eq!(
             BlockSelection::new(
-                endpoint(&snapshot.rows[0]),
-                endpoint(&snapshot.rows[0]),
+                endpoint(&snapshot, &snapshot.rows[0]),
+                endpoint(&snapshot, &snapshot.rows[0]),
                 f32::NAN,
                 1.0
             ),
             Err(VisualBlockError::InvalidX)
         );
         let selection = BlockSelection::new(
-            endpoint(&snapshot.rows[0]),
-            endpoint(&snapshot.rows[0]),
+            endpoint(&snapshot, &snapshot.rows[0]),
+            endpoint(&snapshot, &snapshot.rows[0]),
             0.0,
             1.0,
         )
@@ -957,13 +958,13 @@ mod tests {
             let mut core = Core::new(document);
             let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
             let snapshot = core.layout(view).unwrap().snapshot().unwrap();
-            let selection = BlockSelection::new(endpoint(&snapshot.rows[0]), endpoint(&snapshot.rows[1]), 0.0, 30.0).unwrap();
+            let selection = BlockSelection::new(endpoint(&snapshot, &snapshot.rows[0]), endpoint(&snapshot, &snapshot.rows[1]), 0.0, 30.0).unwrap();
             let resolved = resolve_block_selection(&selection, snapshot, &core.document().hard_line_snapshot()).unwrap();
             assert_eq!(resolved.rows.len(), 2);
             assert!(!core.document().projection().compatibility_text_is_materialized());
         }
         let (mut document, snapshot) = layout("abcd", 300.0);
-        let selection = BlockSelection::new(endpoint(&snapshot.rows[0]), endpoint(&snapshot.rows[0]), 0.0, 10.0).unwrap();
+        let selection = BlockSelection::new(endpoint(&snapshot, &snapshot.rows[0]), endpoint(&snapshot, &snapshot.rows[0]), 0.0, 10.0).unwrap();
         document.replace(0..1, "A").unwrap();
         assert!(matches!(resolve_block_selection(&selection, &snapshot, &document.hard_line_snapshot()),
             Err(VisualBlockError::WrongDocumentRevision { .. })));

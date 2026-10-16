@@ -208,7 +208,7 @@ fn empty_quote_autoformat_after_surplus_separators_stays_regional() {
 #[test]
 fn autoformat_refreshes_cached_neighbor_spacing_and_list_decorations() {
     use viem_core::layout::{LayoutSnapshot, VisualRow};
-    fn comparable_rows(snapshot: &LayoutSnapshot, identity: &LayoutSnapshot) -> Vec<VisualRow> {
+    fn comparable_rows(snapshot: &LayoutSnapshot, _identity: &LayoutSnapshot) -> Vec<VisualRow> {
         let mut rows = snapshot.rows.as_ref().clone();
         for row in &mut rows {
             row.paragraph_id = None;
@@ -216,11 +216,6 @@ fn autoformat_refreshes_cached_neighbor_spacing_and_list_decorations() {
             for decoration in &mut row.decorations {
                 decoration.owner = None;
                 decoration.render_run = None;
-            }
-            for caret in &mut row.carets {
-                caret.point.document_id = identity.document_id;
-                caret.point.document_revision = identity.document_revision;
-                caret.point.layout_revision = identity.revision;
             }
         }
         rows
@@ -511,5 +506,35 @@ fn structural_reprojection_keeps_separator_pairing_and_empty_owner_carets() {
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
         assert_eq!(core.document().source_bytes(), saved);
+    }
+}
+
+#[test]
+fn list_editing_reads_only_the_surrounding_lists() {
+    let middle = "1. First item\n2. Second item\n3. Third item\n\n";
+    let source = document(400, middle);
+    let original = Document::from_bytes(source.clone().into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+    let at = original.text().find("Second item").unwrap() + "Second item".len();
+    let mut core = Core::new(original);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+    core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document().revision(), text_offset: at,
+        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+    // Continuing the list renumbers the following item; removing the new
+    // item's treatment leaves a separator inside the same loose list and
+    // renumbers again. Both inspect only this list run.
+    for (label, key, expected) in [
+        ("Enter", Key::Enter, "1. First item\n2. Second item\n3. \n4. Third item\n\n"),
+        ("Backspace", Key::Backspace, "1. First item\n2. Second item\n\n\n\n3. Third item\n\n"),
+    ] {
+        let (result, work) = measure_document_work(|| core.handle(view, CoreEvent::Input(InputEvent::Key(key))));
+        result.unwrap();
+        assert_eq!(work.compatibility_record_materializations, 0, "{label}: {work:?}");
+        let text = String::from_utf8(core.document().source_bytes()).unwrap();
+        let start = text.find("1. First item").unwrap();
+        assert!(text[start..].starts_with(expected), "{label}: {:?}", &text[start..start + expected.len() + 8]);
+        reopens_as_displayed(&core, label);
     }
 }

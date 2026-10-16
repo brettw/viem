@@ -1133,6 +1133,7 @@ impl Document {
             code_presentation: None,
             configuration: self.configuration.clone(),
             configuration_state: None,
+            view_format_prefetch: Default::default(),
         }
     }
 
@@ -4437,13 +4438,19 @@ impl Document {
     fn prepare_view_format_change(&self, target: Format) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if target == self.format() { return Ok(self.no_op_prepared()); }
         let revision = Revision(self.next_revision);
-        let mut candidate = build_state_from_decoded(
-            self.state().source.clone(),
-            self.encoding().decode(&self.source_bytes())?,
-            target, self.file_format(), self.state().file_format_origin,
-            self.state().line_ending_evidence, revision,
-        )?;
-        let edits = source_backed_reprojection_edits(self.projection(), &candidate.projection);
+        let (mut candidate, edits) = match self.take_prefetched_view_format(target) {
+            Some(prefetched) => (prefetched.candidate, prefetched.edits),
+            None => {
+                let candidate = build_state_from_decoded(
+                    self.state().source.clone(),
+                    self.encoding().decode(&self.source_bytes())?,
+                    target, self.file_format(), self.state().file_format_origin,
+                    self.state().line_ending_evidence, revision,
+                )?;
+                let edits = source_backed_reprojection_edits(self.projection(), &candidate.projection);
+                (candidate, edits)
+            }
+        };
         candidate
             .projection
             .install_persistent_text_edits(self.projection(), &edits)
@@ -7495,7 +7502,7 @@ fn apply_source_patches(
 /// Match unchanged graphemes by their exact source extent, so changing format
 /// interpretation retains anchors throughout the document, including between
 /// distant delimiter edits. Equal spelling alone never establishes identity.
-fn source_backed_reprojection_edits(
+pub(super) fn source_backed_reprojection_edits(
     before: &FormattedDocument,
     after: &FormattedDocument,
 ) -> Vec<TextEdit> {

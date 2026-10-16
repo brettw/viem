@@ -643,6 +643,43 @@ mod tests {
     }
 
     #[test]
+    fn pages_at_resting_document_edges_move_the_caret_to_the_extreme_rows() {
+        use crate::document::{Document, Encoding, Format};
+        let text = (0..40).map(|line| format!("line {line}")).collect::<Vec<_>>().join("\n");
+        let mut core = Core::new(Document::from_bytes(text.clone().into_bytes(), Encoding::Utf8, Format::PlainText).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 80.0);
+        for _ in 0..2 { core.handle_with_layout(view, key(Key::Char('l'))).unwrap(); }
+        let last = text.rfind("line 39").unwrap();
+        for (motion, target) in [(Key::PageDown, last + 2), (Key::PageUp, 2)] {
+            let mut rested = false;
+            for _ in 0..60 {
+                let top = core.layout(view).unwrap().viewport_top();
+                let before = core.command_state(view).unwrap().cursor();
+                core.handle_with_layout(view, key(motion.clone())).unwrap();
+                if (core.layout(view).unwrap().viewport_top() - top).abs() < 0.01 {
+                    // The first page that cannot scroll reaches the extreme row
+                    // at the desired column, and a further page stays there.
+                    assert_ne!(before, target, "{motion:?} reached the edge row before resting");
+                    assert_eq!(core.command_state(view).unwrap().cursor(), target, "{motion:?}");
+                    core.handle_with_layout(view, key(motion.clone())).unwrap();
+                    assert_eq!(core.command_state(view).unwrap().cursor(), target, "{motion:?}");
+                    rested = true;
+                    break;
+                }
+            }
+            assert!(rested, "{motion:?} never rested at a document edge");
+        }
+        // A document that fits one screen pages straight to its edge rows.
+        let mut short = Core::new(Document::from_bytes(b"alpha\nbeta\ngamma".to_vec(), Encoding::Utf8, Format::PlainText).unwrap());
+        let view = short.add_view(MockTextMeasurementProvider::new(), 300.0, 400.0);
+        short.handle_with_layout(view, key(Key::Char('l'))).unwrap();
+        short.handle_with_layout(view, key(Key::PageDown)).unwrap();
+        assert_eq!(short.command_state(view).unwrap().cursor(), "alpha\nbeta\n".len() + 1);
+        short.handle_with_layout(view, key(Key::PageUp)).unwrap();
+        assert_eq!(short.command_state(view).unwrap().cursor(), 1);
+    }
+
+    #[test]
     fn repeated_host_pages_slide_bounded_coverage_in_both_directions() {
         let mut core = Core::new(long_document());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 80.0);

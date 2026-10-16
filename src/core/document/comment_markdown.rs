@@ -19,7 +19,7 @@ use std::{collections::BTreeMap, ops::Range};
 /// Lines inspected beyond the requested range to find a comment's extent.
 const MAX_CONTEXT_LINES: usize = 512;
 /// Requested lines beyond this are not recognized in one call.
-const MAX_REQUEST_LINES: usize = 2048;
+pub(crate) const MAX_REQUEST_LINES: usize = 2048;
 /// A comment with more prose than this is presented without Markdown.
 const MAX_COMMENT_BYTES: usize = 64 * 1024;
 /// Code regions per call; later regions keep their comment presentation.

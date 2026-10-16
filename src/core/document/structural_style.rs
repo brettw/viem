@@ -27,10 +27,12 @@ impl Document {
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
+        // Complete verification streams both snapshots; neither retains a
+        // whole-store copy for it.
         let projection = &candidate.projection;
-        if projection.text() != self.text()
+        if !projection.same_text(self.projection())
             || !projection.has_same_hard_line_structure(self.projection())
-            || projection.style_spans() != self.projection().style_spans()
+            || projection.style_span_items().ne(self.projection().style_span_items())
         {
             return Err(DocumentError::VerificationFailed.into());
         }
@@ -41,8 +43,8 @@ impl Document {
                 block.range.start < range.end && range.start < block.range.end
             }
         };
-        for block in projection.blocks() {
-            if selected(block) {
+        for block in projection.block_items() {
+            if selected(&block) {
                 if block.style != *style
                     || block.range.start < range.start
                     || block.range.end > range.end
@@ -50,11 +52,9 @@ impl Document {
                     return Err(DocumentError::VerificationFailed.into());
                 }
             } else {
-                let old = self.projection().blocks();
-                let matching = old
-                    .binary_search_by_key(&block.range.start, |old| old.range.start)
-                    .ok()
-                    .and_then(|index| old.get(index));
+                let at = block.range.start;
+                let matching = self.projection().blocks_for_region(&(at..at)).into_iter()
+                    .find(|old| old.range.start == at);
                 if !matching.is_some_and(|old| {
                     old.range == block.range
                         && old.kind == block.kind
@@ -222,7 +222,7 @@ impl Document {
         }
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
-        let mut formatted = PatchComposition::new(self.text().len());
+        let mut formatted = PatchComposition::new(self.projection().text_tree().byte_len());
         for block in selected.into_iter().rev() {
             let mut target = block.range;
             let style = scratch.projection().style_sheet().base_paragraph.clone();
@@ -244,21 +244,19 @@ impl Document {
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
-        if candidate.projection.text() != scratch.text()
+        if !candidate.projection.same_text(scratch.projection())
             || !candidate
                 .projection
                 .has_same_hard_line_structure(scratch.projection())
-            || candidate.projection.style_spans() != scratch.projection().style_spans()
+            || candidate.projection.style_span_items().ne(scratch.projection().style_span_items())
             || candidate
                 .projection
-                .blocks()
-                .iter()
-                .map(|block| (&block.range, &block.attributes))
+                .block_items()
+                .map(|block| (block.range.clone(), block.attributes.clone()))
                 .ne(scratch
                     .projection()
-                    .blocks()
-                    .iter()
-                    .map(|block| (&block.range, &block.attributes)))
+                    .block_items()
+                    .map(|block| (block.range.clone(), block.attributes.clone())))
         {
             return Err(DocumentError::VerificationFailed.into());
         }

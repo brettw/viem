@@ -302,9 +302,33 @@ impl SourceSnapshot {
     /// Visit every immutable byte-buffer allocation reachable from this
     /// snapshot. A buffer can appear through several sliced pieces; callers
     /// that aggregate snapshots deduplicate the allocation identity.
+    #[cfg(test)]
     pub(crate) fn visit_retained_buffers(&self, visitor: &mut dyn FnMut(usize, usize)) {
         if let Some(root) = &self.root {
             root.visit_retained_buffers(visitor);
+        }
+    }
+
+    /// Register this snapshot's rope with a history source ledger. Subtrees
+    /// the ledger already retains are referenced without being traversed.
+    pub(crate) fn visit_source_retention(
+        &self,
+        visitor: &mut super::history_source::SourceRetentionVisitor<'_>,
+    ) {
+        fn visit(node: &Arc<Node>, visitor: &mut super::history_source::SourceRetentionVisitor<'_>) {
+            visitor.node(Arc::as_ptr(node) as usize, |visitor| match node.as_ref() {
+                Node::Leaf(piece) => visitor.buffer(
+                    Arc::as_ptr(&piece.bytes).cast::<u8>() as usize,
+                    piece.bytes.len(),
+                ),
+                Node::Branch { left, right, .. } => {
+                    visit(left, visitor);
+                    visit(right, visitor);
+                }
+            });
+        }
+        if let Some(root) = &self.root {
+            visit(root, visitor);
         }
     }
 
@@ -451,6 +475,7 @@ impl Node {
         }
     }
 
+    #[cfg(test)]
     fn visit_retained_buffers(&self, visitor: &mut dyn FnMut(usize, usize)) {
         match self {
             Self::Leaf(piece) => visitor(

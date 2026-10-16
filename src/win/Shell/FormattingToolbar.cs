@@ -159,7 +159,7 @@ internal sealed partial class FormattingToolbar : UserControl
         canvas.Children.Add(path); return canvas;
     }
 
-    private static Canvas FormattedViewIcon(ToggleButton owner)
+    internal static Canvas FormattedViewIcon(ButtonBase owner)
     {
         var canvas = new Canvas { Width = 18, Height = 20 };
         var geometry = new GeometryGroup();

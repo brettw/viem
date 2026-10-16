@@ -1644,27 +1644,7 @@ impl Document {
                     _ => {}
                 }
             }
-            let base: String = label
-                .trim()
-                .to_lowercase()
-                .chars()
-                .filter_map(|ch| {
-                    if ch == ' ' {
-                        Some('-')
-                    } else if ch == '-' || ch == '_' || ch.is_alphanumeric() {
-                        Some(ch)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            let mut slug = base.clone();
-            while slugs.contains_key(&slug) {
-                let suffix = slugs.entry(base.clone()).or_default();
-                *suffix += 1;
-                slug = format!("{base}-{suffix}");
-            }
-            slugs.insert(slug.clone(), 0);
+            let slug = unique_heading_slug(&label, &mut slugs);
             if !visit(LinkHeading {
                 text: label,
                 destination: format!("#{slug}"),
@@ -1689,6 +1669,54 @@ impl Document {
             return (first <= last).then_some(first);
         }
         ordinal(digits)
+    }
+
+    /// Literal Markdown (Code with the Markdown language) has no formatted
+    /// heading blocks. Explicit navigation resolves its GitHub heading
+    /// fragments from source with the same names as Preview, placing the
+    /// caret at the start of the heading's first physical line.
+    pub fn find_markdown_source_fragment(&self, fragment: &str) -> Result<Option<usize>, DocumentError> {
+        use pulldown_cmark::{Event, Options, Tag, TagEnd};
+        if fragment.is_empty() {
+            return Ok(Some(0));
+        }
+        let bytes = self.state().source.bytes();
+        let decoded = self.encoding().decode_region(&bytes, 0)?;
+        let input = super::line_endings::normalize(&decoded, self.file_format());
+        let text = input.text.as_str();
+        let mut slugs = std::collections::HashMap::<String, usize>::new();
+        let mut heading: Option<(usize, String)> = None;
+        let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
+        for (event, range) in pulldown_cmark::Parser::new_ext(text, options).into_offset_iter() {
+            match event {
+                Event::Start(Tag::Heading { .. }) => heading = Some((range.start, String::new())),
+                Event::Text(value) | Event::Code(value) => {
+                    if let Some((_, label)) = heading.as_mut() {
+                        label.push_str(&value);
+                    }
+                }
+                Event::SoftBreak | Event::HardBreak => {
+                    if let Some((_, label)) = heading.as_mut() {
+                        label.push(' ');
+                    }
+                }
+                Event::End(TagEnd::Heading(_)) => {
+                    let Some((start, label)) = heading.take() else { continue };
+                    if unique_heading_slug(&label, &mut slugs) != fragment {
+                        continue;
+                    }
+                    let line = text[..start].bytes().filter(|byte| *byte == b'\n').count();
+                    return self
+                        .state()
+                        .source_hard_lines
+                        .get(line)
+                        .map(|range| self.visible_point_for_source(range.start, true))
+                        .transpose();
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
     }
 
     pub fn find_link_fragment(&self, fragment: &str) -> Result<Option<usize>, DocumentError> {
@@ -1739,4 +1767,31 @@ impl Document {
         result.truncated |= input_truncated;
         Ok(result)
     }
+}
+
+/// GitHub's heading anchor: lowercase, spaces to hyphens, punctuation other
+/// than `-` and `_` removed, with `-1`, `-2`, ... for repeated names.
+fn unique_heading_slug(label: &str, slugs: &mut std::collections::HashMap<String, usize>) -> String {
+    let base: String = label
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|ch| {
+            if ch == ' ' {
+                Some('-')
+            } else if ch == '-' || ch == '_' || ch.is_alphanumeric() {
+                Some(ch)
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut slug = base.clone();
+    while slugs.contains_key(&slug) {
+        let suffix = slugs.entry(base.clone()).or_default();
+        *suffix += 1;
+        slug = format!("{base}-{suffix}");
+    }
+    slugs.insert(slug.clone(), 0);
+    slug
 }

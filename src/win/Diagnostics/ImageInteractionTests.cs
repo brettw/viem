@@ -106,9 +106,7 @@ internal static class ImageInteractionTests
         await LocationPicker(preferences);
         await NestedPopups(preferences);
         await KeyboardSelection(preferences);
-        await LocalPreview(preferences);
-        await HtmlImageDimensions(preferences);
-        await PreviewLimits(preferences);
+        await RunResources(preferences);
         await ScrollDuringImageReload(preferences);
         await ImageStyle(preferences);
         await CacheBudgets(preferences);
@@ -163,7 +161,7 @@ internal static class ImageInteractionTests
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, "picked #%.png");
         const string source = "![old](https://example.invalid/old.png)\n\nbody";
-        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "note.md"), format: VIEM_FORMAT_CODE);
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "note.md"), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window); window.Activate();
         var pane = window.ActivePane!; var view = await pane.Ready;
@@ -427,6 +425,100 @@ internal static class ImageInteractionTests
             Directory.Delete(directory, recursive: true);
         }
         Check(pane.LocalImagePreviewCount == 0 && pane.PendingImageLoads == 0, "closing a view releases decoded images and cancels its preview work");
+    }
+
+    // Mirrors the macOS image resource tests: speculative workers measure
+    // headers so their geometry is final, a decode with known dimensions only
+    // repaints, a placeholder used by layout changes geometry exactly once,
+    // admission reaches one screen beyond each edge, and drawing uses
+    // bounded copies resampled off the UI thread.
+    /// <summary>Local image previews, background dimensions, resampling and limits,
+    /// without native keyboard or pointer input.</summary>
+    internal static async Task RunResources(Preferences preferences)
+    {
+        await LocalPreview(preferences);
+        await BackgroundImageResources(preferences);
+        await HtmlImageDimensions(preferences);
+        await PreviewLimits(preferences);
+    }
+
+    private static async Task BackgroundImageResources(Preferences preferences)
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "viem-image-background-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        WriteBitmap(Path.Combine(directory, "far.bmp"), 80, 40);
+        WriteBitmap(Path.Combine(directory, "near.bmp"), 60, 30);
+        // Wider than the 1024-DIP display cap, so drawing always downscales it.
+        WriteBitmap(Path.Combine(directory, "large.bmp"), 1800, 900);
+        string filler = string.Join("\n\n", Enumerable.Repeat("Prose keeps the far image several screens below the first viewport.", 120));
+        string source = "![large](large.bmp)\n\n" + string.Join("\n\n", Enumerable.Repeat("A short paragraph.", 6))
+            + "\n\n![near](near.bmp)\n\n" + filler + "\n\n![far](far.bmp)\n\nend";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        var pane = window.ActivePane!; var view = await pane.Ready;
+        try
+        {
+            await BackgroundLayoutTests.Idle(view);
+            for (int i = 0; i < 200 && pane.PendingImageLoads != 0; i++) await Task.Delay(25);
+            Check(view.Provider.ImageState("far.bmp") == InlineImageState.Measured && view.Provider.ImageDimensionProbes >= 1,
+                "speculative layout reads a distant local image's dimensions from its header");
+            Check(view.Provider.ImageState("near.bmp") == InlineImageState.Ready && view.Provider.ImageState("far.bmp") != InlineImageState.Ready,
+                "bitmap admission includes one screen below the viewport but not distant images");
+            int probes = view.Provider.ImageDimensionProbes;
+            ulong generation = view.Provider.Generation;
+            float extent = view.Viewport.maximum_top;
+            view.Command("G"); pane.Refresh();
+            for (int i = 0; i < 200 && (view.Provider.ImageState("far.bmp") != InlineImageState.Ready || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+            var far = view.Layout().Clusters.Single(c => view.Provider.ImageDestination(c.render_run) == "far.bmp");
+            Check(view.Provider.ImageState("far.bmp") == InlineImageState.Ready && view.Provider.Generation == generation
+                && Math.Abs(view.Viewport.maximum_top - extent) < .01
+                && Math.Abs(far.typographic_bounds.width - 80 * view.Viewport.scale) < .01 && view.Provider.ImageDimensionProbes == probes,
+                "a decoded bitmap with measured dimensions only repaints, without reshaping, extent changes or another probe");
+
+            // Foreground layout cannot probe: its placeholder changes once.
+            {
+                var cold = new CoreDocument(Encoding.UTF8.GetBytes("![cold](near.bmp)"), Path.Combine(directory, "cold.md"), VIEM_FORMAT_MARKDOWN);
+                var coldPane = window.AddPane(cold); var coldView = await coldPane.Ready;
+                coldView.BackgroundLayout.Enabled = false;
+                for (int i = 0; i < 200 && (coldView.Provider.ImageState("near.bmp") != InlineImageState.Ready || coldPane.PendingImageLoads != 0); i++) await Task.Delay(25);
+                var cluster = coldView.Layout().Clusters.Single(c => coldView.Provider.IsInlineImage(c.render_run));
+                Check(coldView.Provider.ImageDimensionProbes == 0 && Math.Abs(cluster.typographic_bounds.width - 60 * coldView.Viewport.scale) < .01,
+                    "a placeholder used by foreground layout is reshaped once its bitmap reports new dimensions");
+                await window.ClosePane(coldPane, force: true);
+            }
+
+            view.Command("gg"); pane.Refresh();
+            for (int i = 0; i < 200 && (view.Provider.ImageState("large.bmp") != InlineImageState.Ready || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+            using var surface = new Microsoft.Graphics.Canvas.CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
+            void Draw() { using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing); }
+            // The pane's own frames have already drawn the visible images. At a
+            // nondefault display scale smaller images also get device-size copies.
+            for (int i = 0; i < 200 && pane.ImageResamplePending; i++) await Task.Delay(25);
+            Check(pane.HasScaledImageForTest("large.bmp") && pane.ScaledImageRenders >= 1,
+                $"the pane's frames draw a downscaled image from a background resample ({pane.ImageDrawDiagnosticForTesting("large.bmp")})");
+            pane.ClearScaledImagesForTest();
+            int renders = pane.ScaledImageRenders;
+            // Completion is dispatched to this UI thread, so it cannot arrive
+            // before the next await.
+            Draw();
+            Check(pane.ImageResamplePendingForTest("large.bmp") && pane.ScaledImageCount == 0,
+                $"a downscaled image starts one background resample and draws its original meanwhile ({pane.ImageDrawDiagnosticForTesting("large.bmp")})");
+            Draw();
+            for (int i = 0; i < 200 && pane.ImageResamplePending; i++) await Task.Delay(25);
+            int resampled = pane.ScaledImageRenders;
+            Draw(); Draw();
+            Check(pane.HasScaledImageForTest("large.bmp") && resampled > renders && pane.ScaledImageRenders == resampled
+                && pane.ScaledImageBytes > 0 && !pane.ImageResamplePending,
+                "drawing reuses one resampled copy per bitmap and device size");
+            Check(pane.LastError == null && !document.IsDirty, "background image resources change no source and report no errors");
+        }
+        finally
+        {
+            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            Directory.Delete(directory, recursive: true);
+        }
+        Check(pane.ScaledImageCount == 0 && pane.LocalImagePreviewCount == 0, "closing a view releases its decoded and resampled images");
     }
 
     private static async Task HtmlImageDimensions(Preferences preferences)

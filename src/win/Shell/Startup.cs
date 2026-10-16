@@ -63,6 +63,7 @@ internal sealed partial class EditorWindow
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LINE_SPACING_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1"
+                        || Environment.GetEnvironmentVariable("VIEM_TEST_IMAGES_ONLY") == "resources"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_TOOLBAR_ONLY") is "1" or "startup" or "main"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_ONLY") == "1"
                         || Environment.GetEnvironmentVariable("VIEM_TEST_SELECTION_ONLY") == "1"
@@ -151,6 +152,8 @@ internal sealed partial class EditorWindow
                             await RunTestStage("StyleAndSettingsTests.RunLineSpacing", () => Diagnostics.StyleAndSettingsTests.RunLineSpacing(pane, preferences));
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_LISTS_ONLY") == "1")
                             await RunTestStage("ListInteractionTests.Run", () => Diagnostics.ListInteractionTests.Run(preferences));
+                        else if (Environment.GetEnvironmentVariable("VIEM_TEST_IMAGES_ONLY") == "resources")
+                            await RunTestStage("ImageInteractionTests.RunResources", () => Diagnostics.ImageInteractionTests.RunResources(preferences));
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_SETTINGS_ONLY") == "1")
                             await RunTestStage("StyleAndSettingsTests.RunSettings", () => Diagnostics.StyleAndSettingsTests.RunSettings(pane, this, preferences));
                         else if (Environment.GetEnvironmentVariable("VIEM_TEST_SCROLL_ONLY") is "1" or "horizontal" or "status")

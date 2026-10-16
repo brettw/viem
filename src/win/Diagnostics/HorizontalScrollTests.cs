@@ -37,6 +37,7 @@ internal static class HorizontalScrollTests
         Step("setting view margins", () => view.Padding(17, 10, 29, 10));
         Step("disabling whitespace markers", () => view.VisibleWhitespace(false));
         await ScrollbarOverlayTests.Run(pane);
+        await ScrollbarOverlayTests.Indicators(pane);
         using var surface = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
         byte[] Draw() { using (var drawing = surface.CreateDrawingSession()) pane.Draw(drawing); CheckPane("drawing the editor"); return surface.GetPixelBytes(); }
 

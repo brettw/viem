@@ -1,4 +1,5 @@
 use super::history_memory::{AllocationId, Domain, MemoryVisitor, RetainedMemory};
+use super::history_source::{SourceRetention, SourceRetentionId, SourceRetentionVisitor};
 use super::source::{SourceArtifactDigest, SourceSnapshotIdentity};
 use super::{PositionError, PositionMap, Revision, SourcePartId, Splice, TextAnchor};
 use std::collections::{BTreeMap, HashMap};
@@ -400,7 +401,9 @@ pub(crate) struct History<T, M = ()> {
     save_point_digest: Option<SourceArtifactDigest>,
     save_point_source: Option<SourceSnapshotIdentity>,
     retention: HistoryRetentionPolicy,
-    retained_source_bytes: usize,
+    /// Source buffers reachable from retained states, maintained per commit
+    /// and pruning rather than recounted from every node.
+    source: SourceRetention,
     accounting: Option<HistoryAccounting<T>>,
     /// Allocations of every retained state, with the live state's own
     /// references counted separately in the same table.
@@ -429,7 +432,6 @@ struct HistoryCommandCheckpoint<T, M> {
     save_point_digest: Option<SourceArtifactDigest>,
     save_point_source: Option<SourceSnapshotIdentity>,
     retention: HistoryRetentionPolicy,
-    retained_source_bytes: usize,
     retention_requested: bool,
     nodes: HashMap<usize, NodeCommandCheckpoint<T, M>>,
 }
@@ -444,7 +446,6 @@ struct NodeCommandCheckpoint<T, M> {
 
 struct NodeContentCheckpoint<T, M> {
     state: Arc<T>,
-    retained_buffers_capacity: usize,
     edge: Option<EdgeCommandCheckpoint<M>>,
 }
 
@@ -469,7 +470,8 @@ struct Node<T, M> {
     children: Vec<usize>,
     preferred_child: Option<usize>,
     incoming: Option<HistoryEdge<M>>,
-    retained_buffers: Vec<RetainedBuffer>,
+    /// This state's references in the history source ledger.
+    source_roots: Vec<SourceRetentionId>,
     memory_roots: Vec<AllocationId>,
     memory_metadata_bytes: usize,
 }
@@ -549,16 +551,24 @@ impl HistoryUnitRecord {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-struct RetainedBuffer {
-    identity: usize,
-    bytes: usize,
-}
-
 struct HistoryAccounting<T> {
     source_identity: fn(&T) -> SourceSnapshotIdentity,
-    visit_buffers: fn(&T, &mut dyn FnMut(usize, usize)),
+    visit_buffers: fn(&T, &mut SourceRetentionVisitor<'_>),
     digest: fn(&T) -> SourceArtifactDigest,
+}
+
+fn capture_source<T>(
+    source: &mut SourceRetention,
+    accounting: Option<&HistoryAccounting<T>>,
+    state: &T,
+) -> Vec<SourceRetentionId> {
+    match accounting {
+        Some(accounting) => {
+            let visit = accounting.visit_buffers;
+            source.capture(|visitor| visit(state, visitor))
+        }
+        None => Vec::new(),
+    }
 }
 
 impl<T, M> History<T, M> {
@@ -578,7 +588,7 @@ impl<T, M> History<T, M> {
     pub(crate) fn new_accounted(
         initial: T,
         retention: HistoryRetentionPolicy,
-        visit_buffers: fn(&T, &mut dyn FnMut(usize, usize)),
+        visit_buffers: fn(&T, &mut SourceRetentionVisitor<'_>),
         digest: fn(&T) -> SourceArtifactDigest,
         source_identity: fn(&T) -> SourceSnapshotIdentity,
     ) -> Self {
@@ -600,8 +610,8 @@ impl<T, M> History<T, M> {
     ) -> Self {
         let root_id = next_node_id();
         let root_change = HistoryChangeNumber::INITIAL;
-        let retained_buffers = collect_retained_buffers(accounting.as_ref(), &initial);
-        let retained_source_bytes = retained_buffers.iter().map(|buffer| buffer.bytes).sum();
+        let mut source = SourceRetention::default();
+        let source_roots = capture_source(&mut source, accounting.as_ref(), &initial);
         let save_point_digest = accounting.as_ref().map(|value| (value.digest)(&initial));
         let save_point_source = accounting.as_ref().map(|value| (value.source_identity)(&initial));
         let node_indexes = HashMap::from([(root_id, 0)]);
@@ -619,7 +629,7 @@ impl<T, M> History<T, M> {
                 children: Vec::new(),
                 preferred_child: None,
                 incoming: None,
-                retained_buffers,
+                source_roots,
                 memory_roots: Vec::new(),
                 memory_metadata_bytes: 0,
             }],
@@ -633,7 +643,7 @@ impl<T, M> History<T, M> {
             save_point_digest,
             save_point_source,
             retention,
-            retained_source_bytes,
+            source,
             accounting,
             memory: RetainedMemory::default(),
             live_memory_roots: Vec::new(),
@@ -677,7 +687,7 @@ impl<T, M> History<T, M> {
         self.memory.release(Domain::History, previous);
         self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_sub(node.memory_metadata_bytes);
         node.memory_metadata_bytes = node.children.capacity() * std::mem::size_of::<usize>()
-            + node.retained_buffers.capacity() * std::mem::size_of::<RetainedBuffer>()
+            + node.source_roots.capacity() * std::mem::size_of::<SourceRetentionId>()
             + node.memory_roots.capacity() * std::mem::size_of::<AllocationId>()
             + node.incoming.as_ref().map_or(0, |edge| edge.record.owned_heap_bytes());
         self.memory_metadata_bytes = self.memory_metadata_bytes.saturating_add(node.memory_metadata_bytes);
@@ -700,17 +710,22 @@ impl<T, M> History<T, M> {
 
     fn live_state_memory_bytes(&self) -> usize {
         if self.visit_state_memory.is_none() {
-            return self.nodes[self.current].retained_buffers.iter().map(|buffer| buffer.bytes).sum();
+            // Only source-accounted histories without a memory ledger (tests)
+            // take this path; it measures the live state's own buffers.
+            let mut live = SourceRetention::default();
+            capture_source(&mut live, self.accounting.as_ref(), &self.nodes[self.current].state);
+            return live.bytes();
         }
         // A current-only document still needs its allocation ledger, both
-        // root vectors, one history node and its source-buffer index. Charging
-        // that baseline to undo would consume the allowance in proportion to
-        // file size before there was any old state to retain.
+        // root vectors, one history node and its source ledger. Charging that
+        // baseline to undo would consume the allowance in proportion to file
+        // size before there was any old state to retain.
         let state_roots = self.live_memory_roots.capacity() * std::mem::size_of::<AllocationId>();
         self.memory.bytes(Domain::Live)
             .saturating_add(state_roots.saturating_mul(2))
             .saturating_add(std::mem::size_of::<Node<T, M>>())
-            .saturating_add(self.nodes[self.current].retained_buffers.capacity() * std::mem::size_of::<RetainedBuffer>())
+            .saturating_add(self.nodes[self.current].source_roots.capacity() * std::mem::size_of::<SourceRetentionId>())
+            .saturating_add(self.source.metadata_bytes())
             .saturating_add(self.singleton_index_bytes)
     }
 
@@ -721,11 +736,12 @@ impl<T, M> History<T, M> {
     }
 
     fn retained_memory_bytes(&self) -> usize {
-        if self.visit_state_memory.is_none() { return self.retained_source_bytes; }
+        if self.visit_state_memory.is_none() { return self.source.bytes(); }
         if std::env::var_os("VIEM_HISTORY_MEMORY_BREAKDOWN").is_some() {
             eprintln!("  ledger allocations {}", self.memory.allocation_count());
         }
         self.memory.bytes(Domain::History)
+            .saturating_add(self.source.metadata_bytes())
             .saturating_add(self.live_memory_roots.capacity() * std::mem::size_of::<AllocationId>())
             .saturating_add(self.nodes.capacity() * std::mem::size_of::<Node<T, M>>())
             .saturating_add(self.node_indexes.capacity() * 48)
@@ -818,7 +834,6 @@ impl<T, M> History<T, M> {
             save_point_digest: self.save_point_digest,
             save_point_source: self.save_point_source,
             retention: self.retention,
-            retained_source_bytes: self.retained_source_bytes,
             retention_requested: false,
             nodes: HashMap::new(),
         });
@@ -857,7 +872,6 @@ impl<T, M> History<T, M> {
             let node = &mut self.nodes[index];
             saved.content = Some(NodeContentCheckpoint {
                 state: node.state.clone(),
-                retained_buffers_capacity: node.retained_buffers.capacity(),
                 edge: node.incoming.as_mut().map(|edge| {
                     // Keep the original map allocation alive until its ledger
                     // roots are released. A clone alone would not preserve those
@@ -905,28 +919,28 @@ impl<T, M> History<T, M> {
             .command_checkpoints
             .pop()
             .expect("command checkpoint active");
-        for node in &self.nodes[checkpoint.node_count..] {
+        for node in &mut self.nodes[checkpoint.node_count..] {
             self.node_indexes.remove(&node.id);
             self.change_indexes.remove(&node.change);
+            // Release while the abandoned state still owns its rope.
+            self.source.release(std::mem::take(&mut node.source_roots));
         }
         self.nodes.truncate(checkpoint.node_count);
         for (index, saved) in checkpoint.nodes {
+            let restored_roots = match &saved.content {
+                Some(content) => capture_source(&mut self.source, self.accounting.as_ref(), &content.state),
+                None => Vec::new(),
+            };
             let node = &mut self.nodes[index];
             node.children.truncate(saved.children_len);
             node.children.shrink_to(saved.children_capacity);
             node.preferred_child = saved.preferred_child;
             node.saved_write = saved.saved_write;
             if let Some(content) = saved.content {
+                let abandoned = std::mem::replace(&mut node.source_roots, restored_roots);
+                self.source.release(abandoned);
+                let node = &mut self.nodes[index];
                 node.state = content.state;
-                node.retained_buffers =
-                    collect_retained_buffers(self.accounting.as_ref(), &node.state);
-                node.retained_buffers
-                    .shrink_to(content.retained_buffers_capacity);
-                if node.retained_buffers.capacity() < content.retained_buffers_capacity {
-                    node.retained_buffers.reserve_exact(
-                        content.retained_buffers_capacity - node.retained_buffers.len(),
-                    );
-                }
                 if let Some(edge) = content.edge {
                     let current = node
                         .incoming
@@ -962,8 +976,7 @@ impl<T, M> History<T, M> {
         self.save_point_digest = checkpoint.save_point_digest;
         self.save_point_source = checkpoint.save_point_source;
         self.retention = checkpoint.retention;
-        self.retained_source_bytes = checkpoint.retained_source_bytes;
-        // Both ledgers are frozen while a command checkpoint is active. Their
+        // Both memory ledgers are frozen while a command checkpoint is active. Their
         // roots already describe the restored state; refreshing here would
         // publish lazy caches created by the failed command into its status.
     }
@@ -1040,7 +1053,7 @@ impl<T, M> History<T, M> {
                     .map(|edge| edge.record.semantic.clone())
             }),
             retention: self.retention,
-            retained_source_bytes: self.retained_source_bytes,
+            retained_source_bytes: self.source.bytes(),
             retained_memory_bytes: self.retained_memory_bytes(),
             live_state_memory_bytes: self.live_state_memory_bytes(),
             additional_history_memory_bytes: self.retained_memory_bytes().saturating_sub(self.live_state_memory_bytes()),
@@ -1401,7 +1414,6 @@ impl<T, M> History<T, M> {
 
         let mut retained = vec![true; self.nodes.len()];
         let mut retained_count = retained.len();
-        let (mut buffer_references, mut retained_bytes) = self.buffer_reference_counts(&retained);
         let mut protected = vec![false; self.nodes.len()];
         protected[self.current] = true;
         let promotion_floor = self.group_node.and_then(|group| {
@@ -1415,14 +1427,7 @@ impl<T, M> History<T, M> {
 
         // Repeatedly removing the oldest eligible leaf deterministically
         // discards abandoned branches without touching the active ancestry.
-        while self.exceeds_retention(
-            retained_count,
-            if self.visit_state_memory.is_some() {
-                self.retained_memory_bytes()
-            } else {
-                retained_bytes
-            },
-        ) {
+        while self.exceeds_retention(retained_count, self.retained_memory_bytes()) {
             let candidate = (0..self.nodes.len())
                 .filter(|index| retained[*index] && !protected[*index])
                 .filter(|index| {
@@ -1438,25 +1443,14 @@ impl<T, M> History<T, M> {
             retained[candidate] = false;
             retained_count -= 1;
             self.release_node_memory(candidate);
-            remove_buffer_references(
-                &self.nodes[candidate].retained_buffers,
-                &mut buffer_references,
-                &mut retained_bytes,
-            );
+            self.release_node_source(candidate);
         }
 
         // Once no abandoned leaf remains, only current ancestry (and any
         // explicitly protected states) can keep the tree over budget. Promote
         // one oldest ancestor at a time. An open unit stops promotion at its
         // fixed parent so both its before-state and result remain available.
-        while self.exceeds_retention(
-            retained_count,
-            if self.visit_state_memory.is_some() {
-                self.retained_memory_bytes()
-            } else {
-                retained_bytes
-            },
-        ) {
+        while self.exceeds_retention(retained_count, self.retained_memory_bytes()) {
             let active_path: Vec<_> = self
                 .root_path(self.current)
                 .into_iter()
@@ -1481,44 +1475,17 @@ impl<T, M> History<T, M> {
             retained[oldest] = false;
             retained_count -= 1;
             self.release_node_memory(oldest);
-            remove_buffer_references(
-                &self.nodes[oldest].retained_buffers,
-                &mut buffer_references,
-                &mut retained_bytes,
-            );
+            self.release_node_source(oldest);
         }
 
         if retained_count != self.nodes.len() {
             self.compact_to_retained(&retained);
-        } else {
-            self.retained_source_bytes = retained_bytes;
         }
     }
 
-    fn buffer_reference_counts(
-        &self,
-        retained: &[bool],
-    ) -> (HashMap<usize, (usize, usize)>, usize) {
-        let mut references = HashMap::<usize, (usize, usize)>::new();
-        let mut total = 0_usize;
-        for (index, node) in self.nodes.iter().enumerate() {
-            if !retained[index] {
-                continue;
-            }
-            for buffer in &node.retained_buffers {
-                match references.entry(buffer.identity) {
-                    std::collections::hash_map::Entry::Vacant(entry) => {
-                        entry.insert((buffer.bytes, 1));
-                        total = total.saturating_add(buffer.bytes);
-                    }
-                    std::collections::hash_map::Entry::Occupied(mut entry) => {
-                        debug_assert_eq!(entry.get().0, buffer.bytes);
-                        entry.get_mut().1 += 1;
-                    }
-                }
-            }
-        }
-        (references, total)
+    /// Release a pruned state's source references while it still owns them.
+    fn release_node_source(&mut self, index: usize) {
+        self.source.release(std::mem::take(&mut self.nodes[index].source_roots));
     }
 
     fn compact_to_retained(&mut self, retained: &[bool]) {
@@ -1561,8 +1528,6 @@ impl<T, M> History<T, M> {
             self.node_indexes.insert(node.id, index);
             self.change_indexes.insert(node.change, index);
         }
-        let all_retained = vec![true; self.nodes.len()];
-        self.retained_source_bytes = self.buffer_reference_counts(&all_retained).1;
         // Keep removed edges alive until their old allocation identities have
         // been released, preventing allocator address reuse during accounting.
         for index in 0..self.nodes.len() { self.refresh_node_memory(index); }
@@ -1575,76 +1540,32 @@ impl<T, M> History<T, M> {
     }
 }
 
-fn collect_retained_buffers<T>(
-    accounting: Option<&HistoryAccounting<T>>,
-    state: &T,
-) -> Vec<RetainedBuffer> {
-    let Some(accounting) = accounting else {
-        return Vec::new();
-    };
-    let mut unique = HashMap::<usize, usize>::new();
-    (accounting.visit_buffers)(state, &mut |identity, bytes| match unique.entry(identity) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(bytes);
-        }
-        std::collections::hash_map::Entry::Occupied(entry) => {
-            debug_assert_eq!(*entry.get(), bytes);
-        }
-    });
-    let mut buffers: Vec<_> = unique
-        .into_iter()
-        .map(|(identity, bytes)| RetainedBuffer { identity, bytes })
-        .collect();
-    buffers.sort_unstable_by_key(|buffer| buffer.identity);
-    buffers
-}
-
-fn remove_buffer_references(
-    buffers: &[RetainedBuffer],
-    references: &mut HashMap<usize, (usize, usize)>,
-    retained_bytes: &mut usize,
-) {
-    for buffer in buffers {
-        let remove = {
-            let entry = references
-                .get_mut(&buffer.identity)
-                .expect("every retained node buffer has a reference count");
-            debug_assert_eq!(entry.0, buffer.bytes);
-            entry.1 -= 1;
-            entry.1 == 0
-        };
-        if remove {
-            references.remove(&buffer.identity);
-            *retained_bytes = retained_bytes.saturating_sub(buffer.bytes);
-        }
-    }
-}
-
 #[cfg(test)]
 impl<T> History<T> {
     /// Commit a state for history users which do not retain edge metadata.
     /// Document history uses [`History::commit_with_maps`] instead.
     pub(crate) fn commit(&mut self, state: T, grouping: bool) {
         self.refresh_node_memory(self.current);
-        let retained_buffers = collect_retained_buffers(self.accounting.as_ref(), &state);
+        let source_roots = capture_source(&mut self.source, self.accounting.as_ref(), &state);
         if grouping {
             if let Some(group) = self.group_node {
                 debug_assert_eq!(group, self.current);
                 self.checkpoint_node_content(group);
                 let previous = std::mem::replace(&mut self.nodes[group].state, Arc::new(state));
-                self.nodes[group].retained_buffers = retained_buffers;
+                let replaced = std::mem::replace(&mut self.nodes[group].source_roots, source_roots);
+                self.source.release(replaced);
                 self.enforce_retention();
                 drop(previous);
                 return;
             }
         }
-        self.push_node(state, retained_buffers, grouping, None);
+        self.push_node(state, source_roots, grouping, None);
     }
 
     fn push_node(
         &mut self,
         state: T,
-        retained_buffers: Vec<RetainedBuffer>,
+        source_roots: Vec<SourceRetentionId>,
         grouping: bool,
         incoming: Option<HistoryEdge<()>>,
     ) {
@@ -1668,7 +1589,7 @@ impl<T> History<T> {
             children: Vec::new(),
             preferred_child: None,
             incoming,
-            retained_buffers,
+            source_roots,
             memory_roots: Vec::new(),
             memory_metadata_bytes: 0,
         });
@@ -1705,7 +1626,6 @@ impl<T> History<T, PositionMap> {
         let reverse = forward.inverted()?;
         forward.check_then(&reverse)?;
         reverse.check_then(&forward)?;
-        let retained_buffers = collect_retained_buffers(self.accounting.as_ref(), &state);
 
         if grouping {
             if let Some(group) = self.group_node {
@@ -1715,9 +1635,12 @@ impl<T> History<T, PositionMap> {
                     .as_ref()
                     .expect("a non-root group node has an incoming edge");
                 let composed_forward = edge.map.then(&forward)?;
+                let source_roots = capture_source(&mut self.source, self.accounting.as_ref(), &state);
                 self.checkpoint_node_content(group);
                 let previous_state = std::mem::replace(&mut self.nodes[group].state, Arc::new(state));
-                self.nodes[group].retained_buffers = retained_buffers;
+                // The previous state stays alive until its references are released.
+                let replaced = std::mem::replace(&mut self.nodes[group].source_roots, source_roots);
+                self.source.release(replaced);
                 let edge = self.nodes[group]
                     .incoming
                     .as_mut()
@@ -1730,6 +1653,7 @@ impl<T> History<T, PositionMap> {
             }
         }
 
+        let source_roots = capture_source(&mut self.source, self.accounting.as_ref(), &state);
         let parent = self.current;
         self.checkpoint_node(parent);
         let index = self.nodes.len();
@@ -1753,7 +1677,7 @@ impl<T> History<T, PositionMap> {
                 map: forward,
                 record: HistoryUnitRecord::new(transaction, Some(restoration)),
             }),
-            retained_buffers,
+            source_roots,
             memory_roots: Vec::new(),
             memory_metadata_bytes: 0,
         });
@@ -1826,8 +1750,8 @@ mod tests {
     #[derive(Clone)]
     struct ByteState(SourceSnapshot);
 
-    fn visit_byte_state(state: &ByteState, visitor: &mut dyn FnMut(usize, usize)) {
-        state.0.visit_retained_buffers(visitor);
+    fn visit_byte_state(state: &ByteState, visitor: &mut SourceRetentionVisitor<'_>) {
+        state.0.visit_source_retention(visitor);
     }
 
     fn digest_byte_state(state: &ByteState) -> SourceArtifactDigest {
@@ -2157,5 +2081,65 @@ mod tests {
         assert_eq!(history.status().node_count, 1);
         assert_eq!(history.status().retained_source_bytes, 4);
         assert!(!history.status().can_undo);
+    }
+
+    /// Distinct buffer bytes reachable from every retained state, recounted
+    /// from scratch as the incremental ledger's reference.
+    fn recounted_source_bytes(history: &History<ByteState>) -> usize {
+        let mut buffers = HashMap::new();
+        for node in &history.nodes {
+            node.state.0.visit_retained_buffers(&mut |identity, bytes| {
+                buffers.insert(identity, bytes);
+            });
+        }
+        buffers.values().sum()
+    }
+
+    #[test]
+    fn source_accounting_per_commit_is_bounded_by_the_change() {
+        use super::super::work_statistics::measure_document_work;
+        let mut source = SourceSnapshot::new(vec![b'a'; 512 * 1024]);
+        let mut history = byte_history(source.clone(), HistoryRetentionPolicy::new(64, usize::MAX));
+        let mut maximum = 0;
+        for edit in 0..4_000_usize {
+            // Typed characters scattered through the document keep adding
+            // rope pieces; runs of eight share one grouped undo unit.
+            let at = (edit * 7_919) % source.len();
+            source = source.replace(at, at, vec![b'0' + (edit % 10) as u8]).unwrap();
+            let grouping = edit % 8 != 0;
+            if !grouping {
+                history.end_group();
+            }
+            let ((), work) = measure_document_work(|| history.commit(ByteState(source.clone()), grouping));
+            maximum = maximum.max(work.history_source_visits + work.history_source_release_visits);
+            if edit % 500 == 0 {
+                assert_eq!(history.status().retained_source_bytes, recounted_source_bytes(&history));
+            }
+        }
+        assert!(history.status().node_count <= 64);
+        assert_eq!(history.status().retained_source_bytes, recounted_source_bytes(&history));
+        // Each commit registers one new rope path and may release one pruned
+        // state's path, independent of the thousands of pieces now retained.
+        assert!(maximum < 400, "source accounting visited {maximum} entries in one commit");
+    }
+
+    #[test]
+    fn rolled_back_commands_restore_source_accounting() {
+        let original = SourceSnapshot::new(b"seed text".to_vec());
+        let first = original.replace(4, 4, b"A".to_vec()).unwrap();
+        let mut history = byte_history(original, HistoryRetentionPolicy::unlimited());
+        history.commit(ByteState(first.clone()), true);
+        let before = history.status().retained_source_bytes;
+
+        history.begin_command_checkpoint();
+        let grouped = first.replace(0, 4, b"REPLACED".to_vec()).unwrap();
+        history.commit(ByteState(grouped.clone()), true);
+        history.commit(ByteState(grouped.replace(0, 0, b"new".to_vec()).unwrap()), false);
+        assert_eq!(history.status().retained_source_bytes, recounted_source_bytes(&history));
+        history.rollback_command_checkpoint();
+
+        assert_eq!(history.status().retained_source_bytes, before);
+        assert_eq!(history.status().retained_source_bytes, recounted_source_bytes(&history));
+        assert_eq!(history.source.bytes(), recounted_source_bytes(&history));
     }
 }

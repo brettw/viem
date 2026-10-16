@@ -185,8 +185,10 @@ impl Document {
         if !self.format().is_markdown() {
             return Ok(None);
         }
-        let structure = self.projection().list_structure();
-        let blocks = self.projection().blocks();
+        // Only the lists around the edit, without a whole-store copy.
+        let window = self.projection().list_window(range);
+        let structure = &window.structure;
+        let blocks = &window.blocks;
         let block_indices = blocks
             .iter()
             .enumerate()
@@ -825,7 +827,8 @@ impl Document {
             .into_iter()
             .find(|block| block.range.start <= at && at <= block.range.end)
             .ok_or(DocumentError::VerificationFailed)?;
-        let lists = self.projection().list_structure();
+        let window = self.projection().list_window(&(at..at));
+        let lists = &window.structure;
         let item = lists.lists.iter().flat_map(|list| &list.items)
             .find(|item| item.paragraph_ids.contains(&block.id))
             .ok_or(DocumentError::AmbiguousProjection)?;
@@ -836,9 +839,8 @@ impl Document {
             return self.prepare_list_style(block.range.clone(), None);
         }
         let first_id = item.paragraph_id;
-        let first_paragraph = self
-            .projection()
-            .blocks()
+        let first_paragraph = window
+            .blocks
             .iter()
             .find(|candidate| candidate.id == first_id)
             .ok_or(DocumentError::AmbiguousProjection)?;

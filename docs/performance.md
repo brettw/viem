@@ -133,6 +133,12 @@ shaping and no syntax providers or native UI. They do not establish whole-app
 memory bounds or a universal bytes-per-source-byte multiplier. See the
 [fuzzing guide](fuzzing.md) for the separate retained-history ledger probe.
 
+After editing pauses, a source of at most 1 MiB prepares its other Markdown
+view in the background and retains it until the next edit or switch, so a
+Preview switch need not reparse. In the 4 MiB `switch` fixture a Preview
+projection costs about 120 MiB live and a Code projection about 50 MiB, so the
+cap bounds the speculative copy near 30 MiB. Larger sources switch synchronously.
+
 ## Editing and native presentation
 
 The [core latency probe](../examples/editor_perf.rs) opens, scrolls, types,

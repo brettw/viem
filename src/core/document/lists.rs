@@ -40,6 +40,16 @@ pub struct ListStructure {
     pub lists: Vec<ListNode>,
 }
 
+/// The lists touching a region and the blocks they are built from: the run
+/// of list-owned blocks around it, between the nearest blocks outside every
+/// list. A list never continues across such a block, so these lists are
+/// exactly those the complete structure contains there.
+#[derive(Clone, Debug)]
+pub(crate) struct ListWindow {
+    pub(crate) structure: ListStructure,
+    pub(crate) blocks: Vec<Block>,
+}
+
 impl Block {
     /// Separator paragraphs have no marker, but remain leaves of their parsed
     /// list item. Structural traversal must not mistake them for a list break.
@@ -112,11 +122,35 @@ impl FormattedDocument {
     /// Enumerate list containers and their item/child relationships. Paragraph
     /// styles remain assigned to the paragraph inside each item.
     pub fn list_structure(&self) -> ListStructure {
+        self.list_structure_of(self.blocks())
+    }
+
+    /// Lists touching `range`, built in `O(log n + k)` from the surrounding run
+    /// of list-owned blocks without copying the complete block store.
+    pub(crate) fn list_window(&self, range: &Range<usize>) -> ListWindow {
+        let store = self.list_indentation_blocks();
+        let count = store.len();
+        if count == 0 {
+            return ListWindow { structure: ListStructure { revision: self.revision(), lists: Vec::new() }, blocks: Vec::new() };
+        }
+        // The block containing `range.start` (or the one before it), through
+        // every block starting at or before `range.end`.
+        let first = store.partition_point_start(range.start).saturating_sub(1);
+        let last = store.partition_point_start(range.end.saturating_add(1)).max(first + 1).min(count);
+        // Navigation key zero marks a block outside every list.
+        let start = store.find_navigation(0..first, true, |summary| summary.minimum == 0).map_or(0, |index| index + 1);
+        let end = store.find_navigation(last..count, false, |summary| summary.minimum == 0).unwrap_or(count);
+        let blocks = store.get_range(&(start..end)).unwrap_or_default();
+        super::work_statistics::record(|stats| stats.list_capability_blocks_visited += blocks.len());
+        ListWindow { structure: self.list_structure_of(&blocks), blocks }
+    }
+
+    fn list_structure_of<'a>(&self, blocks: impl IntoIterator<Item = &'a Block>) -> ListStructure {
         let mut lists: Vec<ListNode> = Vec::new();
         let mut stack: Vec<usize> = Vec::new();
         let mut items_by_owner: HashMap<ContainerIdentity, (usize, usize)> = HashMap::new();
         let mut lists_by_owner: HashMap<ContainerIdentity, usize> = HashMap::new();
-        for block in self.blocks() {
+        for block in blocks {
             let BlockKind::ListItem {
                 ordered,
                 ordinal,
