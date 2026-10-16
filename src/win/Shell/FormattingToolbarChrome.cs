@@ -4,6 +4,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Windows.Foundation;
+using Viem.Windows.Core;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
