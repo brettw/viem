@@ -48,11 +48,7 @@ fn large_markdown_pages_reuse_only_requested_wrapped_lines() {
     let (_, fresh) = candidate(&document, &mut fresh_view, &mut fresh_engine, 1, 2..4);
     for (cached, recomputed) in reused.regional_snapshot().lines().iter().zip(fresh.regional_snapshot().lines()) {
         assert_eq!(cached.height(), recomputed.height());
-        let mut expected = recomputed.rows().to_vec();
-        for row in &mut expected {
-            for caret in &mut row.carets { caret.point.layout_revision = reused.regional_snapshot().revision(); }
-        }
-        assert_eq!(cached.rows(), expected);
+        assert_eq!(cached.rows(), recomputed.rows());
     }
     let (overlap, mixed) = candidate(&document, &mut view, &mut engine, 3, 4..10);
     assert_eq!(overlap.retained_regional_cache_lines(), 4);
@@ -324,13 +320,7 @@ fn repeated_cluster_geometry_cache_matches_fresh_after_resize_edit_and_metrics_c
         let mut fresh_view = ViewLayout::new(view.width(), view.height());
         let (_, fresh) = candidate(&document, &mut fresh_view, &mut fresh_engine, 1, 250..252);
         for (actual, expected) in cached.regional_snapshot().lines().iter().zip(fresh.regional_snapshot().lines()) {
-            let mut rows = expected.rows().to_vec();
-            for row in &mut rows {
-                for caret in &mut row.carets {
-                    caret.point.layout_revision = cached.regional_snapshot().revision();
-                }
-            }
-            assert_eq!(actual.rows(), rows, "step {step}: cached glyph handles, geometry and carets");
+            assert_eq!(actual.rows(), expected.rows(), "step {step}: cached glyph handles, geometry and carets");
         }
     }
     engine.clear_caches();

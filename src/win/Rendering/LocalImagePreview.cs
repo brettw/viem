@@ -62,6 +62,31 @@ internal sealed class LocalImagePreview(CanvasBitmap bitmap, uint width, uint he
         { return new(null, LocalImagePreviewStatus.Broken); } // A failed optional preview retains its URL placeholder.
     }
 
+    /// Intrinsic oriented dimensions from the verified file's header, with the
+    /// same safety and admission checks as decoding but no pixel decode. For
+    /// background layout workers only: it blocks on file and header reads.
+    internal static (uint Width, uint Height, LocalImagePreviewStatus Status) ProbeDimensions(string path)
+    {
+        try
+        {
+            var read = ReadLocalRaster(path, CancellationToken.None);
+            if (read.Limited) return (300, 64, LocalImagePreviewStatus.Limited);
+            if (read.Bytes is not { } bytes) return (300, 64, LocalImagePreviewStatus.Broken);
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream))
+            {
+                writer.WriteBytes(bytes); writer.StoreAsync().AsTask().GetAwaiter().GetResult(); writer.DetachStream();
+            }
+            stream.Seek(0);
+            var decoder = BitmapDecoder.CreateAsync(stream).AsTask().GetAwaiter().GetResult();
+            if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0) return (300, 64, LocalImagePreviewStatus.Broken);
+            if (decoder.PixelWidth > MaximumDimension || decoder.PixelHeight > MaximumDimension) return (300, 64, LocalImagePreviewStatus.Limited);
+            return (decoder.OrientedPixelWidth, decoder.OrientedPixelHeight, LocalImagePreviewStatus.Ready);
+        }
+        catch (Exception error) when (error is not OutOfMemoryException and not StackOverflowException)
+        { return (300, 64, LocalImagePreviewStatus.Broken); }
+    }
+
     internal static async Task<bool> CanOpenFile(string path)
     {
         if (Path.GetExtension(path).ToLowerInvariant() is not (".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".tif" or ".tiff" or ".webp")) return false;

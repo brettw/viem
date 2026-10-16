@@ -62,6 +62,7 @@ internal sealed partial class EditorWindow : Window
         titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
         titleBar.Children.Add(titleDrag); titleDrag.Children.Add(titleText); titleBar.Children.Add(menuToggle); Grid.SetColumn(menuToggle, 1);
         titleBar.Children.Add(toolbarToggle); Grid.SetColumn(toolbarToggle, 2);
+        titleBar.Children.Add(previewToggle); Grid.SetColumn(previewToggle, 2);
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleDrag);
         Diagnostics.StartupPerformance.Mark("window.chromeReady");
         capturePlacement = (placement ?? App.Instance.WindowPlacement).Track(this, () => paneGrid.OrderedPanes.FirstOrDefault()?.GutterWidth ?? 0);

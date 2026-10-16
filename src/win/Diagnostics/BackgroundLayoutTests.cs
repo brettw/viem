@@ -16,7 +16,11 @@ internal static class BackgroundLayoutTests
         var start = Stopwatch.StartNew();
         while (!view.BackgroundLayout.IsIdle && start.Elapsed < TimeSpan.FromSeconds(15)) await Task.Delay(10);
         if (view.BackgroundLayout.LastError != null) throw new InvalidOperationException(view.BackgroundLayout.LastError);
-        if (!view.BackgroundLayout.IsIdle) throw new InvalidOperationException("Background layout did not become idle.");
+        if (!view.BackgroundLayout.IsIdle) throw new InvalidOperationException(
+            $"Background layout did not become idle (started={view.BackgroundLayout.Started}, installed={view.BackgroundLayout.Installed}, "
+            + $"discarded={view.BackgroundLayout.Discarded}, background characters={view.Provider.BackgroundShapedCharacters}, "
+            + $"wait={view.BackgroundLayout.WaitMilliseconds:F0} ms, compute={view.BackgroundLayout.ComputeMilliseconds:F0} ms, "
+            + $"install delay={view.BackgroundLayout.InstallDelayMilliseconds:F0} ms).");
     }
 
     internal static async Task Run(CanvasDevice device, DispatcherQueue dispatcher)

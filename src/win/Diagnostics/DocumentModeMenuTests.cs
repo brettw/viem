@@ -65,7 +65,7 @@ internal static class DocumentModeMenuTests
             await Close(); await OpenFile();
             var python = code.Items.OfType<ToggleMenuFlyoutItem>().Single(i => i.Text == "Python");
             var languageItems = code.Items.Skip(3).ToArray();
-            Check(plain.Text == "Plain text" && markdown.Text == "Markdown" && codeMode.Text == "Code"
+            Check(plain.Text == "Plain text" && markdown.Text == "Markdown Preview" && codeMode.Text == "Code"
                 && menu.Items[3] is MenuFlyoutSeparator && obscure.Text == "Obscure languages" && code.Items[2] is MenuFlyoutSeparator,
                 "Format starts with document types and Code language places Obscure languages after Auto");
             int codeIndex = file.Items.IndexOf(code);
@@ -83,7 +83,7 @@ internal static class DocumentModeMenuTests
             Check(document.State.format == VIEM_FORMAT_PLAIN_TEXT && plain.IsChecked && !auto.IsChecked
                 && !codeMode.IsChecked && ((FontIcon)code.Icon).Glyph == "", "Plain text menu action overrides a code filename");
             await Close();
-            view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "python", false, DocumentModes.Read(document));
+            view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "python", DocumentModes.Read(document));
             await Open();
             Check(python.IsChecked && !plain.IsChecked && !auto.IsChecked && auto.Text == "Auto (Rust)",
                 "forced Python keeps the independently detected Rust label");
@@ -117,7 +117,7 @@ internal static class DocumentModeMenuTests
                 ("notes.unknown", VIEM_FORMAT_PLAIN_TEXT, "Auto (Plain Text)") })
             {
                 var next = window.AddPane(new CoreDocument(source, filename)); var nextView = await next.Ready;
-                nextView.SetDocumentMode(VIEM_DOCUMENT_MODE_AUTO, "", true, DocumentModes.Read(next.Document));
+                nextView.SetDocumentMode(VIEM_DOCUMENT_MODE_AUTO, "", DocumentModes.Read(next.Document));
                 await Open();
                 Check(next.Document.State.format == expectedFormat && auto.Text == label && auto.IsChecked
                     && plain.IsChecked == (expectedFormat == VIEM_FORMAT_PLAIN_TEXT) && !markdown.IsChecked,

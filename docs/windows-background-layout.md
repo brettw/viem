@@ -15,7 +15,10 @@ first; lines outside the window are trimmed before the budget would evict lines
 inside it, and preparation stops when the budget is nearly full. Within the
 window, chunks are taken nearest-first: three screens ahead, three behind, then
 the rest ahead and behind. A chunk holds at most 128 hard lines and 16 KiB of
-text; larger lines are left to demand layout. The core answers "complete" for a
+text; a larger line is prepared alone up to the 64 KiB long-line slice size.
+Beyond it, visible layout uses resumable slices: a retained document, which the
+threshold bounds, still prepares such a line whole so its height is exact, while
+larger documents leave it to demand layout. The core answers "complete" for a
 retained document in constant time.
 
 Installation publishes exact heights to the height index, so the scroll extent
@@ -34,7 +37,9 @@ was positioned with; rows with progressive (very long) cells stay demand-laid.
 Syntax follows the same threshold: a retained Code document is highlighted
 completely once visible text is covered and editing has paused for 250 ms, and a
 retained Markdown document highlights every fenced block, visible blocks first,
-publishing at most four offscreen completions per poll.
+publishing at most four offscreen completions per poll. Comment Markdown in a
+retained Code document covers every comment: edits re-recognize the visible
+comments and carry the rest across the change until editing pauses.
 
 ## macOS ownership and scheduling
 
@@ -76,6 +81,31 @@ and paint-only configuration changes keep in-flight work, which installation
 validates against its geometry and the current window. Rapid input may outrun
 preparation and synchronously shape visible content. It never waits for an
 offscreen worker.
+
+## Windows ownership and scheduling
+
+Each `CoreView` owns viewport pre-layout and table-width refinement instances
+of [BackgroundLayout](../src/win/Core/BackgroundLayout.cs). One worker slot is
+shared across the app; capture runs at low dispatcher priority, computation on a
+thread-pool worker with a provider captured on the UI thread, and installation at
+normal priority so a finished chunk is published ahead of later input. The same
+cancellation, discard and idle rules as macOS apply.
+
+Worker providers read unknown local image dimensions from file headers, with the
+same safety and admission checks as decoding, so speculative geometry is final;
+the UI thread never touches the filesystem and lays out a placeholder instead.
+Image knowledge lives in the view's provider, separately from bitmaps. A decoded
+bitmap whose dimensions layout already used only repaints; a dimension change
+advances the metrics generation and reports the location only when layout used
+the previous dimensions. Drawing shows a bitmap only while it has the dimensions
+its render resource was laid out with. Bitmaps are admitted for the visible
+screen and one screen beyond each edge, and drawing uses a copy resampled to the
+device size on a background thread (bounded to 16 entries and 48 MiB), drawing
+the original until it is ready.
+
+Shaping selects font families, including app-local designs, through retained
+DirectWrite collections. Win2D resolves family strings and font-file URIs again
+for every layout, which made font setup tens of milliseconds per shaping request.
 
 ## Presentation recovery
 
@@ -129,8 +159,12 @@ preservation, identity validation, and recovery. The corresponding Windows
 export fallback, pointer placement, and recovered drawing-cache equivalence.
 
 Windows references remain the [scheduler](../src/win/Core/BackgroundLayout.cs),
-[regression tests](../src/win/Diagnostics/BackgroundLayoutTests.cs), and
-[development guide](../src/win/README.md). Both frontends use the same
+[regression tests](../src/win/Diagnostics/BackgroundLayoutTests.cs), the image
+resource checks in [image interaction tests](../src/win/Diagnostics/ImageInteractionTests.cs)
+(`BackgroundImageResources`), and the [development guide](../src/win/README.md).
+`scripts/test-win.ps1 -Optimized -ProfileDocument <file> -ProfileScenario preview`
+measures Markdown Preview switches, including per-phase shaping and syntax-wait
+CPU time. Both frontends use the same
 [C ABI](../include/viem_core.h): prepare captures a request, compute returns a
 candidate, install consumes that candidate even on stale rejection, and release
 retires requests or uninstalled candidates exactly once.

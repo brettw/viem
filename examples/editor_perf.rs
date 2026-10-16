@@ -12,7 +12,8 @@ use viem_core::command::{InputEvent, Key};
 use viem_core::document::syntax::detection::LanguageSelection;
 use viem_core::document::HistoryRetentionPolicy;
 use viem_core::layout::MockTextMeasurementProvider;
-use viem_core::{Core, CoreEvent, Document, Encoding, Format, ViewId};
+use viem_core::document::ThemeVariant;
+use viem_core::{Core, CoreEvent, Document, DocumentMode, Encoding, Format, ViewId};
 
 type Editor = Core<MockTextMeasurementProvider>;
 
@@ -237,6 +238,18 @@ fn main() {
     let hard_lines = document.projection().text_tree().hard_line_count();
     let mut core = Core::new(document);
     core.initialize_code_detection(filename, false).unwrap();
+    // Optional theme, applied as the native frontends do: the document's
+    // own variant initially, and again after each Preview toggle.
+    let theme_variants = std::env::var_os("VIEM_PERF_THEME").map(|path| {
+        let theme: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        serde_json::to_vec(&theme["styles"]).unwrap()
+    });
+    if let Some(variants) = &theme_variants {
+        if format.is_markdown() {
+            let json = viem_core::document::theme::style_defaults_json(ThemeVariant::Markdown, variants).unwrap();
+            core.initialize_style_defaults(&json).unwrap();
+        }
+    }
     if !syntax {
         core.set_code_language(LanguageSelection::None);
     }
@@ -254,6 +267,40 @@ fn main() {
     report.insert("open_ms".into(), json!(open_ms));
     report.insert("first_view_ms".into(), json!(first_view_ms));
     report.insert("initial_syntax".into(), initial);
+
+    // Markdown Preview off and on again from the middle of the document,
+    // including the layout a frontend requests to draw the next frame.
+    if format.is_markdown() {
+        let middle = hard_lines / 2;
+        key(&mut core, view, Key::Char(':'));
+        text_prompt(&mut core, view, &middle.to_string());
+        key(&mut core, view, Key::Enter);
+        // Literal Markdown keeps its language, as when opened from a .md file.
+        core.set_code_language(LanguageSelection::Language("markdown".into()));
+        let mut preview = Series::default();
+        for round in 0..10 {
+            let mode = if round % 2 == 0 { DocumentMode::CodeFormat } else { DocumentMode::Markdown };
+            let (_, work) = viem_core::document::measure_document_work(|| time(&mut preview, || {
+                core.handle_with_layout(view, CoreEvent::SetDocumentMode {
+                    document: core.document().id(), revision: core.document().revision(), mode,
+                }).unwrap();
+                if let (Some(variants), true) = (&theme_variants, round % 2 == 1) {
+                    let started = Instant::now();
+                    let json = viem_core::document::theme::style_defaults_json(ThemeVariant::Markdown, variants).unwrap();
+                    core.replace_style_defaults(&json).unwrap();
+                    core.handle_with_layout(view, CoreEvent::SetViewportOrigin { left: 0., top: None }).unwrap();
+                    if std::env::var_os("VIEM_PERF_TRACE").is_some() {
+                        eprintln!("  theme styles {:.1} ms", started.elapsed().as_secs_f64() * 1000.);
+                    }
+                }
+            }));
+            if std::env::var_os("VIEM_PERF_TRACE").is_some() {
+                eprintln!("preview toggle {round}: {:.1} ms {work:?}", preview.samples.last().unwrap());
+            }
+            settle_syntax(&mut core, &mut syntax_polls);
+        }
+        report.insert("preview_toggle".into(), preview.summary());
+    }
 
     // Wheel scrolling from the top: 300 steps of 60 units.
     let mut wheel = Series::default();

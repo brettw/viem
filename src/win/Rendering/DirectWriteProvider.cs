@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Collections.Immutable;
 using System.Collections.Concurrent;
 using System.Numerics;
 using System.Runtime.InteropServices;
@@ -9,6 +8,7 @@ using Microsoft.Graphics.Canvas.Text;
 using Microsoft.Graphics.Canvas.Brushes;
 using Microsoft.UI.Dispatching;
 using Viem.Windows.Interop;
+using Viem.Windows.Shell;
 using Windows.UI;
 using Windows.UI.Text;
 using static Viem.Windows.Interop.Native;
@@ -112,16 +112,105 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     public bool IsInlineImage(ViemRenderRunHandleV1 handle) => ImageDestination(handle) != null;
     public string? ImageDestination(ViemRenderRunHandleV1 handle) => handle.owner == owner && handle.metrics_generation == Generation
         && resources.TryGetValue(handle.identifier, out var resource) ? resource.ImageDestination : null;
-    public void SetImageDimensions(string destination, uint width, uint height)
+    /// The intrinsic size layout used for an image's render resource. Drawing
+    /// shows a bitmap only while it still has these dimensions.
+    public (uint Width, uint Height)? ImageLayoutSize(ViemRenderRunHandleV1 handle) => handle.owner == owner
+        && handle.metrics_generation == Generation && resources.TryGetValue(handle.identifier, out var resource)
+        && resource.ImageDestination != null ? (resource.ImageWidth, resource.ImageHeight) : null;
+
+    // Image knowledge is small document presentation state shared by this
+    // view's shapers, separate from any bitmap. Bitmap eviction never forgets
+    // dimensions layout has accepted.
+    private const int MaximumImageMetadataEntries = 65536;
+    private const long MaximumImageMetadataBytes = 32 * 1024 * 1024;
+    public int ImageDimensionProbes => Volatile.Read(ref shared.ImageProbes);
+    /// Resolve relative image locations against this document. A new base
+    /// forgets all knowledge, so layout that used it is reshaped.
+    public void SetImageDocumentPath(string? path)
     {
-        var dimensions = Volatile.Read(ref shared.ImageDimensions);
-        Volatile.Write(ref shared.ImageDimensions, dimensions.SetItem(destination, (width, height)));
+        lock (shared.ImageLock)
+        {
+            if (string.Equals(shared.ImageDocumentPath, path, StringComparison.OrdinalIgnoreCase)) return;
+            shared.ImageDocumentPath = path; shared.Images.Clear(); shared.ImageMetadataBytes = 0;
+        }
+        InvalidateMetrics();
     }
     public void ClearImageDimensions()
     {
-        if (Volatile.Read(ref shared.ImageDimensions).IsEmpty) return;
-        Volatile.Write(ref shared.ImageDimensions, ImmutableDictionary<string, (uint Width, uint Height)>.Empty.WithComparers(StringComparer.Ordinal));
+        lock (shared.ImageLock)
+        {
+            if (shared.Images.Count == 0) return;
+            shared.Images.Clear(); shared.ImageMetadataBytes = 0;
+        }
         InvalidateMetrics();
+    }
+    public InlineImageState? ImageState(string destination)
+    {
+        lock (shared.ImageLock) return shared.Images.TryGetValue(destination, out var image) ? image.State : null;
+    }
+    /// Remember a location within the metadata budget. A full budget stops
+    /// admission rather than evicting dimensions already used by extents.
+    public bool AdmitImage(string destination)
+    {
+        lock (shared.ImageLock) return Remember(destination) != null;
+    }
+    private InlineImageKnowledge? Remember(string destination)
+    {
+        if (shared.Images.TryGetValue(destination, out var known)) return known;
+        long bytes = (long)destination.Length * sizeof(char) + 128;
+        if (shared.Images.Count >= MaximumImageMetadataEntries || shared.ImageMetadataBytes + bytes > MaximumImageMetadataBytes) return null;
+        var image = new InlineImageKnowledge(); shared.Images[destination] = image; shared.ImageMetadataBytes += bytes;
+        return image;
+    }
+    /// Record new knowledge. Returns whether layout geometry changed: only
+    /// when layout used the previous dimensions; otherwise a repaint suffices.
+    public bool RecordImage(string destination, uint width, uint height, InlineImageState state)
+    {
+        lock (shared.ImageLock) return Record(destination, width, height, state);
+    }
+    private bool Record(string destination, uint width, uint height, InlineImageState state)
+    {
+        if (Remember(destination) is not { } image) return false;
+        var next = new InlineImageKnowledge { Width = width, Height = height, State = state };
+        bool changed = image.LayoutKey != next.LayoutKey;
+        bool geometryChanged = image.Served && changed;
+        image.Width = width; image.Height = height; image.State = state;
+        if (changed) image.Served = false;
+        return geometryChanged;
+    }
+    /// Dimensions for layout. A background worker reads unknown local
+    /// dimensions synchronously from the file header so its geometry is final;
+    /// the UI thread never touches the filesystem and uses a placeholder.
+    private InlineImageKnowledge ImageForLayout(string destination)
+    {
+        string? path = null;
+        lock (shared.ImageLock)
+        {
+            var known = shared.Images.GetValueOrDefault(destination);
+            if (IsWorker && known is null or { State: InlineImageState.Pending })
+                path = ImageLocation.LocalPreviewPath(destination, shared.ImageDocumentPath);
+            if (path == null || Remember(destination) == null) return Serve(destination);
+            Interlocked.Increment(ref shared.ImageProbes);
+        }
+        var probed = LocalImagePreview.ProbeDimensions(path);
+        lock (shared.ImageLock)
+        {
+            if (shared.Images.GetValueOrDefault(destination) is { State: InlineImageState.Pending })
+                Record(destination, probed.Width, probed.Height, probed.Status switch {
+                    LocalImagePreviewStatus.Ready => InlineImageState.Measured,
+                    LocalImagePreviewStatus.Limited => InlineImageState.Limited,
+                    _ => InlineImageState.Broken });
+            return Serve(destination);
+        }
+    }
+    /// Layout's dimensions for a location, remembered as used so that later
+    /// knowledge with other dimensions is reported as a geometry change. With
+    /// a full budget the placeholder stays untracked, and so does its decode.
+    private InlineImageKnowledge Serve(string destination)
+    {
+        if (Remember(destination) is not { } image) return new InlineImageKnowledge();
+        image.Served = true;
+        return image.Copy();
     }
     public bool IsColorGlyph(ViemRenderRunHandleV1 handle) => resources.TryGetValue(handle.identifier, out var resource) && resource.ColorGlyph;
     public void Draw(CanvasDrawingSession drawing, ViemRenderRunHandleV1 handle, Vector2 baseline, Color color)
@@ -314,10 +403,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         long contextStart = checked((long)request.text_start - (long)request.context_before.length);
         var fontTiming = Diagnostics.StartupPerformance.Measure("shape.fontSetup");
         var fontCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.fontSetup");
+        var resolveCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.font.resolve");
         var defaultFont = ResolveFont(request.default_style);
+        // Families, including app-local designs, are applied natively below
+        // over the whole text; a URI here would be re-resolved by Win2D.
         using var format = new CanvasTextFormat
         {
-            FontFamily = FontCatalog.RenderingFamily(defaultFont.Family, (ushort)Math.Clamp(request.default_style.weight, 1, 999), ResolvedSlant(request.default_style), defaultFont.Stretch),
+            FontFamily = defaultFont.Family,
             FontStretch = defaultFont.Stretch, FontSize = request.default_style.size * request.scale,
             FontWeight = new FontWeight { Weight = (ushort)Math.Clamp(request.default_style.weight, 1, 999) },
             FontStyle = ResolvedSlant(request.default_style), WordWrapping = CanvasWordWrapping.NoWrap,
@@ -327,19 +419,28 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         // NoWrap permits overflow. A small width keeps RTL coordinates near
         // the text and avoids losing fractional precision at a huge right edge.
         // Rust owns the real wrap width and final paragraph placement.
+        resolveCpu.Dispose();
+        var layoutCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.font.layout");
         var layout = new CanvasTextLayout(device, text.Length == 0 ? " " : text, format, 1, 16_777_216);
+        layoutCpu.Dispose();
         var fragment = new Fragment(layout);
         using var unleasedLayout = new UnleasedLayout(fragment);
+        using var nativeLayout = new NativeReference(FontVariations.NativeLayout(layout));
+        if (nativeLayout.Pointer == 0) throw new InvalidOperationException("The DirectWrite text layout is unavailable.");
         layout.Options = CanvasDrawTextOptions.EnableColorFont;
+        var sessionCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.font.session");
         using var measuring = measurement.CreateDrawingSession();
-        bool variable = ApplyStyle(layout, 0, Math.Max(text.Length, 1), request.default_style, request.scale);
+        sessionCpu.Dispose();
+        var applyCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.font.apply");
+        bool variable = ApplyStyle(layout, nativeLayout.Pointer, 0, Math.Max(text.Length, 1), request.default_style, request.scale);
         for (ulong i = 0; i < request.style_run_count; i++)
         {
             var run = request.style_runs[i];
             int first = map.Utf16((int)Math.Max(0, (long)run.text_start - contextStart));
             int last = map.Utf16((int)Math.Min(map.ByteLength, (long)run.text_end - contextStart));
-            if (last > first) variable |= ApplyStyle(layout, first, last - first, run.style, request.scale);
+            if (last > first) variable |= ApplyStyle(layout, nativeLayout.Pointer, first, last - first, run.style, request.scale);
         }
+        applyCpu.Dispose();
         var capture = new GlyphCapture(GetFontMetadata);
         fontTiming.Dispose();
         fontCpu.Dispose();
@@ -431,11 +532,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
                 cluster.ink_bounds = new() { x = x, y = y, width = Math.Max(previous.x + previous.width, (float)ink.Right) - x, height = Math.Max(previous.y + previous.height, (float)ink.Bottom) - y };
             }
             string? imageDestination = null;
+            (uint Width, uint Height) imageSize = default;
             if (images.TryGetValue(cluster.text_start, out var image) && image.End == cluster.text_end)
             {
                 imageDestination = image.Destination;
-                var dimensions = Volatile.Read(ref shared.ImageDimensions).TryGetValue(imageDestination, out var known) ? known : (300u, 64u);
-                float width = dimensions.Item1 * request.scale, height = dimensions.Item2 * request.scale;
+                var dimensions = ImageForLayout(imageDestination);
+                imageSize = (dimensions.Width, dimensions.Height);
+                float width = dimensions.Width * request.scale, height = dimensions.Height * request.scale;
                 cluster.advance = width;
                 cluster.metrics = new() { ascent = height };
                 cluster.typographic_bounds = cluster.ink_bounds = new() { y = -height, width = width, height = height };
@@ -451,7 +554,8 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             {
                 ulong id = (ulong)Interlocked.Increment(ref shared.NextResource);
                 if (!markerFonts.TryGetValue(styleIndex, out var markerFont)) markerFonts[styleIndex] = markerFont = MarkerFont.From(style, request.scale);
-                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline + baselineOffset, cluster.ink_bounds, markerFont) { ImageDestination = imageDestination }))
+                if (!resources.TryAdd(id, new Resource(fragment, parts, left, line.Baseline + baselineOffset, cluster.ink_bounds, markerFont)
+                    { ImageDestination = imageDestination, ImageWidth = imageSize.Width, ImageHeight = imageSize.Height }))
                     throw new InvalidOperationException("Duplicate glyph resource identity.");
                 Interlocked.Increment(ref fragment.References);
                 responseResources.Add(id);
@@ -549,12 +653,13 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         bool discoverSystem = Text(style.font_face).Length != 0 || Text(style.font_axes) is not ("" or "{}");
         return FontCatalog.RenderingFace(family, (ushort)Math.Clamp(style.weight, 1, 999), slant, stretch, discoverSystem);
     }
-    private static bool ApplyStyle(CanvasTextLayout layout, int start, int count, ViemResolvedTextStyleV1 style, float scale)
+    private static bool ApplyStyle(CanvasTextLayout layout, nint native, int start, int count, ViemResolvedTextStyleV1 style, float scale)
     {
         var font = ResolveFont(style);
         var slant = ResolvedSlant(style);
         var face = ResolvedFace(style, font.Family, slant, font.Stretch);
-        layout.SetFontFamily(start, count, FontCatalog.RenderingFamily(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), slant, font.Stretch, face));
+        var source = FontCatalog.RenderingSource(font.Family, (ushort)Math.Clamp(style.weight, 1, 999), slant, font.Stretch, face);
+        FontVariations.SetFamily(native, start, count, source.Family, source.Packaged);
         layout.SetFontStretch(start, count, font.Stretch);
         layout.SetFontSize(start, count, style.size * scale);
         layout.SetFontWeight(start, count, new FontWeight { Weight = (ushort)Math.Clamp(style.weight, 1, 999) });
@@ -620,6 +725,11 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         GC.KeepAlive(generationCallback); GC.KeepAlive(shapeCallback); GC.KeepAlive(retainCallback);
     }
     private sealed record Lease(DirectWriteProvider Provider, ulong[] Ids);
+    private readonly struct NativeReference(nint pointer) : IDisposable
+    {
+        public nint Pointer { get; } = pointer;
+        public void Dispose() { if (Pointer != 0) Marshal.Release(Pointer); }
+    }
     private GlyphFontMetadata GetFontMetadata(CanvasFontFace font)
     {
         nint reference = GlyphFontMetadata.NativeReference(font);
@@ -641,14 +751,19 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     {
         public readonly ulong Owner = (ulong)Interlocked.Increment(ref nextOwner);
         public long Generation = 1, NextResource, BackgroundCharacters;
-        public int BackgroundThread;
+        public int BackgroundThread, ImageProbes;
         public readonly ConcurrentDictionary<ulong, Resource> Resources = new();
-        public ImmutableDictionary<string, (uint Width, uint Height)> ImageDimensions = ImmutableDictionary<string, (uint Width, uint Height)>.Empty.WithComparers(StringComparer.Ordinal);
+        // Guards only the dictionaries below; probes and decoding run outside it.
+        public readonly object ImageLock = new();
+        public readonly Dictionary<string, InlineImageKnowledge> Images = new(StringComparer.Ordinal);
+        public long ImageMetadataBytes;
+        public string? ImageDocumentPath;
     }
     private sealed class Fragment(CanvasTextLayout layout) { public CanvasTextLayout Layout = layout; public int References; }
     private sealed class Resource(Fragment fragment, List<GlyphPart> parts, float left, float baseline, ViemShapedBoundsV1 bounds, MarkerFont markerFont)
     {
         public string? ImageDestination;
+        public uint ImageWidth, ImageHeight;
         public MarkerFont MarkerFont = markerFont;
         public Fragment Fragment = fragment; public List<GlyphPart> Parts = parts; public int References = 1;
         public float Left = left, Baseline = baseline; public ViemShapedBoundsV1 Bounds = bounds;

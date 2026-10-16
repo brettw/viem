@@ -1214,10 +1214,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                             });
                             for caret in &cluster.caret_stops {
                                 row.carets.push(PositionedCaret {
-                                    point: CaretPoint {
-                                        document_id,
-                                        document_revision,
-                                        layout_revision,
+                                    point: CaretStop {
                                         text_offset: caret.text_offset,
                                         affinity: caret.affinity,
                                     },

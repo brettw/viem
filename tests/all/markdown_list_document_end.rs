@@ -1,8 +1,8 @@
 //! Structural edits in the final owner of a Markdown document stay regional
 //! when the source ends with a line terminator, as most saved files do. A
 //! complete reprojection would discard every view's retained geometry. A blank
-//! final row before the terminator still uses complete reprojection, since
-//! the terminator then pairs into a separator rather than remaining trivia.
+//! final row pairs the terminator into a separator rather than leaving it
+//! trivia; the regional band still parses every ending to the end.
 use crate::support::{assert_exact_undo_redo, assert_reopens_as_displayed, explain_candidates, Editor};
 use viem_core::command::Key;
 use viem_core::document::{measure_document_work, trace_candidate_strategies, BlockKind, ContainerKind, Format};
@@ -58,4 +58,33 @@ fn continuing_a_final_list_with_dos_endings_stays_regional() {
     assert_reopens_as_displayed(editor.document(), "dos");
     let continued = editor.source();
     assert_exact_undo_redo(&mut editor, &source, &continued, "dos");
+}
+
+#[test]
+fn continuing_or_ending_a_final_list_before_a_blank_final_row_stays_regional() {
+    let intro = "Intro paragraph.\n\n".repeat(200);
+    for (tail, continued) in [
+        ("- one\n- two\n\n", "- one\n- two\n- \n\n"),
+        ("1. one\n2. two\n\n", "1. one\n2. two\n3. \n\n"),
+        ("> quoted\n>\n> - one\n> - two\n\n", "> quoted\n>\n> - one\n> - two\n> - \n\n"),
+        ("- one\n- two\n\n\n\n", "- one\n- two\n- \n\n\n\n"),
+    ] {
+        let source = intro.clone() + tail;
+        let mut editor = Editor::open(&source, Format::Markdown);
+        editor.type_keys("i");
+        editor.place(editor.document().text().rfind("two").unwrap() + 3);
+        assert_not_reprojected(tail, || editor.key(Key::Enter));
+        assert_eq!(editor.source(), intro.clone() + continued, "{tail:?}");
+        assert_reopens_as_displayed(editor.document(), tail);
+        assert_not_reprojected(tail, || editor.type_keys("three"));
+        assert_reopens_as_displayed(editor.document(), tail);
+        // Enter on a new empty item ends the list.
+        editor.key(Key::Enter);
+        editor.key(Key::Enter);
+        assert_reopens_as_displayed(editor.document(), tail);
+        assert_not_reprojected(tail, || editor.type_keys("after"));
+        assert_reopens_as_displayed(editor.document(), tail);
+        let typed = editor.source();
+        assert_exact_undo_redo(&mut editor, &source, &typed, tail);
+    }
 }

@@ -414,8 +414,9 @@ semantic styling, and the absence of resource loading.
 
 Only explicit Open link interaction launches a target. Resolve it from current
 source and relative to the document URL; reject stale targets, control characters,
-and executable schemes. Heading fragments navigate the current document. Local
-file targets focus an existing view or pane of that document, preserving its
+and executable schemes. Heading fragments navigate the current document,
+including literal Markdown (Code with the Markdown language), which resolves the
+same heading names from source. Local file targets focus an existing view or pane of that document, preserving its
 unsaved edits; only documents without an open view receive a new Viem window.
 A local file's heading fragment navigates that chosen view. A `#L` fragment
 followed by a positive decimal line number navigates to the beginning of that
@@ -467,8 +468,10 @@ share ordinary undo, and preserve unselected text and label formatting.
 Turning Markdown Preview on or off is an undoable buffer transaction that
 preserves bytes and recovers each view's caret and viewport through provenance.
 It must not reset scrolling or become quadratic; test first switches in both
-directions on large documents. Insert/Replace affinity follows the adjacent
-content when closing syntax appears.
+directions on large documents. After editing pauses, a bounded background worker
+prepares the other view from the immutable state, so a switch need not reparse
+the document; any change discards that preparation. Insert/Replace affinity
+follows the adjacent content when closing syntax appears.
 
 - Preview prose folds ordinary source endings to spaces. Pairs of separator
   endings create paragraphs; surplus pairs retain editable empty paragraphs,
@@ -725,7 +728,10 @@ multi-line code span closed by a closing fence or the end of its comment,
 highlighted as its declared language or the document's; code text replaces the
 comment's syntax appearance, while other roles layer sparse `Markup` styles over
 it. It is presentation only, with visible delimiters, and recognition stays
-bounded to visible comments.
+bounded to visible comments, except that a pre-rendered document recognizes
+every comment. While its editing continues, each revision recognizes the
+visible comments and carries the last complete result across the edits
+elsewhere; the whole document is recognized again once editing pauses.
 
 While edited Code awaits asynchronous highlighting, retain styles on surviving
 text and provisionally give new text the immediately preceding character's
@@ -1713,8 +1719,11 @@ treatments. It stays visible but disabled when unavailable, including carets or
 selections in Markdown code blocks. Windows Heading 6 remains menu-only because
 Control-6 belongs to Vim Control-^.
 
-The toolbar is absent in Text and non-Markdown Code and remembers visibility for
-Markdown documents. With Preview off it shows only the Markdown Preview toggle.
+The formatting toolbar exists only in Markdown Preview, where the title bar
+offers its toggle and its visibility is remembered for Markdown documents. Text,
+non-Markdown Code and literal Markdown have no toolbar. With Preview off, the
+title bar shows a Markdown Preview button in the toolbar toggle's place; turning
+Preview on restores the remembered toolbar visibility and the toolbar toggle.
 Toolbar groups use the standard extra gap, without divider lines. Paragraph and
 character style selectors follow the indent controls so they clip first in a
 narrow window; earlier formatting controls retain precedence on both platforms.
@@ -1875,8 +1884,9 @@ documents prepare a window of the same amount of text around the viewport and
 discard cached lines farthest from it. Speculation runs on workers at lower
 priority than input, yields to visible work, survives paint-only changes, and
 never shapes on or blocks the input thread. Edits re-prepare only what they
-invalidate; lines that cannot be prepared in one bounded job (giant lines) stay
-demand-laid. Each view retains its own geometry, including inactive documents
+invalidate. Giant lines beyond the long-line slice size are prepared whole only
+in a pre-rendered document, whose size bounds them, so its extent is exact;
+elsewhere they stay demand-laid. Each view retains its own geometry, including inactive documents
 and panes (about 25 MiB of live memory per view of 95 KB of Markdown). This is
 accepted, not a defect; future memory work may drop inactive views to the
 incremental window if needed.
@@ -1907,7 +1917,9 @@ incremental window if needed.
   counts multiply it equally in either direction. Preserve the caret's screen
   baseline and desired x as closely as visible geometry permits; choosing the
   caret must not change the page's scroll distance. Proven document endpoints
-  clamp the final page.
+  clamp the final page. Once the viewport already rests at the start or end, a
+  further page in that direction moves the caret to the first or last row at
+  its desired x.
 - Cursor movement and active search matches reveal horizontal overflow in both
   wrapping modes. Cursor movement minimally reveals the complete cursor cell.
   Search centers the cursor, then shifts as little as possible to fit the match's
@@ -2002,6 +2014,12 @@ windows/dialogs; document typography and native system pickers are independent.
   Preserve unavailable authored families/faces and normal fallback. Startup and
   missing-font lookup must not enumerate all font faces or load picker lists
   before first draw. Font changes still preserve ordered fallback families.
+  Shaping selects families, including app-local designs, through retained
+  DirectWrite collections: Win2D resolves family strings and font URIs again
+  on every layout.
+- Standalone scrollbars show the WinUI mouse indicator whenever content can
+  scroll and none otherwise, keeping their gutter reserved, and stay expanded
+  when Windows does not hide scroll bars automatically.
 - Restore normal window geometry before activation, fit it onto an available
   monitor in desktop coordinates, and preserve normal bounds across
   minimization/maximization/fullscreen. Persist placement without invalidating

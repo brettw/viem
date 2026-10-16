@@ -873,6 +873,9 @@ struct View<P: TextMeasurementProvider> {
     /// view layout remains intact so cancellation is an O(1) restoration.
     composition_layout: Option<ViewLayout>,
     viewport_anchor: Option<ViewportTextAnchor>,
+    /// The next immediate layout follows a Preview/Code projection switch:
+    /// nothing is cached, so it lays out only visible rows.
+    fresh_projection: bool,
     immediate_layout_context: LayoutExecutionContext,
     observed_metrics_generation: MetricsGeneration,
     active_layout_work: Option<ActiveLayoutWork>,
@@ -1949,6 +1952,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 search: Default::default(),
                 syntax_wait: Default::default(),
                 viewport_anchor: None,
+                fresh_projection: false,
                 immediate_layout_context,
                 observed_metrics_generation,
                 active_layout_work: None,
@@ -2560,7 +2564,7 @@ impl<P: TextMeasurementProvider> Core<P> {
 
         let hard_line_count = self.document.projection().presentation_line_count();
         let document_revision = self.document.revision();
-        let (focus_offset, viewport_top, viewport_height, preserved_anchor, visual_block_endpoints) = {
+        let (focus_offset, viewport_top, viewport_height, preserved_anchor, visual_block_endpoints, fresh_projection) = {
             let view = self
                 .views
                 .get_mut(&view_id)
@@ -2595,6 +2599,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 view.layout.height(),
                 view.viewport_anchor,
                 view.commands.active_visual_block_endpoint_offsets(),
+                std::mem::take(&mut view.fresh_projection),
             )
         };
         let focus_line = self
@@ -2693,7 +2698,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             };
             (start.min(focus_line), end.max(focus_line + 1))
         };
-        let overscan = if initial_layout { 0 } else { (visible_end - visible_start).max(MIN_OVERSCAN_LINES) };
+        // Nothing is cached after a first layout or a Preview/Code switch:
+        // lay out only what is visible and let speculation prepare the
+        // neighboring screens afterwards.
+        let overscan = if initial_layout || fresh_projection { 0 } else { (visible_end - visible_start).max(MIN_OVERSCAN_LINES) };
         let mut start = visible_start.saturating_sub(overscan);
         let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
         if let Some((anchor, active)) = visual_block_endpoints {
@@ -4657,6 +4665,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             if projection_change {
                 commands.retire_table_selection(&self.document);
                 commands.follow_format_line_mode(self.document.format());
+                if let Some(view) = self.views.get_mut(&id) { view.fresh_projection = true; }
             }
             self.views
                 .get_mut(&id)

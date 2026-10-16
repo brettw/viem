@@ -712,6 +712,7 @@ pub fn prepare_layout_job(
         region,
         cancellation,
         true,
+        false,
         || {},
         || {},
     )
@@ -729,9 +730,10 @@ pub(crate) fn prepare_cache_layout_job(
 ) -> Result<LayoutJobRequest, LayoutJobError> {
     let mut request = prepare_layout_job_with_registration_hooks(document, view, requirements, job_id,
         LayoutJobPriority::Background, LayoutJobRegion::HardLines(region), cancellation,
-        false, || {}, || {})?;
+        false, true, || {}, || {})?;
     // Speculative rows are retained for any later horizontal scroll, so a
-    // table row materializes every column; callers bound each line's text.
+    // table row materializes every column; callers bound each line's text,
+    // including a giant line that a cache fill lays out whole.
     request.captured_view.complete_table_columns = true;
     Ok(request)
 }
@@ -748,6 +750,7 @@ fn prepare_layout_job_with_registration_hooks<F, G>(
     region: LayoutJobRegion,
     cancellation: LayoutCancellationToken,
     register_viewport_job: bool,
+    complete_lines: bool,
     before_registration: F,
     after_registration: G,
 ) -> Result<LayoutJobRequest, LayoutJobError>
@@ -796,7 +799,9 @@ where
         ));
     }
     let has_table_line = line_ranges.iter().any(|line| document.projection().table_at(line.start).is_some_and(|table| line.end <= table.range.end));
-    let use_long_line_slice = !has_table_line && line_ranges.len() == 1
+    // A cache fill retains only complete lines, so it never uses the
+    // resumable slices that bound foreground work in a giant line.
+    let use_long_line_slice = !complete_lines && !has_table_line && line_ranges.len() == 1
         && view.wrap()
         && (checkpoint.is_some() || line_ranges[0].len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
 
@@ -804,7 +809,7 @@ where
     // enormous; the worker wraps its ordinary lines and streams oversized rows.
     // Single wrapped-line continuations retain the explicit resumable protocol.
     let giant_line = line_ranges.iter().any(|line| line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
-    let stream_wrapped_region = view.wrap() && checkpoint.is_none()
+    let stream_wrapped_region = !complete_lines && view.wrap() && checkpoint.is_none()
         && (line_ranges.len() > 1 || (giant_line
             && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), &mut view.initial_wrap_break_state(), &cancellation)? == line_ranges[0].end));
     let use_unwrapped_viewport = giant_line && (has_table_line || ((!view.wrap() || stream_wrapped_region)
@@ -1850,6 +1855,7 @@ mod tests {
             viewport(1..2, 16.0, 100.0),
             replacement_token,
             true,
+            false,
             move || token_to_cancel.cancel(),
             || {},
         );
@@ -1872,6 +1878,7 @@ mod tests {
             viewport(1..2, 16.0, 100.0),
             accepted_token,
             true,
+            false,
             || {},
             move || token_to_cancel.cancel(),
         )

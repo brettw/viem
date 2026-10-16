@@ -2813,7 +2813,7 @@ impl CommandInterpreter {
             return VisualBlockRebindStatus::Cancelled;
         };
         let mut selection =
-            match BlockSelection::new(anchor.point, active.point, block.anchor_x, block.active_x) {
+            match BlockSelection::new(snapshot.stamp(anchor.point), snapshot.stamp(active.point), block.anchor_x, block.active_x) {
                 Ok(selection) => selection,
                 Err(error) => {
                     self.cancel_visual_block_rebind(VisualBlockRebindError::InvalidSelection(
@@ -6930,7 +6930,7 @@ impl CommandInterpreter {
             .snapshot
             .rows
             .iter()
-            .find(|row| row.carets.iter().any(|caret| caret.point == anchor))
+            .find(|row| row.carets.iter().any(|caret| caret.point == crate::layout::CaretStop::from(anchor)))
             .ok_or_else(|| layout_error(LayoutMotionError::PositionNotInLayout(current)))?;
 
         let mut best: Option<(f32, f32)> = None;
@@ -6939,7 +6939,7 @@ impl CommandInterpreter {
             .iter()
             .filter(|caret| caret.x.is_finite() && caret.x >= anchor_x)
         {
-            let mut selection = BlockSelection::new(anchor, caret.point, anchor_x, caret.x)
+            let mut selection = BlockSelection::new(anchor, context.snapshot.stamp(caret.point), anchor_x, caret.x)
                 .map_err(visual_block_error)?;
             selection
                 .update_inclusive_rectangle(context.snapshot)
@@ -7008,13 +7008,13 @@ impl CommandInterpreter {
             .snapshot
             .rows
             .iter()
-            .find(|row| row.carets.iter().any(|caret| caret.point == anchor))
+            .find(|row| row.carets.iter().any(|caret| caret.point == crate::layout::CaretStop::from(anchor)))
             .ok_or_else(|| layout_error(LayoutMotionError::PositionNotInLayout(current)))?;
         let horizontal_caret = crate::layout::nearest_caret(anchor_row, target_x)
             .ok_or_else(|| layout_error(LayoutMotionError::PositionNotInLayout(current)))?;
         let horizontal_x = horizontal_caret.x;
         let mut horizontal_selection =
-            BlockSelection::new(anchor, horizontal_caret.point, anchor_x, horizontal_x)
+            BlockSelection::new(anchor, context.snapshot.stamp(horizontal_caret.point), anchor_x, horizontal_x)
                 .map_err(visual_block_error)?;
         horizontal_selection
             .update_inclusive_rectangle(context.snapshot)
@@ -15271,7 +15271,7 @@ fn normal_block_insertion_origin(
         .rows
         .iter()
         .enumerate()
-        .find(|(_, row)| row.carets.iter().any(|caret| caret.point == point))?;
+        .find(|(_, row)| row.carets.iter().any(|caret| caret.point == crate::layout::CaretStop::from(point)))?;
     let associated = row.clusters.iter().find(|cluster| match point.affinity {
         BoundaryAffinity::Downstream => {
             cluster.text_range.start <= point.text_offset
@@ -15299,7 +15299,7 @@ fn normal_block_insertion_origin(
             Some((row_index, cluster.text_range.end, logical_end_x))
         }
     } else {
-        let caret = row.carets.iter().find(|caret| caret.point == point)?;
+        let caret = row.carets.iter().find(|caret| caret.point == crate::layout::CaretStop::from(point))?;
         Some((row_index, point.text_offset, caret.x))
     }
 }

@@ -25,6 +25,8 @@ mod formatted_text;
 pub(crate) use formatted_text::FormattedTextSnapshotIdentity;
 mod history;
 mod history_memory;
+mod history_source;
+mod view_format_prefetch;
 #[cfg(test)]
 mod large_file_tests;
 mod html;
@@ -632,9 +634,9 @@ struct DocumentState {
 
 fn visit_document_state_source_buffers(
     state: &DocumentState,
-    visitor: &mut dyn FnMut(usize, usize),
+    visitor: &mut history_source::SourceRetentionVisitor<'_>,
 ) {
-    state.source.visit_retained_buffers(visitor);
+    state.source.visit_source_retention(visitor);
 }
 
 fn document_state_source_digest(state: &DocumentState) -> SourceArtifactDigest {
@@ -733,6 +735,8 @@ pub struct Document {
     code_presentation: Option<code_presentation::CodePresentation>,
     configuration: Option<configuration::Configuration>,
     configuration_state: Option<DocumentState>,
+    /// Disposable background preparation of the next Preview switch.
+    view_format_prefetch: view_format_prefetch::ViewFormatPrefetch,
 }
 
 impl Default for Document {
@@ -874,6 +878,7 @@ impl Document {
             code_presentation: None,
             configuration: None,
             configuration_state: None,
+            view_format_prefetch: Default::default(),
         }
     }
 
@@ -1025,6 +1030,7 @@ impl Document {
             code_presentation: None,
             configuration: None,
             configuration_state: None,
+            view_format_prefetch: Default::default(),
         })
     }
 
@@ -1194,6 +1200,27 @@ impl Document {
             .find(|record| record.after == after)
             .filter(|record| record.before == before)
             .and_then(|record| record.local.clone())
+    }
+
+    /// The retained local changes leading from `before` to `after`, in commit
+    /// order, when every recorded transition between them is local.
+    pub(crate) fn layout_changes_between(
+        &self,
+        before: Revision,
+        after: Revision,
+    ) -> Option<Vec<LocalFormattedChange>> {
+        let mut changes = Vec::new();
+        let mut at = after;
+        while at != before {
+            if changes.len() == RETAINED_LAYOUT_CHANGES {
+                return None;
+            }
+            let record = self.layout_changes.iter().rev().find(|record| record.after == at)?;
+            changes.push(record.local.clone()?);
+            at = record.before;
+        }
+        changes.reverse();
+        Some(changes)
     }
 
     /// Run one serial controller operation while composing every committed

@@ -58,6 +58,9 @@ pub(super) struct CoreSyntax {
     /// When the analyzed input last changed. Speculative whole-document
     /// analysis waits for editing to pause.
     input_changed: Option<(SyntaxInputIdentity, std::time::Instant)>,
+    /// When the document revision last changed, for preparing the other
+    /// Markdown view only after editing pauses.
+    pub(super) view_format_changed: Option<((crate::document::DocumentId, crate::document::Revision), std::time::Instant)>,
     referenced_names: Vec<String>,
     implicit_limited: bool,
     pub(super) sheet: Arc<crate::document::StyleSheet>,
@@ -81,6 +84,7 @@ impl Default for CoreSyntax {
             filename: String::new(),
             published: None,
             input_changed: None,
+            view_format_changed: None,
             referenced_names: Vec::new(),
             implicit_limited: false,
             sheet: code_style::snapshot(),
@@ -264,6 +268,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// Bounded publication and immutable request capture only. No provider
     /// function, parsing, or wait occurs under the coordinator's serial lock.
     pub fn poll_syntax(&mut self) -> bool {
+        self.poll_view_format_prefetch();
         if self.document.format() == Format::Markdown {
             // Whole-document Code analysis is obsolete in Preview; only code
             // blocks use their own bounded services.

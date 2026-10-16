@@ -425,6 +425,7 @@ impl HardLineSnapshot {
                 break;
             };
             bytes += text.len();
+            super::work_statistics::record(|stats| stats.comment_context_lexed_lines += 1);
             let result = lex_line(provider, &text, at, &mut state);
             if (at + 1) % CHECKPOINT_STRIDE == 0 || at == line || state.unknown {
                 checkpoints.push((at + 1, state.clone()));
@@ -447,17 +448,30 @@ impl HardLineSnapshot {
                     if let Some(target) = cache.languages.get_mut(&language) {
                         target.checkpoints.extend(checkpoints);
                         target.results.extend(results);
-                        while target.checkpoints.len() > MAX_CHECKPOINTS {
-                            target.checkpoints.pop_first();
-                        }
-                        while target.results.len() > MAX_RESULTS {
-                            target.results.pop_first();
-                        }
+                        // Keep the entries nearest this query. Evicting by
+                        // position alone would discard a revisited early
+                        // line's new checkpoint at once, so a scan from the
+                        // top would restart from the first line every time.
+                        trim_farthest(&mut target.checkpoints, MAX_CHECKPOINTS, line);
+                        trim_farthest(&mut target.results, MAX_RESULTS, line);
                     }
                 }
             }
         }
         answer
+    }
+}
+
+fn trim_farthest<T>(entries: &mut BTreeMap<usize, T>, limit: usize, line: usize) {
+    while entries.len() > limit {
+        let (Some(first), Some(last)) = (entries.keys().next().copied(), entries.keys().next_back().copied()) else {
+            return;
+        };
+        if line.abs_diff(first) >= line.abs_diff(last) {
+            entries.pop_first();
+        } else {
+            entries.pop_last();
+        }
     }
 }
 
@@ -1323,6 +1337,20 @@ mod tests {
             Some(start..start + opener.len()),
             "{language}: {text}"
         );
+    }
+    #[test]
+    fn revisiting_earlier_lines_after_the_cache_fills_resumes_nearby() {
+        let lines = MAX_CHECKPOINTS * 8;
+        let snapshot = document(&"let a = 1; // note\n".repeat(lines)).hard_line_snapshot();
+        for line in (0..lines).rev().step_by(4) {
+            snapshot.comment_context(Some("rust"), line);
+        }
+        let (_, work) = crate::document::measure_document_work(|| {
+            for line in 0..lines {
+                assert_eq!(snapshot.comment_context(Some("rust"), line).comments.len(), 1);
+            }
+        });
+        assert!(work.comment_context_lexed_lines <= lines + CHECKPOINT_STRIDE, "{}", work.comment_context_lexed_lines);
     }
     #[test]
     fn native_forms_and_string_protection_across_families() {

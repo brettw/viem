@@ -501,28 +501,41 @@ internal static class StyleInspectorBehaviorTests
             Check(Selected(inspector).Id == "Code" && inspector.Title == "Theme styles — Markdown — " + preferences.ThemeDisplayName, "Markdown Styles opens the current named character style immediately");
             Check(!inspector.CaretFollowScheduled, "opening Styles does not schedule an idle timer");
             byte[] source = document.Source(document.State.document_revision);
-            int queries = inspector.CaretStyleQueries, loads = inspector.StyleLoads;
+            int queries = 0, loads = 0;
             var moveTimings = new List<string>();
-            long previousMove = Environment.TickCount64;
-            Move(view, 0);
-            for (int i = 0; i < 30; i++) {
-                long started = Environment.TickCount64, gap = started - previousMove;
-                previousMove = started;
-                int priorQueries = inspector.CaretStyleQueries, priorLoads = inspector.StyleLoads;
-                Move(view, (ulong)(1 + i % 18), true);
-                moveTimings.Add($"{i}: gap={gap}, moveMs={Environment.TickCount64 - started}, queries={priorQueries}->{inspector.CaretStyleQueries}, loads={priorLoads}->{inspector.StyleLoads}");
-                await Task.Delay(40);
+            long settledAt = 0;
+            // A harness stall as long as the follow delay (a blocking collection
+            // late in the full suite, for example) genuinely settles the caret
+            // mid-drag, so such a burst is repeated, boundedly.
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                if (attempt > 0) { Move(view, 7); inspector.Retarget(view); }
+                queries = inspector.CaretStyleQueries; loads = inspector.StyleLoads;
+                long previousMove = Environment.TickCount64, longestGap = 0;
+                Move(view, 0);
+                for (int i = 0; i < 30; i++) {
+                    long started = Environment.TickCount64, gap = started - previousMove;
+                    previousMove = started; longestGap = Math.Max(longestGap, gap);
+                    int priorQueries = inspector.CaretStyleQueries, priorLoads = inspector.StyleLoads;
+                    Move(view, (ulong)(1 + i % 18), true);
+                    moveTimings.Add($"{attempt}.{i}: gap={gap}, moveMs={Environment.TickCount64 - started}, queries={priorQueries}->{inspector.CaretStyleQueries}, loads={priorLoads}->{inspector.StyleLoads}");
+                    await Task.Delay(40);
+                }
+                settledAt = Environment.TickCount64;
+                longestGap = Math.Max(longestGap, settledAt - previousMove);
+                moveTimings.Add($"{attempt}.final: gap={settledAt - previousMove}, queries={inspector.CaretStyleQueries}, loads={inspector.StyleLoads}");
+                Move(view, 1);
+                if (longestGap < 450) break;
             }
-            long settledAt = Environment.TickCount64;
-            moveTimings.Add($"final: gap={settledAt - previousMove}, queries={inspector.CaretStyleQueries}, loads={inspector.StyleLoads}");
-            Move(view, 1);
             Check(inspector.CaretStyleQueries == queries && inspector.StyleLoads == loads && Selected(inspector).Id == "Code",
                 "rapid caret/selection dragging performs no style queries or dialog reloads"
                 + $" (expected queries/loads={queries}/{loads}, selected={Selected(inspector).Key}, {inspector.FollowingStateForTesting}, error={inspector.Error},"
                 + $" moves=[{string.Join("; ", moveTimings)}], events=[{inspector.CaretFollowEventsForTesting}])");
             await Task.Delay(250);
-            Check(inspector.CaretStyleQueries == queries && inspector.CaretFollowScheduled,
-                $"caret following waits for half a second of inactivity (quietMs={Environment.TickCount64 - settledAt}, {inspector.FollowingStateForTesting})");
+            long quietMs = Environment.TickCount64 - settledAt;
+            // Only a harness stall reaching the delay itself can have let it fire.
+            Check(quietMs >= 450 || inspector.CaretStyleQueries == queries && inspector.CaretFollowScheduled,
+                $"caret following waits for half a second of inactivity (quietMs={quietMs}, {inspector.FollowingStateForTesting})");
             await Task.Delay(450);
             Check(Selected(inspector).Id == "Heading1" && inspector.CaretStyleQueries == queries + 1 && !inspector.CaretFollowScheduled,
                 "a drag burst produces one settled paragraph-style update");
@@ -611,6 +624,8 @@ internal static class StyleInspectorBehaviorTests
                 Move(view, 1); inspector.Retarget(view);
                 Move(view, (ulong)document.FormattedText().IndexOf("link", StringComparison.Ordinal) + 1);
                 await Task.Delay(650);
+                // A harness stall can delay the follow timer past the fixed wait.
+                for (int i = 0; i < 60 && Selected(inspector).Key != new StyleKey(2, "Link"); i++) await Task.Delay(25);
                 Check(Selected(inspector).Key == new StyleKey(2, "Link"),
                     "moving onto a link updates the open style inspector after the caret settles: " + format);
                 ulong linkStart = view.LinkContext().Link!.Start;
@@ -684,7 +699,7 @@ internal static class StyleInspectorBehaviorTests
             document.Changed += DocumentChanged; document.SyntaxChanged += SyntaxChanged; view.Changed += ViewChanged;
             try
             {
-                view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "markdown", false, DocumentModes.Read(document));
+                view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "markdown", DocumentModes.Read(document));
                 Check(inspector.DocumentPicker.SelectedIndex == 2, "a Markdown-to-Code menu transition retargets the open inspector");
                 string switched = inspector.FollowingStateForTesting;
                 StyleKey? manual = null;

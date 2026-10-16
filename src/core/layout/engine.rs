@@ -415,9 +415,24 @@ pub struct PositionedDecoration {
     pub font_size: f32,
 }
 
+/// A caret stop within one layout. Its document and layout identity belong
+/// to the snapshot holding it ([`LayoutSnapshot::caret_point`]), so an
+/// unchanged line's geometry is shared across revisions without restamping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaretStop {
+    pub text_offset: usize,
+    pub affinity: BoundaryAffinity,
+}
+
+impl From<CaretPoint> for CaretStop {
+    fn from(point: CaretPoint) -> Self {
+        Self { text_offset: point.text_offset, affinity: point.affinity }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PositionedCaret {
-    pub point: CaretPoint,
+    pub point: CaretStop,
     pub x: f32,
     pub row_index: usize,
 }
@@ -731,7 +746,6 @@ impl RegionalHardLineLayout {
             for caret in &mut row.carets {
                 caret.point.text_offset =
                     usize::try_from(caret.point.text_offset as i128 + byte_delta).ok()?;
-                caret.point.document_revision = document_revision;
             }
             rows.push(row);
         }
@@ -1204,17 +1218,9 @@ impl RegionalLayoutSnapshot {
         self.diagnostics.splice(0..0, preceding.diagnostics.iter().cloned());
     }
 
+    /// Caret stops carry no identity, so retained lines stay shared.
     fn rebind_revision(&mut self, revision: LayoutRevision) {
         self.revision = revision;
-        for line in &mut self.lines {
-            let line = Arc::make_mut(line);
-            line.layout_revision = revision;
-            for row in &mut line.rows {
-                for caret in &mut row.carets {
-                    caret.point.layout_revision = revision;
-                }
-            }
-        }
     }
 }
 
@@ -1541,7 +1547,7 @@ impl LayoutSnapshot {
         row.carets.iter().min_by(|left, right| {
             (left.x - point.x).abs().total_cmp(&(right.x - point.x).abs())
                 .then_with(|| affinity_rank(left.point.affinity).cmp(&affinity_rank(right.point.affinity)))
-        }).map(|caret| caret.point).ok_or(LayoutError::NoCaretStops)
+        }).map(|caret| self.stamp(caret.point)).ok_or(LayoutError::NoCaretStops)
     }
 
     /// Character-mode pointer placement uses the containing visual cell, not
@@ -1549,7 +1555,7 @@ impl LayoutSnapshot {
     /// an indivisible cluster retains its first logical grapheme as its target.
     pub fn hit_test_character(&self, point: LayoutPoint) -> Result<CaretPoint, LayoutError> {
         let row = self.hit_test_row(point)?;
-        let nearest = nearest_caret(row, point.x).ok_or(LayoutError::NoCaretStops)?.point;
+        let nearest = self.stamp(nearest_caret(row, point.x).ok_or(LayoutError::NoCaretStops)?.point);
         let Some(cluster) = row.clusters.iter().find(|cluster| {
             cluster.x <= point.x && point.x < cluster.x + cluster.advance
         }) else { return Ok(nearest) };
@@ -1661,7 +1667,7 @@ impl LayoutSnapshot {
     pub fn caret_geometry(&self, point: CaretPoint) -> Result<CaretGeometry, LayoutError> {
         self.validate_caret_point(point)?;
         for row in self.rows.iter() {
-            if let Some(caret) = row.carets.iter().find(|caret| caret.point == point) {
+            if let Some(caret) = row.carets.iter().find(|caret| caret.point == CaretStop::from(point)) {
                 return Ok(CaretGeometry {
                     point,
                     rect: LayoutRect {
@@ -3334,12 +3340,20 @@ impl LayoutSnapshot {
             (insets.before, insets.after, insets.after_is_exact))
     }
 
+    /// Caret stops carry no identity, so the shared rows are not copied.
     fn rebind_revision(&mut self, revision: LayoutRevision) {
         self.revision = revision;
-        for row in Arc::make_mut(&mut self.rows) {
-            for caret in &mut row.carets {
-                caret.point.layout_revision = revision;
-            }
+    }
+
+    /// A caret stop of this snapshot, with the document and layout identity
+    /// that callers validate it against.
+    pub fn stamp(&self, stop: CaretStop) -> CaretPoint {
+        CaretPoint {
+            document_id: self.document_id,
+            document_revision: self.document_revision,
+            layout_revision: self.revision,
+            text_offset: stop.text_offset,
+            affinity: stop.affinity,
         }
     }
 }
@@ -4756,21 +4770,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     lines.push(RegionalHardLineLayout { layout_revision, hard_line_index,
                         hard_line_range: line_slice.full_range.clone(), text_coverage: line_slice.full_range.clone(),
                         rows, height: f64::from(height), height_is_exact: true, next_checkpoint: None,
-                        diagnostics: Vec::new(), render_run_policy, inputs: line_inputs[line_offset].clone() });
+                        diagnostics: Vec::new(), render_run_policy, inputs: line_inputs[line_offset].clone() }.into_retained());
                     continue;
                 }
             }
             if let Some(cached) = cached {
-                let mut line = cached.as_ref().clone();
-                line.layout_revision = layout_revision;
-                for row in &mut line.rows {
-                    for caret in &mut row.carets {
-                        caret.point.layout_revision = layout_revision;
-                        caret.point.document_revision = document_revision;
-                    }
-                }
-                diagnostics.extend(line.diagnostics.iter().cloned());
-                lines.push(line);
+                // Caret stops carry no snapshot identity: share the line.
+                diagnostics.extend(cached.diagnostics.iter().cloned());
+                lines.push(cached.clone());
                 continue;
             }
             let line_range = &line_slice.work_range;
@@ -4974,12 +4981,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     decorations: Vec::new(),
                     carets: vec![
                         PositionedCaret {
-                            point: point_downstream,
+                            point: point_downstream.into(),
                             x,
                             row_index: 0,
                         },
                         PositionedCaret {
-                            point: point_upstream,
+                            point: point_upstream.into(),
                             x,
                             row_index: 0,
                         },
@@ -5147,7 +5154,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 height_is_exact: !extends_past_work,
                 next_checkpoint,
                 inputs: line_inputs[line_offset].clone(),
-            });
+            }.into_retained());
         }
 
         let paint_start = lines.first().expect("nonempty range").text_coverage.start;
@@ -5219,7 +5226,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             canvas_background_is_default: document_styles.canvas_background_is_default,
             default_paint: document_styles.default_paint.clone(),
             paint_runs,
-            lines: lines.into_iter().map(RegionalHardLineLayout::into_retained).collect(),
+            lines,
             diagnostics,
             grapheme_boundaries,
             work_statistics,
@@ -5582,12 +5589,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     decorations: Vec::new(),
                     carets: vec![
                         PositionedCaret {
-                            point: point_downstream,
+                            point: point_downstream.into(),
                             x,
                             row_index,
                         },
                         PositionedCaret {
-                            point: point_upstream,
+                            point: point_upstream.into(),
                             x,
                             row_index,
                         },
@@ -6704,7 +6711,7 @@ fn position_row(
                 affinity: caret.affinity,
             };
             carets.push(PositionedCaret {
-                point,
+                point: point.into(),
                 x: cluster_x + caret.inline_offset,
                 row_index,
             });
@@ -8838,8 +8845,8 @@ mod tests {
         let mut split = snapshot.clone();
         let row = &mut Arc::make_mut(&mut split.rows)[0];
         for (offset, fraction) in [(2, 0.25), (3, 0.6)] {
-            row.carets.push(PositionedCaret { point: CaretPoint {
-                text_offset: offset, affinity: BoundaryAffinity::Downstream, ..row.carets[0].point
+            row.carets.push(PositionedCaret { point: CaretStop {
+                text_offset: offset, affinity: BoundaryAffinity::Downstream,
             }, x: cluster.x + cluster.advance * fraction, row_index: 0 });
         }
         for (fraction, expected) in [(0.1, 1), (0.5, 2), (0.9, 3)] {
@@ -9069,7 +9076,7 @@ mod tests {
         assert!(snapshot.rows.iter().all(|row| row.carets.len() == 2));
         assert!(snapshot.total_height > 0.0);
         for row in snapshot.rows.iter() {
-            let caret = row.carets[0].point;
+            let caret = snapshot.stamp(row.carets[0].point);
             let geometry = snapshot.caret_geometry(caret).unwrap();
             let hit = snapshot
                 .hit_test(LayoutPoint {
@@ -9542,7 +9549,7 @@ mod tests {
     }
 
     #[test]
-    fn command_snapshot_clones_share_large_geometry_and_revision_changes_detach_it() {
+    fn command_snapshot_clones_and_revision_changes_share_large_geometry() {
         let (_, _, view) = lay_out(&"office and proportional text ".repeat(10_000), 600.0);
         let original = view.snapshot().unwrap();
         let mut copy = original.clone();
@@ -9550,9 +9557,13 @@ mod tests {
         let old_revision = original.revision;
         let revision = LayoutRevision(old_revision.0 + 1);
         copy.rebind_revision(revision);
-        assert!(!Arc::ptr_eq(&copy.rows, &original.rows));
-        assert!(original.rows.iter().flat_map(|row| &row.carets).all(|caret| caret.point.layout_revision == old_revision));
-        assert!(copy.rows.iter().flat_map(|row| &row.carets).all(|caret| caret.point.layout_revision == revision));
+        // Caret stops carry no identity; each snapshot stamps its own.
+        assert!(Arc::ptr_eq(&copy.rows, &original.rows));
+        let stop = original.rows[0].carets[0].point;
+        assert_eq!(original.stamp(stop).layout_revision, old_revision);
+        assert_eq!(copy.stamp(stop).layout_revision, revision);
+        assert!(copy.caret_geometry(copy.stamp(stop)).is_ok());
+        assert!(copy.caret_geometry(original.stamp(stop)).is_err());
     }
 
     #[test]

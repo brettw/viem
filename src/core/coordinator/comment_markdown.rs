@@ -1,9 +1,15 @@
 //! Simplified Markdown in Code comments. Recognition is synchronous and
 //! bounded to the visible comments; code inside comments uses bounded
 //! asynchronous syntax services, like Markdown Preview code blocks.
+//!
+//! A pre-rendered document recognizes every comment, so scrolling never
+//! reveals comments styled late. Until editing pauses, each new revision
+//! re-recognizes the visible comments and carries the earlier complete
+//! result across the edits elsewhere.
 use super::*;
 use crate::document::{
-    comment_markdown::CommentMarkdown,
+    comment_markdown::{CommentCodeRegion, CommentMarkdown, CommentRoleSpan, MAX_REQUEST_LINES},
+    LocalFormattedChange, ReflowOptions,
     syntax::{
         service::SyntaxService, SyntaxInputIdentity, SyntaxInputSnapshot, SyntaxRun,
         SyntaxStyleName,
@@ -16,13 +22,30 @@ use std::{collections::BTreeMap, ops::Range, sync::Arc};
 const MAX_CODE_SERVICES: usize = 32;
 /// Lines recognized above each viewport, so short scrolls keep their styling.
 const LEADING_LINES: usize = 20;
+/// Editing pause before a pre-rendered document's comments are recognized
+/// completely again. Visible comments are always recognized immediately.
+const COMPLETE_RECOGNITION_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
 
 #[derive(Clone, Debug, PartialEq)]
 struct RecognitionKey {
     revision: Revision,
+    /// Visible lines, or none when a complete recognition presents every
+    /// comment and its code regions do not depend on what is visible.
     lines: Vec<Range<usize>>,
     comments: String,
     language: Option<String>,
+    complete: bool,
+}
+
+/// Every comment of a pre-rendered document.
+struct Complete {
+    revision: Revision,
+    comments: String,
+    language: Option<String>,
+    recognized: Arc<CommentMarkdown>,
+    /// Recognized at `revision` itself, rather than an earlier recognition
+    /// carried across edits, whose edited text it no longer covers.
+    exact: bool,
 }
 
 /// The installed layer's spans per hard line, relative to the line start, in
@@ -41,6 +64,9 @@ struct Installed {
 #[derive(Default)]
 pub(super) struct CommentMarkdownSyntax {
     recognized: Option<(RecognitionKey, Arc<CommentMarkdown>)>,
+    complete: Option<Complete>,
+    /// When the revision last changed, for the editing pause.
+    changed_at: Option<(Revision, std::time::Instant)>,
     /// The recognition the services and `code_runs` were built from.
     services_for: Option<Arc<CommentMarkdown>>,
     services: Vec<CodeService>,
@@ -94,26 +120,40 @@ impl<P: TextMeasurementProvider> Core<P> {
         let language = self.reflow_language();
         let mut options = self.buffer_commands.reflow_options.clone();
         options.set_language(language.as_deref());
+        let complete = self.refresh_complete_comment_markdown(&options, &language);
+        let visible = self.visible_comment_lines();
+        // Only code services depend on visibility, and only when there are
+        // more code regions than services.
+        let independent = complete.as_ref().is_some_and(|complete| complete.code.len() <= MAX_CODE_SERVICES);
         let key = RecognitionKey {
             revision,
-            lines: self.visible_comment_lines(),
+            lines: if independent { Vec::new() } else { visible.clone() },
             comments: options.comments().to_owned(),
             language: language.clone(),
+            complete: complete.is_some(),
         };
         let recognized = match &self.syntax.comments.recognized {
             Some((cached, recognized)) if *cached == key => recognized.clone(),
             _ => {
-                let mut recognized = CommentMarkdown::default();
-                for lines in &key.lines {
-                    let part = self.document.recognize_comment_markdown(&options, lines.clone());
-                    recognized.roles.extend(part.roles);
-                    for region in part.code {
-                        if !recognized.code.iter().any(|known| known.segments == region.segments) {
-                            recognized.code.push(region);
-                        }
+                let recognized = match complete {
+                    Some(complete) if independent => complete,
+                    Some(complete) => {
+                        let visible = self.line_byte_ranges(&visible);
+                        Arc::new(CommentMarkdown {
+                            roles: complete.roles.clone(),
+                            code: visible_code_first(&complete.code, &visible),
+                            lines: complete.lines.clone(),
+                        })
                     }
-                }
-                let recognized = Arc::new(recognized);
+                    None => {
+                        let (mut recognized, inspected) = self.recognize_comment_lines(&options, &visible);
+                        if let Some(carried) = self.carry_complete_comment_markdown(&options, &language) {
+                            let inspected = self.line_byte_ranges(&inspected);
+                            merge_carried(&mut recognized, &carried, &inspected);
+                        }
+                        Arc::new(recognized)
+                    }
+                };
                 self.syntax.comments.recognized = Some((key, recognized.clone()));
                 recognized
             }
@@ -162,6 +202,122 @@ impl<P: TextMeasurementProvider> Core<P> {
             return false;
         }
         self.install_comment_markdown_layer(carved, runs)
+    }
+
+    /// Recognize the comments intersecting each range of hard lines. Returns
+    /// the recognition and the hard lines it inspected, which include every
+    /// recognized comment's complete extent.
+    fn recognize_comment_lines(&self, options: &ReflowOptions, ranges: &[Range<usize>]) -> (CommentMarkdown, Vec<Range<usize>>) {
+        let mut recognized = CommentMarkdown::default();
+        let mut inspected = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for range in ranges {
+            let mut start = range.start;
+            while start < range.end {
+                let end = range.end.min(start.saturating_add(MAX_REQUEST_LINES));
+                let part = self.document.recognize_comment_markdown(options, start..end);
+                // A comment crossing a request boundary is presented by both.
+                recognized.roles.extend(part.roles.into_iter()
+                    .filter(|span| seen.insert((span.range.start, span.range.end, span.role))));
+                for region in part.code {
+                    if !recognized.code.iter().any(|known| known.segments == region.segments) {
+                        recognized.code.push(region);
+                    }
+                }
+                inspected.push(part.lines);
+                start = end;
+            }
+        }
+        (recognized, inspected)
+    }
+
+    /// Formatted byte ranges of ranges of hard lines, including each final
+    /// line's break.
+    fn line_byte_ranges(&self, lines: &[Range<usize>]) -> Vec<Range<usize>> {
+        let projection = self.document.projection();
+        let length = projection.text_tree().byte_len();
+        lines
+            .iter()
+            .filter(|lines| !lines.is_empty())
+            .filter_map(|lines| {
+                let start = projection.presentation_line_range(lines.start)?.start;
+                let end = projection.presentation_line_range(lines.end - 1).map_or(length, |range| range.end);
+                Some(start..(end + 1).min(length))
+            })
+            .collect()
+    }
+
+    /// The complete recognition of a pre-rendered document for the current
+    /// revision. It is recognized again when first needed, after a change of
+    /// options or a transition that cannot be carried, and otherwise once
+    /// editing has paused.
+    fn refresh_complete_comment_markdown(
+        &mut self,
+        options: &ReflowOptions,
+        language: &Option<String>,
+    ) -> Option<Arc<CommentMarkdown>> {
+        if !super::prelayout::retains_complete_presentation(&self.document) {
+            self.syntax.comments.complete = None;
+            self.syntax.comments.changed_at = None;
+            return None;
+        }
+        let revision = self.document.revision();
+        let comments = &mut self.syntax.comments;
+        let now = std::time::Instant::now();
+        let changed_at = match comments.changed_at {
+            Some((at_revision, at)) if at_revision == revision => at,
+            _ => {
+                comments.changed_at = Some((revision, now));
+                now
+            }
+        };
+        let carried = match &comments.complete {
+            Some(complete) if complete.comments == options.comments() && complete.language == *language => {
+                if complete.revision == revision && complete.exact {
+                    return Some(complete.recognized.clone());
+                }
+                complete.revision == revision
+                    || self.document.layout_changes_between(complete.revision, revision).is_some()
+            }
+            _ => false,
+        };
+        if carried && now.duration_since(changed_at) < COMPLETE_RECOGNITION_PAUSE {
+            return None;
+        }
+        let count = self.document.projection().presentation_line_count();
+        let (recognized, _) = self.recognize_comment_lines(options, &[0..count]);
+        let recognized = Arc::new(recognized);
+        self.syntax.comments.complete = Some(Complete {
+            revision,
+            comments: options.comments().to_owned(),
+            language: language.clone(),
+            recognized: recognized.clone(),
+            exact: true,
+        });
+        Some(recognized)
+    }
+
+    /// The last complete recognition carried to the current revision across
+    /// the edits since, without the comments they touched.
+    fn carry_complete_comment_markdown(
+        &mut self,
+        options: &ReflowOptions,
+        language: &Option<String>,
+    ) -> Option<Arc<CommentMarkdown>> {
+        let revision = self.document.revision();
+        let complete = self.syntax.comments.complete.as_mut()
+            .filter(|complete| complete.comments == options.comments() && complete.language == *language)?;
+        if complete.revision != revision {
+            let changes = self.document.layout_changes_between(complete.revision, revision)?;
+            let mut carried = (*complete.recognized).clone();
+            for change in &changes {
+                carry_across(&mut carried, change);
+            }
+            complete.recognized = Arc::new(carried);
+            complete.revision = revision;
+            complete.exact = false;
+        }
+        Some(complete.recognized.clone())
     }
 
     /// Visible hard lines of every view, with leading context, merged.
@@ -387,6 +543,61 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 }
 
+/// Whether `range` overlaps the replaced text, or strictly contains the
+/// location of an insertion.
+fn touches(range: &Range<usize>, old: &Range<usize>) -> bool {
+    if old.is_empty() {
+        range.start < old.start && old.start < range.end
+    } else {
+        range.start < old.end && old.start < range.end
+    }
+}
+
+/// Map a recognition across one local change, dropping what it touched.
+fn carry_across(recognized: &mut CommentMarkdown, change: &LocalFormattedChange) {
+    let old = &change.old;
+    let shift = |range: &mut Range<usize>| {
+        if range.start >= old.end {
+            range.start = range.start - old.end + change.new.end;
+            range.end = range.end - old.end + change.new.end;
+        }
+    };
+    recognized.roles.retain_mut(|span| {
+        let keep = !touches(&span.range, old);
+        if keep {
+            shift(&mut span.range);
+        }
+        keep
+    });
+    recognized.code.retain_mut(|region| {
+        let keep = !region.segments.iter().any(|segment| touches(segment, old) || segment.is_empty() && segment.start == old.start);
+        if keep {
+            region.segments.iter_mut().for_each(shift);
+        }
+        keep
+    });
+}
+
+/// Add the carried recognition outside the freshly inspected text.
+fn merge_carried(recognized: &mut CommentMarkdown, carried: &CommentMarkdown, inspected: &[Range<usize>]) {
+    let outside = |range: &Range<usize>| {
+        !inspected.iter().any(|inspected| range.start < inspected.end && inspected.start <= range.end)
+    };
+    let roles: Vec<CommentRoleSpan> = carried.roles.iter().filter(|span| outside(&span.range)).cloned().collect();
+    recognized.roles.extend(roles);
+    // Fresh regions are visible, so they keep the first code services.
+    recognized.code.extend(carried.code.iter()
+        .filter(|region| region.segments.iter().all(outside))
+        .cloned());
+}
+
+/// Code regions intersecting the visible text first, each group in order.
+fn visible_code_first(code: &[CommentCodeRegion], visible: &[Range<usize>]) -> Vec<CommentCodeRegion> {
+    let shown = |region: &&CommentCodeRegion| region.segments.iter().any(|segment|
+        visible.iter().any(|visible| segment.start <= visible.end && visible.start <= segment.end));
+    code.iter().filter(shown).chain(code.iter().filter(|region| !shown(region))).cloned().collect()
+}
+
 /// The new revision's lines whose signatures differ from the previous layer,
 /// after skipping lines equal by position from the start and from the end.
 fn changed_line_hull(
@@ -559,6 +770,62 @@ mod tests {
         core.poll_syntax();
         let resolved = DocumentLayoutStyles::character_at(core.document.projection(), at, false).unwrap();
         assert!(!resolved.bold, "an unclosed delimiter is not strong");
+    }
+
+    fn code_core(source: &str) -> Core<MockTextMeasurementProvider> {
+        let mut core = Core::<MockTextMeasurementProvider>::new(
+            Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap(),
+        );
+        core.initialize_code_detection("fixture.rs", false).unwrap();
+        core.set_syntax_provider_factory(Arc::new(|| Box::new(Fixture)));
+        core.add_view(MockTextMeasurementProvider::new(), 400., 300.);
+        core.set_comment_markdown(true);
+        core
+    }
+
+    fn bold(core: &Core<MockTextMeasurementProvider>, needle: &str) -> bool {
+        let at = core.document.text().find(needle).unwrap();
+        DocumentLayoutStyles::character_at(core.document.projection(), at, false).unwrap().bold
+    }
+
+    fn exact(core: &Core<MockTextMeasurementProvider>) -> bool {
+        core.syntax.comments.complete.as_ref().is_some_and(|complete| complete.exact)
+    }
+
+    #[test]
+    fn pre_rendered_documents_recognize_offscreen_comments_and_carry_them_across_edits() {
+        let source = format!("// near **one**\n{}// far **two** and **three**\n", "let a = 1;\n".repeat(200));
+        let mut core = code_core(&source);
+        settle(&mut core, |core| bold(core, "two"));
+        assert!(bold(&core, "one") && bold(&core, "three") && exact(&core));
+
+        // Typing re-recognizes the visible comment and carries the rest.
+        let at = core.document.text().find("one").unwrap();
+        core.document.replace(at..at, "very ").unwrap();
+        core.poll_syntax();
+        assert!(bold(&core, "very") && bold(&core, "two") && bold(&core, "three"));
+        assert!(!exact(&core), "no complete recognition while editing");
+
+        // An offscreen edit drops the spans it touched until editing pauses.
+        let closer = core.document.text().find("** and").unwrap();
+        core.document.replace(closer..closer + 2, "").unwrap();
+        core.poll_syntax();
+        assert!(!bold(&core, "two") && bold(&core, "three"));
+        std::thread::sleep(COMPLETE_RECOGNITION_PAUSE);
+        core.poll_syntax();
+        assert!(exact(&core));
+        assert!(bold(&core, "very") && !bold(&core, "two") && !bold(&core, " and ") && bold(&core, "three"));
+    }
+
+    #[test]
+    fn larger_documents_recognize_only_visible_comments() {
+        let source = format!("// near **one**\n{}// far **two**\n", "let a = 1;\n".repeat(12_000));
+        assert!(!crate::coordinator::prelayout::retains_complete_presentation(
+            &Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap()));
+        let mut core = code_core(&source);
+        settle(&mut core, |core| bold(core, "one"));
+        assert!(!bold(&core, "two"));
+        assert!(core.syntax.comments.complete.is_none());
     }
 
     fn signature(entries: &[(usize, &str)]) -> BTreeMap<usize, LineSignature> {

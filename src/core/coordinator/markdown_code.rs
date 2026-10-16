@@ -34,7 +34,7 @@ pub(super) struct MarkdownCodeSyntax {
     /// The next publication splices its spans across intervening edits.
     published: Option<(crate::document::FormattedDocument, Vec<u64>)>,
     #[cfg(test)]
-    code_sheet: Option<std::sync::Arc<crate::document::StyleSheet>>,
+    pub(super) code_sheet: Option<std::sync::Arc<crate::document::StyleSheet>>,
 }
 
 #[cfg(test)]

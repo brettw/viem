@@ -27,6 +27,8 @@ internal sealed unsafe partial class CoreView : IDisposable
     {
         Document = document;
         using (Diagnostics.StartupPerformance.Measure("view.provider")) Provider = new(device, dispatcher);
+        // Background layout may probe local image headers from the first job.
+        Provider.SetImageDocumentPath(document.FilePath);
         var table = Provider.Table;
         var options = New<ViemViewOptionsV1>(); options.execution_context = VIEM_LAYOUT_EXECUTION_FRONTEND_MAIN; options.width = Math.Max(1, width); options.height = Math.Max(1, height);
         options.padding_top = padding.top; options.padding_left = padding.left;

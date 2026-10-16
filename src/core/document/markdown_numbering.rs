@@ -111,9 +111,18 @@ impl Document {
             .iter()
             .map(|block| block.id)
             .collect::<HashSet<_>>();
-        let old_lists = self
-            .projection()
-            .list_structure()
+        // Lists never continue across a block outside every list, so the
+        // windows around the edit hold every affected run in both snapshots.
+        let old_window = self.projection().list_window(&range);
+        let extent = match (old_window.blocks.first(), old_window.blocks.last()) {
+            (Some(first), Some(last)) => {
+                map(first.range.start, Association::BeforeInsertion, BoundaryAffinity::Downstream)?.min(mapped.start)
+                    ..map(last.range.end, Association::AfterInsertion, BoundaryAffinity::Upstream)?.max(mapped.end)
+            }
+            _ => mapped.clone(),
+        };
+        let old_lists = old_window
+            .structure
             .lists
             .into_iter()
             .filter(|list| {
@@ -129,10 +138,10 @@ impl Document {
             .flat_map(|list| &list.items)
             .flat_map(|item| item.paragraph_ids.iter().copied())
             .collect::<HashSet<_>>();
-        let lists = candidate.projection.list_structure();
-        let blocks = candidate
-            .projection
-            .blocks()
+        let window = candidate.projection.list_window(&extent);
+        let lists = window.structure;
+        let blocks = window
+            .blocks
             .iter()
             .map(|block| (block.id, block))
             .collect::<HashMap<_, _>>();
@@ -275,12 +284,12 @@ impl Document {
             }
             (kind, block.style.clone())
         };
+        // Streamed comparisons retain no whole-store copy in either snapshot.
         if !literal_overflow && scratch
             .projection()
-            .blocks()
-            .iter()
-            .map(shape)
-            .ne(renumbered_state.projection.blocks().iter().map(shape))
+            .block_items()
+            .map(|block| shape(&block))
+            .ne(renumbered_state.projection.block_items().map(|block| shape(&block)))
         {
             return Err(DocumentError::VerificationFailed.into());
         }
@@ -297,14 +306,12 @@ impl Document {
                 .has_same_hard_line_structure(scratch.projection())
             || candidate
                 .projection
-                .blocks()
-                .iter()
-                .map(|block| (&block.range, &block.kind, &block.style))
+                .block_items()
+                .map(|block| (block.range.clone(), block.kind.clone(), block.style.clone()))
                 .ne(scratch
                     .projection()
-                    .blocks()
-                    .iter()
-                    .map(|block| (&block.range, &block.kind, &block.style)))
+                    .block_items()
+                    .map(|block| (block.range.clone(), block.kind.clone(), block.style.clone())))
         {
             return Err(DocumentError::VerificationFailed.into());
         }

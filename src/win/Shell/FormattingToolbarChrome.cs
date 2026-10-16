@@ -13,6 +13,9 @@ internal sealed partial class EditorWindow
 {
     private FormattingToolbar? formattingToolbar;
     private readonly ToggleButton toolbarToggle = new() { Width = 40, Height = 30, MinHeight = 0, Padding = new(0), BorderThickness = new(0), Visibility = Visibility.Collapsed, AllowFocusOnInteraction = false };
+    // Markdown with Preview off has no toolbar; this title-bar button takes
+    // the toolbar toggle's place and turns Preview back on.
+    private readonly Button previewToggle = new() { Width = 40, Height = 30, MinHeight = 0, Padding = new(0), BorderThickness = new(0), Visibility = Visibility.Collapsed, AllowFocusOnInteraction = false };
     private bool closeAfterToolbarPopup;
 
     private void ConfigureFormattingToolbar()
@@ -27,6 +30,13 @@ internal sealed partial class EditorWindow
         AutomationProperties.SetName(toolbarToggle, "Formatting toolbar");
         toolbarToggle.Click += (_, _) => Safe(() => {
             if (ActivePane != null) preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, toolbarToggle.IsChecked == true);
+            SynchronizeFormattingToolbar(); RestoreEditorFocusAfterControl(); return Task.CompletedTask;
+        });
+        previewToggle.Content = FormattingToolbar.FormattedViewIcon(previewToggle);
+        AutomationProperties.SetName(previewToggle, "Markdown Preview");
+        ToolTipService.SetToolTip(previewToggle, "Markdown Preview");
+        previewToggle.Click += (_, _) => Safe(() => {
+            if (ActivePane is { View: { } view } pane) pane.Run(() => view.SetMarkdownPreview(true));
             SynchronizeFormattingToolbar(); RestoreEditorFocusAfterControl(); return Task.CompletedTask;
         });
     }
@@ -44,10 +54,10 @@ internal sealed partial class EditorWindow
         return toolbar;
     }
 
-    // Markdown documents keep one toolbar, including with Preview off.
+    // Only Markdown Preview has a formatting toolbar.
     private void PrepareFormattingToolbar(CoreDocument document)
     {
-        bool visible = document.IsMarkdownDocument && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
+        bool visible = document.State.format == VIEM_FORMAT_MARKDOWN && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
         if (visible) EnsureFormattingToolbar();
         if (formattingToolbar != null) formattingToolbar.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -64,9 +74,14 @@ internal sealed partial class EditorWindow
     private void SynchronizeFormattingToolbar()
     {
         if (closed) return;
-        bool available = ActivePane?.Document.IsMarkdownDocument == true;
-        bool visible = available && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
-        toolbarToggle.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
+        var document = ActivePane?.Document;
+        bool preview = document?.State.format == VIEM_FORMAT_MARKDOWN;
+        bool visible = preview && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
+        // Preview shows the toolbar toggle; literal Markdown offers Preview
+        // in its place. Text and other Code show neither.
+        bool literalMarkdown = !preview && document?.State.format == VIEM_FORMAT_CODE && document.IsMarkdownDocument;
+        toolbarToggle.Visibility = preview ? Visibility.Visible : Visibility.Collapsed;
+        previewToggle.Visibility = literalMarkdown ? Visibility.Visible : Visibility.Collapsed;
         toolbarToggle.IsChecked = visible;
         ToolTipService.SetToolTip(toolbarToggle, visible ? "Hide Formatting Toolbar" : "Show Formatting Toolbar");
         if (visible) EnsureFormattingToolbar();
@@ -83,6 +98,7 @@ internal sealed partial class EditorWindow
     internal FormattingToolbar Toolbar => formattingToolbar ?? throw new InvalidOperationException("The formatting toolbar has not been needed.");
     internal bool ToolbarCreated => formattingToolbar != null;
     internal ToggleButton ToolbarToggle => toolbarToggle;
+    internal Button PreviewToggle => previewToggle;
     internal ToggleButton MenuToggle => menuToggle;
 #endif
 }

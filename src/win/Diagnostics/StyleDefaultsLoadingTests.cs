@@ -189,6 +189,9 @@ internal static class StyleDefaultsLoadingTests
         try {
             window.Activate(); await window.ActivePane!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
             byte[] source = Encoding.UTF8.GetBytes("# Title\n\nBody");
+            // A fresh profile opens Markdown with Preview off (literal Code);
+            // this check needs the Markdown theme family.
+            preferences.Set("editing", "markdownFormattedView", true);
             string path = Path.Combine(directory, "live.md"); File.WriteAllBytes(path, source); await window.OpenPath(path);
             var view = await window.ActivePane!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
             var document = view.Document;
@@ -199,7 +202,9 @@ internal static class StyleDefaultsLoadingTests
             preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, Encoding.UTF8.GetBytes(styles.ToJsonString()));
             Check(document.State.document_revision == revision && document.IsDirty && document.Source(revision).SequenceEqual(changed)
                 && view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 650,
-                "theme style changes apply to open documents without source or revision changes");
+                "theme style changes apply to open documents without source or revision changes"
+                + $" (revision {revision}->{document.State.document_revision}, dirty={document.IsDirty}, source={document.Source(document.State.document_revision).SequenceEqual(changed)},"
+                + $" weight={view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value}, error={preferences.Error}, theme={preferences.SelectedTheme}@{preferences.SelectedThemePath}, saved weight={JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN))!["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Paragraph")!["character"]!["weight"]}, format={document.State.format}, diagnostics={document.ConfigurationDiagnostics})");
             view.Undo(); Check(document.Source(document.State.document_revision).SequenceEqual(source) && !document.IsDirty,
                 "theme changes preserve the existing source undo record and saved baseline");
 

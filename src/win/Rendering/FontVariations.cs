@@ -189,6 +189,31 @@ internal static unsafe class FontVariations
             return result;
         } finally { if (set != 0) Marshal.Release(set); if (collection != 0) Marshal.Release(collection); if (factory != 0) Marshal.Release(factory); }
     }
+    // The WWS system collection Win2D's family strings use, retained like the
+    // typographic one above.
+    private static readonly Lazy<CollectionHandle> wwsSystemCollection = new(() => {
+        Guid id = new("B859EE5A-D838-4B5B-A2E8-1ADC7D93DB48"); nint factory = 0, collection = 0; // IDWriteFactory
+        try {
+            Marshal.ThrowExceptionForHR(DWriteCreateFactory(0, in id, out factory));
+            Marshal.ThrowExceptionForHR(((delegate* unmanaged[Stdcall]<nint, nint*, int, int>)(*(nint**)factory)[3])(factory, &collection, 0));
+            var result = new CollectionHandle(collection); collection = 0;
+            return result;
+        } finally { if (collection != 0) Marshal.Release(collection); if (factory != 0) Marshal.Release(factory); }
+    });
+    internal static nint NativeLayout(CanvasTextLayout layout) =>
+        NativeResource(layout, new("53737037-6D14-410B-9BFE-0B182BB70961")); // IDWriteTextLayout
+    /// Select a WWS family for a layout range through retained collections.
+    internal static void SetFamily(nint layout, int start, int count, string family, FontFace? packaged)
+    {
+        var collection = packaged?.Source == null ? wwsSystemCollection.Value
+            : bundledCollections.GetOrAdd(packaged.Source, _ => new(() => CreateCollection(packaged))).Value;
+        var range = new TextRange { Start = (uint)start, Length = (uint)count };
+        // IUnknown + IDWriteTextFormat(25), then SetMaxWidth, SetMaxHeight,
+        // SetFontCollection(30) and SetFontFamilyName(31).
+        Marshal.ThrowExceptionForHR(((delegate* unmanaged[Stdcall]<nint, nint, TextRange, int>)(*(nint**)layout)[30])(layout, collection.Pointer, range));
+        fixed (char* p = family) Marshal.ThrowExceptionForHR(((delegate* unmanaged[Stdcall]<nint, char*, TextRange, int>)(*(nint**)layout)[31])(layout, p, range));
+        GC.KeepAlive(collection);
+    }
     private static void UseTypographicFamily(nint layout, int start, int count, FontFace? font)
     {
         if (font == null) return;

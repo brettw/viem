@@ -709,6 +709,21 @@ impl FormattedTextTree {
         &leaf.text().as_bytes()[offset - start..]
     }
 
+    /// Byte equality without flattening either text. Unlike
+    /// [`Self::changed_extent`], separately allocated equal text is equal.
+    pub(crate) fn content_eq(&self, other: &Self) -> bool {
+        if self.byte_len() != other.byte_len() { return false; }
+        if self.shares_root_with(other) { return true; }
+        let mut at = 0;
+        while at < self.byte_len() {
+            let (left, right) = (self.byte_chunk_at(at), other.byte_chunk_at(at));
+            let length = left.len().min(right.len());
+            if length == 0 || left[..length] != right[..length] { return false; }
+            at += length;
+        }
+        true
+    }
+
     /// Borrow the prefix of the leaf immediately before an offset. Reverse
     /// snapshot cursors retain this bounded slice while traversing that leaf.
     pub(crate) fn byte_chunk_before(&self, offset: usize) -> &[u8] {

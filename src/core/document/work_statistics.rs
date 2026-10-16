@@ -25,6 +25,12 @@ pub struct DocumentWorkStatistics {
     pub retained_memory_allocations_registered: usize,
     pub retained_memory_release_visits: usize,
     pub retained_memory_allocations_released: usize,
+    /// Source rope nodes and buffers registered with, or released from, the
+    /// history's retained-source ledger.
+    pub history_source_visits: usize,
+    pub history_source_release_visits: usize,
+    /// Hard lines lexed for comment context.
+    pub comment_context_lexed_lines: usize,
     pub model_requests: usize,
     pub transaction_commits: usize,
     pub full_projection_candidates: usize,
@@ -74,6 +80,9 @@ impl DocumentWorkStatistics {
             retained_memory_allocations_registered,
             retained_memory_release_visits,
             retained_memory_allocations_released,
+            history_source_visits,
+            history_source_release_visits,
+            comment_context_lexed_lines,
             model_requests,
             transaction_commits,
             full_projection_candidates,

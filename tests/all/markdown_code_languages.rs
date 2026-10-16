@@ -616,7 +616,6 @@ fn language_labels_are_nontext_furniture_inside_code_border_including_empty_bloc
             let mut rows = snapshot.rows.as_ref().clone();
             for row in &mut rows {
                 row.decorations.retain(|item| item.kind != DecorationKind::CodeLanguage);
-                for caret in &mut row.carets { caret.point.layout_revision = reference.revision; }
             }
             (rows, snapshot.total_height, snapshot.content_width)
         };
