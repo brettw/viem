@@ -599,6 +599,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         let mut rows = Vec::new();
         let mut y = 0.;
         for line in snapshot.lines {
+            let line = Arc::unwrap_or_clone(line);
             for mut row in line.rows {
                 translate_row_vertically(&mut row, y).map_err(LayoutError::from)?;
                 rows.push(row);
@@ -1635,7 +1636,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     cancellation,
                 )?;
                 part.rebind_revision(revision);
-                lines.extend(part.lines);
+                lines.extend(part.lines.into_iter().map(Arc::unwrap_or_clone));
             }
         }
         let default_row_advance = self.default_row_advance(
@@ -1674,7 +1675,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             canvas_background_is_default: styles.canvas_background_is_default,
             default_paint: styles.default_paint.clone(),
             paint_runs: styles.paint_runs.clone(),
-            lines,
+            lines: lines.into_iter().map(RegionalHardLineLayout::into_retained).collect(),
             diagnostics: styles.recovery_diagnostic.iter().cloned().collect(),
             grapheme_boundaries: Vec::new(),
             work_statistics: LayoutWorkStatistics {

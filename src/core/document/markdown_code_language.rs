@@ -324,4 +324,27 @@ impl Document {
         projection.install_markdown_code_styles(sheet, runs);
         self.publish_code_presentation(projection);
     }
+
+    /// Publish by splicing the `previous` publication's spans across the
+    /// intervening text edits and replacing only the `replaced` block regions.
+    /// Returns false, changing nothing, when the previous spans cannot be
+    /// reused.
+    pub(crate) fn install_markdown_code_presentation_incrementally(
+        &mut self,
+        sheet: std::sync::Arc<StyleSheet>,
+        previous: &FormattedDocument,
+        hull: Option<&(std::ops::Range<usize>, std::ops::Range<usize>)>,
+        replaced: &[std::ops::Range<usize>],
+        runs_in: &dyn Fn(&std::ops::Range<usize>) -> Vec<super::super::syntax::SyntaxRun>,
+    ) -> bool {
+        if self.format() != Format::Markdown {
+            return false;
+        }
+        let mut projection = self.state().projection.clone();
+        if !projection.install_markdown_code_styles_incrementally(sheet, previous, hull, replaced, runs_in) {
+            return false;
+        }
+        self.publish_code_presentation(projection);
+        true
+    }
 }

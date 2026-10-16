@@ -105,8 +105,9 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     /// The nearest contiguous run of uncached lines in plan order, bounded by
-    /// line count and captured text. Lines larger than one job are left to
-    /// demand layout.
+    /// line count and captured text. A line larger than one job is prepared
+    /// alone, as visible layout lays it out, up to the long-line slice size;
+    /// larger lines use resumable slices and are left to demand layout.
     fn next_prelayout_lines(&self, view_id: ViewId, plan: &PrelayoutPlan) -> Option<Range<usize>> {
         let layout = &self.views[&view_id].layout;
         let projection = self.document.projection();
@@ -115,10 +116,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             let mut remaining = band.clone();
             while let Some(line) = layout.first_uncached_regional_line(remaining.clone(), *forward) {
                 let Some(range) = projection.presentation_line_range(line) else { return None; };
-                if range.len() > MAX_JOB_BYTES {
+                if range.len() > crate::layout::MAX_LONG_LINE_LAYOUT_SLICE_BYTES {
                     if *forward { remaining.start = line + 1; } else { remaining.end = line; }
                     continue;
                 }
+                if range.len() > MAX_JOB_BYTES { return Some(line..line + 1); }
                 let mut lines = line..line + 1;
                 let mut text = range;
                 loop {
@@ -291,8 +293,9 @@ mod tests {
         let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
         let mut jobs = 0;
         while let Some(request) = core.prepare_view_prelayout(view, forward).unwrap() {
-            assert!(request.captured_text_len() <= MAX_JOB_BYTES);
             let LayoutJobRegion::HardLines(region) = request.region() else { panic!() };
+            assert!(request.captured_text_len() <= MAX_JOB_BYTES
+                || region.range().len() == 1 && request.captured_text_len() <= crate::layout::MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
             assert!(region.range().len() <= MAX_JOB_LINES);
             let candidate = compute_layout_job(&mut worker, &request, LayoutExecutionContext::WorkerPool).unwrap();
             assert!(core.install_view_prelayout(view, forward, candidate).unwrap());
@@ -737,5 +740,21 @@ mod tests {
         let mut core = Core::new(Document::new(format!("{}{}\nshort", "short\n".repeat(24), "long ".repeat(MAX_JOB_BYTES))));
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         fill(&mut core, view, true);
+        // Beyond the long-line slice size, the paragraph is left to demand layout.
+        assert!(!core.views[&view].layout.regional_line_is_cached(24));
+    }
+
+    #[test]
+    fn prelayout_prepares_a_paragraph_larger_than_one_job_alone() {
+        let long = "long ".repeat(MAX_JOB_BYTES * 2 / 5);
+        assert!(long.len() > MAX_JOB_BYTES && long.len() <= crate::layout::MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
+        let mut core = Core::new(Document::new(format!("{}{long}\n{}", "short\n".repeat(24), "after\n".repeat(24))));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
+        fill(&mut core, view, true);
+        let layout = &core.views[&view].layout;
+        let lines = core.document().projection().presentation_line_count();
+        assert!(layout.regional_line_is_cached(24));
+        assert_eq!(layout.regional_cached_line_count(), lines, "the document is completely prepared");
+        assert!(core.prepare_view_prelayout(view, true).unwrap().is_none());
     }
 }

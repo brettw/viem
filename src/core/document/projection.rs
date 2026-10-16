@@ -313,6 +313,15 @@ fn carve_spans(spans: Vec<StyleSpan>, carved: &[Range<usize>]) -> Vec<StyleSpan>
     output
 }
 
+/// Markdown code blocks resolve syntax names through the Code definitions
+/// merged into the layout sheet under their display names.
+fn markdown_code_style_names(sheet: &StyleSheet) -> std::collections::BTreeMap<&str, &StyleId> {
+    sheet.character_styles()
+        .filter(|style| style.id.0.starts_with("__code/"))
+        .filter_map(|style| sheet.character_style_metadata(&style.id)
+            .map(|metadata| (metadata.display_name.as_str(), &style.id))).collect()
+}
+
 fn code_style_names(sheet: &StyleSheet) -> std::collections::BTreeMap<&str, &StyleId> {
     sheet
         .character_styles()
@@ -3663,6 +3672,11 @@ impl FormattedDocument {
     }
 
     pub(crate) fn layout_style_sheet(&self) -> &StyleSheet {
+        self.layout_style_sheet_arc()
+    }
+
+    /// The shared layout sheet, whose identity can be retained and compared.
+    pub(crate) fn layout_style_sheet_arc(&self) -> &Arc<StyleSheet> {
         self.markdown_code_presentation.as_ref().map_or(&self.style_sheet, |presentation| &presentation.sheet)
     }
 
@@ -3773,14 +3787,92 @@ impl FormattedDocument {
     }
 
     pub(crate) fn install_markdown_code_styles(&mut self, sheet: Arc<StyleSheet>, runs: &[super::syntax::SyntaxRun]) {
-        let names: std::collections::BTreeMap<_, _> = sheet.character_styles()
-            .filter(|style| style.id.0.starts_with("__code/"))
-            .filter_map(|style| sheet.character_style_metadata(&style.id)
-                .map(|metadata| (metadata.display_name.as_str(), &style.id))).collect();
-        let spans = runs.iter().filter_map(|run| self.automatic_span(&names, run)).collect();
-        self.markdown_code_presentation = Some(Arc::new(MarkdownCodePresentation {
-            sheet, spans: IntervalRangeStore::new(spans),
-        }));
+        let spans = self.markdown_code_store(&sheet, runs);
+        self.markdown_code_presentation = Some(Arc::new(MarkdownCodePresentation { sheet, spans }));
+    }
+
+    fn markdown_code_store(&self, sheet: &StyleSheet, runs: &[super::syntax::SyntaxRun]) -> IntervalRangeStore<StyleSpan> {
+        let names = markdown_code_style_names(sheet);
+        IntervalRangeStore::new(runs.iter().filter_map(|run| self.automatic_span(&names, run)).collect())
+    }
+
+    /// Whether the installed Markdown code spans equal a complete
+    /// installation from `runs`. Shadow verification for incremental
+    /// publication.
+    #[cfg(debug_assertions)]
+    pub(crate) fn markdown_code_styles_match(&self, sheet: &StyleSheet, runs: &[super::syntax::SyntaxRun]) -> bool {
+        self.markdown_code_presentation.as_ref()
+            .is_some_and(|presentation| presentation.spans == self.markdown_code_store(sheet, runs))
+    }
+
+    /// Markdown analog of [`Self::install_code_styles_incrementally`]: splice
+    /// `previous`'s code-block spans across the text edit hull, shifting the
+    /// rest lazily, then replace the spans of each `replaced` block region
+    /// with the spans of its current runs. Returns false when the previous
+    /// spans cannot be reused, in which case nothing changes.
+    pub(crate) fn install_markdown_code_styles_incrementally(
+        &mut self,
+        sheet: Arc<StyleSheet>,
+        previous: &FormattedDocument,
+        hull: Option<&(Range<usize>, Range<usize>)>,
+        replaced: &[Range<usize>],
+        runs_in: &dyn Fn(&Range<usize>) -> Vec<super::syntax::SyntaxRun>,
+    ) -> bool {
+        let Some(old) = previous.markdown_code_presentation.as_ref()
+            .filter(|presentation| Arc::ptr_eq(&presentation.sheet, &sheet)) else { return false };
+        let old_len = previous.text.byte_len();
+        let new_len = self.text.byte_len();
+        match hull {
+            Some((old_hull, new_hull)) => {
+                if old_hull.start != new_hull.start
+                    || old_hull.end > old_len
+                    || new_hull.end > new_len
+                    || old_len as i128 - old_hull.end as i128 != new_len as i128 - new_hull.end as i128
+                {
+                    return false;
+                }
+            }
+            None if old_len != new_len => return false,
+            None => {}
+        }
+        let mut spans = old.spans.clone();
+        let mut stats = RangeSpliceStats::default();
+        if let Some((old_hull, new_hull)) = hull {
+            let indices = spans.overlapping_index_span(old_hull);
+            let Some(items) = spans.get_range(&indices) else { return false };
+            let kept = items.into_iter().filter(|span| span.range.end <= old_hull.start).collect();
+            let Some(next) = spans.splice(indices, kept, old_hull.end, new_hull.end, &mut stats) else {
+                return false;
+            };
+            spans = next;
+        }
+        let names = markdown_code_style_names(&sheet);
+        for region in replaced {
+            if region.end > new_len {
+                return false;
+            }
+            let indices = spans.overlapping_index_span(region);
+            let Some(items) = spans.get_range(&indices) else { return false };
+            let mut replacement = Vec::with_capacity(items.len());
+            for span in &items {
+                if span.range.start >= region.end || span.range.end <= region.start {
+                    replacement.push(span.clone());
+                    continue;
+                }
+                if span.range.start < region.start {
+                    replacement.push(span.with_range(span.range.start..region.start));
+                }
+                if span.range.end > region.end {
+                    replacement.push(span.with_range(region.end..span.range.end));
+                }
+            }
+            replacement.extend(runs_in(region).iter().filter_map(|run| self.automatic_span(&names, run))
+                .filter(|span| span.range.start < region.end && region.start < span.range.end));
+            let Some(next) = spans.splice(indices, replacement, 0, 0, &mut stats) else { return false };
+            spans = next;
+        }
+        self.markdown_code_presentation = Some(Arc::new(MarkdownCodePresentation { sheet, spans }));
+        true
     }
 
     /// Install a publication as a splice of the previous presentation's

@@ -31,7 +31,9 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     let positions: [CGPoint]
   }
 
-  struct Resource {
+  /// Immutable once installed; a class so request bookkeeping does not copy
+  /// and retain every glyph array and font.
+  final class Resource {
     let signature: [UInt8]
     let batches: [GlyphBatch]
     let isColorGlyph: Bool
@@ -416,7 +418,51 @@ public final class CoreTextRenderRegistry: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     guard self.generation == generation else { return nil }
+    return installLocked(resource, preferredIdentifier: preferredIdentifier, pin: pin)
+  }
 
+  /// Installs one shape response's resources in order under a single lock
+  /// acquisition. Either every resource is installed or, after a generation
+  /// change, none is.
+  func install(_ entries: [(resource: Resource, preferredIdentifier: UInt64)], generation: UInt64,
+    pin: Bool = false) -> [UInt64]? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard self.generation == generation else { return nil }
+    return entries.map { installLocked($0.resource, preferredIdentifier: $0.preferredIdentifier, pin: pin) }
+  }
+
+  /// Pins installed resources whose signatures equal the given byte ranges,
+  /// in order, under one lock acquisition. Returns nil after a generation
+  /// change; otherwise each entry's pinned identifier, or nil when no
+  /// identical resource is installed.
+  func pinExisting(_ entries: [(preferredIdentifier: UInt64, signature: Range<Int>)], signatures: [UInt8],
+    generation: UInt64) -> [UInt64?]? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard self.generation == generation else { return nil }
+    return signatures.withUnsafeBufferPointer { buffer in
+      entries.map { entry in
+        let wanted = UnsafeBufferPointer(rebasing: buffer[entry.signature])
+        var identifier = entry.preferredIdentifier == 0 ? 1 : entry.preferredIdentifier
+        while let existing = resources[identifier] {
+          let equal = existing.signature.withUnsafeBufferPointer { stored in
+            stored.count == wanted.count
+              && (wanted.isEmpty || memcmp(stored.baseAddress!, wanted.baseAddress!, wanted.count) == 0)
+          }
+          if equal {
+            references[identifier, default: 0] += 1
+            return identifier
+          }
+          identifier = identifier &+ 1
+          if identifier == 0 { identifier = 1 }
+        }
+        return nil
+      }
+    }
+  }
+
+  private func installLocked(_ resource: Resource, preferredIdentifier: UInt64, pin: Bool) -> UInt64 {
     var identifier = preferredIdentifier == 0 ? 1 : preferredIdentifier
     while let existing = resources[identifier] {
       if existing.signature == resource.signature {

@@ -2775,11 +2775,14 @@ impl StyleSheet {
         }
         let mut chain = Vec::new();
         let mut current = Some(id);
-        let mut seen = BTreeMap::new();
+        // Chains are short and resolved for every paragraph; a cycle check by
+        // reference avoids cloning each identifier into an ordered set.
+        let mut seen: Vec<&StyleId> = Vec::new();
         while let Some(style_id) = current {
-            if seen.insert(style_id.clone(), ()).is_some() {
+            if seen.contains(&style_id) {
                 return Err(StyleError::InheritanceCycle(style_id.clone()));
             }
+            seen.push(style_id);
             let style = self
                 .block_styles
                 .get(style_id)
@@ -2822,11 +2825,12 @@ impl StyleSheet {
         }
         let mut chain = Vec::new();
         let mut current = Some(id);
-        let mut seen = BTreeMap::new();
+        let mut seen: Vec<&StyleId> = Vec::new();
         while let Some(style_id) = current {
-            if seen.insert(style_id.clone(), ()).is_some() {
+            if seen.contains(&style_id) {
                 return Err(StyleError::InheritanceCycle(style_id.clone()));
             }
+            seen.push(style_id);
             let style = self
                 .character_styles
                 .get(style_id)

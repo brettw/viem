@@ -688,6 +688,28 @@ fn shift_range(range: &Range<usize>, delta: i128) -> Option<Range<usize>> {
 }
 
 impl RegionalHardLineLayout {
+    /// Retained lines outlive the work that built them, and the cache and
+    /// snapshot share them. Move each record vector into an exact allocation
+    /// once, as a copy would: shrinking in place can keep the larger block.
+    pub(super) fn into_retained(mut self) -> Arc<Self> {
+        fn exact<T>(values: Vec<T>) -> Vec<T> {
+            if values.len() == values.capacity() { return values; }
+            let mut exact = Vec::with_capacity(values.len());
+            exact.extend(values);
+            exact
+        }
+        self.rows = exact(std::mem::take(&mut self.rows)).into_iter().map(|mut row| {
+            row.clusters = exact(row.clusters);
+            row.decorations = exact(row.decorations);
+            row.carets = exact(row.carets);
+            row
+        }).collect();
+        self.diagnostics = exact(std::mem::take(&mut self.diagnostics));
+        self.inputs.runs = exact(std::mem::take(&mut self.inputs.runs));
+        self.inputs.inline_images = exact(std::mem::take(&mut self.inputs.inline_images));
+        Arc::new(self)
+    }
+
     pub fn layout_revision(&self) -> LayoutRevision {
         self.layout_revision
     }
@@ -809,7 +831,8 @@ pub struct RegionalLayoutSnapshot {
     canvas_background_is_default: bool,
     default_paint: ResolvedTextPaint,
     paint_runs: Vec<PaintStyleRun>,
-    lines: Vec<RegionalHardLineLayout>,
+    /// Shared with the regional line cache, which retains the same lines.
+    lines: Vec<Arc<RegionalHardLineLayout>>,
     diagnostics: Vec<ShapingDiagnostic>,
     grapheme_boundaries: Vec<usize>,
     work_statistics: LayoutWorkStatistics,
@@ -894,7 +917,7 @@ impl RegionalLayoutSnapshot {
         &self.paint_runs
     }
 
-    pub fn lines(&self) -> &[RegionalHardLineLayout] {
+    pub fn lines(&self) -> &[Arc<RegionalHardLineLayout>] {
         &self.lines
     }
 
@@ -917,7 +940,7 @@ impl RegionalLayoutSnapshot {
     pub fn next_long_line_checkpoint(&self) -> Option<&LongLineLayoutCheckpoint> {
         self.lines
             .iter()
-            .find_map(RegionalHardLineLayout::next_checkpoint)
+            .find_map(|line| line.next_checkpoint())
     }
 
     /// Keep only the terminal viewport while advancing a long hard line in
@@ -953,10 +976,10 @@ impl RegionalLayoutSnapshot {
             boundaries.extend(previous.grapheme_boundaries.iter().copied());
             diagnostics.extend(previous.diagnostics.iter().cloned());
         }
-        let last = self.lines[0].rows.last().cloned();
+        let line = Arc::make_mut(&mut self.lines[0]);
+        let last = line.rows.last().cloned();
         rows.extend(
-            self.lines[0]
-                .rows
+            line.rows
                 .drain(..)
                 .filter(|row| row.y + row.height() > top),
         );
@@ -966,9 +989,9 @@ impl RegionalLayoutSnapshot {
             rows.extend(last);
         }
         if let Some(first) = rows.first() {
-            self.lines[0].text_coverage.start = first.text_range.start;
+            line.text_coverage.start = first.text_range.start;
         }
-        self.lines[0].rows = rows;
+        line.rows = rows;
         if let Some(previous_sparse) = previous.and_then(|region| region.horizontal_materialization.as_ref()) {
             if let Some(sparse) = &mut self.horizontal_materialization {
                 sparse.rows.extend(previous_sparse.rows.iter().cloned());
@@ -1021,14 +1044,15 @@ impl RegionalLayoutSnapshot {
         let following_height = following.lines.iter().map(|line| line.height).sum::<f64>();
         let needed = (f64::from(self.viewport_height) - following_height).max(0.0);
         let top = (self.lines[0].height - needed).max(0.0) as f32;
-        let last = self.lines[0].rows.last().cloned();
-        self.lines[0].rows.retain(|row| row.y + row.height() > top);
-        if self.lines[0].rows.is_empty() {
-            self.lines[0].rows.extend(last);
+        let first = Arc::make_mut(&mut self.lines[0]);
+        let last = first.rows.last().cloned();
+        first.rows.retain(|row| row.y + row.height() > top);
+        if first.rows.is_empty() {
+            first.rows.extend(last);
         }
-        let start = self.lines[0].rows.first()
-            .map_or(self.lines[0].text_coverage.start, |row| row.text_range.start);
-        self.lines[0].text_coverage.start = start;
+        let start = first.rows.first()
+            .map_or(first.text_coverage.start, |row| row.text_range.start);
+        first.text_coverage.start = start;
         self.lines.extend(following.lines.iter().cloned());
         if let Some(following_sparse) = &following.horizontal_materialization {
             if let Some(sparse) = &mut self.horizontal_materialization {
@@ -1084,13 +1108,14 @@ impl RegionalLayoutSnapshot {
         let prior = preceding.lines.last().expect("a regional snapshot has rows");
         debug_assert_eq!(prior.hard_line_index, self.lines[0].hard_line_index);
         debug_assert_eq!(prior.text_coverage.end, owned.start);
-        self.lines[0].rows.retain(|row| row.reveal_bounds().start <= retained.end
+        let line = Arc::make_mut(&mut self.lines[0]);
+        line.rows.retain(|row| row.reveal_bounds().start <= retained.end
             && row.reveal_bounds().end >= retained.start);
-        self.lines[0].rows.splice(0..0, prior.rows.iter()
+        line.rows.splice(0..0, prior.rows.iter()
             .filter(|row| row.reveal_bounds().end >= retained.start
                 && row.reveal_bounds().start <= retained.end).cloned());
-        self.lines[0].text_coverage = self.lines[0].rows[0].text_range.start
-            ..self.lines[0].rows.last().expect("retained boundary rows").text_range.end;
+        line.text_coverage = line.rows[0].text_range.start
+            ..line.rows.last().expect("retained boundary rows").text_range.end;
         self.lines.splice(0..0, preceding.lines[..preceding.lines.len() - 1].iter().cloned());
         self.hard_lines.start = preceding.hard_lines.start;
         let prior_start = preceding.lines[0].text_coverage.start;
@@ -1182,6 +1207,7 @@ impl RegionalLayoutSnapshot {
     fn rebind_revision(&mut self, revision: LayoutRevision) {
         self.revision = revision;
         for line in &mut self.lines {
+            let line = Arc::make_mut(line);
             line.layout_revision = revision;
             for row in &mut line.rows {
                 for caret in &mut row.carets {
@@ -1315,10 +1341,6 @@ impl RegionalLayoutCache {
     /// A replacement cache keeps the eviction focus of its predecessor.
     fn replacement(&self, identity: Option<RegionalCacheIdentity>) -> Self {
         Self { identity, focus: self.focus, ..Self::default() }
-    }
-
-    fn insert(&mut self, line: RegionalHardLineLayout) {
-        self.insert_arc(Arc::new(line));
     }
 
     fn insert_arc(&mut self, line: Arc<RegionalHardLineLayout>) {
@@ -2001,6 +2023,9 @@ impl LayoutJobViewConfiguration {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewLayout {
     search_matches: Option<(DocumentId, Revision, Vec<Range<usize>>)>,
+    /// Visible paragraphs' resolved appearance, reused by the next viewport
+    /// capture while their inputs are unchanged.
+    paragraph_styles: super::style::ParagraphStyleCache,
     whitespace: WhitespaceConfiguration,
     whitespace_bounds: std::cell::RefCell<super::whitespace::WhitespaceBoundsCache>,
     width: f32,
@@ -2068,6 +2093,7 @@ impl ViewLayout {
     pub fn new(width: f32, height: f32) -> Self {
         Self {
             search_matches: None,
+            paragraph_styles: Default::default(),
             whitespace: WhitespaceConfiguration::default(),
             whitespace_bounds: Default::default(),
             width: finite_nonnegative(width),
@@ -2253,6 +2279,14 @@ impl ViewLayout {
     pub(crate) fn search_matches(&self, document: DocumentId, revision: Revision) -> &[Range<usize>] {
         self.search_matches.as_ref().filter(|(id, rev, _)| *id == document && *rev == revision)
             .map_or(&[], |(_, _, ranges)| ranges.as_slice())
+    }
+
+    /// Current search coverage with the paragraph style cache, borrowed together.
+    pub(crate) fn style_resolution_inputs(&mut self, document: DocumentId, revision: Revision)
+        -> (&[Range<usize>], &mut super::style::ParagraphStyleCache) {
+        let matches = self.search_matches.as_ref().filter(|(id, rev, _)| *id == document && *rev == revision)
+            .map_or(&[][..], |(_, _, ranges)| ranges.as_slice());
+        (matches, &mut self.paragraph_styles)
     }
 
     /// An internal style has no authored assignment ranges to invalidate.
@@ -3174,13 +3208,24 @@ impl ViewLayout {
                 "regional result count does not match its hard-line range",
             ));
         }
+        // Contiguous exact lines replace one index range: each replacement
+        // splits and rejoins the persistent tree.
+        let mut exact_start = 0;
+        let mut exact = Vec::with_capacity(region.lines.len());
         for line in &region.lines {
-            if line.height_is_exact {
-                let extent = line.rows.iter().fold(line.height, |end, row|
-                    end.max(f64::from(row.reveal_bounds().end + region.content_insets.bottom)));
-                next_index.set_exact_heights_with_extents(line.hard_line_index, &[(line.height, extent)])?;
+            if !line.height_is_exact {
+                next_index.set_exact_heights_with_extents(exact_start, &exact)?;
+                exact.clear();
+                continue;
             }
+            if exact.is_empty() {
+                exact_start = line.hard_line_index;
+            }
+            let extent = line.rows.iter().fold(line.height, |end, row|
+                end.max(f64::from(row.reveal_bounds().end + region.content_insets.bottom)));
+            exact.push((line.height, extent));
         }
+        next_index.set_exact_heights_with_extents(exact_start, &exact)?;
         Ok(PreparedRegionalInstall {
             installed_revision,
             region,
@@ -3201,7 +3246,7 @@ impl ViewLayout {
         if region.horizontal_materialization.is_none() {
             for line in &region.lines {
                 if line.text_coverage == line.hard_line_range {
-                    self.regional_cache.insert(line.clone());
+                    self.regional_cache.insert_arc(Arc::clone(line));
                 }
             }
         }
@@ -5174,7 +5219,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             canvas_background_is_default: document_styles.canvas_background_is_default,
             default_paint: document_styles.default_paint.clone(),
             paint_runs,
-            lines,
+            lines: lines.into_iter().map(RegionalHardLineLayout::into_retained).collect(),
             diagnostics,
             grapheme_boundaries,
             work_statistics,
@@ -7350,16 +7395,34 @@ fn logical_grapheme_boundaries(
     origin: usize,
     control: &LayoutRunControl<'_>,
 ) -> Result<Vec<usize>, LayoutComputationError> {
-    let mut boundaries = Vec::new();
-    for (index, (offset, _)) in text.grapheme_indices(true).enumerate() {
+    let mut boundaries = Vec::with_capacity(text.len() + 1);
+    let mut index = 0usize;
+    let mut push = |offset: usize, boundaries: &mut Vec<usize>| {
         if index % CANCELLATION_CLUSTER_BATCH == 0 {
             control.checkpoint()?;
         }
-        boundaries.push(
-            origin
-                .checked_add(offset)
-                .ok_or(LayoutError::InvalidTextOffset(origin))?,
-        );
+        index += 1;
+        boundaries.push(origin.checked_add(offset).ok_or(LayoutError::InvalidTextOffset(origin))?);
+        Ok::<(), LayoutComputationError>(())
+    };
+    // Clusters always break after a line feed. Within a line, two adjacent
+    // ASCII bytes other than CR LF always form a boundary, so ordinary prose
+    // needs no segmentation.
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        if line.is_ascii() {
+            let bytes = line.as_bytes();
+            for (offset, &byte) in bytes.iter().enumerate() {
+                if offset == 0 || !(bytes[offset - 1] == b'\r' && byte == b'\n') {
+                    push(line_start + offset, &mut boundaries)?;
+                }
+            }
+        } else {
+            for (offset, _) in line.grapheme_indices(true) {
+                push(line_start + offset, &mut boundaries)?;
+            }
+        }
+        line_start += line.len();
     }
     let end = origin
         .checked_add(text.len())
@@ -7637,6 +7700,17 @@ fn usable_width(width: f32, insets: EdgeInsets) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ascii_grapheme_fast_path_matches_unicode_segmentation() {
+        let control = LayoutRunControl::synchronous(&NeverCancelled);
+        for text in ["", "a", "ab\r\ncd\n", "\r\n\r\n", "\r\r\n\n", "plain prose.\nnext line",
+            "e\u{301} x\ny", "a\u{200D}b", "\n\u{301}", "abc\r", "\r", "x\r\n\u{301}y", "👩🏽‍💻 ok\nfine\r\nend"] {
+            let expected: Vec<usize> = text.grapheme_indices(true).map(|(offset, _)| offset + 7)
+                .chain(std::iter::once(text.len() + 7)).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+            assert_eq!(logical_grapheme_boundaries(text, 7, &control).unwrap(), expected, "{text:?}");
+        }
+    }
+
     use super::*;
     use crate::document::{
         Block, BlockKind, BlockProperties, BlockRole, BlockStyle, CharacterProperties, Document,

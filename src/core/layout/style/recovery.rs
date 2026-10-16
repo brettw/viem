@@ -7,8 +7,9 @@ impl DocumentLayoutStyles {
     pub(super) fn resolve_for_presentation(
         input: StyleCascadeInput<'_>,
         format: Format,
+        cache: Option<&mut ParagraphStyleCache>,
     ) -> Result<Self, DocumentStyleError> {
-        let error = match Self::resolve_validated(input) {
+        let error = match Self::resolve_validated(input, cache) {
             Ok(styles) => return Ok(styles),
             Err(
                 error @ (DocumentStyleError::Cascade(
@@ -81,6 +82,7 @@ impl DocumentLayoutStyles {
             })
             .cloned()
             .collect();
+        // The recovery appearance is never retained for reuse.
         let mut styles = Self::resolve_validated(StyleCascadeInput {
             blocks: &blocks,
             style_spans: &spans,
@@ -88,7 +90,7 @@ impl DocumentLayoutStyles {
             style_sheet: &sheet,
             document_style: &assignment,
             search_matches: &[],
-        })?;
+        }, None)?;
         // Recovery is still an exact layout of the current source/style
         // snapshot, not an installed replacement stylesheet.
         styles.style_sheet_revision = input.style_sheet.revision;

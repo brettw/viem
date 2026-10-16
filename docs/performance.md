@@ -99,6 +99,11 @@ cluster records; this reduces retained cache storage without changing the
 provider ABI or visible layout representation. Validate edits, resizing, metrics
 changes, resource lifetime and eviction against freshly shaped geometry.
 
+The regional line cache and the installed regional snapshot share each laid-out
+hard line. A newly built line moves its record vectors into exact allocations
+before it is shared: shrinking a vector in place can keep its larger allocator
+block, so growth slack would otherwise be retained for the life of the cache.
+
 ```sh
 cargo build --release --offline --example large_file_memory
 python3 scripts/measure-large-file-memory.py --output /tmp/viem-memory.json --limits scripts/fixtures/large-file-memory-limits.json
@@ -174,6 +179,28 @@ work not caused by input) across builds on identical fixtures. Main-thread busy
 spans include the test window's first display; they are not physical display
 latency.
 
+The `xctest` host is hardened, so `sample` collects no stacks from it. The
+[shape benchmark](../src/mac/ShapeBench/main.swift) drives the release core with
+the real Core Text provider in an ordinary process, on the same fixture: it
+times the first layout, complete pre-layout (computed on its own thread) and
+typing in the middle of the document, and counts provider calls. Attach
+`sample <pid>` while it runs; `--iterations` lengthens the run:
+
+```sh
+cargo build --release --lib
+touch src/mac/CViemCore/shim.c
+VIEM_RUST_PROFILE=release swift build -c release --product viem-shape-bench
+.build/release/viem-shape-bench --iterations 3 --typing 400
+```
+
+Each run prints an order-sensitive `response_digest` of every shape response.
+Provider changes that must keep identical rendering compare it with the previous
+build using `--no-figures` (inline-image render handles embed a per-load
+identity) and with figures under `--no-handle-digest`. `--memory DOCUMENTS,VIEWS`
+instead reports the process footprint as each fully pre-rendered view is added.
+It has no window, drawing or syntax-provider workers, so it bounds core and
+shaping cost rather than complete frame latency.
+
 macOS presentation/cache regression checks use the native test wrapper:
 
 ```sh
@@ -224,19 +251,22 @@ for other scenarios and build/profile options.
 
 ## Open work
 
-- **Native shaping throughput:** speculative layout of 95 KB of Markdown costs
-  about 80 ms of core work with mock shaping but about 1 s of worker time with
-  Core Text, roughly 0.3 ms per provider call. Provider overhead bounds how
-  soon a newly opened document is fully prepared, the cost of demand layout
-  when scrolling outruns preparation, and the first frame.
-- **Typing latency:** a keystroke in a 95 KB Markdown document costs about 5 ms
-  of core work with mock shaping, about 30% of it resolving styles for the whole
-  visible region and about 14% Markdown code-block republication, plus native
-  re-shaping of the edited paragraph. Paragraph-local style resolution and
-  shifting unchanged code-block spans across edits are the next steps.
-- **Structural edits at the document end:** continuing a list at the end of a
-  Markdown document reprojects completely, which discards retained geometry and
-  exact heights until speculation prepares them again.
+- **Native shaping throughput:** speculative layout of 95 KB of Markdown takes
+  about 400 ms of worker time with Core Text (about 90 µs per provider
+  request). Resolved fonts are cached per font-catalog generation and render
+  resources are built only for glyph signatures not already registered. Core
+  Text's own line creation and caret enumeration are now about a third of the
+  provider's time.
+- **Typing latency:** a keystroke in a 95 KB Markdown document costs about 9 ms
+  natively, about half of it drawing. Core work reuses unchanged paragraphs'
+  resolved styles across viewport captures, shifts unchanged code-block spans
+  across edits, and shares retained lines between the snapshot and the line
+  cache. History commits still walk every source piece and recount retained
+  buffers, so keystroke cost grows slowly with session length; reused cached
+  lines are still copied to restamp caret identities.
+- **Structural edits at the document end:** a guarded band may retain the
+  document's terminal line ending when every patch ends before it and a
+  nonblank row precedes it. A blank final row still reprojects completely.
 
 - **Progressive first display:** document construction still decodes and builds
   the initial state before returning. Compact storage does not make opening
@@ -248,6 +278,9 @@ for other scenarios and build/profile options.
   motion and replay still contain `Document::text()` calls. Full-reprojection
   identity reconciliation also materializes old and new snapshots; traversing
   the complete fallback does not require retaining compatibility copies.
+  Markdown list editing (Enter, renumbering, removing list treatment) builds
+  `list_structure()` from the complete block store, which retains a block-record
+  copy with each edited snapshot even when the projection edit is regional.
   These paths need separate measurements and local verification before every editing
   command can claim a bounded working set.
 - **Cold giant-line work:** bounded retained geometry does not bound first-pass
