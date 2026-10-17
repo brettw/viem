@@ -73,6 +73,7 @@ internal sealed partial class StyleWindow
         TraceCaretFollow("schedule");
 #endif
         caretFollowTimer.Stop();
+        caretFollowTimer.Interval = FollowDelay;
         caretFollowTimer.Start();
     }
     private void SyntaxChanged()
@@ -82,30 +83,43 @@ internal sealed partial class StyleWindow
         // Complete the caret lookup when asynchronous captures arrive, while
         // retaining explicit choices and allowing an existing timer to settle.
         caretFollowTimer ??= MakeCaretFollowTimer();
-        if (!caretFollowTimer.IsRunning) caretFollowTimer.Start();
+        if (caretFollowTimer.IsRunning) return;
+        caretFollowTimer.Interval = FollowDelay;
+        caretFollowTimer.Start();
     }
+    /// Caret following waits for this much inactivity before querying styles.
+    internal static readonly TimeSpan CaretFollowDelay = TimeSpan.FromMilliseconds(500);
+#if DEBUG
+    /// Self-tests settle following explicitly rather than waiting for the delay.
+    internal static bool ManualCaretFollowForTesting;
+    private static TimeSpan FollowDelay => ManualCaretFollowForTesting ? TimeSpan.FromHours(1) : CaretFollowDelay;
+#else
+    private static TimeSpan FollowDelay => CaretFollowDelay;
+#endif
     private DispatcherQueueTimer MakeCaretFollowTimer()
     {
         var timer = DispatcherQueue.CreateTimer();
-        timer.Interval = TimeSpan.FromMilliseconds(500);
+        timer.Interval = FollowDelay;
         timer.IsRepeating = false;
-        timer.Tick += (_, _) => {
-#if DEBUG
-            TraceCaretFollow("tick");
-#endif
-            if (closed || !followsCaret || documentView.Id == 0) return;
-            try
-            {
-                bool refresh = refreshAfterFollowing;
-                refreshAfterFollowing = false;
-                var latest = view.Styles();
-                var key = CurrentCaretStyle(latest);
-                var fallback = latest.Styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)?.Key;
-                if (refresh || (key ?? fallback) != selected.Key) Load(key, snapshot: latest);
-            }
-            catch (Exception exception) { error.Text = exception.Message; error.Visibility = Microsoft.UI.Xaml.Visibility.Visible; }
-        };
+        timer.Tick += (_, _) => FollowCaret();
         return timer;
+    }
+    private void FollowCaret()
+    {
+#if DEBUG
+        TraceCaretFollow("tick");
+#endif
+        if (closed || !followsCaret || documentView.Id == 0) return;
+        try
+        {
+            bool refresh = refreshAfterFollowing;
+            refreshAfterFollowing = false;
+            var latest = view.Styles();
+            var key = CurrentCaretStyle(latest);
+            var fallback = latest.Styles.FirstOrDefault(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)?.Key;
+            if (refresh || (key ?? fallback) != selected.Key) Load(key, snapshot: latest);
+        }
+        catch (Exception exception) { error.Text = exception.Message; error.Visibility = Microsoft.UI.Xaml.Visibility.Visible; }
     }
     private StyleKey? CurrentCaretStyle(StyleSheet snapshot)
     {
@@ -169,9 +183,17 @@ internal sealed partial class StyleWindow
         caretFollowEvents.Enqueue($"{kind}@{now}: sinceSchedule={now - lastCaretFollowSchedule}, queries={CaretStyleQueries}, loads={StyleLoads}, scheduled={CaretFollowScheduled}");
     }
     internal string CaretFollowEventsForTesting => string.Join("; ", caretFollowEvents);
+    /// Runs a scheduled follow now, as the timer would after the delay.
+    internal void SettleCaretFollowForTesting()
+    {
+        if (caretFollowTimer is not { IsRunning: true } timer) return;
+        timer.Stop();
+        FollowCaret();
+    }
     internal async Task WaitForCaretFollowForTesting()
     {
         if (caretFollowTimer is not { IsRunning: true } timer) return;
+        if (ManualCaretFollowForTesting) { SettleCaretFollowForTesting(); return; }
         var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void Followed(DispatcherQueueTimer sender, object args) => DispatcherQueue.TryEnqueue(() => completed.TrySetResult());
         timer.Tick += Followed;

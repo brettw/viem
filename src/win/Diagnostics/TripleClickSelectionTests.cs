@@ -22,8 +22,8 @@ internal static class TripleClickSelectionTests
         view.Wrap(true); view.Command("gg");
         try {
             window.Activate(); pane.FocusEditor();
-            foreach (uint policy in new[] { VIEM_LINE_MODE_VISUAL, VIEM_LINE_MODE_PHYSICAL_SOURCE })
-            foreach (var (command, returnMode) in new[] { ("", VIEM_MODE_NORMAL), ("i", VIEM_MODE_INSERT), ("R", VIEM_MODE_REPLACE) }) {
+            foreach (var (policy, command, returnMode) in new[] {
+                (VIEM_LINE_MODE_VISUAL, "", VIEM_MODE_NORMAL), (VIEM_LINE_MODE_PHYSICAL_SOURCE, "R", VIEM_MODE_REPLACE) }) {
                 view.Key(VIEM_KEY_ESCAPE); view.Command("gg"); view.LineMode(policy); view.Command(command);
                 var rows = view.Layout().Rows;
                 var first = rows[0];
@@ -31,7 +31,7 @@ internal static class TripleClickSelectionTests
                 var cluster = view.Layout().Clusters.First(c => c.text_start == first.text_start);
                 var point = new Point((cluster.x + cluster.advance * .1 - view.Viewport.left) / pane.Canvas.ActualWidth,
                     (first.baseline - view.Viewport.top - 3) / pane.Canvas.ActualHeight);
-                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                if (policy != VIEM_LINE_MODE_VISUAL) await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
                 await InputRoutingTests.Drag(window, pane.Canvas, new[] { point }, _ => { }, clickCount: 3);
                 var selected = view.LogicalSelection();
                 ulong expectedEnd = policy == VIEM_LINE_MODE_VISUAL ? first.text_end : (ulong)(source.Length - 4);

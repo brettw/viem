@@ -15,7 +15,26 @@ namespace Viem.Windows.Diagnostics;
 /// <summary>Integration checks run on the real WinUI/DirectWrite UI thread.</summary>
 internal static class FrontendSmokeTests
 {
-    internal static readonly List<string> UiChecks = [];
+    internal static readonly CheckLog UiChecks = [];
+    /// Records how long each check took since the previous one, so reports
+    /// can name the slowest checks rather than only the slowest stages.
+    internal sealed class CheckLog : List<string>
+    {
+        private readonly System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
+        private double previous;
+        internal readonly List<double> Milliseconds = [];
+        internal new void Add(string check)
+        {
+            double now = clock.Elapsed.TotalMilliseconds;
+            Milliseconds.Add(now - previous); previous = now;
+            base.Add(check);
+        }
+        /// Starts the next check's interval, so stage setup is not charged to
+        /// the previous stage's last check.
+        internal void Mark() => previous = clock.Elapsed.TotalMilliseconds;
+        internal List<NativeTestCheckTime> Slowest(int count) => this.Select((name, index) => new NativeTestCheckTime(name, Math.Round(Milliseconds[index])))
+            .OrderByDescending(check => check.milliseconds).Take(count).ToList();
+    }
     internal static bool Started;
     internal static System.Diagnostics.Process? ChildProcess;
     private static readonly System.Diagnostics.Stopwatch runTime = System.Diagnostics.Stopwatch.StartNew();
@@ -26,25 +45,29 @@ internal static class FrontendSmokeTests
     {
         if (ReportPath == null) return;
         string path = ReportPath + ".progress.json", temporary = path + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(
-            new NativeTestProgress(stage, completedChecks ?? UiChecks.Count, runTime.Elapsed.TotalSeconds),
-            NativeTestJsonContext.Default.NativeTestProgress));
-        File.Move(temporary, path, overwrite: true);
+        // Progress is advisory: the harness may be reading the sidecar.
+        try
+        {
+            File.WriteAllText(temporary, JsonSerializer.Serialize(
+                new NativeTestProgress(stage, completedChecks ?? UiChecks.Count, runTime.Elapsed.TotalSeconds),
+                NativeTestJsonContext.Default.NativeTestProgress));
+            File.Move(temporary, path, overwrite: true);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
-    public static void WriteFailure(Exception error)
+    public static void WriteFailure(Exception error) =>
+        WriteFailure($"Completed {UiChecks.Count} native checks; last successful check: {UiChecks.LastOrDefault() ?? "(none)"}.\n{error}", []);
+    internal static void WriteFailure(string error, List<NativeTestStage> stages)
     {
         try { if (ChildProcess is { HasExited: false }) ChildProcess.Kill(); } catch { }
         if (ReportPath != null)
-        {
-            string context = $"Completed {UiChecks.Count} native checks; last successful check: {UiChecks.LastOrDefault() ?? "(none)"}.\n";
-            File.WriteAllText(ReportPath, JsonSerializer.Serialize(new NativeTestFailure(false, context + error), NativeTestJsonContext.Default.NativeTestFailure));
-        }
+            File.WriteAllText(ReportPath, JsonSerializer.Serialize(new NativeTestFailure(false, error, stages, UiChecks.Slowest(40)), NativeTestJsonContext.Default.NativeTestFailure));
     }
-    internal static void WriteSuccess(List<string> checks)
+    internal static void WriteSuccess(List<string> checks, List<NativeTestStage> stages)
     {
         WriteProgress("complete", checks.Count);
         File.WriteAllText(ReportPath!, JsonSerializer.Serialize(
-            new NativeTestSuccess(true, checks.Count, checks, !System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported),
+            new NativeTestSuccess(true, checks.Count, checks, !System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported, stages, UiChecks.Slowest(40)),
             NativeTestJsonContext.Default.NativeTestSuccess));
     }
     public static async Task FileChecks(CanvasDevice device, Microsoft.UI.Dispatching.DispatcherQueue dispatcher, string profile)
@@ -121,8 +144,7 @@ internal static class FrontendSmokeTests
     }
     public static void Run(CanvasDevice device, Microsoft.UI.Dispatching.DispatcherQueue dispatcher)
     {
-        var checks = new List<string>(UiChecks);
-        void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException(name); checks.Add(name); }
+        void Check(bool condition, string name) { if (!condition) throw new InvalidOperationException(name); UiChecks.Add(name); }
         Check(CoreDocument.FormatForPath("document.md") == VIEM_FORMAT_MARKDOWN
             && CoreDocument.FormatForPath("document.markdown") == VIEM_FORMAT_MARKDOWN
             && CoreDocument.FormatForPath("document.html") == VIEM_FORMAT_CODE
@@ -362,7 +384,6 @@ internal static class FrontendSmokeTests
             && KeyPolicy.Route(VirtualKey.A, true, true, true).Action == NativeAction.None,
             "shifted characters and AltGr text remain native text input");
         Check(KeyPolicy.Route(VirtualKey.Number6, true, false, false).Codepoint == '^', "preserve vi Ctrl+6/Ctrl+^");
-        WriteSuccess(checks);
     }
 }
 #endif

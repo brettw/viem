@@ -69,7 +69,7 @@ internal static class TableInteractionTests
         try {
             var pane = window.ActivePane!;
             var view = await pane.Ready;
-            await Task.Delay(150);
+            await InputRoutingTests.Settle();
             pane.Refresh();
             var layout = view.Layout();
             var viewport = view.Viewport;
@@ -119,7 +119,7 @@ internal static class TableInteractionTests
                 && source == Encoding.UTF8.GetString(document.Source(document.State.document_revision)),
                 "right row hover leaves caret selection and source unchanged");
             new ButtonAutomationPeer(Buttons().Single(button => AutomationProperties.GetName(button) == "Delete row 2")).Invoke();
-            await Task.Delay(80);
+            await InputRoutingTests.Settle();
             Check(!document.FormattedText().Contains("First", StringComparison.Ordinal)
                 && document.FormattedText().Contains("Second", StringComparison.Ordinal),
                 "right row toolbar action deletes its targeted row without retargeting to the caret");

@@ -17,7 +17,6 @@ internal static class CommandStatusTests
     {
         void Check(bool value, string name)
         { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
-        async Task Screenshot(string name) => await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + name + ".png");
         CheckRejectedPhysicalAddress(pane, Check);
         await StatusFilePathTests.Run(pane, window, preferences, Check);
         var view = pane.View!;
@@ -27,7 +26,7 @@ internal static class CommandStatusTests
         try
         {
             preferences.Set("appearance", "showStatusBar", false);
-            await Task.Delay(80);
+            await InputRoutingTests.Settle();
             pane.FocusEditor();
             await InputRoutingTests.Text(":");
             Check(pane.PromptControl.LastDrawnText == ":" && pane.StatusControl.Visibility == Visibility.Visible,
@@ -48,27 +47,25 @@ internal static class CommandStatusTests
                 && Math.Abs(promptBounds.Bottom - (height - pane.PromptControl.Margin.Bottom)) <= halfPixel
                 && pane.LocationControl.ActualWidth > 0,
                 $"command entry occupies the status row and retains the location widget (prompt={pane.PromptControl.ActualWidth}x{pane.PromptControl.ActualHeight}, margins={pane.PromptControl.Margin}, status={pane.StatusControl.ActualHeight}, prior={height}, location={pane.LocationControl.ActualWidth}, error={pane.LastError})");
-            await Screenshot(".command-pwd");
             await InputRoutingTests.Key(VirtualKey.Enter);
             Check(pane.CommandOutputText == Environment.CurrentDirectory && pane.OutputTextControl.Text == Environment.CurrentDirectory
                 && pane.StatusControl.Visibility == Visibility.Visible, ":pwd displays its result in the status bar");
             Check(pane.OutputTextControl.IsTextSelectionEnabled && pane.StatusControl.ActualHeight == height,
                 "output is selectable and preserves the status height");
-            pane.Refresh(); await Task.Delay(50);
-            await Screenshot(".command-output");
+            pane.Refresh(); await InputRoutingTests.Settle();
             Check(pane.CommandOutputText == Environment.CurrentDirectory, "ordinary presentation refresh preserves command output");
             pane.OutputTextControl.Focus(FocusState.Programmatic); pane.SelectAll();
             Check(pane.OutputTextControl.SelectedText == Environment.CurrentDirectory && pane.CanCopy && !pane.CanCut,
                 "output selection supports copy and select-all without enabling cut");
             var edit = window.Menu.Items.Single(item => item.Title == "Edit");
             var editPeer = new MenuBarItemAutomationPeer(edit);
-            editPeer.Expand(); await Task.Delay(100);
+            editPeer.Expand(); await InputRoutingTests.Settle();
             Check(edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Copy").IsEnabled
                 && !edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Cut").IsEnabled,
                 $"Edit menu commands retain the read-only output selection as their target (copy={pane.CanCopy}/{edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Copy").IsEnabled}, cut={pane.CanCut}/{edit.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Cut").IsEnabled}, selected={pane.OutputTextControl.SelectedText}, focus={FocusManager.GetFocusedElement(pane.XamlRoot)?.GetType().Name}, active={window.IsWindowActive})");
-            editPeer.Collapse(); await Task.Delay(80);
+            editPeer.Collapse(); await InputRoutingTests.Settle();
             pane.OutputTextControl.Focus(FocusState.Programmatic);
-            new ButtonAutomationPeer(pane.OutputCloseControl).Invoke(); await Task.Delay(80);
+            new ButtonAutomationPeer(pane.OutputCloseControl).Invoke(); await InputRoutingTests.Settle();
             Check(pane.CommandOutputText == null && pane.StatusControl.Visibility == Visibility.Collapsed
                 && FocusManager.GetFocusedElement(pane.XamlRoot) is TextBox,
                 "closing focused output restores editor focus and the hidden-status preference");
@@ -90,7 +87,6 @@ internal static class CommandStatusTests
             Check(pane.CommandOutputText?.Length > 4000, "long output replaces the previous result");
             // ScrollViewer measures its extent on a later WinUI layout pass.
             for (int i = 0; i < 20 && pane.OutputScrollControl.ScrollableHeight == 0; i++) await Task.Delay(100);
-            await Screenshot(".command-output-long");
             Check(pane.StatusControl.ActualHeight == height && pane.OutputScrollControl.ScrollableHeight > 0
                 && pane.OutputScrollControl.ScrollableWidth > 0, "long multiline output scrolls inside one status row");
             pane.OutputScrollControl.ChangeView(100, 20, null, true);
@@ -146,11 +142,11 @@ internal static class CommandStatusTests
     internal static async Task RunScrolled(EditorPane pane)
     {
         var view = await pane.Ready;
-        await Task.Delay(100);
+        await InputRoutingTests.Settle();
         pane.FocusEditor();
         view.LineMode(VIEM_LINE_MODE_VISUAL);
         view.Scroll(0, 50_000);
-        await Task.Delay(100);
+        await InputRoutingTests.Settle();
         var layout = view.Layout();
         ulong cursor = view.Presentation.cursor_utf8_offset;
         if (layout.Rows.Any(row => row.text_start <= cursor && cursor <= row.text_end))

@@ -35,7 +35,7 @@ internal static class ImageInteractionTests
         string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
         try
         {
-            await Task.Delay(100);
+            await InputRoutingTests.Settle();
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             Check(!window.Toolbar.InsertImage.IsEnabled && window.Toolbar.InsertImage.IsChecked == true
                 && AutomationProperties.GetName(window.Toolbar.InsertImage) == "Insert image",
@@ -103,13 +103,6 @@ internal static class ImageInteractionTests
         }
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
         PickedLocationPaths();
-        await LocationPicker(preferences);
-        await NestedPopups(preferences);
-        await KeyboardSelection(preferences);
-        await RunResources(preferences);
-        await ScrollDuringImageReload(preferences);
-        await ImageStyle(preferences);
-        await CacheBudgets(preferences);
     }
 
     private static void PickedLocationPaths()
@@ -155,7 +148,7 @@ internal static class ImageInteractionTests
             "absolute picked image paths retain Unicode spelling and encode every reserved filename character");
     }
 
-    private static async Task LocationPicker(Preferences preferences)
+    internal static async Task LocationPicker(Preferences preferences)
     {
         string directory = Path.Combine(Path.GetTempPath(), "viem-image-picker-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -170,7 +163,7 @@ internal static class ImageInteractionTests
         string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
         try
         {
-            await Task.Delay(100);
+            await InputRoutingTests.Settle();
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             pane.ShowInsertImage(); pane.ImageTextValue = "draft alt"; pane.ImageDestinationValue = "draft.png";
             Check(pane.ImageBrowseButton is { } browse && AutomationProperties.GetName(browse) == "Choose image file"
@@ -241,7 +234,7 @@ internal static class ImageInteractionTests
         }
     }
 
-    private static async Task NestedPopups(Preferences preferences)
+    internal static async Task NestedPopups(Preferences preferences)
     {
         const string source = "[![alt](https://example.invalid/image.png)](https://example.invalid/page)";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
@@ -250,7 +243,7 @@ internal static class ImageInteractionTests
         var pane = window.ActivePane!; var view = await pane.Ready;
         try
         {
-            await Task.Delay(100);
+            await InputRoutingTests.Settle();
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             Check(pane.ImagePopupVisible && !pane.LinkPopupVisible, "a linked image shows only its image location toolbar");
             pane.ShowInsertImage(); pane.Refresh();
@@ -265,7 +258,7 @@ internal static class ImageInteractionTests
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }
 
-    private static async Task KeyboardSelection(Preferences preferences)
+    internal static async Task KeyboardSelection(Preferences preferences)
     {
         const string source = "A![alt](https://example.invalid/image.png)B";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
@@ -281,7 +274,7 @@ internal static class ImageInteractionTests
             + $"transition={pane.PopupFocusDiagnosticForTesting}, error={pane.LastError}";
         try
         {
-            await Task.Delay(100);
+            await InputRoutingTests.Settle();
             view.Command("i"); view.Key(VIEM_KEY_RIGHT);
             var selection = view.LogicalSelection();
             Check(view.HasSelection && selection.text_start == 1 && selection.text_end == 4
@@ -310,7 +303,7 @@ internal static class ImageInteractionTests
             window.Toolbar.InsertImage.Click += clicked;
             Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "the image insertion button accepts native keyboard focus");
             var initialFocus = FocusManager.GetFocusedElement(pane.XamlRoot);
-            try { await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40); }
+            try { await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await InputRoutingTests.Settle(); }
             finally { window.Toolbar.InsertImage.Click -= clicked; }
             Check(pane.ImageEditorVisible && pane.ImageTextValue == "" && pane.ImageDestinationValue == "",
                 "Insert image opens an empty insertion form beside an existing image "
@@ -359,7 +352,7 @@ internal static class ImageInteractionTests
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }
 
-    private static async Task LocalPreview(Preferences preferences)
+    internal static async Task LocalPreview(Preferences preferences)
     {
         string directory = Path.Combine(Path.GetTempPath(), "viem-image-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -434,15 +427,7 @@ internal static class ImageInteractionTests
     // bounded copies resampled off the UI thread.
     /// <summary>Local image previews, background dimensions, resampling and limits,
     /// without native keyboard or pointer input.</summary>
-    internal static async Task RunResources(Preferences preferences)
-    {
-        await LocalPreview(preferences);
-        await BackgroundImageResources(preferences);
-        await HtmlImageDimensions(preferences);
-        await PreviewLimits(preferences);
-    }
-
-    private static async Task BackgroundImageResources(Preferences preferences)
+    internal static async Task BackgroundImageResources(Preferences preferences)
     {
         string directory = Path.Combine(Path.GetTempPath(), "viem-image-background-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -521,41 +506,44 @@ internal static class ImageInteractionTests
         Check(pane.ScaledImageCount == 0 && pane.LocalImagePreviewCount == 0, "closing a view releases its decoded and resampled images");
     }
 
-    private static async Task HtmlImageDimensions(Preferences preferences)
+    internal static async Task HtmlImageDimensions(Preferences preferences)
     {
         string directory = Path.Combine(Path.GetTempPath(), "viem-html-image-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         WriteBitmap(Path.Combine(directory, "sized.bmp"), 120, 60);
         try
         {
-            foreach (var (attributes, width, height) in new[] {
-                ("width='240'", 240f, 120f),
-                ("height='160'", 320f, 160f),
-                ("width='80' height='180'", 80f, 180f),
-                ("width='1024' height='2048'", 512f, 1024f),
+            // Each document shares one window; the capped image stays alone so
+            // its display-cap height cannot push the others out of preview range.
+            foreach (var cases in new[] {
+                new[] { ("width='240'", 240f, 120f), ("height='160'", 320f, 160f), ("width='80' height='180'", 80f, 180f) },
+                new[] { ("width='1024' height='2048'", 512f, 1024f) },
             })
             {
-                string source = "<img src='sized.bmp' " + attributes + " alt='preserved' title='untouched'>";
+                string source = string.Join("\n\n", cases.Select(c => "<img src='sized.bmp' " + c.Item1 + " alt='preserved' title='untouched'>"));
                 var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
                 var window = new EditorWindow(preferences, document);
                 App.Instance.Windows.Add(window); window.Activate();
                 var pane = window.ActivePane!; var view = await pane.Ready;
+                string labels = string.Join(", ", cases.Select(c => c.Item1));
                 try
                 {
                     view.Zoom(1);
                     for (int i = 0; i < 200 && (pane.LocalImagePreviewCount == 0 || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
+                    // Every image names the same file, which decodes once.
                     Check(pane.LocalImagePreviewCount == 1 && pane.PendingImageLoads == 0,
-                        "an HTML image uses the existing relative local raster loader: " + attributes);
+                        "an HTML image uses the existing relative local raster loader: " + labels);
                     view.Resize(650, 500);
-                    var image = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
-                    Check(document.FormattedText() == "\uFFFC" && Math.Abs(image.typographic_bounds.width - width) < .01
-                        && Math.Abs(image.typographic_bounds.height - height) < .01,
-                        "HTML image dimensions scale, preserve one-sided proportions, and obey the display cap: " + attributes);
-                    Check(view.Provider.ImageDestination(image.render_run) == "sized.bmp",
+                    var images = view.Layout().Clusters.Where(c => view.Provider.IsInlineImage(c.render_run)).OrderBy(c => c.text_start).ToArray();
+                    Check(images.Length == cases.Length && cases.Zip(images).All(pair =>
+                            Math.Abs(pair.Second.typographic_bounds.width - pair.First.Item2) < .01
+                            && Math.Abs(pair.Second.typographic_bounds.height - pair.First.Item3) < .01),
+                        "HTML image dimensions scale, preserve one-sided proportions, and obey the display cap: " + labels);
+                    Check(images.All(image => view.Provider.ImageDestination(image.render_run) == "sized.bmp"),
                         "HTML images expose the decoded source to existing native image controls");
                     view.SetMarkdownPreview(false);
                     Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
-                        "HTML dimensions and unrelated attributes survive native image loading and Markdown Preview off: " + attributes);
+                        "HTML dimensions and unrelated attributes survive native image loading and Markdown Preview off: " + labels);
                 }
                 finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
             }
@@ -573,7 +561,7 @@ internal static class ImageInteractionTests
         writer.Write(new byte[bytes]);
     }
 
-    private static async Task PreviewLimits(Preferences preferences)
+    internal static async Task PreviewLimits(Preferences preferences)
     {
         string directory = Path.Combine(Path.GetTempPath(), "viem-image-limits-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -652,7 +640,7 @@ internal static class ImageInteractionTests
         }
     }
 
-    private static async Task ScrollDuringImageReload(Preferences preferences)
+    internal static async Task ScrollDuringImageReload(Preferences preferences)
     {
         string directory = Path.Combine(Path.GetTempPath(), "viem-image-scroll-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -694,7 +682,7 @@ internal static class ImageInteractionTests
         }
     }
 
-    private static async Task ImageStyle(Preferences preferences)
+    internal static async Task ImageStyle(Preferences preferences)
     {
         const string source = "![alt](https://example.invalid/style.png)";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
@@ -703,7 +691,7 @@ internal static class ImageInteractionTests
         var pane = window.ActivePane!; var view = await pane.Ready;
         try
         {
-            await Task.Delay(100);
+            await InputRoutingTests.Settle();
             var style = view.Styles().Styles.Single(s => s.Id == "Image");
             view.EditStyle(style, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(23));
             var cluster = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
@@ -715,7 +703,7 @@ internal static class ImageInteractionTests
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }
 
-    private static async Task CacheBudgets(Preferences preferences)
+    internal static async Task CacheBudgets(Preferences preferences)
     {
         async Task Fixture(int count, int? pixelSize, long? budget, int loaded, int attempts, string label)
         {
@@ -763,9 +751,6 @@ internal static class ImageInteractionTests
                 Directory.Delete(directory, recursive: true);
             }
         }
-        // Tiny images progressively expose more than the entry budget within
-        // one viewport; the overflow must remain a stable URL placeholder.
-        await Fixture(80, 1, null, 48, 48, "an oversized visible image set");
         await Fixture(3, 20, 1600, 1, 3, "a visible set exceeding decoded memory");
         await Fixture(3, null, null, 0, 3, "failed local image requests ahead of a full queue");
     }

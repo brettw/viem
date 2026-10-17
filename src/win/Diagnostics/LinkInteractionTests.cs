@@ -34,7 +34,7 @@ internal static class LinkInteractionTests
         string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
         try
         {
-            await Task.Delay(100);
+            await InputRoutingTests.Settle();
             view.Place(1, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             Check(window.Toolbar.InsertLink.IsEnabled && window.Toolbar.InsertLink.IsChecked == true
                 && AutomationProperties.GetName(window.Toolbar.InsertLink) == "Link"
@@ -72,7 +72,7 @@ internal static class LinkInteractionTests
             view.Key(VIEM_KEY_ESCAPE); view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             ulong revision = document.State.document_revision;
             Check(window.Toolbar.InsertLink.Focus(FocusState.Programmatic), "the link toggle accepts native keyboard focus");
-            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await InputRoutingTests.Settle();
             Check(view.Presentation.mode == VIEM_MODE_INSERT && window.Toolbar.InsertLink.IsChecked == false
                 && document.State.document_revision == revision && !pane.LinkEditorVisible,
                 "Normal link toggling enters Insert with pending unlinked text without editing source");
@@ -86,7 +86,7 @@ internal static class LinkInteractionTests
             Check(window.Toolbar.InsertLink.IsChecked == true && window.Toolbar.InsertLink.IsEnabled,
                 "a single selected link enables removal through the active toolbar button");
             Check(window.Toolbar.InsertLink.Focus(FocusState.Programmatic), "selected-link removal accepts native keyboard focus");
-            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(40);
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await InputRoutingTests.Settle();
             Check(Source().StartsWith("alpha\n\n", StringComparison.Ordinal) && !pane.LinkEditorVisible,
                 "clicking the selected-link button removes its treatment and retains its label");
             view.Undo(); Check(Source() == source, "selected-link toolbar removal restores original bytes on undo");
@@ -143,7 +143,7 @@ internal static class LinkInteractionTests
                 "the native heading dropdown renders its bound label in managed and NativeAOT builds");
             destinationControl.SelectedIndex = 0;
             destinationControl.IsDropDownOpen = false;
-            await Task.Delay(40);
+            await InputRoutingTests.Settle();
             Check(pane.LinkDestinationValue == "#destination", "choosing a heading authors its exact internal fragment");
             pane.DismissLinkPopup(suppress: false);
             Check(!destinationControl.IsDropDownOpen && destinationControl.SelectedItem == null && destinationControl.Items.Count == 0,
@@ -155,7 +155,7 @@ internal static class LinkInteractionTests
             await Task.Delay(30);
             destinationControl.SelectedIndex = 0;
             destinationControl.IsDropDownOpen = false;
-            await Task.Delay(40);
+            await InputRoutingTests.Settle();
             Check(pane.LinkDestinationValue == "#destination", "the same heading can be selected again after cancelling a draft");
             pane.LinkTextValue = ""; pane.LinkDestinationValue = "https://example.test"; pane.ApplyLinkEditor();
             Check(document.FormattedText().Contains("https://example.test", StringComparison.Ordinal), "a destination alone supplies the inserted link text");

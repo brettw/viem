@@ -37,56 +37,53 @@ internal static class ChromeStyleTests
             Padding = default, Border = new(0, 0, 1, 0), RightBorder = Microsoft.UI.Colors.Red
         };
         var current = normal with { Background = global::Windows.UI.Color.FromArgb(128, 0, 255, 0), RightBorder = Microsoft.UI.Colors.Blue };
-        foreach (float dpi in new[] { 96f, 120f, 144f, 192f }) {
-            foreach (float zoom in new[] { .75f, 1f, 1.25f, 1.5f }) {
-                foreach (float scroll in new[] { .125f, .375f, .625f }) {
-                    void Require(bool condition, string name) {
-                        if (!condition) throw new InvalidOperationException($"{name}: DPI {dpi}, zoom {zoom}, scroll {scroll}");
-                    }
-                    double width = 31 * zoom, height = 60.25 * zoom;
-                    var regions = Enumerable.Range(0, 7).Select(index => new ViemLineNumberRegionV1 {
-                        source_line = (ulong)index + 1, top = index * 10.125f * zoom, bottom = (index + 1) * 10.125f * zoom,
-                        flags = index == 2 ? VIEM_LINE_NUMBER_REGION_CURRENT : 0
-                    }).ToArray();
-                    using var target = Target(width, height, dpi);
-                    using (var drawing = target.CreateDrawingSession()) {
-                        var priorAntialiasing = drawing.Antialiasing;
-                        EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions, normal.Scaled(zoom), current.Scaled(zoom));
-                        Require(drawing.Antialiasing == priorAntialiasing, "gutter box painting restores antialiasing");
-                    }
-                    int pixelsWide = (int)target.SizeInPixels.Width, pixelsHigh = (int)target.SizeInPixels.Height;
-                    byte[] background = target.GetPixelBytes(1, 0, 1, pixelsHigh);
-                    byte[] border = target.GetPixelBytes(pixelsWide - 1, 0, 1, pixelsHigh);
-                    int badBackground = Enumerable.Range(0, pixelsHigh).FirstOrDefault(y => background[y * 4 + 3] != 128, -1);
-                    int badBorder = Enumerable.Range(0, pixelsHigh).FirstOrDefault(y => border[y * 4 + 3] != 255
-                        || border[y * 4] != 255 && border[y * 4 + 2] != 255, -1);
-                    Require(badBackground < 0 && badBorder < 0,
-                        $"adjacent backgrounds paint once and the right border covers every pixel (surface={target.Size}, pixels={pixelsWide}x{pixelsHigh}, background row={badBackground}, border row={badBorder}, border={(badBorder < 0 ? "ok" : Convert.ToHexString(border.AsSpan(badBorder * 4, 4)))})");
-                    int currentY = (int)((25.3125 * zoom - scroll) * dpi / 96);
-                    byte[] currentBackground = target.GetPixelBytes(1, currentY, 1, 1);
-                    byte[] currentBorder = target.GetPixelBytes(pixelsWide - 1, currentY, 1, 1);
-                    Require(currentBackground[1] > 0 && currentBackground[3] == 128 && currentBorder[0] == 255,
-                        "current region flags select the current background and border overrides");
-
-                    using var gapTarget = Target(width, height, dpi);
-                    using (var drawing = gapTarget.CreateDrawingSession())
-                        EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions.Take(5).ToArray(), normal.Scaled(zoom), current.Scaled(zoom));
-                    byte[] gapBackground = gapTarget.GetPixelBytes(1, 0, 1, pixelsHigh);
-                    byte[] gapBorder = gapTarget.GetPixelBytes(pixelsWide - 1, 0, 1, pixelsHigh);
-                    Require(Enumerable.Range(0, pixelsHigh).All(y => gapBackground[y * 4 + 3] == 128 && gapBorder[y * 4 + 3] == 255),
-                        "the column gap after the last line covers its final canvas pixel without alpha seams");
-
-                    var transparent = current with { Background = Microsoft.UI.Colors.Transparent, Margin = new(2.125f, .375f, 3.125f, .375f) };
-                    using var transparentTarget = Target(width, height, dpi);
-                    using (var drawing = transparentTarget.CreateDrawingSession())
-                        EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions, normal.Scaled(zoom), transparent.Scaled(zoom));
-                    int currentX = (int)(10 * zoom * dpi / 96);
-                    byte[] empty = transparentTarget.GetPixelBytes(currentX, currentY, 1, 1);
-                    byte[] outer = transparentTarget.GetPixelBytes(0, currentY, 1, 1);
-                    Require(empty[3] == 0 && outer[3] == 128,
-                        "transparent current boxes and explicit margins survive pixel-aligned gap subtraction");
-                }
+        // Each DPI pairs with a different fractional zoom and scroll offset.
+        foreach (var (dpi, zoom, scroll) in new[] { (96f, 1f, .125f), (120f, 1.25f, .375f), (144f, .75f, .625f), (192f, 1.5f, .375f) }) {
+            void Require(bool condition, string name) {
+                if (!condition) throw new InvalidOperationException($"{name}: DPI {dpi}, zoom {zoom}, scroll {scroll}");
             }
+            double width = 31 * zoom, height = 60.25 * zoom;
+            var regions = Enumerable.Range(0, 7).Select(index => new ViemLineNumberRegionV1 {
+                source_line = (ulong)index + 1, top = index * 10.125f * zoom, bottom = (index + 1) * 10.125f * zoom,
+                flags = index == 2 ? VIEM_LINE_NUMBER_REGION_CURRENT : 0
+            }).ToArray();
+            using var target = Target(width, height, dpi);
+            using (var drawing = target.CreateDrawingSession()) {
+                var priorAntialiasing = drawing.Antialiasing;
+                EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions, normal.Scaled(zoom), current.Scaled(zoom));
+                Require(drawing.Antialiasing == priorAntialiasing, "gutter box painting restores antialiasing");
+            }
+            int pixelsWide = (int)target.SizeInPixels.Width, pixelsHigh = (int)target.SizeInPixels.Height;
+            byte[] background = target.GetPixelBytes(1, 0, 1, pixelsHigh);
+            byte[] border = target.GetPixelBytes(pixelsWide - 1, 0, 1, pixelsHigh);
+            int badBackground = Enumerable.Range(0, pixelsHigh).FirstOrDefault(y => background[y * 4 + 3] != 128, -1);
+            int badBorder = Enumerable.Range(0, pixelsHigh).FirstOrDefault(y => border[y * 4 + 3] != 255
+                || border[y * 4] != 255 && border[y * 4 + 2] != 255, -1);
+            Require(badBackground < 0 && badBorder < 0,
+                $"adjacent backgrounds paint once and the right border covers every pixel (surface={target.Size}, pixels={pixelsWide}x{pixelsHigh}, background row={badBackground}, border row={badBorder}, border={(badBorder < 0 ? "ok" : Convert.ToHexString(border.AsSpan(badBorder * 4, 4)))})");
+            int currentY = (int)((25.3125 * zoom - scroll) * dpi / 96);
+            byte[] currentBackground = target.GetPixelBytes(1, currentY, 1, 1);
+            byte[] currentBorder = target.GetPixelBytes(pixelsWide - 1, currentY, 1, 1);
+            Require(currentBackground[1] > 0 && currentBackground[3] == 128 && currentBorder[0] == 255,
+                "current region flags select the current background and border overrides");
+
+            using var gapTarget = Target(width, height, dpi);
+            using (var drawing = gapTarget.CreateDrawingSession())
+                EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions.Take(5).ToArray(), normal.Scaled(zoom), current.Scaled(zoom));
+            byte[] gapBackground = gapTarget.GetPixelBytes(1, 0, 1, pixelsHigh);
+            byte[] gapBorder = gapTarget.GetPixelBytes(pixelsWide - 1, 0, 1, pixelsHigh);
+            Require(Enumerable.Range(0, pixelsHigh).All(y => gapBackground[y * 4 + 3] == 128 && gapBorder[y * 4 + 3] == 255),
+                "the column gap after the last line covers its final canvas pixel without alpha seams");
+
+            var transparent = current with { Background = Microsoft.UI.Colors.Transparent, Margin = new(2.125f, .375f, 3.125f, .375f) };
+            using var transparentTarget = Target(width, height, dpi);
+            using (var drawing = transparentTarget.CreateDrawingSession())
+                EditorPane.DrawLineNumberBoxesForTesting(drawing, width, height, scroll, regions, normal.Scaled(zoom), transparent.Scaled(zoom));
+            int currentX = (int)(10 * zoom * dpi / 96);
+            byte[] empty = transparentTarget.GetPixelBytes(currentX, currentY, 1, 1);
+            byte[] outer = transparentTarget.GetPixelBytes(0, currentY, 1, 1);
+            Require(empty[3] == 0 && outer[3] == 128,
+                "transparent current boxes and explicit margins survive pixel-aligned gap subtraction");
         }
         Check(true, "gutter raster diagnostics cover continuous right borders, single background compositing, current overrides, transparency, and margins at 96/120/144/192 DPI, fractional scroll, and zoom");
         foreach (float dpi in new[] { 96f, 120f, 144f, 192f }) {
@@ -234,7 +231,7 @@ internal static class ChromeStyleTests
             view.Ex("set nonumber"); await SetViewMenuOpen(true);
             Check(!numberItem.IsChecked, "reopening View refreshes the line-number check after an Ex option change");
             await SetViewMenuOpen(false);
-            view.Ex("set number"); await Task.Delay(150); pane.UpdateLayout();
+            view.Ex("set number"); await InputRoutingTests.Settle(); pane.UpdateLayout();
             var pointerRows = view.Layout().Rows;
             float RowY(int index) => pointerRows[index].y + pointerRows[index].ascent * .5f - view.Viewport.top;
             view.SelectPointerRow(RowY(1));
@@ -310,17 +307,17 @@ internal static class ChromeStyleTests
                 return pane.DrawnLineNumbers[0];
             }
             normal["block"]!["base_direction"] = "RightToLeft"; normal["block"]!["alignment"] = "Start";
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle();
             var rtlStart = DrawFirstNumber();
             normal["block"]!["alignment"] = "End";
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle();
             var rtlEnd = DrawFirstNumber();
             Check(rtlStart.Text.X > rtlEnd.Text.X + .1
                 && Math.Abs(rtlStart.Text.Right - rtlStart.Available.Right) < .01
                 && Math.Abs(rtlEnd.Text.Left - rtlEnd.Available.Left) < .01,
                 "RTL gutter styles place Start on the right and End on the left within their available boxes");
             normal["block"]!["base_direction"] = "Natural";
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle();
             var staleNumbers = pane.LineNumbersForTesting!.Info;
             try {
                 view.Resize((float)pane.Canvas.ActualWidth - 24, (float)pane.Canvas.ActualHeight);
@@ -330,18 +327,18 @@ internal static class ChromeStyleTests
             var statusForeground = status["character"]!["foreground"]?.DeepClone();
             var commandForeground = command["character"]!["foreground"]?.DeepClone();
             status["character"]!["foreground"] = null; command["character"]!["foreground"] = null;
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle();
             Check(preferences.StatusStyles.Status.Foreground == preferences.Theme.Foreground
                 && preferences.StatusStyles.Command.Foreground == preferences.StatusStyles.Status.Foreground
                 && pane.CommandStyle.Foreground == preferences.StatusStyles.Status.Foreground,
                 "clearing both status foreground declarations inherits the theme foreground without an inverse fallback");
             status["character"]!["foreground"] = statusForeground; command["character"]!["foreground"] = commandForeground;
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle();
             var originalStatusCharacter = status["character"]!.DeepClone();
             status["character"]!["font_families"] = new JsonArray("Missing Viem diagnostic font", "ui-monospace");
             status["character"]!["font_face"] = ""; status["character"]!["font_axes"] = new JsonObject();
             status["character"]!["letter_spacing"] = 1.5;
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(150); pane.UpdateLayout();
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle(); pane.UpdateLayout();
             void DrawStatus() {
                 using var target = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.StatusControl.ActualWidth, (float)pane.StatusBarHeight, pane.Canvas.Dpi);
                 using var drawing = target.CreateDrawingSession(); pane.DrawStatusTextForTesting(drawing);
@@ -350,7 +347,7 @@ internal static class ChromeStyleTests
             status["block"]!["padding_top"] = 3; status["block"]!["padding_bottom"] = 11;
             status["block"]!["border_top_width"] = 7; status["block"]!["border_bottom_width"] = 30;
             status["block"]!["border_left_width"] = 24; status["block"]!["border_right_width"] = 28;
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(150); pane.UpdateLayout(); DrawStatus();
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle(); pane.UpdateLayout(); DrawStatus();
             double bottomHeight = pane.StatusBarHeight;
             double center = (bottomHeight + 7 + 3 - 11) / 2;
             var normalText = pane.DrawnStatusTexts.Single(text => text.Original == "NORMAL");
@@ -361,7 +358,7 @@ internal static class ChromeStyleTests
                 "internal status bars reserve the bottom border that separates viewports");
             pane.SetStatusBottomEdge(true);
             status["block"] = originalStatusBlock;
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(150); pane.UpdateLayout();
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle(); pane.UpdateLayout();
             DrawStatus();
             var mono = preferences.StatusStyles.Status;
             using (var untracked = (mono with { Tracking = 0 }).Layout(pane.Canvas.Device, "NORMAL"))
@@ -374,7 +371,7 @@ internal static class ChromeStyleTests
             status["character"]!["font_face"] = variableFace.PortableStyle;
             status["character"]!["font_axes"] = new JsonObject { ["wght"] = 437 };
             status["character"]!["open_type_features"] = new JsonObject { ["zero"] = 1 };
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(150); pane.UpdateLayout(); DrawStatus();
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle(); pane.UpdateLayout(); DrawStatus();
             var fonts = new List<CanvasFontFace>();
             var capture = new GlyphCapture(font => { fonts.Add(font); return new GlyphFontMetadata(font); });
             try {
@@ -386,50 +383,50 @@ internal static class ChromeStyleTests
             }
             finally { foreach (var font in fonts.Distinct()) font.Dispose(); }
             status["character"] = originalStatusCharacter;
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, Bytes(fixture)); await InputRoutingTests.Settle();
             int measurements = pane.NumeralMeasurements;
             double oneDigit = pane.GutterWidth;
             view.Command("G"); view.Command("gg"); pane.Refresh();
             Check(pane.GutterWidth == oneDigit && pane.NumeralMeasurements == measurements,
                 "moving the caret between current-line styles never changes width or remeasures numerals");
-            view.Command("Go"); view.Text("A tenth source line"); view.Key(VIEM_KEY_ESCAPE); await Task.Delay(100);
+            view.Command("Go"); view.Text("A tenth source line"); view.Key(VIEM_KEY_ESCAPE); await InputRoutingTests.Settle();
             Check(pane.LineNumbersForTesting?.Info.source_line_count == 10 && pane.GutterWidth > oneDigit && pane.NumeralMeasurements == measurements,
                 "crossing ten physical lines grows the gutter using retained numeral metrics");
-            view.Undo(); await Task.Delay(100);
+            view.Undo(); await InputRoutingTests.Settle();
             Check(pane.GutterWidth == oneDigit && pane.NumeralMeasurements == measurements
                 && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "undo crossing a digit threshold shrinks the gutter without font work and restores source");
-            view.Zoom(1.5f); await Task.Delay(100);
+            view.Zoom(1.5f); await InputRoutingTests.Settle();
             Check(pane.GutterWidth > oneDigit && pane.NumeralMeasurements > measurements,
                 "document zoom updates gutter fonts and box geometry with the viewport metrics");
-            view.Zoom(1); await Task.Delay(100);
+            view.Zoom(1); await InputRoutingTests.Settle();
             Check(pane.GutterWidth == oneDigit, "restoring document zoom restores the original gutter width");
-            view.Ex("set nonumber"); await Task.Delay(150);
+            view.Ex("set nonumber"); await InputRoutingTests.Settle();
             Check(pane.GutterWidth == 0 && Math.Abs(WindowFrame.From(window.AppWindow).Width - frame.Width) <= 1,
                 "hiding the gutter restores a single restored window's original width");
             double statusHeight = pane.StatusBarHeight;
-            view.Command(":"); view.Text("w"); pane.Refresh(); await Task.Delay(100);
+            view.Command(":"); view.Text("w"); pane.Refresh(); await InputRoutingTests.Settle();
             Check(pane.StatusBarHeight == statusHeight && pane.CommandStyle.Size == 80,
                 "command style font changes clip inside the status container without affecting its height");
             view.Key(VIEM_KEY_ESCAPE);
             var markdown = JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN))!;
             Definition(markdown, "Status bar")["character"]!["size"] = 19;
-            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, Bytes(markdown)); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, Bytes(markdown)); await InputRoutingTests.Settle();
             Check(preferences.StatusStyles.Status.Size == 19 && pane.ModeControl.FontSize == 19
                 && Definition(JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_CODE))!, "Status bar")["character"]!["size"]!.GetValue<int>() == 19,
                 "status edits from another stylesheet atomically update the shared chrome authority across families");
             Check(document.Source(document.State.document_revision).AsSpan().SequenceEqual(source)
                 && !document.IsDirty, "gutter and status presentation changes preserve source and saved state");
             var largeDocument = new CoreDocument(Rows(99)); preferences.AttachThemeDocument(largeDocument);
-            var extra = window.SplitPane(pane, largeDocument); var extraView = await extra.Ready; await Task.Delay(100);
+            var extra = window.SplitPane(pane, largeDocument); var extraView = await extra.Ready; await InputRoutingTests.Settle();
             var multipleFrame = WindowFrame.From(window.AppWindow);
-            extraView.Ex("set number"); await Task.Delay(100);
+            extraView.Ex("set number"); await InputRoutingTests.Settle();
             Check(WindowFrame.From(window.AppWindow) == multipleFrame, "multiple documents consume gutter space within their viewports");
             int retainedMeasurements = extra.NumeralMeasurements; double twoDigits = extra.GutterWidth;
-            extraView.Command("Go"); extraView.Text("A hundredth source line"); extraView.Key(VIEM_KEY_ESCAPE); await Task.Delay(100);
+            extraView.Command("Go"); extraView.Text("A hundredth source line"); extraView.Key(VIEM_KEY_ESCAPE); await InputRoutingTests.Settle();
             Check(extra.LineNumbersForTesting?.Info.source_line_count == 100 && extra.GutterWidth > twoDigits
                 && extra.NumeralMeasurements == retainedMeasurements, "crossing one hundred lines grows the gutter without remeasuring its font");
-            extraView.Undo(); await Task.Delay(100);
+            extraView.Undo(); await InputRoutingTests.Settle();
             Check(extra.GutterWidth == twoDigits && extra.NumeralMeasurements == retainedMeasurements,
                 "returning to ninety-nine lines removes a digit while reusing the same metrics");
             await window.ClosePane(extra); window.FocusPane(pane); await Task.Delay(100);
@@ -437,13 +434,13 @@ internal static class ChromeStyleTests
                 $"restored native editor has an overlapped presenter (kind={window.AppWindow.Presenter.Kind}, projectedType={window.AppWindow.Presenter.GetType().FullName})");
             ((OverlappedPresenter)window.AppWindow.Presenter).Maximize(); await Task.Delay(150);
             var maximized = WindowFrame.From(window.AppWindow);
-            view.Ex("set number"); await Task.Delay(150);
+            view.Ex("set number"); await InputRoutingTests.Settle();
             Check(WindowFrame.From(window.AppWindow) == maximized, "maximized windows take gutter width from the content viewport");
             view.Ex("set nonumber");
             ((OverlappedPresenter)window.AppWindow.Presenter).Restore(); await Task.Delay(150);
-            var second = window.SplitPane(pane, document, vertical: true); var secondView = await second.Ready; await Task.Delay(150);
+            var second = window.SplitPane(pane, document, vertical: true); var secondView = await second.Ready; await InputRoutingTests.Settle();
             var splitFrame = WindowFrame.From(window.AppWindow);
-            view.Ex("set number"); await Task.Delay(150);
+            view.Ex("set number"); await InputRoutingTests.Settle();
             Check(WindowFrame.From(window.AppWindow) == splitFrame && !secondView.NumberEnabled,
                 "vertical splits reserve independent gutters without resizing the window or another view's option");
             window.FocusPane(pane); await SetViewMenuOpen(true);

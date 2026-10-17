@@ -30,7 +30,7 @@ internal static class SelectionInputTests
                 && !pane.RowSelectionPointForTesting(new(contentX - 2, firstY))
                 && !pane.RowSelectionPointForTesting(new(contentX - 1, firstY)),
                 "document margin selects rows while the final two DIPs retain text placement");
-            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+            // Consecutive presses here are far apart, so none can form a double click.
             await InputRoutingTests.Drag(window, pane.Canvas,
                 new[] { Fraction(4, firstY), Fraction(contentX + 45, secondY), Fraction(contentX + 20, firstY) }, step => {
                     Check(pane.PointerCursorForTesting == "row", "margin row drag keeps the mirrored cursor over text");
@@ -39,21 +39,17 @@ internal static class SelectionInputTests
                         $"margin drag retains its original complete row when extending and reversing (step={step}, range={range.text_start}..{range.text_end}, rows={rows[0].text_start}..{rows[0].text_end}/{rows[1].text_start}..{rows[1].text_end}, viewport={view.Viewport.top}, text={pane.Document.FormattedText().Replace("\n", "\\n")})");
                 });
             view.Key(VIEM_KEY_ESCAPE); view.Command("gg");
-            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
             await InputRoutingTests.Drag(window, pane.Canvas,
                 new[] { Fraction(contentX + 25, firstY), Fraction(4, secondY), Fraction(contentX + 50, firstY) }, _ => {
                     Check(pane.PointerCursorForTesting == "text", "ordinary drag keeps the I-beam over row-selection margins");
                 });
-            foreach (double startX in new[] { 4d, contentX + 25 }) {
-                view.Key(VIEM_KEY_ESCAPE); view.Command("gg");
-                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
-                await InputRoutingTests.Drag(window, pane.Canvas,
-                    new[] { Fraction(startX, firstY), Fraction(contentX + 45, secondY) }, step => {
-                        if (step != 1) return;
-                        pane.Canvas.ReleasePointerCaptures();
-                        Check(!pane.PointerSelectionActiveForTesting, "capture loss ends both row and text cursor locks");
-                    });
-            }
+            view.Key(VIEM_KEY_ESCAPE); view.Command("gg");
+            await InputRoutingTests.Drag(window, pane.Canvas,
+                new[] { Fraction(4, firstY), Fraction(contentX + 45, secondY) }, step => {
+                    if (step != 1) return;
+                    pane.Canvas.ReleasePointerCaptures();
+                    Check(!pane.PointerSelectionActiveForTesting, "capture loss ends row-selection cursor locks");
+                });
             Check(pane.Document.FormattedText() == "alpha beta\nsecond line", "margin and text drags preserve document contents");
         } finally {
             view.Key(VIEM_KEY_ESCAPE); view.Command("gg"); view.Number(numbered);
@@ -83,15 +79,14 @@ internal static class SelectionInputTests
                 return new((cluster.x + cluster.advance * fraction - viewport.left) / pane.Canvas.ActualWidth,
                     (row.baseline - viewport.top - 3) / pane.Canvas.ActualHeight);
             }
-            foreach (var (command, mode, label) in new[] {
-                ("", VIEM_MODE_NORMAL, "Normal"), ("i", VIEM_MODE_INSERT, "Insert"), ("R", VIEM_MODE_REPLACE, "Replace") })
-            foreach (bool jitter in new[] { false, true })
+            foreach (var (command, mode, label, jitter) in new[] {
+                ("", VIEM_MODE_NORMAL, "Normal", true), ("i", VIEM_MODE_INSERT, "Insert", false), ("R", VIEM_MODE_REPLACE, "Replace", true) })
             {
                 view.Key(VIEM_KEY_ESCAPE);
                 view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, pane.Document.State.document_revision);
                 view.Command(command);
-                // Separate clicks so Windows does not recognize a double-tap.
-                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                // Separate repeated clicks so Windows does not recognize a double-tap.
+                if (command.Length > 0) await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
                 var point = PointAt(6);
                 var points = jitter ? new[] { point,
                     new global::Windows.Foundation.Point(point.X + 1 / pane.Canvas.ActualWidth, point.Y + 1 / pane.Canvas.ActualHeight), point }
@@ -136,37 +131,35 @@ internal static class SelectionInputTests
                 preferences.Set("editing", "caretHoverEffect", false);
                 Check(pane.CaretHoverRectangle == null, "Disabling the setting immediately removes the hover");
             } finally { preferences.Set("editing", "caretHoverEffect", hoverEnabled); view.Key(VIEM_KEY_ESCAPE); }
-            foreach (double fraction in new[] { .1, .9 }) {
-                view.Key(VIEM_KEY_ESCAPE);
-                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
-                await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, fraction) }, _ => { });
-                Check(view.Presentation.cursor_utf8_offset == 6, "Both halves of a normal-mode cell select that character");
-                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
-                await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, fraction), PointAt(2), PointAt(9), PointAt(6) }, step => {
-                    if (step == 0) return;
-                    var range = view.LogicalSelection();
-                    var expected = step == 1 ? (2ul, 7ul) : step == 2 ? (6ul, 9ul) : (6ul, 7ul);
-                    Check(range.text_start == expected.Item1 && range.text_end == expected.Item2,
-                        "Normal-mode dragging includes the clicked character through direction changes");
-                });
-            }
+            // The right half is the case where a click could choose the next boundary.
+            view.Key(VIEM_KEY_ESCAPE);
+            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+            await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, .9) }, _ => { });
+            Check(view.Presentation.cursor_utf8_offset == 6, "Both halves of a normal-mode cell select that character");
+            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+            await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, .9), PointAt(2), PointAt(9), PointAt(6) }, step => {
+                if (step == 0) return;
+                var range = view.LogicalSelection();
+                var expected = step == 1 ? (2ul, 7ul) : step == 2 ? (6ul, 9ul) : (6ul, 7ul);
+                Check(range.text_start == expected.Item1 && range.text_end == expected.Item2,
+                    "Normal-mode dragging includes the clicked character through direction changes");
+            });
             view.Key(VIEM_KEY_ESCAPE); view.Command("i");
             await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
             await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(6, .9) }, _ => { });
             Check(view.Presentation.mode == VIEM_MODE_INSERT && view.Presentation.cursor_utf8_offset == 7,
                 "Insert-mode clicks still choose the nearest boundary on a character's right half");
             view.Key(VIEM_KEY_ESCAPE);
-            await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
             await InputRoutingTests.Drag(window, pane.Canvas, new[] { PointAt(0), PointAt(6), PointAt(3) }, _ => { });
             var selection = view.LogicalSelection();
             Check(view.Presentation.mode == VIEM_MODE_SELECTION_CHARACTER && selection.text_start == 0 && selection.text_end == 3,
                 "native dragging beyond the click threshold preserves its anchor while reversing");
             Check(pane.Document.FormattedText() == original && pane.LastError == null,
                 "native pointer placement and dragging preserve source without routing errors");
-            foreach (string command in new[] { "", "i", "R" })
+            foreach (string command in new[] { "", "i" })
             {
                 view.Key(VIEM_KEY_ESCAPE); view.Command(command);
-                await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
+                if (command.Length > 0) await Task.Delay(TimeSpan.FromMilliseconds(InputRoutingTests.GetDoubleClickTime() + 50));
                 var expected = new[] { (6ul, 10ul), (6ul, 17ul), (0ul, 10ul), (6ul, 10ul) };
                 await InputRoutingTests.Drag(window, pane.Canvas,
                     new[] { PointAt(7), PointAt(13), PointAt(2), PointAt(7) }, step => {

@@ -43,12 +43,12 @@ try {
     Verify-Output $publish
 
     $savedEnvironment = @{}
-    foreach ($key in @('VIEM_CONFIG_DIR', 'VIEM_TEST_SYNTAX_ONLY', 'VIEM_TEST_VIM_MISSING')) {
+    foreach ($key in @('VIEM_CONFIG_DIR', 'VIEM_TEST_SUITES', 'VIEM_TEST_VIM_MISSING')) {
         $savedEnvironment[$key] = [Environment]::GetEnvironmentVariable($key)
     }
     function Test-Syntax([string]$OutputDirectory, [string]$Name, [bool]$Missing = $false) {
         $env:VIEM_CONFIG_DIR = Join-Path $testRoot "$Name-profile"
-        $env:VIEM_TEST_SYNTAX_ONLY = '1'
+        $env:VIEM_TEST_SUITES = 'VimRuntime'
         $env:VIEM_TEST_VIM_MISSING = if ($Missing) { '1' } else { $null }
         $report = Join-Path $testRoot "$Name.json"
         $process = Start-Process -FilePath (Join-Path $OutputDirectory 'Viem.exe') -WorkingDirectory $testRoot `

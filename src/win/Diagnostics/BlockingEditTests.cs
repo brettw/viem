@@ -114,20 +114,23 @@ internal static class BlockingEditTests
             finally { if (!failed.HasExited) failed.Kill(); }
         }
 
-        foreach (string scenario in new[] { "write-quit", "cquit", "crash" })
-        {
+        // Each scenario has its own profile, so the cold launches run concurrently.
+        var scenarios = new[] { "write-quit", "cquit", "crash" }.Select(scenario => {
             string file = Path.Combine(directory, scenario + ".txt"); File.WriteAllText(file, "Original\r\n");
-            using var child = Start(file, directory, scenario);
-            try
+            return (Scenario: scenario, File: file, Child: Start(file, directory, scenario));
+        }).ToArray();
+        try
+        {
+            await Task.WhenAll(scenarios.Select(s => s.Child.WaitForExitAsync())).WaitAsync(TimeSpan.FromSeconds(45));
+            foreach (var (scenario, file, child) in scenarios)
             {
-                await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(45));
                 int expected = scenario == "write-quit" ? 0 : scenario == "cquit" ? 7 : 1;
                 Check(child.ExitCode == expected, "cold blocking launch returns " + scenario + " status: " + await child.StandardError.ReadToEndAsync());
                 Check(File.ReadAllText(file) == (scenario == "write-quit" ? "Edited Original\r\n" : "Original\r\n"),
                     "cold " + scenario + " preserves correct on-disk source");
             }
-            finally { if (!child.HasExited) child.Kill(); }
         }
+        finally { foreach (var (_, _, child) in scenarios) { if (!child.HasExited) child.Kill(); child.Dispose(); } }
         using var invalid = Start(directory, directory);
         await invalid.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
         Check(invalid.ExitCode != 0, "blocking launcher rejects directories");
