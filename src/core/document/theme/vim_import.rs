@@ -59,24 +59,6 @@ const CAPTURE_GROUPS: &[(&str, &str)] = &[
     ("Markup.link", "Underlined"),
 ];
 
-/// Markdown Preview styles and their Vim groups. Fallbacks follow the default
-/// links in Vim's `markdown.vim`/`html.vim` when the scheme does not define a
-/// group; the last entry is an approximation where Vim highlights nothing.
-const MARKDOWN_GROUPS: &[(&str, &[&str])] = &[
-    ("Heading1", &["markdownH1", "htmlH1", "Title"]),
-    ("Heading2", &["markdownH2", "htmlH2", "htmlH1", "Title"]),
-    ("Heading3", &["markdownH3", "htmlH3", "htmlH1", "Title"]),
-    ("Heading4", &["markdownH4", "htmlH4", "htmlH1", "Title"]),
-    ("Heading5", &["markdownH5", "htmlH5", "htmlH1", "Title"]),
-    ("Heading6", &["markdownH6", "htmlH6", "htmlH1", "Title"]),
-    ("Link", &["markdownLinkText", "htmlLink", "Underlined"]),
-    ("Comment", &["htmlComment", "Comment"]),
-    ("Code", &["markdownCode", "String"]),
-    ("Code Block", &["markdownCodeBlock", "markdownCode", "String"]),
-    ("Markdown reference", &["markdownId", "Type"]),
-    ("Block quote", &["markdownBlockquote", "Comment"]),
-];
-
 /// The resolved appearance of a style: `None` colors are the theme's text
 /// color and a transparent background.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -226,7 +208,9 @@ pub fn import_vim_colorscheme(name: &str, source: &[u8]) -> Result<VimThemeImpor
         let sheet = styles.get_mut(family).ok_or("Invalid built-in theme")?;
         chrome.apply(sheet, family == "code")?;
     }
-    markdown(&mut styles["markdown"], &highlights, &palette)?;
+    for family in ["text", "markdown"] {
+        inherit_document_colors(&mut styles[family])?;
+    }
     code(&mut styles["code"], &highlights, &palette)?;
 
     let theme = serde_json::to_vec_pretty(&theme).map_err(|error| error.to_string())?;
@@ -325,51 +309,31 @@ fn gutter(block: &mut Value, look: &Look, parent: &Look) {
     }
 }
 
-fn markdown(sheet: &mut Value, highlights: &VimHighlights, palette: &Palette) -> Result<(), String> {
-    for (style, groups) in MARKDOWN_GROUPS {
-        // The scheme's own definition wins; otherwise follow the syntax files'
-        // default links, ending at the approximation.
-        let group = groups
-            .iter()
-            .find(|group| highlights.defined_by_scheme(group))
-            .or_else(|| groups.iter().find(|group| highlights.contains(group)))
-            .copied()
-            .unwrap_or(groups[groups.len() - 1]);
-        let look = highlights.resolve(group).map(|resolved| palette.look(&resolved)).unwrap_or_default();
-        let foreground = look.foreground.map_or(Value::Null, color_json);
-        let text = palette.painted(&look).0;
-        if let Some(block) = find(sheet, "block_styles", style) {
-            match *style {
-                "Block quote" => block["block"]["border_left_color"] = color_json(text),
-                "Code Block" => {
-                    block["character"]["foreground"] = foreground;
-                    // A faint tint of the text color reads on either canvas.
-                    let mut tint = palette.foreground;
-                    tint.alpha = 0.07;
-                    block["block"]["background"] = color_json(tint);
-                }
-                _ => {
-                    // Headings take the Title color and drop preset banners.
-                    block["character"]["foreground"] = foreground;
-                    block["character"]["background"] = Value::Null;
-                    block["block"]["background"] = Value::Null;
-                }
+/// Document styles (headings, links, code, quotes, tables) drop the preset's
+/// colors and inherit Normal's; only typography remains. Editor chrome keeps
+/// the scheme's colors from `Chrome`.
+fn inherit_document_colors(sheet: &mut Value) -> Result<(), String> {
+    const CHROME: &[&str] = &["Status bar", "Status bar command", "Builtin line number", "Builtin current line number"];
+    let blocks = sheet["block_styles"].as_array_mut().ok_or("Invalid built-in stylesheet")?;
+    for block in blocks.iter_mut().filter(|block| !block["id"].as_str().is_some_and(|id| CHROME.contains(&id))) {
+        for key in ["foreground", "background"] {
+            if let Some(character) = block["character"].as_object_mut() {
+                character.remove(key);
             }
-        } else if let Some(character) = find(sheet, "character_styles", style) {
-            character["properties"]["foreground"] = foreground;
-            if *style == "Comment" {
-                character["properties"]["bold"] = look.bold.then_some(true).into();
-                character["properties"]["slant"] = if look.italic { "Italic".into() } else { Value::Null };
-            }
-        } else {
-            return Err(format!("The built-in Markdown stylesheet has no {style} style"));
+        }
+        if let Some(declarations) = block["block"].as_object_mut() {
+            declarations.retain(|key, _| key != "background" && !(key.starts_with("border_") && key.ends_with("_color")));
+        }
+    }
+    let incremental = StyleId::incremental_match().0;
+    let characters = sheet["character_styles"].as_array_mut().ok_or("Invalid built-in stylesheet")?;
+    for character in characters.iter_mut().filter(|style| style["id"] != incremental.as_str()) {
+        if let Some(properties) = character["properties"].as_object_mut() {
+            properties.remove("foreground");
+            properties.remove("background");
         }
     }
     Ok(())
-}
-
-fn find<'a>(sheet: &'a mut Value, list: &str, id: &str) -> Option<&'a mut Value> {
-    sheet[list].as_array_mut()?.iter_mut().find(|entry| entry["id"] == id)
 }
 
 /// Rebuild every Code syntax style from the scheme. Each style declares only

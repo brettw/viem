@@ -118,6 +118,7 @@ final class EVVimThemeImportController: NSObject, NSTableViewDataSource, NSTable
     table.addTableColumn(column)
     table.headerView = nil
     table.usesAlternatingRowBackgroundColors = true
+    table.rowHeight = 24
     table.allowsEmptySelection = true
     table.dataSource = self
     table.delegate = self
@@ -169,8 +170,24 @@ final class EVVimThemeImportController: NSObject, NSTableViewDataSource, NSTable
   func numberOfRows(in tableView: NSTableView) -> Int { schemes.count }
 
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
-    let cell = NSTextField(labelWithString: schemes[row].name)
-    cell.lineBreakMode = .byTruncatingTail
+    let identifier = NSUserInterfaceItemIdentifier("scheme")
+    let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? {
+      // A bare label fills the row and draws at its top; center it instead.
+      let cell = NSTableCellView()
+      cell.identifier = identifier
+      let label = NSTextField(labelWithString: "")
+      label.lineBreakMode = .byTruncatingTail
+      label.translatesAutoresizingMaskIntoConstraints = false
+      cell.addSubview(label)
+      cell.textField = label
+      NSLayoutConstraint.activate([
+        label.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+        label.trailingAnchor.constraint(lessThanOrEqualTo: cell.trailingAnchor, constant: -6),
+        label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+      ])
+      return cell
+    }()
+    cell.textField?.stringValue = schemes[row].name
     cell.toolTip = schemes[row].url.path
     return cell
   }
