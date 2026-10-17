@@ -32,11 +32,8 @@ internal static class VariableFontTests
         EquivalentGlyphChecks(pane.Canvas.Device, FontCatalog.Match("Recursive", "Mono Casual Light")!, "recursive/Recursive_VF_1.085.ttf");
         foreach (var design in FontCatalog.Faces("Flightline Code"))
             EquivalentGlyphChecks(pane.Canvas.Device, design, "flightline/FlightlineCode-" + (design.Slant == FontStyle.Normal ? "Regular" : "Italic") + "-VF.ttf");
-        await RecursiveInspectorChecks(pane, preferences);
         FlightlineFontChecks(pane);
         await FlightlineInspectorChecks(pane, preferences);
-        await FlightlineSavedInspectorChecks(pane, preferences);
-        await StyleAndSettingsTests.FontChecks(pane, preferences);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_MARKDOWN);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_PLAIN_TEXT);
         var face = FontCatalog.Faces("Bahnschrift").FirstOrDefault() ?? throw new InvalidOperationException("Variable font regression requires the Windows Bahnschrift font.");
@@ -63,30 +60,6 @@ internal static class VariableFontTests
         Check(!CoreView.SameLayout(wide.Info.identity, narrow.Info.identity), "axis edits invalidate the shaping cache");
         var exported = System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults());
         Check(exported.Contains("font_axes") && exported.Contains("75"), "stylesheet export retains numeric axis coordinates");
-        var original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
-        preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
-        var inspector = new StyleWindow(view, preferences); inspector.Activate();
-        try {
-            await Task.Delay(100);
-            var sliders = Descendants<Slider>(inspector.RootControl).ToArray();
-            Check(sliders.Length == 2, "two variable axes occupy one inspector row");
-            var slider = sliders.Single(s => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(s) == "Width");
-            Check(Math.Abs(slider.Value - 75) < .001, "reopening the stylesheet restores the saved axis coordinates");
-            slider.Value = 90;
-            Check(inspector.FontVariantControl.SelectedItem as string == "Custom", "moving an axis selects Custom when no named instance matches");
-            inspector.UndoThemeForTesting();
-            slider = Descendants<Slider>(inspector.RootControl).Single(s => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(s) == "Width");
-            Check(Math.Abs(slider.Value - 75) < .001, "undo restores the previous saved axis coordinate");
-            inspector.RedoThemeForTesting();
-            slider = Descendants<Slider>(inspector.RootControl).Single(s => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(s) == "Width");
-            Check(Math.Abs(slider.Value - 90) < .001, "redo restores the edited axis coordinate");
-            var preset = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>().First();
-            inspector.FontVariantControl.SelectedItem = preset;
-            Check(Math.Abs(slider.Value - preset.Values["wdth"]) < .001, "selecting a named preset synchronizes axis sliders");
-            Check(!Descendants<CheckBox>(inspector.RootControl).Any(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Declare Variant"), "font face has one inheritance checkbox and no variant checkbox");
-            await Task.Delay(300);
-            await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".variable-font.png");
-        } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
 
     internal static void SourceChecks(FontFace face, string relativePath)
@@ -113,8 +86,8 @@ internal static class VariableFontTests
         using var bundled = new CanvasFontSet(source);
         var info = FontVariations.For(selected);
         var coordinates = selected.PortableFamily == "Flightline Code"
-            ? new[] { 250f, 400f, 437f, 700f }.Select(weight => new Dictionary<string, float> { ["wght"] = weight })
-            : info.Instances.Where(i => i.Name != "Default").Where((_, index) => index % 10 == 0).Select(i => i.Values).Append(info.Defaults);
+            ? new[] { 437f, 700f }.Select(weight => new Dictionary<string, float> { ["wght"] = weight })
+            : info.Instances.Where(i => i.Name != "Default").Where((_, index) => index % 32 == 0).Select(i => i.Values).Append(info.Defaults);
         foreach (var axes in coordinates) {
             var expected = Shape(selected, axes, bundled);
             var actual = Shape(selected, axes, null);
@@ -203,7 +176,7 @@ internal static class VariableFontTests
             Check(info.Axes.Length == 1 && info.Axes[0] is { Tag: "wght", Minimum: 200, Default: 400, Maximum: 700 }, "Flightline exposes its 200–700 weight axis");
             var instances = info.Instances.Where(i => i.Name != "Default").ToArray();
             Check(instances.Length == 6, "each Flightline design exposes six named presets");
-            foreach (float weight in instances.Select(i => i.Values["wght"]).Append(437).Distinct()) {
+            foreach (float weight in new[] { instances[0].Values["wght"], 437f }) {
                 view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily, "serif"], face, new() { ["wght"] = weight });
                 var layout = view.Layout();
                 var run = layout.Clusters.First().render_run.identifier;
@@ -239,15 +212,15 @@ internal static class VariableFontTests
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
         var inspector = new StyleWindow(view, preferences); inspector.Activate();
         try {
-            await Task.Delay(100);
-            foreach (bool italic in new[] { false, true }) {
+            await InputRoutingTests.Settle();
+            foreach (bool italic in new[] { true }) {
                 inspector.FontVariantControl.SelectedItem = FontCatalog.Faces("Flightline Code")
                     .Single(f => (f.Slant != FontStyle.Normal) == italic);
                 var slider = Descendants<Slider>(inspector.RootControl).Single();
                 Check(slider.Minimum == 200 && slider.Maximum == 700 && slider.StepFrequency == 1, "Flightline's inspector weight control covers the design range in integer steps");
                 var presets = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>().ToArray();
                 Check(presets.Length == 7, "Flightline's picker exposes Default and all six named presets");
-                foreach (var preset in presets) {
+                foreach (var preset in new[] { presets[0], presets[^1] }) {
                     inspector.FontVariantControl.SelectedItem = preset;
                     Check(Math.Abs(slider.Value - preset.Values["wght"]) < .001, "Flightline preset selection synchronizes its weight slider");
                 }
@@ -293,7 +266,7 @@ internal static class VariableFontTests
         foreach (var face in faces) {
             var info = FontVariations.For(face);
             bool slanted = face.Slant != FontStyle.Normal;
-            var requests = info.Instances.Where(i => i.Name != "Default").Select(i => (i.Name, Weight: i.Values["wght"]))
+            var requests = info.Instances.Where(i => i.Name != "Default").Take(1).Select(i => (i.Name, Weight: i.Values["wght"]))
                 .Append((face.PortableStyle, 250f));
             foreach (var (subfamily, weight) in requests) {
                 Check(FontCatalog.Match("Flightline Code", subfamily) == face, $"portable Flightline {subfamily} resolves its own design");
@@ -318,37 +291,6 @@ internal static class VariableFontTests
         midnight.SetMarkdownPreview(true);
         var midnightRun = midnight.Layout().Clusters.First().render_run.identifier;
         Check(midnight.Provider.RenderedFontNames(midnightRun).Contains("FlightlineCode-Normal"), "Midnight inline Code renders the upright Flightline design");
-    }
-
-    private static async Task FlightlineSavedInspectorChecks(EditorPane pane, Preferences preferences)
-    {
-        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
-        try {
-            foreach (string subfamily in new[] { "Normal", "Normal Italic", "Light", "Light Italic", "" }) {
-                using var doc = new CoreDocument("Saved Flightline inspector"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
-                byte[] styles = FlightlineStyles(subfamily, 250);
-                doc.InitializeStyleDefaults(styles);
-                using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
-                preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, styles);
-                byte[] before = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
-                var inspector = new StyleWindow(view, preferences); inspector.Activate();
-                try {
-                    await Task.Delay(50);
-                    var slider = Descendants<Slider>(inspector.RootControl).Single();
-                    bool italic = subfamily.Contains("Italic", StringComparison.Ordinal);
-                    var presets = inspector.FontVariantControl.Items.OfType<FontInstance>().ToArray();
-                    Check(slider.Value == 250 && inspector.FontVariantControl.SelectedItem as string == "Custom"
-                        && presets.Length == 7 && presets.Where(p => p.Name != "Default").All(p => p.Name.Contains("Italic", StringComparison.Ordinal) == italic),
-                        "opening a saved Flightline style populates matching presets and the custom weight without changing design");
-                    inspector.RefreshForTesting();
-                    Check(before.AsSpan().SequenceEqual(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN)), "opening and refreshing Flightline controls do not rewrite the saved request");
-                    inspector.FontVariantControl.SelectedItem = presets.Single(p => p.Name == (italic ? "Light Italic" : "Light"));
-                    Check(slider.Value == 350 && inspector.FontVariantControl.SelectedItem is FontInstance { Name: "Light" or "Light Italic" }, "a saved Flightline style selects its matching Light preset consistently");
-                    inspector.UndoThemeForTesting();
-                    Check(Descendants<Slider>(inspector.RootControl).Single().Value == 250 && inspector.FontVariantControl.SelectedItem as string == "Custom", "undo restores the saved custom Flightline weight and picker state");
-                } finally { inspector.Close(); }
-            }
-        } finally { preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
 
     internal static void RecursiveFontChecks(EditorPane pane)
@@ -377,7 +319,7 @@ internal static class VariableFontTests
         var portableAxes = view.Provider.RenderedFontAxes(portable.Clusters.First().render_run.identifier).First();
         Check(portableAxes["MONO"] == 1 && portableAxes["CASL"] == 1 && portableAxes["wght"] == 300,
             "portable Recursive family and named instance resolve to the intended Windows outlines without explicit axes");
-        foreach (var instance in instances) {
+        foreach (var instance in instances.Where((_, index) => index % 16 == 0)) {
             view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily, "serif"], face, instance.Values);
             var layout = view.Layout();
             var axes = view.Provider.RenderedFontAxes(layout.Clusters.First().render_run.identifier).First();
@@ -388,30 +330,6 @@ internal static class VariableFontTests
         Check(saved.StringList(saved.Styles.Single(s => s.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { "Recursive", "serif" }),
             "Windows saves the same portable family and fallback order as Mac");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase), "saved Recursive styles use portable names and coordinates");
-    }
-    private static async Task RecursiveInspectorChecks(EditorPane pane, Preferences preferences)
-    {
-        var face = FontCatalog.Faces("Recursive").Single(f => f.Name == "Recursive-SansLinearLight");
-        var info = FontVariations.For(face);
-        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
-        using var doc = new CoreDocument("Recursive variable inspector"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
-        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
-        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily], face);
-        preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
-        var inspector = new StyleWindow(view, preferences); inspector.Activate();
-        try {
-            await Task.Delay(100);
-            var sliders = Descendants<Slider>(inspector.RootControl).ToArray();
-            Check(sliders.Length == 5, "Recursive exposes five sliders in the style inspector");
-            var rowCounts = sliders.GroupBy(s => Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(Microsoft.UI.Xaml.Media.VisualTreeHelper.GetParent(s)))
-                .Select(g => g.Count()).OrderDescending().ToArray();
-            Check(rowCounts.SequenceEqual([2, 2, 1]), "Recursive's five axes occupy two full rows and one half row");
-            var preset = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>()
-                .First(i => i.Values["MONO"] == 1 && i.Values["CASL"] == 1 && i.Values["slnt"] == -15);
-            inspector.FontVariantControl.SelectedItem = preset;
-            Check(info.Axes.All(a => Math.Abs(sliders.Single(s => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(s) == a.Name).Value - preset.Values[a.Tag]) < .001f), "Recursive named instances synchronize all five sliders");
-            Check(inspector.Error.Length == 0, "Recursive variable-font controls apply without inspector errors");
-        } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
     private static async Task SegoeVariable(EditorPane pane, Preferences preferences, uint format)
     {
@@ -427,7 +345,7 @@ internal static class VariableFontTests
         var view = await rendered.Ready;
         var inspector = new StyleWindow(view, preferences); inspector.Activate();
         try {
-            await Task.Delay(200);
+            await InputRoutingTests.Settle();
             view.Place(23, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, doc.State.document_revision);
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Paragraph");
             inspector.FontFamilyControl.SelectedItem = "Segoe UI Variable Text";

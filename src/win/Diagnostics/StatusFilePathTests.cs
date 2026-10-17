@@ -54,10 +54,9 @@ internal static class StatusFilePathTests
             pane.FilePathHost.Width = 160;
             pane.FilePathHost.HorizontalAlignment = HorizontalAlignment.Left;
             pane.Refresh();
-            await Task.Delay(80);
+            await InputRoutingTests.Settle();
             check(pane.FilePathControl.Text == "café-notes.md" && pane.ModeControl.Visibility == Visibility.Collapsed,
                 "narrow native status removes mode first, then whole path components while retaining the filename");
-            await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".status-file-path.png");
             await CheckCopyMenu(pane, check);
             // The directory action reports its result through command output.
             // Restore the ordinary visible status before measuring mode layout.

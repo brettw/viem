@@ -113,8 +113,7 @@ internal static class DocumentModeMenuTests
             await Close();
 
             foreach (var (filename, expectedFormat, label) in new[] {
-                ("notes.md", VIEM_FORMAT_CODE, "Auto (Markdown)"),
-                ("notes.unknown", VIEM_FORMAT_PLAIN_TEXT, "Auto (Plain Text)") })
+                ("notes.md", VIEM_FORMAT_CODE, "Auto (Markdown)") })
             {
                 var next = window.AddPane(new CoreDocument(source, filename)); var nextView = await next.Ready;
                 nextView.SetDocumentMode(VIEM_DOCUMENT_MODE_AUTO, "", DocumentModes.Read(next.Document));

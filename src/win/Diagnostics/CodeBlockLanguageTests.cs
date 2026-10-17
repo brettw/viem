@@ -26,7 +26,7 @@ internal static class CodeBlockLanguageTests
         try
         {
             var pane = window.ActivePane!; var view = await pane.Ready;
-            await Task.Delay(80);
+            await InputRoutingTests.Settle();
             var snapshot = view.Layout();
             var decoration = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
             var row = snapshot.Rows.Single(row => row.row_index == decoration.row_index);

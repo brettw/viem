@@ -43,14 +43,14 @@ internal static class StyleAndSettingsTests
     }
     internal static async Task Run(EditorPane pane, EditorWindow window, Preferences preferences)
     {
-        window.Activate(); pane.FocusEditor(); await Task.Delay(100);
+        window.Activate(); pane.FocusEditor(); await SelfTestRunner.Until(() => GetForegroundWindow() == window.Hwnd);
         byte[] sourceBeforeInspector = pane.Document.Source(pane.Document.State.document_revision);
-        await InputRoutingTests.Key(VirtualKey.F8); await Task.Delay(350);
+        await InputRoutingTests.Key(VirtualKey.F8); await SelfTestRunner.Until(() => window.StyleInspector is { } opened && GetForegroundWindow() == WinRT.Interop.WindowNative.GetWindowHandle(opened));
         var styles = window.StyleInspector ?? throw new InvalidOperationException("F8 did not open the style inspector.");
         // These chrome/control checks inspect Base Paragraph explicitly. F8 now
         // correctly starts at the caret's style, covered by the following tests.
         styles.StylePicker.SelectedItem = styles.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
-        await Task.Delay(100);
+        await InputRoutingTests.Settle();
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(styles);
         Check(GetForegroundWindow() == hwnd, "native F8 opens the inspector and retains foreground focus");
         Check(styles.AppWindow.Presenter is OverlappedPresenter { IsAlwaysOnTop: false }, "style inspector is a normal window, not always on top");
@@ -70,52 +70,23 @@ internal static class StyleAndSettingsTests
         Check(!Children<TextBlock>(styles.RootControl).Any(t => t.Text == "Properties" || t.Text.StartsWith("Changes apply live")), "style inspector omits redundant headings and guidance");
         Check(styles.RootControl.ActualHeight <= styles.RootControl.XamlRoot.Size.Height + 1 && styles.RootControl.XamlRoot.Size.Height - styles.RootControl.ActualHeight < 24,
             "style inspector initially fits its content without spare bottom space");
-        await WindowCapture.Save(hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles.png");
         var characterSize = styles.AppWindow.ClientSize;
-        styles.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
+        styles.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await InputRoutingTests.Settle();
         Check(styles.ParagraphPanel.Visibility == Visibility.Visible && styles.CharacterPanel.Visibility == Visibility.Collapsed, "native Paragraph tab displays paragraph controls");
         Check(styles.AppWindow.ClientSize == characterSize, "character and paragraph tabs occupy the same fixed window size");
         await LineSpacingChecks(pane, styles, sourceBeforeInspector);
         Check(!Children<Button>(styles.RootControl).Any(b => b.Content as string == "Restore Defaults" && b.Visibility == Visibility.Visible), "prose theme styles do not offer a separate reset");
         Check(!styles.VisitParent.IsEnabled && !styles.VisitNext.IsEnabled, "base paragraph has no relationship navigation targets");
-        await WindowCapture.Save(hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles-paragraph.png");
-        window.Activate(); pane.FocusEditor(); await Task.Delay(100);
+        window.Activate(); pane.FocusEditor(); await SelfTestRunner.Until(() => GetForegroundWindow() == window.Hwnd);
         Check(GetForegroundWindow() == window.Hwnd, "editor can be raised above the modeless style inspector");
         var menu = window.Menu.Items.Single(m => m.Title == "Style");
-        new MenuBarItemAutomationPeer(menu).Expand(); await Task.Delay(100);
+        new MenuBarItemAutomationPeer(menu).Expand(); await InputRoutingTests.Settle();
         var item = menu.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…");
-        new MenuFlyoutItemAutomationPeer(item).Invoke(); await Task.Delay(200);
+        new MenuFlyoutItemAutomationPeer(item).Invoke(); await SelfTestRunner.Until(() => GetForegroundWindow() == hwnd);
         Check(window.StyleInspector == styles && GetForegroundWindow() == hwnd, "Edit Styles menu reuses and raises the inspector without refocusing the editor");
         styles.Close();
-        await DocumentSwitchingChecks(preferences);
         Check(KeyPolicy.Route(VirtualKey.F8, false, true, false).Kind == VIEM_KEY_FUNCTION
             && KeyPolicy.Route(VirtualKey.F8, false, false, false, true).Kind == VIEM_KEY_FUNCTION, "modified and literal-next F8 remain core function keys");
-        await FontChecks(pane, preferences);
-        await StyleFontSizeTests.Run(pane, preferences);
-        await FormatMenuTests.Run(preferences);
-        await SelectionFindTests.Run(preferences);
-        await DocumentModeMenuTests.Run(preferences);
-        await ListInteractionTests.Run(preferences);
-        await CodeStyleChecks(pane, preferences);
-        await StyleInspectorBehaviorTests.Run(pane, preferences);
-
-        await RunSettings(pane, window, preferences);
-    }
-
-    internal static async Task RunLineSpacing(EditorPane pane, Preferences preferences)
-    {
-        byte[] sourceBeforeInspector = pane.Document.Source(pane.Document.State.document_revision);
-        var styles = new StyleWindow(pane.View!, preferences, followCaret: false);
-        try {
-            styles.Activate(); await Task.Delay(200);
-            styles.StylePicker.SelectedItem = styles.StylePicker.Items.OfType<StyleDefinition>()
-                .Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
-            styles.ParagraphTab.IsChecked = true; await Task.Delay(100);
-            Check(styles.ParagraphPanel.Visibility == Visibility.Visible, "focused line-spacing diagnostics display paragraph controls");
-            await LineSpacingChecks(pane, styles, sourceBeforeInspector);
-        }
-        finally { styles.Close(); }
-        StyleSessionRecoveryTests.Run(pane, preferences);
     }
 
     internal static async Task DocumentSwitchingChecks(Preferences preferences)
@@ -138,7 +109,7 @@ internal static class StyleAndSettingsTests
             window.Activate();
             var text = new CoreDocument("Another document"u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
             var second = window.SplitPane(first, text);
-            await second.Ready; await Task.Delay(150);
+            await second.Ready; await InputRoutingTests.Settle();
             var expected = second.View!.CurrentStyleEditorKey(second.View.Styles());
             Check(window.StyleInspector == inspector && Selected().Key == expected
                 && inspector.Title.Contains("Plain Text"), "switching panes immediately retargets the existing inspector's family and current style"
@@ -149,18 +120,18 @@ internal static class StyleAndSettingsTests
             Check(GetForegroundWindow() == window.Hwnd, "retargeting the inspector leaves keyboard focus in the document window");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().First(s => s.Id != Selected().Id);
             var explicitChoice = Selected().Key;
-            window.FocusPane(second); await Task.Delay(100);
+            window.FocusPane(second); await InputRoutingTests.Settle();
             Check(Selected().Key == explicitChoice, "refocusing the same document preserves an explicit inspector choice");
-            window.FocusPane(first); await Task.Delay(100);
+            window.FocusPane(first); await InputRoutingTests.Settle();
             Check(Selected().Id == "Code" && inspector.Title.Contains("Markdown"), "switching back restores the originating document's caret style");
             window.FocusPane(second);
-            await window.ClosePane(second, force: true); await Task.Delay(150);
+            await window.ClosePane(second, force: true); await InputRoutingTests.Settle();
             Check(window.StyleInspector == inspector && Selected().Id == "Code",
                 "closing the followed pane keeps the inspector open and follows the remaining document");
             foreach (string command in new[] { "split", "new" }) {
                 first.View!.Ex(command); await window.PendingEffectsForTesting;
                 var added = window.Panes.Single(pane => pane != first);
-                await added.Ready; await Task.Delay(80);
+                await added.Ready; await InputRoutingTests.Settle();
                 Check(window.ActivePane == added && HasInputFocus(added),
                     $":{command} selects the new pane and completes its native input focus");
                 await window.ClosePane(added, force: true);
@@ -169,7 +140,7 @@ internal static class StyleAndSettingsTests
             App.Instance.Windows.Add(otherWindow); otherWindow.Activate();
             try
             {
-                await otherWindow.ActivePane!.Ready; await Task.Delay(150);
+                await otherWindow.ActivePane!.Ready; await SelfTestRunner.Until(() => GetForegroundWindow() == otherWindow.Hwnd);
                 Check(otherWindow.StyleInspector == inspector && inspector.Title.Contains("Plain Text"),
                     "switching document windows retargets the single application-wide inspector");
                 Check(GetForegroundWindow() == otherWindow.Hwnd, "window switching does not raise the inspector");
@@ -178,7 +149,7 @@ internal static class StyleAndSettingsTests
                     "F8 in another window reuses the same inspector");
             }
             finally { await otherWindow.RequestCloseForTesting(); }
-            window.Activate(); await Task.Delay(150);
+            window.Activate(); await SelfTestRunner.Until(() => GetForegroundWindow() == window.Hwnd);
             Check(Selected().Id == "Code", "returning to the original window restores its current style");
             Check(markdown.Source(markdown.State.document_revision).AsSpan().SequenceEqual("# Title `code` tail\n\nBody"u8),
                 "document switching and inspector following leave source bytes unchanged");
@@ -198,7 +169,7 @@ internal static class StyleAndSettingsTests
             VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING,
             CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, VIEM_STYLE_LINE_SPACING_NORMAL));
         styles.CommitThemeForTesting();
-        await Task.Delay(100);
+        await InputRoutingTests.Settle();
         var lineSpacing = Children<ComboBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing");
         var lineSpacingAmount = Children<NumberBox>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing amount");
         var lineSpacingUnits = Children<TextBlock>(styles.ParagraphPanel).Single(c => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(c) == "Line spacing units");
@@ -217,7 +188,7 @@ internal static class StyleAndSettingsTests
             && paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number == 17,
             $"configured side indents survive theme reload (leading: {paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT).number}, "
                 + $"trailing: {paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number}, style: {paragraphStyle.Id})");
-        firstLineIndent.Value = 9; await Task.Delay(100);
+        firstLineIndent.Value = 9; await InputRoutingTests.Settle();
         paragraphStyle = SelectedStyle();
         Check(paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT).number == 23
             && paragraphStyle.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT).number == 17
@@ -231,20 +202,20 @@ internal static class StyleAndSettingsTests
             && Math.Abs(lineSpacingAmount.Value - 1) < .0001
             && lineSpacingAmount.Text == "1" && Math.Abs(lineSpacingAmount.SmallChange - .1) < .0001 && lineSpacingUnits.Text == "\u00D7",
             "Normal line spacing is an enabled compact 1 multiplier with tenth steps");
-        lineSpacingAmount.Value += lineSpacingAmount.SmallChange; await Task.Delay(100);
+        lineSpacingAmount.Value += lineSpacingAmount.SmallChange; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - 1.1) < .0001,
             "stepping Normal away from 1 changes it to a Multiple value by 0.1");
-        lineSpacingAmount.Value = .7999999523162842; await Task.Delay(100);
+        lineSpacingAmount.Value = .7999999523162842; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - .8) < .0001
             && lineSpacingAmount.Text.Length <= 3 && lineSpacingAmount.Text.StartsWith("0") && lineSpacingAmount.Text.EndsWith("8"),
             "Multiple line spacing rounds float noise to one compact decimal place");
-        lineSpacingAmount.Value = 1; await Task.Delay(100);
+        lineSpacingAmount.Value = 1; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 0 && lineSpacingAmount.IsEnabled && lineSpacingAmount.Text == "1",
             "a Multiple value of exactly 1 changes back to Normal without disabling its amount");
-        lineSpacing.SelectedIndex = 1; await Task.Delay(100);
+        lineSpacing.SelectedIndex = 1; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - 1.1) < .0001,
             "choosing Multiple from Normal starts at 1.1");
-        lineSpacingAmount.Value -= lineSpacingAmount.SmallChange; await Task.Delay(100);
+        lineSpacingAmount.Value -= lineSpacingAmount.SmallChange; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 0 && Math.Abs(lineSpacingAmount.Value - 1) < .0001,
             "stepping a Multiple value down to 1 changes it to Normal");
         var nearNormal = CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, VIEM_STYLE_LINE_SPACING_MULTIPLIER);
@@ -253,37 +224,37 @@ internal static class StyleAndSettingsTests
         styles.ThemeView.EditStyle((StyleDefinition)styles.StylePicker.SelectedItem, VIEM_STYLE_EDIT_SET_DECLARATION,
             VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, nearNormal);
         styles.CommitThemeForTesting();
-        await Task.Delay(100);
+        await InputRoutingTests.Settle();
         Check(pane.Document.State.document_revision == revisionBeforeNearNormal && lineSpacing.SelectedIndex == 0
             && Math.Abs(lineSpacingAmount.Value - 1) < .0001 && lineSpacingAmount.Text == "1",
             "an existing multiplier that rounds to 1 displays as Normal without a presentation-time rewrite");
-        lineSpacing.SelectedIndex = 1; await Task.Delay(100);
+        lineSpacing.SelectedIndex = 1; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 1 && Math.Abs(lineSpacingAmount.Value - 1.1) < .0001,
             "choosing Multiple from a normalized legacy 1 multiplier starts at 1.1");
-        lineSpacing.SelectedIndex = 3; await Task.Delay(100);
+        lineSpacing.SelectedIndex = 3; await InputRoutingTests.Settle();
         Check(lineSpacingAmount.Minimum == 0 && Math.Abs(lineSpacingAmount.SmallChange - 1) < .0001 && lineSpacingUnits.Text == "pt",
             "point-based line spacing permits zero, uses point units, and keeps whole-point steps");
-        lineSpacingAmount.Value = 0; await Task.Delay(100);
+        lineSpacingAmount.Value = 0; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 3 && lineSpacingAmount.Value == 0 && lineSpacingAmount.Text == "0",
             "Exact line spacing accepts and compactly displays zero points");
-        lineSpacingAmount.Value = 19.299999237060547; await Task.Delay(100);
+        lineSpacingAmount.Value = 19.299999237060547; await InputRoutingTests.Settle();
         Check(Math.Abs(lineSpacingAmount.Value - 19.3) < .0001 && lineSpacingAmount.Text.Length <= 4
             && lineSpacingAmount.Text.StartsWith("19") && lineSpacingAmount.Text.EndsWith("3"),
             "point-based line spacing also rounds float noise to one compact decimal place");
-        lineSpacingAmount.Value = 19; await Task.Delay(100);
+        lineSpacingAmount.Value = 19; await InputRoutingTests.Settle();
         Check(lineSpacingAmount.Text == "19", "whole point line spacing omits an unnecessary fractional part");
-        lineSpacing.SelectedIndex = 2; await Task.Delay(100);
-        lineSpacingAmount.Value = 0; await Task.Delay(100);
+        lineSpacing.SelectedIndex = 2; await InputRoutingTests.Settle();
+        lineSpacingAmount.Value = 0; await InputRoutingTests.Settle();
         Check(lineSpacing.SelectedIndex == 2 && lineSpacingAmount.Minimum == 0 && lineSpacingAmount.Value == 0
             && lineSpacingAmount.Text == "0" && lineSpacingUnits.Text == "pt",
             "At least line spacing also accepts and compactly displays zero points");
-        lineSpacing.SelectedIndex = 0; await Task.Delay(100);
+        lineSpacing.SelectedIndex = 0; await InputRoutingTests.Settle();
     }
 
     internal static async Task RunSettings(EditorPane pane, EditorWindow window, Preferences preferences)
     {
         await StyleDefaultsLoadingTests.Run(preferences);
-        window.Activate(); await window.ShowSettings(); await Task.Delay(350);
+        window.Activate(); await window.ShowSettings(); await InputRoutingTests.Settle();
         var settings = window.SettingsInspector!;
         string? priorTheme = preferences.SelectedTheme, priorPath = preferences.SelectedThemePath;
         string paperPath = preferences.ThemeFiles.Single(file => file.Name == "Paper").Path; byte[] priorPaper = File.ReadAllBytes(paperPath);
@@ -293,19 +264,18 @@ internal static class StyleAndSettingsTests
         bool priorMarkdownAutodetect = preferences.MarkdownAutodetect;
         try {
             Check(settings.Categories.Items.Count == 3 && settings.Categories.SelectedIndex == 1 && settings.CurrentPage.Visibility == Visibility.Visible, "settings opens Theme beside a three-category sidebar without Code");
-            await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(settings), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".settings.png");
             Check(settings.NewTheme.ActualHeight is > 0 and <= 32, "separate settings window inherits compact control density");
             Check(!Children<ComboBox>(settings.RootControl).Any(control => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(control) == "Status font"),
                 "Settings retires the status font picker in favor of built-in styles");
             File.WriteAllBytes(discoveredThemePath, priorPaper);
             byte[] beforeDiscovery = File.ReadAllBytes(Path.Combine(preferences.DirectoryPath, "config.json"));
-            settings.ThemePicker.IsDropDownOpen = true; await Task.Delay(100);
+            settings.ThemePicker.IsDropDownOpen = true; await InputRoutingTests.Settle();
             Check(settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Any(file => file.Path == discoveredThemePath)
                 && preferences.SelectedTheme == priorTheme && preferences.SelectedThemePath == priorPath
                 && File.ReadAllBytes(Path.Combine(preferences.DirectoryPath, "config.json")).SequenceEqual(beforeDiscovery),
                 "opening the theme dropdown discovers external files without changing selection or saving settings");
             settings.ThemePicker.IsDropDownOpen = false;
-            settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Name == "Paper"); await Task.Delay(100);
+            settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Name == "Paper"); await InputRoutingTests.Settle();
             Check(settings.Error.Length == 0 && preferences.SelectedTheme == "Paper" && preferences.SelectedThemePath == paperPath
                 && preferences.Theme.Background == Theme.Paper.Background, "Paper selection commits the named aggregate theme");
             Check(settings.DeleteTheme.Content as string == "Revert", "bundled themes offer Revert in Settings");
@@ -316,15 +286,15 @@ internal static class StyleAndSettingsTests
             var status = statusStyles["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Status bar")!;
             status["character"]!["font_families"] = new System.Text.Json.Nodes.JsonArray("Consolas");
             status["character"]!["size"] = 14;
-            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, System.Text.Encoding.UTF8.GetBytes(statusStyles.ToJsonString())); await Task.Delay(100);
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, System.Text.Encoding.UTF8.GetBytes(statusStyles.ToJsonString())); await InputRoutingTests.Settle();
             Check(preferences.StatusStyles.Status.Family == "Consolas" && preferences.StatusStyles.Status.Size == 14
                 && settings.PreviewStatus.FontFamily.Source == "Consolas" && settings.PreviewStatus.FontSize == 14, "status font changes update preferences and the theme preview");
-            settings.ThemePicker.SelectedItem = "Default"; await Task.Delay(100);
+            settings.ThemePicker.SelectedItem = "Default"; await InputRoutingTests.Settle();
             Check(!settings.DeleteTheme.IsEnabled, "Default has no Revert or Delete action");
             Check(StyleDefaultsLoadingTests.MatchesBuiltInTheme(preferences)
                 && settings.PreviewStatus.FontSize == preferences.StatusStyles.Status.Size, "Default selection restores built-in colors and status typography");
             for (int index = 0; index < 3; index++) {
-                settings.Categories.SelectedIndex = index; await Task.Delay(100);
+                settings.Categories.SelectedIndex = index; await InputRoutingTests.Settle();
                 Check(settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0, $"settings sidebar displays category {index + 1}");
             }
             var markdownTyping = Children<CheckBox>(settings.CurrentPage).Single(c => c.Content as string == "Automatically format typed Markdown");
@@ -337,7 +307,7 @@ internal static class StyleAndSettingsTests
                 Check(checkbox.IsChecked == (indentation?[key]?.GetValue<bool>() ?? fallback),
                     $"Editing reflects the portable default or explicit setting for {key}");
             }
-            markdownTyping.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(100);
+            markdownTyping.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await InputRoutingTests.Settle();
             Check(preferences.MarkdownAutodetect != priorMarkdownAutodetect
                 && new Preferences(preferences.DirectoryPath).MarkdownAutodetect == preferences.MarkdownAutodetect,
                 "the native Markdown typing checkbox persists its new value");
@@ -395,15 +365,13 @@ internal static class StyleAndSettingsTests
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "theme font variants leave Markdown source unchanged");
         byte[] originalThemeStyles = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
-        var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
+        var inspector = new StyleWindow(view, preferences); inspector.Activate(); await InputRoutingTests.Settle();
         try {
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == id);
             Check(!inspector.ParagraphTab.IsEnabled, "character styles disable the paragraph tab");
             Check(inspector.FontVariantControl.SelectedItem as FontFace == face, "style inspector displays the stored font variant");
-            await Task.Delay(150);
-            await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".styles-font.png");
             var regular = faces.First(f => f.Weight == 400 && f.Slant == FontStyle.Normal);
-            inspector.FontVariantControl.SelectedItem = regular; await Task.Delay(100);
+            inspector.FontVariantControl.SelectedItem = regular; await InputRoutingTests.Settle();
             sheet = inspector.ThemeView.Styles(); style = sheet.Styles.Single(s => s.Id == id);
             Check(inspector.Error.Length == 0 && sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { regular.PortableFamily, "serif" })
                 && style.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value == 0, "choosing a variant in the native picker applies its traits and preserves fallbacks");
@@ -413,7 +381,7 @@ internal static class StyleAndSettingsTests
             declare.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
             Check(inspector.Error.Length == 0 && inspector.FontFamilyControl.IsEnabled
                 && inspector.ThemeView.Styles().Styles.Single(s => s.Id == id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES), "an inherited font family can be enabled with the native declaration checkbox");
-            inspector.ThemeView.EditStyleFont(style, ["viem-missing-font", "serif"], null); inspector.RefreshForTesting(); await Task.Delay(100);
+            inspector.ThemeView.EditStyleFont(style, ["viem-missing-font", "serif"], null); inspector.RefreshForTesting(); await InputRoutingTests.Settle();
             Check(inspector.FontFamilyControl.Text == "viem-missing-font" && inspector.FontVariantControl.SelectedItem == null,
                 "unavailable document fonts remain visible without selecting a substitute variant");
             var familyItemsSource = ((IEnumerable<object>)inspector.FontFamilyControl.ItemsSource).ToArray();
@@ -423,7 +391,7 @@ internal static class StyleAndSettingsTests
             Check(familyItems.Take(2).SequenceEqual(new[] { "System Default", "System Monospace" })
                 && familyItems.Skip(2).SequenceEqual(familyItems.Skip(2).OrderBy(f => f, StringComparer.CurrentCultureIgnoreCase)),
                 "the font family picker lists the two system entries first, then a native separator, then installed fonts in order");
-            inspector.FontFamilyControl.SelectedItem = "System Default"; await Task.Delay(100);
+            inspector.FontFamilyControl.SelectedItem = "System Default"; await InputRoutingTests.Settle();
             sheet = inspector.ThemeView.Styles(); style = sheet.Styles.Single(s => s.Id == id);
             Check(inspector.Error.Length == 0 && sheet.StringList(style.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).SequenceEqual(new[] { "system-ui", "serif" }),
                 "choosing System Default in the native picker stores its portable token, not a resolved font name, and keeps the fallback tail");
@@ -434,12 +402,12 @@ internal static class StyleAndSettingsTests
             inspector.ThemeView.EditStyleString(child, VIEM_STYLE_EDIT_SET_NEXT_STYLE, 0, parentId); inspector.RefreshForTesting();
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);
             byte[] related = doc.Source(doc.State.document_revision);
-            new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await Task.Delay(100);
+            new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await InputRoutingTests.Settle();
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
                 && inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
                 "parent navigation selects the referenced style while inheritance choices retain descendants for apply-time cycle validation");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);
-            new ButtonAutomationPeer(inspector.VisitNext).Invoke(); await Task.Delay(100);
+            new ButtonAutomationPeer(inspector.VisitNext).Invoke(); await InputRoutingTests.Settle();
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId && related.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "next paragraph arrow navigates without editing styles");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);
             inspector.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space);
@@ -480,8 +448,6 @@ internal static class StyleAndSettingsTests
             }
         }
         Check(count == 2, "both native Flightline variable designs render through the provider");
-        VariableFontTests.FlightlineFontChecks(pane);
-        VariableFontTests.RecursiveFontChecks(pane);
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(sourceAfterCodeAssignment), "font selection preserves source after the explicit Code-style assignment");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase),
             "saved font styles contain portable names rather than resource URIs");
@@ -491,7 +457,7 @@ internal static class StyleAndSettingsTests
         using var doc = new CoreDocument("A Code style sample."u8.ToArray(), format: VIEM_FORMAT_CODE);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         byte[] before = view.ExportStyleDefaults(), source = doc.Source(doc.State.document_revision);
-        var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
+        var inspector = new StyleWindow(view, preferences); inspector.Activate(); await InputRoutingTests.Settle();
         try {
             var restore = Children<Button>(inspector.RootControl).Single(b => b.Content as string == "Restore Defaults");
             Check(restore.Visibility == Visibility.Visible, "Code theme styles expose Restore Defaults");
@@ -513,12 +479,12 @@ internal static class StyleAndSettingsTests
             view.EditStyleString(child, VIEM_STYLE_EDIT_SET_PARENT, 0, parentId); inspector.RefreshForTesting();
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);
             byte[] related = view.ExportStyleDefaults();
-            new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await Task.Delay(100);
+            new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await InputRoutingTests.Settle();
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
                 && inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
                 "Code parent navigation selects the referenced style while inheritance choices retain descendants for apply-time cycle validation");
             Check(related.AsSpan().SequenceEqual(view.ExportStyleDefaults()), "Code parent navigation does not edit shared styles");
-            new ButtonAutomationPeer(restore).Invoke(); await Task.Delay(100);
+            new ButtonAutomationPeer(restore).Invoke(); await InputRoutingTests.Settle();
             Check(inspector.Error.Length == 0 && !view.Styles().Styles.Any(style => style.Id == childId || style.Id == parentId),
                 "Restore Defaults replaces only the current theme's Code styles");
             inspector.UndoThemeForTesting();
@@ -545,11 +511,9 @@ internal static class StyleAndSettingsTests
             Check(!view.Styles().Styles.Single(s => s.Id == comment.Id).Declares(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND),
                 "saved Code styles do not restore a cleared built-in declaration");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Paragraph");
-            inspector.CharacterTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
-            await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".code-styles-character.png");
-            inspector.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await Task.Delay(200);
+            inspector.CharacterTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await InputRoutingTests.Settle();
+            inspector.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await InputRoutingTests.Settle();
             Check(inspector.ParagraphPanel.Visibility == Visibility.Visible, "Code Styles also exposes base paragraph properties");
-            await WindowCapture.Save(WinRT.Interop.WindowNative.GetWindowHandle(inspector), pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".code-styles-paragraph.png");
         }
         finally {
             inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_CODE, before);

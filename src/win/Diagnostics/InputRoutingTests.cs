@@ -40,7 +40,7 @@ internal static class InputRoutingTests
     internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect, bool focusTarget = true, bool doubleClick = false, int clickCount = 1)
     {
         if (focusTarget) element.Focus(FocusState.Programmatic);
-        await Task.Delay(150);
+        await Settle();
         // The automation peer for a windowed flyout omits the owner's client
         // origin. Map XAML root coordinates explicitly to physical screen pixels.
         var logical = element.TransformToVisual(owner.Content).TransformBounds(new(0, 0, element.ActualWidth, element.ActualHeight));
@@ -157,7 +157,7 @@ internal static class InputRoutingTests
             if (Owned(GetForegroundWindow()) && GetCursorPos(out var current) && Math.Abs(current.X - position.X) <= 1 && Math.Abs(current.Y - position.Y) <= 1)
                 SetCursorPos(original.X, original.Y);
         }
-        await Task.Delay(60);
+        await Settle();
     }
 
     private static T? Find<T>(DependencyObject root) where T : DependencyObject
@@ -179,10 +179,24 @@ internal static class InputRoutingTests
         // Never inject global input or target another application's window.
         if (!PostMessage(NativeTarget(), message, value, data)) throw new InvalidOperationException("Cannot post input to the native test window.");
     }
+    /// Lets the UI thread process posted input and the editor work it queues:
+    /// low-priority dispatcher work runs only once higher-priority work and
+    /// pending messages are drained, and one short delay covers a frame.
+    internal static async Task Settle()
+    {
+        var dispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+        for (int turn = 0; turn < 2; turn++)
+        {
+            var idle = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!dispatcher.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () => idle.TrySetResult())) break;
+            await idle.Task;
+        }
+        await Task.Delay(20);
+    }
     internal static async Task Text(string text)
     {
         foreach (char value in text) Post(0x0102, value, 1); // WM_CHAR, including UTF-16 pairs.
-        await Task.Delay(100);
+        await Settle();
     }
     internal static async Task Key(VirtualKey key, bool control = false, bool shift = false, bool alt = false)
     {
@@ -207,7 +221,7 @@ internal static class InputRoutingTests
             if (alt)
             {
                 Post(0x0104, (uint)VirtualKey.Menu, (nint)(1u | MapVirtualKey((uint)VirtualKey.Menu, 0) << 16));
-                await Task.Delay(30);
+                await Settle();
             }
             if (!altOnly)
             {
@@ -216,7 +230,7 @@ internal static class InputRoutingTests
                 Post(alt ? 0x0104u : 0x0100u, (uint)key, (nint)(1u | scan << 16 | context)); // WM_[SYS]KEYDOWN
                 Post(alt ? 0x0105u : 0x0101u, (uint)key, (nint)(0xC0000001u | scan << 16 | context)); // WM_[SYS]KEYUP
             }
-            await Task.Delay(100);
+            await Settle();
         }
         finally
         {
@@ -224,7 +238,7 @@ internal static class InputRoutingTests
             if (alt)
             {
                 Post(0x0105, (uint)VirtualKey.Menu, (nint)(0xC0000001u | MapVirtualKey((uint)VirtualKey.Menu, 0) << 16));
-                await Task.Delay(30);
+                await Settle();
             }
         }
     }
@@ -279,9 +293,6 @@ internal static class InputRoutingTests
         await Key(VirtualKey.Escape); await Key(VirtualKey.Z, control: true);
         await Text(":%d"); await Key(VirtualKey.Enter);
         Check(pane.Document.FormattedText() == "" && pane.LastError == null, "native input test leaves an empty document without routing errors");
-        await RunZoom(pane);
-        pane.View.Wrap(true);
-        await SelectionInputTests.Run(pane);
     }
     internal static async Task RunZoom(EditorPane pane)
     {

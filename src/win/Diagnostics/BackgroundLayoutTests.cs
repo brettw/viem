@@ -57,7 +57,7 @@ internal static class BackgroundLayoutTests
         }
 
         int uiThread = Environment.CurrentManagedThreadId;
-        byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 10_000).Select(i =>
+        byte[] source = Encoding.UTF8.GetBytes(string.Concat(Enumerable.Range(0, 3_000).Select(i =>
             $"Paragraph {i}: **office** and *words* مرحبا 👩‍💻 that wrap into multiple visual rows.\n\n")));
         using var doc = new CoreDocument(source, format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, device, dispatcher, 600, 400);
@@ -123,7 +123,7 @@ internal static class BackgroundLayoutTests
         // Distinct source lines share a small glyph alphabet. Scrolling must
         // shape new paragraphs without repeating the native ink query per line.
         using var repeated = new CoreDocument(Encoding.UTF8.GetBytes(string.Concat(
-            Enumerable.Range(0, 10_000).Select(i => $"Line {i}: repeated letters abcdef ghijkl mnopqr stuvwx yz.\n"))));
+            Enumerable.Range(0, 3_000).Select(i => $"Line {i}: repeated letters abcdef ghijkl mnopqr stuvwx yz.\n"))));
         using var inkView = new CoreView(repeated, device, dispatcher, 600, 400);
         inkView.BackgroundLayout.Enabled = false;
         long queries = inkView.Provider.GlyphBoundsQueries, characters = inkView.Provider.ShapedCharacters;

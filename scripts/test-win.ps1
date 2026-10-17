@@ -1,29 +1,29 @@
-param([switch]$NoBuild, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip', 'preview')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
+param([switch]$NoBuild, [string[]]$Suite, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip', 'preview')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$optimizedOutput = Join-Path $projectRoot $(if ($NativeAot) { 'target/windows-native-tests' } else { 'target/windows-profile' })
+$testOutput = Join-Path $projectRoot $(if ($NativeAot) { 'target/windows-native-tests' } elseif ($Optimized) { 'target/windows-profile' } else { 'target/windows-tests' })
 Push-Location $projectRoot
 try {
     & python src/win/tools/generate_bindings.py --check
     if ($LASTEXITCODE -ne 0) { throw 'Generated ABI declarations differ from the C header.' }
     if (!$NoBuild) {
-        if ($Optimized -or $NativeAot) {
-            & cargo build --release --locked
-            if ($LASTEXITCODE -ne 0) { throw 'Optimized Rust build failed.' }
-            # Keep diagnostics enabled, with the same Rust and C# optimization
-            # as shipping builds, in a separate output from the running editor.
-            $testBuild = @('build', 'src/win/Viem.Windows.csproj', '-c', 'Debug', '--nologo', '-p:RestoreLockedMode=true', '-p:Optimize=true', '-p:RustProfile=release')
-            if ($NativeAot) {
-                $testBuild[0] = 'publish'
-                $testBuild += @('-p:PublishAot=true', '--output', $optimizedOutput,
-                    "-p:BaseIntermediateOutputPath=$projectRoot/target/windows-native-tests-obj/",
-                    "-p:BaseOutputPath=$projectRoot/target/windows-native-tests-build/")
-            } else { $testBuild += "-p:OutDir=$optimizedOutput/" }
-            & dotnet @testBuild
-            if ($LASTEXITCODE -ne 0) { throw 'Optimized Windows test build failed.' }
-            & dotnet publish src/win/Blocking/BlockingViem.csproj -c Debug --nologo --output $optimizedOutput
-            if ($LASTEXITCODE -ne 0) { throw 'Blocking launcher test build failed.' }
-        } else { & "$PSScriptRoot/build-win.ps1" -Configuration Debug }
+        # Keep diagnostics enabled in a separate output from the running editor.
+        # Like macOS native tests, ordinary runs link the opt-level 1
+        # native-test core; -Optimized and -NativeAot use shipping optimization.
+        $rustProfile = if ($Optimized -or $NativeAot) { 'release' } else { 'native-test' }
+        & cargo build --locked --profile $rustProfile
+        if ($LASTEXITCODE -ne 0) { throw "Rust $rustProfile build failed." }
+        $testBuild = @('build', 'src/win/Viem.Windows.csproj', '-c', 'Debug', '--nologo', '-p:RestoreLockedMode=true', '-p:Optimize=true', "-p:RustProfile=$rustProfile")
+        if ($NativeAot) {
+            $testBuild[0] = 'publish'
+            $testBuild += @('-p:PublishAot=true', '--output', $testOutput,
+                "-p:BaseIntermediateOutputPath=$projectRoot/target/windows-native-tests-obj/",
+                "-p:BaseOutputPath=$projectRoot/target/windows-native-tests-build/")
+        } else { $testBuild += "-p:OutDir=$testOutput/" }
+        & dotnet @testBuild
+        if ($LASTEXITCODE -ne 0) { throw 'Windows test build failed.' }
+        & dotnet publish src/win/Blocking/BlockingViem.csproj -c Debug --nologo --output $testOutput
+        if ($LASTEXITCODE -ne 0) { throw 'Blocking launcher test build failed.' }
     }
     $testRoot = Join-Path $projectRoot 'target/windows-validation'
     New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
@@ -34,6 +34,8 @@ try {
     $oldPointerInput = $env:VIEM_TEST_POINTER_INPUT
     $oldPrelayout = $env:VIEM_TEST_DISABLE_PRELAYOUT
     $oldInterval = $env:VIEM_PERF_INTERVAL_MS
+    $oldSuites = $env:VIEM_TEST_SUITES
+    $env:VIEM_TEST_SUITES = if ($Suite) { $Suite -join ',' } else { $null }
     $env:VIEM_TEST_DISABLE_PRELAYOUT = if ($DisablePrelayout) { '1' } else { $null }
     $env:VIEM_PERF_INTERVAL_MS = "$ProfileIntervalMs"
     $env:VIEM_TEST_POINTER_INPUT = if ($PointerInput) { '1' } else { $null }
@@ -42,10 +44,7 @@ try {
     $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
     if ($ConfigFile) { New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null; Copy-Item -LiteralPath $ConfigFile -Destination (Join-Path $env:VIEM_CONFIG_DIR 'config.json') }
     try {
-        if (!$Executable) {
-            $Executable = Join-Path $projectRoot 'target/windows/Viem.Windows/bin/x64/Debug/net10.0-windows10.0.26100.0/win-x64/Viem.exe'
-            if ($Optimized -or $NativeAot) { $Executable = Join-Path $optimizedOutput 'Viem.exe' }
-        }
+        if (!$Executable) { $Executable = Join-Path $testOutput 'Viem.exe' }
         $testTimer = [System.Diagnostics.Stopwatch]::StartNew()
         $process = Start-Process -FilePath $executable -ArgumentList @('--self-test', ('"' + $reportPath + '"')) -PassThru -WindowStyle Hidden
         if (!$process.WaitForExit($TimeoutSeconds * 1000)) {
@@ -63,6 +62,16 @@ try {
         }
         if (!(Test-Path -LiteralPath $reportPath)) { throw "Windows app exited $($process.ExitCode) before writing a test report." }
         $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+        if ($report.stages) {
+            # Slowest stages first; select one with -Suite <name>.
+            $report.stages | Sort-Object seconds -Descending | Select-Object -First 12 |
+                Format-Table @{ Label = 'Stage'; Expression = { $_.name } }, @{ Label = 'Seconds'; Expression = { $_.seconds } }, checks, failed, strayWindows -AutoSize | Out-String | Write-Output
+        }
+        if ($report.slowestChecks) {
+            # Each time covers the work since the previous check in its stage.
+            $report.slowestChecks | Select-Object -First 8 |
+                Format-Table @{ Label = 'Milliseconds'; Expression = { $_.milliseconds } }, @{ Label = 'Slowest checks'; Expression = { $_.name } } -AutoSize | Out-String -Width 200 | Write-Output
+        }
         if (!$report.passed) { throw $report.error }
         if ($NativeAot -and !$ProfileDocument -and $report.nativeAot -ne $true) {
             throw 'The requested native UI checks ran in a managed executable.'
@@ -70,6 +79,6 @@ try {
         if ($ProfileDocument) { Write-Output "$ProfileScenario CPU benchmark completed. Report: $reportPath" }
         else { Write-Output "$($report.count) Windows integration checks passed in $([Math]::Round($testTimer.Elapsed.TotalSeconds, 1)) seconds. Report: $reportPath" }
     }
-    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval }
+    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval; $env:VIEM_TEST_SUITES = $oldSuites }
 }
 finally { Pop-Location }

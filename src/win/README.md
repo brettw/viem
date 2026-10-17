@@ -72,10 +72,12 @@ also fetches the SDK's native compiler/runtime packs; later `-Offline` builds
 reuse them. The pinned Windows SDK .NET projection supplies the C#/WinRT
 runtime support required for Win2D's non-blittable font and line-metric arrays.
 
-Use `test-win.ps1 -NativeAot` to publish the native UI diagnostics with optimized
-C# and Rust code into `target/windows-native-tests`, including the blocking
-launcher. This exercises NativeAOT behavior with the same native rendering and
-UI checks as the managed tests. `-NoBuild -NativeAot` reuses that test build;
+`test-win.ps1` builds the diagnostics with optimized C# against the opt-level 1
+`native-test` Rust core, as the macOS native tests do, into `target/windows-tests`,
+separate from the Debug editor build. Use `test-win.ps1 -NativeAot` to publish
+them with shipping optimization into `target/windows-native-tests`, including the
+blocking launcher. This exercises NativeAOT behavior with the same native rendering
+and UI checks as the managed tests. `-NoBuild -NativeAot` reuses that test build;
 `-Optimized` alone retains the managed optimized test mode.
 
 The executable is under
@@ -242,7 +244,7 @@ are ignored without migration. Ordinary status labels and command input use
 the full font shaping properties. Selectable command output uses native text
 controls, which honor family, face stretch, size, weight, slant and tracking;
 custom variable axes and OpenType features are not applied to that output.
-`VIEM_TEST_CHROME_ONLY=1` selects the native gutter and status-style diagnostics.
+`test-win.ps1 -Suite Chrome` runs the native gutter and status-style diagnostics.
 
 The normative list of known Mac differences is in the **Windows**
 section of [`AGENTS.md`](../../AGENTS.md). In particular,
@@ -266,21 +268,17 @@ per-font OpenType discovery are not claimed as implemented.
   WinUI/DirectWrite UI thread, plus opt-in Release startup tracing. No stand-in
   core or test compiler is involved.
 
-`scripts/test-win.ps1` creates a unique profile under `target/windows-validation`.
-The complete UI suite has a ten-minute process timeout; use `-TimeoutSeconds`
-to override it. Individual operation and performance checks have separate limits.
-Set `VIEM_TEST_ZOOM_ONLY=1` to run just native zoom shortcut checks.
-Set `VIEM_TEST_MENU_KEYS_ONLY=1` to run just native menu access-key checks.
-Set `VIEM_TEST_POINTER_ONLY=1` to run just native click mode preservation, click
-jitter, subsequent keyboard input, and drag-selection checks.
-Set `VIEM_TEST_SELECTION_ONLY=1` for native keyboard selection, line/block modes,
-clipboard preservation, and block-IME rejection checks.
-Set `VIEM_TEST_SCROLL_ONLY=horizontal` for scrollbar overlay geometry and
-cached-versus-fresh overflow painting.
-Set `VIEM_TEST_IMAGES_ONLY=resources` for local image previews, background
-dimension probes, resampled bitmaps and preview limits, which need no native input.
-Set `VIEM_TEST_TOOLBAR_ONLY=1` to run just the formatting-toolbar native controls,
-visibility, selection/undo, formatted-view switching, overflow, and large-document latency checks.
+`scripts/test-win.ps1` creates a unique profile under `target/windows-validation`
+and runs the named stages listed in `Diagnostics/SelfTest.cs` in one process,
+then prints the slowest stages. A failing stage does not stop later ones; the
+report names every failing stage. Pass `-Suite <Name>,<Name>` (or set
+`VIEM_TEST_SUITES`) to run selected stages; an unknown name lists them all.
+The run has a ten-minute process timeout; use `-TimeoutSeconds` to override it.
+Stages that inject native keyboard or pointer input need the test window to keep
+the foreground, so leave the desktop alone while they run. Keep stages fast:
+wait for an observable result (`InputRoutingTests.Settle`, `SelfTestRunner.Until`)
+rather than sleeping, and settle the style inspector's caret following with
+`SettleCaretFollowForTesting` rather than waiting for its 500 ms delay.
 The toolbar uses the active pane's core selection, the shared style catalogue,
 and the same commands as the menus. Refreshes reuse exact-revision style exports
 and native selector items; visibility uses the shared per-format
@@ -301,8 +299,7 @@ Unicode and bidi, composition, shared views, source/style
 round trips, clipboard policy, atomic settings/save behavior, recovery ownership,
 second-process launch handoff, window placement across sessions and monitor
 changes, menu visibility and large-document layout/cache
-behavior. It also writes screenshots of the real editor, split prompt, style
-inspector and Settings. It does not overwrite the system clipboard or use the
+behavior. It does not overwrite the system clipboard or use the
 normal application profile. Atomic file replacement must be permitted by the
 host: the Codex workspace sandbox on this machine blocks `File.Replace`, so the
 native integration harness was run outside that sandbox against isolated test data.
@@ -352,11 +349,9 @@ created only when shown; visible Markdown reserves their space before the first
 editor layout. Primary Code language controls are created when File first opens;
 Obscure languages controls are deferred until Code language first opens. Both paths use
 native row loading, including keyboard, access-key and UI Automation entry.
-`VIEM_TEST_TOOLBAR_ONLY=startup` selects the focused native startup/toolbar checks;
-use `VIEM_TEST_MENU_KEYS_ONLY=1` for access-key and window-focus coverage.
 Set `VIEM_FORCE_BUNDLED_FONTS=1` to exercise the bundled fallback even when matching
 fonts are installed. This works in Release for startup comparisons and with
-`VIEM_TEST_STYLES_ONLY=variable` for the native font/preset/inspector regressions.
+`test-win.ps1 -Suite VariableFonts` for the native font/preset/inspector regressions.
 Run both modes in fresh processes, preserve matching settings and document bytes,
 and include the installed-font check in measurements of the optimized path.
 Keep local measurement output under `target/windows-validation`; record the

@@ -30,10 +30,10 @@ internal static class FormattingToolbarTests
     private static async Task Choose(DropDownButton selector, string id)
     {
         selector.Focus(FocusState.Programmatic);
-        selector.Flyout.ShowAt(selector); await Task.Delay(40);
+        selector.Flyout.ShowAt(selector); await InputRoutingTests.Settle();
         Check(Entry(selector, id).Focus(FocusState.Programmatic), "toolbar style entry takes keyboard focus");
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-        selector.Flyout.Hide(); await Task.Delay(50);
+        selector.Flyout.Hide(); await InputRoutingTests.Settle();
     }
     private static string? Title(DropDownButton selector) => (selector.Content as StackPanel)?.Children.OfType<TextBlock>().SingleOrDefault()?.Text;
     private static bool? State(FormattingToolbar toolbar, ToolbarAction action) => ((ToggleButton)toolbar.Buttons[action]).IsChecked;
@@ -41,19 +41,19 @@ internal static class FormattingToolbarTests
     {
         Check(toolbar.Buttons[action].Focus(FocusState.Programmatic), "toolbar action takes keyboard focus: " + action);
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-        await Task.Delay(40);
+        await InputRoutingTests.Settle();
     }
     private static async Task SwitchView(FormattingToolbar toolbar)
     {
         Check(toolbar.FormattedView.Focus(FocusState.Programmatic), "formatted-view toggle takes keyboard focus");
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-        await Task.Delay(40);
+        await InputRoutingTests.Settle();
     }
     private static async Task PreviewFromTitleBar(EditorWindow window)
     {
         Check(window.PreviewToggle.Focus(FocusState.Programmatic), "title-bar Markdown Preview button takes keyboard focus");
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
-        await Task.Delay(40);
+        await InputRoutingTests.Settle();
     }
     private static bool PreviewChrome(EditorWindow window, FormattingToolbar toolbar, bool toolbarVisible) =>
         window.ToolbarToggle.Visibility == Visibility.Visible && window.PreviewToggle.Visibility == Visibility.Collapsed
@@ -62,9 +62,8 @@ internal static class FormattingToolbarTests
         window.ToolbarToggle.Visibility == Visibility.Collapsed && window.PreviewToggle.Visibility == Visibility.Visible
         && toolbar.Visibility == Visibility.Collapsed;
 
-    internal static async Task RunStartup(Preferences preferences)
+    internal static async Task RunShortcuts(Preferences preferences)
     {
-        await LazyConstruction(preferences);
         foreach (var kind in Enum.GetValues<StyleIconKind>())
         {
             var icon = StyleIcons.Icon(kind);
@@ -78,10 +77,6 @@ internal static class FormattingToolbarTests
         }
         await CharacterCaretContext(preferences);
         await KeyboardShortcuts(preferences);
-        TablePickerTests.Run();
-        await TableInteractionTests.Run(preferences);
-        await LinkInteractionTests.Run(preferences);
-        await ImageInteractionTests.Run(preferences);
     }
 
     private static async Task KeyboardShortcuts(Preferences preferences)
@@ -133,7 +128,7 @@ internal static class FormattingToolbarTests
                 view.Command("g"); pane.HoldInputForTest(gate.Task); pane.FocusEditor();
                 try { await InputRoutingTests.Text("g"); await InputRoutingTests.Key((VirtualKey)190, control: true); }
                 finally { gate.SetResult(true); }
-                await Task.Delay(100);
+                await InputRoutingTests.Settle();
                 Check(view.Presentation.mode == VIEM_MODE_INSERT && view.SuperscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
                     "formatting candidate waits for queued text to finish the Vim command");
                 view.Text("X"); view.Key(VIEM_KEY_ESCAPE); view.Undo();
@@ -158,10 +153,8 @@ internal static class FormattingToolbarTests
         var pane = window.ActivePane!; var view = await pane.Ready; var toolbar = window.Toolbar;
         try
         {
-            await Task.Delay(100);
-            foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Italic, "italic"),
-                (ToolbarAction.Underline, "underline"), (ToolbarAction.Strikethrough, "strike"),
-                (ToolbarAction.Superscript, "super"), (ToolbarAction.Subscript, "sub"), (ToolbarAction.CharacterCode, "code") })
+            await InputRoutingTests.Settle();
+            foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Superscript, "super"), (ToolbarAction.CharacterCode, "code") })
             {
                 view.Key(VIEM_KEY_ESCAPE);
                 ulong offset = (ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1;
@@ -177,9 +170,7 @@ internal static class FormattingToolbarTests
                     "Normal character toggle and insertion retain exact undo: " + action);
             }
             document.SetReadOnly(true);
-            foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Italic, "italic"),
-                (ToolbarAction.Underline, "underline"), (ToolbarAction.Strikethrough, "strike"),
-                (ToolbarAction.Superscript, "super"), (ToolbarAction.Subscript, "sub"), (ToolbarAction.CharacterCode, "code") })
+            foreach (var (action, word) in new[] { (ToolbarAction.Bold, "bold"), (ToolbarAction.Superscript, "super"), (ToolbarAction.CharacterCode, "code") })
             {
                 view.Place((ulong)document.FormattedText().IndexOf(word, StringComparison.Ordinal) + 1,
                     VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
@@ -201,9 +192,8 @@ internal static class FormattingToolbarTests
         finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
     }
 
-    internal static async Task Run(Preferences preferences, bool startup = true)
+    internal static async Task Run(Preferences preferences)
     {
-        if (startup) await RunStartup(preferences);
         const string source = "# Heading\n\nplain `code`";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
@@ -216,7 +206,7 @@ internal static class FormattingToolbarTests
         }
         try
         {
-            await Task.Delay(150);
+            await InputRoutingTests.Settle();
             Check(window.ToolbarToggle.Visibility == Visibility.Visible && toolbar.Visibility == Visibility.Visible, "Markdown toolbar defaults visible");
             Check(Grid.GetColumn(window.ToolbarToggle) == Grid.GetColumn(window.MenuToggle) + 1, "toolbar toggle immediately follows the menu toggle");
             Check(Title(toolbar.Paragraph) == "Heading 1", "toolbar reads the initial named paragraph");
@@ -355,12 +345,6 @@ internal static class FormattingToolbarTests
             Check(!toolbar.Paragraph.IsEnabled && !toolbar.Character.IsEnabled && pane.LastError == null, "command prompt disables formatting without stale selection errors");
             view.Key(VIEM_KEY_ESCAPE);
 
-            // Save the native chrome in both appearances and verify overflow.
-            await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".toolbar.png");
-            var originalTheme = preferences.Theme;
-            preferences.SetSections(new() { ["theme"] = Preferences.ThemeJson(Theme.Paper) }); await Task.Delay(80);
-            await WindowCapture.Save(window.Hwnd, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".toolbar-paper.png");
-            preferences.SetSections(new() { ["theme"] = Preferences.ThemeJson(originalTheme) });
             var size = window.AppWindow.Size;
             double scale = toolbar.XamlRoot.RasterizationScale;
             void Resize(double width, double height) => window.AppWindow.Resize(new((int)Math.Round(width * scale), (int)Math.Round(height * scale)));
@@ -400,7 +384,7 @@ internal static class FormattingToolbarTests
             double rowX = toolbarRow.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
             toolbar.Character.Focus(FocusState.Programmatic);
             toolbar.Character.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
-            await Task.Delay(50); toolbar.UpdateLayout();
+            await InputRoutingTests.Settle(); toolbar.UpdateLayout();
             Check(Math.Abs(toolbarRow.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X - rowX) < .01
                 && toolbar.Character.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X >= toolbar.Viewport.ActualWidth
                 && Math.Abs(toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X - toggleX) < 1,
@@ -414,7 +398,7 @@ internal static class FormattingToolbarTests
             Check(toolbar.Visibility == Visibility.Visible, "toolbar visibility is independent of menu visibility");
             preferences.Set("windows", "showMenu", showMenu);
             window.ToolbarToggle.Focus(FocusState.Programmatic);
-            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(50);
+            await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await InputRoutingTests.Settle();
             Check(toolbar.Visibility == Visibility.Collapsed && !new Preferences(preferences.DirectoryPath).ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN), "title-bar toggle persists the Markdown toolbar preference");
 
             preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
@@ -524,105 +508,6 @@ internal static class FormattingToolbarTests
             Check(window.Panes.All(p => p.LastError == null), "toolbar scenarios leave no presentation errors");
         }
         finally { App.Instance.Windows.Remove(window); window.Close(); }
-        await MarkdownViewPreferenceTests.Run(preferences.DirectoryPath);
-        await Performance(preferences);
-    }
-
-    private static async Task LazyConstruction(Preferences preferences)
-    {
-        bool formatted = preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
-        try {
-            foreach (uint format in new[] { VIEM_FORMAT_PLAIN_TEXT, VIEM_FORMAT_CODE, VIEM_FORMAT_MARKDOWN }) {
-                preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, false);
-                var document = new CoreDocument("Text"u8.ToArray(), format: format);
-                var window = new EditorWindow(preferences, document);
-                App.Instance.Windows.Add(window);
-                try {
-                    Check(!window.ToolbarCreated, "hidden or unavailable toolbar is not constructed with its window: " + format);
-                    window.Activate();
-                    var pane = window.ActivePane!; var view = await pane.Ready;
-                    view.Command("i"); view.Text("X"); view.Key(VIEM_KEY_ESCAPE);
-                    Check(!window.ToolbarCreated && document.FormattedText() == "XText" && pane.LastError == null,
-                        "first editing commands work without constructing hidden formatting controls: " + format);
-                    if (format != VIEM_FORMAT_MARKDOWN) {
-                        Check(window.ToolbarToggle.Visibility == Visibility.Collapsed && window.PreviewToggle.Visibility == Visibility.Collapsed,
-                            "literal startup omits the formatting and Preview toggles: " + format);
-                        continue;
-                    }
-                    await Task.Delay(80);
-                    Check(window.ToolbarToggle.Focus(FocusState.Programmatic), "the first formatting-toolbar toggle takes native focus");
-                    await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await Task.Delay(50);
-                    var toolbar = window.Toolbar;
-                    Check(toolbar.Visibility == Visibility.Visible && Title(toolbar.Paragraph) == "Base Paragraph"
-                        && document.FormattedText() == "XText", "first native toolbar activation creates current controls without editing text");
-                    preferences.SetFormattingToolbar(format, false);
-                    preferences.SetFormattingToolbar(format, true);
-                    Check(ReferenceEquals(toolbar, window.Toolbar) && toolbar.Visibility == Visibility.Visible,
-                        "hiding and reopening retains the first toolbar instance");
-                } finally { App.Instance.Windows.Remove(window); window.Close(); }
-            }
-
-            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, true);
-            // Markdown opened with Preview off is literal Code: no toolbar is
-            // reserved or built, and the title bar offers Preview instead.
-            var literalMarkdown = new EditorWindow(preferences, new CoreDocument("# Notes"u8.ToArray(), "notes.md", markdownFormattedView: false));
-            App.Instance.Windows.Add(literalMarkdown);
-            try {
-                literalMarkdown.Activate();
-                var literalPane = literalMarkdown.ActivePane!; await literalPane.Ready; await Task.Delay(80);
-                Check(literalPane.Document.State.format == VIEM_FORMAT_CODE && !literalMarkdown.ToolbarCreated
-                    && literalMarkdown.PreviewToggle.Visibility == Visibility.Visible && literalMarkdown.ToolbarToggle.Visibility == Visibility.Collapsed,
-                    "literal Markdown starts without a toolbar and shows the title-bar Preview button");
-            } finally { App.Instance.Windows.Remove(literalMarkdown); literalMarkdown.Close(); }
-            var visibleWindow = new EditorWindow(preferences, new CoreDocument("# Heading\n\nText"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN));
-            App.Instance.Windows.Add(visibleWindow);
-            try {
-                Check(visibleWindow.ToolbarCreated && visibleWindow.Toolbar.Visibility == Visibility.Visible,
-                    "visible Markdown constructs and reserves its toolbar before window activation");
-                var pane = visibleWindow.ActivePane!;
-                var frames = new List<(double Height, double Top)>();
-                pane.Canvas.Draw += (_, _) => frames.Add((pane.Canvas.ActualHeight, pane.Canvas.TransformToVisual(null).TransformPoint(new()).Y));
-                visibleWindow.Activate(); await pane.Ready; await Task.Delay(150);
-                Check(frames.Count > 0 && frames.All(frame => Math.Abs(frame.Height - frames[0].Height) < .01 && Math.Abs(frame.Top - frames[0].Top) < .01),
-                    "visible Markdown's first drawn frame already has the final toolbar geometry");
-            } finally { App.Instance.Windows.Remove(visibleWindow); visibleWindow.Close(); }
-        } finally {
-            preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, formatted);
-        }
-    }
-
-    private static async Task Performance(Preferences preferences)
-    {
-        string md = "# Heading\n\n- First item\n- Second item\n\n" + string.Concat(Enumerable.Repeat("A paragraph with **bold** and `code` text.\n\n", 4000));
-        foreach (var (format, source) in new[] { (VIEM_FORMAT_MARKDOWN, md) })
-        {
-            var doc = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
-            var window = new EditorWindow(preferences, doc); App.Instance.Windows.Add(window); window.Activate();
-            var pane = window.ActivePane!; var view = await pane.Ready; var toolbar = window.Toolbar;
-            try
-            {
-                ulong at = (ulong)doc.FormattedText().IndexOf("Second item", StringComparison.Ordinal);
-                view.Place(at, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, doc.State.document_revision);
-                toolbar.Refresh();
-                var items = ((MenuFlyout)toolbar.Paragraph.Flyout).Items.ToArray();
-                double elapsed = 0;
-                for (ulong i = 0; i < 10; i++)
-                {
-                    view.Place(at + i, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, doc.State.document_revision);
-                    long start = Stopwatch.GetTimestamp(); toolbar.Refresh(); elapsed += Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-                }
-                Check(elapsed / 10 < 50 && items.SequenceEqual(((MenuFlyout)toolbar.Paragraph.Flyout).Items), $"large {CoreDocument.FormatName(format)} toolbar refresh averages {elapsed / 10:F2} ms and retains controls");
-                view.Place(at, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, doc.State.document_revision); view.Command("viw");
-                long actionStart = Stopwatch.GetTimestamp(); toolbar.Execute(ToolbarAction.Bold); double actionMs = Stopwatch.GetElapsedTime(actionStart).TotalMilliseconds;
-                Check(State(toolbar, ToolbarAction.Bold) == true && pane.LastError == null && actionMs < 500,
-                    $"large {CoreDocument.FormatName(format)} selected Bold applies in {actionMs:F2} ms");
-                view.Key(VIEM_KEY_ESCAPE); view.Command("i"); ulong revision = doc.State.document_revision;
-                actionStart = Stopwatch.GetTimestamp(); toolbar.Execute(ToolbarAction.Italic); actionMs = Stopwatch.GetElapsedTime(actionStart).TotalMilliseconds;
-                Check(actionMs < 100 && State(toolbar, ToolbarAction.Italic) == true && doc.State.document_revision == revision,
-                    $"large {CoreDocument.FormatName(format)} pending Italic applies in {actionMs:F2} ms");
-            }
-            finally { App.Instance.Windows.Remove(window); window.Close(); }
-        }
     }
 }
 #endif

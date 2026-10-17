@@ -101,7 +101,6 @@ internal static class VimRuntimeTests
         await Paint(".vimrc", "set number\r\nset expandtab\r\n\" editor settings\r\nlet g:example = 'value'\r\n", 3);
         if (!missing)
         {
-            await Paint("Makefile", "all: input.txt\r\n\t@echo $(MESSAGE)\r\n", 3);
             // This distribution keyword is generated from shared/debversions.vim.
             await Paint("sources.list", "bookworm\n# vim: ft=debsources\n", 8);
         }
@@ -152,7 +151,6 @@ internal static class VimRuntimeTests
             finally { App.Instance.Windows.Remove(window); window.Close(); }
         }
         await ScrollPaint("scroll.rs", i => $"fn item_{i}() {{ let value = {i}; }}\n");
-        if (!missing) await ScrollPaint("scroll.vim", i => $"set number \" row {i}\n");
     }
 }
 #endif

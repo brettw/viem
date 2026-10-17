@@ -5,8 +5,10 @@ namespace Viem.Windows.Diagnostics;
 
 // NativeAOT diagnostics exercise the same native code as the shipped build.
 // Keep report schemas explicit rather than relying on runtime reflection.
-internal sealed record NativeTestSuccess(bool passed, int count, List<string> checks, bool nativeAot);
-internal sealed record NativeTestFailure(bool passed, string error);
+internal sealed record NativeTestStage(string name, double seconds, int checks, bool failed, int strayWindows);
+internal sealed record NativeTestCheckTime(string name, double milliseconds);
+internal sealed record NativeTestSuccess(bool passed, int count, List<string> checks, bool nativeAot, List<NativeTestStage> stages, List<NativeTestCheckTime> slowestChecks);
+internal sealed record NativeTestFailure(bool passed, string error, List<NativeTestStage> stages, List<NativeTestCheckTime> slowestChecks);
 internal sealed record NativeTestProgress(string stage, int completedChecks, double elapsedSeconds);
 internal sealed record InputPerformanceStep(int index, string phase, double milliseconds,
     double gcPauseMilliseconds, long allocatedBytes, long shapedCharacters, int drawingBuilds, float top, ulong revision);
