@@ -42,6 +42,8 @@ internal sealed partial class EditorWindow
             new("CommandStatus", () => CommandStatusTests.Run(initial, this, preferences)),
             new("Chrome", () => ChromeStyleTests.Run(this, preferences)),
             new("CloseReview", () => DocumentCloseReviewTests.Run(preferences)),
+            new("FileChangeMonitor", () => FileChangeMonitorTests.Run(profile)),
+            new("ExternalFileChange", () => ExternalFileChangeTests.Run(preferences)),
             new("BlockingEdit", () => BlockingEditTests.Run(preferences)),
             new("DirectoryOpen", () => DirectoryOpenTests.Run(preferences)),
             new("HomePath", () => HomePathTests.Run(preferences)),

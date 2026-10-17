@@ -123,10 +123,13 @@ extension EVDocument {
   ) {
     let window = windowForSheet
     // File I/O continues in the background, but a prompt only appears while
-    // the document is visible and the app is active. Activation retries it.
+    // the document is visible and the app is active. Check activity after I/O:
+    // the user may have switched apps while the fingerprint was being read.
+    // Activation retries deferred observations without acknowledging them.
     guard externalFileWriteCount == 0,
+          externalFileReviewIsApplicationActive(),
           externalFileReviewDecisionHandler != nil
-            || (NSApplication.shared.isActive && window?.isVisible == true && window?.attachedSheet == nil),
+            || (window?.isVisible == true && window?.attachedSheet == nil),
           let target = fileURL ?? fileBaselineURL,
           let review = externalFileReviewState.begin(token: observation.token,
             canReload: observation.canReload,

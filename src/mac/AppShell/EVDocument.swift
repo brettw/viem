@@ -129,6 +129,7 @@ public final class EVDocument: NSDocument {
     var externalFileMonitoringClosed = false
     var externalFileMonitorObservers: [NSObjectProtocol] = []
     var externalFileWriteCount = 0
+    var externalFileReviewIsApplicationActive: () -> Bool = { NSApplication.shared.isActive }
     var externalFileReviewDecisionHandler: ((EVExternalFileChange, EVExternalFileReview,
         @escaping (EVExternalFileDecision) -> Void) -> Void)?
     var externalFileSnapshotReader: @Sendable (URL) throws -> EVExternalFileSnapshot = { try .read($0) }

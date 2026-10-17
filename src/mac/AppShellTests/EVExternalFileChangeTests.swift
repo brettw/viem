@@ -43,6 +43,7 @@ final class EVExternalFileChangeTests: XCTestCase {
     let url = directory.appendingPathComponent("source.txt")
     try Data("original".utf8).write(to: url)
     let backend = Backend(); let document = EVDocument(editorBackend: backend)
+    document.externalFileReviewIsApplicationActive = { true }
     document.externalFileReviewDecisionHandler = { _, _, decide in decide(.keepBuffer) }
     try document.read(from: url, ofType: EVDocument.plainTextType)
     document.fileURL = url; document.fileType = EVDocument.plainTextType

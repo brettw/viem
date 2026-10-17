@@ -1432,6 +1432,9 @@ one acknowledged review per buffer across all views. Keep Buffer is the default
 and acknowledges only that notification, never the load/save baseline. Further
 changes require new choices. Deleted/unreadable files preserve editable text;
 inactive-document prompts wait until they can be presented.
+External-change notifications appear only while the application is in the
+foreground. Reactivation promptly checks file-backed documents and presents
+pending changes; background observations must not consume their review.
 
 Load File explicitly discards unsaved changes in every view after warning.
 Consent becomes stale when the buffer, bound path, or disk state changes. Reload

@@ -52,6 +52,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     try Data("original".utf8).write(to: url)
     let backend = Backend()
     let document = EVDocument(editorBackend: backend)
+    document.externalFileReviewIsApplicationActive = { true }
     document.recordRecentDocument = { _ in }
     try document.read(from: url, ofType: EVDocument.plainTextType)
     document.fileURL = url
@@ -70,6 +71,81 @@ final class EVExternalFileReviewTests: XCTestCase {
     document.checkForExternalChangesAndReview { result = $0; done.fulfill() }
     wait(for: [done], timeout: 5)
     return result
+  }
+
+  func testBackgroundChangesWaitForApplicationActivationAndReviewLatestVersion() throws {
+    let (document, backend, url) = try fixture()
+    var isActive = false
+    document.externalFileReviewIsApplicationActive = { isActive }
+    // Keep the activation observer, but silence vnode events so the test proves
+    // that activation itself checks the file even without a monitor callback.
+    document.externalFileMonitor?.stop()
+    backend.edit("unsaved text")
+    let baseline = document.fileBaseline
+    let activated = expectation(description: "application activation reviews current disk state")
+    var prompts = 0
+    document.externalFileReviewDecisionHandler = { _, options, decide in
+      prompts += 1
+      XCTAssertTrue(isActive)
+      XCTAssertTrue(options.discardsUnsavedChanges)
+      XCTAssertEqual(document.externalFileObservation?.fingerprint, try? EVFileFingerprint.read(url))
+      decide(.keepBuffer)
+      activated.fulfill()
+    }
+
+    try Data("first background version".utf8).write(to: url, options: .atomic)
+    try review(document).get()
+    XCTAssertNotNil(document.externalFileChange)
+    XCTAssertEqual(prompts, 0)
+    try Data("latest background version".utf8).write(to: url, options: .atomic)
+    isActive = true
+    NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
+    wait(for: [activated], timeout: 5)
+
+    try review(document).get()
+    XCTAssertEqual(prompts, 1)
+    XCTAssertEqual(backend.data, Data("unsaved text".utf8))
+    XCTAssertTrue(backend.persistenceState.isDirty)
+    XCTAssertEqual(document.fileBaseline, baseline)
+  }
+
+  func testDeactivationDuringFileCheckDefersPromptUntilReactivation() throws {
+    let (document, backend, url) = try fixture()
+    document.externalFileMonitor?.stop()
+    var isActive = true
+    document.externalFileReviewIsApplicationActive = { isActive }
+    var prompts = 0
+    document.externalFileReviewDecisionHandler = { _, _, decide in
+      prompts += 1
+      XCTAssertTrue(isActive)
+      decide(.keepBuffer)
+    }
+    try Data("external".utf8).write(to: url, options: .atomic)
+    let checked = expectation(description: "check completes while application is inactive")
+    document.checkForExternalChangesAndReview { result in
+      XCTAssertNoThrow(try result.get())
+      checked.fulfill()
+    }
+    XCTAssertTrue(document.externalFileCheckInFlight)
+    // Completion must return to the main actor, so changing state here is
+    // deterministic even if the worker has already finished reading.
+    isActive = false
+    wait(for: [checked], timeout: 5)
+    XCTAssertEqual(prompts, 0)
+    XCTAssertNotNil(document.externalFileChange)
+
+    let activated = expectation(description: "deferred observation is reviewed after activation")
+    document.externalFileReviewDecisionHandler = { _, _, decide in
+      prompts += 1
+      XCTAssertTrue(isActive)
+      decide(.keepBuffer)
+      activated.fulfill()
+    }
+    isActive = true
+    NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
+    wait(for: [activated], timeout: 5)
+    XCTAssertEqual(prompts, 1)
+    XCTAssertEqual(backend.data, Data("original".utf8))
   }
 
   func testKeepBufferDeduplicatesOneDiskStateButPreservesOverwriteProtection() throws {
