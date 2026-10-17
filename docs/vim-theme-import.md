@@ -58,6 +58,16 @@ Vim's default state. Schemes that branch on `&background` without setting it
 (for example `lunaperche`, `retrobox`) therefore import their light variant.
 Fonts, sizes and spacing come from the preset.
 
+## Document styles
+
+Text and Markdown document styles (headings, links, inline code, code blocks,
+quotes, tables, comments and references) inherit Normal's colors: the import
+removes the preset's foreground, background and border colors from them and
+keeps their typography and geometry. Paper's inverted Heading 1, for example,
+becomes ordinary text in the heading font. Only editor chrome below takes Vim
+colors in these sheets. Fenced Markdown code with a language uses the Code
+styles.
+
 ## Mapped directly
 
 These keep their Vim meaning.
@@ -71,7 +81,6 @@ These keep their Vim meaning.
 | `Search` | The internal Incremental match style in the Code, Text and Markdown stylesheets |
 | `LineNr` | Line number: foreground, gutter background, Bold, Italic |
 | `CursorLineNr`, when the scheme defines it | Current line number, relative to Line number |
-| `htmlComment` → `Comment` | Markdown Comment |
 
 Every Code style declares only what differs from the style it inherits, so
 links reproduce as inheritance (`Conditional` with no declarations follows
@@ -87,11 +96,6 @@ declarations matching Vim's result.
 | `Visual` | Selection color | Opaque `guibg`. Selection paints beneath unchanged text, so Visual's own `guifg` cannot apply; when the scheme relies on it and Normal text would have contrast below 3:1, the selection is 40% opaque. `gui=reverse` uses the text color |
 | `StatusLine` | Status bar in every stylesheet | Colors after `reverse`; its `bold` and `italic` are not applied to status typography. The top border takes the bar's background (flat, like Vim), or its foreground when the bar matches the canvas |
 | `StatusLine`, inverted | Status bar command | Vim draws the command line with Normal below the status line; Viem's command field is the status bar's inverse |
-| `markdownH1`–`markdownH6` → `htmlH1`–`htmlH6` → `Title` | Markdown Heading 1–6 foreground | Heading typography is kept; Paper's inverted Heading 1 banner background is removed |
-| `markdownLinkText` → `htmlLink` → `Underlined` | Markdown Link foreground | Link keeps its underline |
-| `markdownCode`, `markdownCodeBlock`, else `String` | Markdown Code and Code Block text | Vim's `markdown.vim` leaves code unhighlighted, so `String` stands in. Code Block's background is a 7% tint of the text color |
-| `markdownId` → `Type` | Markdown reference | Vim colors reference identifiers as `Type` |
-| `markdownBlockquote` → `Comment` | Block quote border color | Vim colors quoted text, Viem a border |
 | Tree-sitter captures without a Vim group | `Keyword.import` ← `Include`; `String.escape`, `String.special`, `Character.special` ← `SpecialChar`; `Function.macro` ← `Macro`; `Number.float` ← `Float`; `Type.definition` ← `Typedef`; `Type.qualifier` ← `StorageClass`; `Attribute` ← `PreProc`; `Text.uri`, `Markup.link` ← `Underlined`; `Markup.heading` ← `Title` | Other captures (`Variable`, `Property`, `Function.builtin`, `Type.builtin`, `Constant.builtin`, `Punctuation.*`, …) inherit from their Viem parents, which carry the Vim colors |
 | `undercurl`, `underdouble`, `underdotted`, `underdashed` | Underline | Viem has one underline style |
 | `standout` | Reverse video | As gVim draws it |
@@ -123,8 +127,9 @@ declarations matching Vim's result.
   still become Code styles for syntax links).
 - **Language-specific groups** such as `javaClassDecl` or `vimCommand`. Viem's
   Vim provider resolves them through the syntax file's own links to standard
-  groups, so a scheme's overrides would not apply. The Markdown and HTML groups
-  above are the exception.
+  groups, so a scheme's overrides would not apply.
+- **Markdown and HTML groups** (`markdownH1`, `htmlLink`, `markdownCode`, …):
+  Markdown Preview's document styles inherit Normal's colors instead.
 - **Attributes:** `guisp` (undercurl color), `font=`, `nocombine`, `blend`, and
   every terminal attribute (`term`, `cterm`, `ctermfg`, `ctermbg`, `ctermul`).
 - **Other settings:** `g:terminal_ansi_colors` and options other than

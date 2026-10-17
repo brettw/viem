@@ -1651,8 +1651,9 @@ Vim's default state ('background' light), through the bounded syntax setup
 language; unsupported statements are skipped and reported, never executed. A
 light Normal background, or a light final 'background' without one, starts from
 the shipped Paper preset, otherwise Midnight, never the profile's edited copies.
-Code, Text and Markdown styles, status chrome, line numbers and search matches
-take the scheme's colors. The new theme is named by the file stem, numbered on a
+Code styles, status chrome, line numbers and search matches take the scheme's
+colors; Text and Markdown document styles drop the preset's colors and inherit
+Normal's, keeping their typography. The new theme is named by the file stem, numbered on a
 case-insensitive collision, saved and selected. Keep the mapping and its
 approximations current in [Vim theme import](docs/vim-theme-import.md).
 

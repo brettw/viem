@@ -91,27 +91,51 @@ fn code_styles_declare_only_differences_from_their_parents() {
 }
 
 #[test]
-fn light_and_default_schemes_use_paper_and_markdown_follows_vim_links() {
+fn light_and_default_schemes_use_paper_without_document_colors() {
     // Without a Normal background, Vim's default 'background' is light.
     let (theme, base) = import("hi clear\nhi Comment guifg=#008800\nhi Title guifg=#aa00aa gui=bold\nhi Underlined guifg=#0000cc gui=underline\n");
     assert_eq!(base, "Paper");
     let paper: Value = serde_json::from_slice(PAPER).unwrap();
     assert_eq!(hex(&theme["theme"]["background"]), hex(&paper["theme"]["background"]));
-    let heading = block(&theme, "markdown", "Heading1");
-    assert_eq!(hex(&heading["character"]["foreground"]), "#aa00aa");
-    // Paper's inverted banner is not a Vim color.
-    assert!(heading["block"]["background"].is_null());
-    assert_eq!(hex(&character(&theme, "markdown", "Link").unwrap()["properties"]["foreground"]), "#0000cc");
-    assert_eq!(hex(&character(&theme, "markdown", "Comment").unwrap()["properties"]["foreground"]), "#008800");
-    assert_eq!(hex(&block(&theme, "markdown", "Block quote")["block"]["border_left_color"]), "#008800");
-    // Vim's default light String (Constant) colors code without markdownCode.
-    assert_eq!(hex(&character(&theme, "markdown", "Code").unwrap()["properties"]["foreground"]), "#ff00ff");
     let (light, base) = import("hi Normal guifg=#202020 guibg=#fdf6e3\nset background=dark\n");
     assert_eq!((base, hex(&light["theme"]["background"])), ("Paper", "#fdf6e3".into()));
     let (dark, base) = import("set background=dark\nhi Comment guifg=#80a0ff\n");
     assert_eq!(base, "Midnight");
     let midnight: Value = serde_json::from_slice(MIDNIGHT).unwrap();
     assert_eq!(hex(&dark["theme"]["background"]), hex(&midnight["theme"]["background"]));
+}
+
+#[test]
+fn document_styles_inherit_normal_colors_and_keep_typography() {
+    // Paper colors headings, links, code and quotes; Midnight colors tables.
+    for source in [DARK.replace("#101418", "#fdfdfd"), DARK.to_owned()] {
+        let (theme, _) = import(&source);
+        let preset: Value = serde_json::from_slice(if hex(&theme["theme"]["background"]) == "#fdfdfd" { PAPER } else { MIDNIGHT }).unwrap();
+        let bytes = serde_json::to_vec(&theme["styles"]["markdown"]).unwrap();
+        let (sheet, diagnostics) = StyleSheet::for_format(Format::Markdown).with_default_json(&bytes).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        for id in ["Heading1", "Heading2", "Code Block", "Block quote", "Table cell", "Table header"] {
+            let style = sheet
+                .resolve_paragraph_style(&"Paragraph".into(), &id.into(), None, &Default::default(), &Default::default())
+                .unwrap();
+            assert!(style.character.foreground_is_default && style.character.background.is_none(), "{id}");
+            assert!(style.background.is_none() && style.border_left_color.is_none() && style.border_top_color.is_none(), "{id}");
+            // Typography and geometry are the preset's.
+            let declared = block(&theme, "markdown", id);
+            let original = block(&preset, "markdown", id);
+            assert_eq!(declared["character"]["font_families"], original["character"]["font_families"], "{id}");
+            assert_eq!(declared["block"]["border_left_width"], original["block"]["border_left_width"], "{id}");
+        }
+        for id in ["Link", "Code", "Comment", "Markdown reference"] {
+            let properties = sheet.named_character_declarations(Some(&StyleId(id.into()))).unwrap();
+            assert!(properties.foreground.is_none() && properties.background.is_none(), "{id}");
+        }
+        assert_eq!(character(&theme, "markdown", "Link").unwrap()["properties"]["underline"], json!(true));
+        // Chrome keeps the scheme's colors.
+        assert_eq!(hex(&block(&theme, "markdown", "Status bar")["block"]["background"]), "#30363d");
+        let search = character(&theme, "markdown", "* Incremental match").unwrap();
+        assert_eq!(hex(&search["properties"]["background"]), "#e3b341");
+    }
 }
 
 #[test]

@@ -72,6 +72,13 @@ final class EVVimThemeImportTests: XCTestCase {
     let buttons = Set(descendants(try XCTUnwrap(dialog.panel.contentView)).compactMap { ($0 as? NSButton)?.title })
     XCTAssertEqual(buttons, ["Select File…", "Cancel", "Import"])
     XCTAssertTrue(dialog.importButton.isEnabled)
+    // Names sit in the middle of their rows.
+    let cell = try XCTUnwrap(dialog.tableView(dialog.table, viewFor: nil, row: 0) as? NSTableCellView)
+    cell.frame = NSRect(x: 0, y: 0, width: 300, height: dialog.table.rowHeight)
+    cell.layoutSubtreeIfNeeded()
+    let label = try XCTUnwrap(cell.textField)
+    XCTAssertEqual(label.stringValue, "dusk")
+    XCTAssertEqual(label.frame.midY, cell.bounds.midY, accuracy: 0.5)
     var closed = false
     dialog.onClose = { closed = true }
     dialog.table.selectRowIndexes(IndexSet(integer: 1), byExtendingSelection: false)
