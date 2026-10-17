@@ -214,10 +214,8 @@ internal static class ChromeStyleTests
                 } finally { if (open) numberItem.Loaded -= Changed; else numberItem.Unloaded -= Changed; }
             }
             var invisibleItem = viewMenu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Show Invisible Characters");
-            var commentMarkdownItem = viewMenu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Markdown in comments");
-            Check(viewMenu.Items.IndexOf(numberItem) + 1 == viewMenu.Items.IndexOf(commentMarkdownItem)
-                && viewMenu.Items.IndexOf(commentMarkdownItem) + 1 == viewMenu.Items.IndexOf(invisibleItem),
-                "Show line numbers and Markdown in comments appear immediately before Show Invisible Characters in the View menu");
+            Check(viewMenu.Items.IndexOf(numberItem) + 1 == viewMenu.Items.IndexOf(invisibleItem),
+                "Show line numbers appears immediately before Show Invisible Characters in the View menu");
             await SetViewMenuOpen(true);
             Check(!numberItem.IsChecked && numberItem.IsEnabled && numberItem.Focus(FocusState.Programmatic),
                 "the line-number menu check reflects the active view's initially disabled number option");

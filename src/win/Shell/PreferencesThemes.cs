@@ -238,6 +238,28 @@ internal sealed partial class Preferences
         catch { if (created) File.Delete(path); throw; }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
+    /// Save an imported Vim color scheme as a new theme named after its file
+    /// and select it.
+    public string ImportVimTheme(byte[] source, string stem)
+    {
+        byte[] bytes = CoreThemes.ImportVim(source);
+        var candidate = JsonNode.Parse(bytes)!.AsObject();
+        EnsureCurrentThemeExists();
+        string name = CoreThemes.UniqueName(stem, ThemeNames);
+        string path = ThemePath(name);
+        Directory.CreateDirectory(ThemesDirectory);
+        string temporary = path + ".viem-" + Guid.NewGuid().ToString("N") + ".tmp";
+        bool created = false;
+        try {
+            using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { output.Write(bytes); output.Flush(true); }
+            // The no-overwrite move publishes a complete file atomically.
+            File.Move(temporary, path); created = true;
+            PublishTheme(candidate, name, () => Update(root => SetThemeSelection(root, name, path), notify: false), path);
+        }
+        catch { if (created) File.Delete(path); throw; }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+        return name;
+    }
     public void DeleteTheme()
     {
         if (SelectedThemeIsBundled) throw new InvalidOperationException("Bundled themes can be reverted, not deleted.");

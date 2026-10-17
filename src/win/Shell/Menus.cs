@@ -21,7 +21,6 @@ internal sealed partial class EditorWindow
     private MenuFlyoutSubItem paragraphMenu = null!, characterMenu = null!, themeMenu = null!;
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
     private ToggleMenuFlyoutItem wrapItem = null!;
-    private ToggleMenuFlyoutItem commentMarkdownItem = null!;
     private CoreView? View => ActivePane?.View;
     private bool Rich => View != null && CoreDocument.IsMarkdown(ActivePane!.Document.State.format);
     private bool CanFormatBlocks => ActivePane?.CanUseFormattingCommands == true && !View!.SelectedNamedStyles().HasTable;
@@ -112,11 +111,8 @@ internal sealed partial class EditorWindow
         Top("Style", "S", themeMenu, Separator(), paragraphMenu, characterMenu, Separator(), StyleEditorItem());
         var lineNumbersItem = Toggle("Show line numbers", "N", b => View?.Number(b), () => View?.NumberEnabled == true);
         validation.Add((lineNumbersItem, () => View != null));
-        commentMarkdownItem = Toggle("Markdown in comments", "M", b => ActivePane?.Document.SetCommentMarkdown(b),
-            () => ActivePane?.Document.CommentMarkdown.Enabled == true);
-        validation.Add((commentMarkdownItem, () => ActivePane?.Document.CommentMarkdown.Applicable == true));
         Top("View", "V", Toggle("Show Status Bar", "S", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", "B", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(),
-            Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), lineNumbersItem, commentMarkdownItem, Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
+            Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), lineNumbersItem, Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
             Separator(), ActionItem("Zoom In", "Z", () => View?.StepZoom(true), "Ctrl+="), ActionItem("Zoom Out", "O", () => View?.StepZoom(false), "Ctrl+-"), ActionItem("Actual Size", "A", () => View?.Zoom(1)),
             Separator(), ActionItem("Full Screen", "U", () => AppWindow.SetPresenter(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? AppWindowPresenterKind.Overlapped : AppWindowPresenterKind.FullScreen)));
         Top("Window", "W", ActionItem("Split Vertically", "V", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document, vertical: true); }), ActionItem("Split View", "S", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document); }), ActionItem("New Empty Pane", "E", () => { RequireSplitRoom(); SplitPane(ActivePane!, NewDocument()); }),

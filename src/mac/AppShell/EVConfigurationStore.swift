@@ -107,8 +107,6 @@ public final class EVConfigurationStore {
   public var markdownAutodetect: Bool { (root["editing"] as? [String: Any])?["markdownAutodetect"] as? Bool ?? true }
   public var caretHoverEffect: Bool { (root["editing"] as? [String: Any])?["caretHoverEffect"] as? Bool ?? true }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
-  /// Application default for simplified Markdown in Code comments.
-  public var commentMarkdown: Bool { (root["editing"] as? [String: Any])?["commentMarkdown"] as? Bool ?? true }
   public var markdownFormattedView: Bool {
     (root["editing"] as? [String: Any])?["markdownFormattedView"] as? Bool ?? false
   }
@@ -166,7 +164,6 @@ public final class EVConfigurationStore {
   public func setMarkdownAutodetect(_ enabled: Bool) throws { try update(section: "editing", values: ["markdownAutodetect": enabled]) }
   public func setCaretHoverEffect(_ enabled: Bool) throws { try update(section: "editing", values: ["caretHoverEffect": enabled]) }
   public func setSmartQuotes(_ enabled: Bool) throws { try update(section: "editing", values: ["smartQuotes": enabled]) }
-  public func setCommentMarkdown(_ enabled: Bool) throws { try update(section: "editing", values: ["commentMarkdown": enabled]) }
   public func setMarkdownFormattedView(_ enabled: Bool) throws {
     // This default affects future opens; existing views retain their own state.
     try update(section: "editing", values: ["markdownFormattedView": enabled], notify: false)
@@ -342,7 +339,7 @@ public final class EVConfigurationStore {
         guard margins.isValid else { throw invalid("View margins must be between 0 and 1000 pixels") }
       }
     }
-    for (section, key) in [("editing", "caretHoverEffect"), ("editing", "markdownAutodetect"), ("editing", "smartQuotes"), ("editing", "commentMarkdown"), ("editing", "markdownFormattedView"), ("appearance", "showStatusBar")] {
+    for (section, key) in [("editing", "caretHoverEffect"), ("editing", "markdownAutodetect"), ("editing", "smartQuotes"), ("editing", "markdownFormattedView"), ("appearance", "showStatusBar")] {
       if let raw = object[section] {
         guard let fields = raw as? [String: Any] else { throw invalid("Invalid \(section) settings") }
         if let value = fields[key] {

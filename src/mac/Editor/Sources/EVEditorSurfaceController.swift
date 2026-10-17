@@ -897,9 +897,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             performInput { _ = try self.sendCommandCharacter("~", session: session) }
         case .wordWrap:
             performInput { _ = try session.setWrap(!self.wrapEnabled) }
-        case .commentMarkdown:
-            guard let state = try? session.commentMarkdown(), state.applicable else { NSSound.beep(); return }
-            performInput { try session.setCommentMarkdown(!state.enabled) }
         case .lineEndingUnix:
             setFileFormat(UInt32(VIEM_FILE_FORMAT_UNIX), session: session)
         case .lineEndingWindows:
@@ -1032,8 +1029,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         case .wordWrap:
             EVMenuItemPresentation(isEnabled: true, state: wrapEnabled ? .on : .off)
-        case .commentMarkdown:
-            commentMarkdownPresentation()
         case .lineEndingUnix:
             fileFormatPresentation(UInt32(VIEM_FILE_FORMAT_UNIX))
         case .lineEndingWindows:
@@ -1108,13 +1103,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         viewPresentation.mode == UInt32(VIEM_MODE_VISUAL_BLOCK)
             || viewPresentation.mode == UInt32(VIEM_MODE_SELECT_BLOCK)
             || viewPresentation.mode == UInt32(VIEM_MODE_SELECTION_BLOCK)
-    }
-
-    private func commentMarkdownPresentation() -> EVMenuItemPresentation {
-        guard let state = try? session?.commentMarkdown() else {
-            return EVMenuItemPresentation(isEnabled: false, state: .off)
-        }
-        return EVMenuItemPresentation(isEnabled: state.applicable, state: state.enabled ? .on : .off)
     }
 
     var wrapEnabled: Bool {
@@ -2005,7 +1993,6 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_EX_OPTION_AUTOSELECT): name = "autoselect"
         case UInt32(VIEM_EX_OPTION_KEYMODEL): name = "keymodel"
         case UInt32(VIEM_EX_OPTION_SELECTMODE): name = "selectmode"
-        case UInt32(VIEM_EX_OPTION_COMMENTMARKDOWN): name = "commentmarkdown"
 
         default: name = "option\(option.name)"
         }

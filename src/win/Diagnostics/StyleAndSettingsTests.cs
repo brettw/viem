@@ -279,6 +279,9 @@ internal static class StyleAndSettingsTests
             Check(settings.Error.Length == 0 && preferences.SelectedTheme == "Paper" && preferences.SelectedThemePath == paperPath
                 && preferences.Theme.Background == Theme.Paper.Background, "Paper selection commits the named aggregate theme");
             Check(settings.DeleteTheme.Content as string == "Revert", "bundled themes offer Revert in Settings");
+            Check(settings.ImportTheme.Content as string == "Import…" && settings.DeleteTheme.Parent is Panel themeRow
+                && themeRow.Children.IndexOf(settings.ImportTheme) == themeRow.Children.IndexOf(settings.DeleteTheme) + 1,
+                "Settings offers Import… to the right of Revert or Delete");
             settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Path == discoveredThemePath);
             Check(settings.DeleteTheme.Content as string == "Delete", "user themes offer Delete in Settings");
             settings.ThemePicker.SelectedItem = settings.ThemePicker.Items.OfType<Preferences.ThemeFile>().Single(file => file.Name == "Paper");

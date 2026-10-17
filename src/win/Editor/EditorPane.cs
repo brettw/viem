@@ -286,7 +286,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void PreferencesChanged() { ApplyTheme(); if (View != null) Run(ApplyPreferences); UpdateCaretHover(); }
     private void ApplyPreferences()
     {
-        Document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations, preferences.CommentMarkdown);
+        Document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
         View!.Padding(preferences.Margin("top"), preferences.Margin("left"), preferences.Margin("bottom"), preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes); View.MarkdownAutodetect(preferences.MarkdownAutodetect);
     }
     private void ApplyTheme()

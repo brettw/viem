@@ -100,8 +100,6 @@ internal sealed partial class SettingsWindow : Window
         Check(page, "Smart quotes", preferences.SmartQuotes, value => preferences.Set("editing", "smartQuotes", value));
         Check(page, "Automatically format typed Markdown", preferences.MarkdownAutodetect, value => preferences.Set("editing", "markdownAutodetect", value));
         page.Children.Add(new TextBlock { Text = "In Markdown Preview, completed Markdown spans and block prefixes become formatting. Use Ctrl-Q before a character to keep it literal.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
-        Check(page, "Format Markdown in Code comments", preferences.CommentMarkdown, value => preferences.Set("editing", "commentMarkdown", value));
-        page.Children.Add(new TextBlock { Text = "Show emphasis, links and code spans inside comments. Code in backticks or ``` fences uses syntax highlighting. Comment markers and source are unchanged; :set commentmarkdown overrides this per document.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
         Number(page, "Text width (columns for gq / gw)", preferences.TextWidth, 1, uint.MaxValue, n => preferences.Set("editing", "textWidth", n), 250);
         var editing = preferences.Editing;
         var indentation = editing["indentation"] as JsonObject ?? new JsonObject();

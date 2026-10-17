@@ -389,7 +389,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         ))
         menu.addItem(.separator())
         menu.addItem(coreItem("Show line numbers", command: .showLineNumbers))
-        menu.addItem(coreItem("Markdown in comments", command: .commentMarkdown))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
         menu.addItem(.separator())
         menu.addItem(coreItem("Zoom In", command: .zoomIn, key: "=", modifiers: [.command]))

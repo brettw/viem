@@ -28,6 +28,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 - [Native background layout](windows-background-layout.md): worker ownership,
   cache-only installation, cancellation and native regression checks.
 - [Code formatting](code-formatting.md): reflow flags, language context, overrides, and list prefixes.
+- [Vim theme import](vim-theme-import.md): color scheme evaluation, the base
+  preset, and how Vim highlight groups map onto theme styles.
 - [Comment language coverage](comment-language-coverage.md): supported forms, limits, defaults, and pinned Vim provenance.
 - [Markdown demo](markdown_demo.md): loadable examples of supported syntax and
   deliberate presentation exceptions.

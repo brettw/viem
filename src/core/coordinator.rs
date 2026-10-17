@@ -970,7 +970,6 @@ fn allocate_style_edit_group_id() -> Option<StyleEditGroupId> {
 /// Serial composition root for one buffer and its attached views.
 mod syntax;
 mod markdown_code;
-mod comment_markdown;
 mod document_mode;
 pub use document_mode::{DocumentMode, DocumentModeState};
 mod whitespace;
@@ -2056,32 +2055,6 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.buffer_commands.text_width.set_default(width);
         for view in self.views.values_mut() {
             view.commands.set_text_width_default(width);
-        }
-    }
-
-    /// The buffer's `commentmarkdown` state shared by every view.
-    pub fn comment_markdown(&self) -> crate::document::CommentMarkdownSetting {
-        self.buffer_commands.comment_markdown
-    }
-
-    /// Whether the current format presents comment Markdown.
-    pub fn comment_markdown_applicable(&self) -> bool {
-        self.document.format().is_code()
-    }
-
-    /// Propagate the application default. An explicit buffer override survives.
-    pub fn set_comment_markdown_default(&mut self, enabled: bool) {
-        self.buffer_commands.comment_markdown.set_default(enabled);
-        for view in self.views.values_mut() {
-            view.commands.set_comment_markdown_default(enabled);
-        }
-    }
-
-    /// Set the buffer override, as `:set commentmarkdown` does.
-    pub fn set_comment_markdown(&mut self, enabled: bool) {
-        self.buffer_commands.comment_markdown.set_local(Some(enabled));
-        for view in self.views.values_mut() {
-            view.commands.set_comment_markdown_local(Some(enabled));
         }
     }
 

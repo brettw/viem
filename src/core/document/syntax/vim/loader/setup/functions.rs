@@ -8,6 +8,8 @@ pub(super) enum Statement {
     Return(String),
     Bind(String),
     Emit(String),
+    /// A literal `:highlight` line, accepted while a color scheme is evaluated.
+    Highlight(String),
     Call(String),
     InspectCluster(String),
     If(String, Vec<Statement>, Vec<Statement>),
@@ -137,6 +139,7 @@ fn block(body: &[String], at: &mut usize, depth: usize) -> Result<Vec<Statement>
             }
             "break" => Statement::Break,
             "continue" => Statement::Continue,
+            _ if super::super::commands::command_name(command) == "highlight" => Statement::Highlight(line.clone()),
             _ => Statement::Unsupported(line.clone()),
         });
     }
@@ -252,6 +255,22 @@ fn run_block(
                     return Err("setup generated-command budget exceeded".into());
                 }
                 emitted.push(command);
+            }
+            Statement::Highlight(line) => {
+                if !setup.colorscheme_mode() {
+                    return Err(format!("unsupported active setup function command: {line}"));
+                }
+                setup.charge(line.len())?;
+                let emitted = setup
+                    .emitted
+                    .as_mut()
+                    .ok_or("syntax-generating setup functions require a call statement")?;
+                if emitted.len() >= MAX_BINDINGS
+                    || emitted.iter().map(String::len).sum::<usize>().saturating_add(line.len()) > MAX_VALUE_BYTES
+                {
+                    return Err("setup generated-command budget exceeded".into());
+                }
+                emitted.push(line.clone());
             }
             Statement::Call(source) => {
                 evaluate(setup, source, arguments, depth)?;

@@ -162,6 +162,9 @@ pub(super) struct Setup<'a> {
     fuel: usize,
     storage_reserved: usize,
     cancel: Option<&'a AtomicBool>,
+    /// The 'background' value seen by a color scheme. Present only while a
+    /// color scheme is evaluated, which also models gVim's features.
+    colorscheme_background: Option<String>,
 }
 impl<'a> Setup<'a> {
     pub(super) fn new(context: &VimSetupContext, cancel: Option<&'a AtomicBool>) -> Self {
@@ -190,7 +193,45 @@ impl<'a> Setup<'a> {
                 .saturating_mul(2)
                 .saturating_add(initial_storage),
             cancel,
+            colorscheme_background: None,
         }
+    }
+    /// Evaluate as gVim with `:syntax on` loading a color scheme.
+    pub(super) fn begin_colorscheme(&mut self, background: &str) {
+        self.colorscheme_background = Some(background.to_owned());
+        self.variables.insert("g:syntax_on".into(), Value::Number(1));
+    }
+    pub(super) fn set_colorscheme_background(&mut self, background: &str) {
+        self.colorscheme_background = Some(background.to_owned());
+    }
+    pub(super) fn colorscheme_mode(&self) -> bool {
+        self.colorscheme_background.is_some()
+    }
+    /// gVim 9.2 features a color scheme may test. Neovim and platform
+    /// features are absent so that portable GUI branches are chosen.
+    fn colorscheme_feature(feature: &str) -> bool {
+        let feature = feature.to_ascii_lowercase();
+        if let Some(version) = feature.strip_prefix("patch-") {
+            let parts = version.split('.').map(str::parse::<u32>).collect::<Result<Vec<_>, _>>();
+            return matches!(parts.as_deref(), Ok([major, minor, _]) if (*major, *minor) <= (9, 2));
+        }
+        if feature.strip_prefix("patch").is_some_and(|number| !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit())) {
+            return true;
+        }
+        matches!(feature.as_str(), "gui" | "gui_running" | "termguicolors" | "syntax" | "eval"
+            | "multi_byte" | "vim9script" | "autocmd" | "user_commands" | "lambda" | "vertsplit"
+            | "statusline" | "linebreak" | "conceal" | "cursorbind" | "float" | "spell" | "textprop"
+            | "diff" | "folding" | "signs" | "vimscript-1" | "vimscript-2" | "vimscript-3" | "vimscript-4")
+    }
+    fn colorscheme_option(name: &str) -> Option<Value> {
+        Some(match name {
+            "&background" | "&bg" => return None,
+            "&t_Co" => Value::Text("256".into()),
+            "&termguicolors" | "&tgc" => Value::Number(1),
+            "&guifont" | "&gfn" | "&guifontwide" | "&gfw" | "&t_8f" | "&t_8b" => Value::Text(String::new()),
+            "&cursorline" | "&cul" | "&number" | "&nu" | "&list" | "&spell" | "&diff" => Value::Number(0),
+            _ => return None,
+        })
     }
     pub(super) fn set_filetype(&mut self, filetype: &str) {
         self.filetype = filetype.to_owned();
@@ -741,6 +782,14 @@ impl<'a> Setup<'a> {
         } else {
             name
         };
+        if let Some(background) = &self.colorscheme_background {
+            if matches!(name, "&background" | "&bg") {
+                return Ok(Value::Text(background.clone()));
+            }
+            if let Some(value) = Self::colorscheme_option(name) {
+                return Ok(value);
+            }
+        }
         match name {
             "v:true" => return Ok(Value::Number(1)),
             "v:false" => return Ok(Value::Number(0)),
@@ -924,6 +973,19 @@ impl<'a> Setup<'a> {
             {
                 self.call(name, values.clone(), depth + 1)
             }
+            ("exists", [Value::Text(name)]) if self.colorscheme_mode() && name.starts_with(['&', '+', '*', ':', '#']) => {
+                let present = match name.split_at(1) {
+                    ("&" | "+", option) => option == "background" || option == "bg"
+                        || Self::colorscheme_option(&format!("&{option}")).is_some(),
+                    ("*", function) => if function.starts_with("s:") {
+                        self.script.borrow().functions.contains_key(function)
+                    } else {
+                        self.global_functions.contains_key(function)
+                    },
+                    _ => false,
+                };
+                Ok(Value::Number(i64::from(present)))
+            }
             ("exists", [Value::Text(name)]) => {
                 let name = variable_name(name);
                 let present = if name.starts_with("s:") {
@@ -933,10 +995,10 @@ impl<'a> Setup<'a> {
                 };
                 Ok(Value::Number(i64::from(present)))
             }
-            ("has", [Value::Text(_)]) => {
+            ("has", [Value::Text(feature)]) => {
                 // No optional Vim editor/runtime facilities exist in this native
                 // host. In particular conceal is unavailable in literal Code.
-                Ok(Value::Number(0))
+                Ok(Value::Number(i64::from(self.colorscheme_mode() && Self::colorscheme_feature(feature))))
             }
             ("get", [Value::Scope(scope), Value::Text(key), default]) => {
                 let name = format!("{scope}{key}");

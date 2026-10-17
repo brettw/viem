@@ -4,6 +4,9 @@ use super::{code_style, DocumentStyleAssignment, StyleSheet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod vim_import;
+pub use vim_import::{import_vim_colorscheme, unique_theme_name, VimThemeImport, MAX_VIM_COLORSCHEME_BYTES};
+
 pub const MAX_THEME_BYTES: usize = 20 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

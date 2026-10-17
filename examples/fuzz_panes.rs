@@ -32,11 +32,6 @@ impl Rng {
 
 const EPS: f64 = 0.01;
 
-// exactly, without overlap, and respect the minimum pane sizes.
-//
-// ```sh
-// cargo run --release --example fuzz_panes -- 20000 400
-// ```
 fn panes(layout: &PaneLayout) -> Vec<Frame> {
     layout.frames().into_iter().filter(|f| !f.splitter).collect()
 }

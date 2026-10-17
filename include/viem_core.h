@@ -481,7 +481,6 @@ ViemStatus viem_external_file_review_finish(
 #define VIEM_EX_OPTION_AUTOSELECT 23u
 #define VIEM_EX_OPTION_HLSEARCH 19u
 #define VIEM_EX_OPTION_INCSEARCH 20u
-#define VIEM_EX_OPTION_COMMENTMARKDOWN 28u
 
 #define VIEM_EX_JUMP_CURRENT (1u << 0)
 
@@ -2877,6 +2876,14 @@ ViemStatus viem_theme_default_json(uint32_t preset, uint8_t *output, uint64_t ca
 ViemStatus viem_theme_style_defaults_json(uint32_t variant, const uint8_t *json, uint64_t length, uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_theme_validate_json(const uint8_t *json, uint64_t length);
 ViemStatus viem_theme_validate_name(const uint8_t *name, uint64_t length);
+/* Import a Vim color scheme (bounded to 4 MiB) as complete theme JSON based
+ * on the built-in Paper or Midnight preset, using the two-pass output contract.
+ * Evaluation is deterministic and touches no files. On success the callback
+ * receives skipped statements once the output is written; on failure, the
+ * reason. Unique names derive from a file stem: filename-safe, at most 32
+ * characters, distinct ignoring case from the LF-separated existing names. */
+ViemStatus viem_theme_import_vim(const uint8_t *source, uint64_t length, uint8_t *output, uint64_t capacity, uint64_t *required, ViemStyleDefaultsDiagnosticCallback diagnostic, void *context);
+ViemStatus viem_theme_unique_name(const uint8_t *stem, uint64_t stem_length, const uint8_t *existing, uint64_t existing_length, uint8_t *output, uint64_t capacity, uint64_t *required);
 
 /* Command prompt selection and editing carry the exact exported prompt identity. */
 typedef struct ViemCommandLineSelectionV1 {
@@ -3021,13 +3028,6 @@ ViemStatus viem_core_copy_link_destination(ViemCoreHandle core,
     uint8_t *output, uint64_t capacity, uint64_t *required, uint8_t *found);
 /* Application default for textwidth (positive). Buffer :set overrides survive. */
 ViemStatus viem_core_set_text_width_default(ViemCoreHandle core, uint32_t width);
-/* Simplified Markdown in Code comments. The default comes from application
- * settings; viem_core_set_comment_markdown sets the buffer override shared by
- * every view, as :set commentmarkdown does. applicable reports whether the
- * buffer's current format presents it (Code). Poll syntax to refresh. */
-ViemStatus viem_core_set_comment_markdown_default(ViemCoreHandle core, uint8_t enabled);
-ViemStatus viem_core_set_comment_markdown(ViemCoreHandle core, uint8_t enabled);
-ViemStatus viem_core_comment_markdown(ViemCoreHandle core, uint8_t *out_enabled, uint8_t *out_applicable);
 /* Application defaults; JSON is validated before mutation. Ex overrides survive. */
 ViemStatus viem_validate_whitespace_presentation(const uint8_t *json, uint64_t length);
 ViemStatus viem_core_set_indentation_defaults(ViemCoreHandle core, const uint8_t *json, uint64_t length);

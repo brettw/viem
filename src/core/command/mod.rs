@@ -1349,8 +1349,6 @@ pub(crate) struct BufferCommandState {
     pub(crate) text_width: crate::document::TextWidthSetting,
     pub(crate) reflow_options: crate::document::ReflowOptions,
     pub(crate) indentation: crate::document::IndentationSetting,
-    /// Buffer-owned `commentmarkdown`: inherited default plus optional override.
-    pub(crate) comment_markdown: crate::document::CommentMarkdownSetting,
 }
 
 /// Per-view Vim controller state.
@@ -1465,7 +1463,6 @@ pub struct CommandInterpreter {
     pending_clipboard_writes: Vec<ClipboardWriteRequest>,
     /// Buffer-owned `textwidth`, bridged through the buffer command state.
     text_width: crate::document::TextWidthSetting,
-    comment_markdown: crate::document::CommentMarkdownSetting,
     reflow_options: crate::document::ReflowOptions,
     indentation: crate::document::IndentationSetting,
     generated_indent: Option<indentation::GeneratedIndent>,
@@ -1628,7 +1625,6 @@ impl CommandInterpreter {
             clipboard_context: ClipboardCommandContext::default(),
             pending_clipboard_writes: Vec::new(),
             text_width: crate::document::TextWidthSetting::default(),
-            comment_markdown: Default::default(),
             reflow_options: crate::document::ReflowOptions::default(),
             indentation: Default::default(),
             generated_indent: None,
@@ -1663,7 +1659,6 @@ impl CommandInterpreter {
             text_width: self.text_width,
             reflow_options: self.reflow_options.clone(),
             indentation: self.indentation,
-            comment_markdown: self.comment_markdown,
         }
     }
 
@@ -1684,7 +1679,6 @@ impl CommandInterpreter {
         self.recording.clone_from(&state.recording);
         self.last_macro = state.last_macro;
         self.text_width = state.text_width;
-        self.comment_markdown = state.comment_markdown;
         if self.reflow_options.comments() != state.reflow_options.comments() {
             self.generated_indent = None;
         }
@@ -13636,7 +13630,6 @@ impl CommandInterpreter {
             search_options: self.search_options,
             selection_options: self.selection_options.clone(),
             text_width: self.text_width,
-            comment_markdown: self.comment_markdown,
             reflow_options: self.reflow_options.clone(),
             indentation: self.indentation,
             last_search_pattern: address_search.as_ref().or(self.last_search.as_ref())
@@ -14111,9 +14104,6 @@ impl CommandInterpreter {
                 (ExOptionName::Number, ExOptionValue::Boolean(value)) => self.number = *value,
                 (ExOptionName::TextWidth, ExOptionValue::OptionalNumber(value)) => {
                     self.text_width.set_local(*value);
-                }
-                (ExOptionName::CommentMarkdown, ExOptionValue::OptionalBoolean(value)) => {
-                    self.comment_markdown.set_local(*value);
                 }
                 (ExOptionName::FileFormats, ExOptionValue::FileFormats(value)) => {
                     self.fileformats.clone_from(value);

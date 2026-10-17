@@ -9,7 +9,13 @@ final class EVThemeActions {
     return withExtendedLifetime(prompt) { prompt.run() }
   }
 
+  var presentVimImport: (NSWindow?, EVThemeStore) -> Void = { window, store in
+    EVVimThemeImportController.present(for: window, store: store)
+  }
+
   init(store: EVThemeStore) { self.store = store }
+
+  func importVim(window: NSWindow?) { presentVimImport(window, store) }
 
   func create(window: NSWindow?) {
     guard let name = requestName(window) else { return }

@@ -127,6 +127,19 @@ remains explicitly provisional. `display` rules are always evaluated. Folding,
 spelling, and concealment declarations are accepted presentation metadata; Code
 continues to display every source character and uses its own presentation policy.
 
+## Color scheme evaluation
+
+Theme import (`evaluate_colorscheme`) runs a color scheme through the same setup
+language and limits, with `:highlight` recording GUI attributes in a highlight
+table that models gVim with `:syntax on`: Vim 9.1's compiled-in and
+`syncolor.vim` defaults, merge/link/clear precedence, and 'background' reloads
+guarded by `g:colors_name`. Only this mode answers `has('gui_running')` and
+related features, reads `&background`, `&t_Co` and `&termguicolors`, accepts
+`:highlight` lines in function bodies, and `:syntax reset`. An unsupported
+statement becomes a warning instead of rejecting the scheme; exhausted budgets
+and cancellation still fail. Syntax compilation is unchanged. The import
+mapping is documented in [Vim theme import](../../../../../docs/vim-theme-import.md).
+
 ## Pattern semantics
 
 The regular subset is compiled to a Thompson NFA and interpreted with explicit

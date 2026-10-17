@@ -40,9 +40,7 @@ was positioned with; rows with progressive (very long) cells stay demand-laid.
 Syntax follows the same threshold: a retained Code document is highlighted
 completely once visible text is covered and editing has paused for 250 ms, and a
 retained Markdown document highlights every fenced block, visible blocks first,
-publishing at most four offscreen completions per poll. Comment Markdown in a
-retained Code document covers every comment: edits re-recognize the visible
-comments and carry the rest across the change until editing pauses.
+publishing at most four offscreen completions per poll.
 
 ## macOS ownership and scheduling
 
