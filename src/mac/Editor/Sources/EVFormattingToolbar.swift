@@ -3,10 +3,14 @@ import CViemCore
 import ViemAppShell
 
 extension EVEditorSurfaceController: EVFormattingToolbarProviding {
-  /// Markdown documents keep one toolbar, including with Preview off.
-  public var formattingToolbarFormat: EVSourceFormat { isMarkdownDocument ? .markdown : backend.sourceFormat }
+  public var formattingToolbarFormat: EVSourceFormat { backend.sourceFormat }
+  public var isLiteralMarkdown: Bool { backend.sourceFormat == .code && isMarkdownDocument }
   public var formattingToolbarView: NSView { formattingToolbar }
   public func refreshFormattingToolbar() { formattingToolbar.refresh() }
+  public func showMarkdownPreview() {
+    setMarkdownPreview(true)
+    if isViewLoaded { editorView.window?.makeFirstResponder(editorView) }
+  }
 }
 
 /// A presentation of the editor's existing style catalogue and document actions.
@@ -109,7 +113,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     controlsViewport.addSubview(row)
     addSubview(controlsViewport)
     configure(formattedView, title: "Markdown Preview", toggle: true)
-    formattedView.image = Self.formattedViewImage()
+    formattedView.image = EVFormattingToolbarIcons.markdownPreview()
     formattedView.allowsMixedState = false
     formattedView.toolTip = "Markdown Preview"
     formattedView.action = #selector(toggleMarkdownPreview(_:))
@@ -199,40 +203,13 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     }
   }
 
-  private static func formattedViewImage() -> NSImage {
-    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-      NSColor.black.setStroke()
-      let page = NSBezierPath()
-      page.move(to: NSPoint(x: 2.5, y: 1.5))
-      page.line(to: NSPoint(x: 15.5, y: 1.5))
-      page.line(to: NSPoint(x: 15.5, y: 12))
-      page.line(to: NSPoint(x: 11, y: 16.5))
-      page.line(to: NSPoint(x: 2.5, y: 16.5))
-      page.close()
-      page.move(to: NSPoint(x: 11, y: 16.5))
-      page.line(to: NSPoint(x: 11, y: 12))
-      page.line(to: NSPoint(x: 15.5, y: 12))
-      page.lineWidth = 1
-      page.stroke()
-      let paragraph = NSMutableParagraphStyle()
-      paragraph.alignment = .center
-      ("Aa" as NSString).draw(in: NSRect(x: 3, y: 3, width: 12, height: 10), withAttributes: [
-        .font: NSFont.systemFont(ofSize: 8, weight: .semibold),
-        .foregroundColor: NSColor.black,
-        .paragraphStyle: paragraph,
-      ])
-      return true
-    }
-    image.isTemplate = true
-    return image
-  }
-
   func refresh() {
     guard let surface else { return }
     let markdown = surface.backend.sourceFormat == .markdown
     formattedView.state = markdown ? .on : .off
     formattedView.isEnabled = surface.isMarkdownDocument
-    // With Preview off the document is literal Code: only the toggle remains.
+    // Only Preview has formatting controls; with Preview off the title bar
+    // offers Preview in place of this detached toolbar.
     controlsViewport.isHidden = !markdown
     setHidden(!markdown, for: insertTable)
     setHidden(!markdown, for: insertLink)

@@ -4,9 +4,45 @@ import AppKit
 /// same portable selections, capabilities, and intentions as the menus.
 @MainActor
 public protocol EVFormattingToolbarProviding: AnyObject {
+  /// The document's current format. Only Markdown Preview has a toolbar.
   var formattingToolbarFormat: EVSourceFormat { get }
+  /// Markdown with Preview off, edited literally as Code.
+  var isLiteralMarkdown: Bool { get }
   var formattingToolbarView: NSView { get }
   func refreshFormattingToolbar()
+  func showMarkdownPreview()
+}
+
+/// Icons shared by the formatting toolbar and the title bar.
+public enum EVFormattingToolbarIcons {
+  /// A page marked "Aa".
+  public static func markdownPreview() -> NSImage {
+    let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
+      NSColor.black.setStroke()
+      let page = NSBezierPath()
+      page.move(to: NSPoint(x: 2.5, y: 1.5))
+      page.line(to: NSPoint(x: 15.5, y: 1.5))
+      page.line(to: NSPoint(x: 15.5, y: 12))
+      page.line(to: NSPoint(x: 11, y: 16.5))
+      page.line(to: NSPoint(x: 2.5, y: 16.5))
+      page.close()
+      page.move(to: NSPoint(x: 11, y: 16.5))
+      page.line(to: NSPoint(x: 11, y: 12))
+      page.line(to: NSPoint(x: 15.5, y: 12))
+      page.lineWidth = 1
+      page.stroke()
+      let paragraph = NSMutableParagraphStyle()
+      paragraph.alignment = .center
+      ("Aa" as NSString).draw(in: NSRect(x: 3, y: 3, width: 12, height: 10), withAttributes: [
+        .font: NSFont.systemFont(ofSize: 8, weight: .semibold),
+        .foregroundColor: NSColor.black,
+        .paragraphStyle: paragraph,
+      ])
+      return true
+    }
+    image.isTemplate = true
+    return image
+  }
 }
 
 @MainActor
@@ -17,6 +53,9 @@ final class EVFormattingToolbarChrome: NSObject {
   private let toggleAccessory = NSTitlebarAccessoryViewController()
   private let toolbarAccessory = NSTitlebarAccessoryViewController()
   let toggleButton = NSButton()
+  // Markdown with Preview off has no toolbar; this button takes the
+  // toolbar toggle's place and turns Preview back on.
+  let previewButton = NSButton()
   private var installedView: NSView?
   private var updating = false
   private var configurationObserver: NSObjectProtocol?
@@ -41,6 +80,21 @@ final class EVFormattingToolbarChrome: NSObject {
     toggleButton.refusesFirstResponder = true
     toggleButton.setAccessibilityLabel("Formatting toolbar")
     toggleAccessory.view.addSubview(toggleButton)
+    // At rest it matches the hidden toolbar's toggle: a bezel appears only
+    // under the pointer.
+    previewButton.frame = toggleButton.frame
+    previewButton.bezelStyle = .accessoryBarAction
+    previewButton.setButtonType(.momentaryPushIn)
+    previewButton.showsBorderOnlyWhileMouseInside = true
+    previewButton.image = EVFormattingToolbarIcons.markdownPreview()
+    previewButton.imagePosition = .imageOnly
+    previewButton.title = ""
+    previewButton.target = self
+    previewButton.action = #selector(showMarkdownPreview(_:))
+    previewButton.refusesFirstResponder = true
+    previewButton.toolTip = "Markdown Preview"
+    previewButton.setAccessibilityLabel("Markdown Preview")
+    toggleAccessory.view.addSubview(previewButton)
     toolbarAccessory.layoutAttribute = .bottom
     toolbarAccessory.view = NSView(frame: NSRect(x: 0, y: 0, width: window.frame.width, height: 42))
     configurationObserver = NotificationCenter.default.addObserver(
@@ -62,17 +116,20 @@ final class EVFormattingToolbarChrome: NSObject {
     updating = true
     defer { updating = false }
     self.surface = surface
-    guard let provider = surface as? any EVFormattingToolbarProviding,
-      provider.formattingToolbarFormat != .plainText, provider.formattingToolbarFormat != .code
-    else {
+    // Preview shows the toolbar toggle; literal Markdown offers Preview in
+    // its place. Text and other Code show neither.
+    let provider = surface as? any EVFormattingToolbarProviding
+    let preview = provider?.formattingToolbarFormat == .markdown
+    guard let provider, preview || provider.isLiteralMarkdown else {
       remove(toolbarAccessory, from: window)
       remove(toggleAccessory, from: window)
-      installedView?.removeFromSuperview()
-      installedView = nil
+      detachToolbarView()
       return
     }
     install(toggleAccessory, in: window)
-    let visible = configuration.showFormattingToolbar(for: provider.formattingToolbarFormat)
+    toggleButton.isHidden = !preview
+    previewButton.isHidden = preview
+    let visible = preview && configuration.showFormattingToolbar(for: .markdown)
     toggleButton.state = visible ? .on : .off
     toggleButton.isBordered = visible
     toggleButton.toolTip = visible ? "Hide Formatting Toolbar" : "Show Formatting Toolbar"
@@ -89,18 +146,29 @@ final class EVFormattingToolbarChrome: NSObject {
       provider.refreshFormattingToolbar()
     } else {
       remove(toolbarAccessory, from: window)
-      installedView?.removeFromSuperview()
-      installedView = nil
+      detachToolbarView()
     }
   }
 
   @objc func toggleToolbar(_ sender: Any?) {
-    guard let surface, let provider = surface as? any EVFormattingToolbarProviding else { return }
+    guard let surface, let provider = surface as? any EVFormattingToolbarProviding,
+      provider.formattingToolbarFormat == .markdown else { return }
     do {
-      let format = provider.formattingToolbarFormat
-      try configuration.setShowFormattingToolbar(!configuration.showFormattingToolbar(for: format), for: format)
+      try configuration.setShowFormattingToolbar(!configuration.showFormattingToolbar(for: .markdown), for: .markdown)
     } catch { surface.showDocumentMessage(error.localizedDescription) }
     synchronize(surface: surface)
+  }
+
+  @objc func showMarkdownPreview(_ sender: Any?) {
+    guard let surface, let provider = surface as? any EVFormattingToolbarProviding,
+      provider.isLiteralMarkdown else { return }
+    provider.showMarkdownPreview()
+    synchronize(surface: surface)
+  }
+
+  private func detachToolbarView() {
+    installedView?.removeFromSuperview()
+    installedView = nil
   }
 
   private func install(_ accessory: NSTitlebarAccessoryViewController, in window: NSWindow) {
