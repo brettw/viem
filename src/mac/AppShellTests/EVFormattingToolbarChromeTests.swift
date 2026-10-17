@@ -9,9 +9,16 @@ final class EVFormattingToolbarChromeTests: XCTestCase {
     var statusBarState = EVStatusBarState()
     var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
     var formattingToolbarFormat: EVSourceFormat = .markdown
+    var isLiteralMarkdown = false
     let formattingToolbarView = NSView(frame: NSRect(x: 0, y: 0, width: 800, height: 42))
     var refreshes = 0
+    var previewRequests = 0
     func refreshFormattingToolbar() { refreshes += 1 }
+    func showMarkdownPreview() {
+      previewRequests += 1
+      formattingToolbarFormat = .markdown
+      isLiteralMarkdown = false
+    }
     func perform(menuCommand: EVMenuCommand, sender: Any?) {}
     func presentation(for menuCommand: EVMenuCommand) -> EVMenuItemPresentation { .enabled }
   }
@@ -52,6 +59,49 @@ final class EVFormattingToolbarChromeTests: XCTestCase {
     try config.setShowFormattingToolbar(false, for: .markdown)
     XCTAssertEqual(window.titlebarAccessoryViewControllers.count, 1)
     XCTAssertEqual(chrome.toggleButton.state, .off)
+  }
+
+  func testLiteralMarkdownOffersPreviewInTheToolbarTogglePlace() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let config = EVConfigurationStore(directory: directory)
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+      styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    defer { window.orderOut(nil) }
+    let chrome = EVFormattingToolbarChrome(window: window, configuration: config)
+    let surface = Surface()
+    chrome.synchronize(surface: surface)
+    XCTAssertFalse(chrome.toggleButton.isHidden)
+    XCTAssertTrue(chrome.previewButton.isHidden, "Preview shows only the toolbar toggle")
+    XCTAssertEqual(chrome.previewButton.accessibilityLabel(), "Markdown Preview")
+    XCTAssertEqual(chrome.previewButton.toolTip, "Markdown Preview")
+    XCTAssertTrue(chrome.previewButton.superview === chrome.toggleButton.superview)
+    XCTAssertEqual(chrome.previewButton.frame, chrome.toggleButton.frame)
+    for visible in [true, false] {
+      try config.setShowFormattingToolbar(visible, for: .markdown)
+      surface.formattingToolbarFormat = .code
+      surface.isLiteralMarkdown = true
+      chrome.synchronize(surface: surface)
+      XCTAssertEqual(window.titlebarAccessoryViewControllers.map(\.layoutAttribute), [.right],
+        "literal Markdown has no toolbar whatever its preference")
+      XCTAssertNil(surface.formattingToolbarView.window)
+      XCTAssertTrue(chrome.toggleButton.isHidden)
+      XCTAssertFalse(chrome.previewButton.isHidden)
+      // Hidden toolbar toggles cannot change the Markdown preference.
+      chrome.toggleToolbar(nil)
+      XCTAssertEqual(config.showFormattingToolbar(for: .markdown), visible)
+      let requests = surface.previewRequests
+      chrome.previewButton.performClick(nil)
+      XCTAssertEqual(surface.previewRequests, requests + 1)
+      XCTAssertFalse(chrome.toggleButton.isHidden)
+      XCTAssertTrue(chrome.previewButton.isHidden)
+      XCTAssertEqual(chrome.toggleButton.state, visible ? .on : .off,
+        "Preview restores the remembered toolbar visibility")
+      XCTAssertEqual(surface.formattingToolbarView.window === window, visible)
+      XCTAssertEqual(window.titlebarAccessoryViewControllers.count, visible ? 2 : 1)
+    }
+    chrome.previewButton.performClick(nil)
+    XCTAssertEqual(surface.previewRequests, 2, "Preview cannot be requested again once it is on")
   }
 
   func testSettingsMergeAndRejectNonBooleanVisibility() throws {

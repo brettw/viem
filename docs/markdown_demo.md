@@ -1,6 +1,6 @@
 # Viem Markdown demo
 
-Open this file, then turn on Markdown Preview in the toolbar. With Preview off, the same source is edited literally as Code with Markdown syntax highlighting. The original source is preserved when switching views and when saving without edits.
+Open this file, then turn on Markdown Preview with the title-bar button. With Preview off, the same source is edited literally as Code with Markdown syntax highlighting. The original source is preserved when switching views and when saving without edits.
 
 In Settings > Editing, **Automatically format typed Markdown** is on by default.
 In Markdown Preview, type `*italic*`, `**bold**`, `***bold italic***`, `~~strike~~`,

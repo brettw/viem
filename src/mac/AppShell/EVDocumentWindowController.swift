@@ -51,7 +51,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private let placement: EVDocumentWindowPlacement
   private let configuration: EVConfigurationStore
   private var initialWindowFrame: NSRect?
-  private lazy var formattingToolbar = EVFormattingToolbarChrome(
+  private(set) lazy var formattingToolbar = EVFormattingToolbarChrome(
     window: window!, configuration: configuration)
 
   /// Injectable I/O boundary for launch and argument-list opens.

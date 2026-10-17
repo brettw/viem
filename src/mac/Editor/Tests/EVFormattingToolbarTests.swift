@@ -100,7 +100,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     toolbar.formattedView.performClick(nil)
     toolbar.refresh()
     XCTAssertEqual(backend.sourceFormat, .code)
-    XCTAssertTrue(toolbar.paragraphStyle.isHiddenOrHasHiddenAncestor, "Preview off shows only its toggle")
+    XCTAssertTrue(toolbar.paragraphStyle.isHiddenOrHasHiddenAncestor, "Preview off hides the formatting controls")
   }
 
   func testPreviewListCaretShowsItsExactParagraphStyleWithoutOfferingAssignment() throws {
@@ -156,35 +156,66 @@ final class EVFormattingToolbarTests: XCTestCase {
     secondWindow.showWindow(nil)
     let button = first.formattingToolbar.formattedView
     let otherButton = second.formattingToolbar.formattedView
+    let titleBarPreview = firstWindow.formattingToolbar.previewButton
+    // Literal Markdown has no toolbar; the title bar offers Preview in the
+    // toolbar toggle's place. Preview restores the toolbar and its toggle.
+    func showsLiteralChrome(_ window: EVDocumentWindowController, _ surface: EVEditorSurfaceController) -> Bool {
+      window.formattingToolbar.toggleButton.isHidden && !window.formattingToolbar.previewButton.isHidden
+        && window.formattingToolbar.previewButton.window === window.window && surface.formattingToolbar.window == nil
+    }
+    func showsPreviewChrome(_ window: EVDocumentWindowController, _ surface: EVEditorSurfaceController) -> Bool {
+      !window.formattingToolbar.toggleButton.isHidden && window.formattingToolbar.previewButton.isHidden
+        && window.formattingToolbar.toggleButton.state == .on && surface.formattingToolbar.window === window.window
+    }
+    XCTAssertTrue(showsLiteralChrome(firstWindow, first))
+    XCTAssertTrue(showsLiteralChrome(secondWindow, second))
     let image = try XCTUnwrap(button.image)
     XCTAssertEqual(button.state, .off)
     XCTAssertEqual(button.accessibilityLabel(), "Markdown Preview")
     XCTAssertEqual(button.toolTip, "Markdown Preview")
     XCTAssertFalse(button.allowsMixedState)
     XCTAssertTrue(button.isEnabled)
+    XCTAssertEqual(titleBarPreview.accessibilityLabel(), "Markdown Preview")
+    XCTAssertEqual(titleBarPreview.toolTip, "Markdown Preview")
 
-    button.performClick(nil)
+    titleBarPreview.performClick(nil)
     XCTAssertEqual(backend.sourceFormat, .markdown)
     XCTAssertEqual(button.state, .on)
     XCTAssertEqual(otherButton.state, .on)
+    XCTAssertTrue(showsPreviewChrome(firstWindow, first))
+    XCTAssertTrue(showsPreviewChrome(secondWindow, second))
     XCTAssertEqual(try backend.formattedText(), "Heading\nWords")
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
     XCTAssertTrue(firstWindow.window?.firstResponder === first.editorView)
     XCTAssertTrue(button.image === image)
 
+    // Detached toolbars refresh when Preview installs them again.
     second.perform(menuCommand: .undo, sender: nil)
     XCTAssertEqual(backend.sourceFormat, .code)
-    XCTAssertEqual(button.state, .off)
-    XCTAssertEqual(otherButton.state, .off)
+    XCTAssertTrue(showsLiteralChrome(firstWindow, first), "undoing a view switch removes the toolbar again")
+    XCTAssertTrue(showsLiteralChrome(secondWindow, second))
     second.perform(menuCommand: .redo, sender: nil)
     XCTAssertEqual(button.state, .on)
     XCTAssertEqual(otherButton.state, .on)
+    XCTAssertTrue(showsPreviewChrome(firstWindow, first), "redoing a view switch restores the toolbar")
+    XCTAssertTrue(showsPreviewChrome(secondWindow, second))
     button.performClick(nil)
     XCTAssertEqual(backend.sourceFormat, .code)
-    XCTAssertEqual(button.state, .off)
-    XCTAssertEqual(otherButton.state, .off)
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
-    XCTAssertTrue(button.window != nil, "Preview off keeps the Markdown toolbar and its toggle")
+    XCTAssertTrue(showsLiteralChrome(firstWindow, first), "Preview off hides the toolbar and offers Preview in the title bar")
+    XCTAssertTrue(showsLiteralChrome(secondWindow, second))
+    XCTAssertTrue(firstWindow.window?.firstResponder === first.editorView)
+
+    // Preview from the title bar keeps a hidden toolbar hidden.
+    try backend.configuration.setShowFormattingToolbar(false, for: .markdown)
+    XCTAssertTrue(showsLiteralChrome(firstWindow, first), "literal Markdown offers Preview whatever the toolbar preference")
+    titleBarPreview.performClick(nil)
+    XCTAssertEqual(backend.sourceFormat, .markdown)
+    XCTAssertFalse(firstWindow.formattingToolbar.toggleButton.isHidden)
+    XCTAssertTrue(titleBarPreview.isHidden)
+    XCTAssertEqual(firstWindow.formattingToolbar.toggleButton.state, .off)
+    XCTAssertNil(first.formattingToolbar.window)
+    XCTAssertTrue(firstWindow.window?.firstResponder === first.editorView)
   }
 
   func testSelectorsTrackCaretMixedSelectionAssignmentAndUndo() throws {
