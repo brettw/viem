@@ -2729,6 +2729,25 @@ impl ViewLayout {
         self.regional_cache.lines.contains_key(&hard_line)
     }
 
+    /// Whether `hard_line` is retained whole with exact geometry for these
+    /// identities in a pre-rendered document. Visible layout reuses such a
+    /// line, even a giant one, instead of shaping resumable slices; the
+    /// document's size bounds it.
+    pub(crate) fn regional_line_prepared_whole(&self, document_id: DocumentId, document_revision: Revision,
+        requirements: super::jobs::LayoutProviderRequirements, document_hard_line_count: usize, hard_line: usize) -> bool {
+        let identity = RegionalCacheIdentity {
+            document_id, document_revision,
+            configuration_generation: self.configuration_generation,
+            measurement_environment_id: requirements.measurement_environment_id,
+            metrics_generation: requirements.metrics_generation,
+            document_hard_line_count,
+        };
+        self.regional_cache_retains_document && self.regional_cache.identity == Some(identity)
+            && self.regional_cache.lines.get(&hard_line).is_some_and(|cached| cached.line.height_is_exact
+                && cached.line.text_coverage == cached.line.hard_line_range
+                && (!cached.is_shifted() || cached.document_revision.is_some()))
+    }
+
     pub(crate) fn regional_cache_identity_matches(&self, document_id: DocumentId, document_revision: Revision,
         document_hard_line_count: usize) -> bool {
         self.regional_cache.identity.is_some_and(|identity| identity.document_id == document_id

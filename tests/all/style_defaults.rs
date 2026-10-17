@@ -134,6 +134,30 @@ fn live_theme_replacement_survives_edits_undo_redo_without_source_or_history_cha
 }
 
 #[test]
+fn returning_to_the_configured_view_format_keeps_its_installed_defaults() {
+    let themed = br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":27},"block":{}}]}"#;
+    let size = |doc: &Document| doc.projection().style_sheet().block_style(&"Paragraph".into()).unwrap().character.size;
+    let mut document = open("# Title\n\nBody", Format::Markdown);
+    document.replace_style_defaults(themed).unwrap();
+    assert!(document.style_defaults_installed(themed));
+    document.set_view_format(Format::Code).unwrap();
+    assert!(!document.style_defaults_installed(themed), "Code uses the application Code sheet");
+    document.set_view_format(Format::Markdown).unwrap();
+    // Publication reinstalled the Markdown theme, so reapplying it is free.
+    assert!(document.style_defaults_installed(themed));
+    assert_eq!(size(&document), Some(FontSize::Points(27.)));
+    let revision = document.projection().style_sheet().revision;
+    assert!(document.replace_style_defaults(themed).unwrap().is_empty());
+    assert_eq!(document.projection().style_sheet().revision, revision);
+    assert!(document.undo(), "undo the switch back to Markdown");
+    assert!(document.redo());
+    assert!(document.style_defaults_installed(themed));
+    document.replace_style_defaults(br#"{"version":1}"#).unwrap();
+    assert!(!document.style_defaults_installed(themed));
+    assert_ne!(size(&document), Some(FontSize::Points(27.)));
+}
+
+#[test]
 fn live_theme_replaces_custom_catalogue_and_current_generated_styles_remain_editable() {
     let mut document = open("Text", Format::PlainText);
     document.replace_style_defaults(br#"{"version":1,"character_styles":[{"id":"Old Theme","name":"Old Theme","properties":{"bold":true}}]}"#).unwrap();

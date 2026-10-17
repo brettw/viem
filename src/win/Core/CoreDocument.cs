@@ -80,8 +80,7 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     }
     public static bool IsMarkdown(uint format) => format == VIEM_FORMAT_MARKDOWN;
     /// <summary>Markdown Preview, or literal Code whose effective language is Markdown.</summary>
-    public bool IsMarkdownDocument => State.format == VIEM_FORMAT_MARKDOWN
-        || State.format == VIEM_FORMAT_CODE && DocumentModes.Read(this) is { } mode && (mode.Language ?? mode.DetectedLanguage) == "markdown";
+    public bool IsMarkdownDocument => (State.flags & VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE) != 0;
     public static uint FormatForPath(string? path) => Path.GetExtension(path ?? "").ToLowerInvariant() switch
     {
         ".md" or ".markdown" or ".mdown" or ".mkd" => VIEM_FORMAT_MARKDOWN,

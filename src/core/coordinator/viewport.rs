@@ -340,12 +340,16 @@ pub(super) fn include_preceding_rows<P: TextMeasurementProvider>(
         let range = core.document.projection().presentation_line_range(line)
             .ok_or(LayoutJobError::InvalidDocumentLineIndex { hard_line: line })?;
         let following = candidate.regional_snapshot().clone();
-        let mut checkpoint = {
-            let cache = &core.views[&view_id].long_line_checkpoints;
-            cache.before(range.clone(), range.end).and_then(|last| {
-                cache.before_height(range.clone(), (last.completed_height() - height).max(0.))
+        let view = &core.views[&view_id];
+        // A line retained whole is reused in one job, never resumed in slices.
+        let mut checkpoint = core.lays_out_in_slices(&view.layout, inspect_layout_provider(&view.engine), line, &range)
+            .then(|| {
+                let cache = &view.long_line_checkpoints;
+                cache.before(range.clone(), range.end).and_then(|last| {
+                    cache.before_height(range.clone(), (last.completed_height() - height).max(0.))
+                })
             })
-        };
+            .flatten();
         let mut tail = None;
         loop {
             let work_start = checkpoint.as_ref().map_or(range.start, LongLineLayoutCheckpoint::next_text_offset);

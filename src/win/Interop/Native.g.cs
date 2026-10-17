@@ -1426,6 +1426,7 @@ internal static unsafe partial class Native
     public const uint VIEM_DOCUMENT_STATE_IS_DIRTY = (1u << 3);
     public const uint VIEM_DOCUMENT_STATE_READ_ONLY = (1u << 4);
     public const uint VIEM_DOCUMENT_STATE_RECOVERED = (1u << 5);
+    public const uint VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE = (1u << 6);
     public const uint VIEM_DOCUMENT_OPTIONS_SIZE = 16u;
     public static readonly uint VIEM_DOCUMENT_STATE_V1_SIZE = ((uint)sizeof(ViemDocumentStateV1));
     public static readonly uint VIEM_FORMATTED_SNAPSHOT_IDENTITY_V1_SIZE = ((uint)sizeof(ViemFormattedSnapshotIdentityV1));

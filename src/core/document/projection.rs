@@ -3470,37 +3470,51 @@ impl FormattedDocument {
         } else { span }
     }
 
+    /// A literal span's first UTF-16 offset and source bytes per UTF-16 code
+    /// unit, when its encoded length agrees with its source range. Latin-1
+    /// scalars are one byte and UTF-16 code units two, so boundaries map
+    /// through the text tree's UTF-16 aggregates in logarithmic time instead
+    /// of re-encoding the span for every query. UTF-8 maps bytes directly.
+    fn literal_units(&self, span: &ProvenanceSpan) -> Option<(usize, usize)> {
+        let width = match self.literal_encoding? {
+            super::Encoding::Utf8 => return None,
+            super::Encoding::Latin1 => 1,
+            super::Encoding::Utf16Le | super::Encoding::Utf16Be => 2,
+        };
+        let first = self.text.utf16_offset_for_byte(span.formatted.start).ok()?;
+        let last = self.text.utf16_offset_for_byte(span.formatted.end).ok()?;
+        ((last - first).checked_mul(width)? == span.source.len()).then_some((first, width))
+    }
+
     fn literal_source_in_span(&self, span: &ProvenanceSpan, at: usize) -> Option<usize> {
         if at == span.formatted.start { return Some(span.source.start); }
         if at == span.formatted.end { return Some(span.source.end); }
-        let encoding = self.literal_encoding?;
-        if encoding == super::Encoding::Utf8 && span.formatted.len() == span.source.len() {
-            return (span.formatted.contains(&at) && self.text.is_char_boundary(at).ok()?)
-                .then_some(span.source.start + at - span.formatted.start);
+        if self.literal_encoding? == super::Encoding::Utf8 {
+            // A UTF-8 span whose lengths differ holds undecodable bytes.
+            return (span.formatted.len() == span.source.len() && span.formatted.contains(&at)
+                && self.text.is_char_boundary(at).ok()?).then_some(span.source.start + at - span.formatted.start);
         }
-        let text = self.text.slice(span.formatted.clone()).ok()?;
-        if encoding.encoded_text_len(&text) != span.source.len() { return None; }
-        let prefix = text.get(..at.checked_sub(span.formatted.start)?)?;
-        Some(span.source.start + encoding.encoded_text_len(prefix))
+        if !span.formatted.contains(&at) { return None; }
+        let (first, width) = self.literal_units(span)?;
+        let units = self.text.utf16_offset_for_byte(at).ok()?;
+        Some(span.source.start + (units - first) * width)
     }
 
     fn literal_text_in_span(&self, span: &ProvenanceSpan, source: usize) -> Option<usize> {
         if source == span.source.start { return Some(span.formatted.start); }
         if source == span.source.end { return Some(span.formatted.end); }
-        let encoding = self.literal_encoding?;
-        if encoding == super::Encoding::Utf8 && span.formatted.len() == span.source.len() {
+        if self.literal_encoding? == super::Encoding::Utf8 {
+            if span.formatted.len() != span.source.len() { return None; }
             let at = span.formatted.start.checked_add(source.checked_sub(span.source.start)?)?;
             return (source < span.source.end && self.text.is_char_boundary(at).ok()?).then_some(at);
         }
-        let text = self.text.slice(span.formatted.clone()).ok()?;
-        if encoding.encoded_text_len(&text) != span.source.len() { return None; }
-        let mut at = span.source.start;
-        for (offset, ch) in text.char_indices() {
-            if at == source { return Some(span.formatted.start + offset); }
-            at += encoding.scalar_source_width(ch);
-            if at > source { return None; }
-        }
-        None
+        if !span.source.contains(&source) { return None; }
+        let (first, width) = self.literal_units(span)?;
+        let offset = source - span.source.start;
+        // An offset inside a code unit, or between a surrogate pair's units,
+        // is not a scalar boundary.
+        if offset % width != 0 { return None; }
+        self.text.byte_offset_for_utf16(first + offset / width).ok()
     }
 
     fn literal_span_for_source(&self, source: usize) -> Option<ProvenanceSpan> {
@@ -7025,6 +7039,30 @@ mod tests {
             }
         }
         assert!(gaps > 100, "{gaps} hidden positions compared");
+    }
+
+    #[test]
+    fn literal_grapheme_ranges_stream_long_latin1_and_utf16_lines() {
+        // A literal line is one contributor. Each boundary maps through the
+        // text tree's UTF-16 aggregates; re-encoding the line's prefix for
+        // every grapheme made this walk quadratic in the line length.
+        for encoding in [Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            let unit = if encoding == Encoding::Latin1 { "aé" } else { "aé😀" };
+            let line = unit.repeat(40_000);
+            let bytes = encoding.encode_fragment(&line).unwrap();
+            let decoded = encoding.decode(&bytes).unwrap();
+            let normalized = super::super::line_endings::normalize_literal(&decoded, FileFormat::Unix);
+            let projection = project_plain(&normalized, Revision(1), decoded.bom_len, bytes.len());
+            let mut source = 0;
+            let mut graphemes = 0;
+            for (_, item, range) in projection.source_grapheme_ranges() {
+                let width = encoding.encoded_text_len(item);
+                assert_eq!(range, Some(source..source + width), "{encoding:?} at source {source}");
+                source += width;
+                graphemes += 1;
+            }
+            assert_eq!((graphemes, source), (line.chars().count(), bytes.len()), "{encoding:?}");
+        }
     }
 
     #[test]

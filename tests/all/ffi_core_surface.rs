@@ -1562,6 +1562,36 @@ fn native_format_encoding_and_list_requests_validate_exact_identity() {
 }
 
 #[test]
+fn document_state_flags_markdown_preview_and_literal_markdown_sources() {
+    let core = create_core(b"# Heading\n", ViemDocumentOptions { format: VIEM_FORMAT_CODE, ..ViemDocumentOptions::default() });
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, _) = add_test_view(&core, provider.as_mut());
+    let markdown = |core: &TestCore| document_state(core).flags & VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE != 0;
+    let set_mode = |mode: u32, language: &str| {
+        let state = document_state(&core);
+        let request = ViemSetDocumentModeV1 {
+            struct_size: VIEM_SET_DOCUMENT_MODE_V1_SIZE,
+            mode,
+            document_id: state.document_id,
+            document_revision: state.document_revision,
+        };
+        let (mut outcome, mut effects) = (ViemCoreOutcomeV1::default(), 0);
+        let status = unsafe { viem_core_view_set_document_mode_with_effects(core.handle, view, &request,
+            language.as_ptr(), language.len() as u64, &mut outcome, &mut effects) };
+        assert_eq!(discard_test_effects(status, effects), ViemStatus::Ok);
+    };
+    assert!(!markdown(&core), "Code without a Markdown language");
+    set_mode(VIEM_DOCUMENT_MODE_CODE, "markdown");
+    assert!(markdown(&core), "literal Code with the Markdown language");
+    set_mode(VIEM_DOCUMENT_MODE_CODE, "python");
+    assert!(!markdown(&core), "Code with another explicit language");
+    set_mode(VIEM_DOCUMENT_MODE_MARKDOWN, "");
+    assert!(markdown(&core), "Markdown Preview");
+    set_mode(VIEM_DOCUMENT_MODE_PLAIN_TEXT, "");
+    assert!(!markdown(&core), "Plain Text");
+}
+
+#[test]
 fn document_state_tracks_pipeline_history_file_format_and_native_save_point() {
     let source = "\u{feff}**a**\r\n"
         .encode_utf16()

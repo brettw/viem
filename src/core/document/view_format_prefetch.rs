@@ -100,6 +100,20 @@ impl Document {
         *slot = spawned.ok().map(|_| Job { key, cancelled, result });
     }
 
+    /// Read a finished preparation for exactly this state without taking it,
+    /// so work keyed to the revision the switch installs can start early.
+    pub(crate) fn peek_prefetched_view_format<R>(
+        &self, target: Format, read: impl FnOnce(Revision, &super::FormattedDocument) -> R,
+    ) -> Option<R> {
+        let key = self.view_format_prefetch_key(target)?;
+        let slot = self.view_format_prefetch.job.lock().unwrap_or_else(|e| e.into_inner());
+        let job = slot.as_ref().filter(|job| job.key == key)?;
+        let result = job.result.lock().unwrap_or_else(|e| e.into_inner());
+        let prepared = result.as_ref()?.as_ref()?;
+        (prepared.candidate.revision == key.revision_after())
+            .then(|| read(prepared.candidate.revision, &prepared.candidate.projection))
+    }
+
     /// Discard any prepared or running switch.
     pub(crate) fn cancel_view_format_prefetch(&self) {
         self.view_format_prefetch.job.lock().unwrap_or_else(|e| e.into_inner()).take();

@@ -161,6 +161,8 @@ pub const VIEM_DOCUMENT_STATE_CAN_REDO: u32 = 1 << 2;
 pub const VIEM_DOCUMENT_STATE_IS_DIRTY: u32 = 1 << 3;
 pub const VIEM_DOCUMENT_STATE_READ_ONLY: u32 = 1 << 4;
 pub const VIEM_DOCUMENT_STATE_RECOVERED: u32 = 1 << 5;
+/// Markdown Preview, or literal Code whose effective language is Markdown.
+pub const VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE: u32 = 1 << 6;
 
 /// Immutable model/history metadata captured in one serial core query.
 #[repr(C)]
@@ -7630,7 +7632,11 @@ pub unsafe extern "C" fn viem_core_document_state(
     ffi_boundary(|| {
         typed_pointer_region(out_state, 1)?;
         unsafe { out_state.write(ViemDocumentStateV1::default()) };
-        let state = with_core(handle, |core| Ok(summarize_document_state(core.document())))?;
+        let state = with_core(handle, |core| {
+            let mut state = summarize_document_state(core.document());
+            if core.is_markdown_source() { state.flags |= VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE; }
+            Ok(state)
+        })?;
         unsafe { out_state.write(state) };
         Ok(())
     })

@@ -42,8 +42,18 @@ mod filename_tests {
     }
 }
 
+/// Code highlighting started for the projection a Markdown Preview switch
+/// will install, keyed to that exact input identity. Any edit discards it.
+pub(super) struct PreparedCodeSyntax {
+    /// The Preview revision the switch was prepared from.
+    pub(super) source_revision: u64,
+    pub(super) identity: SyntaxInputIdentity,
+    pub(super) service: SyntaxService,
+}
+
 pub(super) struct CoreSyntax {
     pub(super) service: SyntaxService,
+    pub(super) prepared_code: Option<PreparedCodeSyntax>,
     pub(super) markdown: super::markdown_code::MarkdownCodeSyntax,
     pub(super) comments: super::comment_markdown::CommentMarkdownSyntax,
     pub(super) selection: LanguageSelection,
@@ -72,6 +82,7 @@ impl Default for CoreSyntax {
     fn default() -> Self {
         Self {
             service: Default::default(),
+            prepared_code: None,
             markdown: Default::default(),
             comments: Default::default(),
             selection: LanguageSelection::Automatic,
@@ -216,6 +227,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.detection.as_ref()
     }
     pub fn configure_syntax(&mut self, directory: &str) {
+        self.syntax.prepared_code = None;
         self.syntax.service.set_vim_directory(directory.to_owned());
         self.syntax.published = None;
         self.syntax.markdown = Default::default();
@@ -233,6 +245,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         service.set_vim_directory(self.syntax.service.configuration.vim_directory.clone());
         service.set_filename(self.syntax.service.configuration.filename.clone());
         self.syntax.service = service;
+        self.syntax.prepared_code = None;
         self.syntax.markdown = Default::default();
         self.syntax.comments.reset_services();
         self.syntax.published = None;
@@ -298,6 +311,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.syntax.detection = Some(detection);
             self.syntax.detected_for_code = true;
         }
+        self.adopt_prepared_code_syntax(input.identity());
         let map = self.document.code_presentation_change_map();
         let hull = map
             .and_then(|map| self.document.layout_change_between(map.source_revision(), map.target_revision()))

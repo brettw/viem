@@ -16,8 +16,18 @@ impl Configuration {
 }
 
 impl Document {
+    /// Whether exactly these defaults are installed for the current format.
+    /// Publication reinstalls the last defaults when a view switch returns to
+    /// their format, so a frontend reapplying the same theme has nothing to do.
+    pub fn style_defaults_installed(&self, json: &[u8]) -> bool {
+        self.configuration.as_ref().is_some_and(|configuration| configuration.applies_to(self.format())
+            && *configuration.json == *json
+            && self.state().projection.style_sheet().theme_generation == configuration.generation)
+    }
+
     /// Replace application defaults in an edited document. Source declarations,
     /// exact positions, the source revision and all history records are kept.
+    /// Replacing the installed defaults with identical bytes changes nothing.
     pub fn replace_style_defaults(
         &mut self,
         json: &[u8],
@@ -26,6 +36,9 @@ impl Document {
             return Err(StyleDefaultsError::Json(
                 "Code uses its application-wide stylesheet".into(),
             ));
+        }
+        if self.style_defaults_installed(json) {
+            return Ok(Vec::new());
         }
         let (mut sheet, diagnostics) = self
             .projection()

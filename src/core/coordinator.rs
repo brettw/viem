@@ -1177,6 +1177,11 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn replace_style_defaults(&mut self, json: &[u8]) -> Result<Vec<String>, crate::document::StyleDefaultsError> {
+        // A view switch back to the configured format has already reinstalled
+        // these defaults; keep layout work and syntax presentation.
+        if !self.document.format().is_code() && self.document.style_defaults_installed(json) {
+            return Ok(Vec::new());
+        }
         let anchors: BTreeMap<_, _> = self.views.iter().filter_map(|(id, view)| {
             capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor))
         }).collect();
@@ -2787,6 +2792,17 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
     }
 
+    /// Whether visible layout must page through `line` in resumable slices:
+    /// a wrapped giant hard line that is not retained whole and exact. A
+    /// pre-rendered document's prepared giant lines take the ordinary path,
+    /// which reuses their cached rows without shaping.
+    pub(super) fn lays_out_in_slices(&self, layout: &ViewLayout, requirements: LayoutProviderRequirements,
+                                     line: usize, range: &std::ops::Range<usize>) -> bool {
+        layout.wrap() && range.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES
+            && !layout.regional_line_prepared_whole(self.document.id(), self.document.revision(), requirements,
+                self.document.projection().presentation_line_count(), line)
+    }
+
     /// Reach a distant caret or viewport anchor by resuming exact wrap state.
     /// The first visit must discover preceding row boundaries, but each job
     /// captures at most one bounded text slice and only the final slice is
@@ -2805,15 +2821,16 @@ impl<P: TextMeasurementProvider> Core<P> {
             .presentation_line_range(focus_line)
             .ok_or(LayoutError::InvalidTextOffset(focus_offset))?;
         let (line_start, line_end) = (line.start, line.end);
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        let requirements = inspect_layout_provider(&view.engine);
+        if !self.lays_out_in_slices(&view.layout, requirements, focus_line, &line) {
+            return Ok(false);
+        }
         let (mut checkpoint, top, height) = {
             let view = self
                 .views
                 .get_mut(&view_id)
                 .ok_or(CoreError::UnknownView(view_id))?;
-            if !view.layout.wrap() || line_end - line_start <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES {
-                return Ok(false);
-            }
-            let requirements = inspect_layout_provider(&view.engine);
             view.long_line_checkpoints
                 .discard_stale(&self.document, &view.layout, requirements);
             let mut checkpoint = view
@@ -2993,7 +3010,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .projection()
                 .presentation_line_range(line)
                 .ok_or(LayoutError::InvalidTextOffset(self.document.projection().text_tree().byte_len()))?;
-            let long = staged_layout.wrap() && range.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES;
+            let long = self.lays_out_in_slices(staged_layout, requirements, line, &range);
             let mut checkpoint = if long {
                 let view = self.views.get_mut(&view_id).expect("view was validated");
                 view.long_line_checkpoints.discard_stale(
@@ -3098,7 +3115,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let count = projection.presentation_line_count();
         let range = projection.presentation_line_range(target_line)
             .ok_or(LayoutError::InvalidTextOffset(projection.text_tree().byte_len()))?;
-        if !staged_layout.wrap() || range.len() <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES {
+        if !self.lays_out_in_slices(staged_layout, requirements, target_line, &range) {
             return Ok(None);
         }
         let height = staged_layout.height().max(f32::EPSILON);
