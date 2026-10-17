@@ -265,7 +265,7 @@ internal sealed partial class EditorWindow
         var fallback = new ToggleMenuFlyoutItem { Text = "Default", AccessKey = "D", IsChecked = preferences.SelectedTheme == null };
         fallback.Click += (_, _) => Safe(() => { preferences.SelectTheme(null); return Task.CompletedTask; });
         themeMenu.Items.Add(fallback);
-        themeMenu.Items.Add(Item("New theme…", "N", () => ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme)));
+        themeMenu.Items.Add(Item("New theme…", "N", () => DeferExternalFileReviews(() => ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme))));
         themeMenu.Items.Add(Item("Theme Settings…", "S", ShowThemeSettings));
     }
     private SettingsWindow? settingsWindow;

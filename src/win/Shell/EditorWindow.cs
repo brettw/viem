@@ -44,7 +44,6 @@ internal sealed partial class EditorWindow : Window
     internal bool HasSavedBaselineForTesting(CoreDocument document, byte[] source) =>
         savedSources.TryGetValue(document, out var baseline) && baseline.AsSpan().SequenceEqual(SHA256.HashData(source));
 #endif
-    private int pollTicks;
     internal nint Hwnd => WinRT.Interop.WindowNative.GetWindowHandle(this);
 
     public EditorWindow(Preferences preferences, CoreDocument? document = null, DocumentWindowPlacement? placement = null, bool openLaunchFiles = false)
@@ -83,6 +82,7 @@ internal sealed partial class EditorWindow : Window
             if (IsWindowActive && ActivePane is { View: { } view } activePane)
                 activePane.Run(() => styleInspector?.FollowActiveView(view));
             foreach (var pane in Panes) { pane.CaretHoverFocusChanged(); pane.Canvas.Invalidate(); }
+            if (IsWindowActive) RequestExternalFileChecks();
         };
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
@@ -110,7 +110,6 @@ internal sealed partial class EditorWindow : Window
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
-            if (++pollTicks % 50 == 0) Safe(CheckExternalChanges);
         };
         poll.Start();
     }
@@ -149,7 +148,7 @@ internal sealed partial class EditorWindow : Window
         var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat, preferences.MarkdownFormattedView);
         return ConfigureNewDocument(doc, source ?? [], path);
     }
-    private CoreDocument ConfigureNewDocument(CoreDocument doc, byte[] source, string? path)
+    private CoreDocument ConfigureNewDocument(CoreDocument doc, byte[] source, string? path, bool missingOnDisk = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.configure");
         try
@@ -162,6 +161,7 @@ internal sealed partial class EditorWindow : Window
             doc.ConfigureForEditing("selection settings", () => GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath));
             if (path != null) {
                 savedSources[doc] = SHA256.HashData(source ?? []);
+                if (missingOnDisk) missingFileBaselines.Add(doc);
                 doc.ConfigureForEditing("file attributes", () => {
                     if (File.Exists(path) && (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) doc.SetReadOnly(true);
                 });
@@ -169,7 +169,7 @@ internal sealed partial class EditorWindow : Window
                     recoveries[doc] = DocumentRecovery.Claim(doc, path, preferences.DirectoryPath, DispatcherQueue, e => ActivePane?.Report(e));
                 });
             }
-            doc.Disposed += () => { recoveries.Remove(doc); styleDefaultsWarnings.Remove(doc); };
+            doc.Disposed += () => { recoveries.Remove(doc); styleDefaultsWarnings.Remove(doc); missingFileBaselines.Remove(doc); };
             return doc;
         }
         catch { styleDefaultsWarnings.Remove(doc); doc.Dispose(); throw; }
@@ -219,6 +219,7 @@ internal sealed partial class EditorWindow : Window
         }
         else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical); }
         SetActive(pane);
+        TrackExternalFile(doc);
         // Attaching can finish PaneReady before the new pane becomes active.
         // Complete native focus after layout so an old input host cannot
         // restore the previous action target when the window is activated.
@@ -389,8 +390,9 @@ internal sealed partial class EditorWindow : Window
         if (await ShowExisting()) return;
         RequireReplacementAllowed();
         byte[] bytes;
+        bool existsOnDisk = pickedFile || File.Exists(path);
         using (Diagnostics.StartupPerformance.Measure("document.read")) bytes = newWindow && existing.Pane != null ? []
-            : pickedFile || File.Exists(path) ? await File.ReadAllBytesAsync(path) : [];
+            : existsOnDisk ? await File.ReadAllBytesAsync(path) : [];
         ValidateTarget();
         existing = FindExisting();
         if (await ShowExisting()) return;
@@ -413,7 +415,9 @@ internal sealed partial class EditorWindow : Window
                     : "Some recovery files cannot be safely deleted and will be retained. Recover restores unsaved changes and replaces only a verified stale Viem recovery file.";
                 var content = new StackPanel { Spacing = 12 }; content.Children.Add(new TextBlock { Text = "Another editing session or recovery file exists for " + Path.GetFileName(path) + ". " + explanation, TextWrapping = TextWrapping.Wrap }); content.Children.Add(choices);
                 var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = "Existing editing session", Content = content, PrimaryButtonText = "Open", CloseButtonText = "Cancel" };
-                if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+                ContentDialogResult decision = ContentDialogResult.None;
+                await DeferExternalFileReviews(async () => { decision = await dialog.ShowAsync(); });
+                if (decision != ContentDialogResult.Primary) return;
                 ValidateTarget();
                 readOnly = choices.SelectedIndex == 0;
                 if (choices.SelectedIndex == recoverIndex && recoveryCandidate != null)
@@ -449,7 +453,7 @@ internal sealed partial class EditorWindow : Window
                 doc = existing.Pane.Document;
                 recovered = null; readOnly = false; retireCandidates = [];
             }
-            else doc = ConfigureNewDocument(doc, source, path);
+            else doc = ConfigureNewDocument(doc, source, path, missingOnDisk: !existsOnDisk);
         }
         try { ValidateTarget(); RequireReplacementAllowed(); if (split) RequireSplitRoom(splitSource, vertical); }
         catch { if (existing.Pane == null) { savedSources.Remove(doc); doc.Dispose(); } throw; }
@@ -468,6 +472,7 @@ internal sealed partial class EditorWindow : Window
         {
             var window = NewWindow(doc);
             if (savedSources.TryGetValue(doc, out var baseline)) window.savedSources[doc] = baseline;
+            window.TrackExternalFile(doc);
             if (!Panes.Any(p => p.Document == doc)) savedSources.Remove(doc);
             window.ActivePane!.RememberedArgument = old?.RememberedArgument ?? ulong.MaxValue;
             if (reuseOpenDocument || !string.IsNullOrEmpty(linkFragment))
@@ -485,6 +490,7 @@ internal sealed partial class EditorWindow : Window
     internal async Task<bool> Save(EditorPane pane, bool saveAs = false, string? explicitPath = null, bool force = false, bool adoptPath = true, bool native = true)
     {
         var doc = pane.Document;
+        using var externalWrite = new ExternalFileWrite(this, doc);
         string? path = explicitPath == null ? (saveAs ? null : doc.FilePath) : ResolvePath(explicitPath);
         if (path == null)
         {
@@ -535,6 +541,7 @@ internal sealed partial class EditorWindow : Window
             if (replacementRecovery != null) { if (recoveries.Remove(doc, out var previous)) previous.Dispose(); recoveries[doc] = replacementRecovery; }
             doc.FilePath = path;
             foreach (var w in App.Instance.Windows.Where(w => w.Panes.Any(p => p.Document == doc))) w.savedSources[doc] = SHA256.HashData(bytes);
+            missingFileBaselines.Remove(doc);
             if (doc.State.document_revision == state.document_revision) doc.MarkSaved(state);
             if (!samePath) doc.RedetectLanguage();
             preferences.Remember(path);
@@ -585,10 +592,12 @@ internal sealed partial class EditorWindow : Window
         if (ActivePane == pane) ActivePane = Panes.FirstOrDefault();
         if (rebuild) { RebuildPanes(); paneGrid.Equalize(); if (ActivePane != null) SetActive(ActivePane); }
     }
-    internal async Task<ContentDialogResult> Dialog(string title, string text, string primary = "OK", string close = "", string secondary = "")
+    internal async Task<ContentDialogResult> Dialog(string title, string text, string primary = "OK", string close = "", string secondary = "", ContentDialogButton defaultButton = ContentDialogButton.Primary)
     {
-        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = title, Content = new ScrollViewer { Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }, MaxHeight = 450 }, PrimaryButtonText = primary, CloseButtonText = close, SecondaryButtonText = secondary, DefaultButton = ContentDialogButton.Primary };
-        return await dialog.ShowAsync();
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = title, Content = new ScrollViewer { Content = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true }, MaxHeight = 450 }, PrimaryButtonText = primary, CloseButtonText = close, SecondaryButtonText = secondary, DefaultButton = defaultButton };
+        openDialogs++;
+        try { return await dialog.ShowAsync(); }
+        finally { openDialogs--; RequestExternalFileChecks(); }
     }
     internal void ChangeDirectory(EditorPane pane, string path)
     {
@@ -686,13 +695,13 @@ internal sealed partial class EditorWindow : Window
             catch (OperationCanceledException) { if (sourceDepth > 0) throw; }
             catch (Exception e) { pane.Report(e); }
     }
-    private async Task Reload(EditorPane pane, bool force = false)
+    private async Task Reload(EditorPane pane, bool force = false, byte[]? reviewedBytes = null)
     {
         var old = pane.Document;
         string? path = old.FilePath; if (path == null) return;
         var expected = old.State;
         if (!force && old.IsDirty && await Dialog("Revert to saved file?", "Unsaved changes will be discarded.", "Revert", "Cancel") != ContentDialogResult.Primary) return;
-        byte[] bytes = await File.ReadAllBytesAsync(path);
+        byte[] bytes = reviewedBytes ?? await File.ReadAllBytesAsync(path);
         if (old.Handle == 0 || old.FilePath != path || old.State.document_revision != expected.document_revision) return;
         var replacement = NewDocument(bytes, path, expected.format);
         var prepared = new List<(EditorWindow Window, EditorPane Pane, CoreView? View)>();
@@ -716,6 +725,7 @@ internal sealed partial class EditorWindow : Window
         foreach (var w in prepared.Select(entry => entry.Window).Distinct())
         {
             w.savedSources.Remove(old); w.savedSources[replacement] = SHA256.HashData(bytes); w.UpdateTitle();
+            w.TrackExternalFile(replacement);
         }
         App.Instance.BlockingEdits.Replace(old, replacement);
         old.Dispose();

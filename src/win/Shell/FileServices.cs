@@ -10,8 +10,6 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class EditorWindow
 {
-    private bool checkingFiles;
-    private readonly Dictionary<CoreDocument, (long Length, long Time)> observedFiles = [];
     private static string ResolvePath(string path, string? baseDirectory = null)
     {
         // Tilde is a shell convention, so expand it before calling Windows path APIs.
@@ -33,10 +31,12 @@ internal sealed partial class EditorWindow
     private async Task RenameDocument(EditorPane pane, string path)
     {
         var doc = pane.Document;
+        using var externalWrite = new ExternalFileWrite(this, doc);
         if (string.Equals(doc.FilePath, path, StringComparison.OrdinalIgnoreCase)) return;
         if (App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document != doc && p.Document.FilePath is string named && FileIdentity.Same(named, path)))
             throw new IOException("That file is already open in another document.");
-        byte[] baseline = SHA256.HashData(File.Exists(path) ? await File.ReadAllBytesAsync(path) : []);
+        bool exists = File.Exists(path);
+        byte[] baseline = SHA256.HashData(exists ? await File.ReadAllBytesAsync(path) : []);
         var replacement = DocumentRecovery.Claim(doc, path, preferences.DirectoryPath, DispatcherQueue, e => pane.Report(e));
         try
         {
@@ -47,6 +47,7 @@ internal sealed partial class EditorWindow
         if (recoveries.Remove(doc, out var previous)) previous.Dispose();
         recoveries[doc] = replacement;
         doc.FilePath = path;
+        if (exists) missingFileBaselines.Remove(doc); else missingFileBaselines.Add(doc);
         foreach (var window in App.Instance.Windows.Where(w => w.Panes.Any(p => p.Document == doc))) window.savedSources[doc] = baseline;
         doc.RedetectLanguage(); doc.NotifyChanged();
     }
@@ -67,6 +68,7 @@ internal sealed partial class EditorWindow
         string? requestedPath = request.Text.Length == 0 ? null : request.Text;
         if ((r.flags & VIEM_EX_FRONTEND_HAS_RANGE) != 0)
         {
+            using var externalWrite = new ExternalFileWrite(this, doc);
             string? path = requestedPath == null ? doc.FilePath : ResolvePath(requestedPath);
             if (path == null) throw new InvalidOperationException("A filename is required to write selected lines.");
             if (App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document != doc && p.Document.FilePath is string named && FileIdentity.Same(named, path))) throw new IOException("That file is already open in another document.");
@@ -78,6 +80,7 @@ internal sealed partial class EditorWindow
             if (same)
             {
                 foreach (var window in App.Instance.Windows.Where(w => w.Panes.Any(p => p.Document == doc))) window.savedSources[doc] = SHA256.HashData(bytes);
+                missingFileBaselines.Remove(doc);
                 if (complete && doc.State.document_revision == state.document_revision) doc.MarkSaved(state);
             }
             return true;
@@ -91,31 +94,5 @@ internal sealed partial class EditorWindow
         bool all = false;
         byte[] bytes = Copy((p, n, r) => { uint complete = 0; var status = viem_core_copy_source_range_bytes(doc.Handle, request.document_id, request.document_revision, request.hard_line_start, request.hard_line_end, p, n, r, &complete); all = complete != 0; return status; });
         return (bytes, all);
-    }
-    private async Task CheckExternalChanges()
-    {
-        if (checkingFiles || closed || !IsWindowActive) return;
-        checkingFiles = true;
-        try
-        {
-            foreach (var document in Panes.Select(p => p.Document).Distinct().ToArray())
-            {
-                string? path = document.FilePath;
-                if (path == null || !File.Exists(path) || !savedSources.TryGetValue(document, out var baseline)) continue;
-                var file = new FileInfo(path); var token = (file.Length, file.LastWriteTimeUtc.Ticks);
-                if (observedFiles.TryGetValue(document, out var previous) && previous == token) continue;
-                observedFiles[document] = token;
-                byte[] observed;
-                using (var input = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) observed = await SHA256.HashDataAsync(input);
-                if (observed.AsSpan().SequenceEqual(baseline)) continue;
-                var pane = Panes.FirstOrDefault(p => p.Document == document); if (pane == null) continue;
-                var result = await Dialog("File changed on disk", $"{document.Name} was changed by another program." + (document.IsDirty ? " Reloading will discard your unsaved edits." : ""), "Reload", "Keep My Version");
-                // A subsequent observation is reviewed separately. Saving still
-                // compares against the saved baseline, even after Keep My Version.
-                if (result == ContentDialogResult.Primary) await Reload(pane, true);
-            }
-        }
-        catch (Exception e) { ActivePane?.Report(e); }
-        finally { checkingFiles = false; }
     }
 }
