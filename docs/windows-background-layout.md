@@ -13,13 +13,16 @@ document prepares a window of that much text around the viewport, two thirds in
 the direction of travel, and evicts cached lines farthest from the viewport
 first; lines outside the window are trimmed before the budget would evict lines
 inside it, and preparation stops when the budget is nearly full. Within the
-window, chunks are taken nearest-first: three screens ahead, three behind, then
-the rest ahead and behind. A chunk holds at most 128 hard lines and 16 KiB of
-text; a larger line is prepared alone up to the 64 KiB long-line slice size.
-Beyond it, visible layout uses resumable slices: a retained document, which the
-threshold bounds, still prepares such a line whole so its height is exact, while
-larger documents leave it to demand layout. The core answers "complete" for a
-retained document in constant time.
+window, chunks are taken nearest-first: visible lines not yet retained whole,
+three screens ahead, three behind, then the rest ahead and behind. A chunk holds
+at most 128 hard lines and 16 KiB of text; a larger line is prepared alone up to
+the 64 KiB long-line slice size. Beyond it, visible layout uses resumable
+slices, except that a retained document, which the threshold bounds, prepares
+such a line whole so its height is exact and visible layout then reuses those
+rows without shaping. Larger documents leave giant lines to demand layout. An
+edit to a giant line returns visible layout to slices until the line is
+prepared again. The core answers "complete" for a retained document in
+constant time.
 
 Installation publishes exact heights to the height index, so the scroll extent
 converges before the lines are visible. Heights above the visible snapshot move

@@ -799,16 +799,24 @@ where
         ));
     }
     let has_table_line = line_ranges.iter().any(|line| document.projection().table_at(line.start).is_some_and(|table| line.end <= table.range.end));
+    // A pre-rendered document retains its giant lines whole and exact.
+    // Visible layout reuses them like any other cached line rather than
+    // shaping resumable slices; the document's size bounds their capture.
+    let prepared_whole = !complete_lines && checkpoint.is_none() && view.wrap() && !has_table_line
+        && range.clone().zip(&line_ranges)
+            .filter(|(_, line)| line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES)
+            .all(|(hard_line, _)| view.regional_line_prepared_whole(document.id(), document.revision(),
+                provider_requirements, hard_line_count, hard_line));
     // A cache fill retains only complete lines, so it never uses the
     // resumable slices that bound foreground work in a giant line.
-    let use_long_line_slice = !complete_lines && !has_table_line && line_ranges.len() == 1
+    let use_long_line_slice = !complete_lines && !prepared_whole && !has_table_line && line_ranges.len() == 1
         && view.wrap()
         && (checkpoint.is_some() || line_ranges[0].len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
 
     // Multi-line viewport capture shares the tree whenever one line is
     // enormous; the worker wraps its ordinary lines and streams oversized rows.
     // Single wrapped-line continuations retain the explicit resumable protocol.
-    let giant_line = line_ranges.iter().any(|line| line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
+    let giant_line = !prepared_whole && line_ranges.iter().any(|line| line.len() > MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
     let stream_wrapped_region = !complete_lines && view.wrap() && checkpoint.is_none()
         && (line_ranges.len() > 1 || (giant_line
             && super::line_breaks::first_line_break(document.projection().text_tree(), line_ranges[0].clone(), &mut view.initial_wrap_break_state(), &cancellation)? == line_ranges[0].end));

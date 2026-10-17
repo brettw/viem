@@ -128,6 +128,8 @@ ViemStatus viem_pane_layout_action(uint64_t handle, uint64_t pane, uint32_t oper
 #define VIEM_DOCUMENT_STATE_IS_DIRTY (1u << 3)
 #define VIEM_DOCUMENT_STATE_READ_ONLY (1u << 4)
 #define VIEM_DOCUMENT_STATE_RECOVERED (1u << 5)
+/* Markdown Preview, or literal Code whose effective language is Markdown. */
+#define VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE (1u << 6)
 
 typedef struct ViemDocumentOptions {
   uint32_t struct_size;

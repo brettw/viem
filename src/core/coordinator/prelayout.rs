@@ -35,11 +35,11 @@ pub(super) fn retains_complete_presentation(document: &Document) -> bool {
 }
 
 /// The window of hard lines to prepare, and the scan order within it:
-/// nearby lines in the direction of travel, nearby lines behind, then the
-/// rest of the window ahead and behind.
+/// visible lines that are not retained whole, nearby lines in the direction of
+/// travel, nearby lines behind, then the rest of the window ahead and behind.
 struct PrelayoutPlan {
     window: Range<usize>,
-    bands: [(Range<usize>, bool); 4],
+    bands: [(Range<usize>, bool); 5],
 }
 
 impl<P: TextMeasurementProvider> Core<P> {
@@ -96,10 +96,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         let behind_near = clip(coverage.start.saturating_sub(near)..coverage.start);
         let ahead_rest = clip(ahead_near.end..window.end);
         let behind_rest = clip(window.start..behind_near.start);
+        // Visible layout commits ordinary lines itself, but lays out an edited
+        // giant line in slices that are never retained whole.
+        let visible = (clip(coverage.clone()), forward);
         let bands = if forward {
-            [(ahead_near, true), (behind_near, false), (ahead_rest, true), (behind_rest, false)]
+            [visible, (ahead_near, true), (behind_near, false), (ahead_rest, true), (behind_rest, false)]
         } else {
-            [(behind_near, false), (ahead_near, true), (behind_rest, false), (ahead_rest, true)]
+            [visible, (behind_near, false), (ahead_near, true), (behind_rest, false), (ahead_rest, true)]
         };
         Ok(Some(PrelayoutPlan { window, bands }))
     }
@@ -242,18 +245,10 @@ mod tests {
     use crate::layout::{compute_layout_job, LayoutEngine, MockTextMeasurementProvider, RegionalLayoutCacheLimits};
     use crate::document::Format;
 
-    /// A core that ignores concurrent tests' changes to the process-wide Code
-    /// sheet, which republish every Markdown presentation and reshape.
-    fn pinned_core(document: Document) -> Core<MockTextMeasurementProvider> {
-        let mut core = Core::new(document);
-        core.syntax.markdown.code_sheet = Some(crate::document::code_style::snapshot());
-        core
-    }
-
     fn fixture() -> (Core<MockTextMeasurementProvider>, ViewId) {
         let text = (0..10_000).map(|i| format!("Paragraph {i}: **office** and words that wrap into visual rows.\n\n")).collect::<String>();
         let document = Document::from_bytes_detect_encoding(text.into_bytes(), Format::Markdown).unwrap();
-        let mut core = pinned_core(document);
+        let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         (core, view)
     }
@@ -289,6 +284,25 @@ mod tests {
         assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
         assert_eq!(core.active_linear_selection_identity(view).unwrap(), selection);
         assert_eq!(core.layout(view).unwrap().viewport_top(), top);
+    }
+
+    #[test]
+    fn reapplying_the_installed_theme_keeps_layout_and_prelayout() {
+        // Frontends reapply the format's theme after a view switch, which
+        // publication has already reinstalled. That must not discard work.
+        let (mut core, _) = fixture();
+        let theme = br#"{"version":1,"block_styles":[{"id":"Paragraph","name":"Base Paragraph","role":"Paragraph","character":{"size":23},"block":{}}]}"#;
+        core.replace_style_defaults(theme).unwrap();
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
+        let background = core.prepare_view_prelayout(view, true).unwrap().unwrap();
+        let generation = core.layout(view).unwrap().configuration_generation();
+        let sheet = core.document().projection().style_sheet().revision;
+        assert!(core.replace_style_defaults(theme).unwrap().is_empty());
+        assert!(!background.cancellation_token().is_cancelled());
+        assert_eq!(core.layout(view).unwrap().configuration_generation(), generation);
+        assert_eq!(core.document().projection().style_sheet().revision, sheet);
+        core.replace_style_defaults(br#"{"version":1}"#).unwrap();
+        assert!(background.cancellation_token().is_cancelled(), "different defaults still apply");
     }
 
     /// Text and screen offset of every row intersecting the viewport. Cache
@@ -342,7 +356,7 @@ mod tests {
 
     #[test]
     fn small_document_is_prelaid_completely_and_scrolls_without_shaping_or_extent_changes() {
-        let mut core = pinned_core(small_markdown());
+        let mut core = Core::new(small_markdown());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         assert!(core.layout(view).unwrap().regional_cache_retains_document());
         let lines = core.document().projection().presentation_line_count();
@@ -374,7 +388,7 @@ mod tests {
 
     #[test]
     fn prelayout_above_the_viewport_keeps_visible_text_in_place() {
-        let mut core = pinned_core(small_markdown());
+        let mut core = Core::new(small_markdown());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         let middle = core.layout(view).unwrap().content_height().height() as f32 / 2.0;
         core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(middle) }).unwrap();
@@ -426,7 +440,7 @@ mod tests {
 
     #[test]
     fn paint_only_changes_keep_retained_geometry() {
-        let mut core = pinned_core(small_markdown());
+        let mut core = Core::new(small_markdown());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         fill(&mut core, view, true);
         let lines = core.document().projection().presentation_line_count();
@@ -444,7 +458,7 @@ mod tests {
     #[test]
     fn paint_only_changes_keep_in_flight_speculation_and_geometry_changes_reject_it() {
         for geometry in [false, true] {
-            let mut core = pinned_core(small_markdown());
+            let mut core = Core::new(small_markdown());
             let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
             let request = core.prepare_view_prelayout(view, true).unwrap().unwrap();
             let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
@@ -476,7 +490,7 @@ mod tests {
     #[test]
     fn retained_tables_reuse_exact_rows_without_shaping() {
         let document = Document::from_bytes_detect_encoding(tables_markdown().into_bytes(), Format::Markdown).unwrap();
-        let mut core = pinned_core(document);
+        let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 400.0, 200.0);
         fill(&mut core, view, true);
         assert!(verified_everywhere(&core, view));
@@ -497,7 +511,7 @@ mod tests {
     #[test]
     fn widening_one_cell_relayouts_retained_rows_with_the_new_widths() {
         let document = Document::from_bytes_detect_encoding(tables_markdown().into_bytes(), Format::Markdown).unwrap();
-        let mut core = pinned_core(document);
+        let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 400.0, 200.0);
         fill(&mut core, view, true);
         type Cells = std::collections::BTreeMap<(u64, usize, usize), (u32, u32)>;
@@ -514,7 +528,7 @@ mod tests {
         core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
         core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(0.0) }).unwrap();
         let edited = cells(&core, view);
-        let mut fresh = pinned_core(Document::from_bytes_detect_encoding(core.document().source_bytes(), Format::Markdown).unwrap());
+        let mut fresh = Core::new(Document::from_bytes_detect_encoding(core.document().source_bytes(), Format::Markdown).unwrap());
         let fresh_view = fresh.add_view(MockTextMeasurementProvider::new(), 400.0, 200.0);
         let expected = cells(&fresh, fresh_view);
         let shared = expected.keys().filter(|key| edited.contains_key(key)).collect::<Vec<_>>();
@@ -529,7 +543,7 @@ mod tests {
     #[test]
     fn line_local_metric_changes_reject_only_overlapping_speculation() {
         for overlapping in [false, true] {
-            let mut core = pinned_core(small_markdown());
+            let mut core = Core::new(small_markdown());
             let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
             let request = core.prepare_view_prelayout(view, true).unwrap().unwrap();
             let LayoutJobRegion::HardLines(region) = request.region() else { panic!() };
@@ -544,7 +558,7 @@ mod tests {
 
     #[test]
     fn edits_in_a_retained_document_relayout_only_nearby_lines() {
-        let mut core = pinned_core(small_markdown());
+        let mut core = Core::new(small_markdown());
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         fill(&mut core, view, true);
         let lines = core.document().projection().presentation_line_count();
@@ -565,7 +579,7 @@ mod tests {
     #[test]
     fn initial_padding_is_applied_once_and_equal_padding_only_reflows_stale_metrics() {
         let document = Document::from_bytes_detect_encoding("A paragraph that wraps.\n\n".repeat(10_000).into_bytes(), Format::Markdown).unwrap();
-        let mut core = pinned_core(document);
+        let mut core = Core::new(document);
         let mut layout = ViewLayout::new(300.0, 160.0);
         let insets = crate::layout::EdgeInsets { top: 10.0, left: 17.0, bottom: 10.0, right: 23.0 };
         layout.set_insets(insets);
@@ -587,7 +601,7 @@ mod tests {
     fn first_large_prose_view_shapes_only_the_exact_initial_screen() {
         let paragraph = "many words in a long paragraph that wraps across the viewport. ".repeat(20);
         let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(10_000).into_bytes(), Format::Markdown).unwrap();
-        let mut core = pinned_core(document);
+        let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 400.0);
         let first = core.layout(view).unwrap().snapshot().unwrap();
         assert!(first.coverage.vertical_range().unwrap().end >= 400.0);
@@ -750,7 +764,7 @@ mod tests {
         assert!(request.cancellation_token().is_cancelled());
         let mut worker = LayoutEngine::new(MockTextMeasurementProvider::new());
         assert!(matches!(compute_layout_job(&mut worker, &request, LayoutExecutionContext::WorkerPool), Err(LayoutJobError::Cancelled)));
-        let mut core = pinned_core(Document::new(format!("{}{}\n{}", "short\n".repeat(24), "long ".repeat(MAX_JOB_BYTES), "short\n".repeat(4096))));
+        let mut core = Core::new(Document::new(format!("{}{}\n{}", "short\n".repeat(24), "long ".repeat(MAX_JOB_BYTES), "short\n".repeat(4096))));
         assert!(!retains_complete_presentation(core.document()));
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         fill(&mut core, view, true);
@@ -762,7 +776,7 @@ mod tests {
     fn retained_documents_prepare_giant_lines_whole_and_keep_their_extent() {
         let long = "long ".repeat(MAX_JOB_BYTES);
         assert!(long.len() > crate::layout::MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
-        let mut core = pinned_core(Document::new(format!("{}{long}\n{}", "short\n".repeat(24), "after\n".repeat(24))));
+        let mut core = Core::new(Document::new(format!("{}{long}\n{}", "short\n".repeat(24), "after\n".repeat(24))));
         assert!(retains_complete_presentation(core.document()));
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         fill(&mut core, view, true);
@@ -770,24 +784,45 @@ mod tests {
         assert!(core.prepare_view_prelayout(view, true).unwrap().is_none(), "complete work is idle");
         let extent = core.layout(view).unwrap().content_height();
         assert!(extent.is_exact());
-        // Visible layout pages through the giant line in bounded slices, which
-        // agree with the prepared height: the extent never changes.
+        // Visible layout reuses the prepared rows instead of shaping bounded
+        // slices of the giant line on the input thread.
+        let calls = core.views[&view].engine.provider().request_calls();
         let maximum = core.layout(view).unwrap().maximum_viewport_top();
         let mut previous_top = -1.0;
+        let mut pages_inside = 0;
         while core.layout(view).unwrap().viewport_top() > previous_top {
             previous_top = core.layout(view).unwrap().viewport_top();
             core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::PageDown))).unwrap();
             assert_eq!(core.layout(view).unwrap().maximum_viewport_top(), maximum, "the scroll extent never changes");
+            let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+            if snapshot.rows.iter().any(|row| row.hard_line_index == 24) { pages_inside += 1; }
         }
+        assert!(pages_inside > 10, "paging crossed the giant line");
+        assert_eq!(core.views[&view].engine.provider().request_calls(), calls, "visible layout shapes nothing");
+        assert_eq!(core.views[&view].long_line_checkpoints.len(), 0, "no resumable slices were laid out");
         assert_eq!(core.layout(view).unwrap().content_height(), extent);
-        assert!(verified_everywhere(&core, view), "slices do not displace the prepared line");
+        assert!(verified_everywhere(&core, view), "visible layout does not displace the prepared line");
+
+        // Editing the giant line retires its prepared geometry: visible layout
+        // returns to bounded slices until the line is prepared again.
+        for key in "25G$".chars() {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Char(key)))).unwrap();
+        }
+        assert_eq!(core.views[&view].long_line_checkpoints.len(), 0, "reaching its end reuses the prepared line");
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Char('x')))).unwrap();
+        assert!(core.views[&view].long_line_checkpoints.len() > 0, "the edited giant line is laid out in slices");
+        let top = core.layout(view).unwrap().viewport_top();
+        fill(&mut core, view, true);
+        assert!(verified_everywhere(&core, view), "the visible edited line is prepared whole again");
+        assert_eq!(core.layout(view).unwrap().viewport_top(), top, "preparation does not move the viewport");
+        assert!(core.layout(view).unwrap().content_height().is_exact(), "the extent is exact again");
     }
 
     #[test]
     fn prelayout_prepares_a_paragraph_larger_than_one_job_alone() {
         let long = "long ".repeat(MAX_JOB_BYTES * 2 / 5);
         assert!(long.len() > MAX_JOB_BYTES && long.len() <= crate::layout::MAX_LONG_LINE_LAYOUT_SLICE_BYTES);
-        let mut core = pinned_core(Document::new(format!("{}{long}\n{}", "short\n".repeat(24), "after\n".repeat(24))));
+        let mut core = Core::new(Document::new(format!("{}{long}\n{}", "short\n".repeat(24), "after\n".repeat(24))));
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
         fill(&mut core, view, true);
         let layout = &core.views[&view].layout;

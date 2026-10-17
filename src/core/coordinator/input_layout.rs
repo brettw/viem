@@ -243,7 +243,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .and_then(|row| self.document.next_grapheme_boundary(row.text_range.end)
                     .map(|focus| (row.hard_line_range.clone(), row.hard_line_index, focus)));
             let Some((line, hard_line, focus)) = before.or(after) else { return Ok(false); };
-            if line.len() <= MAX_LONG_LINE_LAYOUT_SLICE_BYTES { return Ok(false); }
+            if !self.lays_out_in_slices(&view.layout, inspect_layout_provider(&view.engine), hard_line, &line) {
+                return Ok(false);
+            }
             let mut required = focus..focus;
             // Explicit scrolling may leave the old caret far outside this
             // snapshot. Paging chooses a new visible caret; retaining that

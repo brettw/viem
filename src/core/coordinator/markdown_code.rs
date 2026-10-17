@@ -601,8 +601,11 @@ impl Default for MarkdownCodeSyntax {
             document_sheet_revision: None,
             language_change: None,
             published: None,
+            // Unit tests run concurrently against the process-wide Code sheet.
+            // Each core keeps the sheet it started with, so another test's
+            // implicit definitions cannot republish and reshape its Markdown.
             #[cfg(test)]
-            code_sheet: None,
+            code_sheet: Some(code_style::snapshot()),
         }
     }
 }
