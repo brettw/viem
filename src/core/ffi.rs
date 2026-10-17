@@ -573,7 +573,6 @@ pub const VIEM_EX_OPTION_SELECTMODE: u32 = 22;
 pub const VIEM_EX_OPTION_AUTOSELECT: u32 = 23;
 pub const VIEM_EX_OPTION_HLSEARCH: u32 = 19;
 pub const VIEM_EX_OPTION_INCSEARCH: u32 = 20;
-pub const VIEM_EX_OPTION_COMMENTMARKDOWN: u32 = 28;
 
 pub const VIEM_EX_JUMP_CURRENT: u32 = 1 << 0;
 
@@ -3608,7 +3607,6 @@ fn ex_option_name_to_ffi(name: &ExOptionName) -> u32 {
         ExOptionName::AutoSelect => VIEM_EX_OPTION_AUTOSELECT,
         ExOptionName::KeyModel => VIEM_EX_OPTION_KEYMODEL,
         ExOptionName::SelectMode => VIEM_EX_OPTION_SELECTMODE,
-        ExOptionName::CommentMarkdown => VIEM_EX_OPTION_COMMENTMARKDOWN,
 
     }
 }
@@ -3635,9 +3633,6 @@ fn export_ex_option(
         ExOptionValue::Indentation(_) | ExOptionValue::VisibleWhitespace(_) | ExOptionValue::Reflow(_) => return Err(ViemStatus::InvalidArgument),
         ExOptionValue::OptionalNumber(value) => {
             (VIEM_EX_OPTION_VALUE_NUMBER, value.unwrap_or(0))
-        }
-        ExOptionValue::OptionalBoolean(value) => {
-            (VIEM_EX_OPTION_VALUE_BOOLEAN, u32::from(value.unwrap_or(false)))
         }
     };
     Ok(ViemExOptionDisplayV1 {
@@ -13849,6 +13844,61 @@ pub unsafe extern "C" fn viem_theme_validate_name(name: *const u8, length: u64) 
     })
 }
 
+/// Import a Vim color scheme's GUI colors as complete theme JSON based on the
+/// built-in Paper or Midnight preset. Evaluation is deterministic, so the
+/// two-pass size protocol may repeat it. On success the diagnostic callback
+/// receives skipped statements only once the output was written; on failure it
+/// receives the reason. No file is read or written.
+/// # Safety
+/// Input and output follow `viem_theme_style_defaults_json`'s contract. The
+/// callback and context must be valid for synchronous invocation and must not
+/// unwind through C; diagnostic bytes are borrowed for the callback only.
+#[no_mangle]
+pub unsafe extern "C" fn viem_theme_import_vim(source: *const u8, length: u64, output: *mut u8, capacity: u64,
+    required: *mut u64, diagnostic: ViemStyleDefaultsDiagnosticCallback, context: *mut c_void) -> ViemStatus {
+    ffi_boundary(|| {
+        if length > crate::document::theme::MAX_VIM_COLORSCHEME_BYTES as u64 { return Err(ViemStatus::InvalidArgument); }
+        validate_disjoint_regions(&[typed_pointer_region(source, length)?, typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let report = |message: &str| if let Some(callback) = diagnostic {
+            unsafe { callback(context, message.as_ptr(), message.len() as u64) };
+        };
+        let imported = match crate::document::theme::import_vim_colorscheme("color scheme", unsafe { input_bytes(source, length)? }) {
+            Ok(imported) => imported,
+            Err(error) => { report(&error); return Err(ViemStatus::InvalidArgument); }
+        };
+        unsafe { required.write(imported.theme.len() as u64); }
+        if capacity < imported.theme.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { std::ptr::copy_nonoverlapping(imported.theme.as_ptr(), output, imported.theme.len()); }
+        for warning in &imported.warnings {
+            report(&format!("line {}: {}", warning.line, warning.message));
+        }
+        Ok(())
+    })
+}
+
+/// Choose a theme name for an imported file stem: filename-safe, at most 32
+/// characters, and distinct ignoring case from the LF-separated `existing`
+/// names, appending " (2)", " (3)", ... as needed. UTF-8 output.
+/// # Safety
+/// Inputs are readable UTF-8; outputs are writable; all regions are disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_theme_unique_name(stem: *const u8, stem_length: u64, existing: *const u8,
+    existing_length: u64, output: *mut u8, capacity: u64, required: *mut u64) -> ViemStatus {
+    ffi_boundary(|| {
+        if stem_length > 4096 || existing_length > 16 * 1024 * 1024 { return Err(ViemStatus::InvalidArgument); }
+        validate_disjoint_regions(&[typed_pointer_region(stem, stem_length)?, typed_pointer_region(existing, existing_length)?,
+            typed_pointer_region(output, capacity)?, typed_pointer_region(required, 1)?])?;
+        let stem = str::from_utf8(unsafe { input_bytes(stem, stem_length)? }).map_err(|_| ViemStatus::InvalidUtf8)?;
+        let existing = str::from_utf8(unsafe { input_bytes(existing, existing_length)? }).map_err(|_| ViemStatus::InvalidUtf8)?;
+        let names = existing.split('\n').filter(|name| !name.is_empty()).collect::<Vec<_>>();
+        let name = crate::document::theme::unique_theme_name(stem, &names);
+        unsafe { required.write(name.len() as u64); }
+        if capacity < name.len() as u64 { return Err(ViemStatus::BufferTooSmall); }
+        unsafe { std::ptr::copy_nonoverlapping(name.as_ptr(), output, name.len()); }
+        Ok(())
+    })
+}
+
 /// Replace live application defaults without editing source or document history.
 /// # Safety
 /// Input and callback follow `viem_core_initialize_style_defaults`'s contract.
@@ -13975,49 +14025,6 @@ pub extern "C" fn viem_core_set_text_width_default(handle: ViemCoreHandle, width
             core.set_text_width_default(width);
             Ok(())
         })
-    })
-}
-
-#[no_mangle]
-pub extern "C" fn viem_core_set_comment_markdown_default(handle: ViemCoreHandle, enabled: u8) -> ViemStatus {
-    ffi_boundary(|| {
-        with_core_mut(handle, |core| {
-            core.set_comment_markdown_default(enabled != 0);
-            Ok(())
-        })
-    })
-}
-
-#[no_mangle]
-pub extern "C" fn viem_core_set_comment_markdown(handle: ViemCoreHandle, enabled: u8) -> ViemStatus {
-    ffi_boundary(|| {
-        with_core_mut(handle, |core| {
-            core.set_comment_markdown(enabled != 0);
-            Ok(())
-        })
-    })
-}
-
-/// # Safety
-/// Both outputs point to one writable byte each.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_comment_markdown(
-    handle: ViemCoreHandle,
-    out_enabled: *mut u8,
-    out_applicable: *mut u8,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        if out_enabled.is_null() || out_applicable.is_null() {
-            return Err(ViemStatus::NullPointer);
-        }
-        let (enabled, applicable) = with_core(handle, |core| {
-            Ok((core.comment_markdown().effective(), core.comment_markdown_applicable()))
-        })?;
-        unsafe {
-            *out_enabled = u8::from(enabled);
-            *out_applicable = u8::from(applicable);
-        }
-        Ok(())
     })
 }
 

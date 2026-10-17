@@ -137,6 +137,24 @@ internal static class StyleDefaultsLoadingTests
             && MatchesBuiltInTheme(new Preferences(directory)),
             "editing after an active theme file disappears uses memory-only Default and never recreates the missing file");
 
+        string vimColors = Path.Combine(directory, "vim", "colors"); Directory.CreateDirectory(vimColors);
+        byte[] night = Encoding.UTF8.GetBytes("set background=dark\nhi clear\nhi Normal guifg=#c0c0c0 guibg=#101010\nhi Comment guifg=#ff0000\n");
+        foreach (string file in new[] { "night.vim", "notes.vimrc", ".hidden.vim" }) File.WriteAllBytes(Path.Combine(vimColors, file), night);
+        Check(VimColorSchemes.Available([vimColors, Path.Combine(directory, "missing")]).Select(scheme => scheme.Name).SequenceEqual(new[] { "night" }),
+            "Vim color scheme discovery lists visible .vim files by their stems");
+        Check(VimColorSchemes.Directories(@"C:\Users\someone").SequenceEqual(new[] { @"C:\Users\someone\vimfiles\colors", @"C:\Users\someone\.vim\colors" }),
+            "Vim for Windows reads vimfiles before a shared .vim directory");
+        Check(preferences.ImportVimTheme(night, "night") == "night" && preferences.SelectedTheme == "night"
+            && preferences.Theme.Background == Theme.Rgb(16, 16, 16) && new Preferences(directory).SelectedTheme == "night",
+            "importing a Vim color scheme creates and selects a theme named by its file");
+        Check(preferences.ImportVimTheme(night, "Night") == "Night (2)" && preferences.ImportVimTheme(night, "default") == "default (2)"
+            && preferences.SelectedTheme == "default (2)", "imported names are numbered on collision and avoid Default");
+        bool notVim = false;
+        try { preferences.ImportVimTheme(Encoding.UTF8.GetBytes("prose\n"), "prose"); }
+        catch (InvalidDataException exception) { notVim = exception.Message == "The file contains no Vim highlight commands"; }
+        Check(notVim && preferences.SelectedTheme == "default (2)" && !preferences.ThemeNames.Contains("prose"),
+            "a file without highlight commands is rejected without creating a theme");
+
         string invalid = Path.Combine(preferences.ThemesDirectory, "Broken.json"); File.WriteAllText(invalid, "{");
         var root = Read(Path.Combine(directory, "config.json")); root["selectedTheme"] = "Broken"; Write(Path.Combine(directory, "config.json"), root);
         var broken = new Preferences(directory);

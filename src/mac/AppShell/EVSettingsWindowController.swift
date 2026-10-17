@@ -30,7 +30,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private var editingObserver: NSObjectProtocol?
   private weak var markdownAutodetectCheckbox: NSButton?
   private weak var caretHoverCheckbox: NSButton?
-  private weak var commentMarkdownCheckbox: NSButton?
   private weak var smartQuotesCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
   private var indentationCheckboxes: [String: NSButton] = [:]
@@ -279,16 +278,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       let group = section("Typing assistance", views: [checkbox, explanation, markdown, markdownExplanation])
       stack.addArrangedSubview(group)
       group.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
-      let comments = NSButton(checkboxWithTitle: "Format Markdown in Code comments", target: self, action: #selector(changeCommentMarkdown(_:)))
-      comments.state = editingPreferences.commentMarkdown ? .on : .off
-      comments.setAccessibilityLabel("Format Markdown in Code comments")
-      commentMarkdownCheckbox = comments
-      let commentsExplanation = NSTextField(wrappingLabelWithString: "Show emphasis, links and code spans inside comments. Code in backticks or ``` fences uses syntax highlighting. Comment markers and source are unchanged; :set commentmarkdown overrides this per document.")
-      commentsExplanation.textColor = .secondaryLabelColor
-      commentsExplanation.font = .systemFont(ofSize: 12)
-      let commentsGroup = section("Code comments", views: [comments, commentsExplanation])
-      stack.addArrangedSubview(commentsGroup)
-      commentsGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
       textWidthField.stringValue = String(editingPreferences.textWidth)
       textWidthField.alignment = .right
       textWidthField.target = self
@@ -315,7 +304,8 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     deleteTheme.target = self
     deleteTheme.action = #selector(removeTheme(_:))
     let themes = NSStackView(views: [label("Theme"), themeSelect,
-      button("New Theme…", action: #selector(createTheme(_:))), deleteTheme])
+      button("New Theme…", action: #selector(createTheme(_:))), deleteTheme,
+      button("Import…", action: #selector(importVimTheme(_:)))])
     themes.spacing = 8
     stack.addArrangedSubview(themes)
     preview.translatesAutoresizingMaskIntoConstraints = false
@@ -460,7 +450,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     markdownAutodetectCheckbox?.state = editingPreferences.markdownAutodetect ? .on : .off
     caretHoverCheckbox?.state = editingPreferences.caretHoverEffect ? .on : .off
     smartQuotesCheckbox?.state = editingPreferences.smartQuotes ? .on : .off
-    commentMarkdownCheckbox?.state = editingPreferences.commentMarkdown ? .on : .off
     textWidthField.stringValue = String(editingPreferences.textWidth)
     let options = editingPreferences.indentation
     let switches = ["autoindent": options.autoindent, "expandtab": options.expandtab, "smarttab": options.smarttab,
@@ -679,6 +668,9 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     themeActions.revertOrDelete()
     refresh()
   }
+  @objc private func importVimTheme(_ sender: Any?) {
+    themeActions.importVim(window: window)
+  }
   @objc private func changeMarkdownAutodetect(_ sender: NSButton) {
     editingPreferences.setMarkdownAutodetect(sender.state == .on)
     refreshEditingPreferences()
@@ -686,12 +678,6 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   @objc private func changeCaretHoverEffect(_ sender: NSButton) {
     editingPreferences.setCaretHoverEffect(sender.state == .on)
     refreshEditingPreferences()
-  }
-  @objc private func changeCommentMarkdown(_ sender: NSButton) {
-    editingPreferences.setCommentMarkdown(sender.state == .on)
-    sender.state = editingPreferences.commentMarkdown ? .on : .off
-    persistenceDiagnostic.stringValue = editingPreferences.lastError ?? ""
-    persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
   }
   @objc private func changeSmartQuotes(_ sender: NSButton) {
     editingPreferences.setSmartQuotes(sender.state == .on)

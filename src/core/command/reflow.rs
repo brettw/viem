@@ -16,21 +16,6 @@ impl CommandInterpreter {
         self.text_width.set_default(width);
     }
 
-    /// The buffer's `commentmarkdown` state.
-    pub fn comment_markdown(&self) -> crate::document::CommentMarkdownSetting {
-        self.comment_markdown
-    }
-
-    /// Application default propagation. An explicit local override survives.
-    pub fn set_comment_markdown_default(&mut self, enabled: bool) {
-        self.comment_markdown.set_default(enabled);
-    }
-
-    /// A buffer override, or `None` to resume inheriting the default.
-    pub fn set_comment_markdown_local(&mut self, enabled: Option<bool>) {
-        self.comment_markdown.set_local(enabled);
-    }
-
     /// Canonical language name used to select a declarative comment profile.
     /// Independent of syntax coverage, styles, and highlighter availability.
     pub fn set_reflow_language(&mut self, language: Option<String>) {

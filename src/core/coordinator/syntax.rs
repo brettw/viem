@@ -55,7 +55,6 @@ pub(super) struct CoreSyntax {
     pub(super) service: SyntaxService,
     pub(super) prepared_code: Option<PreparedCodeSyntax>,
     pub(super) markdown: super::markdown_code::MarkdownCodeSyntax,
-    pub(super) comments: super::comment_markdown::CommentMarkdownSyntax,
     pub(super) selection: LanguageSelection,
     pub(super) automatic_detection: Option<Detection>,
     pub(super) automatic_mode: bool,
@@ -73,7 +72,7 @@ pub(super) struct CoreSyntax {
     pub(super) view_format_changed: Option<((crate::document::DocumentId, crate::document::Revision), std::time::Instant)>,
     referenced_names: Vec<String>,
     implicit_limited: bool,
-    pub(super) sheet: Arc<crate::document::StyleSheet>,
+    sheet: Arc<crate::document::StyleSheet>,
     /// Whether `sheet` has any automatic style with non-default metrics,
     /// memoized by its revision.
     metric_styles: Option<(crate::document::StyleSheetRevision, bool)>,
@@ -84,7 +83,6 @@ impl Default for CoreSyntax {
             service: Default::default(),
             prepared_code: None,
             markdown: Default::default(),
-            comments: Default::default(),
             selection: LanguageSelection::Automatic,
             automatic_detection: None,
             automatic_mode: true,
@@ -247,7 +245,6 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.service = service;
         self.syntax.prepared_code = None;
         self.syntax.markdown = Default::default();
-        self.syntax.comments.reset_services();
         self.syntax.published = None;
     }
     pub fn syntax_diagnostics(&self) -> String {
@@ -287,23 +284,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             // blocks use their own bounded services.
             self.syntax.service.cancel();
             self.syntax.published = None;
-            self.poll_comment_markdown();
             return self.poll_markdown_code_syntax();
         }
         self.syntax.markdown = Default::default();
         if !self.document.format().is_code() {
             self.syntax.service.cancel();
             self.syntax.published = None;
-            self.poll_comment_markdown();
             return false;
         }
-        // Comment Markdown decorates the current Code presentation, so it is
-        // installed after any syntax publication in the same poll.
-        let published = self.poll_code_presentation();
-        self.poll_comment_markdown() | published
-    }
-
-    fn poll_code_presentation(&mut self) -> bool {
         let input = self.syntax_input();
         if !self.syntax.detected_for_code {
             let detection = self.detect_code_language(&self.syntax.selection);

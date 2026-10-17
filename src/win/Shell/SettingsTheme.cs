@@ -17,16 +17,20 @@ internal sealed partial class SettingsWindow
     private readonly TextBlock previewStatus = new() { Text = "NORMAL      ○ Ln 1, Col 1     UTF-8     Markdown", Padding = new(12, 5, 12, 5) };
     private readonly Border previewBody = new() { Height = 108 }, previewFooter = new(), selectionPaint = new(), caretPaint = new() { Width = 11, Height = 22, Margin = new(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     private readonly ComboBox themePicker = new() { MinWidth = 230, HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly Button newTheme = new() { Content = "New…" }, deleteTheme = new() { Content = "Delete" };
+    private readonly Button newTheme = new() { Content = "New…" }, deleteTheme = new() { Content = "Delete" }, importTheme = new() { Content = "Import…" };
+#if DEBUG
+    internal Func<string?, Task<string?>>? PickVimFileForTesting { get; set; }
+#endif
 
     private void BuildTheme(StackPanel page)
     {
-        var themes = Row(page); themes.Children.Add(themePicker); themes.Children.Add(newTheme); themes.Children.Add(deleteTheme);
+        var themes = Row(page); themes.Children.Add(themePicker); themes.Children.Add(newTheme); themes.Children.Add(deleteTheme); themes.Children.Add(importTheme);
         AutomationProperties.SetName(themePicker, "Theme");
         themePicker.SelectionChanged += (_, _) => { if (!loading) { Commit(() => { if (themePicker.SelectedItem is Preferences.ThemeFile file) preferences.SelectTheme(file.Name, file.Path); else preferences.SelectTheme(null); }); RefreshThemeControls(); } };
         themePicker.DropDownOpened += (_, _) => Commit(RefreshThemeControls);
         newTheme.Click += async (_, _) => { try { await ThemeDialogs.Create(preferences, root.XamlRoot, root.RequestedTheme); } catch (Exception exception) { Commit(() => throw exception); } };
         deleteTheme.Click += async (_, _) => { try { await ThemeDialogs.RevertOrDelete(preferences, root.XamlRoot, root.RequestedTheme); } catch (Exception exception) { Commit(() => throw exception); } };
+        importTheme.Click += async (_, _) => { try { await ThemeDialogs.ImportVim(preferences, root.XamlRoot, root.RequestedTheme, PickVimFile); } catch (Exception exception) { Commit(() => throw exception); } };
         var preview = new StackPanel { Spacing = 12, Padding = new(18, 16, 18, 16) };
         var title = Row(preview); title.Spacing = 0; title.Children.Add(previewTitle); title.Children.Add(caretPaint);
         selectionPaint.Child = previewSelection; selectionPaint.HorizontalAlignment = HorizontalAlignment.Left; preview.Children.Add(selectionPaint);
@@ -63,6 +67,16 @@ internal sealed partial class SettingsWindow
         pair.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center }); pair.Children.Add(button); Grid.SetColumn(button, 1); Grid.SetColumn(pair, column); row.Children.Add(pair);
         // Preview while dragging, persist once the picker closes.
         picker.ColorChanged += (_, _) => RefreshThemePreview(); button.Flyout.Closed += (_, _) => SaveTheme();
+    }
+    private async Task<string?> PickVimFile(string? directory)
+    {
+#if DEBUG
+        if (PickVimFileForTesting is { } pick) return await pick(directory);
+#endif
+        var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(AppWindow.Id);
+        if (directory != null) picker.SuggestedFolder = directory;
+        picker.FileTypeFilter.Add(".vim");
+        return (await picker.PickSingleFileAsync())?.Path;
     }
     private void RefreshThemeControls()
     {
@@ -112,6 +126,7 @@ internal sealed partial class SettingsWindow
     internal ComboBox ThemePicker => themePicker;
     internal Button NewTheme => newTheme;
     internal Button DeleteTheme => deleteTheme;
+    internal Button ImportTheme => importTheme;
     internal TextBlock PreviewStatus => previewStatus;
 #endif
 }

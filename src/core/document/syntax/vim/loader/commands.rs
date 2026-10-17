@@ -342,7 +342,7 @@ impl Loader<'_> {
         let mut enabled = true;
         let mut i = 0;
         while i < lines.len() {
-            if self.errors.len() != errors_before {
+            if self.errors.len() != errors_before && !self.demote_colorscheme_errors(errors_before) {
                 return Flow::Error;
             }
             let statement = &lines[i];
@@ -550,7 +550,7 @@ impl Loader<'_> {
                 "unterminated conditional",
             );
         }
-        if self.errors.len() != errors_before {
+        if self.errors.len() != errors_before && !self.demote_colorscheme_errors(errors_before) {
             Flow::Error
         } else {
             Flow::Next

@@ -56,6 +56,45 @@ enum EVThemeFile {
     return data
   }
 
+  static let maximumVimColorSchemeSize = 4 * 1024 * 1024
+
+  private final class Diagnostics { var messages: [String] = [] }
+
+  /// The portable core evaluates the scheme as gVim would and returns a
+  /// complete theme based on its built-in Paper or Midnight preset.
+  static func importVim(_ source: Data) throws -> Data {
+    guard source.count <= maximumVimColorSchemeSize else {
+      throw EVConfigurationStore.invalid("The Vim color scheme is larger than 4 MiB")
+    }
+    let diagnostics = Diagnostics()
+    let collect: ViemStyleDefaultsDiagnosticCallback = { context, message, length in
+      guard let context, let message else { return }
+      Unmanaged<Diagnostics>.fromOpaque(context).takeUnretainedValue().messages.append(
+        String(decoding: UnsafeBufferPointer(start: message, count: Int(length)), as: UTF8.self))
+    }
+    let context = Unmanaged.passUnretained(diagnostics).toOpaque()
+    return try withExtendedLifetime(diagnostics) {
+      try source.withUnsafeBytes { input in
+        let bytes = input.bindMemory(to: UInt8.self).baseAddress
+        var required: UInt64 = 0
+        let sizing = viem_theme_import_vim(bytes, UInt64(input.count), nil, 0, &required, collect, context)
+        guard sizing == UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) || sizing == UInt32(VIEM_STATUS_OK),
+              required <= maximumSize else {
+          throw EVConfigurationStore.invalid(diagnostics.messages.first ?? "The Vim color scheme could not be imported")
+        }
+        var data = Data(count: Int(required))
+        let status = data.withUnsafeMutableBytes { output in
+          viem_theme_import_vim(bytes, UInt64(input.count), output.bindMemory(to: UInt8.self).baseAddress,
+            UInt64(output.count), &required, collect, context)
+        }
+        guard status == UInt32(VIEM_STATUS_OK) else {
+          throw EVConfigurationStore.invalid(diagnostics.messages.first ?? "The Vim color scheme could not be imported")
+        }
+        return data
+      }
+    }
+  }
+
   static func read(_ file: URL) throws -> Data {
     let handle = try FileHandle(forReadingFrom: file)
     defer { try? handle.close() }
@@ -191,6 +230,41 @@ extension EVConfigurationStore {
     do { try persistThemeSelection(name) }
     catch { try? manager.removeItem(at: file); throw error }
     installTheme(activeTheme, name: name, file: file, diskData: data, selectionChanged: true)
+  }
+
+  /// A portable theme name for an imported file stem, numbered on a
+  /// case-insensitive collision with an existing theme.
+  static func uniqueThemeName(_ stem: String, existing: [String]) throws -> String {
+    let stem = Data(stem.utf8), existing = Data(existing.joined(separator: "\n").utf8)
+    var output = Data(count: 256)
+    var required: UInt64 = 0
+    let status = stem.withUnsafeBytes { stem in
+      existing.withUnsafeBytes { existing in
+        output.withUnsafeMutableBytes { output in
+          viem_theme_unique_name(stem.bindMemory(to: UInt8.self).baseAddress, UInt64(stem.count),
+            existing.bindMemory(to: UInt8.self).baseAddress, UInt64(existing.count),
+            output.bindMemory(to: UInt8.self).baseAddress, UInt64(output.count), &required)
+        }
+      }
+    }
+    guard status == UInt32(VIEM_STATUS_OK) else { throw invalid("Cannot name the imported theme") }
+    return String(decoding: output.prefix(Int(required)), as: UTF8.self)
+  }
+
+  /// Save an imported Vim color scheme as a new theme named after its file and
+  /// select it.
+  @discardableResult
+  public func importVimTheme(_ source: Data, named stem: String) throws -> String {
+    let data = try EVThemeFile.importVim(source)
+    let candidate = try EVThemeFile.decode(data)
+    let name = try Self.uniqueThemeName(stem, existing: availableThemeNames)
+    let file = themesDirectory.appendingPathComponent(name + ".json")
+    try manager.createDirectory(at: themesDirectory, withIntermediateDirectories: true)
+    try data.write(to: file, options: .withoutOverwriting)
+    do { try persistThemeSelection(name) }
+    catch { try? manager.removeItem(at: file); throw error }
+    installTheme(candidate, name: name, file: file, diskData: data, selectionChanged: true)
+    return name
   }
 
   public func deleteCurrentTheme() throws {

@@ -90,6 +90,10 @@ public final class EVThemeStore {
   public func restoreMissingBundledThemes() throws { try configuration.restoreMissingBundledThemes() }
   public func revertCurrentTheme() throws { try configuration.revertCurrentTheme() }
   public func deleteCurrentTheme() throws { try configuration.deleteCurrentTheme() }
+  @discardableResult
+  public func importVimTheme(_ source: Data, named stem: String) throws -> String {
+    try configuration.importVimTheme(source, named: stem)
+  }
 
   private func reload() {
     theme = configuration.theme

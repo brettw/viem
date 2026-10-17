@@ -75,8 +75,6 @@ mod percentage_styles_tests;
 mod reflow;
 mod format_options;
 mod comment_context;
-pub(crate) mod comment_markdown;
-pub use comment_markdown::CommentMarkdownSetting;
 pub use comment_context::{CommentContextStatus, CommentLineContext, NativeCommentKind, NativeCommentSpan, has_comment_context_provider, supports_native_block, supports_native_line};
 mod indentation;
 pub use indentation::{IndentationOptions, IndentationOverrides, IndentationSetting};
@@ -1132,44 +1130,12 @@ impl Document {
         false
     }
 
-    fn publish_code_presentation(&mut self, mut projection: FormattedDocument) {
-        // Comment Markdown belongs to one source revision and Code sheet. A
-        // publication sharing both retains it; anything else recomputes it.
-        if let Some(previous) = self.code_presentation.as_ref().filter(|previous| {
-            previous.projection.revision() == projection.revision()
-                && previous.projection.style_sheet().revision == projection.style_sheet().revision
-        }) {
-            projection.take_comment_markdown_from(&previous.projection);
-        }
+    fn publish_code_presentation(&mut self, projection: FormattedDocument) {
         self.code_presentation = Some(code_presentation::CodePresentation {
             projection,
             transition: PositionMap::identity(self.id, PositionDomain::FormattedText,
                 self.revision(), self.state().projection.text_tree().byte_len()),
         });
-    }
-
-    /// Install simplified comment Markdown on the current Code presentation.
-    /// Returns false when no presentation is current for this revision.
-    pub(crate) fn install_comment_markdown_presentation(
-        &mut self,
-        carved: Vec<std::ops::Range<usize>>,
-        runs: &[syntax::SyntaxRun],
-    ) -> bool {
-        let revision = self.revision();
-        if !self.format().is_code() {
-            return false;
-        }
-        let Some(presentation) = self.code_presentation.as_mut()
-            .filter(|presentation| presentation.projection.revision() == revision)
-        else {
-            return false;
-        };
-        if carved.is_empty() && runs.is_empty() {
-            presentation.projection.clear_comment_markdown();
-        } else {
-            presentation.projection.install_comment_markdown(carved, runs);
-        }
-        true
     }
 
     /// The retained Code presentation, including one published for an
@@ -1200,27 +1166,6 @@ impl Document {
             .find(|record| record.after == after)
             .filter(|record| record.before == before)
             .and_then(|record| record.local.clone())
-    }
-
-    /// The retained local changes leading from `before` to `after`, in commit
-    /// order, when every recorded transition between them is local.
-    pub(crate) fn layout_changes_between(
-        &self,
-        before: Revision,
-        after: Revision,
-    ) -> Option<Vec<LocalFormattedChange>> {
-        let mut changes = Vec::new();
-        let mut at = after;
-        while at != before {
-            if changes.len() == RETAINED_LAYOUT_CHANGES {
-                return None;
-            }
-            let record = self.layout_changes.iter().rev().find(|record| record.after == at)?;
-            changes.push(record.local.clone()?);
-            at = record.before;
-        }
-        changes.reverse();
-        Some(changes)
     }
 
     /// Run one serial controller operation while composing every committed

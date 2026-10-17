@@ -68,8 +68,6 @@ pub struct ExExecutionContext {
     pub selection_options: super::SelectionOptions,
     /// Buffer-owned `textwidth` state.
     pub text_width: crate::document::TextWidthSetting,
-    /// Buffer-owned `commentmarkdown` state.
-    pub comment_markdown: crate::document::CommentMarkdownSetting,
     pub reflow_options: crate::document::ReflowOptions,
     pub indentation: crate::document::IndentationSetting,
     pub visible_whitespace: super::VisibleWhitespaceSetting,
@@ -87,7 +85,6 @@ impl Default for ExExecutionContext {
             search_options: super::search_regex::SearchOptions::default(),
             selection_options: Default::default(),
             text_width: crate::document::TextWidthSetting::default(),
-            comment_markdown: Default::default(),
             reflow_options: crate::document::ReflowOptions::default(),
             indentation: Default::default(),
             visible_whitespace: Default::default(),
@@ -290,7 +287,6 @@ pub enum ExOptionName {
     AutoIndent, TabStop, ShiftWidth, SoftTabStop, ExpandTab, SmartTab,
     ContinueCommentsOnEnter, ContinueCommentsOnOpenLine,
     List, ListChars, KeyModel, SelectMode, AutoSelect,
-    CommentMarkdown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -307,8 +303,6 @@ pub enum ExOptionValue {
     Number(u32),
     /// A buffer-local numeric override; `None` returns to inheritance.
     OptionalNumber(Option<u32>),
-    /// A buffer-local boolean override; `None` returns to inheritance.
-    OptionalBoolean(Option<bool>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2376,7 +2370,6 @@ fn prepare_set(
         search_options: context.search_options,
         selection_options: context.selection_options.clone(),
         text_width: context.text_width,
-        comment_markdown: context.comment_markdown,
         reflow_options: context.reflow_options.clone(),
         indentation: context.indentation,
         visible_whitespace: context.visible_whitespace.clone(),
@@ -2481,7 +2474,6 @@ struct PendingOptions {
     search_options: super::search_regex::SearchOptions,
     selection_options: super::SelectionOptions,
     text_width: crate::document::TextWidthSetting,
-    comment_markdown: crate::document::CommentMarkdownSetting,
     reflow_options: crate::document::ReflowOptions,
     indentation: crate::document::IndentationSetting,
     visible_whitespace: super::VisibleWhitespaceSetting,
@@ -2513,10 +2505,6 @@ fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
         display(
             ExOptionName::TextWidth,
             ExOptionValue::Number(values.text_width.effective()),
-        ),
-        display(
-            ExOptionName::CommentMarkdown,
-            ExOptionValue::Boolean(values.comment_markdown.effective()),
         ),
         display(
             ExOptionName::FileFormat,
@@ -2796,33 +2784,6 @@ fn apply_option_operation(
             &mut values.wrap,
             plan,
         ),
-        "commentmarkdown" | "cmd" => {
-            // Like `textwidth`, both `:set` and `:setlocal` set a buffer
-            // override; Settings owns the application default.
-            let old = values.comment_markdown.local_override();
-            let effective = values.comment_markdown.effective();
-            let local = match &operation.action {
-                OptionAction::Query => {
-                    show_option(plan, ExOptionName::CommentMarkdown, ExOptionValue::Boolean(effective));
-                    return Ok(());
-                }
-                OptionAction::Enable => Some(true),
-                OptionAction::Disable => Some(false),
-                OptionAction::Toggle => Some(!effective),
-                OptionAction::Reset | OptionAction::Inherit => None,
-                _ => return Err(ExExecuteError::UnsupportedOptionOperation(name)),
-            };
-            values.comment_markdown.set_local(local);
-            if local != old {
-                plan.outcome.option_effects.push(ExOptionEffect {
-                    scope,
-                    name: ExOptionName::CommentMarkdown,
-                    old_value: ExOptionValue::OptionalBoolean(old),
-                    new_value: ExOptionValue::OptionalBoolean(local),
-                });
-            }
-            Ok(())
-        }
         "textwidth" | "tw" => {
             // Both `:set` and `:setlocal` forms set a buffer override; the
             // application default is owned by Settings, never by Ex.

@@ -1,6 +1,7 @@
 //! Native Vim syntax profile v4: strict declaration loading and resumable,
 //! fuel-metered regular matching. See `vim/PROFILE.md` for compatibility limits.
 mod checkpoints;
+pub mod colorscheme;
 mod loader;
 mod regex;
 use super::super::formatted_text::{FormattedLeafLocation, LeafBoundarySide};
@@ -162,6 +163,16 @@ pub struct VimProgram {
     pub generation: u64,
     pub source_files: Vec<String>,
 }
+/// Evaluate a Vim color scheme's highlight commands as gVim would load it,
+/// starting from Vim's default state ('background' light, `:syntax on`).
+/// Unsupported statements are skipped and returned as warnings.
+pub fn evaluate_colorscheme(
+    name: &str,
+    source: &[u8],
+) -> Result<(colorscheme::VimHighlights, Vec<VimDiagnostic>), Vec<VimDiagnostic>> {
+    loader::colorscheme(name, source, VimLoadLimits::default())
+}
+
 impl VimProgram {
     fn intern_group_name(&mut self, name: &str) -> String {
         self.group_names.entry(name.to_ascii_lowercase())

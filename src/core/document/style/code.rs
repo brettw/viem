@@ -252,11 +252,10 @@ pub fn default_sheet() -> StyleSheet {
             .insert(id, StyleDefinitionMetadata::generated(name));
     }
     // Neovim's markup captures, used by the JSX queries for text inside
-    // elements such as `<h1>` or `<em>`, and by Markdown in Code comments.
-    // They carry typographic meaning rather than a color. Delimiters keep
-    // their surrounding appearance unless a theme declares otherwise.
+    // elements such as `<h1>` or `<em>`. They carry typographic meaning
+    // rather than a color.
     let bold = CharacterProperties { bold: Some(true), ..Default::default() };
-    let markup: [(&str, CharacterProperties); 17] = [
+    let markup: [(&str, CharacterProperties); 16] = [
         ("Markup", Default::default()),
         ("Markup.heading", bold.clone()),
         ("Markup.heading.1", Default::default()),
@@ -270,7 +269,6 @@ pub fn default_sheet() -> StyleSheet {
         ("Markup.underline", CharacterProperties { underline: Some(true), ..Default::default() }),
         ("Markup.strikethrough", CharacterProperties { strikethrough: Some(true), ..Default::default() }),
         ("Markup.raw", Default::default()),
-        ("Markup.delimiter", Default::default()),
         ("Markup.link", Default::default()),
         ("Markup.link.label", Default::default()),
         ("Markup.link.url", CharacterProperties { underline: Some(true), ..Default::default() }),

@@ -4,10 +4,12 @@ use super::{
     VimDiagnostic, VimLoadLimits, VimProgram, VimSetupContext, NATIVE_PROFILE_VERSION,
 };
 
+mod colors;
 mod commands;
 mod setup;
 #[cfg(test)]
 mod tests;
+pub(super) use colors::colorscheme;
 use setup::Setup;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -43,6 +45,9 @@ struct Loader<'a> {
     current_source: Option<PathBuf>,
     loop_depth: usize,
     include_stack: Vec<Option<String>>,
+    /// Color scheme import evaluates the same bounded setup language into a
+    /// highlight table instead of a syntax program.
+    colors: Option<colors::ColorSession>,
 }
 pub(super) fn compile(
     name: &str,
@@ -220,6 +225,7 @@ impl<'a> Loader<'a> {
             current_source: None,
             loop_depth: 0,
             include_stack: Vec::new(),
+            colors: None,
         }
     }
     fn err(&mut self, file: &str, line: usize, message: impl AsRef<str>) {
@@ -499,6 +505,11 @@ impl<'a> Loader<'a> {
             return result;
         }
         let forced = cmd.ends_with('!');
+        if self.colors.is_some() {
+            if let Some(result) = self.colorscheme_command(cmd, rest, forced) {
+                return result;
+            }
+        }
         match commands::command_name(cmd) {
             "syn" | "sy" | "syntax" => self.syntax(rest),
             "highlight" => self.highlight(rest, forced),

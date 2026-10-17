@@ -719,20 +719,6 @@ languages leave parent highlighting intact; available children overlay parent
 runs, retaining parent runs in gaps. Test stale results, empty coverage, fallback,
 dependency repair, long lines and large-document locality.
 
-Comment Markdown (`commentmarkdown`, on by default; Settings default plus a
-buffer override shared by views, and a View menu toggle) presents only
-character syntax in lexically known comments: emphasis, strong, strikethrough,
-links and code spans, never block structure. Leaders, middles and closers are
-never prose, and spans continue across a comment's lines. A backtick fence is a
-multi-line code span closed by a closing fence or the end of its comment,
-highlighted as its declared language or the document's; code text replaces the
-comment's syntax appearance, while other roles layer sparse `Markup` styles over
-it. It is presentation only, with visible delimiters, and recognition stays
-bounded to visible comments, except that a pre-rendered document recognizes
-every comment. While its editing continues, each revision recognizes the
-visible comments and carries the last complete result across the edits
-elsewhere; the whole document is recognized again once editing pauses.
-
 While edited Code awaits asynchronous highlighting, retain styles on surviving
 text and provisionally give new text the immediately preceding character's
 style. A missing/default predecessor stays default. This appearance is not
@@ -1653,6 +1639,19 @@ with the bundled original while keeping selection. Other saved themes offer Dele
 Restoring missing themes must leave existing customizations and user themes alone.
 The Theme settings font-size control includes native up/down arrows, following
 the style inspector's numeric controls.
+
+Theme settings' Import… creates a theme from a Vim color scheme listed from the
+user's Vim runtime (`~/.vim/colors`, then `$XDG_CONFIG_HOME/vim/colors` on macOS;
+`~\vimfiles\colors`, then `~\.vim\colors` on Windows) or chosen with Select File….
+The core evaluates its GUI highlights as gVim with `:syntax on` loads it from
+Vim's default state ('background' light), through the bounded syntax setup
+language; unsupported statements are skipped and reported, never executed. A
+light Normal background, or a light final 'background' without one, starts from
+the shipped Paper preset, otherwise Midnight, never the profile's edited copies.
+Code, Text and Markdown styles, status chrome, line numbers and search matches
+take the scheme's colors. The new theme is named by the file stem, numbered on a
+case-insensitive collision, saved and selected. Keep the mapping and its
+approximations current in [Vim theme import](docs/vim-theme-import.md).
 
 Theme variants may inherit from the exact same named style in another variant,
 within the same namespace and role. The Based on menu lists those variants first
