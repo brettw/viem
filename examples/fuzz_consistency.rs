@@ -683,7 +683,7 @@ impl H {
                 };
                 let range = expected.range();
                 let (core, view) = (&mut self.core, self.view);
-                let intent = viem_core::document::ImageEditIntent::Insert { range, text: "alt".into(), destination: destination.clone() };
+                let intent = viem_core::document::ImageEditIntent::Insert { range, text: "alt".into(), destination: destination.clone(), width: None, height: None };
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.edit_image(view, expected, intent))) {
                     Err(panic) => Res::Err(format!("PANIC {}", panic_message(panic))),
                     Ok(Err(e)) => Res::Err(format!("{e:?}")),

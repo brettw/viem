@@ -6,20 +6,24 @@ import ViemCoreTextProvider
 /// History belongs to the application setting, independently of document undo.
 @MainActor
 final class EVVisibleWhitespaceStyleSession {
+    private static var nextRevision: UInt64 = 0
     let configuration: EVConfigurationStore
-    let undoManager = UndoManager()
+    let undoManager: UndoManager
     var onChange: (() -> Void)?
     private(set) var style: EVVisibleWhitespaceStyle
+    private(set) var revision: UInt64
     private(set) var lastError: String?
     private var groupStart: EVVisibleWhitespaceStyle?
     private var writing = false
     private var observer: NSObjectProtocol?
 
-    init(configuration: EVConfigurationStore) {
+    init(configuration: EVConfigurationStore, undoManager: UndoManager? = nil) {
         self.configuration = configuration
+        self.undoManager = undoManager ?? UndoManager()
+        revision = Self.allocateRevision()
         style = configuration.whitespacePresentation.visibleWhitespace.style
         lastError = configuration.lastError
-        undoManager.groupsByEvent = false
+        self.undoManager.groupsByEvent = false
         observer = NotificationCenter.default.addObserver(forName: .viemConfigurationDidChange, object: nil, queue: .main) { [weak self] notification in
             MainActor.assumeIsolated {
                 guard let self, !self.writing, let source = notification.object as? EVConfigurationStore,
@@ -30,6 +34,12 @@ final class EVVisibleWhitespaceStyleSession {
     }
 
     deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
+
+    private static func allocateRevision() -> UInt64 {
+        precondition(nextRevision < UInt64.max)
+        nextRevision += 1
+        return nextRevision
+    }
 
     func beginGroup() { if groupStart == nil { groupStart = style } }
     func endGroup() {
@@ -74,6 +84,7 @@ final class EVVisibleWhitespaceStyleSession {
         defer { writing = false }
         try configuration.setWhitespacePresentation(options)
         style = candidate
+        revision = Self.allocateRevision()
         lastError = nil
         if groupStart == nil { registerUndo(before) }
         onChange?()
@@ -92,17 +103,20 @@ final class EVVisibleWhitespaceStyleSession {
     }
 
     private func refreshExternalChange() {
+        let previous = style
+        let previousError = lastError
         do {
             try configuration.reloadFromDisk()
             let current = configuration.whitespacePresentation.visibleWhitespace.style
             if current != style {
                 style = current
+                revision = Self.allocateRevision()
                 groupStart = nil
                 undoManager.removeAllActions()
             }
             lastError = nil
         } catch { lastError = error.localizedDescription }
-        onChange?()
+        if style != previous || lastError != previousError { onChange?() }
     }
 
     private static func invalid(_ message: String) -> NSError {
@@ -110,7 +124,7 @@ final class EVVisibleWhitespaceStyleSession {
     }
 }
 
-private extension EVVisibleWhitespaceStyle {
+extension EVVisibleWhitespaceStyle {
     mutating func apply(_ mutation: EVStyleMutation) throws {
         let property: EVStyleProperty
         let value: EVStyleValue?
@@ -170,8 +184,8 @@ private extension EVVisibleWhitespaceStyle {
         }
     }
 
-    var definition: EVStyleDefinition {
-        let key = EVStyleKey(namespace: .character, id: EVStyleID(rawValue: "Visible whitespace"))
+    func definition(in snapshot: EVStyleSheetSnapshot) -> EVStyleDefinition {
+        let key = EVStyleKey.visibleWhitespace
         var declared: [EVStyleProperty: EVStyleValue] = [:]
         declared[.characterFontFamilies] = fontFamilies.map(EVStyleValue.stringList)
         declared[.characterFontFace] = fontFace.map(EVStyleValue.string)
@@ -191,160 +205,12 @@ private extension EVVisibleWhitespaceStyle {
         declared[.characterOpenTypeFeatures] = openTypeFeatures.map { .openTypeFeatures($0.sorted { $0.key < $1.key }.map { EVOpenTypeFeature(tag: $0.key, setting: $0.value) }) }
         declared[.characterLetterSpacing] = letterSpacing.map(EVStyleValue.float)
         let properties = Dictionary(uniqueKeysWithValues: EVStyleProperty.characterProperties.map { property in
-            (property, EVResolvedStyleProperty(property: property, declared: declared[property], effective: declared[property],
-                contributorKind: UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY), contributor: declared[property] == nil ? nil : key, dependencies: []))
+            let inherited = snapshot.definition(for: .baseParagraph)?.properties[property]
+            return (property, EVResolvedStyleProperty(property: property, declared: declared[property], effective: declared[property] ?? inherited?.effective,
+                contributorKind: declared[property] == nil ? inherited?.contributorKind ?? UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY) : UInt32(VIEM_STYLE_CONTRIBUTOR_ENGINE_EMERGENCY),
+                contributor: declared[property] == nil ? inherited?.contributor : key, dependencies: []))
         })
         return EVStyleDefinition(key: key, name: "Visible whitespace", kind: .character, origin: .generatedConfiguration,
-            flags: [], capabilities: [.declarations], parentID: nil, nextStyleID: nil, properties: properties)
-    }
-}
-
-private final class EVVisibleWhitespaceStylePanel: NSPanel {
-    var settingsUndoManager: UndoManager?
-    override var undoManager: UndoManager? { settingsUndoManager ?? super.undoManager }
-    override var canBecomeMain: Bool { true }
-}
-
-@MainActor
-final class EVVisibleWhitespaceStyleEditor: NSWindowController, NSWindowDelegate, NSTextFieldDelegate {
-    private static var sharedController: EVVisibleWhitespaceStyleEditor?
-    let session: EVVisibleWhitespaceStyleSession
-    private let controls = EVCompactStyleControls()
-    private let preview = EVCoreTextStylePreviewView()
-    private let diagnostic = NSTextField(wrappingLabelWithString: "")
-    private let language = NSTextField(string: "")
-    private let languageOverride = NSButton(checkboxWithTitle: "Language", target: nil, action: nil)
-    private let weight = NSTextField(string: "")
-    private let slant = NSPopUpButton()
-    private var themeObserver: NSObjectProtocol?
-
-    static func show(configuration: EVConfigurationStore) {
-        if sharedController?.session.configuration.directory.standardizedFileURL != configuration.directory.standardizedFileURL {
-            sharedController?.close()
-            sharedController = EVVisibleWhitespaceStyleEditor(configuration: configuration)
-        }
-        sharedController?.showWindow(nil)
-        sharedController?.window?.makeKeyAndOrderFront(nil)
-    }
-
-    init(configuration: EVConfigurationStore) {
-        session = EVVisibleWhitespaceStyleSession(configuration: configuration)
-        let panel = EVVisibleWhitespaceStylePanel(contentRect: NSRect(x: 0, y: 0, width: 720, height: 470),
-            styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: false)
-        panel.title = "Visible whitespace"
-        panel.setAccessibilityLabel("Visible whitespace style editor")
-        panel.settingsUndoManager = session.undoManager
-        panel.isFloatingPanel = false
-        panel.level = .normal
-        panel.hidesOnDeactivate = false
-        panel.isReleasedWhenClosed = false
-        panel.contentMinSize = NSSize(width: 700, height: 440)
-        super.init(window: panel)
-        panel.delegate = self
-        panel.center()
-        build()
-        controls.onMutations = { [weak self] in _ = self?.session.apply($0) }
-        controls.onEditBegan = { [weak self] in self?.session.beginGroup() }
-        controls.onEditEnded = { [weak self] in self?.session.endGroup() }
-        session.onChange = { [weak self] in self?.refresh() }
-        themeObserver = NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.refresh() }
-        }
-        refresh()
-    }
-
-    @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    deinit { if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) } }
-
-    func windowWillClose(_ notification: Notification) { session.endGroup() }
-
-    private func build() {
-        let explanation = NSTextField(wrappingLabelWithString: "This character style applies to visible whitespace in Text and Code. Unchecked properties inherit the surrounding text. The preview uses a sample text style.")
-        explanation.textColor = .secondaryLabelColor
-        languageOverride.target = self
-        languageOverride.action = #selector(changeLanguageOverride(_:))
-        languageOverride.setAccessibilityLabel("Override marker language")
-        language.placeholderString = "Language tag"
-        language.setAccessibilityLabel("Marker language")
-        language.delegate = self
-        language.target = self
-        language.action = #selector(changeLanguage(_:))
-        language.widthAnchor.constraint(equalToConstant: 110).isActive = true
-        weight.placeholderString = "Inherited"
-        weight.setAccessibilityLabel("Marker weight")
-        weight.toolTip = "Weight from 1 to 1000; leave blank to inherit"
-        weight.delegate = self
-        weight.target = self
-        weight.action = #selector(changeWeight(_:))
-        weight.widthAnchor.constraint(equalToConstant: 85).isActive = true
-        slant.addItems(withTitles: ["Inherited", "Upright", "Italic", "Oblique"])
-        slant.setAccessibilityLabel("Marker slant")
-        slant.target = self
-        slant.action = #selector(changeSlant(_:))
-        let additional = NSStackView(views: [languageOverride, language, NSTextField(labelWithString: "Weight"), weight, NSTextField(labelWithString: "Slant"), slant])
-        additional.spacing = 10
-        let restore = NSButton(title: "Restore Defaults", target: self, action: #selector(restoreDefaults))
-        diagnostic.textColor = .systemRed
-        diagnostic.font = .systemFont(ofSize: 12)
-        let stack = NSStackView(views: [explanation, controls.characterView, additional, diagnostic, preview, restore])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 18
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        let content = NSView()
-        content.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor), stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: content.topAnchor), stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor),
-            controls.characterView.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
-            explanation.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
-            preview.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40), preview.heightAnchor.constraint(equalToConstant: 120),
-        ])
-        window?.contentView = content
-    }
-
-    private func refresh() {
-        let style = session.style
-        let definition = style.definition
-        controls.configure(definition, theme: EVThemeStore.shared.theme, allowsPercentageSize: false)
-        languageOverride.state = style.language == nil ? .off : .on
-        language.isEnabled = style.language != nil
-        language.stringValue = style.language ?? ""
-        weight.stringValue = style.weight.map(String.init) ?? ""
-        slant.selectItem(at: style.slant.map { $0 == .upright ? 1 : $0 == .italic ? 2 : 3 } ?? 0)
-        diagnostic.stringValue = session.lastError ?? ""
-        diagnostic.isHidden = diagnostic.stringValue.isEmpty
-        var values = definition.properties.compactMapValues(\.effective)
-        if values[.characterForeground] == nil {
-            let color = EVThemeStore.shared.theme.foreground
-            values[.characterForeground] = .color(EVStyleColor(red: Float(color.red), green: Float(color.green), blue: Float(color.blue), alpha: Float(color.alpha)))
-        }
-        preview.apply(kind: .character, effectiveValues: values)
-    }
-
-    @objc private func changeLanguageOverride(_ sender: NSButton) {
-        session.endGroup()
-        session.apply([sender.state == .on ? .setDeclaration(.characterLanguage, .string("en")) : .clearDeclaration(.characterLanguage)])
-    }
-    @objc private func changeLanguage(_ sender: NSTextField) {
-        session.apply([.setDeclaration(.characterLanguage, .string(sender.stringValue))])
-    }
-    @objc private func changeWeight(_ sender: NSTextField) {
-        let value = sender.stringValue.trimmingCharacters(in: .whitespaces)
-        if value.isEmpty { session.apply([.clearDeclaration(.characterWeight)]) }
-        else if let number = UInt32(value), (1...1000).contains(number) { session.apply([.setDeclaration(.characterWeight, .unsigned(number))]) }
-        else { refresh(); diagnostic.stringValue = "Weight must be a whole number from 1 to 1000."; diagnostic.isHidden = false }
-    }
-    @objc private func changeSlant(_ sender: NSPopUpButton) {
-        session.endGroup()
-        session.apply([sender.indexOfSelectedItem == 0 ? .clearDeclaration(.characterSlant) : .setDeclaration(.characterSlant, .fontSlant(UInt32(sender.indexOfSelectedItem - 1)))])
-    }
-    @objc private func restoreDefaults() { session.restoreDefaults() }
-    func controlTextDidBeginEditing(_ notification: Notification) { session.beginGroup() }
-    func controlTextDidEndEditing(_ notification: Notification) {
-        if notification.object as AnyObject? === language { changeLanguage(language) }
-        if notification.object as AnyObject? === weight { changeWeight(weight) }
-        session.endGroup()
+            flags: [.internalSyntax], capabilities: [.declarations], parentID: nil, nextStyleID: nil, properties: properties)
     }
 }

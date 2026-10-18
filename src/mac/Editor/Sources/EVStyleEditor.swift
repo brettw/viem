@@ -685,9 +685,8 @@ final class EVStyleEditorViewController: NSViewController {
             selectedStyleKey = variantDefinition(for: previousStyle, in: nextSnapshot)?.key ?? .baseParagraph
         } else { selectedStyleKey = .baseParagraph }
         diagnosticMessage = settingsSession.lastError ?? ""
-        let notification: Notification.Name = settingsSession.sourceFormat == .code ? .viemGlobalCodeStyleDidChange : .viemThemeStyleSessionDidChange
-        documentObserver = NotificationCenter.default.addObserver(forName: notification,
-            object: settingsSession.sourceFormat == .code ? nil : settingsSession, queue: .main) { [weak self] _ in
+        documentObserver = NotificationCenter.default.addObserver(forName: .viemStyleSettingsSessionDidChange,
+            object: settingsSession, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.targetDocumentDidChange() }
         }
         reloadCommittedStyle()
@@ -891,7 +890,8 @@ final class EVStyleEditorViewController: NSViewController {
                   case let .float(value)? = snapshot.definition(for: sizeBasisKey)?.properties[.characterSize]?.effective else { return nil }
             return value
         }()
-        compactControls.configure(definition, theme: themeStore.theme, documentID: snapshot.identity.documentID, fontSizeBasis: sizeBasis)
+        compactControls.configure(definition, theme: themeStore.theme, documentID: snapshot.identity.documentID,
+            fontSizeBasis: sizeBasis, allowsPercentageSize: definition.key != .visibleWhitespace)
         nextStyleRow.configure(
             selected: definition.flags.isBase ? nil
                 : definition.nextStyleID.map { EVStyleKey(namespace: .block, id: $0) },
@@ -959,7 +959,8 @@ final class EVStyleEditorViewController: NSViewController {
 
     private func configureBasedOn(snapshot: EVStyleSheetSnapshot, definition: EVStyleDefinition) {
         let localEditable = definition.capabilities.contains(.parent)
-        let editable = localEditable || (settingsSession != nil && definition.capabilities.contains(.declarations))
+        let editable = definition.key != .visibleWhitespace
+            && (localEditable || (settingsSession != nil && definition.capabilities.contains(.declarations)))
         var choices: [EVStyleChoiceIdentity] = []
         if editable {
             if let settingsSession {
@@ -989,7 +990,7 @@ final class EVStyleEditorViewController: NSViewController {
             let title = definition.parentKey.flatMap { snapshot.definition(for: $0)?.name }
                 ?? (definition.kind == .character ? "Default Paragraph" : "None")
             let parent = definition.parentKey.flatMap { snapshot.definition(for: $0) }
-            choices = [EVStyleChoiceIdentity(key: definition.parentKey, name: title,
+            choices = [EVStyleChoiceIdentity(key: definition.parentKey ?? (definition.kind == .character ? .defaultParagraph : nil), name: title,
                 icon: parent.map { EVStyleIcons.type(for: $0) } ?? (definition.kind == .character ? .character : nil))]
         }
         if parentMenuChoices != choices {
@@ -1191,7 +1192,7 @@ final class EVStyleEditorViewController: NSViewController {
             refreshAfterCommit = true
         } else {
             endContinuousStyleEdit(reportUnexpectedFailure: false)
-            diagnosticMessage = ""
+            diagnosticMessage = settingsSession?.lastError ?? ""
             reloadCommittedStyle()
         }
     }
@@ -1377,7 +1378,7 @@ final class EVStyleEditorViewController: NSViewController {
 
     @objc private func restoreCodeDefaults(_ sender: Any?) {
         guard let settingsSession = codeSettingsSession else { return }
-        _ = changeStyleCatalogue { try settingsSession.restoreDefaults() }
+        _ = changeStyleCatalogue { try settingsSession.restoreDefaults(for: selectedStyleKey) }
     }
 
     @objc private func basedOnChanged(_ sender: NSPopUpButton) {

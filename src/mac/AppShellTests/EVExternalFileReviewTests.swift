@@ -123,7 +123,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     try Data("external".utf8).write(to: url, options: .atomic)
     let checked = expectation(description: "check completes while application is inactive")
     document.checkForExternalChangesAndReview { result in
-      if case .failure(let error) = result { XCTFail("\(error)") }
+      if case .failure(let error) = result { XCTFail("External file check failed: \(error)") }
       checked.fulfill()
     }
     XCTAssertTrue(document.externalFileCheckInFlight)

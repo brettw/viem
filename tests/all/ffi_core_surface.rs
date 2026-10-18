@@ -5157,8 +5157,23 @@ fn image_popup_ffi_exports_selection_seed_and_rejects_stale_authoring() {
     assert!(context["image"].is_null());
     let text = ViemUtf8Slice { data: b"selected".as_ptr(), length: 8 };
     let destination = ViemUtf8Slice { data: b"image.png".as_ptr(), length: 9 };
-    assert_eq!(unsafe { viem_core_view_edit_image(core.handle, view, &selection, 0, 0, 0, text, destination, &mut outcome) }, ViemStatus::Ok);
-    assert_eq!(unsafe { viem_core_view_edit_image(core.handle, view, &selection, 0, 0, 0, text, destination, &mut outcome) }, ViemStatus::StaleRevision);
+    assert_eq!(unsafe { viem_core_view_edit_image(core.handle, view, &selection, 0, 0, 0, text, destination, 320, 180, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(unsafe { viem_core_view_edit_image(core.handle, view, &selection, 0, 0, 0, text, destination, 320, 180, &mut outcome) }, ViemStatus::StaleRevision);
+    assert_eq!(unsafe { viem_core_view_copy_image_context(core.handle, view, ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
+    let mut bytes = vec![0; required as usize];
+    assert_eq!(unsafe { viem_core_view_copy_image_context(core.handle, view, bytes.as_mut_ptr(), bytes.len() as u64, &mut required) }, ViemStatus::Ok);
+    let context: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(context["image"]["width"], 320);
+    assert_eq!(context["image"]["height"], 180);
+    assert_eq!(unsafe { viem_core_view_list_selection(core.handle, view, &mut selection) }, ViemStatus::Ok);
+    let image_end = context["image"]["end"].as_u64().unwrap();
+    assert_eq!(unsafe { viem_core_view_edit_image(core.handle, view, &selection, 1, 0, image_end, text, destination, 0, 0, &mut outcome) }, ViemStatus::Ok);
+    assert_eq!(unsafe { viem_core_view_copy_image_context(core.handle, view, ptr::null_mut(), 0, &mut required) }, ViemStatus::BufferTooSmall);
+    let mut bytes = vec![0; required as usize];
+    assert_eq!(unsafe { viem_core_view_copy_image_context(core.handle, view, bytes.as_mut_ptr(), bytes.len() as u64, &mut required) }, ViemStatus::Ok);
+    let context: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(context["image"]["width"].is_null());
+    assert!(context["image"]["height"].is_null());
 }
 
 #[test]

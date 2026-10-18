@@ -689,6 +689,7 @@ impl Document {
             .into_iter()
             .find(|block| block.range.start <= range.start && range.start <= block.range.end);
         let mut prefix = String::new();
+        let mut bare_item_start = false;
         if let Some(block) = &block {
             prefix = "> ".repeat(block.quote_depth);
             if range.is_empty()
@@ -702,19 +703,11 @@ impl Document {
                 let at = line.start + self.encoding().encode_fragment(&raw[..quote])?.len();
                 source = at..at;
             }
-            if matches!(block.kind, super::super::BlockKind::ListItem { .. }) {
-                let line = self
-                    .state()
-                    .source_hard_lines
-                    .line_at_offset(source.start)
-                    .and_then(|index| self.state().source_hard_lines.get(index))
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let raw = self.table_source_text(line)?;
-                let quoted = super::super::markdown_quotes::prefix(&raw);
-                let body = &raw[quoted..];
-                let indent = super::super::markdown_blocks::marker_prefix_length(body)
-                    .unwrap_or_else(|| body.len() - body.trim_start_matches([' ', '\t']).len());
-                prefix.push_str(&" ".repeat(indent));
+            if block.list_level().is_some() {
+                let (owner, decoded, continuation) = self.markdown_list_continuation_context(range.start)?;
+                prefix = continuation;
+                bare_item_start = block.range.is_empty() && owner.id == block.id
+                    && !decoded.text.ends_with([' ', '\t']);
             }
         }
         let physical = self.state().source_hard_lines.line_at_offset(source.start)
@@ -722,8 +715,8 @@ impl Document {
             .ok_or(DocumentError::AmbiguousProjection)?;
         let at_paragraph_start = block.as_ref().is_some_and(|block|
             range.is_empty() && range.start == block.range.start
-                && matches!(block.kind, BlockKind::Paragraph | BlockKind::Heading(_)));
-        let mut body = String::new();
+                && matches!(block.kind, BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::ListItem { .. }));
+        let mut body = if bare_item_start { " ".to_owned() } else { String::new() };
         let needs_before = !at_paragraph_start && source.start
             > self.state().source_hard_lines.get(0).map_or(0, |range| range.start);
         if needs_before {
@@ -813,12 +806,16 @@ impl Document {
             .map_err(DocumentError::FormattedTextStorage);
         let before = slice(self.projection(), before_start..range.start)?;
         let after = slice(self.projection(), range.end..after_end)?;
-        let candidate_before = slice(&state.projection,
-            mapped(before_start, Association::BeforeInsertion)?..table.range.start)?;
-        let candidate_after = slice(&state.projection,
-            table.range.end..mapped(after_end, Association::AfterInsertion)?)?;
-        if candidate_before.trim_end_matches('\n') != before.trim_end_matches('\n')
-            || candidate_after.trim_start_matches('\n') != after.trim_start_matches('\n')
+        // An empty paragraph's retained source boundary can map before the
+        // inserted table, even with AfterInsertion association. It has no
+        // surviving prose to compare and must not form a reversed text slice.
+        let before_preserved = before.is_empty() || slice(&state.projection,
+            mapped(before_start, Association::BeforeInsertion)?..table.range.start)?
+            .trim_end_matches('\n') == before.trim_end_matches('\n');
+        let after_preserved = after.is_empty() || slice(&state.projection,
+            table.range.end..mapped(after_end, Association::AfterInsertion)?)?
+            .trim_start_matches('\n') == after.trim_start_matches('\n');
+        if !before_preserved || !after_preserved
         {
             return Err(unsupported(
                 "This insertion cannot preserve the surrounding inline structure.",

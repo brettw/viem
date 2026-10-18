@@ -376,7 +376,7 @@ Deliberate presentation exceptions:
   dimension preserves intrinsic proportions, while both specify the displayed
   proportions. Apply document zoom and then fit within the content width and
   existing display caps. Preserve authored dimensions through image location
-  edits without exposing dimension controls. Displayed images never exceed 1024
+  edits unless the user changes them with the image size controls. Displayed images never exceed 1024
   device-independent pixels in either direction, including at higher document zoom. Preview only
   files of at most 10 MB (10,000,000 bytes), with source width and height each at
   most 5000 pixels. Check file size before reading bytes and dimensions before
@@ -432,7 +432,20 @@ and encode invalid bytes once.
 Markdown image insertion and location editing use native caret popups, with the
 image button beside Code Block. Selecting an image shows its location, explicit
 open/copy/edit/remove actions, and an outline matching the open-box caret. The
-edit transition follows the link popup's native controls and reduced-motion
+authoring action reads Insert for a new image and Apply for an existing image.
+Insertions and destination changes load eligible local previews immediately.
+The image editor's Specify size disclosure opens automatically for authored
+dimensions. It offers pixel width and height, an aspect-ratio lock, and Use image
+size. Enabling size initially uses the natural pixel dimensions and locks the
+ratio; authored sizes use passive HTML image attributes. Collapsing the section
+only hides the controls; clearing both fields removes explicit sizing. The lock is popup-local and defaults
+on for existing dimensions within one pixel of the natural ratio calculated
+from either axis. Locking adjusts the other axis from the most recently edited
+dimension in that showing, or preserves width when neither has been edited.
+Use image size restores natural pixel dimensions. Header inspection follows
+the same local-only resource limits; unavailable natural dimensions still allow
+manual sizes but cannot offer proportional adjustment or Use image size.
+The edit transition follows the link popup's native controls and reduced-motion
 behavior. Clicking a Preview image selects its entire atomic range independently
 of automatic text-selection preferences. Explicit Insert/Replace navigation onto
 an image selects its atomic range; subsequent arrow movement leaves that
@@ -1138,6 +1151,10 @@ markers are enabled with `tab:>-,trail:*,extends:>,precedes:<`. The menu toggle
 uses the same option. Markers appear only in Text and Code, never Markdown
 Preview (including rich Code blocks). They use the application-owned **Visible
 whitespace** style, initially dark blue `#00008B`, with application-settings undo.
+Settings' Editing > Edit Style opens or raises the ordinary Style Editor with
+Code and Visible whitespace selected. It reuses the existing editor window,
+holds that explicit target independently of the active document, and saves
+marker declarations as application settings rather than theme or source styles.
 It cannot become authored/typing style. Marker ink fits existing geometry and
 changes no text, caret stops, wrapping, height, search, clipboard, accessibility
 or serialization. Exact marker exports must use the same presentation text as

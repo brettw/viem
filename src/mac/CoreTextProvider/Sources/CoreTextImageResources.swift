@@ -94,6 +94,14 @@ final class CoreTextImageResources: @unchecked Sendable {
   private var reloadRequested = Set<String>()
   private var loads = 0
   private var probes = 0
+  private struct DimensionRequest {
+    let location: String
+    let epoch: UUID
+    let cancellation: Operation
+    let completion: @MainActor @Sendable (CGSize?) -> Void
+  }
+  private var dimensionRequest: DimensionRequest?
+  private var dimensionRequestRunning = false
   /// Bitmaps resampled to the device size they are drawn at, so scrolling
   /// draws them nearly 1:1 instead of resampling a large raster every frame.
   private struct Scaled { let source: CGImage; let pixels: CGSize; let image: CGImage }
@@ -183,6 +191,7 @@ final class CoreTextImageResources: @unchecked Sendable {
     entries.removeAll(); order.removeAll(); bytes = 0
     scaled.removeAll(); scaledOrder.removeAll(); scaledBytes = 0; scaling.removeAll()
     known.removeAll(); metadataBytes = 0; reloadRequested.removeAll()
+    dimensionRequest = nil
     visible = nil; viewportID = nil; admitted.removeAll(); attempted.removeAll(); needsRetry = false
     // Keep old jobs counted until they drain; never cancel a new epoch's job.
     return true
@@ -191,6 +200,7 @@ final class CoreTextImageResources: @unchecked Sendable {
   func stop() {
     lock.lock()
     stopped = true; epoch = UUID(); changed = nil; resourcesChanged = nil; rastersChanged = nil
+    dimensionRequest = nil
     entries.removeAll(); known.removeAll(); metadataBytes = 0
     scaled.removeAll(); scaledOrder.removeAll(); scaledBytes = 0; scaling.removeAll()
     pending.removeAll(); order.removeAll(); bytes = 0; reloadRequested.removeAll()
@@ -201,6 +211,46 @@ final class CoreTextImageResources: @unchecked Sendable {
   func canReload(_ location: String) -> Bool {
     lock.lock(); defer { lock.unlock() }
     return !stopped && Self.localURL(location, relativeTo: baseURL) != nil
+  }
+
+  /// A cancelled popup probe cannot install into a later document or draft.
+  /// It shares the bounded local decoder and reads headers without pixels.
+  func requestDimensions(_ location: String, completion: @escaping @MainActor @Sendable (CGSize?) -> Void) -> Operation {
+    let operation = BlockOperation()
+    lock.lock()
+    guard !stopped else { lock.unlock(); operation.cancel(); return operation }
+    let superseded = dimensionRequest?.cancellation
+    dimensionRequest = DimensionRequest(location: location, epoch: epoch, cancellation: operation, completion: completion)
+    let start = !dimensionRequestRunning
+    dimensionRequestRunning = true
+    lock.unlock()
+    superseded?.cancel()
+    // One header read and one coalesced request, even if the filesystem stalls
+    // while the user types or opens successive popups.
+    if start { queue.addOperation { [weak self] in self?.runDimensionRequests() } }
+    return operation
+  }
+
+  private func runDimensionRequests() {
+    while true {
+      lock.lock()
+      guard !stopped, let request = dimensionRequest else {
+        dimensionRequestRunning = false; lock.unlock(); return
+      }
+      dimensionRequest = nil
+      lock.unlock()
+      guard !request.cancellation.isCancelled else { continue }
+      let value = image(for: request.location, probe: true, servesLayout: false, expectedEpoch: request.epoch)
+      let size = value.state.hasExactDimensions ? value.size : nil
+      DispatchQueue.main.async { [weak self] in
+        guard let self, !request.cancellation.isCancelled else { return }
+        self.lock.lock()
+        let current = !self.stopped && self.epoch == request.epoch
+          && (value.state == .remote || self.known[request.location]?.layoutKey == value.layoutKey)
+        self.lock.unlock()
+        if current { request.completion(size) }
+      }
+    }
   }
 
   @discardableResult
@@ -226,9 +276,12 @@ final class CoreTextImageResources: @unchecked Sendable {
   }
 
   /// `servesLayout` is false for requests that only start a bitmap load.
-  private func image(for location: String, probe: Bool = false, servesLayout: Bool) -> CoreTextInlineImage {
+  private func image(for location: String, probe: Bool = false, servesLayout: Bool, expectedEpoch: UUID? = nil) -> CoreTextInlineImage {
     guard location.utf8.count <= 8192 else { return .placeholder(location) }
     lock.lock()
+    if let expectedEpoch, expectedEpoch != epoch || stopped {
+      lock.unlock(); return .placeholder(location)
+    }
     guard let local = Self.localURL(location, relativeTo: baseURL) else {
       lock.unlock(); return .placeholder(location, state: .remote)
     }
@@ -243,6 +296,10 @@ final class CoreTextImageResources: @unchecked Sendable {
         record(measured ?? .placeholder(location, state: .broken), for: location, notifyFromWorker: true)
       }
     }
+    // Layout may encounter a newly inserted location before the next visible
+    // frame admits it for decoding. Remember that placeholder now so the load
+    // invalidates its geometry instead of merely repainting stale bounds.
+    if servesLayout { _ = remember(location) }
     let cached = entries[location]
     let result = cached ?? known[location]?.placeholder(location) ?? .placeholder(location)
     if servesLayout { known[location]?.served = true }

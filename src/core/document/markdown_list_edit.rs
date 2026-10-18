@@ -2,9 +2,77 @@
 //! decorations; the formatted intention contains only the new paragraph break.
 use super::replacement::PatchComposition;
 use super::*;
-use crate::document::{edit_boundary, BlockKind};
+use crate::document::{edit_boundary, BlockKind, ContainerKind};
 
 impl Document {
+    /// Resolve continuation syntax from the owning item, including separator
+    /// paragraphs whose own physical row has no marker or indentation.
+    pub(super) fn markdown_list_continuation_context(
+        &self,
+        at: usize,
+    ) -> Result<(crate::document::Block, crate::document::encoding::DecodedText, String), ModelTransactionError> {
+        let block = edit_boundary::paragraph_at(self, at)?
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let blocks = self.projection().list_indentation_blocks();
+        let index = blocks.index_touching_point(at).ok_or(DocumentError::AmbiguousProjection)?;
+        let level = block.list_level().ok_or(DocumentError::UnsupportedFormatting)?;
+        let key = u16::from(level) + 1;
+        let owner_index = blocks.find_navigation(0..index + 1, true, |summary| {
+            summary.minimum < key || summary.minimum_start <= key
+        }).ok_or(DocumentError::AmbiguousProjection)?;
+        let owner = blocks.get(owner_index).filter(|owner| {
+            matches!(owner.kind, BlockKind::ListItem { level: owner_level, item_start: true, .. } if owner_level == level)
+        }).ok_or(DocumentError::AmbiguousProjection)?;
+        let body = self.projection().source_insertion_point(owner.range.start, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let line = self.state().source_hard_lines.line_at_offset(body)
+            .and_then(|index| self.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = self.state().source.bytes_in(line.start..body)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode_region(&bytes, line.start)?;
+        let mut remaining = decoded.text.as_str();
+        let mut continuation = String::new();
+        let mut found_marker = false;
+        // Quote and list containers can interleave in either order on one
+        // physical row. Keep quote syntax in place and replace every owned
+        // marker with its continuation indentation.
+        loop {
+            let quote = crate::document::markdown_quotes::prefix(remaining);
+            if quote > 0 {
+                continuation.push_str(&remaining[..quote]);
+                remaining = &remaining[quote..];
+            } else if let Some((bytes, columns)) = crate::document::markdown_blocks::marker_prefix_geometry(remaining) {
+                // This slice stops at the first visible character. A trailing
+                // inline emphasis opener is not another bare list marker.
+                if !owner.range.is_empty() && bytes == remaining.len()
+                    && !remaining.ends_with([' ', '\t']) {
+                    break;
+                }
+                continuation.push_str(&" ".repeat(columns));
+                remaining = &remaining[bytes..];
+                found_marker = true;
+            } else {
+                break;
+            }
+        }
+        if !found_marker {
+            return Err(DocumentError::AmbiguousProjection.into());
+        }
+        // Later paragraphs can enter or leave quotes inside this item.
+        // Keep the item's indentation while matching the current quote owner,
+        // rather than inheriting the first paragraph's inner quote scopes.
+        if block.quote_depth > owner.quote_depth {
+            continuation.push_str(&"> ".repeat(block.quote_depth - owner.quote_depth));
+        } else {
+            for _ in block.quote_depth..owner.quote_depth {
+                let quote = continuation.rfind('>').ok_or(DocumentError::AmbiguousProjection)?;
+                continuation.truncate(quote);
+            }
+        }
+        Ok((owner, decoded, continuation))
+    }
+
     /// Whether the caret can create another paragraph in its existing item.
     /// Literal views, code bodies and table cells keep their own break actions.
     pub fn can_insert_list_paragraph(&self, at: usize) -> bool {
@@ -57,55 +125,10 @@ impl Document {
         } else { None };
         let block = edit_boundary::paragraph_at(self, at)?
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let blocks = self.projection().list_indentation_blocks();
-        let index = blocks.index_touching_point(at).ok_or(DocumentError::AmbiguousProjection)?;
-        let level = block.list_level().ok_or(DocumentError::UnsupportedFormatting)?;
-        let key = u16::from(level) + 1;
-        let owner_index = blocks.find_navigation(0..index + 1, true, |summary| {
-            summary.minimum < key || summary.minimum_start <= key
-        }).ok_or(DocumentError::AmbiguousProjection)?;
-        let owner = blocks.get(owner_index).filter(|owner| {
-            matches!(owner.kind, BlockKind::ListItem { level: owner_level, item_start: true, .. } if owner_level == level)
-        }).ok_or(DocumentError::AmbiguousProjection)?;
-        let body = self.projection().source_insertion_point(owner.range.start, true)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let line = self.state().source_hard_lines.line_at_offset(body)
-            .and_then(|index| self.state().source_hard_lines.get(index))
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let bytes = self.state().source.bytes_in(line.start..body)
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let decoded = self.encoding().decode_region(&bytes, line.start)?;
-        let mut remaining = decoded.text.as_str();
-        let mut continuation = String::new();
-        let mut found_marker = false;
-        // Quote and list containers can interleave in either order on one
-        // physical row. Keep quote syntax in place and replace every owned
-        // marker with its continuation indentation.
-        loop {
-            let quote = crate::document::markdown_quotes::prefix(remaining);
-            if quote > 0 {
-                continuation.push_str(&remaining[..quote]);
-                remaining = &remaining[quote..];
-            } else if let Some((bytes, columns)) = crate::document::markdown_blocks::marker_prefix_geometry(remaining) {
-                continuation.push_str(&" ".repeat(columns));
-                remaining = &remaining[bytes..];
-                found_marker = true;
-            } else {
-                break;
-            }
-        }
-        if !found_marker {
-            return Err(DocumentError::AmbiguousProjection.into());
-        }
+        let (owner, decoded, continuation) = self.markdown_list_continuation_context(at)?;
         let mut separator = format!("\n{}\n{continuation}", continuation.trim_end_matches([' ', '\t']));
         if at == block.range.start {
             separator.insert_str(0, "<span></span>");
-            if matches!(block.kind, BlockKind::Paragraph) {
-                // Raw separator paragraphs inherit their parsed item owner,
-                // but their physical blank row has no continuation prefix.
-                // The retained empty body now needs that owner's indentation.
-                separator.insert_str(0, &continuation);
-            }
             if block.range.is_empty() && owner.id == block.id && !decoded.text.ends_with([' ', '\t']) {
                 separator.insert(0, ' ');
             }
@@ -139,6 +162,9 @@ impl Document {
                 patch.range.start <= folded.start && folded.end <= patch.range.end)
                 .ok_or(DocumentError::AmbiguousProjection)?;
             patch.range.end = patch.range.end.max(end);
+        }
+        if block.range.is_empty() && block.kind == BlockKind::Paragraph {
+            self.preserve_empty_list_body_prefix(source_at, &continuation, &mut patches)?;
         }
         self.preserve_markdown_edit_boundaries(
             std::slice::from_ref(&edit), std::iter::once(&edit.range), &mut patches,
@@ -174,6 +200,45 @@ impl Document {
             return Err(DocumentError::VerificationFailed.into());
         }
         Ok(prepared)
+    }
+
+    /// A separator caret can follow existing blank-row indentation. Reusing
+    /// that prefix avoids doubling it when the empty body gains inline syntax.
+    fn preserve_empty_list_body_prefix(
+        &self,
+        source_at: usize,
+        continuation: &str,
+        patches: &mut [SourcePatch],
+    ) -> Result<(), ModelTransactionError> {
+        let line = self.state().source_hard_lines.line_at_offset(source_at)
+            .and_then(|index| self.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = self.state().source.bytes_in(line.start..source_at)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = self.encoding().decode_region(&bytes, line.start)?;
+        if decoded.text == continuation { return Ok(()); }
+        if !decoded.text.chars().all(|ch| matches!(ch, ' ' | '\t' | '>')) {
+            return Err(DocumentError::AmbiguousProjection.into());
+        }
+        // Equivalent tab spelling already supplies the required columns.
+        // Preserve it instead of rewriting untouched blank-row trivia.
+        let expanded = |prefix: &str| {
+            let mut result = String::new();
+            for ch in prefix.chars() {
+                if ch == '\t' {
+                    for _ in 0..4 - result.len() % 4 { result.push(' '); }
+                } else { result.push(ch); }
+            }
+            result
+        };
+        if expanded(&decoded.text) == expanded(continuation) { return Ok(()); }
+        let patch = patches.iter_mut().find(|patch| patch.range.start == source_at)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let mut replacement = self.encoding().encode_fragment(continuation)?;
+        replacement.extend_from_slice(&patch.replacement);
+        patch.range.start = line.start;
+        patch.replacement = replacement;
+        Ok(())
     }
 
     /// Removing an item's label releases its continuation paragraphs too.
@@ -528,12 +593,30 @@ impl Document {
         }
         let origin =
             edit_boundary::paragraph_at(self, origin)?.ok_or(DocumentError::VerificationFailed)?;
+        // Raw separator paragraphs acquire the generated item style when an
+        // explicit empty body is materialized, without changing their owner.
+        let materialized_style = |paragraph: &crate::document::Block| -> Result<StyleId, DocumentError> {
+            if paragraph.range.is_empty() && paragraph.kind == BlockKind::Paragraph && paragraph.list_level().is_some()
+                && !self.is_trailing_blank_list_paragraph(paragraph)? {
+                if let Some(level) = paragraph.list_level() {
+                    if let Some(ordered) = paragraph.containers.iter().rev().find_map(|member| {
+                        if let ContainerKind::List { ordered } = member.container.kind { Some(ordered) }
+                        else { None }
+                    }) {
+                        return Ok(self.projection().style_sheet().list_style_id(ordered, level));
+                    }
+                }
+            }
+            Ok(paragraph.style.clone())
+        };
+        let retained_style = materialized_style(&block)?;
+        let origin_style = materialized_style(&origin)?;
         let next = following_override.unwrap_or_else(|| {
             self.projection()
                 .style_sheet()
-                .next_paragraph_style(&origin.style)
+                .next_paragraph_style(&origin_style)
                 .cloned()
-                .unwrap_or_else(|_| origin.style.clone())
+                .unwrap_or_else(|_| origin_style.clone())
         });
         let mut scratch = self.scratch_document();
         let mut sources = PatchComposition::new(self.source_byte_len());
@@ -564,6 +647,9 @@ impl Document {
             )?
         } else if self.format() == Format::Markdown && block.style.0 == "Code Block" {
             scratch.prepare_markdown_code_open(at, &block, after)?
+        } else if block.range.is_empty() && block.kind == BlockKind::Paragraph
+            && block.list_level().is_some() && !self.is_trailing_blank_list_paragraph(&block)? {
+            scratch.prepare_list_paragraph(at, BoundaryAffinity::Downstream)?
         } else if matches!(block.kind, BlockKind::ListItem { .. }) {
             if self.format() == Format::Markdown {
                 scratch.prepare_markdown_list_split(at, true)?
@@ -603,9 +689,9 @@ impl Document {
         // The opposite side retains the original paragraph's style even when
         // an adapter's ordinary split defaults a heading to body text.
         for (point, style) in if after {
-            [(before, block.style.clone()), (following, next.clone())]
+            [(before, retained_style.clone()), (following, next.clone())]
         } else {
-            [(following, block.style.clone()), (before, next.clone())]
+            [(following, retained_style.clone()), (before, next.clone())]
         } {
             let actual = scratch
                 .projection()
@@ -891,21 +977,18 @@ impl Document {
         let edit = TextEdit::new(at..at, "\n");
         let mut range = source_at..source_at;
         let mut replacement = replacement;
+        let mut materializes_empty_body = block.range.is_empty() && block.kind == BlockKind::Paragraph;
         if at == block.range.start && block.id != first_paragraph.id {
             if matches!(block.kind, BlockKind::Paragraph) {
                 // An editable raw separator has no source body to retain.
-                // Give that existing paragraph its item's continuation prefix
-                // before appending the new item's marker.
-                let (_, columns) = crate::document::markdown_blocks::marker_prefix_geometry(prefix)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let mut support = self.encoding().encode_fragment(
-                    &format!("{quote_prefix}{}<span></span>", " ".repeat(columns)),
-                )?;
+                // Keep its body before appending the new item's marker.
+                let mut support = self.encoding().encode_fragment("<span></span>")?;
                 support.extend(replacement);
                 replacement = support;
             } else if block.range.is_empty() {
-                // Keep the existing passive empty body with the old item.
-                // An empty continuation is not an empty labelled item.
+                // Keep an existing passive empty body with the old item.
+                // A physically blank quoted continuation needs such a body
+                // too; otherwise its old paragraph disappears on the split.
                 let current = self.state().source_hard_lines.line_at_offset(source_at)
                     .and_then(|line| self.state().source_hard_lines.get(line))
                     .ok_or(DocumentError::AmbiguousProjection)?;
@@ -915,6 +998,12 @@ impl Document {
                 let end = decoded.text.trim_end_matches(['\r', '\n']).len();
                 let at = decoded.source_boundary(end).ok_or(DocumentError::AmbiguousProjection)?;
                 range = at..at;
+                if crate::document::markdown_quotes::container_prefix(&decoded.text[..end]) == end {
+                    materializes_empty_body = true;
+                    let mut support = self.encoding().encode_fragment("<span></span>")?;
+                    support.extend(replacement);
+                    replacement = support;
+                }
             } else {
                 let mut support = self.encoding().encode_fragment("<span></span>")?;
                 support.extend(replacement);
@@ -922,6 +1011,11 @@ impl Document {
             }
         }
         let mut patches = vec![SourcePatch::primary(range, replacement)];
+        if materializes_empty_body {
+            let (_, _, continuation) = self.markdown_list_continuation_context(at)?;
+            let body_at = patches[0].range.start;
+            self.preserve_empty_list_body_prefix(body_at, &continuation, &mut patches)?;
+        }
         if at == block.range.end && !block.range.is_empty() {
             let next = self.projection().blocks_for_region(&(at + 1..at + 1))
                 .into_iter().find(|next| next.range.start == at + 1);

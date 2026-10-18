@@ -8,7 +8,8 @@ public enum EVEditorComposition {
         EVLaunchArguments.parse = EVCoreLaunchArguments.parse
         EVCoreArgumentListPolicy.install()
         EVEditingPreferences.editVisibleWhitespaceStyle = { configuration in
-            EVVisibleWhitespaceStyleEditor.show(configuration: configuration)
+            EVStyleEditorCoordinator.shared.showCode(configuration: configuration,
+                preferredStyle: .visibleWhitespace, sender: nil)
         }
         EVEditingPreferences.validateWhitespacePresentation = { options in
             guard let data = try? JSONEncoder().encode(options) else { return "Invalid visible whitespace settings." }

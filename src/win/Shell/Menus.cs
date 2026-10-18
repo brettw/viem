@@ -246,6 +246,13 @@ internal sealed partial class EditorWindow
         else styleInspector.Retarget(View);
         styleInspector.Activate();
     }
+    internal void ShowVisibleWhitespaceStyle()
+    {
+        if (View == null) return;
+        if (styleInspector == null) { styleInspector = new StyleWindow(View, preferences, followCaret: false); styleInspector.Closed += (_, _) => styleInspector = null; }
+        styleInspector.SelectVisibleWhitespace();
+        styleInspector.Activate();
+    }
 #if DEBUG
     internal StyleWindow? StyleInspector => styleInspector;
     internal void ValidateMenusForTesting() => ValidateMenus();
@@ -273,7 +280,7 @@ internal sealed partial class EditorWindow
     internal Task ShowThemeSettings() => ShowSettings(selectTheme: true);
     private Task ShowSettings(bool selectTheme)
     {
-        if (settingsWindow == null) { settingsWindow = new SettingsWindow(preferences); settingsWindow.Closed += (_, _) => settingsWindow = null; }
+        if (settingsWindow == null) { settingsWindow = new SettingsWindow(preferences) { EditVisibleWhitespaceStyle = ShowVisibleWhitespaceStyle }; settingsWindow.Closed += (_, _) => settingsWindow = null; }
         if (selectTheme) settingsWindow.SelectThemeCategory();
         settingsWindow.Activate(); return Task.CompletedTask;
     }

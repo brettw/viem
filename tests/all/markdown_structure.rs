@@ -145,6 +145,40 @@ fn typing_in_empty_eof_heading_stays_inside_heading() {
 }
 
 #[test]
+fn clearing_empty_heading_closing_hashes_keeps_source_patches_disjoint() {
+    use viem_core::document::FileFormat;
+    for heading in ["## ###", "##   ###  ", "##\t###", "##", "  ## ###"] {
+        for encoding in [Encoding::Utf8, Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
+            for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+                let ending = match file_format { FileFormat::Unix => "\n", FileFormat::Dos => "\r\n", FileFormat::Mac => "\r" };
+                let encode = |text: &str| match encoding {
+                    Encoding::Utf8 | Encoding::Latin1 => text.as_bytes().to_vec(),
+                    Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                    Encoding::Utf16Be => text.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+                };
+                let original = encode(&format!("Before{ending}{ending}{heading}{ending}{ending}After"));
+                let mut doc = Document::from_bytes_with_file_format(original.clone(), encoding, Format::Markdown, file_format).unwrap();
+                let target = doc.projection().blocks().iter().find(|block| block.style.0 == "Heading2").unwrap().range.clone();
+                assert!(target.is_empty());
+                let prepared = doc.prepare_model_request(ModelRequest::SetParagraphStyle {
+                    document: doc.id(), revision: doc.revision(), range: target, style: "Paragraph".into(),
+                }).unwrap_or_else(|error| panic!("{heading:?} {encoding:?} {file_format:?}: {error:?}"));
+                assert!(prepared.summary().source_patches().windows(2).all(|pair| pair[0].range().end <= pair[1].range().start));
+                doc.commit_model_transaction(prepared).unwrap();
+                let changed = doc.source_bytes();
+                assert_eq!(changed, encode(&format!("Before{ending}{ending}{ending}{ending}After")), "{heading:?} {encoding:?} {file_format:?}");
+                assert_eq!(doc.text(), "Before\n\nAfter");
+                let reopened = Document::from_bytes_with_file_format(changed.clone(), encoding, Format::Markdown, file_format).unwrap();
+                assert_eq!(reopened.text(), doc.text());
+                assert!(reopened.projection().blocks().iter().all(|block| block.style.0 == "Paragraph"));
+                assert!(doc.undo()); assert_eq!(doc.source_bytes(), original);
+                assert!(doc.redo()); assert_eq!(doc.source_bytes(), changed);
+            }
+        }
+    }
+}
+
+#[test]
 fn bare_list_marker_typing_through_document_edits_matches_reopened_source() {
     for (source, at, expected) in [
         ("-\nparagraph", 0, "X\nparagraph"),

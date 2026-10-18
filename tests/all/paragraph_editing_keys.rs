@@ -323,6 +323,68 @@ fn shift_enter_at_paragraph_edges_keeps_one_paragraph_and_source_modes_insert_li
 }
 
 #[test]
+fn empty_structural_owner_keyboard_edits_preserve_neighbors_and_history() {
+    let mut failures = Vec::new();
+    for owner in ["##", "## ###", "##\t###", ">", "-", "1.", "```\n```", "> ##", "> -", "- ##", "- ```\n  ```", "<span></span>", "> <span></span>", "- <span></span>", "- a\n\n  \n\n  b", "> - a\n> \n>   \n> \n>   b", "- parent\n  - a\n\n    \n\n    b"] {
+        for key in [Key::Char('o'), Key::Char('O'), Key::Enter, Key::ShiftEnter] {
+            let result = std::panic::catch_unwind(|| {
+            let source = format!("Before\n\n{owner}\n\nAfter");
+            let (mut core, view) = open(&source, Format::Markdown);
+            let original = core.document().projection().blocks().iter().find(|block| block.range.is_empty())
+                .unwrap_or_else(|| panic!("missing empty owner in {source:?}")).clone();
+            let at = original.range.start;
+            core.handle_with_layout(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: at,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            if matches!(key, Key::Enter | Key::ShiftEnter) { input(&mut core, view, InputEvent::key('i')); }
+            input(&mut core, view, InputEvent::Key(key));
+            if key != Key::Enter {
+                let range = match key { Key::ShiftEnter => at..at + 1, Key::Char('O') => at + 1..at + 1, _ => at..at };
+                let retained = core.document().projection().blocks().iter().find(|block| block.range == range)
+                    .unwrap_or_else(|| panic!("missing retained owner in {source:?} after {key:?}"));
+                let original_lists = original.containers.iter().filter_map(|member| {
+                    if let viem_core::document::ContainerKind::List { ordered } = member.container.kind { Some(ordered) }
+                    else { None }
+                }).collect::<Vec<_>>();
+                if original.kind == viem_core::document::BlockKind::Paragraph && !original_lists.is_empty() {
+                    let level = original_lists.len() as u8 - 1;
+                    assert!(matches!(retained.kind, viem_core::document::BlockKind::ListItem {
+                        ordered, level: retained_level, item_start: false, ..
+                    } if Some(&ordered) == original_lists.last() && retained_level == level), "{source:?} {key:?}: {retained:?}");
+                    assert_eq!(retained.style, core.document().projection().style_sheet().list_style_id(*original_lists.last().unwrap(), level));
+                    assert_eq!(retained.containers.iter().map(|member| &member.container).collect::<Vec<_>>(),
+                        original.containers.iter().map(|member| &member.container).collect::<Vec<_>>(), "{source:?} {key:?}");
+                    assert_eq!(retained.quote_depth, original.quote_depth, "{source:?} {key:?}");
+                } else {
+                    assert_eq!((&retained.style, std::mem::discriminant(&retained.kind), retained.quote_depth),
+                        (&original.style, std::mem::discriminant(&original.kind), original.quote_depth), "{source:?} {key:?}");
+                }
+            }
+            let empty_bytes = core.document().source_bytes();
+            let reopened = Document::from_bytes(empty_bytes, Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), core.document().text(), "{source:?} {key:?}");
+            assert_eq!(reopened.projection().blocks().iter().map(|block| (&block.range, &block.kind, &block.style, block.quote_depth)).collect::<Vec<_>>(),
+                core.document().projection().blocks().iter().map(|block| (&block.range, &block.kind, &block.style, block.quote_depth)).collect::<Vec<_>>(), "{source:?} {key:?}");
+            input(&mut core, view, InputEvent::text("X"));
+            assert!(core.document().text().starts_with("Before\n"), "{source:?} {key:?}");
+            assert!(core.document().text().ends_with("\nAfter"), "{source:?} {key:?}");
+            assert!(core.document().source_bytes().starts_with(b"Before\n\n"), "{source:?} {key:?}");
+            assert!(core.document().source_bytes().ends_with(b"\n\nAfter"), "{source:?} {key:?}: {:?}", String::from_utf8_lossy(&core.document().source_bytes()));
+            reopen_and_history(&mut core, view, source.as_bytes());
+            });
+            if let Err(error) = result {
+                let detail = error.downcast_ref::<String>().cloned()
+                    .or_else(|| error.downcast_ref::<&str>().map(|value| (*value).to_owned()))
+                    .unwrap_or_else(|| "unexpected panic".to_owned());
+                failures.push(format!("{owner:?} {key:?}: {detail}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn empty_quote_enter_and_list_backspace_reset_while_other_block_backspace_joins() {
     for (format, source, at, enter, expected) in [
         (Format::Markdown, "previous\n\n> body\n\nnext", 9, false, "previous\nbody\nnext"),
