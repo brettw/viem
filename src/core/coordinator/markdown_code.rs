@@ -51,6 +51,49 @@ mod tests {
     };
     use std::time::{Duration, Instant};
 
+    #[test]
+    fn bundled_yaml_publishes_styles_in_standalone_files_front_matter_and_fences() {
+        use crate::document::StyleApplication;
+        let body = "name: update-themes\nenabled: true\ncount: 42\ntitle: \"Writer\"\n# settings\n";
+        for (filename, format, source) in [
+            ("settings.yaml", Format::PlainText, body.to_owned()),
+            ("SKILL.md", Format::Markdown, format!("---\n{body}---\n\nProse")),
+            ("example.md", Format::Markdown, format!("```yaml\n{body}```\n\nProse")),
+        ] {
+            let mut core = Core::new(Document::from_bytes(
+                source.as_bytes().to_vec(), Encoding::Utf8, format,
+            ).unwrap());
+            core.configure_syntax(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax"));
+            core.initialize_code_detection(filename, true).unwrap();
+            core.add_view(MockTextMeasurementProvider::new(), 900., 600.);
+            let expected = [("name", "Identifier"), ("true", "Constant"), ("42", "Number"),
+                ("Writer", "String"), ("# settings", "Comment")];
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                core.poll_syntax();
+                let projection = core.document().projection();
+                if expected.iter().all(|(token, name)| {
+                    let at = core.document().text().find(token).unwrap();
+                    projection.layout_style_spans_for_region(&(at..at + token.len())).iter().any(|span| span.range.contains(&at)
+                        && matches!(&span.application, StyleApplication::Automatic(id)
+                            if projection.layout_style_sheet().character_style_metadata(id)
+                                .is_some_and(|metadata| metadata.display_name == *name)))
+                }) { break; }
+                assert!(std::time::Instant::now() < deadline,
+                    "{filename}: {:?}; {}", projection.layout_style_spans_for_region(&(0..source.len())),
+                    core.syntax_diagnostics());
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            assert!(!core.document().is_dirty());
+            if format == Format::Markdown {
+                let prose = core.document().text().find("Prose").unwrap();
+                assert!(!core.document().projection().layout_style_spans_for_region(&(prose..prose + 5)).iter().any(|span|
+                    span.range.contains(&prose) && matches!(&span.application, StyleApplication::Automatic(_))));
+            }
+        }
+    }
+
     fn fixture_code_sheet(size: f32) -> Arc<crate::document::StyleSheet> {
         let mut sheet = code_style::default_sheet();
         let mut base = sheet.block_style(&sheet.base_paragraph).unwrap().clone();

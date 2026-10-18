@@ -12,6 +12,9 @@ download syntax files. Git attributes disable text conversion for these files,
 including on Windows. The [native compiler profile](../../src/core/document/syntax/vim/PROFILE.md)
 documents compatibility and current audit procedures; distribution does not
 imply that every file is supported by Viem's bounded native compiler.
+Every language entry point is a compatibility target. Outstanding loader,
+execution, and dependency gaps are tracked in the
+[highlighter compatibility guide](../../docs/highlighter-compatibility.md).
 
 ## Build and update
 

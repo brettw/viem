@@ -890,7 +890,11 @@ final class EVStyleEditorViewController: NSViewController {
                   case let .float(value)? = snapshot.definition(for: sizeBasisKey)?.properties[.characterSize]?.effective else { return nil }
             return value
         }()
-        compactControls.configure(definition, theme: themeStore.theme, documentID: snapshot.identity.documentID,
+        // A settings session may rebuild its disposable specimen after saving.
+        // The session remains the color panel's target across that refresh.
+        let targetIdentity = settingsSession.map { ObjectIdentifier($0) }
+            ?? document.map { ObjectIdentifier($0.backend) }
+        compactControls.configure(definition, theme: themeStore.theme, targetIdentity: targetIdentity,
             fontSizeBasis: sizeBasis, allowsPercentageSize: definition.key != .visibleWhitespace)
         nextStyleRow.configure(
             selected: definition.flags.isBase ? nil

@@ -116,7 +116,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
     private var definition: EVStyleDefinition?
     private var alignmentGroup: NSView?
     private let tableAlignmentNote = NSTextField(labelWithString: "Alignment comes from the table column")
-    private var documentID: UInt64?
+    private var targetIdentity: ObjectIdentifier?
     private var theme = EVTheme.midnight
     private let alignmentValues: [UInt32] = [UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_START), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_CENTER), UInt32(VIEM_STYLE_PARAGRAPH_ALIGNMENT_END)]
     private var updating = false
@@ -313,7 +313,7 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         blockView.edgeInsets = NSEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
     }
 
-    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .midnight, documentID: UInt64? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
+    func configure(_ definition: EVStyleDefinition?, theme: EVTheme = .midnight, targetIdentity: ObjectIdentifier? = nil, fontSizeBasis: Float? = nil, allowsPercentageSize: Bool = true) {
         fallbackPopover?.close()
         fallbackPopover = nil
         let activeLineEditor = lineValue.currentEditor() as? NSTextView
@@ -323,11 +323,11 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
         updating = true
         defer { updating = wasUpdating }
         if self.definition?.key != definition?.key { blockLock.state = .off }
-        if self.definition?.key != definition?.key || self.documentID != documentID {
+        if self.definition?.key != definition?.key || self.targetIdentity != targetIdentity {
             lastLineValues = [:]
             for well in wells.values { well.dismissColorControls() }
         }
-        self.documentID = documentID
+        self.targetIdentity = targetIdentity
         self.definition = definition
         self.fontSizeBasis = fontSizeBasis
         self.allowsPercentageSize = allowsPercentageSize

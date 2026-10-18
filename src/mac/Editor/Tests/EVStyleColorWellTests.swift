@@ -6,6 +6,73 @@ import XCTest
 @MainActor
 final class EVStyleColorWellTests: XCTestCase {
 
+    func testBorderPanelRemainsBoundAcrossChoicesUntilItsTabIsHidden() throws {
+        let (backend, surface, editor, window) = try makeEditor()
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        editor.selectTab(.block)
+        let well = try XCTUnwrap(descendants(of: editor.view).compactMap { $0 as? EVStyleColorWell }
+            .first { $0.tag == Int(EVStyleProperty.blockBorderLeftColor.rawValue) })
+        try openColorPanel(well)
+        for expected in [EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1),
+                         EVStyleColor(red: 0.75, green: 0.25, blue: 0.5, alpha: 0.5)] {
+            NSColorPanel.shared.color = expected.appKitColor
+            XCTAssertEqual(try backend.styleSheetSnapshot().definition(for: .baseParagraph)?
+                .properties[.blockBorderLeftColor]?.declared, .color(expected))
+            XCTAssertTrue(well.isActive, "Refreshing the same visible attribute must retain the panel binding")
+        }
+        editor.selectTab(.character)
+        XCTAssertFalse(well.isActive)
+        let before = try backend.styleSheetSnapshot()
+        NSColorPanel.shared.color = .red
+        XCTAssertEqual(try backend.styleSheetSnapshot().identity, before.identity)
+    }
+
+    func testThemeBorderPanelRemainsBoundAcrossSavedChoices() throws {
+        let (backend, surface, editor, window) = try makeEditor()
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        let styles = try EVThemeStyleSession(configuration: backend.configuration, format: .markdown)
+        editor.retarget(settingsSession: styles)
+        editor.selectTab(.block)
+        let well = try colorWell("Border left color", in: editor.view)
+        let before = try styles.snapshot().definition(for: .baseParagraph)?.properties[.blockBorderLeftColor]
+        try openColorPanel(well)
+        for expected in [EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1),
+                         EVStyleColor(red: 0.75, green: 0.25, blue: 0.5, alpha: 0.5)] {
+            NSColorPanel.shared.color = expected.appKitColor
+            XCTAssertEqual(try styles.snapshot().definition(for: .baseParagraph)?
+                .properties[.blockBorderLeftColor]?.declared, .color(expected))
+            XCTAssertTrue(well.isActive, "Saving a theme must retain the same visible attribute's binding")
+        }
+        NSColorPanel.shared.close()
+        XCTAssertFalse(well.isActive)
+        let committed = try styles.snapshot().identity
+        NSColorPanel.shared.color = .red
+        XCTAssertEqual(try styles.snapshot().identity, committed)
+        styles.undoManager.undo()
+        XCTAssertEqual(try styles.snapshot().definition(for: .baseParagraph)?
+            .properties[.blockBorderLeftColor]?.declared,
+            .color(EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1)))
+        styles.undoManager.undo()
+        XCTAssertEqual(try styles.snapshot().definition(for: .baseParagraph)?
+            .properties[.blockBorderLeftColor], before)
+        XCTAssertFalse(styles.undoManager.canUndo)
+    }
+
+    func testRetargetingSettingsDisconnectsThePreviousColorWell() throws {
+        let (backend, surface, editor, window) = try makeEditor()
+        defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }
+        let first = try EVThemeStyleSession(configuration: backend.configuration, format: .markdown)
+        editor.retarget(settingsSession: first)
+        let well = try colorWell("Text color", in: editor.view)
+        try openColorPanel(well)
+        let second = try EVThemeStyleSession(configuration: backend.configuration, format: .plainText)
+        editor.retarget(settingsSession: second)
+        XCTAssertFalse(well.isActive)
+        let before = try second.snapshot().identity
+        NSColorPanel.shared.color = .red
+        XCTAssertEqual(try second.snapshot().identity, before)
+    }
+
     func testNativePanelSelectionCommitsOnceAndReopeningShowsCommittedColor() throws {
         let (backend, surface, editor, window) = try makeEditor()
         defer { closeColorPanel(in: editor.view); window.orderOut(nil); withExtendedLifetime(surface) {} }

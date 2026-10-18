@@ -730,6 +730,12 @@ completed parse provisional. Unsupported query handlers or Vim atoms must report
 compatibility failures, not silently succeed with different semantics. Vim syntax
 patterns, Neovim query predicates and Viem Regex v2 are separate languages.
 
+Every bundled language entry point is a highlighting compatibility target;
+shipping its source or listing it in a picker does not establish support. Track
+load and execution gaps in the [highlighter compatibility guide](docs/highlighter-compatibility.md),
+including dependencies and document-sensitive setup. Audit helpers in their
+owning packages and distinguish runtime utilities from language entry points.
+
 Before presenting newly visible Code text, native frontends may wait up to the
 shared 100 ms syntax grace-period constant for current visible coverage, without
 holding the core or provider locks. Ready coverage returns immediately; timeout
@@ -1857,6 +1863,10 @@ subsequent clicks and drags preserve ordinary native text selection.
 Closing never rolls back. Native font/color panels stay modeless and retain the
 same target and undo authority. External changes refresh controls/preview without
 manufacturing another edit.
+The macOS Colors panel stays bound to its selected style attribute across live
+refreshes and theme saves, including rebuilds of a disposable preview document.
+Hiding its source swatch, closing the panel, or selecting another editing target
+ends that binding.
 
 Block controls follow box order: margin, border weight, border color, padding,
 with sides ordered left, right, top, bottom. An optional inspector-local padlock

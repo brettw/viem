@@ -62,6 +62,12 @@ Active unsupported editor, process, file-writing, or network
 commands still reject the whole program. Runtime `try` handlers can handle
 supported setup errors; they cannot conceal a compatibility failure.
 
+Scalar `is`/`isnot` comparisons preserve types and support `#`/`?` case modifiers,
+including the bundled YAML schema selection. Collection identity remains
+unsupported because setup collections do not retain Vim reference identities.
+YAML provider and coordinator regressions cover keys, scalars, comments and
+quoted strings in standalone files, Markdown front matter and fenced blocks.
+
 Setup functions also support bounded `try`/`catch`/`finally`, preserving returns,
 loop flow and the enclosing exception state. Only modeled Vim setup errors are
 catchable; unsupported operations, cancellation and exhausted budgets remain
@@ -285,17 +291,31 @@ provisional when the finite exact-priming allowance expires.
 Regenerate diagnostics for the bundled runtime from the repository root:
 
 ```sh
-cargo run --release --offline --example audit_vim_syntax -- \
-  assets/vim/runtime/syntax > target/vim-syntax-audit.json
+mkdir -p target/validation/vim-audit
+python3 -B scripts/validation_support.py -- sh -c \
+  'cargo run --offline --profile native-test --example audit_vim_syntax -- \
+  assets/vim/runtime/syntax > target/validation/vim-audit/loads.json'
 ```
 
-An optional final argument filters relative filenames. The audit reports the
-first active compiler failure per file under default setup, without a document
-filename or prefix. Independently compiled helper fragments may lack their
-owner's context. Compilation success does not establish highlighting equivalence;
-use the native Vim differential fixtures for execution parity.
+An optional positional argument filters relative filenames. The audit reports
+the first active compiler failure per file. Without `--input FILE`, setup has no
+document snapshot. Supply a UTF-8 fixture with `--input FILE` and optionally
+`--filename NAME` to exercise production buffer queries and filename branches;
+an empty fixture supplies a real empty document. `--highlight` additionally runs
+the fixture and reports effective group runs, coverage, diagnostics, and work.
+Execution uses production per-slice limits, at most 320 slices (64 million
+instructions), and a ten-second deadline. Fixtures are capped at 1 MiB.
 
-The runtime audit has no document snapshot, so setup requiring `line('$')` or
+Top-level utilities and nested fragments are labeled separately. Fragments still
+compile independently without owner context; their standalone failures are not
+language failures. Audit them through their owners' transitive `source_files`
+as well. A top-level file can itself be a supplemental helper, such as Chicken.
+The command reports findings without failing its process for rejected programs.
+Compilation success and exact coverage do not establish highlighting equivalence;
+compare group runs with Vim using matched source, filenames, and capability
+policy. See the [compatibility work](../../../../../docs/highlighter-compatibility.md).
+
+Without `--input`, setup requiring `line('$')` or
 reads beyond its supplied prefix can still report unavailable context. Provider
 regressions load the unchanged bundled `gitcommit.vim` and `diff.vim` with real
 snapshots to exercise summary, trailer, comment, scissors, and verbose-diff
