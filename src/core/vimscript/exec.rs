@@ -105,9 +105,22 @@ pub struct Modifiers {
     pub placement: Vec<String>,
 }
 
-/// Services the editor provides to scripts. All methods run on the buffer's
-/// serial owner; none may hold a lock while calling back into the runtime.
+/// Services provided to scripts. Editor hosts run on the buffer's serial owner;
+/// syntax workers own private script state and immutable document queries.
+/// No host may hold a lock while calling back into the runtime.
 pub trait ScriptHost {
+    /// A confined host may replace builtins that otherwise inspect ambient
+    /// files, environment or editor state. Checked before engine dispatch.
+    fn override_builtin(&mut self, _rt: &mut Runtime, _name: &str, _args: &[Value]) -> Option<EvalResult<Value>> {
+        None
+    }
+    /// Syntax hosts resolve runtime imports within their pinned resources.
+    fn handles_runtime_commands(&self) -> bool { false }
+    /// Load an autoload namespace before resolving a missing global or function.
+    /// Ordinary editor hosts may decline; confined hosts account for the import.
+    fn autoload(&mut self, _rt: &mut Runtime, _name: &[u8]) -> EvalResult<bool> { Ok(false) }
+    /// Built-in runtime events supplied by a host without sourcing editor plugins.
+    fn runtime_event(&mut self, _rt: &mut Runtime, _event: &str, _matched: &str) -> EvalResult<()> { Ok(()) }
     /// Execute an Ex command that is not part of the scripting language.
     fn execute(&mut self, rt: &mut Runtime, command: &HostCommand) -> EvalResult<()>;
     fn get_option(&mut self, name: &str, scope: OptionScope) -> Result<Value, VimError>;
@@ -343,6 +356,9 @@ pub(crate) enum Redirect {
 
 pub struct Runtime {
     pub state: ScriptState,
+    /// Implicit script scope for the syntax host's Vim9 declaration profile.
+    /// Ordinary legacy editor scripts retain their global default scope.
+    script_local_sids: std::collections::BTreeSet<usize>,
     pub(crate) frames: Vec<Frame>,
     /// Synchronous nesting depth; suspension is impossible while positive.
     pub(crate) nested: usize,
@@ -356,6 +372,8 @@ pub struct Runtime {
     pub(crate) fuel: u64,
     /// Every error reported during this runtime's life, in order.
     pub errors: Vec<ScriptError>,
+    /// Preserve an uncatchable failure's origin before synchronous frames unwind.
+    pub(crate) interrupt_context: Option<ScriptError>,
     pub(crate) captures: Vec<Capture>,
     pub(crate) redirect: Option<Redirect>,
     /// The command currently executing, for "Vim(cmd):E..." exceptions.
@@ -382,6 +400,7 @@ impl Runtime {
     pub fn new(state: ScriptState) -> Self {
         Self {
             state,
+            script_local_sids: Default::default(),
             frames: Vec::new(),
             nested: 0,
             nested_result: None,
@@ -392,6 +411,7 @@ impl Runtime {
             msg_silent: 0,
             fuel: DEFAULT_FUEL,
             errors: Vec::new(),
+            interrupt_context: None,
             captures: Vec::new(),
             redirect: None,
             current_command: String::new(),
@@ -447,6 +467,22 @@ impl Runtime {
         Ok(())
     }
 
+    /// Execute an already decoded script synchronously while preserving its
+    /// physical source locations and the calling runtime's scopes and budget.
+    pub(crate) fn source_lines_now(&mut self, host: &mut dyn ScriptHost, path: &str, lines: Vec<SourceLine>, script_local: bool) -> EvalResult<()> {
+        if self.nested == 0 { self.interrupt_context = None; }
+        if self.frames.len() >= MAX_NESTING {
+            return Err(Fail::Error(VimError::new(169, "Command too recursive")));
+        }
+        let sid = self.state.script_id(path);
+        if script_local {self.script_local_sids.insert(sid);} else {self.script_local_sids.remove(&sid);}
+        let mut frame = Frame::new(FrameKind::Script { path: path.to_owned() }, lines.into(), sid);
+        frame.boundary = true;
+        let base = self.frames.len();
+        self.frames.push(frame);
+        self.run_nested(host, base).map(|_| ())
+    }
+
     /// Queue one command line (as typed after `:`) as a frame.
     pub fn push_command_line(&mut self, text: &str, sid: usize) {
         let lines: Arc<[SourceLine]> = super::source::split_command_lines(text.as_bytes(), 1).into();
@@ -499,6 +535,9 @@ impl Runtime {
                 break Err(Fail::Interrupt("Interrupted".into()));
             }
             if let Err(fail) = self.step(host) {
+                if matches!(fail, Fail::Interrupt(_)) && self.interrupt_context.is_none() {
+                    self.interrupt_context = Some(self.error_context());
+                }
                 self.unwind_to(base);
                 self.nested_result = None;
                 break Err(fail);
@@ -1188,11 +1227,15 @@ impl Runtime {
         }
         match self.current_scope() {
             Some(scope) => Ok((scope.locals.clone(), name.to_vec(), 'l')),
+            None if self.script_local_sids.contains(&self.current_sid()) => Ok((self.state.script_vars(self.current_sid()).ok_or_else(illegal)?, name.to_vec(), 's')),
             None => Ok((self.state.globals().clone(), name.to_vec(), 'g')),
         }
     }
 
     pub fn get_variable(&mut self, host: &mut dyn ScriptHost, name: &[u8]) -> EvalResult<Value> {
+        self.lookup_variable(host, name, true)
+    }
+    pub(crate) fn lookup_variable(&mut self, host: &mut dyn ScriptHost, name: &[u8], autoload: bool) -> EvalResult<Value> {
         if let Some(value) = host.dynamic_variable(name) {
             return Ok(value);
         }
@@ -1209,6 +1252,9 @@ impl Runtime {
         let (dict, key, scope) = self.variable_slot(host, name)?;
         if let Some(value) = dict.get(&key) {
             return Ok(value);
+        }
+        if autoload && scope == 'g' && key.contains(&b'#') && host.autoload(self, &key)? {
+            if let Some(value) = dict.get(&key) { return Ok(value); }
         }
         // Old names for v: variables ("count") come before closure scopes.
         if !explicit {
@@ -1369,11 +1415,17 @@ impl Runtime {
 
     pub fn call_function(&mut self, host: &mut dyn ScriptHost, name: &[u8], args: Vec<Value>, self_dict: Option<Dict>) -> EvalResult<Value> {
         self.charge(10)?;
+        if name.contains(&b'#') && self.state.function(name).is_none() {
+            host.autoload(self, name)?;
+        }
         if let Some(function) = self.state.function(name) {
             return self.call_user_function(host, function, args, self_dict, None);
         }
         if is_builtin_name(name) {
             let text = String::from_utf8_lossy(name).into_owned();
+            if let Some(result) = host.override_builtin(self, &text, &args) {
+                return result;
+            }
             if let Some(result) = super::builtins::call(self, host, &text, args.clone()) {
                 return result;
             }

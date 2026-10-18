@@ -984,6 +984,13 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             }
             return Err(self.invalid());
         };
+        // Legacy Vim permits whitespace between a named function and `(`.
+        // Keep it untouched otherwise: adjacent expressions can be arguments
+        // of :echo and :execute.
+        let after_name = skip_white(self.src, self.pos);
+        if self.src.get(after_name) == Some(&b'(') {
+            self.pos = after_name;
+        }
         if self.peek() == b'(' {
             let args = self.call_arguments()?;
             if !self.evaluate {
@@ -1305,6 +1312,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 target = Some(found);
             }
         }
+        self.skip_white();
         if self.peek() != b'(' {
             self.pos = start;
             return Ok(None);

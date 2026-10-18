@@ -6,6 +6,12 @@ including nested helpers and each file's original attribution. `runtime/LICENSE`
 is copied from the same installation. The personal `~/.vim` directory contained
 a color scheme but no syntax files at import time.
 
+The syntax dependency closure also includes the unmodified `autoload/ada.vim`,
+`autoload/freebasic.vim`, and `autoload/modula2.vim` from the upstream Vim
+`v9.1.1887` tag. Their source and hashes are recorded in `manifest.json`.
+These helpers supply syntax data and dialect selection; the remaining autoload
+and plugin runtime is not bundled or discovered from the host.
+
 `manifest.json` pins the exact imported bytes with SHA-256 hashes. Its source
 path records provenance only; builds never read from that installation or
 download syntax files. Git attributes disable text conversion for these files,
@@ -59,7 +65,8 @@ outside the byte-preserved upstream `runtime` subtree and its manifest.
 
 Viem always uses its bundled syntax files. The frontend resolves the bundle's
 current installation path at runtime and passes it through the existing C ABI.
-Includes stay within that syntax root. There is no directory preference or
+Includes stay within the bundled syntax directory and its pinned autoload
+dependency directory. There is no directory preference or
 associated settings UI, and resource paths are never persisted.
 
 The retired `code.vimSyntaxDirectory` key is ignored and removed on the next

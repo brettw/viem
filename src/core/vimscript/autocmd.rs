@@ -361,14 +361,20 @@ fn match_tokens(tokens: &[GlobToken], text: &[char], ignore_case: bool, budget: 
 }
 
 pub fn glob_match(pattern: &str, text: &str, ignore_case: bool) -> bool {
-    if pattern.len() > 65_536 || text.len() > 65_536 { return false; }
+    glob_match_bounded(pattern, text, ignore_case, &mut 100_000).unwrap_or(false)
+}
+
+/// Resource hosts must distinguish exhausted matching from a proven miss and
+/// can share one traversal/matching budget across all candidate filenames.
+pub(crate) fn glob_match_bounded(pattern: &str, text: &str, ignore_case: bool, budget: &mut usize) -> Result<bool, &'static str> {
+    if pattern.len() > 65_536 || text.len() > 65_536 { return Err("glob byte budget exceeded"); }
     let mut depth = 0usize;
     let mut escaped = false;
     for character in pattern.chars() {
         if escaped { escaped = false; continue; }
         match character {
             '\\' => escaped = true,
-            '{' => { depth += 1; if depth > 128 { return false; } }
+            '{' => { depth += 1; if depth > 128 { return Err("glob nesting budget exceeded"); } }
             '}' => depth = depth.saturating_sub(1),
             _ => {}
         }
@@ -377,8 +383,8 @@ pub fn glob_match(pattern: &str, text: &str, ignore_case: bool) -> bool {
     let text: Vec<char> = text.chars().collect();
     let mut at = 0;
     let alternatives = parse_glob(&pattern, &mut at, false);
-    let mut budget = 100_000usize;
-    alternatives.iter().any(|tokens| match_tokens(tokens, &text, ignore_case, &mut budget).contains(&text.len()))
+    let found = alternatives.iter().any(|tokens| match_tokens(tokens, &text, ignore_case, budget).contains(&text.len()));
+    if *budget == 0 {Err("glob matching budget exceeded")} else {Ok(found)}
 }
 
 #[cfg(test)]

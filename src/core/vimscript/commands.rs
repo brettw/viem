@@ -696,6 +696,9 @@ fn restricted_command(full: &str) -> bool {
 /// The argument of a host command and where the next command starts.
 fn host_argument(src: &[u8], header: &Header, full: &str) -> (Vec<u8>, Next) {
     let at = header.arg;
+    if full == "syntax" {
+        return syntax_argument(src, at);
+    }
     // Commands that see `|` as their argument.
     let sees_bar = super::excmds::sees_bar(full)
         || (full == "read" && src.get(at) == Some(&b'!'))
@@ -712,6 +715,54 @@ fn host_argument(src: &[u8], header: &Header, full: &str) -> (Vec<u8>, Next) {
         "sort" => sort_argument(src, at),
         _ => split_bar(src, at, super::excmds::allows_comment(full), super::excmds::is_map_like(full)),
     }
+}
+
+/// Syntax patterns may use quotes or bars as delimiters, and contain either
+/// inside character classes. A real separator stays in the calling frame:
+/// executing it through a host callback would break `if ... | syn ... | endif`.
+fn syntax_argument(src: &[u8], start: usize) -> (Vec<u8>, Next) {
+    let mut at = skip_white(src, start);
+    let kind_end = src[at..].iter().position(|b| is_white(*b)).map_or(src.len(), |n|at+n);
+    let mut pending_pattern = matches!(&src[at..kind_end], b"match" | b"sync");
+    let mut words = 0;
+    while at < src.len() {
+        at = skip_white(src, at);
+        if at >= src.len() { break; }
+        let token_start = at;
+        let region_pattern = [b"start=".as_slice(), b"skip=", b"end="]
+            .into_iter().find(|key| src[at..].starts_with(key));
+        if let Some(key) = region_pattern {
+            at = skip_white(src, at + key.len());
+            if at == src.len() {break;}
+            if let Some(end) = super::regex::delimited_pattern_end(&src[at..]) {
+                at += end;
+                continue;
+            }
+        } else if pending_pattern && words >= 2
+            && !src[at].is_ascii_alphanumeric() && src[at] != b'_'
+        {
+            if let Some(end) = super::regex::delimited_pattern_end(&src[at..]) {
+                at += end;
+                pending_pattern = false;
+                continue;
+            }
+        }
+        if src[at] == b'|' { return (src[start..at].to_vec(), Next::Column(at+1)); }
+        if src[at] == b'"' { return (src[start..at].to_vec(), Next::NextLine); }
+        // cchar itself can be a separator or a quote (or a space).
+        if src[at..].get(..6).is_some_and(|s|s.eq_ignore_ascii_case(b"cchar=")) {
+            at += 6;
+            if at < src.len() { at += 1; }
+        }
+        while at < src.len() && !is_white(src[at]) {
+            if src[at] == b'\\' { at = (at+2).min(src.len()); }
+            else if src[at] == b'|' { break; }
+            else { at += 1; }
+        }
+        if at == token_start { at += 1; }
+        words += 1;
+    }
+    (src[start..].to_vec(), Next::NextLine)
 }
 
 fn substitute_argument(src: &[u8], mut at: usize) -> (Vec<u8>, Next) {
@@ -823,7 +874,7 @@ fn skip_script_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], 
             let mut at = header.arg;
             loop {
                 at = skip_white(src, at);
-                if at >= src.len() || src[at] == b'|' || (comment && src[at] == b'"') {
+                if at >= src.len() || src[at] == b'|' {
                     break;
                 }
                 let mut eval = super::expr::Eval::new(rt, host, src, at, false);
@@ -908,9 +959,32 @@ fn run_script_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], h
             if header.bang {
                 return error(next, VimError::plain("Viem does not support :source! (Normal-mode command files)"));
             }
-            outcome(next, source_file(rt, host, &argument))
+            if host.handles_runtime_commands() {
+                let argument = String::from_utf8_lossy(&argument).into_owned();
+                let command = HostCommand {
+                    text: format!("source {argument}"), name: Some("source"),
+                    bang: false, range: String::new(), argument,
+                    modifiers: header.modifiers.clone(), sid: rt.current_sid(),
+                };
+                outcome(next, host.execute(rt, &command))
+            } else {
+                outcome(next, source_file(rt, host, &argument))
+            }
         }
-        Runtime | Packadd => outcome(split_bar(src, at, true, false).1, Ok(())),
+        Runtime | Packadd => {
+            let (argument, next) = split_bar(src, at, true, false);
+            if !host.handles_runtime_commands() {
+                return outcome(next, Ok(()));
+            }
+            let name = if matches!(command, Runtime) { "runtime" } else { "packadd" };
+            let argument = String::from_utf8_lossy(&argument).into_owned();
+            let command = HostCommand {
+                text: format!("{name}{} {argument}", if header.bang { "!" } else { "" }),
+                name: Some(name), bang: header.bang, range: String::new(), argument,
+                modifiers: header.modifiers.clone(), sid: rt.current_sid(),
+            };
+            outcome(next, host.execute(rt, &command))
+        }
         Vim9script => {
             let next = split_bar(src, at, true, false).1;
             if matches!(rt.frames.last().map(|frame| &frame.kind), Some(FrameKind::Script { .. })) {
@@ -2016,6 +2090,9 @@ fn cmd_doautocmd(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: us
         let Some(event) = autocmd::event_index(name) else {
             return error(next, VimError::new(216, format!("No such group or event: {name}")));
         };
+        if group.is_none() {
+            if let Err(fail) = host.runtime_event(rt, name, &matched) { return outcome(next, Err(fail)); }
+        }
         frames.extend(rt.autocmd_frames(event, &matched, group));
     }
     if frames.is_empty() {

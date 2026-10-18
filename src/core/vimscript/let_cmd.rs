@@ -730,7 +730,10 @@ pub(crate) fn unlet_command(rt: &mut Runtime, host: &mut dyn ScriptHost, argumen
                 let (dict, key, _) = rt.variable_slot(host, &name)?;
                 let mut data = dict.data();
                 match data.items.get(key.as_slice()) {
-                    Some(item) if item.lock.is_locked() => return Err(Fail::Error(VimError::new(741, format!("Value is locked: {}", String::from_utf8_lossy(&name))))),
+                    // lockvar protects the value, not the variable's binding.
+                    // Vim permits unlet of a locked variable; :const and v:
+                    // bindings remain fixed.
+                    Some(item) if item.lock == Lock::Fixed => return Err(Fail::Error(VimError::new(741, format!("Value is locked: {}", String::from_utf8_lossy(&name))))),
                     Some(_) => {
                         data.items.remove(key.as_slice());
                     }

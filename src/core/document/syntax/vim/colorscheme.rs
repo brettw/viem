@@ -81,6 +81,7 @@ const MAX_LINK_DEPTH: usize = 100;
 struct Group {
     name: String,
     gui: VimGuiAttributes,
+    attributes: BTreeMap<String, String>,
     /// Nonempty terminal attributes, which still give a group "settings".
     other: u8,
     link: Option<String>,
@@ -103,6 +104,7 @@ impl Group {
     }
     fn clear(&mut self) {
         self.gui = VimGuiAttributes::default();
+        self.attributes.clear();
         self.other = 0;
         self.link = self.default_link.clone();
         self.cleared = true;
@@ -129,6 +131,13 @@ pub struct VimHighlights {
 }
 
 impl VimHighlights {
+    /// A syntax source starts with editor UI groups but without syncolor.vim.
+    pub(crate) fn syntax_setup() -> Self {
+        let mut highlights = Self { background: VimBackground::Light, groups: BTreeMap::new(), commands: 0 };
+        highlights.apply_table(defaults::UI_BOTH, Origin::Default);
+        highlights.apply_table(defaults::UI_LIGHT, Origin::Default);
+        highlights
+    }
     /// gVim's state before a color scheme loads: 'background' is light.
     pub(crate) fn startup() -> Self {
         let mut highlights = Self { background: VimBackground::Light, groups: BTreeMap::new(), commands: 0 };
@@ -239,7 +248,7 @@ impl VimHighlights {
             let (Some(from), Some(to), None) = (words.next(), words.next(), words.next()) else {
                 return Err("E412: Not enough arguments to :highlight link".into());
             };
-            let to = (!to.eq_ignore_ascii_case("NONE"))
+            let to = (to != "NONE")
                 .then(|| self.group(to).map(|group| group.name.to_ascii_lowercase()))
                 .transpose()?;
             let group = self.group(from)?;
@@ -307,11 +316,15 @@ impl VimHighlights {
                 _ => None,
             };
             if let Some(bit) = other {
+                if matches!(key.as_str(), "term" | "cterm") {
+                    if let Err(error) = gui_flags(value) { result = Err(error); break; }
+                }
                 if value.eq_ignore_ascii_case("NONE") {
                     group.other &= !bit;
                 } else {
                     group.other |= bit;
                 }
+                group.attributes.insert(key.clone(), value.into());
                 changed = true;
                 continue;
             }
@@ -342,6 +355,7 @@ impl VimHighlights {
                 result = Err(error);
                 break;
             }
+            group.attributes.insert(key.clone(), value.into());
             if !init {
                 group.user_gui = true;
             }
@@ -404,6 +418,42 @@ impl VimHighlights {
             group = self.groups.get(next)?;
         }
         None
+    }
+
+    /// synIDattr reads the specified group; synIDtrans is a separate operation.
+    pub(crate) fn attribute(&self, name: &str, what: &str, mode: &str) -> String {
+        let Some(group) = self.groups.get(&name.to_ascii_lowercase()) else { return String::new() };
+        if what == "name" { return group.name.clone(); }
+        let mode = match mode { "gui" => "gui", "term" => "term", _ => "cterm" };
+        if matches!(what, "fg" | "bg" | "sp" | "fg#" | "bg#" | "sp#" | "font") {
+            let key = if what == "font" { "font".into() } else { format!("{mode}{}", what.trim_end_matches('#')) };
+            if mode == "gui" && what.ends_with('#') {
+                let color = match what { "fg#" => group.gui.foreground, "bg#" => group.gui.background, _ => group.gui.special };
+                return match color {
+                    Some(VimColor::Rgb([r,g,b])) => format!("#{r:02x}{g:02x}{b:02x}"),
+                    _ => String::new(),
+                };
+            }
+            let value = group.attributes.get(&key).filter(|v|!v.eq_ignore_ascii_case("NONE"));
+            if mode == "cterm" && matches!(what, "fg" | "fg#" | "bg" | "bg#") {
+                return value.map_or_else(String::new, |value| {
+                    let number = match value.to_ascii_lowercase().as_str() {
+                        "black" => Some(0), "darkblue" => Some(1), "darkgreen" => Some(2), "darkcyan" => Some(3),
+                        "darkred" => Some(4), "darkmagenta" => Some(5), "brown" | "darkyellow" => Some(6),
+                        "lightgray" | "lightgrey" | "gray" | "grey" => Some(7), "darkgray" | "darkgrey" => Some(8),
+                        "blue" | "lightblue" => Some(9), "green" | "lightgreen" => Some(10), "cyan" | "lightcyan" => Some(11),
+                        "red" | "lightred" => Some(12), "magenta" | "lightmagenta" => Some(13), "yellow" | "lightyellow" => Some(14), "white" => Some(15),
+                        _ => None,
+                    };
+                    number.map_or_else(||value.clone(), |n|n.to_string())
+                });
+            }
+            return value.cloned().unwrap_or_default();
+        }
+        let Some(attributes) = group.attributes.get(mode) else { return String::new() };
+        if attributes.split(',').any(|a| a.eq_ignore_ascii_case(what) || what == "inverse" && a.eq_ignore_ascii_case("reverse")) {
+            "1".into()
+        } else { String::new() }
     }
 }
 

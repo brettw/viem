@@ -4,12 +4,24 @@
     "distribution": "MacVim 9.1.1887",
     "runtime_directory": "/opt/homebrew/Cellar/macvim/9.1.1887/MacVim.app/Contents/Resources/vim/runtime"
   },
-  "file_count": 777,
-  "total_bytes": 7682691,
+  "file_count": 780,
+  "total_bytes": 7706990,
   "files": {
     "runtime/LICENSE": {
       "bytes": 5021,
       "sha256": "0b3f1f330cb1b179bb17c7c687d4cec601e0aa3462bc7f890ad4c3888d37d720"
+    },
+    "runtime/autoload/ada.vim": {
+      "bytes": 22568,
+      "sha256": "e255b88f78d2572ad30cbd8e75bf06c27f5673f30f80a5d0b51339d366e214ff"
+    },
+    "runtime/autoload/freebasic.vim": {
+      "bytes": 1040,
+      "sha256": "85abeaf2238edd6671cf3f2c12fd95567eab468cbf060ca848672c0318e98c38"
+    },
+    "runtime/autoload/modula2.vim": {
+      "bytes": 691,
+      "sha256": "bc292290aa876d4d0d2c276ff9c5f4fff2f28c3dce21506247dac0c385077b1b"
     },
     "runtime/syntax/2html.vim": {
       "bytes": 79152,
@@ -1615,6 +1627,10 @@
       "bytes": 3623,
       "sha256": "4f4d9aaef0aad0f74e8f1c4f9d74a7c03bd228ae6452f249cdfea46594f9a44a"
     },
+    "runtime/syntax/modula2.vim": {
+      "bytes": 535,
+      "sha256": "0b293bf0ffb75451f52066bfa5393936f0b7e3667037b407bd6d50f809502e55"
+    },
     "runtime/syntax/modula2/opt/iso.vim": {
       "bytes": 15306,
       "sha256": "08b88541dbfa74178b1af00541c05609985b2091b9438b6f4c288f79a0b08679"
@@ -1626,10 +1642,6 @@
     "runtime/syntax/modula2/opt/r10.vim": {
       "bytes": 18774,
       "sha256": "4f6ab3dbee00c83390361bef18cb5f26fbf820e53ee875b3afb7390b8bbe0dcc"
-    },
-    "runtime/syntax/modula2.vim": {
-      "bytes": 535,
-      "sha256": "0b293bf0ffb75451f52066bfa5393936f0b7e3667037b407bd6d50f809502e55"
     },
     "runtime/syntax/modula3.vim": {
       "bytes": 4536,
@@ -3115,5 +3127,16 @@
       "bytes": 23602,
       "sha256": "b5c0caaa43a0414ff43d824cb93c9f17f482393ad715994e5b76ca34ebb6f085"
     }
-  }
+  },
+  "additional_sources": [
+    {
+      "repository": "https://github.com/vim/vim",
+      "revision": "v9.1.1887",
+      "files": [
+        "runtime/autoload/ada.vim",
+        "runtime/autoload/freebasic.vim",
+        "runtime/autoload/modula2.vim"
+      ]
+    }
+  ]
 }

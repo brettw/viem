@@ -1,20 +1,16 @@
 //! Explicit launch context, never ambient filesystem/editor state.
-use super::{Setup, Value, VimPattern, VimRegexLimits};
+use super::{Setup, QueryValue, VimPattern, VimRegexLimits};
 
 impl Setup<'_> {
     pub(super) fn environment_builtin(
         &mut self,
         name: &str,
-        values: &[Value],
-    ) -> Result<Value, String> {
+        values: &[QueryValue],
+    ) -> Result<QueryValue, String> {
         match (name, values) {
-            ("execute", [Value::Text(command)]) => {
+            ("execute", [QueryValue::Text(command)]) => {
                 // A syntax package may inspect an existing cluster to choose
                 // containment. This is one read-only query, never Ex execution.
-                if self.emitted.as_ref().is_some_and(|pending|
-                    pending.iter().any(|command| !command.trim().is_empty())) {
-                    return Err("setup syntax query after pending generated commands is unsupported".into());
-                }
                 let mut words = command.split_whitespace();
                 let (Some("syn" | "syntax"), Some("list"), Some(cluster), None) =
                     (words.next(), words.next(), words.next(), words.next()) else {
@@ -27,10 +23,10 @@ impl Setup<'_> {
                 let Some((name, groups)) = self.syntax_clusters.get(&cluster.to_ascii_lowercase()) else {
                     return Err(format!("E392: No such syntax cluster: {cluster}"));
                 };
-                Ok(Value::Text(format!("\n--- Syntax items ---\n{name} cluster={} ",
+                Ok(QueryValue::Text(format!("\n--- Syntax items ---\n{name} cluster={} ",
                     if groups.is_empty() { "NONE".into() } else { groups.join(",") })))
             }
-            ("expand", [Value::Text(expression)])
+            ("expand", [QueryValue::Text(expression)])
                 if expression.starts_with('%') || expression.starts_with("<sfile>") =>
             {
                 let (value, suffix) = if let Some(suffix) = expression.strip_prefix("<sfile>") {
@@ -38,52 +34,39 @@ impl Setup<'_> {
                 } else {
                     (self.filename.clone().unwrap_or_default(), &expression[1..])
                 };
-                Ok(Value::Text(filename_modifiers(&value, suffix)?))
+                Ok(QueryValue::Text(filename_modifiers(&value, suffix)?))
             }
-            ("fnamemodify", [Value::Text(value), Value::Text(modifiers)]) => {
-                Ok(Value::Text(filename_modifiers(value, modifiers)?))
+            ("fnamemodify", [QueryValue::Text(value), QueryValue::Text(modifiers)]) => {
+                Ok(QueryValue::Text(filename_modifiers(value, modifiers)?))
             }
-            ("printf", [Value::Text(format), values @ ..]) => {
-                Ok(Value::Text(super::formatting::format(format, values)?))
-            }
-            ("hlexists", [Value::Text(name)]) => {
-                // Function-generated commands are applied by the loader after
-                // the call returns. Reading their effects before that point
-                // would choose a branch using stale declaration state.
-                if self
-                    .emitted
-                    .as_ref()
-                    .is_some_and(|pending| pending.iter().any(|command| !command.trim().is_empty()))
-                {
-                    return Err(
-                        "setup hlexists after pending generated commands is unsupported".into(),
-                    );
-                }
-                Ok(Value::Number(i64::from(
+            ("hlexists", [QueryValue::Text(name)]) => {
+                Ok(QueryValue::Number(i64::from(
                     self.highlights.contains(&name.to_ascii_lowercase()),
                 )))
             }
-            ("bufname", []) | ("bufname", [Value::Number(0)]) => {
-                Ok(Value::Text(self.filename.clone().unwrap_or_default()))
+            ("bufname", []) | ("bufname", [QueryValue::Number(0)]) => {
+                Ok(QueryValue::Text(self.filename.clone().unwrap_or_default()))
             }
-            ("bufname", [Value::Text(name)]) if name.is_empty() || name == "%" => {
-                Ok(Value::Text(self.filename.clone().unwrap_or_default()))
+            ("bufname", [QueryValue::Text(name)]) if name.is_empty() || name == "%" => {
+                Ok(QueryValue::Text(self.filename.clone().unwrap_or_default()))
             }
-            ("executable", [Value::Text(_)]) => {
+            ("executable", [QueryValue::Text(_)]) => {
                 // This compiler deliberately exposes no external executable
                 // capability. Runtime defaults must not depend on the host PATH.
-                Ok(Value::Number(0))
+                Ok(QueryValue::Number(0))
             }
-            ("getline", [Value::Number(line)]) if *line <= 0 => Ok(Value::Text(String::new())),
-            ("line", [Value::Text(position)]) if position == "$" => {
+            ("getline", [QueryValue::Number(line)]) if *line <= 0 => Ok(QueryValue::Text(String::new())),
+            ("line", [QueryValue::Text(position)]) if position == "$" => {
                 let input = self
                     .input
                     .as_ref()
                     .ok_or("setup line('$') requires buffer context")?;
                 let count = super::super::super::setup_line_count(input);
                 self.reads.line_count = Some(count);
-                Ok(Value::Number(count as i64))
+                Ok(QueryValue::Number(count as i64))
             }
+            ("line", [QueryValue::Text(position)]) if position=="." => Ok(QueryValue::Number(self.cursor.0 as i64)),
+            ("col", [QueryValue::Text(position)]) if position=="." => Ok(QueryValue::Number(self.cursor.1 as i64)),
             ("search", values) => self.prefix_search(values),
             _ => Err(format!(
                 "unsupported syntax setup function or arguments: {name}"
@@ -106,31 +89,30 @@ impl Setup<'_> {
         text
     }
 
-    fn prefix_search(&mut self, values: &[Value]) -> Result<Value, String> {
-        let [Value::Text(source), Value::Text(flags), rest @ ..] = values else {
+    fn prefix_search(&mut self, values: &[QueryValue]) -> Result<QueryValue, String> {
+        let [QueryValue::Text(source), QueryValue::Text(flags), rest @ ..] = values else {
             return Err("setup search requires a pattern and flags".into());
         };
-        if !flags.contains('n')
-            || flags
+        if flags
                 .chars()
                 .any(|flag| !matches!(flag, 'c' | 'n' | 'w' | 'W'))
             || rest.len() > 2
         {
-            return Err("setup search supports only non-moving cnwW flags".into());
+            return Err("setup search supports cnwW flags in its private query view".into());
         }
         if self.input.is_some() {
             return self.buffer_search(source, flags, rest);
         }
         let endline = match rest.first() {
             None => 32,
-            Some(Value::Text(value)) if value.is_empty() => 32,
-            Some(Value::Number(0)) => 32,
-            Some(Value::Number(value)) if (1..=32).contains(value) => *value as usize,
+            Some(QueryValue::Text(value)) if value.is_empty() => 32,
+            Some(QueryValue::Number(0)) => 32,
+            Some(QueryValue::Number(value)) if (1..=32).contains(value) => *value as usize,
             _ => return Err("setup search is confined to the first 32 supplied lines".into()),
         };
         if rest
             .get(1)
-            .is_some_and(|value| !matches!(value,Value::Number(n) if *n >= 0))
+            .is_some_and(|value| !matches!(value,QueryValue::Number(n) if *n >= 0))
         {
             return Err("invalid setup search timeout".into());
         }
@@ -140,23 +122,31 @@ impl Setup<'_> {
             .nth(endline.saturating_sub(1))
             .map_or(self.prefix.len(), |(at, _)| at);
         let text = &self.prefix[..end];
-        let at = if flags.contains('c') {
-            0
-        } else {
-            text.chars().next().map_or(0, char::len_utf8)
+        let line_start = if self.cursor.0 <= 1 {0} else {
+            text.match_indices('\n').nth(self.cursor.0-2).map_or(text.len(), |(at,_)|at+1)
         };
-        let pattern = VimPattern::compile(source, false, VimRegexLimits::default())?;
+        let origin = (line_start + self.cursor.1.saturating_sub(1)).min(text.len());
+        let at = if flags.contains('c') {origin} else {
+            origin + text[origin..].chars().next().map_or(0, char::len_utf8)
+        };
+        let pattern = self.query_pattern(source)?;
         let cancel = self.cancel;
         let mut found = pattern.find_text_with_control(text, at, &mut self.fuel, &mut || {
             cancel.is_some_and(|c| c.load(super::Ordering::Relaxed))
         })?;
-        if found.is_none() && flags.contains('w') && !flags.contains('W') && at != 0 {
+        if found.is_none() && flags.contains('w') && !flags.contains('W') && at != 0
+            && rest.first().is_none_or(|v|matches!(v,QueryValue::Number(0))) {
             found = pattern.find_text_with_control(text, 0, &mut self.fuel, &mut || {
                 cancel.is_some_and(|c| c.load(super::Ordering::Relaxed))
             })?;
         }
-        Ok(Value::Number(found.map_or(0, |found| {
-            1 + text[..found.start].bytes().filter(|b| *b == b'\n').count() as i64
+        Ok(QueryValue::Number(found.map_or(0, |found| {
+            let before = &text[..found.start];
+            let row = 1 + before.bytes().filter(|b| *b == b'\n').count();
+            if !flags.contains('n') {
+                self.cursor = (row, found.start - before.rfind('\n').map_or(0,|at|at+1) + 1);
+            }
+            row as i64
         })))
     }
 
@@ -164,36 +154,33 @@ impl Setup<'_> {
         &mut self,
         source: &str,
         flags: &str,
-        rest: &[Value],
-    ) -> Result<Value, String> {
+        rest: &[QueryValue],
+    ) -> Result<QueryValue, String> {
         use super::super::super::VimRegexProgress;
         use regex_syntax::hir::Look;
         const BYTE_LIMIT: usize = 1024 * 1024;
         const INSTRUCTION_LIMIT: usize = 1_000_000;
         let input = self.input.as_ref().unwrap();
         let stop_line = match rest.first() {
-            None | Some(Value::Number(0)) => None,
-            Some(Value::Text(value)) if value.is_empty() => None,
-            Some(Value::Number(line)) if *line > 0 => Some(*line as usize),
+            None | Some(QueryValue::Number(0)) => None,
+            Some(QueryValue::Text(value)) if value.is_empty() => None,
+            Some(QueryValue::Number(line)) if *line > 0 => Some(*line as usize),
             _ => return Err("invalid syntax setup search stop line".into()),
         };
         let timeout = match rest.get(1) {
-            None | Some(Value::Number(0)) => 100,
-            Some(Value::Number(ms)) if *ms > 0 => (*ms as u64).min(100),
+            None | Some(QueryValue::Number(0)) => 100,
+            Some(QueryValue::Number(ms)) if *ms > 0 => (*ms as u64).min(100),
             _ => return Err("invalid syntax setup search timeout".into()),
         };
         let end = stop_line
             .and_then(|line| input.text_tree().hard_line_end(line - 1).ok())
             .unwrap_or(input.byte_len());
-        let pattern = VimPattern::compile(source, false, VimRegexLimits::default())?;
+        let pattern = self.query_pattern(source)?;
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout);
-        let mut at = if flags.contains('c') {
-            0
-        } else {
-            input
-                .chunk_at(0)
-                .first()
-                .map_or(1, |byte| utf8_width(*byte))
+        let origin=input.text_tree().hard_line_start(self.cursor.0.saturating_sub(1)).unwrap_or(0)
+            .saturating_add(self.cursor.1.saturating_sub(1)).min(input.byte_len());
+        let mut at = if flags.contains('c') {origin} else {
+            origin + input.chunk_at(origin).first().map_or(0,|byte|utf8_width(*byte))
         };
         let mut inspected = 0;
         let mut budget = self.fuel.min(INSTRUCTION_LIMIT);
@@ -201,7 +188,7 @@ impl Setup<'_> {
         let wrap_origin =
             flags.contains('w') && !flags.contains('W') && stop_line.is_none() && at != 0;
         let result = (|| {
-            for (start, end) in std::iter::once((at, end)).chain(wrap_origin.then_some((0, 0))) {
+            for (start, end) in std::iter::once((at, end)).chain(wrap_origin.then_some((0, origin))) {
                 at = start;
                 while at <= end {
                     if at > BYTE_LIMIT || budget == 0 || std::time::Instant::now() >= deadline {
@@ -249,10 +236,11 @@ impl Setup<'_> {
                             }
                             VimRegexProgress::Failed(error) => return Err(error),
                             VimRegexProgress::Complete(Some(found)) => {
-                                return Ok(1 + input
-                                    .text_tree()
-                                    .hard_line_at_byte(found.start)
-                                    .map_err(|e| e.to_string())?);
+                                let row=input.text_tree().hard_line_at_byte(found.start).map_err(|e|e.to_string())?;
+                                if !flags.contains('n') {
+                                    self.cursor=(row+1,found.start-input.text_tree().hard_line_start(row).map_err(|e|e.to_string())?+1);
+                                }
+                                return Ok(row+1);
                             }
                             VimRegexProgress::Complete(None) => {
                                 break;
@@ -294,7 +282,12 @@ impl Setup<'_> {
             return Err("syntax setup search count budget exceeded".into());
         }
         self.reads.search_results.push(line);
-        Ok(Value::Number(line as i64))
+        Ok(QueryValue::Number(line as i64))
+    }
+
+    fn query_pattern(&self, source: &str) -> Result<VimPattern,String> {
+        let keyword=super::super::VimKeyword::parse(&self.keyword_option)?;
+        VimPattern::compile_with_keyword(source,self.ignore_case,VimRegexLimits::default(),&keyword)
     }
 }
 

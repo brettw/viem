@@ -736,6 +736,13 @@ load and execution gaps in the [highlighter compatibility guide](docs/highlighte
 including dependencies and document-sensitive setup. Audit helpers in their
 owning packages and distinguish runtime utilities from language entry points.
 
+Use one Vimscript evaluator for editor automation, syntax setup and color
+schemes. Hosts supply their permitted effects and immutable query context;
+they must not duplicate expression, value, function or control-flow semantics.
+Vim syntax compatibility targets Vim 9.2 behavior, including every construct in
+the bundled syntax programs. Resource limits may decline work explicitly;
+accepting a program with silently different highlighting is not compatibility.
+
 Before presenting newly visible Code text, native frontends may wait up to the
 shared 100 ms syntax grace-period constant for current visible coverage, without
 holding the core or provider locks. Ready coverage returns immediately; timeout

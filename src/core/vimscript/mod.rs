@@ -1,6 +1,7 @@
 //! Legacy Vim script (the language of `.vimrc` files in Vim 8 and Vim 9's
 //! legacy dialect). Viem uses one engine for every script it loads:
-//! `startup.viem`, `:source`, and commands typed at the `:` prompt.
+//! `startup.viem`, `:source`, commands typed at the `:` prompt, syntax setup,
+//! and imported color schemes. Each host supplies its permitted effects.
 //!
 //! This module is independent of the command interpreter; the editor plugs
 //! in through `ScriptHost`. Vim9 script is not supported.

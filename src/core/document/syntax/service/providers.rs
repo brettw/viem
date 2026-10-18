@@ -966,6 +966,12 @@ fn analyze_child(
             .push("Embedded output budget exceeded".into());
     } else {
         result.coverage = output.coverage;
+        // Resource discovery can find a Vim-only child. Once its fallback is
+        // exact, retire the placeholder about its absent primary provider.
+        // Preserve actual primary failures and any execution diagnostics.
+        if output.coverage == Coverage::Exact && child.failed.is_none() {
+            result.diagnostics.remove(0);
+        }
     }
     child.fallback_work = 0;
     result
@@ -1008,12 +1014,14 @@ fn vim_language(language: &str) -> &str {
         "c_sharp" => "cs",
         "tsx" => "typescriptreact",
         "javascriptreact" => "javascript",
+        "latex" => "tex",
         other => other,
     }
 }
 /// Neovim injects only languages it can highlight: a Tree-sitter package, or
-/// here also a bundled Vim syntax program that loads. Cancellation is not a
-/// negative answer and is not cached.
+/// here also an available bundled Vim resource. Actual compilation uses the
+/// child's snapshot and retains its setup reads; an empty-context probe cannot
+/// predict a document-dependent program's availability.
 fn injectable_language(
     cache: &mut BTreeMap<String, bool>,
     directory: &str,
@@ -1023,16 +1031,15 @@ fn injectable_language(
     if let Some(&known) = cache.get(language) {
         return known;
     }
+    let language_path = vim_language(language);
     let available = treesitter::package_exists(language)
         || (!directory.is_empty()
-            && VimProgram::load_directory_with_context(
-                directory,
-                vim_language(language),
-                VimLoadLimits::default(),
-                &VimSetupContext::default(),
-                cancelled,
-            )
-            .is_ok());
+            && !language_path.is_empty()
+            && language_path.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+            && std::path::Path::new(directory).canonicalize().is_ok_and(|root| {
+                root.join(format!("{language_path}.vim")).canonicalize()
+                    .is_ok_and(|path| path.starts_with(root) && path.is_file())
+            }));
     if cancelled.load(Ordering::Relaxed) {
         return false;
     }

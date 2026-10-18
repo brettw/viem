@@ -720,6 +720,15 @@ fn vim_lookbehind_byte_limits_and_multiline_atoms() {
 }
 
 #[test]
+fn numeric_modifiers_only_limit_lookbehind() {
+    for slice in [1, 8192] {
+        assert_eq!(find(r"\%(abcd\)\@1=abcd", "abcd", slice), Some(0..4));
+        assert_eq!(find(r"\%(abcd\)\@1!abce", "abce", slice), Some(0..4));
+        assert_eq!(find(r"\%(ab\|a\)\@1>b", "ab", slice), None);
+    }
+}
+
+#[test]
 fn same_line_assertions_preserve_local_repair_and_bounded_lookbehind() {
     let pattern = VimPattern::compile(r"\a\@<=!", false, VimRegexLimits::default()).unwrap();
     assert!(!pattern.multiline);

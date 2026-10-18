@@ -298,10 +298,15 @@ shadow values. Startup has a theme catalogue before evaluation, drains
 application effects after view attachment, and marks them for first-buffer-only
 application without suppressing later buffers' events.
 
-Syntax-file and imported color-scheme evaluation still use the separate bounded
-evaluator in [`document/syntax/vim/loader/`](../src/core/document/syntax/vim/loader/).
-Sharing it with this language engine requires a determinism and caching review;
-the common editor script entry points do not imply that these evaluators merged.
+Syntax files and imported color schemes use this same interpreter through the
+confined [`syntax host`](../src/core/document/syntax/vim/loader/script.rs).
+They share reference identities, functions, exceptions, user commands and
+synchronous execution. Their private state cannot edit documents, access ambient
+files/processes, or load the host's plugins. The host supplies bounded immutable
+buffer queries and imports only pinned runtime dependencies. Its query reads and
+resource identities participate in syntax caching; the editor host's permissions
+are not inherited. The [syntax profile](../src/core/document/syntax/vim/PROFILE.md)
+records the separate highlighting capabilities and remaining compatibility gaps.
 
 ## Oracle compatibility notes
 

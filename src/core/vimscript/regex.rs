@@ -9,6 +9,52 @@ use std::sync::Arc;
 
 const CACHE_LIMIT: usize = 128;
 
+/// Byte immediately after a Vim-delimited pattern, including bracket classes
+/// and changes to 'magic'. Shared by Ex boundary parsing and syntax loading.
+pub(crate) fn delimited_pattern_end(source: &[u8]) -> Option<usize> {
+    let text = std::str::from_utf8(source).ok()?;
+    let delimiter = text.chars().next()?;
+    if delimiter.is_alphanumeric() || delimiter.is_whitespace() || delimiter == '\\' { return None; }
+    let mut escaped = false;
+    let mut magic = true;
+    let mut multiline = false;
+    let mut chars = text.char_indices().skip(1).peekable();
+    while let Some((at, ch)) = chars.next() {
+        if ch == delimiter && !escaped { return Some(at + ch.len_utf8()); }
+        if ch == '[' && (escaped != magic || multiline) {
+            if let Some(end) = bracket_end(text, at) {
+                while chars.peek().is_some_and(|(at, _)| *at <= end) { chars.next(); }
+                escaped = false;
+                multiline = false;
+                continue;
+            }
+        }
+        if escaped {
+            match ch { 'm' | 'v' => magic = true, 'M' | 'V' => magic = false, _ => {} }
+        }
+        multiline = escaped && ch == '_';
+        escaped = ch == '\\' && !escaped;
+    }
+    None
+}
+
+fn bracket_end(source: &str, start: usize) -> Option<usize> {
+    let mut chars = source[start + 1..].char_indices().peekable();
+    if chars.peek().is_some_and(|(_, c)| *c == '^') { chars.next(); }
+    if chars.peek().is_some_and(|(_, c)| *c == ']') { chars.next(); }
+    while let Some((at, ch)) = chars.next() {
+        if ch == '\\' { chars.next(); continue; }
+        if ch == ']' { return Some(start + 1 + at); }
+        if ch == '[' && chars.peek().is_some_and(|(_, c)| matches!(c, ':' | '.' | '=')) {
+            let (_, marker) = chars.next()?;
+            while let Some((_, ch)) = chars.next() {
+                if ch == marker && chars.peek().is_some_and(|(_, c)| *c == ']') { chars.next(); break; }
+            }
+        }
+    }
+    None
+}
+
 thread_local! {
     static CACHE: std::cell::RefCell<HashMap<(Vec<u8>, bool), Arc<VimPattern>>> = std::cell::RefCell::new(HashMap::new());
 }

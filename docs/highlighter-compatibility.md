@@ -7,22 +7,42 @@ A successful load only covers the setup branches taken by that input; even exact
 coverage can contain incorrect groups. Native presentation continues to follow
 Viem's literal-source, theme, folding, spelling, and explicit-link policies.
 
+## Shared interpreter and repaired setup gaps
+
+Editor scripts, syntax files and imported color schemes now use the one
+[`vimscript` interpreter](../src/core/vimscript/mod.rs). The separate setup
+expression parser, value evaluator and function executor have been removed.
+The [confined syntax host](../src/core/document/syntax/vim/loader/script.rs)
+provides declarations, options, immutable document queries, and pinned resource
+imports without exposing editor effects or ambient file/process access.
+
+This repairs shared failures involving dictionary functions, lambdas, collection
+identity, interpolated strings/heredocs, command wrappers, `execute()`, and
+synchronous declarations followed by queries. `getline()` accepts the numbered
+and `$` forms used by the runtime. Included scripts and lazy autoload helpers
+share the same runtime while retaining script-local scope. `exists()` does not
+source an autoload file. The manifest now pins the Ada, FreeBASIC and Modula-2
+autoload dependencies at the original runtime revision.
+
+Setup uses private modeled options and a scratch query cursor. Syntax events
+resolve bundled language resources. It never changes a user's view. Highlights
+retain declaration precedence and distinguish the `NONE` unlink token from a
+group named `None`. Large keyword lists and provably exclusive, word-delimited
+literal unions split into bounded rules; arbitrary oversized patterns remain
+subject to the ordinary limits. Numeric lookahead modifiers use Vim's semantics.
+
 ## Outstanding work
 
-These are concrete gaps found by compiling the pinned syntax inventory, reading
-its dependencies, and comparing representative source against Vim. The listed
-failures are first active failures, not exhaustive diagnoses of each program.
+Successful loading still does not establish complete highlighting compatibility.
+These architectural gaps remain:
 
 | Area | Bundled evidence | Required work |
 | --- | --- | --- |
-| Setup expression and function semantics | `java.vim:130` calls a dictionary function; `shared/debarchitectures.vim:21` uses lambdas; `help.vim:18` uses `#{}` and later method calls; `csv.vim:17` uses interpolated strings; `neomuttrc.vim:441` mutates a local collection | Extend the bounded setup evaluator with correct identities, scope and execution order. Cover legacy and the syntax-setup subset of Vim9 without enabling a general editor interpreter. |
-| Builtins and document context | `cs.vim:163` uses `getline('1')`; `gitrebase.vim:13` uses `getline('$')`; `sed.vim:60` calls `char2nr()`; `hostconf.vim:84` calls `remove()`; `tera.vim:13` calls `strridx()` | Implement supported argument forms and deterministic helpers. Test filename, prefix, EOF and edit-dependent branches; retain query dependencies for successful and failed loads. |
-| Declarations inside functions and wrappers | `ant.vim:41`, `doxygen.vim:407`, `haml.vim:18`, `pandoc.vim:223`, and `cucumber.vim:132` fail on function execution, wrappers, command attributes or parsing | Use an ordered, bounded setup execution model. Validate declarations and reads as they occur; deferred output cannot substitute for synchronous setup semantics. |
-| Runtime dependency closure | Ada reads `g:ada#Keywords`; FreeBASIC and Modula-2 call autoload functions; R probes `globpath(&rtp, ...)`; DocBook uses filetype autocommands; Cmod/Pike load `matchit` | Inventory and pin required helper data, not only `syntax/`. Provide confined read-only resolution and explicit adapters for needed setup effects. Do not enable arbitrary plugins, host runtime discovery, or process execution. |
-| Options and capability queries | `acedb.vim:110`, `fasm.vim:18`, `gift.vim:16`, `dune.vim:17`, `spec.vim:172`; `exists('*...')` and `has(...)` in setup | Separate syntax-affecting options from passive editor hints. Model the former and validate the latter without mutating views. Capability answers must describe the host consistently rather than accidentally skipping required rules. |
-| Regex and region behavior | `bst.vim:19` and `gitconfig.vim:21` use cursor assertions; `m17ndb.vim:21` uses `\Z`; `raku.vim:184` uses a numeric lookahead modifier; Groovy, Tcl, Procmail and others use rejected region offsets | Add proven matching semantics and offset handling. Cursor-dependent syntax needs view identity/invalidation because the current syntax service is shared by a buffer. Do not substitute a fixed cursor or silently drop atoms. |
-| Default resource budgets | Clojure's keyword data exceeds the setup list limit; Hollywood exceeds the pattern-byte limit | Measure and change representation or compilation strategy while preserving finite work/memory. A blanket limit increase is not a compatibility proof. |
-| Highlight link semantics | `zsh.vim:339` links `zshVariable` to `None`; native code treats every case spelling as the `NONE` unlink sentinel | Match Vim's declaration-token semantics separately from case-insensitive group identity. Compare resulting group names as well as theme resolution. |
+| Region and match offsets | Java/Groovy, Tcl, Procmail, RST, Yacc and dependents | Match Vim's offset scheduling, including valid negative starts/end offsets, without rewriting published exact coverage. Verify containment, skips, boundaries and incremental checkpoints against Vim. |
+| View-dependent patterns | `bst.vim`, `gitconfig.vim` use `\%#` | Carry actual view cursor identity and invalidate dependent results. The private setup cursor is not a substitute. |
+| Composing-character matching | `m17ndb.vim` uses `\Z`; Vim also defines `\%C` | Implement composing-character semantics in both matching paths, including leading combining marks and ordinary literal behavior. |
+| Vim9 setup surface | Some bundled files use Vim9 declarations; XPM contains a typed helper | The shared source reader currently lowers only a small declaration surface. General typed calls, scope/type behavior and imports remain unsupported. Do not claim full Vim9 semantics from a passing default branch. |
+| Setup host coverage | Alternative runtime branches, option combinations, highlight queries and buffer-sensitive helpers | Add named nonempty fixtures and differential branch coverage; successful empty-input loads do not prove every branch. Keep effects confined and resource budgets explicit. |
 
 The top-level `chicken.vim` is supplemental Scheme syntax and produces no rules
 when loaded alone. It is currently exposed by the manifest-derived catalogue.
@@ -37,17 +57,16 @@ does not establish the availability of every child requested by those queries.
 
 Fixed injection targets without a bundled provider include `comment`, `re2c`,
 `printf`, `jsdoc`, `groq`, `glimmer`, `styled`, `regex`, and `angular`.
-`latex` also lacks a provider/alias even though `tex.vim` exists. Doxygen is
-present but fails its Vim load. Dynamic captured language names need the same
-dependency accounting. Missing children retain host colors, so this loss is
-easy to miss in visual smoke tests.
+`latex` now resolves to the bundled `tex` provider, and Doxygen loads through
+the shared interpreter. Dynamic captured language names need the same dependency
+accounting. Missing children retain host colors, so this loss is easy to miss
+in visual smoke tests.
 
-The Vim injection availability check in `service/providers.rs` compiles with a
-default context and caches a Boolean by language. This rejects languages whose
-setup requires a document even when their actual child snapshot would load
-(for example Git commit). Separate resource availability from child-context
-compilation, and key negative results by their real dependencies. Test a fenced
-language with context-sensitive setup, then edit the relevant context.
+Injection discovery now checks resource availability without compiling a Vim
+program against an invented default context. The child compiles against its
+actual immutable source, retains setup-query dependencies, and recompiles when
+a dependency changes. A regression exercises a context-dependent fence and
+compares its edited result with fresh analysis.
 
 ## Acceptance and audit procedure
 
@@ -75,8 +94,7 @@ capability settings. Do not modify the pinned upstream syntax to obtain passes.
    Until then, retain an explicit failure inventory and reject new failures;
    neither hiding picker entries nor silently ignoring syntax repairs support.
 
-Start with shared setup failures affecting Java and its dependents, the missing
-`getline` forms and deterministic builtins, then dependency/option adapters.
-Handle view-dependent atoms and retroactive offsets as architectural work.
+Continue with view-dependent atoms and offset scheduling as architectural work,
+then close the remaining injection providers and fixture/branch inventory.
 Keep intentional non-highlighting effects (concealment, folding, editor plugins)
 separate from missing highlighting support.
