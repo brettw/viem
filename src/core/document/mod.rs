@@ -123,7 +123,7 @@ pub use position::{
     SourcePoint, SourceRange, Splice, TextAnchor, TextRange, UnresolvableAnchor,
 };
 pub use projection::{
-    Block, BlockDirectFormatting, BlockKind, Format, FormattedDocument, InlineImage, FormattedPayloadError, FormattedTextPayload,
+    Block, BlockDirectFormatting, BlockKind, CodeBlockKind, CodeClipboardRepresentation, Format, FormattedDocument, InlineImage, FormattedPayloadError, FormattedTextPayload,
     HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };

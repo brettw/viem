@@ -86,6 +86,7 @@ mod markdown_block_quotes;
 mod markdown_fence_ownership;
 mod markdown_code_languages;
 mod markdown_front_matter;
+mod markdown_test_support;
 mod markdown_front_matter_clipboard;
 mod markdown_front_matter_boundaries;
 mod markdown_continuation_batch_deletion;

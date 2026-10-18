@@ -1,0 +1,14 @@
+{
+  "front-matter": {
+    "recognition and literal projection": "markdown_front_matter::leading_metadata_is_literal_yaml_code_with_hidden_delimiters",
+    "nonleading and incomplete syntax": "markdown_front_matter::unclosed_nonleading_and_other_delimiters_keep_ordinary_markdown_behavior",
+    "empty body insertion": "markdown_front_matter::empty_metadata_body_insertion_materializes_content_before_its_closer",
+    "whole owner deletion": "markdown_front_matter::linewise_deletion_of_complete_metadata_removes_its_delimiters",
+    "BOM, encodings, endings and undo": "markdown_front_matter::body_edits_preserve_bom_encoding_line_endings_and_exact_history",
+    "unintended syntax activation": "markdown_front_matter_boundaries::creating_a_later_rule_does_not_reinterpret_an_existing_leading_rule",
+    "source transfers": "markdown_front_matter::ex_rule_transfers_preserve_thematic_rules_without_creating_metadata",
+    "whole, partial and cross-owner clipboard": "markdown_front_matter_clipboard::",
+    "navigation and source switching": "link_authoring::front_matter_does_not_change_heading_fragments_between_preview_and_literal_markdown",
+    "bounded local work": "markdown_front_matter_boundaries::small_edits_after_an_unclosed_leading_rule_keep_source_work_local"
+  }
+}

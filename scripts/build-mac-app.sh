@@ -17,6 +17,10 @@ esac
 rust_profile=${VIEM_RUST_PROFILE:-$configuration}
 
 cd "$project_dir"
+# All supported build entry points share an inherited, validated lock.
+if ! python3 "$script_dir/validation_support.py" --check-lock; then
+    exec python3 "$script_dir/validation_support.py" -- "$0" "$@"
+fi
 python3 "$script_dir/vim-runtime.py" verify "$project_dir/assets/vim"
 module_cache_dir="$project_dir/.build/clang-module-cache"
 mkdir -p "$module_cache_dir"
@@ -49,6 +53,13 @@ current_fingerprint=$(printf '%s\n%s\n' "$archive_fingerprint" "$binary_fingerpr
 # Also verify the linked output, since a manual Swift build can replace it
 # without updating this script's last-successful-link stamp.
 if [ ! -f "$link_stamp" ] || [ "$(cat "$link_stamp")" != "$current_fingerprint" ]; then
+    if [ ! -f "$link_stamp" ]; then
+        echo "Rust link invalidation: no successful link fingerprint"
+    else
+        echo "Rust link invalidation: archive or executable fingerprint changed"
+        echo "Previous: $(cat "$link_stamp")"
+        echo "Current: $current_fingerprint"
+    fi
     touch "$project_dir/src/mac/CViemCore/shim.c"
 fi
 

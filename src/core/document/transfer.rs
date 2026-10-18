@@ -27,7 +27,7 @@ pub(super) struct LineSignature {
     kind: super::BlockKind,
     quote_depth: usize,
     code_language: Option<String>,
-    front_matter: bool,
+    code_kind: super::CodeBlockKind,
     thematic_break: bool,
     containers: Vec<(super::ContainerKind, StyleId, Option<std::sync::Arc<super::BlockDirectFormatting>>)>,
     style: StyleId,
@@ -505,7 +505,7 @@ fn projected_markdown_rows(document: &Document, required: &std::collections::BTr
     let decoded = document.encoding().decode(&document.source_bytes())?;
     let normalized = normalize(&decoded, document.file_format());
     let syntax = super::markdown_syntax::Blocks::parse(
-        &super::markdown_syntax::grammar_text(&normalized)).to_source(&normalized);
+        &super::markdown_syntax::grammar_text(&normalized), super::markdown_syntax::ParseContext::Document).to_source(&normalized);
     let mut result = std::collections::BTreeMap::<usize, PhysicalHardLine>::new();
     for &index in required {
         let info = snapshot.line(index).ok_or(DocumentError::HardLineTransferProjectionMismatch)?;
@@ -830,7 +830,7 @@ pub(super) fn projection_signatures(
                 },
                 quote_depth: block.quote_depth,
                 code_language: block.code_language.clone(),
-                front_matter: block.front_matter,
+                code_kind: block.code_kind,
                 thematic_break: block.thematic_break,
                 containers: block.containers.iter().filter(|member| {
                     let container = &member.container;

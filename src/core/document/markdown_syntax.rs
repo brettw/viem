@@ -16,22 +16,24 @@ pub(super) struct Inline {
 }
 
 pub(super) fn inlines(text: &str, range: Range<usize>, definitions: &str) -> BTreeMap<usize, Inline> {
-    parse_inlines(text, range, definitions, "x ")
+    parse_inlines(text, range, definitions, "x ", ParseContext::ContainerFragment)
 }
 
 /// Recognize inline pairs in physical source with its actual list and quote
 /// containers. Continuation prefixes belong to those blocks, not inline text.
 pub(super) fn source_inlines(text: &str) -> BTreeMap<usize, Inline> {
-    parse_inlines(text, 0..text.len(), "", "")
+    parse_inlines(text, 0..text.len(), "", "", ParseContext::Interior)
 }
 
-fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &str) -> BTreeMap<usize, Inline> {
+fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &str, context: ParseContext) -> BTreeMap<usize, Inline> {
     // Paragraph bodies use a harmless prefix to suppress block recognition;
     // physical source uses its real container grammar.
     let offset = prefix.len();
     let source = format!("{prefix}{}{}", &text[range.clone()], definitions);
     let mut result = BTreeMap::new();
-    let mut events=Parser::new_ext(&source, Options::ENABLE_STRIKETHROUGH).into_offset_iter();
+    let start = context.metadata_end(&source);
+    let mut events = Parser::new_ext(&source[start..], Options::ENABLE_STRIKETHROUGH)
+        .into_offset_iter().map(|(event, span)| (event, span.start + start..span.end + start));
     while let Some((event, mut span)) = events.next() {
         if span.start < offset || span.end > range.len() + offset { continue; }
         let raw = &source[span.clone()];
@@ -78,15 +80,31 @@ fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &st
     result
 }
 
-pub(super) fn definitions(text: &str) -> (String, Vec<Range<usize>>) {
-    definitions_with_start(text, true)
+/// The grammar depends on the origin of its input, not just its contents.
+/// Container fragments have already lost source prefixes and can never own
+/// document metadata, even when their first mapped byte is at the file start.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ParseContext {
+    Document,
+    Interior,
+    ContainerFragment,
 }
 
-pub(super) fn definitions_with_start(text: &str, document_start: bool) -> (String, Vec<Range<usize>>) {
+impl ParseContext {
+    pub fn source_region(source_start: usize, content_start: usize) -> Self {
+        if source_start == content_start { Self::Document } else { Self::Interior }
+    }
+
+    fn permits_metadata(self) -> bool { self == Self::Document }
+    fn metadata_end(self, text: &str) -> usize {
+        if self.permits_metadata() { super::markdown_front_matter::recognize(text).map_or(0, |front| front.range.end) }
+        else { 0 }
+    }
+}
+
+pub(super) fn definitions(text: &str, context: ParseContext) -> (String, Vec<Range<usize>>) {
     if !text.contains("]:") { return (String::new(), Vec::new()); }
-    let parse_start = if document_start {
-        super::markdown_front_matter::recognize(text).map_or(0, |front| front.range.end)
-    } else { 0 };
+    let parse_start = context.metadata_end(text);
     let parser = Parser::new(&text[parse_start..]);
     let mut ranges: Vec<_> = parser.reference_definitions().iter()
         .map(|(_, value)| value.span.start + parse_start..value.span.end + parse_start).collect();
@@ -135,11 +153,11 @@ mod definition_tests {
     #[test]
     fn front_matter_does_not_supply_markdown_definitions_or_inline_scopes() {
         let source = "---\n[ref]: /metadata\ntext: **literal**\n---\n\n[ref]: /document\n\n**body**";
-        let (context, ranges) = super::definitions(source);
+        let (context, ranges) = super::definitions(source, super::ParseContext::Document);
         assert_eq!(ranges.len(), 1);
         assert!(context.contains("/document"));
         assert!(!context.contains("/metadata"));
-        let syntax = super::Blocks::parse(source);
+        let syntax = super::Blocks::parse(source, super::ParseContext::Document);
         assert!(syntax.inline_code.is_empty());
         assert!(syntax.inline_links.is_empty());
         assert!(syntax.inline_html.is_empty());
@@ -156,25 +174,29 @@ mod definition_tests {
     #[test]
     fn front_matter_grammar_owns_literal_lines_only_at_the_document_start() {
         let source = "---\n# literal\n- item\n\n> quote\n---\n\n# Heading";
-        let syntax = super::Blocks::parse(source);
+        let syntax = super::Blocks::parse(source, super::ParseContext::Document);
         assert!(syntax.front_matter.is_some());
         assert_eq!(syntax.code.len(), 1);
         assert!(syntax.containers.is_empty());
         assert_eq!(syntax.blocks.len(), 1);
         assert!(matches!(syntax.blocks[0].role, super::BlockRole::Heading(1)));
         assert_eq!(&source[syntax.blocks[0].content.clone()], "Heading");
-        let regional = super::Blocks::parse_with_start(source, false);
-        assert!(regional.front_matter.is_none());
+        for context in [super::ParseContext::Interior, super::ParseContext::ContainerFragment,
+            super::ParseContext::source_region(20, 3)] {
+            assert!(super::Blocks::parse(source, context).front_matter.is_none(), "{context:?}");
+        }
+        let regional = super::Blocks::parse(source, super::ParseContext::Interior);
+        assert!(super::Blocks::parse(source, super::ParseContext::source_region(3, 3)).front_matter.is_some());
         assert!(regional.code.is_empty());
         assert!(!regional.containers.is_empty());
-        let (_, definitions) = super::definitions_with_start("---\n[ref]: /inside\n---", false);
+        let (_, definitions) = super::definitions("---\n[ref]: /inside\n---", super::ParseContext::ContainerFragment);
         assert_eq!(definitions.len(), 1);
     }
 
     #[test]
     fn duplicate_definitions_keep_their_source_context() {
         let source = "[ref]: /first\n\n[ref]: /second\n\n```\n[code]: /hidden\n```\n\nprose\n[inline]: /literal";
-        let (context, ranges) = super::definitions(source);
+        let (context, ranges) = super::definitions(source, super::ParseContext::Document);
         assert_eq!(ranges.len(), 2);
         assert!(context.contains("[ref]: /first"));
         assert!(context.contains("[ref]: /second"));
@@ -285,22 +307,18 @@ pub(super) struct Blocks {
     pub inline_html: Vec<Range<usize>>,
 }
 impl Blocks {
-    pub fn parse(text: &str) -> Self {
-        Self::parse_with_start(text, true)
-    }
-
-    pub fn parse_with_start(text: &str, document_start: bool) -> Self {
+    pub fn parse(text: &str, context: ParseContext) -> Self {
         super::work_statistics::record(|work| {
             work.markdown_block_parse_calls += 1;
             work.markdown_block_parsed_bytes += text.len();
         });
         use pulldown_cmark::TagEnd;
         let mut result = Self::default();
-        result.front_matter = document_start.then(|| super::markdown_front_matter::recognize(text)).flatten();
+        result.front_matter = context.permits_metadata().then(|| super::markdown_front_matter::recognize(text)).flatten();
         let parse_start = result.front_matter.as_ref().map_or(0, |front| front.range.end);
         let parser = Parser::new_ext(&text[parse_start..], Options::ENABLE_TABLES);
         let mut tables = super::markdown_tables::TableParser::default();
-        result.definitions = definitions_with_start(text, document_start).1;
+        result.definitions = definitions(text, context).1;
         if let Some(front) = &result.front_matter {
             result.owners.push(super::containers::SourceContainer::new(front.range.clone(), super::ContainerKind::CodeBlock));
             result.code.push(CodeSyntax { range: front.range.clone(), body_end: front.body.end, fenced: true });

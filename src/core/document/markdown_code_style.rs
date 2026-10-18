@@ -9,7 +9,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(range)?;
         let blocks = structural_style::selected_blocks(self, range);
-        if !enabled && blocks.iter().any(|block| block.front_matter) {
+        if !enabled && blocks.iter().any(|block| !block.code_kind.treatment_removable()) {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         if !enabled && self.format() == Format::Markdown {

@@ -42,7 +42,7 @@ impl Document {
                 block.style.0 == "Code Block" && block.range.start <= at && at <= block.range.end
             })
             .ok_or(DocumentError::UnsupportedFormatting)?;
-        if block.front_matter {
+        if !block.code_kind.language_editable() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         let expected = language.map(super::super::syntax::detection::canonical_language);
@@ -151,7 +151,7 @@ impl Document {
         let normalized_at = input
             .unit(input.unit_partition_point(|unit| unit.source.end <= source_at))
             .map_or(input.text.len(), |unit| unit.normalized.start);
-        let syntax = markdown_syntax::Blocks::parse(&markdown_syntax::grammar_text(&input));
+        let syntax = markdown_syntax::Blocks::parse(&markdown_syntax::grammar_text(&input), markdown_syntax::ParseContext::Document);
         let region = syntax
             .blocks
             .iter()

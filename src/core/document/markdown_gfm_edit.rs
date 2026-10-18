@@ -505,7 +505,7 @@ impl Document {
         let projected = super::super::projection::project(
             &input, Format::Markdown, self.revision(), 0, candidate.len());
         let mapper = super::super::rich_text::Builder::new(&input, self.revision());
-        let (_, candidate_definitions) = super::super::markdown_syntax::definitions(&input.text);
+        let (_, candidate_definitions) = super::super::markdown_syntax::definitions(&input.text, super::super::markdown_syntax::ParseContext::Document);
         let candidate_definitions = candidate_definitions.into_iter()
             .map(|range| mapper.source_range(range)).collect::<Vec<_>>();
         let mut protect = Vec::new();

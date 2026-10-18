@@ -16,6 +16,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         var keyEvents: [NSEvent] = []
         var menu: NSMenu?
         var highlighted: [String] = []
+        var ended = false
         init(surface: EVEditorSurfaceController, snapshot: EVLayoutExport, label: ViemLayoutDecorationV1, exit: NSEvent) {
             self.surface = surface; self.snapshot = snapshot; self.label = label; self.exit = exit
             super.init()
@@ -23,6 +24,11 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         func beganTracking(_ menu: NSMenu) {
             self.menu = menu
             menu.delegate = self
+            // Schedule only after AppKit announces tracking, on its actual
+            // tracking loop. No elapsed-time guess determines readiness.
+            RunLoop.current.perform(inModes: [.eventTracking]) { [self] in
+                MainActor.assumeIsolated { postKeys() }
+            }
             XCTAssertEqual(surface.editorView.codeBlockLanguageOpacity(for: label, in: snapshot), 1)
             surface.editorView.mouseExited(with: exit)
             XCTAssertEqual(surface.editorView.codeBlockLanguageOpacity(for: label, in: snapshot), 1,
@@ -56,27 +62,33 @@ final class EVCodeBlockLanguageTests: XCTestCase {
                 }
             }
         }
-        defer { NotificationCenter.default.removeObserver(observer) }
+        let endObserver = NotificationCenter.default.addObserver(forName: NSMenu.didEndTrackingNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated {
+                if let menu = note.object as? NSMenu, menu === tracker.menu { tracker.ended = true }
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(observer)
+            NotificationCenter.default.removeObserver(endObserver)
+        }
         tracker.keyEvents = try keys.reversed().map { keyCode, characters in
             try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: location, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, characters: characters,
                 charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode))
         }
-        // NSMenu.popUp starts standalone tracking; unlike an NSComboBox button,
-        // it has no native mouse-down to release before keyboard selection.
-        // Deliver keys after AppKit enters tracking, so popup setup cannot
-        // discard events queued before the standalone menu opens.
-        let timer = Timer(timeInterval: 0.05, repeats: false) { _ in
+        // A timeout is a failure safeguard, never the successful delivery path.
+        let watchdog = Timer(timeInterval: 5, repeats: false) { _ in
             MainActor.assumeIsolated {
-                tracker.postKeys()
+                XCTFail("Language menu did not finish tracking; highlighted=\(tracker.highlighted)")
+                tracker.menu?.cancelTrackingWithoutAnimation()
             }
         }
-        RunLoop.current.add(timer, forMode: .eventTracking)
-        defer { timer.invalidate() }
+        RunLoop.current.add(watchdog, forMode: .eventTracking)
+        defer { watchdog.invalidate() }
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         surface.editorView.mouseDown(with: down)
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+        XCTAssertTrue(tracker.ended, "native popup must finish tracking before returning")
         surface.editorView.mouseExited(with: exit)
         XCTAssertEqual(surface.editorView.codeBlockLanguageOpacity(for: label, in: snapshot), 0.25, accuracy: 0.001,
             "closing the menu and leaving the selector restores idle opacity")
@@ -223,25 +235,15 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         var pickerOpened = false
         let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { note in
             MainActor.assumeIsolated {
-                if let menu = note.object as? NSMenu, menu.title == "Code block language" { pickerOpened = true }
+                if let menu = note.object as? NSMenu, menu.title == "Code block language" {
+                    pickerOpened = true
+                    RunLoop.current.perform(inModes: [.eventTracking]) {
+                        MainActor.assumeIsolated { menu.cancelTrackingWithoutAnimation() }
+                    }
+                }
             }
         }
         defer { NotificationCenter.default.removeObserver(observer) }
-        // Bound the regression path if this disabled label accidentally opens a menu.
-        let windowNumber = window.windowNumber
-        let timer = Timer(timeInterval: 0.05, repeats: false) { _ in
-            MainActor.assumeIsolated {
-                guard let escape = NSEvent.keyEvent(with: .keyDown, location: location, modifierFlags: [], timestamp: 0,
-                    windowNumber: windowNumber, context: nil, characters: "\u{1b}",
-                    charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53) else {
-                    XCTFail("Could not create Escape event to dismiss the language picker")
-                    return
-                }
-                NSApplication.shared.postEvent(escape, atStart: true)
-            }
-        }
-        RunLoop.current.add(timer, forMode: .eventTracking)
-        defer { timer.invalidate() }
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))

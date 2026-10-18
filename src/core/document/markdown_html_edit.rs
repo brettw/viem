@@ -441,8 +441,8 @@ impl Document {
             let decoded = self.encoding().decode(&self.source_bytes())?;
             normalize(&decoded, self.file_format())
         };
-        let syntax = super::super::markdown_syntax::Blocks::parse_with_start(
-            &input.text, input.source_at(0) == self.projection().source_content_start(),
+        let syntax = super::super::markdown_syntax::Blocks::parse(
+            &input.text, super::super::markdown_syntax::ParseContext::source_region(input.source_at(0), self.projection().source_content_start()),
         ).to_source(&input);
         let Some(first) = edits.first() else {
             return Ok(None);

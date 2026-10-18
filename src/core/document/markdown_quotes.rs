@@ -170,7 +170,7 @@ pub(super) fn prefix_with_limit(text: &str, limit: usize) -> (usize, usize) {
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<QuoteLine> {
     let syntax =
-        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input)).to_source(input);
+        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input), super::markdown_syntax::ParseContext::Document).to_source(input);
     classify_with_syntax(input, &syntax)
 }
 

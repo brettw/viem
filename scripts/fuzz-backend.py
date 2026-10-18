@@ -508,4 +508,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    from validation_support import build_lock
+    with build_lock():
+        sys.exit(main())
