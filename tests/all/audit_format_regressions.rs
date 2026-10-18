@@ -285,6 +285,8 @@ fn repository_global_delete_preserves_completed_prefix_on_supported_targets() {
             Document::from_bytes(result.clone(), Encoding::Utf8, Format::Markdown).unwrap();
         assert_eq!(reopened.text(), core.document().text());
         if result == before {
+            let remaining = core.document().text().match_indices('a')
+                .map(|(at, _)| at).collect::<Vec<_>>();
             if work_limit {
                 // The wall-clock replay budget can expire before the first
                 // target when other tests contend for CPU. Retry that pause
@@ -300,7 +302,9 @@ fn repository_global_delete_preserves_completed_prefix_on_supported_targets() {
             // Whole visual-row table deletion remains the existing open
             // policy. Repeated continuation must end at that explicit refusal,
             // never an internal verification error or silently accepted edit.
-            assert!(table_policy);
+            assert!(table_policy, "{status:?}");
+            assert!(!remaining.is_empty());
+            assert!(remaining.iter().all(|at| core.document().projection().table_cell_at(*at).is_some()));
             return;
         }
         core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u')))
@@ -396,5 +400,203 @@ fn october11_block_actions_preserve_special_source_owners() {
         core.handle_with_layout(view, event).unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
         assert_eq!(core.document().source_bytes(), expected.as_bytes());
         verify(&mut core, view, source, &original);
+    }
+}
+
+#[test]
+fn ex_line_deletion_preserves_following_markdown_owners() {
+    use viem_core::command::CommandStatus;
+    for (deleted, retained) in [
+        ("# a", "| b |\n| --- |\n| c |"),
+        ("## a ##", "keep"),
+        ("a\n===", "```\nb\n```"),
+        ("a&amp; &#x1F642;", "### b ###"),
+        ("[](url)a <https://example.com> and <writer@example.com>.", "b"),
+        ("<!-- a -->", "<div>\n<p>b</p>\n</div>"),
+        ("# a", "<section>\n<div>\n<p>b</p>\n</div>\n</section>"),
+        ("<pre>a</pre>", "keep"),
+        ("<div>\n<p>a</p>\n</div>", "b"),
+    ] {
+        for ending in ["\n", "\r\n"] {
+            let source = format!("{deleted}\n\n{retained}").replace('\n', ending);
+            let retained = retained.replace('\n', ending);
+            for command in [":d", ":g/a/d"] {
+                let (mut core, view) = open(&source);
+                for key in command.chars() {
+                    core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key)))
+                        .unwrap();
+                }
+                let output = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter)))
+                    .unwrap();
+                let status = output.command.unwrap().status;
+                assert!(matches!(status, CommandStatus::Complete), "{command}: {source}: {status:?}");
+                assert_eq!(core.document().source_bytes(), retained.as_bytes(), "{command}: {source}");
+                let reopened = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown)
+                    .unwrap();
+                assert_eq!(reopened.text(), core.document().text());
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r'))))
+                    .unwrap();
+                assert_eq!(core.document().source_bytes(), retained.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn ex_line_deletion_preserves_retained_code_rows() {
+    use viem_core::command::CommandStatus;
+    for source in [
+        "keep\n\n    a\n\n        b\n\nend",
+        "keep\n\n<pre>a\n  b</pre>\n\nend",
+        "keep\n\n<pre lang=\"rust\">a\nb\n}</pre>\n\nend",
+        "keep\n\n```text\na\n\nb\n```\n\nend",
+    ] {
+        for command in [":d", ":g/^a/d"] {
+            let (mut core, view) = open(source);
+            let original = core.document().text().to_owned();
+            let at = original.find('a').unwrap();
+            let range = core.document().hard_line_snapshot().line_at_offset(at).unwrap().linewise_range();
+            let mut expected = original.clone();
+            expected.replace_range(range, "");
+            core.handle_with_layout(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: at,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            for key in command.chars() {
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+            }
+            let status = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter)))
+                .unwrap().command.unwrap().status;
+            assert!(matches!(status, CommandStatus::Complete), "{command}: {source}: {status:?}");
+            assert_eq!(core.document().text(), expected, "{command}: {source}");
+            let result = core.document().source_bytes();
+            let reopened = Document::from_bytes(result.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), expected);
+            let retained = expected.find('b').unwrap();
+            assert_eq!(reopened.projection().blocks().iter()
+                .find(|block| block.range.contains(&retained)).unwrap().style.0, "Code Block");
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+            assert_eq!(core.document().source_bytes(), result);
+        }
+    }
+}
+
+#[test]
+fn ex_final_line_deletion_preserves_preceding_html_owner() {
+    use viem_core::command::CommandStatus;
+    for retained in ["<div>\n<p>b</p>\n</div>", "<pre>b</pre>"] {
+        let source = format!("{retained}\n\n# a");
+        let (mut core, view) = open(&source);
+        for key in ":g/a/d".chars() {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+        }
+        let status = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter)))
+            .unwrap().command.unwrap().status;
+        assert!(matches!(status, CommandStatus::Complete), "{source}: {status:?}");
+        assert_eq!(core.document().source_bytes(), retained.as_bytes());
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+        assert_eq!(core.document().source_bytes(), retained.as_bytes());
+    }
+}
+
+#[test]
+fn global_delete_does_not_clear_a_different_table_cell_than_the_match() {
+    use viem_core::command::ex_execute::ExExecuteError;
+    use viem_core::command::{CommandStatus, ExCommandError};
+    use viem_core::document::DocumentError;
+    let source = "| keep | a |\n| --- | --- |\n| b | c |";
+    let (mut core, view) = open(source);
+    let revision = core.document().revision();
+    for key in ":g/a/d".chars() {
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+    }
+    let status = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter)))
+        .unwrap().command.unwrap().status;
+    assert!(matches!(status, CommandStatus::ExError(ExCommandError::Execute(
+        ExExecuteError::Document(DocumentError::UnsupportedTableEdit(_))
+    ))), "{status:?}");
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+    assert_eq!(core.document().revision(), revision);
+}
+
+#[test]
+fn ex_deletion_preserves_nested_list_children() {
+    use viem_core::command::CommandStatus;
+    let source = "- a\n  - b\n    - c\n      - d\n        - e";
+    for (source, command, expected) in [
+        (source, ":2d", "a\nc\nd\ne"),
+        ("- a\n  - b\n    - c\n    - d\n  - e", ":2,3d", "a\nd\ne"),
+    ] {
+        for offset in [0, 4] {
+            let (mut core, view) = open(source);
+            core.handle_with_layout(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: offset,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            for key in command.chars() {
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+            }
+            let status = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter)))
+                .unwrap().command.unwrap().status;
+            assert!(matches!(status, CommandStatus::Complete), "{command}: {offset}: {status:?}");
+            assert_eq!(core.document().text(), expected);
+            let result = core.document().source_bytes();
+            let reopened = Document::from_bytes(result.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), expected);
+            assert!(reopened.projection().blocks().iter().all(|block|
+                matches!(block.kind, viem_core::document::BlockKind::ListItem { .. })
+                    && block.style.0 != "Code Block"));
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+            assert_eq!(core.document().source_bytes(), source.as_bytes());
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+            assert_eq!(core.document().source_bytes(), result);
+        }
+    }
+}
+
+#[test]
+fn ex_empty_list_line_keeps_its_existing_deletion_policy() {
+    use viem_core::command::CommandStatus;
+    for (source, expected) in [("- ", "- "), ("keep\n\n- ", "keep")] {
+        let (mut core, view) = open(source);
+        for key in ":$d".chars() {
+            core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+        }
+        let status = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter)))
+            .unwrap().command.unwrap().status;
+        assert!(matches!(status, CommandStatus::Complete), "{source}: {status:?}");
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
+fn ex_final_line_deletion_preserves_preceding_table() {
+    use viem_core::command::CommandStatus;
+    for retained in ["| b |\n| - |\n| c |", "> | b |\n> | - |\n> | c |"] {
+        for deleted in ["a", "- a", "- [](#target)a"] {
+            let source = format!("{retained}\n\n{deleted}");
+            for command in [":$d", ":g/a/d"] {
+                let (mut core, view) = open(&source);
+                for key in command.chars() {
+                    core.handle_with_layout(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+                }
+                let status = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Enter)))
+                    .unwrap().command.unwrap().status;
+                assert!(matches!(status, CommandStatus::Complete), "{command}: {source}: {status:?}");
+                assert_eq!(core.document().source_bytes(), retained.as_bytes());
+                let reopened = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+                assert_eq!(reopened.text(), core.document().text());
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('u'))).unwrap();
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('r')))).unwrap();
+                assert_eq!(core.document().source_bytes(), retained.as_bytes());
+            }
+        }
     }
 }

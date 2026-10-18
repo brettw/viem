@@ -24,6 +24,23 @@ impl Document {
             let body = range.start.max(block.range.start)..range.end.min(block.range.end);
             let complete = body == block.range;
             if !complete && block.style.0 != "Code Block" { return Ok(None); }
+            let html_owner = if block.markdown_html {
+                if !complete { return Ok(None); }
+                let Some((source, formatted)) = self.markdown_html_row_owner(block)? else {
+                    return Ok(None);
+                };
+                // A complete leaf can remove its wrappers only when no other
+                // HTML paragraph shares that parsed source owner.
+                if formatted != block.range { return Ok(None); }
+                Some(source)
+            } else { None };
+            let fence = if block.style.0 == "Code Block" {
+                super::super::markdown_code::fenced_source(self, block)?
+            } else { None };
+            // Indented code may need a supporting fence to retain a blank
+            // first/last body row. Passive HTML has its own contributor and
+            // tag-boundary adapter. Do not bypass either with physical rows.
+            if !complete && fence.is_none() { return Ok(None); }
             let first = snapshot.line_at_offset(body.start).map_err(|_| DocumentError::AmbiguousProjection)?;
             let last_at = snapshot.previous_grapheme_boundary(body.end).unwrap_or(body.start).max(body.start);
             let last = snapshot.line_at_offset(last_at).map_err(|_| DocumentError::AmbiguousProjection)?;
@@ -36,8 +53,11 @@ impl Document {
             let last_source = self.physical_line_at_source(source.end.saturating_sub(1).max(source.start))?;
             let mut start = first_source.content_range.start;
             let mut end = last_source.content_range.end;
-            if complete && block.style.0 == "Code Block" {
-                if let Some(fence) = super::super::markdown_code::fenced_source(self, block)? {
+            if complete {
+                if let Some(owner) = &html_owner {
+                    start = owner.start;
+                    end = owner.end;
+                } else if let Some(fence) = &fence {
                     start = fence.opening.start;
                     end = fence.closing_content_end.unwrap_or(end);
                 }
@@ -58,7 +78,13 @@ impl Document {
                     let at = self.projection().source_insertion_point(next.range.start, true)
                         .ok_or(DocumentError::AmbiguousProjection)?;
                     end = self.physical_line_at_source(at)?.content_range.start;
-                    if let Some(fence) = super::super::markdown_code::fenced_source(self, &next)? {
+                    if next.markdown_html {
+                        let Some((owner, formatted)) = self.markdown_html_row_owner(&next)? else {
+                            return Ok(None);
+                        };
+                        if formatted.start != next.range.start { return Ok(None); }
+                        end = self.physical_line_at_source(owner.start)?.content_range.start;
+                    } else if let Some(fence) = super::super::markdown_code::fenced_source(self, &next)? {
                         end = fence.opening.start;
                     }
                 }
@@ -69,7 +95,13 @@ impl Document {
                     let source = self.projection().source_range(previous.range.clone())
                         .ok_or(DocumentError::AmbiguousProjection)?;
                     start = self.physical_line_at_source(source.end.saturating_sub(1).max(source.start))?.content_range.end;
-                    if let Some(fence) = super::super::markdown_code::fenced_source(self, &previous)? {
+                    if previous.markdown_html {
+                        let Some((owner, formatted)) = self.markdown_html_row_owner(&previous)? else {
+                            return Ok(None);
+                        };
+                        if formatted.end != previous.range.end { return Ok(None); }
+                        start = owner.end;
+                    } else if let Some(fence) = super::super::markdown_code::fenced_source(self, &previous)? {
                         start = fence.closing_content_end.unwrap_or(start);
                     }
                 }
@@ -77,6 +109,39 @@ impl Document {
             patches.push(SourcePatch::primary(start..end, Vec::new()));
         }
         Ok(Some(patches))
+    }
+
+    /// An HTML leaf may begin after hidden opening rows or end before hidden
+    /// closing rows. Return the parsed source owner and its complete visible
+    /// extent so callers can distinguish outer boundaries from shared leaves.
+    fn markdown_html_row_owner(
+        &self,
+        block: &super::super::Block,
+    ) -> Result<Option<(Range<usize>, Range<usize>)>, DocumentError> {
+        let Some(input) = self.guarded_markdown_input(block.range.clone())
+            .map_err(compat_document_error)? else { return Ok(None); };
+        let syntax = super::super::markdown_syntax::Blocks::parse(
+            &super::super::markdown_syntax::grammar_text(&input),
+        ).to_source(&input);
+        let source = self.projection().source_range(block.range.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let Some(owner) = syntax.blocks.iter().find(|owner|
+            matches!(owner.role, super::super::markdown_syntax::BlockRole::Html)
+                && owner.range.start <= source.start && source.end <= owner.range.end)
+        else { return Ok(None); };
+        // The final physical ending belongs to the boundary after the HTML
+        // owner, rather than to the retained closing tag.
+        let content_end = input.endings.iter()
+            .find(|ending| ending.source.end == owner.range.end)
+            .map_or(owner.range.end, |ending| ending.source.start);
+        let contributors = self.projection().provenance_contained_in_source(
+            &(owner.range.start..content_end),
+        );
+        let Some(start) = contributors.iter().map(|span| span.formatted.start).min()
+            else { return Ok(None); };
+        let Some(end) = contributors.iter().map(|span| span.formatted.end).max()
+            else { return Ok(None); };
+        Ok(Some((owner.range.start..content_end, start..end)))
     }
 
     /// Text and payload edits share adapter dispatch, mapping, escaping and
