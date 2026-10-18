@@ -50,6 +50,42 @@ fn source_at(input: &NormalizedText, at: usize) -> usize {
     input.source_at(at)
 }
 
+fn comment_at(input: &NormalizedText, syntax: &super::markdown_syntax::Blocks, at: usize) -> Option<Range<usize>> {
+    let block = syntax.blocks.get(syntax.blocks.partition_point(|block| block.range.end <= at))
+        .filter(|block| matches!(block.role, super::markdown_syntax::BlockRole::Html))
+        .map(|block| &block.range);
+    let inline = syntax.inline_html.get(syntax.inline_html.partition_point(|range| range.end <= at));
+    [block, inline].into_iter().flatten().find(|range| {
+        range.start <= at && at < range.end
+            && input.text[input.normalized_at(range.start)..].starts_with("<!--")
+    }).cloned()
+}
+
+/// A comment preserves indentation beyond its list owner's columns. If a
+/// tab straddles that boundary, its remaining columns retain the original tab
+/// as their shared contributor rather than creating source bytes.
+fn strip_comment_owner_prefix(
+    input: &NormalizedText,
+    line: &Range<usize>,
+    indent: usize,
+    replacements: &mut Vec<(Range<usize>, &'static str, bool)>,
+) {
+    let mut columns = 0;
+    let mut end = line.start;
+    for byte in input.text[line.clone()].bytes().take_while(|byte| matches!(byte, b' ' | b'\t')) {
+        if columns >= indent { break; }
+        let next = columns + if byte == b'\t' { 4 - columns % 4 } else { 1 };
+        if next > indent {
+            if line.start < end { replacements.push((line.start..end, "", false)); }
+            replacements.push((end..end + 1, ["", " ", "  ", "   "][next - indent], false));
+            return;
+        }
+        columns = next;
+        end += 1;
+    }
+    if line.start < end { replacements.push((line.start..end, "", false)); }
+}
+
 pub(super) fn source_lines(input: &NormalizedText) -> Vec<Range<usize>> {
     let mut start = 0;
     let mut lines = Vec::new();
@@ -248,9 +284,25 @@ fn markdown_projection_with_soft_breaks(
         }
         i += 1;
     }
+    let mut comment_owner: Option<(Range<usize>, usize)> = None;
     for (index, context) in lists.iter().enumerate() {
         let start = source_at(input, lines[index].start);
         let end = source_at(input, lines[index].end);
+        let comment = comment_at(input, syntax, start);
+        let comment_indent = comment.as_ref().and_then(|comment| {
+            context.as_ref().map(|context| context.content_indent)
+                .or_else(|| comment_owner.as_ref().filter(|(owner, _)| owner == comment).map(|(_, indent)| *indent))
+        });
+        // Blank rows have no ListLine, but a continuous literal comment
+        // remains inside the same parser-owned item as its preceding row.
+        comment_owner = comment_at(input, syntax, end).and_then(|comment| {
+            context.as_ref().map(|context| context.content_indent).or(comment_indent)
+                .map(|indent| (comment, indent))
+        });
+        if let Some(indent) = comment_indent {
+            strip_comment_owner_prefix(input, &lines[index], indent, &mut replacements);
+            continue;
+        }
         // Parser ranges may begin after the container's indentation. Match
         // the whole row so that extra literal code spaces are never stripped.
         let indented = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= start))

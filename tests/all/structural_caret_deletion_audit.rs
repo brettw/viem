@@ -195,6 +195,30 @@ fn insert_mode_caret_deletion_handles_structural_edges_without_edit_errors() {
 }
 
 #[test]
+fn repeated_caret_deletion_preserves_whitespace_separator_boundaries() {
+    let mut failures = Vec::new();
+    for source in ["a\n \n \n \nb", "# h\n \n \n \n- b"] {
+        let original = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        for at in 0..=original.text().len() {
+            for deletion in [Key::Backspace, Key::Delete] {
+                let (mut core, view) = editor(Format::Markdown, source);
+                let result = (|| {
+                    key(&mut core, view, Key::Char('i'))?;
+                    place(&mut core, view, at, false)?;
+                    for _ in 0..2 { key(&mut core, view, deletion)?; }
+                    verify_reopen_and_history(&mut core, view, Format::Markdown, source)
+                })();
+                if let Err(error) = result {
+                    failures.push(format!("{source:?} at={at} {deletion:?}: {error}; source={:?}",
+                        String::from_utf8_lossy(&core.document().source_bytes())));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn disjoint_visual_block_deletions_keep_empty_rows_and_exact_history() {
     let mut checked = 0;
     for (format, source) in [

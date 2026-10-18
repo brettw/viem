@@ -93,7 +93,12 @@ pub(super) fn replacement_insertion(
             affinity == BoundaryAffinity::Downstream && at < document.text().len(),
         )
         .ok_or(DocumentError::AmbiguousProjection)?;
-    let current = if affinity == BoundaryAffinity::Upstream && at > 0 {
+    // At EOF the only insertion side is before the retained closing syntax.
+    // A change of the link suffix therefore still types into that link even
+    // when its inherited selection affinity is downstream. Do not nest a new
+    // link inside the retained label merely because there is no next character.
+    let current = if at > 0 && (affinity == BoundaryAffinity::Upstream
+        || at == document.projection().text_tree().byte_len()) {
         document
             .hard_line_snapshot()
             .previous_grapheme_boundary(at)

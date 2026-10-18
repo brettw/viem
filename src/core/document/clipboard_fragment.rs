@@ -427,6 +427,7 @@ impl Document {
             .capture(range.clone())
             .map_err(|_| DocumentError::AmbiguousProjection)?;
         let is_rich = self.format().is_markdown();
+        let mut incomplete_source = false;
         // Only a whole-document selection copies the whole source; a part
         // reads and interprets just the source lines around it.
         let source_bytes = if range == (0..self.projection().text_tree().byte_len()) {
@@ -434,11 +435,17 @@ impl Document {
         } else if range.is_empty() {
             Vec::new()
         } else {
-            selected_source(self, &range, true).unwrap_or_default()
+            selected_source(self, &range, true).unwrap_or_else(|_| {
+                incomplete_source = true;
+                Vec::new()
+            })
         };
         let source_text = self.encoding().decode(&source_bytes)?.text;
         let inline_source_bytes = if is_rich && !captured.text().contains('\n') {
-            selected_source(self, &range, false).unwrap_or_default()
+            selected_source(self, &range, false).unwrap_or_else(|_| {
+                incomplete_source = true;
+                Vec::new()
+            })
         } else {
             Vec::new()
         };
@@ -482,6 +489,10 @@ impl Document {
                     })
                     && !(span.application == StyleApplication::Named("Code".into())
                         && code_ranges.contains(&(span.range.start, span.range.end))))
+                || incomplete_source && source_spans.iter().any(|span|
+                    matches!(&span.application, StyleApplication::Direct(properties)
+                        if properties.underline == Some(true) || properties.superscript == Some(true)
+                            || properties.subscript == Some(true)))
                 || !self.projection().inline_images_for_region(&range).is_empty()
                 || self.projection().blocks_for_region(&range).iter().any(|block| block.markdown_html),
             hard_breaks: captured.break_offsets().to_vec(),
@@ -635,11 +646,23 @@ impl Document {
         };
         let inline = encoding.decode_region(inline, 0)?.text;
         use pulldown_cmark::{Event, Tag, TagEnd};
+        let mut passive_scopes = Vec::new();
         let simple_inline = self.format() == Format::Markdown && !whole && !export.requires_source_semantics
             && pulldown_cmark::Parser::new_ext(&inline, pulldown_cmark::Options::ENABLE_STRIKETHROUGH)
-                .all(|event| matches!(event, Event::Text(_) | Event::Code(_) | Event::SoftBreak | Event::HardBreak
+                .all(|event| match event {
+                    // These passive tags carry exactly the portable character
+                    // traits in the fragment. Unknown tags or attributes still
+                    // require their original source semantics.
+                    Event::InlineHtml(html) => super::super::html::tokenize(&html).iter().all(|token| {
+                        let super::super::html::TokenKind::Tag(tag) = &token.kind else { return false; };
+                        if !tag.attributes.is_empty() || !matches!(tag.name.as_str(), "ins" | "u" | "sup" | "sub") { return false; }
+                        if tag.end { passive_scopes.pop().as_ref() == Some(&tag.name) }
+                        else { passive_scopes.push(tag.name.clone()); true }
+                    }),
+                    event => matches!(event, Event::Text(_) | Event::Code(_) | Event::SoftBreak | Event::HardBreak
                     | Event::Start(Tag::Paragraph | Tag::Emphasis | Tag::Strong | Tag::Strikethrough)
-                    | Event::End(TagEnd::Paragraph | TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough)));
+                    | Event::End(TagEnd::Paragraph | TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough)),
+                }) && passive_scopes.is_empty();
         if simple_inline {
             let payload = FormattedTextPayload::new(&self.hard_line_snapshot(), text, export.hard_breaks.clone())
                 .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
@@ -1165,7 +1188,7 @@ impl Document {
                 (StyleProperty::CharacterSubscript, properties.subscript),
             ] {
                 if let Some(enabled) = enabled {
-                    let styled = scratch.prepare_typing_inline_property(range.clone(), property, enabled)?;
+                    let styled = scratch.prepare_inline_property(range.clone(), property, enabled)?;
                     publish(&mut scratch, styled, &mut sources)?;
                 }
             }
@@ -1305,6 +1328,36 @@ fn selected_markdown_source(
     // Markdown semantic spans identify their authored delimiter runs. Copy
     // those runs at a cut edge, retaining underscore/star/backtick spelling.
     for span in document.projection().style_spans_for_region(range) {
+        if let StyleApplication::Direct(properties) = &span.application {
+            // Passive effects retain their exact wrapper bytes too. Besides
+            // balancing a partial copy, this keeps authored attributes visible
+            // to the paste policy instead of silently normalizing them away.
+            for property in [StyleProperty::CharacterUnderline,
+                StyleProperty::CharacterSuperscript, StyleProperty::CharacterSubscript]
+            {
+                if super::inline_properties::inline_boolean(properties, property) != Some(true) {
+                    continue;
+                }
+                let names = super::inline_properties::tags(property)?;
+                let Some(mut content) = document.projection().source_range(span.range.clone())
+                    else { continue; };
+                for depth in 0..=64 {
+                    let Ok((opening, closing, _, _)) = document.inline_scope_delimiters_around(&span.range, names, &content)
+                        else { break; };
+                    if depth == 64 {
+                        return Err(DocumentError::UnsupportedFormatting);
+                    }
+                    content = opening.start..closing.end;
+                    if span.range.start <= range.start && range.start < span.range.end {
+                        prefixes.push(opening);
+                    }
+                    if span.range.start < range.end && range.end <= span.range.end {
+                        suffixes.push(closing);
+                    }
+                }
+            }
+            continue;
+        }
         if !matches!(span.application, StyleApplication::Semantic(_)) {
             continue;
         }

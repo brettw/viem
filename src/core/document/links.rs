@@ -1358,6 +1358,20 @@ impl Document {
             .map(|link| link.source.clone())
             .or_else(|| self.projection().source_range(range.clone()))
             .ok_or(DocumentError::AmbiguousProjection)?;
+        if existing.is_none() && range.is_empty() {
+            // An adjacent link is a new owner, not text inserted into the
+            // existing label. Its outer source boundary includes the hidden
+            // brackets/destination which an ordinary caret insertion omits.
+            if let Some(link) = self.link_at_boundary(range.start, BoundaryAffinity::Downstream)?
+                .filter(|link| link.editable && link.range.start == range.start)
+            {
+                source_range = link.source.start..link.source.start;
+            } else if let Some(link) = self.link_at_boundary(range.start, BoundaryAffinity::Upstream)?
+                .filter(|link| link.editable && link.range.end == range.start)
+            {
+                source_range = link.source.end..link.source.end;
+            }
+        }
         let preserved_label = if let Some(link) = &existing {
             (text == link.text).then(|| link.label_source.clone())
         } else if text == old_text {

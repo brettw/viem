@@ -6071,21 +6071,31 @@ fn project_markdown_lines(
             let contains_table = markdown_html::contains_table(&normalized.text[range.clone()]);
             let pre_ending = !contains_table && normalized.endings.get(line_index).is_some_and(|ending|
                 ending.source.end == source_content_end && markdown_html::open_pre(&normalized.text[range.clone()]));
-            if normalized.text[range.clone()].starts_with("<!--") || contains_table {
-                builder.emit_range(range.start, range.end);
-                for ending in normalized.endings.iter().filter(|ending| range.contains(&ending.normalized.start)) {
-                    hard_breaks.push(output_start + ending.normalized.start - range.start);
+            let body_start = normalized_at(html.range.start).max(range.start);
+            let comment = normalized.text[body_start..range.end].starts_with("<!--");
+            if comment || contains_table {
+                // Comments are visible literal source, including whitespace
+                // and hard lines. The paragraph-flow pass has already removed
+                // surrounding Markdown owner prefixes.
+                let start = if comment { body_start } else { range.start };
+                builder.emit_range(start, range.end);
+                let first_ending = normalized.endings.partition_point(|ending| ending.normalized.start < start);
+                for ending in normalized.endings[first_ending..].iter()
+                    .take_while(|ending| ending.normalized.start < range.end) {
+                    hard_breaks.push(output_start + ending.normalized.start - start);
                 }
                 builder.blocks.push(Block::new(0, output_start..builder.output.len(), presented_kind(BlockKind::Paragraph), "Paragraph".into(), None));
-                builder.blocks.last_mut().unwrap().quote_depth = quote_depth;
-                if normalized.text[range.clone()].starts_with("<!--") && output_start < builder.output.len() {
+                let block = builder.blocks.last_mut().unwrap();
+                block.quote_depth = quote_depth;
+                block.markdown_html = comment && body_start != range.start;
+                if comment && output_start < builder.output.len() {
                     builder.styles.push(StyleSpan { range: output_start..builder.output.len(), application: StyleApplication::Automatic("Comment".into()) });
                 }
             } else {
                 // The grammar's HTML range begins after an enclosing list
                 // marker; that source prefix remains a list decoration.
                 let end = if pre_ending { normalized.endings[line_index].normalized.end } else { range.end };
-                let range = normalized_at(html.range.start).max(range.start)..end;
+                let range = body_start..end;
                 let fragment = markdown_html::block(normalized, range, revision);
                 builder.output.push_str(fragment.text());
                 builder.blocks.extend(fragment.blocks().iter().cloned().map(|mut block| {
@@ -6661,6 +6671,13 @@ impl<'a> MarkdownBuilder<'a> {
                         // Comments remain editable, visible source by product policy.
                         if self.source_text[inline.range.clone()].starts_with("<!--") {
                             self.emit_range(at, inline.range.end);
+                            // A newline inside a visible inline comment is
+                            // literal comment content and a hard line, just as
+                            // in a comment recognized as an HTML block.
+                            let first = self.input.endings.partition_point(|ending| ending.normalized.end <= at);
+                            self.inline_hard_breaks.extend(self.input.endings[first..].iter()
+                                .take_while(|ending| ending.normalized.start < inline.range.end)
+                                .map(|ending| output + ending.normalized.start - at));
                             self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Comment".into()) });
                         } else {
                             self.html_tag(inline.range.clone());

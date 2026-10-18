@@ -198,6 +198,10 @@ mod command_audit;
 mod audit_replay_regressions;
 
 mod audit_format_regressions;
+mod markdown_inline_action_audit;
+mod markdown_nested_owner_edits;
+mod markdown_hard_break_action_audit;
+mod markdown_table_boundary_keys;
 
 mod local_word_motion;
 

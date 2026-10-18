@@ -1723,6 +1723,14 @@ fn support_patches_impl(
         for index in boundaries {
             let left = projection.hard_line_range(index).unwrap();
             let right = projection.hard_line_range(index + 1).unwrap();
+            if projection.table_at(left.start).zip(projection.table_at(right.start))
+                .is_some_and(|(left, right)| left.id == right.id)
+            {
+                // Removing an enclosing list/quote leaves the table intact.
+                // Its cell separators are synthetic, not prose endings that
+                // need a supporting blank source row.
+                continue;
+            }
             // A source continuation or literal code break is internal to one
             // paragraph. Only its outer boundaries need prose separators.
             if projection

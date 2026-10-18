@@ -99,7 +99,7 @@ pub(super) fn hard_break_patches(
     source_at: usize,
     separator: &str,
 ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
-    patches_with_separator(document, &(at..at), "\n", separator, Some(source_at))
+    patches_with_scope_policy(document, &(at..at), "\n", separator, Some(source_at), true)
 }
 
 pub(super) fn patches_with_separator(
@@ -108,6 +108,17 @@ pub(super) fn patches_with_separator(
     replacement: &str,
     separator: &str,
     insertion_source: Option<usize>,
+) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+    patches_with_scope_policy(document, range, replacement, separator, insertion_source, false)
+}
+
+fn patches_with_scope_policy(
+    document: &Document,
+    range: &Range<usize>,
+    replacement: &str,
+    separator: &str,
+    insertion_source: Option<usize>,
+    hard_break: bool,
 ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
     if document.format() != Format::Markdown {
         return Ok(None);
@@ -148,6 +159,11 @@ pub(super) fn patches_with_separator(
     let Some(mut scopes) = inline_scopes(document, range, &line)? else {
         return Ok(None);
     };
+    if hard_break {
+        // Emphasis, passive inline formatting and links can cross a hard
+        // break. Only literal code must close around the break's syntax.
+        scopes.retain(|scope| scope.marker.starts_with('`'));
+    }
     let mut source = if range.is_empty() {
         let Some(at) =
             insertion_source.or_else(|| projection.source_insertion_point(range.start, true))

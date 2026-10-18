@@ -54,12 +54,12 @@ pub(super) fn joining_patches(
         .bytes_in(line.start..line.end.min((line.start + 512).max(at)))
         .ok_or(DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode_region(&bytes, line.start)?;
-    let quote = super::super::markdown_quotes::prefix(&decoded.text);
-    let body = &decoded.text[quote..];
-    let mut prefix = quote
-        + super::super::markdown_blocks::marker_prefix_length(body).unwrap_or_else(|| {
-            super::super::projection::markdown_block_prefix(body, 0, body.len()).0
-        });
+    // One physical row can alternate quote and list owners more than once.
+    // Consume their complete structural prefix, stopping before inline syntax.
+    let containers = super::super::markdown_quotes::container_prefix(&decoded.text);
+    let body = &decoded.text[containers..];
+    let mut prefix = containers
+        + super::super::projection::markdown_block_prefix(body, 0, body.len()).0;
     if last.range.is_empty() || matches!(
         last.kind,
         super::super::BlockKind::ListItem {
@@ -207,6 +207,21 @@ pub(super) fn joining_patches(
             )
         })
         .collect::<Vec<_>>();
+    if let Some(next) = projection.blocks_for_region(&(last.range.end + 1..last.range.end + 1))
+        .into_iter().find(|block| block.range.start == last.range.end + 1 && !block.range.is_empty())
+    {
+        // The joined text keeps the first paragraph's owner. Child lists of
+        // any removed later owner still need that ancestor's marker, even
+        // when its former body was merged into the first paragraph.
+        let removed = blocks.iter().filter(|block| block.id != first.id
+            && block.range.start <= last.range.start).cloned().collect::<Vec<_>>();
+        if let Some((end, prefix)) = retained_descendant_prefix(document, &removed, &next)? {
+            let line = document.state().source_hard_lines.line_at_offset(end)
+                .and_then(|index| document.state().source_hard_lines.get(index))
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            patches.push(SourcePatch::primary(line.start..end, document.encoding().encode_fragment(&prefix)?));
+        }
+    }
     if first.style.0 != "Block quote"
         && first.quote_depth == 0
         && (last.style.0 == "Block quote" || last.quote_depth > 0)
@@ -386,7 +401,7 @@ pub(super) fn deletion_patches(
     } else {
         source_line(first, false)?.start
     };
-    let end = if range.end > last.range.end {
+    let mut end = if range.end > last.range.end {
         let next = projection
             .blocks_for_region(&(range.end..range.end))
             .into_iter()
@@ -413,6 +428,19 @@ pub(super) fn deletion_patches(
         source_line(last, true)?.end
     };
     let mut replacement = Vec::new();
+    if whole_line {
+        if let Some(next) = projection.blocks_for_region(&(range.end..range.end)).into_iter()
+            .find(|block| block.range.start == range.end && !block.range.is_empty())
+        {
+            if let Some((prefix_end, prefix)) = retained_descendant_prefix(document, &paragraphs, &next)? {
+                // Empty ancestor items can share the descendant's marker row.
+                // Retain those owners without inventing visible empty leaves,
+                // and leave the descendant's own marker/body bytes untouched.
+                end = prefix_end;
+                replacement = document.encoding().encode_fragment(&prefix)?;
+            }
+        }
+    }
     if retained_empty.is_some() && range.start == first.range.start && range.start > 0 {
         // An item may follow its parent or sibling after a single physical
         // ending. Removing its marker leaves that retained boundary beside
@@ -433,6 +461,55 @@ pub(super) fn deletion_patches(
         }
     }
     Ok(Some(vec![SourcePatch::primary(start..end, replacement)]))
+}
+
+fn retained_descendant_prefix(
+    document: &Document,
+    selected: &[super::super::Block],
+    next: &super::super::Block,
+) -> Result<Option<(usize, String)>, DocumentError> {
+    // Only deleting a marker-bearing paragraph removes an item owner. Later
+    // paragraphs may share that owner, including the first retained owner of
+    // a join, and must neither duplicate nor reintroduce its marker.
+    let ancestors = selected.iter().filter(|block|
+        matches!(block.kind, BlockKind::ListItem { item_start: true, .. }))
+        .filter(|block| block.list_item_owner()
+        .is_some_and(|owner| next.containers.iter().any(|member| member.container.id == owner)))
+        .collect::<Vec<_>>();
+    if ancestors.is_empty() { return Ok(None); }
+    let prefix = |block: &super::super::Block| -> Result<Option<(super::super::encoding::DecodedText, usize, usize)>, DocumentError> {
+        let body = document.projection().source_insertion_point(block.range.start, true)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let row = document.state().source_hard_lines.line_at_offset(body)
+            .and_then(|index| document.state().source_hard_lines.get(index))
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let bytes = document.state().source.bytes_in(row.start..body)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let decoded = document.encoding().decode_region(&bytes, row.start)?;
+        let quote = super::super::markdown_quotes::prefix(&decoded.text);
+        let rest = &decoded.text[quote..];
+        let Some(marker_end) = super::super::markdown_blocks::marker_prefix_length(rest) else { return Ok(None); };
+        // The parsed item establishes this structural marker. Its visible
+        // caret can lie after inline openers, which remain with their body and
+        // are not part of the retained ancestor prefix. Multiple marker owners
+        // on this physical row still need a separate structural rule.
+        let after = &rest[marker_end..];
+        if super::super::markdown_blocks::marker_prefix_length(after)
+            .is_some_and(|end| end < after.len() || after.ends_with([' ', '\t'])) {
+            return Ok(None);
+        }
+        let indent = rest.len() - rest.trim_start_matches([' ', '\t']).len();
+        Ok(Some((decoded, quote + indent, quote + marker_end)))
+    };
+    let mut retained = String::new();
+    for (index, ancestor) in ancestors.iter().enumerate() {
+        if ancestor.quote_depth != next.quote_depth { return Ok(None); }
+        let Some((decoded, marker, end)) = prefix(ancestor)? else { return Ok(None); };
+        retained.push_str(if index == 0 { &decoded.text[..end] } else { &decoded.text[marker..end] });
+    }
+    let Some((decoded, marker, _)) = prefix(next)? else { return Ok(None); };
+    let end = decoded.source_boundary(marker).ok_or(DocumentError::AmbiguousProjection)?;
+    Ok(Some((end, retained)))
 }
 
 pub(super) fn empty_insertion_patches(
@@ -577,6 +654,28 @@ pub(super) fn preserve_empty_item_boundaries(
         for block in projection.blocks_for_region(&edit.range) {
             if block.range.is_empty() || edit.range != block.range
                 || !matches!(block.kind, BlockKind::ListItem { item_start: true, .. }) {
+                continue;
+            }
+            if block.containers.iter().rposition(|member|
+                member.container.kind == super::super::ContainerKind::ListItem)
+                .is_some_and(|item| block.containers[item + 1..].iter().any(|member|
+                    member.container.kind == super::super::ContainerKind::Quote))
+            {
+                // A heading already supplies an empty leaf, and the sole
+                // document paragraph has an empty fallback. Neither needs
+                // synthetic body syntax that would survive later cc typing.
+                if block.style.0.starts_with("Heading") || projection.block_count() == 1 {
+                    continue;
+                }
+                // An empty quote nested inside an item otherwise has no body
+                // leaf on reopen. Keep the selected paragraph as an explicit
+                // passive empty body, without retaining any selected text.
+                let end = projection.source_insertion_point(block.range.end, false)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                if let Some(patch) = patches.iter_mut().find(|patch|
+                    patch.range.start < end && end <= patch.range.end && patch.replacement.is_empty()) {
+                    patch.replacement = document.encoding().encode_fragment("<span></span>")?;
+                }
                 continue;
             }
             let next = projection.blocks_for_region(&(block.range.end + 1..block.range.end + 1))
