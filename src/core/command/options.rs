@@ -585,14 +585,14 @@ const MATCHING: &[(&str, Option<&str>)] = &[
     ("magic", Some("1")),
 ];
 
-/// Mapped onto Viem settings; see vimscript_gaps.md §6.
+/// Mapped onto Viem settings; see docs/vimscript.md#options-and-native-settings.
 const MAPPED: &[&str] = &[
     "background", "guifont", "linespace", "lines", "columns", "laststatus", "guioptions", "timeout",
     "timeoutlen", "scrolloff", "breakindent", "breakindentopt", "readonly", "fileencoding", "bomb", "belloff",
     "visualbell", "errorbells",
 ];
 
-/// Implemented by Viem's own command code; see vimscript_gaps.md §6.
+/// Implemented by Viem's own command code; see docs/vimscript.md#options-and-native-settings.
 const FEATURES: &[&str] = &[
     "clipboard", "gdefault", "shiftround", "joinspaces", "whichwrap", "startofline", "history", "iskeyword",
     "filetype", "syntax",

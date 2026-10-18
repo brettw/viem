@@ -29,7 +29,7 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
   cache-only installation, cancellation and native regression checks.
 - [Code formatting](code-formatting.md): reflow flags, language context, overrides, and list prefixes.
 - [Vim script support](vimscript.md): startup, legacy language, mappings, events,
-  native option mappings and compatibility limits.
+  native option mappings, compatibility limits, engine invariants and oracle tests.
 - [Vim theme import](vim-theme-import.md): color scheme evaluation, the base
   preset, and how Vim highlight groups map onto theme styles.
 - [Comment language coverage](comment-language-coverage.md): supported forms, limits, defaults, and pinned Vim provenance.
