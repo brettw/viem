@@ -8,6 +8,38 @@ import XCTest
 @MainActor
 final class EVVariableFontIntegrationTests: XCTestCase {
 
+    func testRecursivePresetPreservesAutoAndCursiveSliderOffersAllThreeModes() throws {
+        var root = URL(fileURLWithPath: #filePath)
+        for _ in 0..<5 { root.deleteLastPathComponent() }
+        let file = root.appendingPathComponent("assets/fonts/recursive/Recursive_VF_1.085.ttf")
+        if CTFontManagerRegisterFontsForURL(file as CFURL, .process, nil) {
+            addTeardownBlock { CTFontManagerUnregisterFontsForURL(file as CFURL, .process, nil); EVFontCatalog.invalidate() }
+        }
+        EVFontCatalog.invalidate()
+        let (_, backend, _, styles, editor) = try fixture()
+        let original = try backend.recoverySnapshot()
+        let menu = try control(NSPopUpButton.self, label: "Font face", in: editor.view)
+        menu.selectItem(at: try XCTUnwrap(menu.itemTitles.lastIndex(of: "Sans Linear Light")))
+        XCTAssertTrue(menu.sendAction(try XCTUnwrap(menu.action), to: menu.target))
+        let slider = try control(NSSlider.self, label: "Cursive", in: editor.view)
+        XCTAssertEqual(slider.doubleValue, 0.5)
+        XCTAssertEqual(slider.numberOfTickMarks, 3)
+        XCTAssertTrue(slider.allowsTickMarkValuesOnly)
+        for (value, name) in [(0.0, "Off"), (1.0, "On"), (0.5, "Auto")] {
+            slider.doubleValue = value
+            XCTAssertTrue(slider.sendAction(try XCTUnwrap(slider.action), to: slider.target))
+            XCTAssertEqual(slider.doubleValue, value)
+            XCTAssertTrue(descendants(editor.view).compactMap { ($0 as? NSTextField)?.stringValue }
+                .contains("Cursive \(name) (\(String(format: "%g", value)))"))
+            let base = try XCTUnwrap(try styles.snapshot().definitions.first { $0.key == .baseParagraph })
+            guard case let .string(json)? = base.properties[.characterFontAxes]?.effective else {
+                return XCTFail("Cursive selection must be saved as an axis coordinate")
+            }
+            XCTAssertEqual(EVFontVariations.decode(json)["CRSV"], value)
+        }
+        XCTAssertEqual(try backend.recoverySnapshot(), original)
+    }
+
     func testSavedPortableFlightlineRequestExposesVariableControlsWithoutAnEdit() throws {
         try registerFlightline()
         let (configuration, backend, surface, _, editor) = try fixture(family: "Flightline Code", face: "ExtraLight Italic", weight: 300)

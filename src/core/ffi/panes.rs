@@ -1,7 +1,7 @@
 //! Frontend-owned pane geometry. Registry locks only lease serial ownership;
 //! tree operations and copying snapshots happen after releasing the lock.
 use super::*;
-use crate::layout::panes::{Axis, Error, PaneLayout, MAX_PANES};
+use crate::layout::panes::{Axis, Error, PaneLayout, SplitPlacement, MAX_PANES};
 pub const VIEM_PANE_FRAME_STATUS_DRAGGABLE: u32 = 1;
 pub const VIEM_PANE_FRAME_SUPPRESS_SPLITTER_TOP_BORDER: u32 = 1 << 1;
 
@@ -209,6 +209,7 @@ pub extern "C" fn viem_pane_layout_can_split(
     })
 }
 /// # Safety
+/// placement=0 puts the new pane before (above/left), 1 after (below/right).
 /// out_pane is aligned writable storage. Failed splits leave it and geometry unchanged.
 #[no_mangle]
 pub unsafe extern "C" fn viem_pane_layout_split(
@@ -216,15 +217,21 @@ pub unsafe extern "C" fn viem_pane_layout_split(
     pane: u64,
     orientation: u32,
     status_height: f64,
+    placement: u32,
     out_pane: *mut u64,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_pane, 1)?;
+        let placement = match placement {
+            0 => SplitPlacement::Before,
+            1 => SplitPlacement::After,
+            _ => return Err(ViemStatus::InvalidArgument),
+        };
         let id = checkout(handle)?
             .state
             .as_mut()
             .unwrap()
-            .split(pane, axis(orientation)?, status_height)
+            .split(pane, axis(orientation)?, status_height, placement)
             .map_err(error)?;
         unsafe { out_pane.write(id) };
         Ok(())
@@ -351,12 +358,12 @@ mod tests {
         );
         let mut lower = 0;
         assert_eq!(
-            unsafe { viem_pane_layout_split(handle, 1, 0, 25.0, &mut lower) },
+            unsafe { viem_pane_layout_split(handle, 1, 0, 25.0, 1, &mut lower) },
             ViemStatus::Ok
         );
         let mut right = 0;
         assert_eq!(
-            unsafe { viem_pane_layout_split(handle, lower, 1, 25.0, &mut right) },
+            unsafe { viem_pane_layout_split(handle, lower, 1, 25.0, 1, &mut right) },
             ViemStatus::Ok
         );
         let mut info = ViemPaneSnapshot::default();
@@ -410,7 +417,12 @@ mod tests {
         );
         let mut next = 999;
         assert_eq!(
-            unsafe { viem_pane_layout_split(handle, 1, 1, 25.0, &mut next) },
+            unsafe { viem_pane_layout_split(handle, 1, 1, 25.0, 2, &mut next) },
+            ViemStatus::InvalidArgument
+        );
+        assert_eq!(next, 999);
+        assert_eq!(
+            unsafe { viem_pane_layout_split(handle, 1, 1, 25.0, 0, &mut next) },
             ViemStatus::PolicyRequired
         );
         assert_eq!(next, 999);
@@ -419,7 +431,7 @@ mod tests {
             ViemStatus::Ok
         );
         assert_eq!(
-            unsafe { viem_pane_layout_split(handle, 1, 1, 25.0, &mut next) },
+            unsafe { viem_pane_layout_split(handle, 1, 1, 25.0, 0, &mut next) },
             ViemStatus::Ok
         );
         let mut info = ViemPaneSnapshot::default();
@@ -434,6 +446,7 @@ mod tests {
             unsafe { viem_pane_layout_copy(handle, frames.as_mut_ptr(), 3, &mut info) },
             ViemStatus::Ok
         );
+        assert_eq!(frames[0].id, next, "placement zero puts the new pane first");
         let before = frames.map(|f| f.width);
         let invalid = [ViemPaneChrome {
             id: 1,

@@ -9,7 +9,7 @@
 //! ```sh
 //! cargo run --release --example fuzz_panes -- 20000 400
 //! ```
-use viem_core::layout::panes::{Axis, Error, Frame, PaneLayout, MIN_WIDTH, SPLITTER_WIDTH};
+use viem_core::layout::panes::{Axis, Error, Frame, PaneLayout, SplitPlacement, MIN_WIDTH, SPLITTER_WIDTH};
 
 struct Rng(u64);
 impl Rng {
@@ -122,7 +122,8 @@ fn main() {
                         let axis = if rng.below(2) == 0 { Axis::Width } else { Axis::Height };
                         let height = *rng.pick(&[0.0, 22.0, 24.0, 30.5]);
                         let can = layout.can_split(pane, axis, height);
-                        match layout.split(pane, axis, height) {
+                        let placement = if rng.below(2) == 0 { SplitPlacement::Before } else { SplitPlacement::After };
+                        match layout.split(pane, axis, height, placement) {
                             Ok(id) => {
                                 if can.is_err() {
                                     return Err(format!("split succeeded but can_split said {can:?}"));
@@ -130,7 +131,7 @@ fn main() {
                                 chrome.push((id, height));
                                 // The native wrapper immediately re-sends the current size and chrome.
                                 layout.update(size.0, size.1, &chrome).map_err(|e| format!("update after split {e:?}"))?;
-                                Some(format!("split {pane} {axis:?} {height} -> {id}"))
+                                Some(format!("split {pane} {axis:?} {height} {placement:?} -> {id}"))
                             }
                             Err(e @ (Error::NoRoom | Error::TooManyPanes)) => {
                                 if can.is_ok() {

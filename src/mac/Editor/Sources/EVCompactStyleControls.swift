@@ -512,6 +512,10 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
                     let slider = EVFontAxisSlider()
                     slider.minValue = axis.minimum; slider.maxValue = axis.maximum; slider.isContinuous = true
                     slider.setAccessibilityLabel(axis.name)
+                    if axis.hasCursiveModes {
+                        slider.numberOfTickMarks = 3; slider.allowsTickMarkValuesOnly = true
+                        slider.toolTip = "Off: always roman. Auto: follow the slant axis. On: always cursive."
+                    }
                     slider.axisTag = axis.tag; slider.fontIdentity = identity; slider.target = self; slider.action = #selector(axisChanged(_:))
                     slider.widthAnchor.constraint(equalToConstant: 240).isActive = true
                     slider.setContentCompressionResistancePriority(.required, for: .vertical)
@@ -531,16 +535,18 @@ final class EVCompactStyleControls: NSObject, NSTextFieldDelegate, NSComboBoxDel
             let value = base[axis.tag] ?? axis.defaultValue
             slider.doubleValue = value; slider.isEnabled = isOverridden(.characterFontFamilies)
             let actual = effective[axis.tag] ?? value
-            label.stringValue = "\(axis.name) \(String(format: "%g", value))" + (abs(actual - value) > 0.001 ? " (effective \(String(format: "%g", actual)))" : "")
+            label.stringValue = "\(axis.name) \(axis.displayValue(value))" + (abs(actual - value) > 0.001 ? " (effective \(axis.displayValue(actual)))" : "")
         }
         axisRows.isHidden = axisControls.isEmpty
     }
     @objc private func axisChanged(_ sender: EVFontAxisSlider) {
         guard !updating, editable, sender.fontIdentity == axisIdentity else { return }
         let chosen = stringList(.characterFontFamilies).first ?? "Helvetica"
-        var values = baseAxisValues(variationInfo(for: chosen), chosen: chosen)
+        let info = variationInfo(for: chosen)
+        guard let axis = info.axes.first(where: { $0.tag == sender.axisTag }) else { return }
+        var values = baseAxisValues(info, chosen: chosen)
         values.merge(axisValues) { _, saved in saved }
-        values[sender.axisTag] = min(sender.maxValue, max(sender.minValue, sender.doubleValue.rounded()))
+        values[sender.axisTag] = axis.sliderValue(sender.doubleValue)
         setFontAxes(values)
     }
 

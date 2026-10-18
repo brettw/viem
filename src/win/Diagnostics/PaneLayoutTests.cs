@@ -26,9 +26,16 @@ internal static class PaneLayoutTests
         try
         {
             var first = window.ActivePane!; await first.Ready; await Task.Delay(150);
-            var second = window.SplitPane(first, first.Document); await second.Ready;
+            first.View!.Ex("4split"); await window.PendingEffectsForTesting;
+            var upper = window.ActivePane!; await upper.Ready; window.PaneStack.UpdateLayout();
+            Check(window.Panes[0] == upper && window.Panes[1] == first && upper.IsActive
+                && Math.Abs(upper.ActualHeight - upper.StatusBarHeight - upper.View!.DefaultLineHeight * 4) < 1,
+                "counted horizontal split focuses and sizes the new upper pane");
+            upper.View!.Ex("close"); await window.PendingEffectsForTesting;
+            window.FocusPane(first);
+            var second = window.SplitPane(first, first.Document, before: false); await second.Ready;
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
-            var third = window.SplitPane(second, first.Document); await third.Ready;
+            var third = window.SplitPane(second, first.Document, before: false); await third.Ready;
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout(); await Task.Delay(80);
             var positionOrigin = first.LocationToggleControl.TransformToVisual(first.StatusControl).TransformPoint(new Point());
             var empty = new Point(positionOrigin.X - 2, first.StatusControl.ActualHeight / 2);
@@ -104,11 +111,11 @@ internal static class PaneLayoutTests
             window.FocusPane(first);
             ulong revision = first.Document.State.document_revision;
             view.Ex("vs"); await window.PendingEffectsForTesting;
-            var right = window.ActivePane!; await right.Ready; window.PaneStack.UpdateLayout();
-            Check(window.Panes.Count == 2 && right.Document == first.Document && window.PaneStack.MinimumSize.Width == 205,
+            var left = window.ActivePane!; await left.Ready; window.PaneStack.UpdateLayout();
+            Check(window.Panes.Count == 2 && window.Panes[0] == left && window.Panes[1] == first && left.IsActive && left.Document == first.Document && window.PaneStack.MinimumSize.Width == 205,
                 "vertical Ex split shares a buffer and enforces a 100-DIP minimum per pane");
-            view.Ex("vertical 2resize 24"); await window.PendingEffectsForTesting; window.PaneStack.UpdateLayout();
-            Check(Math.Abs(right.ActualWidth - Math.Max(100, right.View!.DefaultColumnWidth * 24)) < 1,
+            view.Ex("vertical 1resize 24"); await window.PendingEffectsForTesting; window.PaneStack.UpdateLayout();
+            Check(Math.Abs(left.ActualWidth - Math.Max(100, left.View!.DefaultColumnWidth * 24)) < 1,
                 "indexed vertical resize uses the target pane's default font and zoom");
             window.FocusPane(first);
             var splitter = window.PaneStack.Splitters.Single();
@@ -121,23 +128,23 @@ internal static class PaneLayoutTests
                 "a full-height vertical splitter clips only its outer top and bottom borders");
             double width = first.ActualWidth;
             await InputRoutingTests.Drag(window, splitter, (global::Windows.Foundation.Point[])[new(.5, .5), new(.5 + 40 / splitter.ActualWidth, .5)], _ => { });
-            Check(Math.Abs(first.ActualWidth - width - 40) < 2 && window.ActivePane == first,
-                $"native vertical dragging moves the divider and preserves pane focus (width={width}->{first.ActualWidth}, right={right.ActualWidth}, focusFirst={window.ActivePane == first})");
-            window.PaneStack.ResizeWidth(right, 1);
-            Check(Math.Abs(right.ActualWidth - 100) < .01, "width commands cannot shrink below 100 DIPs");
+            Check(Math.Abs(first.ActualWidth - width + 40) < 2 && window.ActivePane == first,
+                $"native vertical dragging moves the divider and preserves pane focus (width={width}->{first.ActualWidth}, left={left.ActualWidth}, focusFirst={window.ActivePane == first})");
+            window.PaneStack.ResizeWidth(left, 1);
+            Check(Math.Abs(left.ActualWidth - 100) < .01, "width commands cannot shrink below 100 DIPs");
             rejected = false;
-            try { window.SplitPane(right, first.Document, vertical: true); } catch (InvalidOperationException e) { rejected = e.Message.Contains("No room to split"); }
+            try { window.SplitPane(left, first.Document, vertical: true); } catch (InvalidOperationException e) { rejected = e.Message.Contains("No room to split"); }
             Check(rejected && window.Panes.Count == 2, "a vertical split without 205 DIPs fails before adding a view");
-            await InputRoutingTests.Drag(window, right.StatusControl, (global::Windows.Foundation.Point[])[new(.3, .5), new(.3, .5)], _ => { });
-            Check(window.ActivePane == right, "a plain status-bar click focuses its buffer");
-            right.View!.Ex("vnew"); await window.PendingEffectsForTesting;
+            await InputRoutingTests.Drag(window, left.StatusControl, (global::Windows.Foundation.Point[])[new(.3, .5), new(.3, .5)], _ => { });
+            Check(window.ActivePane == left, "a plain status-bar click focuses its buffer");
+            left.View!.Ex("vnew"); await window.PendingEffectsForTesting;
             Check(window.Panes.Count == 2, "vnew obeys the same admission check before creating a document");
             Check(first.Document.State.document_revision == revision, "pane operations preserve the source revision");
             view.Ex("only"); await window.PendingEffectsForTesting;
-            var middle = window.SplitPane(first, first.Document); await middle.Ready;
-            var bottomPane = window.SplitPane(middle, first.Document); await bottomPane.Ready;
+            var middle = window.SplitPane(first, first.Document, before: false); await middle.Ready;
+            var bottomPane = window.SplitPane(middle, first.Document, before: false); await bottomPane.Ready;
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
-            var bottomRight = window.SplitPane(bottomPane, first.Document, vertical: true); await bottomRight.Ready;
+            var bottomRight = window.SplitPane(bottomPane, first.Document, vertical: true, before: false); await bottomRight.Ready;
             window.PaneStack.UpdateLayout();
             var beneathStatus = window.PaneStack.Splitters.Single();
             Check(beneathStatus.HidesTopBorder && beneathStatus.HidesBottomBorder,
@@ -160,7 +167,7 @@ internal static class PaneLayoutTests
             var rightPanes = new List<EditorPane>();
             foreach (var row in new[] { first, middle })
             {
-                var nested = window.SplitPane(row, first.Document, vertical: true); await nested.Ready;
+                var nested = window.SplitPane(row, first.Document, vertical: true, before: false); await nested.Ready;
                 rightPanes.Add(nested);
             }
             rightPanes.Add(bottomRight);

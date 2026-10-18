@@ -34,6 +34,7 @@ internal static class VariableFontTests
             EquivalentGlyphChecks(pane.Canvas.Device, design, "flightline/FlightlineCode-" + (design.Slant == FontStyle.Normal ? "Regular" : "Italic") + "-VF.ttf");
         FlightlineFontChecks(pane);
         await FlightlineInspectorChecks(pane, preferences);
+        await RecursiveInspectorChecks(pane, preferences);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_MARKDOWN);
         await SegoeVariable(pane, preferences, VIEM_FORMAT_PLAIN_TEXT);
         var face = FontCatalog.Faces("Bahnschrift").FirstOrDefault() ?? throw new InvalidOperationException("Variable font regression requires the Windows Bahnschrift font.");
@@ -199,6 +200,35 @@ internal static class VariableFontTests
         Check(FontCatalog.Resolve("FlightlineCode-does-not-exist") == null, "unknown Flightline names remain unavailable");
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Flightline font changes preserve document source");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase), "Flightline styles retain portable font requests");
+    }
+
+    private static async Task RecursiveInspectorChecks(EditorPane pane, Preferences preferences)
+    {
+        byte[] original = preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN);
+        using var doc = new CoreDocument("Recursive controls"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(doc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300);
+        var face = FontCatalog.Match("Recursive", "Sans Linear Light")!;
+        view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily], face);
+        preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
+        var inspector = new StyleWindow(view, preferences); inspector.Activate();
+        try {
+            await InputRoutingTests.Settle();
+            var preset = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>()
+                .Single(i => i.Name == "Sans Linear Light");
+            Check(preset.Values["CRSV"] == .5f, "Recursive's upright named preset retains its font-defined Auto mode");
+            inspector.FontVariantControl.SelectedItem = preset;
+            var slider = Descendants<Slider>(inspector.RootControl)
+                .Single(s => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(s) == "Cursive");
+            Check(slider.StepFrequency == .5 && slider.Value == .5, "the Cursive slider preserves and can select Auto");
+            foreach (var (value, label) in new[] { (0d, "Off"), (1d, "On"), (.5, "Auto") }) {
+                slider.Value = value;
+                Check(Descendants<TextBlock>(inspector.RootControl).Any(t => t.Text.StartsWith("Cursive " + label + " (")), "Cursive labels explain " + label);
+                var styles = inspector.ThemeView.Styles();
+                var paragraph = styles.Styles.Single(s => s.Id == "Paragraph");
+                var axes = FontVariations.Decode(styles.String(paragraph.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES)));
+                Check(axes["CRSV"] == value && inspector.Error.Length == 0, "Cursive " + label + " persists its exact coordinate");
+            }
+        } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
     }
 
     private static async Task FlightlineInspectorChecks(EditorPane pane, Preferences preferences)

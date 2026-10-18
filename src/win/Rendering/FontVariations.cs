@@ -10,7 +10,19 @@ using static Viem.Windows.Interop.Abi;
 
 namespace Viem.Windows.Rendering;
 
-internal sealed record FontAxis(string Tag, string Name, float Minimum, float Default, float Maximum, bool Hidden);
+internal sealed record FontAxis(string Tag, string Name, float Minimum, float Default, float Maximum, bool Hidden)
+{
+    // CRSV Auto follows the slant axis; it is a real font-provided coordinate.
+    internal bool HasCursiveModes => Tag == "CRSV" && Minimum == 0 && Maximum == 1;
+    internal double SliderStep => HasCursiveModes ? .5 : 1;
+    internal float SliderValue(double value) => (float)Math.Clamp(Math.Round(value / SliderStep, MidpointRounding.AwayFromZero) * SliderStep, Minimum, Maximum);
+    internal string DisplayValue(float value)
+    {
+        string numeric = value.ToString("G");
+        string? mode = HasCursiveModes ? value switch { 0 => "Off", .5f => "Auto", 1 => "On", _ => null } : null;
+        return mode == null ? numeric : $"{mode} ({numeric})";
+    }
+}
 internal sealed record FontInstance(string Name, Dictionary<string, float> Values) { public override string ToString() => Name; }
 internal sealed record FontStyleLink(float From, float To);
 internal sealed record FontVariationInfo(FontAxis[] Axes, FontInstance[] Instances, Dictionary<string, List<FontStyleLink>> Links)

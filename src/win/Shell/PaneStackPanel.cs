@@ -39,7 +39,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
         if (status == VIEM_STATUS_UNSUPPORTED_OPERATION) throw new InvalidOperationException("Cannot rotate or exchange a row or column containing nested splits.");
         Abi.Check(status, "Arrange views");
     }
-    internal void Rebuild(IReadOnlyList<EditorPane> panes, int? splitIndex = null, bool vertical = false)
+    internal void Rebuild(IReadOnlyList<EditorPane> panes, int? splitIndex = null, bool vertical = false, bool splitBefore = false)
     {
         foreach (var pane in ids.Keys.Where(p => !panes.Contains(p)).ToArray()) RemovePane(pane);
         foreach (var pane in panes.Where(p => !ids.ContainsKey(p)))
@@ -48,7 +48,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
             if (ids.Count > 0)
             {
                 var source = splitIndex is { } i ? panes[i] : panes.Last(p => ids.ContainsKey(p));
-                Check(viem_pane_layout_split(handle, ids[source], vertical ? 1u : 0u, pane.StatusBarHeight, &id));
+                Check(viem_pane_layout_split(handle, ids[source], vertical ? 1u : 0u, pane.StatusBarHeight, splitBefore ? 0u : 1u, &id));
             }
             ids.Add(pane, id); Children.Add(pane);
         }

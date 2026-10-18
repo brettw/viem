@@ -9,6 +9,26 @@ public struct EVFontAxis: Equatable, Sendable {
   public let defaultValue: Double
   public let maximum: Double
   public let hidden: Bool
+
+  // Recursive's CRSV axis has an intentional third state: automatic cursive
+  // substitution along the slant axis. Keep the font's named coordinates.
+  public var hasCursiveModes: Bool { tag == "CRSV" && minimum == 0 && maximum == 1 }
+  public var sliderStep: Double { hasCursiveModes ? 0.5 : 1 }
+  public func sliderValue(_ value: Double) -> Double {
+    min(maximum, max(minimum, (value / sliderStep).rounded() * sliderStep))
+  }
+  public func displayValue(_ value: Double) -> String {
+    let numeric = String(format: "%g", value)
+    guard hasCursiveModes else { return numeric }
+    let name: String
+    switch value {
+    case 0: name = "Off"
+    case 0.5: name = "Auto"
+    case 1: name = "On"
+    default: return numeric
+    }
+    return "\(name) (\(numeric))"
+  }
 }
 public struct EVFontInstance: Equatable, Sendable {
   public let name: String

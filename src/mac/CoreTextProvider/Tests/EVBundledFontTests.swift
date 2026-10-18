@@ -67,6 +67,8 @@ struct EVBundledFontTests {
         } else {
           #expect(Set(variations.axes.map(\.tag)) == ["MONO", "CASL", "wght", "slnt", "CRSV"])
           #expect(variations.instances.filter { $0.name != "Default" }.count == 64)
+          #expect(variations.axes.first { $0.tag == "CRSV" }?.defaultValue == 0.5)
+          #expect(variations.instances.first { $0.name == "Sans Linear Light" }?.values["CRSV"] == 0.5)
         }
         let name = CTFontCopyPostScriptName(originalFont) as String
         let face = try #require(EVFontCatalog.face(named: name))

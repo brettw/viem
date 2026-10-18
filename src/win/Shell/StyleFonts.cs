@@ -112,8 +112,9 @@ internal sealed partial class StyleWindow
                 foreach (var axis in visible.Skip(i).Take(2)) {
                     var column = new StackPanel { Width = 280, Spacing = 2 };
                     var value = new TextBlock { FontSize = 11 };
-                    var slider = new Slider { Minimum = axis.Minimum, Maximum = axis.Maximum, StepFrequency = 1, Width = 275 };
+                    var slider = new Slider { Minimum = axis.Minimum, Maximum = axis.Maximum, StepFrequency = axis.SliderStep, Width = 275 };
                     Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(slider, axis.Name);
+                    if (axis.HasCursiveModes) ToolTipService.SetToolTip(slider, "Off: always roman. Auto: follow the slant axis. On: always cursive.");
                     column.Children.Add(value); column.Children.Add(slider); row.Children.Add(column);
                     axisControls.Add(axis.Tag, (slider, value));
                     bool gesture = false;
@@ -126,7 +127,7 @@ internal sealed partial class StyleWindow
                     slider.ValueChanged += (_, _) => {
                         if (loading || !slider.IsEnabled || identity != axisControlIdentity) return;
                         var values = BaseAxisValues(info);
-                        values[axis.Tag] = (float)Math.Clamp(Math.Round(slider.Value, MidpointRounding.AwayFromZero), axis.Minimum, axis.Maximum);
+                        values[axis.Tag] = axis.SliderValue(slider.Value);
                         Try(() => SetAxes(values));
                     };
                 }
@@ -138,7 +139,7 @@ internal sealed partial class StyleWindow
             control.Slider.Value = value;
             control.Slider.IsEnabled = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) && ShowsValue(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES);
             var effective = FontVariations.Effective(info, saved, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value + (selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0 ? 300 : 0), selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_BOLD).enum_value != 0, selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_SLANT).enum_value);
-            control.Value.Text = axis.Name + " " + value.ToString("0") + (Math.Abs(effective[axis.Tag] - value) > .001f ? " (effective " + effective[axis.Tag].ToString("0") + ")" : "");
+            control.Value.Text = axis.Name + " " + axis.DisplayValue(value) + (Math.Abs(effective[axis.Tag] - value) > .001f ? " (effective " + axis.DisplayValue(effective[axis.Tag]) + ")" : "");
         }
         axisRows.Visibility = axisControls.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
