@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
+using Viem.Windows.Editor;
 using Viem.Windows.Input;
 using Viem.Windows.Rendering;
 using Viem.Windows.Shell;
@@ -77,7 +78,7 @@ internal static class ImageInteractionTests
             Check(hostCopy.Text == "![remote](<https://example.invalid/a.png>)" && hostCopy.Fragment.Length > 0 && pane.LastError == null,
                 "image clipboard host effects publish fallback text without rejecting the private U+FFFC payload");
             pane.ShowInsertImage();
-            Check(pane.ImageEditorVisible && pane.ImageTextValue == "remote" && pane.ImageDestinationValue == "https://example.invalid/a.png",
+            Check(pane.ImageEditorVisible && pane.ImageApplyLabel == "Apply" && pane.ImageTextValue == "remote" && pane.ImageDestinationValue == "https://example.invalid/a.png",
                 "image editing expands into native alt text and location fields");
             pane.ImageDestinationValue = "javascript:alert(1)"; pane.ApplyImageEditor();
             Check(pane.ImageEditorVisible && Source() == source, "invalid image locations retain the draft without changing source");
@@ -95,7 +96,7 @@ internal static class ImageInteractionTests
                 "deleting an image removes its source construct and alt text");
             view.Undo(); Check(Source() == source, "image deletion undo restores the exact source");
             view.Command("G0viw"); pane.ShowInsertImage();
-            Check(pane.ImageTextValue == "plain", "selected text seeds the inserted image's alt text");
+            Check(pane.ImageTextValue == "plain" && pane.ImageApplyLabel == "Insert", "selected text seeds the inserted image's alt text and Insert action");
             pane.ImageDestinationValue = "https://example.invalid/new.png"; pane.ApplyImageEditor();
             Check(document.FormattedText().EndsWith("\uFFFC", StringComparison.Ordinal), "inserting an image replaces selected text with one atomic object");
             view.Undo();
@@ -559,6 +560,137 @@ internal static class ImageInteractionTests
         writer.Write(40); writer.Write(width); writer.Write(height); writer.Write((ushort)1); writer.Write((ushort)24);
         writer.Write(0); writer.Write(bytes); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0);
         writer.Write(new byte[bytes]);
+    }
+
+    internal static async Task SizeEditor(Preferences preferences)
+    {
+        var draft = new ImageSizeDraft();
+        draft.Reset(200, 101); draft.SetNatural(400, 200);
+        Check(draft.Locked, "image ratio inference accepts a height within one pixel of its natural proportion");
+        draft.Reset(101, 200); draft.SetNatural(200, 400);
+        Check(draft.Locked, "image ratio inference independently accepts a width within one pixel of its natural proportion");
+        draft.Reset(101, 203); draft.SetNatural(200, 400);
+        Check(draft.Locked, "one-pixel ratio tolerance accepts either direction even when the reverse exceeds one pixel");
+        draft.Reset(100, 203); draft.SetNatural(200, 400);
+        Check(!draft.Locked, "image ratio inference rejects dimensions outside both one-pixel tolerances");
+        draft.Reset(80, null); draft.SetNatural(120, 60);
+        Check(draft.Expanded && draft.Locked && draft.Width == "80" && draft.Height == "40",
+            "an image with one authored dimension fills its other dimension using the natural ratio");
+        Check(draft.Dimensions() == (80u, 0u), "displaying a derived height leaves a width-only authored image unchanged");
+        draft.SetExpanded(false);
+        Check(draft.Dimensions() == (80u, 0u), "collapsing the size disclosure preserves authored dimensions");
+        draft.Reset(null, 90); draft.SetNatural(120, 60);
+        Check(draft.Locked && draft.Width == "180" && draft.Height == "90", "height-only sizing retains its authored height");
+        draft.Reset(null, null); draft.SetExpanded(true); draft.SetNatural(120, 60);
+        draft.SetLocked(false); draft.EditHeight("99"); draft.EditWidth("50"); draft.SetLocked(true);
+        Check(draft.Width == "50" && draft.Height == "25", "relocking preserves the most recently edited width");
+        draft.SetLocked(false); draft.EditHeight("40"); draft.SetLocked(true);
+        Check(draft.Width == "80" && draft.Height == "40", "relocking preserves the most recently edited height");
+        draft.EditWidth("0"); bool invalid = false;
+        try { draft.Dimensions(); } catch (InvalidOperationException) { invalid = true; }
+        Check(invalid, "zero image dimensions are invalid drafts instead of silent dimension removal");
+        draft.EditWidth(""); draft.EditHeight(""); draft.SetExpanded(false); draft.SetExpanded(true);
+        Check(draft.Dimensions() == (0u, 0u) && draft.Width == "" && draft.Height == "",
+            "blanking both dimensions explicitly removes sizing and survives reopening the disclosure");
+
+        string directory = Path.Combine(Path.GetTempPath(), "viem-image-size-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        WriteBitmap(Path.Combine(directory, "sized.bmp"), 120, 60);
+        WriteBitmap(Path.Combine(directory, "updated.bmp"), 200, 100);
+        WriteBitmap(Path.Combine(directory, "delayed.bmp"), 40, 20);
+        const string source = "<img src='sized.bmp' width='80' height='180' alt='original' title='keep'>";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        var pane = window.ActivePane!; var view = await pane.Ready;
+        string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
+        async Task WaitForImage(EditorPane target, CoreView owner, string destination)
+        {
+            for (int i = 0; i < 200 && (owner.Provider.ImageState(destination) != InlineImageState.Ready || target.PendingImageLoads != 0); i++)
+                await Task.Delay(25);
+            Check(owner.Provider.ImageState(destination) == InlineImageState.Ready && target.PendingImageLoads == 0,
+                "local image insertion or update loads its bitmap without saving or reopening: " + destination);
+        }
+        try
+        {
+            await WaitForImage(pane, view, "sized.bmp");
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            pane.ShowInsertImage();
+            Check(pane.ImageApplyLabel == "Apply" && pane.ImageSizeExpanded && pane.ImageWidthValue == "80"
+                && pane.ImageHeightValue == "180" && !pane.ImageSizeLocked,
+                "editing explicit stretched dimensions expands the size controls and starts unlocked");
+            pane.ImageHeightValue = "100"; pane.SetImageSizeLocked(true);
+            Check(pane.ImageWidthValue == "200" && pane.ImageHeightValue == "100",
+                "native dimension fields relock around the most recently changed height");
+            pane.SetImageSizeLocked(false); pane.ImageHeightValue = "200"; pane.ImageWidthValue = "250";
+            pane.SetImageSizeLocked(true);
+            Check(pane.ImageWidthValue == "250" && pane.ImageHeightValue == "125",
+                "native dimension fields relock around the most recently changed width");
+            pane.UseNaturalImageSize();
+            Check(pane.ImageWidthValue == "120" && pane.ImageHeightValue == "60", "Use image size restores both intrinsic pixel dimensions");
+            pane.DismissImagePopup(suppress: false); pane.ShowInsertImage(); pane.SetImageSizeLocked(true);
+            Check(pane.ImageWidthValue == "80" && pane.ImageHeightValue == "40",
+                "a reopened image draft forgets prior field history and relocks by preserving width");
+            pane.ApplyImageEditor();
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            Check(view.ImageContext().Image is { Width: 80, Height: 40 } && Source().Contains("title='keep'", StringComparison.Ordinal),
+                "applying image size publishes dimensions while preserving unrelated HTML attributes");
+            view.Undo(); Check(Source() == source, "image sizing undo restores exact HTML source");
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision); pane.ShowInsertImage();
+            pane.ImageWidthValue = "0"; pane.ApplyImageEditor();
+            Check(pane.ImageEditorVisible && Source() == source, "invalid native image sizing keeps the form open and source untouched");
+            pane.DismissImagePopup(suppress: false); pane.ShowInsertImage();
+            pane.SetImageSizeExpanded(false); pane.ApplyImageEditor();
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            Check(view.ImageContext().Image is { Width: 80, Height: 180 } && Source() == source,
+                "collapsing Specify size only hides controls and Apply preserves exact source");
+            pane.ShowInsertImage(); pane.ImageWidthValue = ""; pane.ImageHeightValue = ""; pane.ApplyImageEditor();
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            Check(view.ImageContext().Image is { Width: null, Height: null }, "blanking both image dimensions removes explicit image sizing");
+            view.Undo(); Check(Source() == source, "clearing image sizing undo restores exact HTML source");
+
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision); pane.ShowInsertImage();
+            pane.ImageDestinationValue = "updated.bmp"; pane.ApplyImageEditor();
+            await WaitForImage(pane, view, "updated.bmp");
+            Check(!File.Exists(Path.Combine(directory, "source.md")), "image location updates render before the document has ever been saved");
+
+            var fresh = new CoreDocument("body"u8.ToArray(), Path.Combine(directory, "fresh.md"), VIEM_FORMAT_MARKDOWN);
+            var insertPane = window.AddPane(fresh); var insertView = await insertPane.Ready;
+            try
+            {
+                insertView.Command("i"); insertPane.ShowInsertImage();
+                Check(insertPane.ImageApplyLabel == "Insert" && !insertPane.ImageSizeExpanded,
+                    "first image insertion offers Insert and initially collapsed size controls");
+                insertPane.ImageDestinationValue = "sized.bmp"; insertPane.SetImageSizeExpanded(true);
+                for (int i = 0; i < 200 && !insertPane.ImageSizeNaturalKnown; i++) await Task.Delay(25);
+                Check(insertPane.ImageSizeLocked && insertPane.ImageWidthValue == "120" && insertPane.ImageHeightValue == "60",
+                    "expanding a new local image size probes its header and populates natural locked dimensions");
+                insertPane.ImageWidthValue = "80";
+                Check(insertPane.ImageHeightValue == "40", "editing a locked width updates its height proportionally");
+                insertPane.ApplyImageEditor(); await WaitForImage(insertPane, insertView, "sized.bmp");
+                var image = insertView.Layout().Clusters.Single(c => insertView.Provider.IsInlineImage(c.render_run));
+                Check(Math.Abs(image.typographic_bounds.width - 80 * insertView.Viewport.scale) < .01
+                    && Math.Abs(image.typographic_bounds.height - 40 * insertView.Viewport.scale) < .01
+                    && !File.Exists(Path.Combine(directory, "fresh.md")),
+                    "a newly inserted sized image immediately uses its authored geometry and decoded bitmap without saving");
+                insertView.Key(VIEM_KEY_ESCAPE); insertView.Undo();
+                Check(Encoding.UTF8.GetString(fresh.Source(fresh.State.document_revision)) == "body", "sized image insertion is one exact undo unit");
+
+                insertView.Command("gg0i"); insertPane.ShowInsertImage(); insertPane.ImageDestinationValue = "delayed.bmp";
+                insertPane.SetImageSizeExpanded(true); insertPane.DismissImagePopup(suppress: false);
+                insertPane.ShowInsertImage(); insertPane.ImageDestinationValue = "https://example.invalid/no-fetch.png";
+                insertPane.SetImageSizeExpanded(true); await Task.Delay(250);
+                Check(!insertPane.ImageSizeNaturalKnown && insertPane.ImageWidthValue == "" && insertPane.ImageHeightValue == "",
+                    "a cancelled size probe cannot populate a reopened remote-image draft");
+            }
+            finally { await window.ClosePane(insertPane, force: true); }
+            Check(pane.LastError == null, "image size interactions finish without native presentation errors");
+        }
+        finally
+        {
+            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     internal static async Task PreviewLimits(Preferences preferences)

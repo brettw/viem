@@ -4,6 +4,75 @@ import XCTest
 @testable import ViemCoreTextProvider
 
 final class CoreTextImageResourcesTests: XCTestCase {
+  @MainActor
+  func testNewlyInsertedImageInvalidatesPlaceholderGeometryAfterAdmission() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-insert-image-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 200, height: 100)
+    let cache = CoreTextImageResources()
+    defer { cache.stop() }
+    _ = cache.setVisibleLocations([], viewportID: 1)
+    let initial = cache.image(for: file.path)
+    XCTAssertEqual(initial.state, .pending)
+    XCTAssertEqual(cache.localLoadCount, 0, "Layout precedes visible admission")
+    let changed = expectation(description: "Replace served placeholder geometry")
+    cache.setResourceChangeHandler { locations in
+      XCTAssertEqual(locations, [file.path]); changed.fulfill()
+    }
+    _ = cache.setVisibleLocations([file.path], viewportID: 2)
+    wait(for: [changed], timeout: 5)
+    XCTAssertEqual(cache.image(for: file.path).size, CGSize(width: 200, height: 100))
+    XCTAssertNotNil(cache.image(for: file.path).image)
+  }
+
+  @MainActor
+  func testPopupDimensionsUseHeaderOnlyAndRemoteLocationsStayPassive() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-popup-size-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 321, height: 123)
+    let cache = CoreTextImageResources()
+    defer { cache.stop() }
+    let local = expectation(description: "Local header")
+    _ = cache.requestDimensions(file.path) { size in
+      XCTAssertEqual(size, CGSize(width: 321, height: 123)); local.fulfill()
+    }
+    wait(for: [local], timeout: 5)
+    let remote = expectation(description: "Passive remote")
+    _ = cache.requestDimensions("https://example.invalid/image.png") { size in
+      XCTAssertNil(size); remote.fulfill()
+    }
+    wait(for: [remote], timeout: 5)
+    XCTAssertEqual(cache.localLoadCount, 0)
+    XCTAssertEqual(cache.dimensionProbeCount, 1)
+    XCTAssertEqual(cache.retainedRasterBytes, 0)
+  }
+
+  @MainActor
+  func testPopupDimensionRequestsCoalesceAndCancelledDraftsCannotPublish() {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    let cache = CoreTextImageResources(prober: { _, location in
+      if location == "/tmp/first.png" { entered.signal(); release.wait() }
+      return CoreTextInlineImage(location: location, image: nil, size: CGSize(width: 80, height: 40),
+        identity: UUID(), state: .measured)
+    })
+    defer { release.signal(); cache.stop() }
+    let first = cache.requestDimensions("/tmp/first.png") { _ in XCTFail("Cancelled draft published") }
+    XCTAssertEqual(entered.wait(timeout: .now() + 2), .success)
+    first.cancel()
+    for index in 0..<100 {
+      _ = cache.requestDimensions("/tmp/superseded-\(index).png") { _ in XCTFail("Superseded draft published") }
+    }
+    let finished = expectation(description: "Newest draft")
+    _ = cache.requestDimensions("/tmp/current.png") { size in
+      XCTAssertEqual(size, CGSize(width: 80, height: 40)); finished.fulfill()
+    }
+    release.signal()
+    wait(for: [finished], timeout: 5)
+    XCTAssertEqual(cache.dimensionProbeCount, 2)
+    XCTAssertEqual(cache.localLoadCount, 0)
+  }
+
   func testRemoteAndExecutableLocationsNeverStartLocalLoads() {
     let cache = CoreTextImageResources()
     defer { cache.stop() }

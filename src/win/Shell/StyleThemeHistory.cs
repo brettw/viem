@@ -38,11 +38,14 @@ internal sealed partial class StyleWindow
     {
         var history = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         history.Children.Add(undoTheme); history.Children.Add(redoTheme); history.Children.Add(restoreCodeDefaults); buttons.Children.Add(history);
-        ToolTipService.SetToolTip(undoTheme, "Undo theme style change (Ctrl+Z)");
-        ToolTipService.SetToolTip(redoTheme, "Redo theme style change (Ctrl+Y)");
+        ToolTipService.SetToolTip(undoTheme, "Undo style change (Ctrl+Z)");
+        ToolTipService.SetToolTip(redoTheme, "Redo style change (Ctrl+Y)");
         undoTheme.Click += (_, _) => ReplayThemeHistory(redo: false);
         redoTheme.Click += (_, _) => ReplayThemeHistory(redo: true);
-        restoreCodeDefaults.Click += (_, _) => Try(() => view.ReplaceCodeStyles(preferences.ThemeStyleContext(VIEM_FORMAT_CODE, [])));
+        restoreCodeDefaults.Click += (_, _) => {
+            if (IsWhitespaceStyle) RestoreWhitespaceDefaults();
+            else Try(() => view.ReplaceCodeStyles(preferences.ThemeStyleContext(VIEM_FORMAT_CODE, [])));
+        };
         foreach (var (key, modifiers, redo) in new[] {
             (VirtualKey.Z, VirtualKeyModifiers.Control, false),
             (VirtualKey.Y, VirtualKeyModifiers.Control, true),
@@ -82,16 +85,17 @@ internal sealed partial class StyleWindow
     {
         if (closed || updating) return;
         DismissColorPickers(commit: false);
-        if (preferences.EnsureCurrentThemeExists()) return;
-        if (!PrepareThemeEdit()) return;
         var edit = redo ? themeRedo.FirstOrDefault() : themeUndo.LastOrDefault();
         if (edit == null) return;
+        bool whitespace = edit.Selection == VisibleWhitespaceStyle.Key;
+        if (!whitespace && (preferences.EnsureCurrentThemeExists() || !PrepareThemeEdit())) return;
         updating = true;
         try {
-            preferences.SaveThemeStyles(view.Document.State.format, redo ? edit.After : edit.Before);
+            if (whitespace) { if (!ReplayWhitespaceHistory(edit, redo)) return; }
+            else preferences.SaveThemeStyles(view.Document.State.format, redo ? edit.After : edit.Before);
             if (redo) { themeRedo.Pop(); PushThemeUndo(edit); }
             else { themeUndo.RemoveAt(themeUndo.Count - 1); themeRedo.Push(edit); }
-            CreateThemeSession(); Load(edit.Selection);
+            if (!whitespace) { CreateThemeSession(); Load(edit.Selection); }
             error.Text = ""; error.Visibility = Visibility.Collapsed;
         }
         catch (Exception exception) { themeSessionNeedsRefresh = true; ShowStyleFailure(exception); }

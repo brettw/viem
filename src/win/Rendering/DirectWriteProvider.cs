@@ -148,6 +148,11 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     {
         lock (shared.ImageLock) return shared.Images.TryGetValue(destination, out var image) ? image.State : null;
     }
+    public (uint Width, uint Height)? ImageDimensions(string destination)
+    {
+        lock (shared.ImageLock) return shared.Images.TryGetValue(destination, out var image) && image.Exact
+            ? (image.Width, image.Height) : null;
+    }
     /// Remember a location within the metadata budget. A full budget stops
     /// admission rather than evicting dimensions already used by extents.
     public bool AdmitImage(string destination)

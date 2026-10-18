@@ -27,6 +27,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     let textField = NSTextField()
     let destinationField: NSTextField
     let chooseImageButton = NSButton()
+    let imageSizeControls = EVImageSizeControls()
     let applyButton = NSButton(title: "Apply", target: nil, action: nil)
     private let cancelButton = NSButton(title: "Cancel", target: nil, action: nil)
     private let errorLabel = NSTextField(wrappingLabelWithString: "")
@@ -49,6 +50,10 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     private var scheduledDestinationDraft: NSObject?
     private var pendingDestination: (index: Int, text: String, destination: String)?
     private var imageFilePicker: NSOpenPanel?
+    private var imageSizeProbe: Operation?
+    private var imageSizeProbeDelay: DispatchWorkItem?
+    private var probedImageLocation: String?
+    private var probedImageDocument: URL?
     var imageFilePanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)?
     var popupFrame: NSRect { panel.frame }
 
@@ -128,6 +133,14 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         grid.column(at: 1).xPlacement = .fill
         grid.widthAnchor.constraint(equalToConstant: 360).isActive = true
         form.addArrangedSubview(grid)
+        if kind == .image {
+            form.addArrangedSubview(imageSizeControls)
+            imageSizeControls.didChange = { [weak self] in
+                guard let self else { return }
+                self.setValidationMessage(""); self.updateValidation()
+                if self.isEditing { self.position(animated: true) }
+            }
+        }
         destinationField.placeholderString = kind == .image ? "image.png or https://…" : "https://…, document.md, or #heading"
         if let combo = destinationField as? NSComboBox {
             combo.completes = false
@@ -301,9 +314,15 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         }
         textField.stringValue = context.item?.text ?? context.text
         destinationField.stringValue = context.item?.destination ?? ""
+        applyButton.title = kind == .image && context.item == nil ? "Insert" : "Apply"
+        if kind == .image {
+            imageSizeControls.reset(width: context.item?.width, height: context.item?.height)
+            probedImageLocation = nil
+        }
         setValidationMessage("")
         updateValidation()
         show(editing: true)
+        requestImageDimensions()
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(textField.stringValue.isEmpty ? textField : destinationField)
     }
@@ -433,6 +452,9 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         picker?.cancel(nil)
         selectingDestination = false; headingChoices = []
         destinationDraft = nil; pendingDestination = nil
+        imageSizeProbe?.cancel(); imageSizeProbe = nil
+        imageSizeProbeDelay?.cancel(); imageSizeProbeDelay = nil
+        probedImageLocation = nil
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }; eventMonitor = nil
         for observer in observers { NotificationCenter.default.removeObserver(observer) }; observers.removeAll()
         let window = originWindow
@@ -506,6 +528,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
             if let file, file.isFileURL {
                 self.destinationField.stringValue = EVImageFileLocation.destination(for: file, relativeTo: document)
                 self.setValidationMessage(""); self.updateValidation()
+                self.requestImageDimensions()
             }
             self.panel.makeKeyAndOrderFront(nil)
             self.panel.makeFirstResponder(self.destinationField)
@@ -527,7 +550,8 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
                 let destination = destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 if action != 2 { try EVLinkOpener.validateForAuthoring(destination) }
                 _ = try session.editInlineContent(kind, action: action, context: context, expected: expected,
-                    text: kind == .link && textField.stringValue.isEmpty ? destination : textField.stringValue, destination: destination)
+                    text: kind == .link && textField.stringValue.isEmpty ? destination : textField.stringValue, destination: destination,
+                    imageSize: kind == .image ? imageSizeControls.dimensions : nil)
                 succeeded = true
             } catch {
                 setValidationMessage(error.localizedDescription)
@@ -542,7 +566,34 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         }
     }
     @objc func cancel() { close(restoreFocus: true, suppress: true) }
-    func controlTextDidChange(_ obj: Notification) { setValidationMessage(""); updateValidation() }
+    func controlTextDidChange(_ obj: Notification) {
+        setValidationMessage(""); updateValidation(); requestImageDimensions()
+    }
+
+    private func requestImageDimensions() {
+        guard kind == .image, isEditing, let surface, let session = surface.session,
+              let draft = destinationDraft, let expected else { return }
+        let location = destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let document = surface.documentHostEffectHandler?.documentURL(for: surface)
+        guard location != probedImageLocation || document != probedImageDocument else { return }
+        probedImageLocation = location; probedImageDocument = document
+        imageSizeProbeDelay?.cancel(); imageSizeProbe?.cancel()
+        imageSizeControls.setNaturalSize(nil)
+        let work = DispatchWorkItem { [weak self, weak session, weak surface] in
+            guard let self, let session, let surface,
+                  self.isEditing, self.destinationDraft === draft else { return }
+            self.imageSizeProbe = session.provider.requestImageDimensions(location) { [weak self, weak session, weak surface] size in
+                guard let self, let session, let surface, self.isEditing,
+                      self.destinationDraft === draft, self.surface?.session === session,
+                      self.probedImageLocation == location,
+                      surface.documentHostEffectHandler?.documentURL(for: surface) == document,
+                      let selection = try? session.listSelection(), expected.isSameSelection(as: selection) else { return }
+                self.imageSizeControls.setNaturalSize(size)
+            }
+        }
+        imageSizeProbeDelay = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+    }
     func comboBoxWillPopUp(_ notification: Notification) {
         guard let combo = notification.object as? NSComboBox, let session = surface?.session, let expected else { return }
         selectingDestination = true
@@ -602,5 +653,6 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     }
     private func updateValidation() {
         applyButton.isEnabled = !destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (kind != .image || imageSizeControls.isValid)
     }
 }

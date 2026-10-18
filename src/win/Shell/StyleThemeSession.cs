@@ -92,8 +92,8 @@ internal sealed partial class StyleWindow
     internal void CommitThemeForTesting() => preferences.SaveThemeStyles(view.Document.State.format, view.ExportStyleDefaults());
     internal void RefreshForTesting() => Load(selected?.Key);
     internal bool EditPropertyForTesting(uint property, float number)
-        => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number(number)));
+        => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number(number)));
     internal bool ClearPropertyForTesting(uint property)
-        => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default));
+        => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default));
 #endif
 }

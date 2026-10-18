@@ -74,7 +74,9 @@ internal sealed partial class EditorPane
         location.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         location.Children.Add(imageDestination); location.Children.Add(imageBrowse); Grid.SetColumn(imageBrowse, 1);
         imageEditor = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
-        imageEditor.Children.Add(imageText); imageEditor.Children.Add(location); imageEditor.Children.Add(imageError);
+        imageEditor.Children.Add(imageText); imageEditor.Children.Add(location);
+        BuildImageSizeControls(imageEditor);
+        imageEditor.Children.Add(imageError);
         var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = "Cancel", MinWidth = 60 };
         imageApply = new Button { Content = "Apply", MinWidth = 60 };
@@ -84,6 +86,7 @@ internal sealed partial class EditorPane
         imageDestination.TextChanged += (_, _) => {
             imageApply.IsEnabled = imageDestination.Text.Trim().Length > 0;
             imageError.Visibility = Visibility.Collapsed;
+            if (!updatingImageSize) RefreshImageSizeNatural();
         };
         imageText.TextChanged += (_, _) => imageError.Visibility = Visibility.Collapsed;
         imageApply.IsEnabled = false;
@@ -129,14 +132,22 @@ internal sealed partial class EditorPane
         if (!insertingImageAtCaret && context.Image is { Editable: false }) return;
         EnsureImagePopup();
         editingImage = true;
+        CancelImageSizeProbe();
         imageEditDraft = new object();
         imageBrowse!.IsEnabled = !PickingImageLocation;
+        updatingImageSize = true;
         imageText!.Text = insertingImageAtCaret ? "" : context.Image?.Text ?? context.Text;
         imageDestination!.Text = insertingImageAtCaret ? "" : context.Image?.Destination ?? "";
+        var edited = insertingImageAtCaret ? null : context.Image;
+        imageSize.Reset(edited?.Width, edited?.Height);
+        updatingImageSize = false;
+        UpdateImageSizeControls();
+        imageApply!.Content = edited == null ? "Insert" : "Apply";
         imageApply!.IsEnabled = imageDestination.Text.Trim().Length > 0;
         imageError!.Text = ""; imageError.Visibility = Visibility.Collapsed;
         imageActions!.Visibility = Visibility.Collapsed; imageEditor!.Visibility = Visibility.Visible;
         imagePopup!.Visibility = Visibility.Visible;
+        RefreshImageSizeNatural();
         PositionImagePopup();
         if (animate && new global::Windows.UI.ViewManagement.UISettings().AnimationsEnabled)
         {
@@ -215,7 +226,8 @@ internal sealed partial class EditorPane
             // Validate supported schemes before creating an image; relative paths
             // may be authored before a document is first saved.
             ImageLocation.Validate(target);
-            view.EditImage(context, imageText!.Text, target, insertAtCaret: insertingImageAtCaret);
+            var size = imageSize.Dimensions();
+            view.EditImage(context, imageText!.Text, target, insertAtCaret: insertingImageAtCaret, width: size.Width, height: size.Height);
             DismissImagePopup(suppress: false); FocusEditor(); Refresh();
         }
         catch (Exception error)
@@ -233,6 +245,7 @@ internal sealed partial class EditorPane
         CancelPopupFocus(imagePopup);
         if (suppress) dismissedImage = shownImage;
         editingImage = false; insertingImageAtCaret = false; shownImage = null; imageEditDraft = null;
+        CancelImageSizeProbe();
         if (imagePopup != null) imagePopup.Visibility = Visibility.Collapsed;
     }
 

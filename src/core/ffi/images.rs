@@ -59,7 +59,7 @@ pub unsafe extern "C" fn viem_core_view_copy_image_context(
                     "start": range.start, "end": range.end, "kind": identity.kind, "anchor": selection.anchor(), "active": selection.active(),
                     "affinity": if selection.active_affinity() == BoundaryAffinity::Upstream { 0 } else { 1 } },
                 "canInsert": linear && document.can_insert_image(range), "text": text,
-                "image": image.map(|image| serde_json::json!({"start":image.range.start,"end":image.range.end,"text":image.text,"destination":image.destination,"editable":image.editable && !document.is_read_only()}))
+                "image": image.map(|image| serde_json::json!({"start":image.range.start,"end":image.range.end,"text":image.text,"destination":image.destination,"width":image.width,"height":image.height,"editable":image.editable && !document.is_read_only()}))
             })).map_err(|_| ViemStatus::CoreFailure)
         })?;
         unsafe {
@@ -87,6 +87,8 @@ pub unsafe extern "C" fn viem_core_view_edit_image(
     image_end: u64,
     text: ViemUtf8Slice,
     destination: ViemUtf8Slice,
+    width: u32,
+    height: u32,
     output: *mut ViemCoreOutcomeV1,
 ) -> ViemStatus {
     ffi_boundary(|| {
@@ -133,11 +135,15 @@ pub unsafe extern "C" fn viem_core_view_edit_image(
                     range: selection.range(),
                     text,
                     destination,
+                    width: (width > 0).then_some(width),
+                    height: (height > 0).then_some(height),
                 },
                 1 => ImageEditIntent::Edit {
                     range,
                     text,
                     destination,
+                    width: (width > 0).then_some(width),
+                    height: (height > 0).then_some(height),
                 },
                 _ => ImageEditIntent::Remove { range },
             };

@@ -161,6 +161,8 @@ fn nested_list_quote_images_keep_owner_identity_during_location_edits() {
         assert_eq!(doc.projection().blocks().iter().find(|block| block.range.contains(&image.range.start)).unwrap().quote_depth, 1);
         let (edit, _) = doc.prepare_image_edit(doc.id(), doc.revision(), ImageEditIntent::Edit {
             range: image.range, text: image.text, destination: "updated.png".into(),
+            width: image.width,
+            height: image.height,
         }).unwrap();
         doc.commit_model_transaction(edit).unwrap();
         assert_eq!(doc.source_bytes(), source.replace("'nested.png'", "\"updated.png\"").as_bytes());

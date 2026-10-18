@@ -447,6 +447,32 @@ fn table_insertion_in_a_large_document_only_reprojects_its_local_paragraph() {
 }
 
 #[test]
+fn table_insertion_into_an_empty_paragraph_keeps_local_work_and_source_patches() {
+    let prefix = "before\n\n".repeat(2_000) + "## Heading\n\n";
+    let suffix = "\n\nFollowing paragraph\n\n".to_owned() + &"after\n\n".repeat(2_000);
+    let source = format!("{prefix}{suffix}");
+    let mut document = doc(&source, Format::Markdown);
+    let at = document.text().find("Heading").unwrap() + "Heading\n".len();
+    assert!(document.paragraph_range_at(at).unwrap().is_empty());
+    let (prepared, _) = document.prepare_table_edit(document.id(), document.revision(),
+        TableEditIntent::Insert { range: at..at, columns: 2, body_rows: 1 }).unwrap();
+    let work = prepared.summary().projection_work();
+    assert_eq!(work.scope(), viem_core::document::ProjectionWorkScope::RegionalHardLines);
+    assert!(work.decoded_source_bytes() < 512, "{work:?}");
+    assert!(prepared.summary().source_patches().iter().all(|patch|
+        prefix.len() <= patch.range().start && patch.range().end <= prefix.len() + 2));
+    document.commit_model_transaction(prepared).unwrap();
+    let saved = document.source_bytes();
+    assert!(saved.starts_with(prefix.as_bytes()));
+    assert!(saved.ends_with(suffix.as_bytes()));
+    assert_eq!(Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap().text(), document.text());
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), saved);
+}
+
+#[test]
 fn inserting_below_header_retains_adjacent_delimiter_and_terminal_spelling() {
     let original = "| A | B |\n| :-- | --: |\n| one | two |";
     let mut document = doc(original, Format::Markdown);

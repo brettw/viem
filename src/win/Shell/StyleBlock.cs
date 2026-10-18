@@ -71,7 +71,7 @@ internal sealed partial class StyleWindow
     {
         uint[] properties = blockLock.IsChecked == true
             ? BlockRows.FirstOrDefault(row => row.Properties.Contains(property)).Properties ?? [property] : [property];
-        foreach (uint side in properties) view.EditStyle(selected, operation, side, value, group);
+        foreach (uint side in properties) EditStyle(selected, operation, side, value, group);
     }
 
     private void LinkBlockSides()

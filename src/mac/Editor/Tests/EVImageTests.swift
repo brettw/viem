@@ -94,6 +94,7 @@ final class EVImageTests: XCTestCase {
             surface.formattingToolbar.insertImage.performClick(nil)
             let popup = surface.imagePopover
             XCTAssertTrue(popup.isEditing)
+            XCTAssertEqual(popup.applyButton.title, "Insert")
             popup.textField.stringValue = ""
             popup.destinationField.stringValue = "local.png"
             popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
@@ -105,6 +106,7 @@ final class EVImageTests: XCTestCase {
             popup.refresh(); XCTAssertTrue(popup.isOpen)
             XCTAssertFalse(popup.reloadButton.isHidden)
             popup.editButton.performClick(nil)
+            XCTAssertEqual(popup.applyButton.title, "Apply")
             popup.destinationField.stringValue = "https://example.invalid/new.png"
             popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
             try preview("image-editor", try XCTUnwrap(popup.textField.window?.contentView))
@@ -149,6 +151,74 @@ final class EVImageTests: XCTestCase {
         surface.editorView.mouseDown(with: event)
         XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, image.text_start, "Clicking the right half still selects the image")
         XCTAssertTrue(surface.imagePopover.isOpen)
+    }
+
+    func testInsertAndUpdateLocalImageLoadWithoutReopeningAndSizeEditorRoundTrips() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        func write(_ name: String, _ width: Int, _ height: Int) throws -> URL {
+            let file = directory.appendingPathComponent(name)
+            let pixels = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            pixels.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+            pixels.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            let writer = try XCTUnwrap(CGImageDestinationCreateWithURL(file as CFURL, "public.png" as CFString, 1, nil))
+            CGImageDestinationAddImage(writer, try XCTUnwrap(pixels.makeImage()), nil)
+            XCTAssertTrue(CGImageDestinationFinalize(writer))
+            return file
+        }
+        func wait(_ condition: () -> Bool) {
+            let deadline = Date(timeIntervalSinceNow: 5)
+            while !condition() && Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01)) }
+            XCTAssertTrue(condition())
+        }
+        let first = try write("first.png", 200, 100)
+        let second = try write("second.png", 180, 120)
+        let (backend, surface, window) = try editor("before  after", type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        func imageHeight() -> Float? {
+            surface.layoutSnapshot?.clusters.first(where: surface.editorView.isImageCluster)?.typographic_bounds.height
+        }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 7, length: 0))
+        surface.formattingToolbar.insertImage.performClick(nil)
+        let popup = surface.imagePopover
+        popup.destinationField.stringValue = first.path
+        popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: popup.destinationField))
+        popup.applyButton.performClick(nil)
+        wait { imageHeight() == 100 }
+        XCTAssertNil(surface.commandOutput)
+        popup.refresh(); popup.editButton.performClick(nil)
+        popup.destinationField.stringValue = second.path
+        popup.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: popup.destinationField))
+        popup.applyButton.performClick(nil)
+        wait { imageHeight() == 120 }
+        let beforeSize = try backend.serializedSource(typeName: EVDocument.markdownType)
+        popup.refresh(); popup.editButton.performClick(nil)
+        wait { popup.imageSizeControls.useImageSizeButton.isEnabled }
+        popup.imageSizeControls.disclosure.performClick(nil)
+        XCTAssertEqual(popup.imageSizeControls.widthField.stringValue, "180")
+        XCTAssertEqual(popup.imageSizeControls.heightField.stringValue, "120")
+        let sizes = popup.imageSizeControls
+        sizes.widthField.stringValue = "90"
+        sizes.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: sizes.widthField))
+        XCTAssertEqual(sizes.heightField.stringValue, "60")
+        try preview("image-size-editor", try XCTUnwrap(popup.textField.window?.contentView))
+        popup.applyButton.performClick(nil)
+        XCTAssertNil(surface.commandOutput)
+        wait { imageHeight() == 60 }
+        let sized = try backend.serializedSource(typeName: EVDocument.markdownType)
+        XCTAssertTrue(String(decoding: sized, as: UTF8.self).contains("width=\"90\" height=\"60\""))
+        popup.refresh(); popup.editButton.performClick(nil)
+        XCTAssertTrue(sizes.expanded)
+        wait { sizes.useImageSizeButton.isEnabled }
+        XCTAssertEqual(sizes.lockButton.state, .on)
+        popup.applyButton.performClick(nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), sized)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), beforeSize)
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), sized)
     }
 
     func testHTMLImageDimensionsUseLocalRasterAndPaintTheirLayoutRectangle() throws {

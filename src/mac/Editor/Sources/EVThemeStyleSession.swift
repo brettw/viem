@@ -42,7 +42,7 @@ extension EVStyleSettingsSession {
 }
 
 extension Notification.Name {
-    static let viemThemeStyleSessionDidChange = Notification.Name("com.viem.theme-style-session.did-change")
+    static let viemStyleSettingsSessionDidChange = Notification.Name("com.viem.style-settings-session.did-change")
 }
 
 /// A settings editing session with its own history, separate from every open
@@ -77,7 +77,7 @@ final class EVThemeStyleSession: EVStyleSettingsSession {
                 }
                 do { try self.rebuild(); self.lastError = nil }
                 catch { self.lastError = error.localizedDescription }
-                NotificationCenter.default.post(name: .viemThemeStyleSessionDidChange, object: self)
+                NotificationCenter.default.post(name: .viemStyleSettingsSessionDidChange, object: self)
             }
         }
     }
@@ -112,7 +112,7 @@ final class EVThemeStyleSession: EVStyleSettingsSession {
             if context != (try configuration.themeStyleDefaults(for: sourceFormat)) { try rebuild() }
             if groupStart == nil { registerUndo(before) }
             lastError = nil
-            NotificationCenter.default.post(name: .viemThemeStyleSessionDidChange, object: self)
+            NotificationCenter.default.post(name: .viemStyleSettingsSessionDidChange, object: self)
         } catch {
             try? rebuild()
             // The inspector presents relationship cycles in its named modal.
@@ -141,7 +141,7 @@ final class EVThemeStyleSession: EVStyleSettingsSession {
             registerUndo(before)
             lastError = nil
         } catch { lastError = error.localizedDescription }
-        NotificationCenter.default.post(name: .viemThemeStyleSessionDidChange, object: self)
+        NotificationCenter.default.post(name: .viemStyleSettingsSessionDidChange, object: self)
     }
 
     private func rebuild() throws {

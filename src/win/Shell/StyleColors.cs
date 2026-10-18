@@ -34,7 +34,7 @@ internal sealed partial class StyleWindow
 
     private void RefreshCommittedColors()
     {
-        sheet = view.Styles();
+        sheet = InspectorStyles(view.Styles());
         selected = sheet.Styles.Single(s => s.Key == selected.Key);
         foreach (var refresh in refreshColors) refresh();
         preview.Invalidate();
@@ -52,7 +52,7 @@ internal sealed partial class StyleWindow
     }
     private void DeclareEffective(uint property)
     {
-        if (property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) view.EditStyleFont(selected, sheet.StringList(selected.Value(property)), CurrentFace, CurrentAxisValues, sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE)));
+        if (property == VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES) EditStyleFont(selected, sheet.StringList(selected.Value(property)), CurrentFace, CurrentAxisValues, sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE)));
         else if (property == VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND && selected.UsesThemeForeground) SetColor(property, preferences.Theme.Foreground);
         else if (property == VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND && selected.Value(property).kind != VIEM_STYLE_VALUE_COLOR)
             SetColor(property, NewBlockBackground());
@@ -68,6 +68,7 @@ internal sealed partial class StyleWindow
             }
             else EditLinkedProperty(VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Number(selected.Value(property).number));
         }
+        else if (IsWhitespaceStyle) DeclareEffectiveWhitespace(property);
         else view.DeclareEffectiveStyle(selected, property, sheet);
     }
     private Color NewBlockBackground()
@@ -80,6 +81,7 @@ internal sealed partial class StyleWindow
     private void ThemeChanged()
     {
         if (closed) return;
+        RefreshWhitespaceSession();
         root.RequestedTheme = preferences.Midnight ? ElementTheme.Dark : ElementTheme.Light;
         RefreshSelectorColors();
         if (Content is ScrollViewer scroll) { scroll.RequestedTheme = root.RequestedTheme; scroll.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(32, 32, 32) : Theme.Rgb(250, 250, 250)); }
