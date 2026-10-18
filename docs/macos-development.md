@@ -88,8 +88,14 @@ cargo test --all-targets
 scripts/test-mac.sh
 ```
 
-The native test script checks the C header against the Rust ABI, builds the
-current app, and runs the Swift tests with isolated settings. Run `make check-abi`
+The native test script checks capabilities before building, verifies the C ABI,
+and runs Swift tests with isolated settings. Build, packaging and execution have
+separate timings. A content-verified build is reused for subsequent test filters;
+changed source, toolchains, options or output bytes invalidate that evidence.
+Use `python3 scripts/validate.py native --native-filter EVCodeBlockLanguageTests`
+to record a focused run. Tests that need no app bundle may explicitly use
+`--no-native-package`. See [the workflow](development-workflow.md#native-tests)
+for capability checks, ownership, artifact reuse and failure handling. Run `make check-abi`
 for the header check alone. See [C ABI validation](abi-validation.md) for Windows
 setup and CI usage. Ordinary Rust tests do not run the C compiler check.
 

@@ -14,6 +14,8 @@ exact artifacts it ran, under target/validation/<timestamp>/ by default.
 Stages (run in the order given):
 
   check             cargo check of the library, tests and examples.
+  tooling           Python validation/build-tool regression tests.
+  contract          A curated feature integration matrix.
   focused           Integration (or library) tests matching --filter. Shadow
                     verification compares regional edits with complete
                     reprojection (see .cargo/config.toml).
@@ -49,10 +51,11 @@ import sys
 import threading
 import time
 from pathlib import Path
+from validation_support import build_lock, child_options, input_identity, environment_identity
 
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ["examples/fuzz_consistency.rs", "examples/fuzz_consistency/corpus.rs"]
-STAGES = ["check", "focused", "suites", "consistency", "consistency-full", "memory", "native"]
+STAGES = ["check", "focused", "suites", "consistency", "consistency-full", "memory", "native", "contract", "tooling"]
 
 
 class StageFailure(Exception):
@@ -66,16 +69,14 @@ def git(*args, cwd=ROOT):
 def source_identity():
     """Commit plus a digest of uncommitted changes, so dirty runs are distinguishable."""
     commit = git("rev-parse", "HEAD")
-    status = git("status", "--porcelain")
+    status = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True).rstrip("\n")
     digest = hashlib.sha256()
     digest.update(subprocess.run(["git", "diff", "HEAD", "--binary"], cwd=ROOT, check=True,
                                  capture_output=True).stdout)
-    for line in status.splitlines():
-        if line.startswith("??"):
-            path = ROOT / line[3:].strip().strip('"')
-            if path.is_file():
-                digest.update(path.name.encode())
-                digest.update(path.read_bytes())
+    for name in subprocess.check_output(["git", "ls-files", "-z", "--others", "--exclude-standard"], cwd=ROOT).decode().split("\0"):
+        path = ROOT / name
+        if name and path.is_file():
+            digest.update(name.encode()); digest.update(b"\0"); digest.update(path.read_bytes())
     return {"commit": commit, "dirty": bool(status), "status": status.splitlines(),
             "change_digest": digest.hexdigest()[:16]}
 
@@ -94,7 +95,7 @@ class Run:
         self.keep_going = keep_going
         self.out.mkdir(parents=True, exist_ok=True)
         self.manifest = {"started": datetime.datetime.now().isoformat(timespec="seconds"),
-                         "source": source_identity(), "stages": []}
+                         "source": source_identity(), "stages": [], "environment": environment_identity()}
         self.save()
 
     def save(self):
@@ -105,13 +106,15 @@ class Run:
         log = self.out / f"{stage}-{name}.log"
         merged_env = dict(os.environ)
         merged_env.update(env or {})
-        started = time.time()
-        record = {"stage": stage, "name": name, "argv": argv, "cwd": str(cwd), "log": str(log),
+        started = time.monotonic()
+        record = {"started": datetime.datetime.now().isoformat(), "stage": stage, "name": name, "argv": argv, "cwd": str(cwd), "log": str(log),
                   "env": env or {}}
+        self.manifest["stages"].append(record)
+        self.save()
         print(f"[{stage}] {name}: {' '.join(argv)}", flush=True)
         with open(log, "wb") as output:
             process = subprocess.Popen(argv, cwd=cwd, env=merged_env, stdout=subprocess.PIPE,
-                                       stderr=subprocess.STDOUT, start_new_session=True)
+                                       stderr=subprocess.STDOUT, start_new_session=True, **child_options())
             last_output = [time.time()]
             stalled = [False]
 
@@ -123,21 +126,34 @@ class Run:
 
             reader = threading.Thread(target=pump, daemon=True)
             reader.start()
-            while process.poll() is None:
-                time.sleep(1)
-                if stall_seconds and time.time() - last_output[0] > stall_seconds:
-                    stalled[0] = True
-                    sample_stalled(process.pid, self.out / f"{stage}-{name}-stall.txt")
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    break
+            try:
+                while process.poll() is None:
+                    time.sleep(1)
+                    if stall_seconds and time.time() - last_output[0] > stall_seconds:
+                        stalled[0] = True
+                        sample_stalled(process.pid, self.out / f"{stage}-{name}-stall.txt")
+                        os.killpg(process.pid, signal.SIGTERM)
+                        try:
+                            process.wait(timeout=30)
+                        except subprocess.TimeoutExpired:
+                            os.killpg(process.pid, signal.SIGKILL)
+                            process.wait()
+                        break
+            except BaseException:
+                try: os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError: pass
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL); process.wait()
+                reader.join(timeout=5)
+                record.update(seconds=round(time.monotonic() - started, 3),
+                              exit=process.returncode, interrupted=True,
+                              finished=datetime.datetime.now().isoformat())
+                self.save()
+                raise
             reader.join(timeout=10)
-        record.update({"seconds": round(time.time() - started, 1), "exit": process.returncode,
+        record.update({"seconds": round(time.monotonic() - started, 3), "finished": datetime.datetime.now().isoformat(), "exit": process.returncode,
                        "stalled": stalled[0]})
-        self.manifest["stages"].append(record)
         self.save()
         status = "stalled" if stalled[0] else f"exit {process.returncode}"
         print(f"[{stage}] {name}: {status} in {record['seconds']}s (log {log})", flush=True)
@@ -169,19 +185,22 @@ def cargo_artifact(run, stage, cargo_args, target, kind="example", cwd=ROOT, env
     Never guess paths under target/: a stale binary from another profile,
     worktree or CARGO_TARGET_DIR silently invalidates every later result.
     """
-    log = run.out / f"{stage}-build-{target}.json"
-    merged = dict(os.environ)
-    merged.update(env or {})
+    # Candidate and baseline commands retain distinct logs, including failed or
+    # interrupted builds. Use the same process-group supervision as test runs.
+    name = f"build-{target}" + ("-baseline" if Path(cwd) != ROOT else "")
     argv = ["cargo", "build", "--message-format=json-render-diagnostics", *cargo_args]
-    print(f"[{stage}] build {target}: {' '.join(argv)}", flush=True)
-    started = time.time()
-    result = subprocess.run(argv, cwd=cwd, env=merged, capture_output=True, text=True)
-    log.write_text(result.stdout + result.stderr)
-    if result.returncode != 0:
-        sys.stderr.write(result.stderr[-4000:])
+    started = time.monotonic()
+    code, log = run.command(stage, name, argv, cwd=cwd, env=env, allow_failure=True)
+    output = log.read_text()
+    build_record = {"stage": stage, "target": target, "argv": argv, "cwd": str(cwd), "log": str(log),
+                    "exit": code, "build_seconds": round(time.monotonic() - started, 3)}
+    run.manifest.setdefault("artifacts", []).append(build_record)
+    run.save()
+    if code != 0:
+        sys.stderr.write(output[-4000:])
         raise StageFailure(f"{stage}: building {target} failed; see {log}")
     executable = None
-    for line in result.stdout.splitlines():
+    for line in output.splitlines():
         try:
             message = json.loads(line)
         except json.JSONDecodeError:
@@ -192,9 +211,7 @@ def cargo_artifact(run, stage, cargo_args, target, kind="example", cwd=ROOT, env
     if not executable:
         raise StageFailure(f"{stage}: Cargo reported no executable for {target}")
     digest = hashlib.sha256(Path(executable).read_bytes()).hexdigest()[:16]
-    run.manifest.setdefault("artifacts", []).append(
-        {"stage": stage, "target": target, "path": executable, "sha256": digest,
-         "build_seconds": round(time.time() - started, 1)})
+    build_record.update(path=executable, sha256=digest)
     run.save()
     return executable
 
@@ -297,27 +314,54 @@ def stage_memory(run, args):
 
 
 def stage_native(run, args):
-    problems = []
-    if sys.platform != "darwin":
-        problems.append("native tests require macOS")
-    for tool in ("swift", "xcrun", "caffeinate"):
-        if not shutil.which(tool):
-            problems.append(f"{tool} is not on PATH")
-    session = subprocess.run(["launchctl", "managername"], capture_output=True, text=True).stdout.strip()
-    if session != "Aqua":
-        problems.append(f"no GUI login session (launchctl managername: {session or 'unknown'}); "
-                        "AppKit and font-service tests need one, and sandboxed shells usually lack it")
-    if problems:
-        raise StageFailure("native preflight: " + "; ".join(problems))
-    run.command("native", "test-mac", ["scripts/test-mac.sh"], stall_seconds=args.stall_minutes * 60)
+    argv = ["scripts/test-mac.sh", "--report", str(run.out / "native-phases.json")]
+    for value in args.native_filter: argv += ["--filter", value]
+    if args.no_native_package: argv += ["--no-package"]
+    run.command("native", "test-mac", argv, stall_seconds=args.stall_minutes * 60)
 
 
-def main():
+def stage_tooling(run, args):
+    run.command("tooling", "python-tests", [sys.executable, "-B", "-m", "unittest", "discover",
+                                           "-s", "scripts/tests", "-p", args.tooling_pattern])
+
+
+def stage_contract(run, args):
+    path = ROOT / "scripts/fixtures/markdown-contracts.json"
+    contracts = json.loads(path.read_text())
+    if args.contract not in contracts:
+        raise StageFailure(f"unknown contract {args.contract!r}; choose from {list(contracts)}")
+    filters = list(contracts[args.contract].values())
+    run.manifest["contract"] = {"name": args.contract, "behaviors": contracts[args.contract]}
+    run.command("contract", "integration", ["cargo", "test", "--test", "all", "--", *filters])
+
+
+def evidence_key(stage, args):
+    # Test selection and resolved baseline are part of the proof, not just files.
+    options = {name: getattr(args, name) for name in
+               ("filter", "tests", "probes", "positions", "seed_filter", "op_filter", "fmt",
+                "native_filter", "no_native_package", "contract", "tooling_pattern")}
+    options["baseline_commit"] = git("rev-parse", f"{args.baseline}^{{commit}}") if args.baseline else None
+    return {"stage": stage, "inputs": input_identity(stage),
+            "environment": environment_identity(stage == "native"), "options": options}
+
+
+def reusable_evidence(previous, key):
+    return next((entry for entry in previous.get("summary", [])
+                 if entry.get("outcome") == "passed" and entry.get("key") == key
+                 and entry.get("inputs_after") == key["inputs"]), None)
+
+
+def main_locked(lock):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("stages", nargs="*", default=["check"], choices=STAGES, metavar="STAGE")
     parser.add_argument("--filter", action="append", default=[], help="test name filter for `focused`")
     parser.add_argument("--tests", choices=["all", "lib", "both"], default="all",
                         help="which test binaries `focused` runs (default: integration tests only)")
+    parser.add_argument("--tooling-pattern", default="test_*.py", help="Python tooling test selection")
+    parser.add_argument("--contract", default="front-matter", help="feature-contract matrix to run")
+    parser.add_argument("--native-filter", action="append", default=[], help="native test filter, recorded in evidence")
+    parser.add_argument("--no-native-package", action="store_true", help="native tests do not need a packaged app")
+    parser.add_argument("--reuse-from", type=Path, help="reuse successful evidence with identical inputs, options and environment")
     parser.add_argument("--baseline", help="git revision to compare consistency results with")
     parser.add_argument("--probes", default="insert,normal,selection,copypaste")
     parser.add_argument("--positions", type=int, help="override probe positions per seed")
@@ -328,23 +372,35 @@ def main():
     parser.add_argument("--keep-going", action="store_true", help="continue after a failed stage")
     parser.add_argument("--out", type=Path, help="results directory")
     args = parser.parse_args()
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run = Run(args.out or ROOT / "target" / "validation" / stamp, args.keep_going)
+    run.manifest["lock"] = lock
+    previous = json.loads(args.reuse_from.read_text()) if args.reuse_from else {}
     print(f"results: {run.out}", flush=True)
     failures = []
     for stage in args.stages:
         started = time.time()
+        key = evidence_key(stage, args)
+        reused = reusable_evidence(previous, key) if stage != "native" else None
         try:
-            {"check": stage_check, "focused": stage_focused, "suites": stage_suites,
+            if reused:
+                print(f"[{stage}] reusing verified evidence from {args.reuse_from}", flush=True)
+            else:
+                {"check": stage_check, "focused": stage_focused, "suites": stage_suites,
              "consistency": lambda run, args: stage_consistency(run, args, False),
              "consistency-full": lambda run, args: stage_consistency(run, args, True),
-             "memory": stage_memory, "native": stage_native}[stage](run, args)
+             "memory": stage_memory, "native": stage_native, "contract": stage_contract, "tooling": stage_tooling}[stage](run, args)
+            inputs_after = input_identity(stage)
+            if inputs_after != key["inputs"]:
+                raise StageFailure(f"{stage}: inputs changed during validation; result is stale")
             outcome = "passed"
         except StageFailure as failure:
             outcome = str(failure)
             failures.append(outcome)
         run.manifest.setdefault("summary", []).append(
-            {"stage": stage, "outcome": outcome, "seconds": round(time.time() - started, 1)})
+            {"stage": stage, "outcome": outcome, "seconds": round(time.time() - started, 3),
+             "key": key, "inputs_after": input_identity(stage),
+             "reused_from": str(args.reuse_from) if reused else None})
         run.save()
         print(f"== {stage}: {outcome} ({time.time() - started:.0f}s)", flush=True)
         if failures and not args.keep_going:
@@ -356,6 +412,25 @@ def main():
         return 1
     print("all requested stages passed")
     return 0
+
+
+def interrupt_requested(signum, _frame):
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
+def main():
+    previous = signal.signal(signal.SIGTERM, interrupt_requested)
+    try:
+        with build_lock() as lock:
+            return main_locked(lock)
+    except KeyboardInterrupt:
+        print("validation interrupted; active command group stopped", file=sys.stderr)
+        return 130
+    except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == "__main__":

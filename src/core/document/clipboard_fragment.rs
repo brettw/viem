@@ -767,24 +767,14 @@ impl Document {
             if insertion_index.is_none() {
                 patches.push(SourcePatch::primary(insertion..insertion, replacement));
             }
-            let bom = self.encoding().bom_bytes();
-            let artifact_has_bom = !bom.is_empty() && patches[0].replacement.starts_with(bom);
-            if whole && artifact_has_bom != self.state().has_bom {
-                // This source is a complete copied artifact: its leading BOM
-                // is metadata, not inserted U+FEFF content. Decode it fully so
-                // regional origins cannot retain the old artifact's BOM extent.
-                self.prevent_accidental_front_matter(&mut patches)?;
-                let source = apply_source_patches(&self.state().source, &patches)?;
-                let candidate = self.build_verified_candidate(
-                    source, self.file_format(), self.file_format_origin(), Revision(self.next_revision),
+            if whole {
+                let prepared = self.prepare_artifact_replacement(
+                    patches.remove(0).replacement,
                     CandidateVerification {
                         expected_text: text.to_owned(),
                         expected_hard_breaks: Some(&export.hard_breaks),
                         mismatch_error: DocumentError::VerificationFailed,
                     },
-                )?;
-                let prepared = self.prepare_reprojected_source_candidate(
-                    patches, candidate, ModelChangeKind::TextEdits,
                 )?;
                 return verify_styles(prepared, &export, range.clone(), whole, self);
             }
@@ -1279,7 +1269,7 @@ fn clipboard_whole_source(document: &Document) -> Result<Vec<u8>, DocumentError>
     let mut bytes = document.source_bytes();
     if !document.format().is_markdown() { return Ok(bytes); }
     let Some(block) = document.projection().blocks_for_region(&(0..0)).into_iter()
-        .find(|block| block.front_matter) else { return Ok(bytes); };
+        .find(|block| block.code_kind.clipboard_representation() == super::super::CodeClipboardRepresentation::FencedYaml) else { return Ok(bytes); };
     let body = document.projection().text_tree().slice(block.range.clone())
         .map_err(DocumentError::FormattedTextStorage)?;
     let marker = code_fence_marker(&body);
@@ -1304,7 +1294,7 @@ fn selected_front_matter_source(
 ) -> Result<Option<Vec<u8>>, DocumentError> {
     if !document.format().is_markdown() || range.is_empty() { return Ok(None); }
     let Some(block) = document.projection().blocks_for_region(range).into_iter().find(|block|
-        block.front_matter && block.range.start <= range.start
+        block.code_kind.clipboard_representation() == super::super::CodeClipboardRepresentation::FencedYaml && block.range.start <= range.start
             && (range.start < block.range.end || block.range.is_empty()))
     else { return Ok(None); };
     if range.end > block.range.end {
@@ -1404,9 +1394,9 @@ fn selected_markdown_source(
     let input = super::super::line_endings::normalize(&decoded, document.file_format());
     let builder = super::super::rich_text::Builder::new(&input, Revision(0));
     if blocks {
-        let syntax = super::super::markdown_syntax::Blocks::parse_with_start(
+        let syntax = super::super::markdown_syntax::Blocks::parse(
             &super::super::markdown_syntax::grammar_text(&input),
-            input.source_at(0) == document.projection().source_content_start(),
+            super::super::markdown_syntax::ParseContext::source_region(input.source_at(0), document.projection().source_content_start()),
         ).to_source(&input);
         if let Some(owner) = document.projection().blocks_for_region(range).iter()
             .find(|block| block.range == *range && matches!(block.kind, super::super::BlockKind::Heading(_))) {

@@ -4396,6 +4396,24 @@ impl Document {
         }
     }
 
+    /// Replace the complete encoded artifact, including its BOM metadata.
+    /// Visible-text insertion must use `prepare_text_edits_with_patches`: a
+    /// leading U+FEFF in typed content is not an artifact BOM. Complete imports
+    /// intentionally reproject the entire artifact and verify their semantics.
+    fn prepare_artifact_replacement(
+        &self,
+        bytes: Vec<u8>,
+        verification: CandidateVerification<'_>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if self.is_read_only() { return Err(DocumentError::UnsupportedFormatting.into()); }
+        let mut patches = vec![SourcePatch::primary(0..self.source_byte_len(), bytes)];
+        self.prevent_accidental_front_matter(&mut patches)?;
+        let source = apply_source_patches(&self.state().source, &patches)?;
+        let candidate = self.build_verified_candidate(source, self.file_format(),
+            self.file_format_origin(), Revision(self.next_revision), verification)?;
+        self.prepare_reprojected_source_candidate(patches, candidate, ModelChangeKind::TextEdits)
+    }
+
     fn prepare_reprojected_source_candidate(
         &self,
         patches: Vec<SourcePatch>,

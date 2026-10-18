@@ -73,7 +73,7 @@ impl Document {
             &self.encoding().decode(&self.source_bytes())?,
             self.file_format(),
         );
-        let (_, definitions) = super::super::markdown_syntax::definitions(&input.text);
+        let (_, definitions) = super::super::markdown_syntax::definitions(&input.text, super::super::markdown_syntax::ParseContext::Document);
         let mapper = super::super::rich_text::Builder::new(&input, self.revision());
         let literal_definition_edits = edits.iter().all(|edit| {
             !edit.replacement.contains('\n')
@@ -155,8 +155,8 @@ impl Document {
                 &self.encoding().decode_region(&bytes, source.start)?,
                 self.file_format(),
             );
-            let (_, retained_definitions) = super::super::markdown_syntax::definitions_with_start(
-                &candidate.text, source.start == self.projection().source_content_start(),
+            let (_, retained_definitions) = super::super::markdown_syntax::definitions(
+                &candidate.text, super::super::markdown_syntax::ParseContext::source_region(source.start, self.projection().source_content_start()),
             );
             let structural_prefix = candidate.text.lines().any(|line| {
                 let body = line.trim_start_matches([' ', '\t']);

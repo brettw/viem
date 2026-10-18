@@ -44,12 +44,12 @@ fn leading_metadata_is_literal_yaml_code_with_hidden_delimiters() {
         let document = open(source);
         assert_eq!(document.text(), expected, "{source:?}");
         let block = &document.projection().blocks()[0];
-        assert!(block.front_matter, "{source:?}");
+        assert!(block.is_front_matter(), "{source:?}");
         assert_eq!(block.style.0, "Code Block");
         assert_eq!(block.code_language.as_deref(), Some("yaml"));
         assert!(document.projection().blocks()[1..]
             .iter()
-            .all(|block| !block.front_matter));
+            .all(|block| !block.is_front_matter()));
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert!(!document.is_dirty());
     }
@@ -73,7 +73,7 @@ fn unclosed_nonleading_and_other_delimiters_keep_ordinary_markdown_behavior() {
                 .projection()
                 .blocks()
                 .iter()
-                .all(|block| !block.front_matter),
+                .all(|block| !block.is_front_matter()),
             "{source:?}"
         );
         assert_eq!(document.source_bytes(), source.as_bytes());
@@ -112,7 +112,7 @@ fn body_edits_preserve_bom_encoding_line_endings_and_exact_history() {
                 )
                 .unwrap();
                 assert_eq!(document.source_bytes(), bytes);
-                assert!(document.projection().blocks()[0].front_matter);
+                assert!(document.projection().blocks()[0].is_front_matter());
                 let at = document.text().find("café").unwrap();
                 document.replace(at..at + "café".len(), "thé").unwrap();
                 let expected = encode(&source.replace("café", "thé"), encoding);
@@ -129,7 +129,7 @@ fn body_edits_preserve_bom_encoding_line_endings_and_exact_history() {
                 )
                 .unwrap();
                 assert_eq!(reopened.text(), document.text());
-                assert!(reopened.projection().blocks()[0].front_matter);
+                assert!(reopened.projection().blocks()[0].is_front_matter());
                 assert_eq!(
                     reopened.projection().style_spans(),
                     document.projection().style_spans()
@@ -232,7 +232,7 @@ fn assert_key_edit(source: &str, at: usize, keys: &[Key], expected: &str, front_
         "{source:?}, at {at}, {keys:?}"
     );
     assert_eq!(
-        core.document().projection().blocks()[0].front_matter,
+        core.document().projection().blocks()[0].is_front_matter(),
         front_matter
     );
     let saved = core.document().source_bytes();
@@ -315,7 +315,7 @@ fn empty_metadata_body_insertion_materializes_content_before_its_closer() {
                     if suffix.is_empty() { "" } else { "\nTail" }
                 )
             );
-            assert!(document.projection().blocks()[0].front_matter);
+            assert!(document.projection().blocks()[0].is_front_matter());
             assert_eq!(open(&expected).text(), document.text());
             assert!(document.undo());
             assert_eq!(document.source_bytes(), source.as_bytes());
@@ -337,14 +337,14 @@ fn replacing_the_complete_body_keeps_its_metadata_owner() {
         let range = document.projection().blocks()[0].range.clone();
         document.replace(range, replacement).unwrap();
         assert_eq!(document.text(), format!("{replacement}\nTail"));
-        assert!(document.projection().blocks()[0].front_matter);
+        assert!(document.projection().blocks()[0].is_front_matter());
         let saved = document.source_bytes();
         assert!(saved.starts_with(b"---\n"));
         assert!(saved.ends_with(b"---\n\nTail"));
         let reopened =
             Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
         assert_eq!(reopened.text(), document.text());
-        assert!(reopened.projection().blocks()[0].front_matter);
+        assert!(reopened.projection().blocks()[0].is_front_matter());
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert!(document.redo());
@@ -431,7 +431,7 @@ fn deleting_complete_metadata_preserves_the_document_bom() {
                 "{encoding:?}, {file_format:?}"
             );
             assert_eq!(core.document().text(), "Tail");
-            assert!(!core.document().projection().blocks()[0].front_matter);
+            assert!(!core.document().projection().blocks()[0].is_front_matter());
             let reopened = Document::from_bytes_with_file_format(
                 expected.clone(),
                 encoding,
@@ -519,7 +519,7 @@ fn new_code_blocks_do_not_inherit_language_from_front_matter() {
             .iter()
             .find(|block| block.range.contains(&at))
             .unwrap();
-        assert!(!block.front_matter);
+        assert!(!block.is_front_matter());
         assert_eq!(block.style.0, "Code Block");
         assert_eq!(block.code_language.as_deref(), expected);
         assert!(document
@@ -570,7 +570,7 @@ fn preview_switches_keep_source_and_metadata_body_anchors() {
         assert_eq!(mapped.offset(), document.text().find("example").unwrap());
         assert_eq!(document.source_bytes(), source.as_bytes());
         assert_eq!(
-            document.projection().blocks()[0].front_matter,
+            document.projection().blocks()[0].is_front_matter(),
             target == Format::Markdown
         );
         if target == Format::Code {
@@ -658,7 +658,7 @@ fn small_metadata_edit_does_not_materialize_or_reproject_large_prose_suffix() {
             document.source_bytes(),
             source.replace("title: old", "title: new").as_bytes()
         );
-        assert!(document.projection().blocks()[0].front_matter);
+        assert!(document.projection().blocks()[0].is_front_matter());
         assert!(document.undo());
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
@@ -703,12 +703,12 @@ fn ex_rule_transfers_preserve_thematic_rules_without_creating_metadata() {
             assert_eq!(core.document().text(), expected_text, "{source:?}, :{command}");
             let saved = encode(&expected_source, encoding);
             assert_eq!(core.document().source_bytes(), saved, "{source:?}, :{command}");
-            assert!(core.document().projection().blocks().iter().all(|block| !block.front_matter));
+            assert!(core.document().projection().blocks().iter().all(|block| !block.is_front_matter()));
             let reopened = Document::from_bytes_with_file_format(
                 saved.clone(), encoding, Format::Markdown, FileFormat::Unix,
             ).unwrap();
             assert_eq!(reopened.text(), expected_text);
-            assert!(reopened.projection().blocks().iter().all(|block| !block.front_matter));
+            assert!(reopened.projection().blocks().iter().all(|block| !block.is_front_matter()));
             core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
             assert_eq!(core.document().source_bytes(), original);
             core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();

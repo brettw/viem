@@ -129,7 +129,7 @@ fn markdown_projection(
     input: &NormalizedText,
     document_start: bool,
 ) -> (NormalizedText, BTreeSet<usize>) {
-    let syntax = super::markdown_syntax::Blocks::parse_with_start(&super::markdown_syntax::grammar_text(input), document_start).to_source(input);
+    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input), if document_start { super::markdown_syntax::ParseContext::Document } else { super::markdown_syntax::ParseContext::Interior }).to_source(input);
     markdown_with_syntax(input, document_start, &syntax)
 }
 

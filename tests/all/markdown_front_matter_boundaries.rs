@@ -22,7 +22,7 @@ fn assert_rule_edit(
         .projection()
         .blocks()
         .iter()
-        .all(|block| !block.front_matter));
+        .all(|block| !block.is_front_matter()));
     assert_eq!(
         core.document()
             .projection()
@@ -76,7 +76,7 @@ fn assert_rule_edit(
             .projection()
             .blocks()
             .iter()
-            .all(|block| !block.front_matter),
+            .all(|block| !block.is_front_matter()),
         "editing thematic rules must not create metadata: {source:?}, {keys:?}"
     );
     assert_eq!(

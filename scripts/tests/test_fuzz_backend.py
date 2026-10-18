@@ -15,6 +15,8 @@ from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "fuzz-backend.py"
+sys.path.insert(0, str(SCRIPT.parent))
+from validation_support import child_options
 SPEC = importlib.util.spec_from_file_location("fuzz_backend_supervisor", SCRIPT)
 fuzz = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(fuzz)
@@ -155,7 +157,7 @@ print(json.dumps(records[-1]))
         output = self.directory / "campaign"
         command = [sys.executable, str(SCRIPT), "--no-build", "--binary", str(binary),
                    "--output", str(output), "--suite", "all", "--seed", "41", "--cases", "2", "--sessions", "2"]
-        completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, **child_options())
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         summary = json.loads((output / "summary.json").read_text())
         self.assertEqual(summary["cases_completed"], 6)
@@ -173,11 +175,11 @@ print(json.dumps(records[-1]))
         replay_output = self.directory / "replayed"
         completed = subprocess.run([sys.executable, str(SCRIPT), "--no-build", "--binary", str(binary),
             "--output", str(replay_output), "--replay", str(case / "trace.jsonl")],
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20, **child_options())
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         replay_case = replay_output / "00001-replay"
         self.assertEqual((replay_case / "replay-original.jsonl").read_bytes(), (case / "trace.jsonl").read_bytes())
-        repeated = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        repeated = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, **child_options())
         self.assertEqual(repeated.returncode, 2)
 
     @requires_supervisor

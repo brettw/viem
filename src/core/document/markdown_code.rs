@@ -36,7 +36,7 @@ pub(super) fn patches(
     }
     for block in document.projection().blocks_for_region(range) {
         if block.range.start <= range.start && range.end <= block.range.end {
-            if block.front_matter {
+            if block.is_front_matter() {
                 return front_matter_body_patches(document, &block, range, replacement).map(Some);
             }
             if let Some(code) = super::markdown_indented_code::source_block(document, &block)? {
@@ -696,10 +696,10 @@ fn join_following_paragraph(
         .slice(last_line.start..range.start)
         .map_err(DocumentError::FormattedTextStorage)?;
     joined_tail.push_str(&appended);
-    if code.front_matter && joined_tail.split('\n').any(front_matter_delimiter) {
+    if code.is_front_matter() && joined_tail.split('\n').any(front_matter_delimiter) {
         return Err(DocumentError::UnsupportedFormatting);
     }
-    let needed = if code.front_matter { opening_width } else { joined_tail
+    let needed = if code.is_front_matter() { opening_width } else { joined_tail
         .lines()
         .filter_map(|line| {
             let line = line.trim();
@@ -895,7 +895,7 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
     let Some(mut opening) = lines.get(first.saturating_sub(1)) else {
         return Ok(None);
     };
-    if block.front_matter {
+    if block.is_front_matter() {
         // The physical first row also owns the BOM. The metadata envelope
         // starts after it, including when a linewise edit removes that owner.
         opening.start = document.projection().source_content_start();
@@ -907,7 +907,7 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
     };
     let text = read(&opening)?;
     let prefix = super::markdown_quotes::container_prefix(&text.text);
-    let marker = if block.front_matter {
+    let marker = if block.is_front_matter() {
         let normalized = super::line_endings::normalize(&text, document.file_format());
         front_matter_delimiter(normalized.text.trim_end_matches('\n'))
             .then_some((b'-', 3))
@@ -941,7 +941,7 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         let container = if matches!(block.kind, super::BlockKind::ListItem { .. }) { result.body_prefix[super::markdown_quotes::prefix(&result.body_prefix)..].len() } else { 0 };
         let trim = line_body.bytes().take(container).take_while(|b| *b == b' ').count();
         let value = &line_body[trim..];
-        if if block.front_matter { front_matter_delimiter(value) }
+        if if block.is_front_matter() { front_matter_delimiter(value) }
             else { super::markdown_syntax::fence_close(value, delimiter, width) } {
             result.closing_content_end = Some(normalized.endings.last()
                 .filter(|ending| ending.source.end == line.end)

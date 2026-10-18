@@ -378,9 +378,9 @@ fn markdown_patches(
     unindent: bool,
 ) -> Result<Vec<SourcePatch>, DocumentError> {
     let original = input;
-    let syntax = super::super::markdown_syntax::Blocks::parse_with_start(
+    let syntax = super::super::markdown_syntax::Blocks::parse(
         &super::super::markdown_syntax::grammar_text(input),
-        input.source_at(0) == document.projection().source_content_start(),
+        super::super::markdown_syntax::ParseContext::source_region(input.source_at(0), document.projection().source_content_start()),
     ).to_source(input);
     let mut quotes = super::super::markdown_quotes::classify_with_syntax(input, &syntax);
     // Move the item's inner quotes with it. Only quotes enclosing the list
@@ -672,13 +672,13 @@ mod tests {
         let source = "> ---\n> - parent\n> - child\n> ---";
         let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         let before = document.text().to_owned();
-        assert!(document.projection().blocks().iter().all(|block| !block.front_matter));
+        assert!(document.projection().blocks().iter().all(|block| !block.is_front_matter()));
         let at = before.find("child").unwrap();
         let transaction = document.prepare_list_indent(at..at, false).unwrap();
         document.commit_model_transaction(transaction).unwrap();
         assert_eq!(document.text(), before);
         assert_eq!(document.source_bytes(), b"> ---\n> - parent\n>   - child\n> ---");
-        assert!(document.projection().blocks().iter().all(|block| !block.front_matter));
+        assert!(document.projection().blocks().iter().all(|block| !block.is_front_matter()));
         let levels: Vec<_> = document.projection().blocks().iter().filter_map(Block::list_level).collect();
         assert_eq!(levels, [0, 1]);
         assert!(document.undo());

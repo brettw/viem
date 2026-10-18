@@ -11,6 +11,7 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 - [Development workflow](development-workflow.md): staged validation, shadow
   verification, candidate tracing, explicit materialization and measurement
   discipline for changes to shared editing code.
+- [Markdown feature contracts](markdown-feature-contracts.md): early integration coverage and parser/owner boundaries.
 - [macOS development](macos-development.md): build, run, test and startup setup.
 - [Blocking editor](blocking-editor.md): Git integration and document completion.
 - [Split views](window-panes.md): window commands, resize units, and mouse dragging.

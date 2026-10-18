@@ -1,3 +1,4 @@
+use super::markdown_test_support::{EncodedFixture, place_insert_boundary};
 use viem_core::command::clipboard::{
     ClipboardCommandContext, ClipboardContent, ClipboardGeneration, ClipboardSnapshot, ClipboardTarget,
 };
@@ -21,8 +22,7 @@ fn paste(document: &mut Document, at: usize, fragment: &ClipboardFragment) {
         ClipboardContent::from_register(RegisterValue::from_clipboard_fragment(fragment).unwrap()),
     ));
     let mut commands = CommandInterpreter::new();
-    commands.handle(document, InputEvent::key('i')).unwrap();
-    assert!(commands.set_cursor(document, at));
+    place_insert_boundary(&mut commands, document, at);
     let result = commands.handle_with_clipboard_context(
         document, InputEvent::Key(Key::PasteClipboard), &context,
     ).unwrap_or_else(|error| panic!(
@@ -37,7 +37,7 @@ fn paste(document: &mut Document, at: usize, fragment: &ClipboardFragment) {
 
 fn assert_code_copy(document: &Document, expected: &str) {
     assert_eq!(document.text(), expected);
-    assert!(document.projection().blocks().iter().all(|block| !block.front_matter));
+    assert!(document.projection().blocks().iter().all(|block| !block.is_front_matter()));
     let block = &document.projection().blocks()[0];
     assert_eq!(block.style.0, "Code Block");
     assert_eq!(block.code_language.as_deref(), Some("yaml"));
@@ -50,9 +50,10 @@ fn whole_front_matter_clipboard_pastes_as_yaml_code_with_original_encoded_body()
         for (file_format, ending) in [(FileFormat::Unix, "\n"), (FileFormat::Dos, "\r\n"), (FileFormat::Mac, "\r")] {
             for bom in [false, true] {
                 let prefix = if bom { "\u{feff}" } else { "" };
-                let source = format!("{prefix}---{ending}{}{ending}---", body.replace('\n', ending));
-                let original = encoded(&source, encoding);
-                let donor = Document::from_bytes_with_file_format(original.clone(), encoding, Format::Markdown, file_format).unwrap();
+                let fixture = EncodedFixture { encoding, file_format, bom };
+                let normalized = format!("---\n{body}\n---");
+                let original = fixture.bytes(&normalized);
+                let donor = fixture.open(&normalized);
                 let fragment = donor.clipboard_fragment(0..donor.text().len()).unwrap();
                 let mut target = Document::from_bytes_with_file_format(Vec::new(), encoding, Format::Markdown, file_format).unwrap();
                 paste(&mut target, 0, &fragment);
@@ -63,10 +64,7 @@ fn whole_front_matter_clipboard_pastes_as_yaml_code_with_original_encoded_body()
                 assert!(!donor.is_dirty());
                 let reopened = Document::from_bytes_with_file_format(expected.clone(), encoding, Format::Markdown, file_format).unwrap();
                 assert_code_copy(&reopened, body);
-                assert!(target.undo());
-                assert!(target.source_bytes().is_empty());
-                assert!(target.redo());
-                assert_eq!(target.source_bytes(), expected);
+                fixture.assert_history(&mut target, &[], &expected);
             }
         }
     }
@@ -81,7 +79,7 @@ fn whole_document_clipboard_preserves_prose_after_the_converted_metadata_owner()
     paste(&mut target, 0, &fragment);
     assert_eq!(target.text(), donor.text());
     assert_eq!(target.source_bytes(), b"```yaml\nname: example\n```\n\n# Heading\n\n__untouched__ prose\n");
-    assert!(target.projection().blocks().iter().all(|block| !block.front_matter));
+    assert!(target.projection().blocks().iter().all(|block| !block.is_front_matter()));
     assert_eq!(donor.source_bytes(), source.as_bytes());
 }
 
@@ -134,7 +132,7 @@ fn single_line_metadata_copies_preserve_literal_text_when_pasted_into_prose() {
         let mut target = Document::from_bytes(b"before after".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         paste(&mut target, 7, &fragment);
         assert_eq!(target.text(), format!("before {copied}after"));
-        assert!(target.projection().blocks().iter().all(|block| !block.front_matter));
+        assert!(target.projection().blocks().iter().all(|block| !block.is_front_matter()));
         let saved = target.source_bytes();
         let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
         assert_eq!(reopened.text(), target.text());

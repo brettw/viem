@@ -12,7 +12,7 @@ impl Document {
     ) -> Result<(), ModelTransactionError> {
         if self.format() != Format::Markdown || patches.is_empty() { return Ok(()); }
         let had_metadata = self.projection().blocks_for_region(&(0..0)).iter()
-            .any(|block| block.front_matter);
+            .any(|block| block.is_front_matter());
         let first_line = self.state().source_hard_lines.get(0)
             .ok_or(DocumentError::AmbiguousProjection)?;
         if had_metadata && patches.iter().all(|patch| patch.range.start >= first_line.end) {
@@ -209,7 +209,7 @@ mod tests {
                         expected.extend(encoding.encode_fragment(&expected_body).unwrap());
                         assert_eq!(candidate.bytes(), expected, "{encoding:?} {format:?} bom={bom}");
                         let reopened = Document::from_bytes_with_file_format(expected, encoding, Format::Markdown, format).unwrap();
-                        assert!(!reopened.projection().blocks_for_region(&(0..0)).iter().any(|block| block.front_matter));
+                        assert!(!reopened.projection().blocks_for_region(&(0..0)).iter().any(|block| block.is_front_matter()));
                         assert_eq!(document.source_bytes(), original);
                     }
                 }

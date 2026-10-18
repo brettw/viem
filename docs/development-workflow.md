@@ -11,10 +11,21 @@ Run the cheapest stage that can find a problem first. Freeze the candidate befor
 the expensive stages; if new evidence requires a change, reopen implementation
 explicitly and repeat the affected stages rather than calling a build final.
 
+For Markdown changes, first map the [feature contracts](markdown-feature-contracts.md).
+Run small representatives of every affected contract before expanding encoding,
+ending and large-document matrices. A candidate is frozen only when the contract
+matrix is covered, integration review is complete, and no planned source edits
+remain. Say which of these is still pending rather than describing a partial
+implementation as final. If validation reopens implementation, name the new
+blocking contract and keep adjacent investigations bounded. Record unrelated
+defects for follow-up instead of extending the change to repair them.
+
 | Stage | Command | Use it for |
 | --- | --- | --- |
+| Tooling tests | `python3 scripts/validate.py tooling` | Python validation/build tooling changes |
 | Type check | `python3 scripts/validate.py check` | Every edit loop |
 | Focused tests | `python3 scripts/validate.py focused --filter module::` | The tests nearest the change |
+| Feature contract | `python3 scripts/validate.py contract --contract front-matter` | Representatives across the feature's integration boundaries |
 | Quick consistency | `python3 scripts/validate.py consistency --baseline main` | Any change to transactions, projection, typing or paste |
 | Suites | `python3 scripts/validate.py suites` | Before measurements or review |
 | Native | `python3 scripts/validate.py native` | Frontend, ABI or rendering changes |
@@ -33,8 +44,21 @@ with the source identity (commit and a digest of uncommitted changes), every
 command, its duration, exit status and log, and the artifacts it ran. It finds
 binaries from Cargo's JSON output; never run a binary by guessing a path under
 `target/`, because a stale artifact from another profile, worktree or
-`CARGO_TARGET_DIR` silently invalidates every later result. Run stages directly
-when that is simpler; the commands are in the script and in the linked guides.
+`CARGO_TARGET_DIR` silently invalidates every later result. Use the runner for focused work too, so its evidence and time are recorded.
+For native selection use `native --native-filter EVCodeBlockLanguageTests`.
+Native runs also write `native-phases.json` with separate capability, build,
+packaging and execution durations and the artifact reuse/invalidation reason.
+
+Every stage records its relevant input-content digest, toolchain and environment,
+test selection, and resolved consistency baseline. Inputs are checked again at
+completion; a changed candidate is reported as stale even when its tests pass.
+To retain unaffected successful evidence after another change, pass
+`--reuse-from path/to/manifest.json`. Only an identical input/environment/options
+key with unchanged completion inputs can be reused. Failed, stale or older
+manifests without these fields are rerun. Native tests always check capabilities
+and execute; their compiled artifacts can be reused separately. Conservative
+source groups may rerun more than the minimum; they never authorize skipping a
+check based only on a filename guess.
 
 The core is one large crate, and each Rust test binary recompiles its changed
 code separately. After a small edit, `cargo check` is several times faster than
@@ -134,15 +158,40 @@ supporting numbers and a recorded decision.
 ## Native tests
 
 Native tests need a logged-in GUI session (`launchctl managername` reports
-`Aqua`), the Swift toolchain and the system font service. Sandboxed shells
-usually lack the GUI session; `scripts/validate.py native` checks this before
-building. Its watchdog stops a run that produces no output for ten minutes, and
-records the process tree and a sample of each process so a stall in a system
-service can be identified instead of waited out.
+`Aqua`), the Swift toolchain, a usable screen, private clipboard access, local
+Unix sockets, temporary-file access and the system font service. The runner
+probes these capabilities before building. A private clipboard is used so the
+probe never replaces user clipboard contents. If the execution environment
+cannot provide these facilities, use the authorized native execution environment
+before retrying; environment failures are distinct from product regressions.
+
+The native runner separates ABI verification, compilation, packaging and test
+execution. It reuses artifacts only when source/configuration/toolchain inputs
+and the bytes of every recorded output match. An ordinary filtered run can reuse
+a preceding full build. `--no-native-package` (or `test-mac.sh --no-package`)
+is for tests known not to require the app bundle; tests that inspect launching,
+packaged fonts or resources still require packaging. Raw `--skip-build` is
+rejected by the wrapper; it supplies that flag only after verifying artifacts.
+
+Use observable native readiness and completion for successful test paths.
+Timeouts are bounded failure guards, not delays that make a test "ready". A
+failure that passes on rerun remains an unresolved intermittent failure until
+its cause is established; retain the first result and rerun the smallest relevant
+group before deciding whether broader validation is needed.
+
+The validator's watchdog stops a run that produces no output for ten minutes,
+recording the process tree and samples. It terminates its command group on
+interruption so an abandoned build cannot silently keep holding a lock.
 
 ## Ownership
 
-Give each build, timing run and consistency run one owner. When handing work to
+Give each build, timing run and consistency run one owner. The validation,
+native-test, backend-fuzz and macOS build entry points share an OS-backed lock under
+`target/validation/build.lock`. Child builds inherit the same ownership. Waiting
+reports the owner's PID and has a finite deadline; manifests record wait time.
+Do not delete a held lock file or launch raw Cargo/Swift commands around it.
+Independent checkouts have independent locks; measurements still need exclusive
+machine resources. When handing work to
 another agent, state which candidate (commit and change digest from the
 manifest) it validates and restart an idle agent explicitly. Independent review
 and test preparation can run in parallel; measured execution cannot.

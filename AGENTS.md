@@ -123,6 +123,13 @@ transaction verification. Retries and degraded work must remain bounded.
 
 ## Source preservation and editing
 
+Parsing must name the origin of its input: whole document, source region or
+container-stripped fragment. Document-level syntax cannot activate merely
+because a regional slice starts with its delimiters. Code-like owners derive
+language editing, creation and portable-copy policy from their semantic kind.
+Complete encoded-artifact replacement and visible-text insertion are distinct
+transaction intentions; an artifact BOM is not typed U+FEFF content.
+
 The source artifact is the only document persistence authority; formatted
 content, resolved styles, and layout are disposable projections. An artifact may contain multiple
 parts rather than one flat string. Every editable pipeline must preserve:
@@ -2097,7 +2104,10 @@ Follow the [development workflow](docs/development-workflow.md): run focused
 tests and, for shared editing changes, the quick consistency probe before full
 suites, compare consistency results case by case with a baseline, establish
 allocation ownership by measurement before claiming a cause, and freeze a
-candidate before final validation. Ordinary changes do not run the full
+candidate before final validation. A frozen candidate has covered the affected
+feature contracts, completed integration review, and no planned source edits.
+Record focused checks through the validation runner; retain only evidence whose
+source, environment and selection identities remain valid. Ordinary changes do not run the full
 consistency probe, backend fuzz campaigns or other runs of open-ended length;
 reserve them for particularly large or risky refactors or a request to run all
 tests. Run the memory measurements only for such a request, a request about

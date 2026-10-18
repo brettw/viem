@@ -82,6 +82,31 @@ pub struct Block {
     pub attributes: Arc<BlockAttributes>,
 }
 
+/// Semantic code owner; presentation and authoring policy come from this kind.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum CodeBlockKind {
+    #[default]
+    Ordinary,
+    FrontMatter,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CodeClipboardRepresentation { Source, FencedYaml }
+
+impl CodeBlockKind {
+    pub fn language_editable(self) -> bool { self == Self::Ordinary }
+    pub fn treatment_removable(self) -> bool { self == Self::Ordinary }
+    pub fn supplies_language_default(self) -> bool { self == Self::Ordinary }
+    pub fn creatable_in_preview(self) -> bool { self == Self::Ordinary }
+    pub fn clipboard_representation(self) -> CodeClipboardRepresentation {
+        match self { Self::Ordinary => CodeClipboardRepresentation::Source,
+            Self::FrontMatter => CodeClipboardRepresentation::FencedYaml }
+    }
+    pub fn fixed_label(self) -> Option<&'static str> {
+        match self { Self::Ordinary => None, Self::FrontMatter => Some("front matter") }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct BlockAttributes {
     /// Adapter support retained by the parser, including semantic item starts.
@@ -94,8 +119,8 @@ pub struct BlockAttributes {
     pub list_loose: bool,
     pub thematic_break: bool,
     pub markdown_html: bool,
-    /// A document-leading YAML envelope, displayed with Code Block geometry.
-    pub front_matter: bool,
+    /// Semantic owner policy, independent of its Code Block appearance.
+    pub code_kind: CodeBlockKind,
     /// Authored fenced-code language; empty means unspecified.
     pub code_language: Option<String>,
     pub(crate) code_language_label: bool,
@@ -113,6 +138,14 @@ pub(super) struct ListEditing {
 }
 
 impl Block {
+    pub fn is_front_matter(&self) -> bool { self.code_kind == CodeBlockKind::FrontMatter }
+
+    pub(crate) fn language_label(&self) -> String {
+        self.code_kind.fixed_label().map(str::to_owned).unwrap_or_else(||
+            self.code_language.as_deref().map(super::syntax::languages::display_name)
+                .unwrap_or_else(|| "None".into()))
+    }
+
     pub fn new(id: u64, range: Range<usize>, kind: BlockKind, style: StyleId,
         direct_formatting: Option<Arc<BlockDirectFormatting>>) -> Self {
         if kind == BlockKind::Paragraph && style.0 == "Paragraph" && direct_formatting.is_none() {
@@ -122,13 +155,13 @@ impl Block {
             BlockKind::ListItem { item_start, .. } => ListEditing { item_start, indent: true, unindent: true },
             _ => ListEditing::default(),
         };
-        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, front_matter: false, code_language: None, code_language_label: false }) }
+        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_kind: CodeBlockKind::Ordinary, code_language: None, code_language_label: false }) }
     }
 
     pub fn paragraph(id: u64, range: Range<usize>) -> Self {
         static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
         Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
-            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, front_matter: false, code_language: None, code_language_label: false,
+            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_kind: CodeBlockKind::Ordinary, code_language: None, code_language_label: false,
             list_editing: ListEditing::default(),
         })).clone() }
     }
@@ -193,7 +226,7 @@ impl PartialEq for BlockAttributes {
                 a.starts_here == b.starts_here && a.ends_here == b.ends_here
                     && a.container.kind == b.container.kind && a.container.style == b.container.style
                     && a.container.direct_formatting == b.container.direct_formatting
-            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.front_matter == other.front_matter && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
+            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.code_kind == other.code_kind && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
 
@@ -207,7 +240,7 @@ impl RangedItem for Block {
             minimum_start: if self.list_editing.item_start { key } else { u16::MAX },
             flags: u16::from(!self.list_editing.indent && !owned_paragraph)
                 | (u16::from(!self.list_editing.unindent && !owned_paragraph) << 1)
-                | if self.style.0 == "Code Block" && !self.front_matter { 4 } else { 0 }
+                | if self.style.0 == "Code Block" && self.code_kind.supplies_language_default() { 4 } else { 0 }
                 | if matches!(self.kind, BlockKind::Heading(_)) || self.style.0.strip_prefix("Heading")
                     .and_then(|level| level.parse::<u8>().ok()).is_some_and(|level| (1..=6).contains(&level)) { 8 } else { 0 }
                 // A list grammar restart may cross ordinary empty paragraphs,
@@ -3307,7 +3340,7 @@ impl FormattedDocument {
             field!("list_editing", a.list_editing, b.list_editing);
             field!("thematic_break", a.thematic_break, b.thematic_break);
             field!("markdown_html", a.markdown_html, b.markdown_html);
-            field!("front_matter", a.front_matter, b.front_matter);
+            field!("code_kind", a.code_kind, b.code_kind);
             field!("code_language", a.code_language, b.code_language);
             let containers = |attributes: &BlockAttributes| attributes.containers.iter()
                 .map(|member| (member.container.kind.clone(), member.container.style.clone(), member.starts_here, member.ends_here))
@@ -5870,8 +5903,8 @@ fn project_markdown(
     source_content_end: usize,
     document_start: bool,
 ) -> FormattedDocument {
-    let syntax = super::markdown_syntax::Blocks::parse_with_start(&super::markdown_syntax::grammar_text(normalized), document_start).to_source(normalized);
-    let definitions = super::markdown_syntax::definitions_with_start(&normalized.text, document_start).0;
+    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(normalized), if document_start { super::markdown_syntax::ParseContext::Document } else { super::markdown_syntax::ParseContext::Interior }).to_source(normalized);
+    let definitions = super::markdown_syntax::definitions(&normalized.text, if document_start { super::markdown_syntax::ParseContext::Document } else { super::markdown_syntax::ParseContext::Interior }).0;
     let quote_context = super::markdown_quotes::source_context_with_syntax(normalized, &syntax);
     let indented = super::markdown_indented_code::classify_with_syntax(normalized, &syntax);
     let list_context = super::markdown_blocks::source_context_with_syntax(normalized, &syntax);
@@ -6249,7 +6282,7 @@ fn project_markdown_lines(
                 block.quote_depth = quote_depth;
                 block.code_language = language;
                 block.code_language_label = true;
-                block.front_matter = front_matter.is_some();
+                block.code_kind = if front_matter.is_some() { CodeBlockKind::FrontMatter } else { CodeBlockKind::Ordinary };
             }
             if let Some(ending) = normalized.endings.get(after - 1) {
                 hard_breaks.push(builder.output.len());
@@ -7125,12 +7158,12 @@ mod tests {
         assert_eq!(projected.text(), expected);
         assert_eq!(projected.blocks().len(), 2);
         let metadata = &projected.blocks()[0];
-        assert!(metadata.front_matter);
+        assert!(metadata.is_front_matter());
         assert_eq!(metadata.style.0, "Code Block");
         assert_eq!(metadata.code_language.as_deref(), Some("yaml"));
         assert!(metadata.code_language_label);
         assert_eq!(metadata.quote_depth, 0);
-        assert!(!projected.blocks()[1].front_matter);
+        assert!(!projected.blocks()[1].is_front_matter());
         assert_eq!(projected.blocks()[1].kind, BlockKind::Heading(1));
         assert!(projected.default_code_language(0).is_none());
         assert_eq!(projected.map_source_boundary(Revision(1), 4, BoundaryAffinity::Downstream)
@@ -7143,7 +7176,7 @@ mod tests {
             let projected = markdown(source);
             assert_eq!(projected.text(), "");
             assert_eq!(projected.blocks().len(), 1);
-            assert!(projected.blocks()[0].front_matter);
+            assert!(projected.blocks()[0].is_front_matter());
             assert_eq!(projected.blocks()[0].range, 0..0);
             assert_eq!(projected.map_source_boundary(Revision(1), 4, BoundaryAffinity::Downstream)
                 .unwrap().formatted_offset, 0);
@@ -7156,7 +7189,7 @@ mod tests {
         let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
         let normalized = normalize(&decoded, FileFormat::Unix);
         let projected = project_band(&normalized, Format::Markdown, Revision(1), 0, source.len(), false);
-        assert!(projected.blocks().iter().all(|block| !block.front_matter));
+        assert!(projected.blocks().iter().all(|block| !block.is_front_matter()));
         assert!(projected.blocks().iter().any(|block| block.thematic_break));
         assert!(projected.blocks().iter().any(|block| block.kind == BlockKind::Heading(2)));
     }
@@ -7170,7 +7203,7 @@ mod tests {
             let normalized = normalize(&decoded, file_format);
             let projected = project(&normalized, Format::Markdown, Revision(1), 0, source.len());
             assert_eq!(projected.text(), "name: café\nsecond: true");
-            assert!(projected.blocks()[0].front_matter);
+            assert!(projected.blocks()[0].is_front_matter());
             assert_eq!(projected.map_source_boundary(Revision(1), 3 + ending.len(), BoundaryAffinity::Downstream)
                 .unwrap().formatted_offset, 0);
         }

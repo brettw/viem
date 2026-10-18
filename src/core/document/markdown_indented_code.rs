@@ -39,7 +39,7 @@ fn strip_indent_from(text: &str, target: usize, mut column: usize) -> Option<(us
 
 pub(super) fn classify(input: &NormalizedText) -> Vec<CodeBlock> {
     let syntax =
-        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input))
+        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input), super::markdown_syntax::ParseContext::Document)
             .to_source(input);
     classify_with_syntax(input, &syntax)
 }
@@ -140,7 +140,7 @@ pub(super) fn source_block(
     document: &super::Document,
     block: &super::Block,
 ) -> Result<Option<CodeBlock>, super::DocumentError> {
-    if block.style.0 != "Code Block" || block.front_matter {
+    if block.style.0 != "Code Block" || block.is_front_matter() {
         return Ok(None);
     }
     let at = document
