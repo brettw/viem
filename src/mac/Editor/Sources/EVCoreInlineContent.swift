@@ -10,6 +10,8 @@ struct EVInlineContentContext: Decodable {
         let text: String
         let destination: String
         let editable: Bool
+        let width: UInt32?
+        let height: UInt32?
     }
     let canInsert: Bool
     let item: Item?
@@ -85,20 +87,26 @@ extension EVCoreViewSession {
 
     @discardableResult
     func editInlineContent(_ kind: EVInlineContentKind, action: UInt32, context: EVInlineContentContext, expected: ViemLogicalSelectionIdentityV1,
-                  text: String = "", destination: String = "") throws -> ViemCoreOutcomeV1 {
-        let edit = kind == .image ? viem_core_view_edit_image : viem_core_view_edit_link
+                  text: String = "", destination: String = "", imageSize: (width: UInt32?, height: UInt32?)? = nil) throws -> ViemCoreOutcomeV1 {
         var selection = expected
         var outcome = ViemCoreOutcomeV1()
         outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
         let status = Array(text.utf8).withUnsafeBufferPointer { label in
             Array(destination.utf8).withUnsafeBufferPointer { url in
-                edit(document.core, viewID, &selection, action,
+                let label = ViemUtf8Slice(data: label.baseAddress, length: UInt64(label.count))
+                let url = ViemUtf8Slice(data: url.baseAddress, length: UInt64(url.count))
+                if kind == .image {
+                    let size = imageSize ?? (context.item?.width, context.item?.height)
+                    return viem_core_view_edit_image(document.core, viewID, &selection, action,
+                        context.item?.start ?? 0, context.item?.end ?? 0, label, url,
+                        size.width ?? 0, size.height ?? 0, &outcome)
+                }
+                return viem_core_view_edit_link(document.core, viewID, &selection, action,
                     context.item?.start ?? 0, context.item?.end ?? 0,
-                    ViemUtf8Slice(data: label.baseAddress, length: UInt64(label.count)),
-                    ViemUtf8Slice(data: url.baseAddress, length: UInt64(url.count)), &outcome)
+                    label, url, &outcome)
             }
         }
-        guard status == 0 else { throw EVCoreFrontendError.core(operation: "Edit link", status: status) }
+        guard status == 0 else { throw EVCoreFrontendError.core(operation: kind == .image ? "Edit image" : "Edit link", status: status) }
         if kind == .link, action == 3 {
             notePendingCharacterContextChange(outcome, expected: expected)
         }

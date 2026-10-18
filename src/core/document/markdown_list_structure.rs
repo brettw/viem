@@ -60,7 +60,7 @@ pub(super) fn joining_patches(
         + super::super::markdown_blocks::marker_prefix_length(body).unwrap_or_else(|| {
             super::super::projection::markdown_block_prefix(body, 0, body.len()).0
         });
-    if matches!(
+    if last.range.is_empty() || matches!(
         last.kind,
         super::super::BlockKind::ListItem {
             item_start: false,
@@ -74,6 +74,32 @@ pub(super) fn joining_patches(
         .source_range(first.range.end..first.range.end + 1)
         .ok_or(DocumentError::AmbiguousProjection)?
         .start;
+    let mut empty_continuation = None;
+    if first.range.is_empty() && first.kind == BlockKind::Paragraph
+        && !first.markdown_html && !first.thematic_break
+    {
+        let physical = document.physical_line_at_source(start)?;
+        let bytes = document.source_bytes_in(physical.content_range.clone())?;
+        let decoded = document.encoding().decode_region(&bytes, physical.content_range.start)?;
+        let quote = super::super::markdown_quotes::prefix(&decoded.text);
+        if decoded.text[quote..].bytes().all(|byte| matches!(byte, b' ' | b'\t')) {
+            if first.list_level().is_some() {
+                // Separator paragraphs inherit a list owner even though
+                // their own physical row has no marker or indentation.
+                empty_continuation = Some(document.markdown_list_continuation_context(first.range.start)
+                    .map_err(compat_document_error)?.2);
+                start = physical.content_range.start;
+            } else {
+                // Retain harmless blank-row trivia. Only indentation that
+                // would turn the joined prose into code needs to be removed.
+                let columns = |text: &str| text.bytes().fold(0usize, |column, byte|
+                    column + if byte == b'\t' { 4 - column % 4 } else { 1 });
+                if columns(&decoded.text) - columns(&decoded.text[..quote]) >= 4 {
+                    start = decoded.source_boundary(quote).ok_or(DocumentError::AmbiguousProjection)?;
+                }
+            }
+        }
+    }
     // A heading's closing sequence is hidden syntax before its ending. Once
     // another body is joined there, that sequence would become literal text.
     if first.style.0.starts_with("Heading") {
@@ -144,6 +170,11 @@ pub(super) fn joining_patches(
     } else {
         document.escape_markdown_source_text(merged[0].start, replacement)?
     };
+    if let Some(continuation) = empty_continuation
+        .filter(|_| !syntax.is_empty() || range.end < last.range.end)
+    {
+        syntax.insert_str(0, &continuation);
+    }
     if first.range.is_empty() && matches!(first.kind, super::super::BlockKind::ListItem { .. }) {
         let line = document
             .state()

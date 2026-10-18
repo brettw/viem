@@ -216,7 +216,7 @@ pub(super) fn block(input: &NormalizedText, range: Range<usize>, revision: Revis
             }
             TokenKind::Opaque => { token.kind = TokenKind::MappedText { text: fragment.text[token.range.clone()].to_owned(), mapped: true }; }
             TokenKind::Tag(tag) if html::image_metadata(tag, 0..0, 0..0).is_some() => {
-                tag.attributes.retain(|(name, _)| matches!(name.as_str(), "src" | "alt" | "width" | "height"));
+                tag.attributes.retain(|(name, _)| matches!(name.as_str(), "src" | "alt" | "title" | "width" | "height"));
             }
             TokenKind::Tag(tag) if allowed(&tag.name) => {
                 let pre = tag.name == "pre";

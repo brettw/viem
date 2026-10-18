@@ -44,7 +44,7 @@ internal sealed partial class StyleWindow
         apply.Click += (_, _) => {
             var values = families.Text.Split(['\r', '\n'], StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
             if (values.Length == 0) return;
-            if (!values.SequenceEqual(sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)))) Try(() => view.EditStyleFont(selected, values, null));
+            if (!values.SequenceEqual(sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)))) Try(() => EditStyleFont(selected, values, null));
             flyout.Hide();
         };
         Property(row, "Font family", VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES, Inline(fontFamily, fallback, fontVariant), caption: false);
@@ -100,7 +100,7 @@ internal sealed partial class StyleWindow
         foreach (var (tag, value) in CurrentAxisValues) values[tag] = value;
         return values;
     }
-    private void SetAxes(Dictionary<string, float> values) => view.EditStyleFont(selected, sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), CurrentFace, values, sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE)));
+    private void SetAxes(Dictionary<string, float> values) => EditStyleFont(selected, sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)), CurrentFace, values, sheet.String(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE)));
     private void RefreshAxisControls(FontVariationInfo info)
     {
         string identity = CurrentFace?.Name ?? "";
@@ -151,12 +151,12 @@ internal sealed partial class StyleWindow
         // The two portable system entries store their generic request token
         // rather than a concrete resolved face, so the same declaration
         // renders correctly on macOS too.
-        if (FontCatalog.StorageFamily(value) is { } portable) { view.EditStyleFont(selected, ReplacePrimary(portable), null); return; }
+        if (FontCatalog.StorageFamily(value) is { } portable) { EditStyleFont(selected, ReplacePrimary(portable), null); return; }
         if (FontCatalog.ForFamilyChange(value, CurrentFace) is { } face) SetFace(face);
-        else view.EditStyleFont(selected, ReplacePrimary(value), null);
+        else EditStyleFont(selected, ReplacePrimary(value), null);
     }
     private string[] ReplacePrimary(string value) => new[] { value }.Concat(sheet.StringList(selected.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES)).Skip(1)).ToArray();
-    private void SetFace(FontFace face) => view.EditStyleFont(selected, ReplacePrimary(face.PortableFamily), face);
+    private void SetFace(FontFace face) => EditStyleFont(selected, ReplacePrimary(face.PortableFamily), face);
 #if DEBUG
     internal ComboBox FontFamilyControl => fontFamily;
     internal ComboBox FontVariantControl => fontVariant;

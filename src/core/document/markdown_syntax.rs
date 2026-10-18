@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, ops::Range};
 #[derive(Clone, Debug)]
 pub(super) enum InlineKind {
     Emphasis, Strong, Strike, Reference, Autolink, Html, Link,
-    Image { destination: String, text: String, inline: bool },
+    Image { destination: String, text: String, title: String, inline: bool },
 }
 #[derive(Clone, Debug)]
 pub(super) struct Inline {
@@ -39,7 +39,7 @@ fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &st
             Event::Start(Tag::Emphasis) => (InlineKind::Emphasis, 1),
             Event::Start(Tag::Strong) => (InlineKind::Strong, 2),
             Event::Start(Tag::Strikethrough) => (InlineKind::Strike, raw.bytes().take_while(|b| *b == b'~').count().min(2)),
-            Event::Start(Tag::Image { dest_url, link_type, .. }) => {
+            Event::Start(Tag::Image { dest_url, link_type, title, .. }) => {
                 // pulldown's collapsed-reference interval ends at the label;
                 // the consumed empty suffix still belongs to the image.
                 if link_type == LinkType::Collapsed && source[span.end..].starts_with("[]") {
@@ -56,7 +56,7 @@ fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &st
                         _ => {},
                     }
                 }
-                (InlineKind::Image { destination: dest_url.into_string(), text: alt, inline: link_type == LinkType::Inline }, 0)
+                (InlineKind::Image { destination: dest_url.into_string(), text: alt, title: title.into_string(), inline: link_type == LinkType::Inline }, 0)
             },
             Event::Start(Tag::Link { link_type: LinkType::Autolink | LinkType::Email, .. }) => (InlineKind::Autolink, 1),
             Event::Start(Tag::Link { link_type: LinkType::Inline, .. }) => {

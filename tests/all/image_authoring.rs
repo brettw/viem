@@ -22,7 +22,7 @@ fn html_image_location_edits_preserve_dimensions_and_other_attribute_bytes() {
             let mut doc = document(source, format);
             let image = doc.projection().inline_images_for_region(&(0..doc.text().len())).remove(0);
             let snapshot = doc.image_snapshot_at(doc.text_point(image.range.start).unwrap()).unwrap().unwrap();
-            apply(&mut doc, ImageEditIntent::Edit { range: snapshot.range, text: snapshot.text, destination: "new file.png?a=1&b=2".into() });
+            apply(&mut doc, ImageEditIntent::Edit { range: snapshot.range, text: snapshot.text, destination: "new file.png?a=1&b=2".into(), width: snapshot.width, height: snapshot.height });
             assert_eq!(doc.source_bytes(), expected.as_bytes(), "{format:?}: {source}");
             let reopened = document(expected, format);
             assert_eq!(doc.text(), reopened.text());
@@ -44,7 +44,7 @@ fn html_image_existing_alt_controls_keep_html_and_dimensions() {
     ] {
         let mut doc = document(source, Format::Markdown);
         let image = doc.image_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap();
-        apply(&mut doc, ImageEditIntent::Edit { range: image.range, text: "a <cat> & \"dog\"".into(), destination: image.destination });
+        apply(&mut doc, ImageEditIntent::Edit { range: image.range, text: "a <cat> & \"dog\"".into(), destination: image.destination, width: image.width, height: image.height });
         assert_eq!(doc.source_bytes(), expected.as_bytes());
         assert_eq!(doc.image_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap().text, "a <cat> & \"dog\"");
         assert!(doc.undo());
@@ -96,7 +96,7 @@ fn html_image_location_edits_copy_untouched_encoded_and_malformed_attributes() {
         original.extend(&suffix);
         let mut doc = Document::from_bytes(original.clone(), encoding, Format::Markdown).unwrap();
         let image = doc.image_snapshot_at(doc.text_point(2).unwrap()).unwrap().unwrap();
-        apply(&mut doc, ImageEditIntent::Edit { range: image.range, text: image.text, destination: "new.png".into() });
+        apply(&mut doc, ImageEditIntent::Edit { range: image.range, text: image.text, destination: "new.png".into(), width: image.width, height: image.height });
         let mut expected = prefix;
         expected.extend(encode("\"new.png\""));
         expected.extend(suffix);
@@ -147,7 +147,7 @@ fn html_image_location_edits_preserve_multiline_quote_owners_and_endings() {
                 let mut doc = Document::from_bytes_with_file_format(original.as_bytes().to_vec(), Encoding::Utf8, format, file_format).unwrap();
                 let image = doc.projection().inline_images_for_region(&(0..doc.text().len())).into_iter().next()
                     .unwrap_or_else(|| panic!("missing image {format:?} {file_format:?}: {source}"));
-                let (edit, _) = doc.prepare_image_edit(doc.id(), doc.revision(), ImageEditIntent::Edit { range: image.range, text: image.text, destination: "new.png".into() })
+                let (edit, _) = doc.prepare_image_edit(doc.id(), doc.revision(), ImageEditIntent::Edit { range: image.range, text: image.text, destination: "new.png".into(), width: image.width, height: image.height })
                     .unwrap_or_else(|error| panic!("{format:?} {file_format:?}: {source}: {error:?}"));
                 doc.commit_model_transaction(edit).unwrap();
                 assert_eq!(doc.source_bytes(), original.replace("'old.png'", "\"new.png\"").as_bytes(), "{format:?} {file_format:?}: {source}");
@@ -188,6 +188,8 @@ fn image_insertion_edit_removal_and_undo_preserve_unrelated_bytes_and_title() {
                 range: image.range,
                 text: image.text,
                 destination: "new file.png?x=1&y=2".into(),
+                width: image.width,
+                height: image.height,
             },
         );
         assert_eq!(
@@ -211,6 +213,8 @@ fn image_insertion_edit_removal_and_undo_preserve_unrelated_bytes_and_title() {
                 range: 0..6,
                 text: String::new(),
                 destination: "local.png".into(),
+                width: None,
+                height: None,
             },
         );
         assert!(String::from_utf8(doc.source_bytes())
@@ -237,6 +241,8 @@ fn reference_images_resolve_without_changing_definitions_and_edit_only_occurrenc
                 range: image.range,
                 text: "new".into(),
                 destination: "other.png".into(),
+                width: image.width,
+                height: image.height,
             },
         );
         assert_eq!(
@@ -289,7 +295,9 @@ fn stale_failed_and_unsupported_edits_are_atomic() {
                 ImageEditIntent::Insert {
                     range: 0..6,
                     text: text.into(),
-                    destination: destination.into()
+                    destination: destination.into(),
+                    width: None,
+                    height: None,
                 }
             )
             .is_err());
@@ -305,6 +313,8 @@ fn stale_failed_and_unsupported_edits_are_atomic() {
                 range: 0..6,
                 text: "alt".into(),
                 destination: "file.png".into(),
+                width: None,
+                height: None,
             },
         )
         .unwrap();
@@ -328,6 +338,8 @@ fn image_metadata_rebases_after_local_edits_and_matches_reopened_source() {
             range: image.range,
             text: "dog".into(),
             destination: "dog.png".into(),
+            width: image.width,
+            height: image.height,
         },
     );
     assert_eq!(
@@ -408,6 +420,8 @@ fn local_inline_image_edits_in_large_documents_retain_incremental_projection() {
                 range,
                 text: "dog".into(),
                 destination: "dog.png".into(),
+                width: None,
+                height: None,
             },
         )
         .unwrap();
@@ -435,6 +449,8 @@ fn native_authoring_and_normal_delete_share_command_undo() {
             range: expected.range(),
             text: "cat".into(),
             destination: "cat.png".into(),
+            width: None,
+            height: None,
         },
     )
     .unwrap();
@@ -447,7 +463,9 @@ fn native_authoring_and_normal_delete_share_command_undo() {
             ImageEditIntent::Insert {
                 range: 0..0,
                 text: "dog".into(),
-                destination: "dog.png".into()
+                destination: "dog.png".into(),
+                width: None,
+                height: None,
             }
         )
         .is_err());
@@ -488,6 +506,8 @@ fn image_authoring_preserves_utf16_and_latin1_encodings() {
                 range: image.range,
                 text: image.text,
                 destination: "new.png".into(),
+                width: image.width,
+                height: image.height,
             },
         );
         assert_eq!(doc.encoding(), encoding);
@@ -729,4 +749,109 @@ fn prose_edits_near_html_images_keep_projection_work_bounded_as_documents_grow()
             assert_eq!(doc.source_bytes(), source.as_bytes());
         }
     }
+}
+
+#[test]
+fn explicit_image_size_insertion_is_verified_and_undoable() {
+    for (width, height) in [(Some(320), Some(180)), (Some(320), None), (None, Some(180))] {
+        let mut doc = document("before after", Format::Markdown);
+        apply(&mut doc, ImageEditIntent::Insert {
+            range: 7..7, text: "cat & dog".into(), destination: "local cat.png".into(), width, height,
+        });
+        assert_eq!(doc.text(), "before \u{fffc}after");
+        let image = doc.image_snapshot_at(doc.text_point(7).unwrap()).unwrap().unwrap();
+        assert_eq!((image.width, image.height), (width, height));
+        let bytes = doc.source_bytes();
+        let reopened = Document::from_bytes(bytes.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(reopened.image_snapshot_at(reopened.text_point(7).unwrap()).unwrap(), Some(image));
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), b"before after");
+        assert!(doc.redo());
+        assert_eq!(doc.source_bytes(), bytes);
+    }
+}
+
+#[test]
+fn sizing_markdown_and_reference_images_preserves_titles_and_only_changes_the_occurrence() {
+    for (source, expected) in [
+        ("before ![a **bold** cat](cat.png 'a &amp; b') after", "before <img src=\"cat.png\" alt=\"a bold cat\" title=\"a &amp; b\" width=\"320\" height=\"180\"> after"),
+        ("before ![cat][pic] after ![other][pic]\n\n[pic]: cat.png \"a title\"", "before <img src=\"cat.png\" alt=\"cat\" title=\"a title\" width=\"320\" height=\"180\"> after ![other][pic]\n\n[pic]: cat.png \"a title\""),
+        ("| Image |\n| --- |\n| ![a\\|b](cat.png 'x\\|y') |", "| Image |\n| --- |\n| <img src=\"cat.png\" alt=\"a&#124;b\" title=\"x&#124;y\" width=\"320\" height=\"180\"> |"),
+    ] {
+        let mut doc = document(source, Format::Markdown);
+        let old_text = doc.text().to_owned();
+        let image = doc.projection().inline_images_for_region(&(0..doc.text().len())).remove(0);
+        apply(&mut doc, ImageEditIntent::Edit {
+            range: image.range, text: image.text, destination: image.destination,
+            width: Some(320), height: Some(180),
+        });
+        assert_eq!(doc.source_bytes(), expected.as_bytes(), "{source}");
+        assert_eq!(doc.text(), old_text);
+        let reopened = document(expected, Format::Markdown);
+        assert_eq!(doc.projection().inline_images_for_region(&(0..doc.text().len())), reopened.projection().inline_images_for_region(&(0..reopened.text().len())));
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        assert!(doc.redo());
+        assert_eq!(doc.source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
+fn sizing_html_images_preserves_unrelated_attribute_bytes_and_clears_both_dimensions() {
+    for (source, expected, width, height) in [
+        ("before <IMG width='0240' src = 'cat.png' height=80 alt='cat' title='kept' data-extra='x'> after", "before <IMG width=\"320\" src = 'cat.png' height=80 alt='cat' title='kept' data-extra='x'> after", Some(320), Some(80)),
+        ("<img src='cat.png' width height='80'>", "<img src='cat.png' width=\"320\" height='80'>", Some(320), Some(80)),
+        ("<img src='cat.png' width='240' WIDTH=500 height=80>", "<img src='cat.png'   >", None, None),
+        ("> <img width=\n> '240' height='80' src=cat.png>", "> <img \n>   src=cat.png>", None, None),
+    ] {
+        let mut doc = document(source, Format::Markdown);
+        let image = doc.projection().inline_images_for_region(&(0..doc.text().len())).remove(0);
+        let old_text = doc.text().to_owned();
+        apply(&mut doc, ImageEditIntent::Edit { range: image.range, text: image.text, destination: image.destination, width, height });
+        assert_eq!(doc.source_bytes(), expected.as_bytes(), "{source}");
+        assert_eq!(doc.text(), old_text);
+        let reopened = document(expected, Format::Markdown);
+        let image = reopened.projection().inline_images_for_region(&(0..reopened.text().len())).remove(0);
+        assert_eq!((image.width, image.height), (width, height));
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
+fn size_no_op_and_invalid_size_do_not_change_source_or_history() {
+    let source = "<img src=cat.png width='00320' height=180 title='keep'>";
+    let doc = document(source, Format::Markdown);
+    let history = doc.history_status();
+    let (prepared, _) = doc.prepare_image_edit(doc.id(), doc.revision(), ImageEditIntent::Edit {
+        range: 0..3, text: String::new(), destination: "cat.png".into(), width: Some(320), height: Some(180),
+    }).unwrap();
+    assert!(prepared.is_no_op());
+    for (width, height) in [(Some(0), Some(180)), (Some(320), Some(0))] {
+        assert!(doc.prepare_image_edit(doc.id(), doc.revision(), ImageEditIntent::Edit {
+            range: 0..3, text: String::new(), destination: "cat.png".into(), width, height,
+        }).is_err());
+    }
+    assert_eq!(doc.source_bytes(), source.as_bytes());
+    assert_eq!(doc.history_status(), history);
+}
+
+#[test]
+fn sizing_image_in_large_document_uses_only_local_projection() {
+    let mut source = "ordinary prose\n\n".repeat(20_000);
+    source.push_str("![cat](cat.png 'kept')\n\nend");
+    let mut doc = document(&source, Format::Markdown);
+    let before = doc.projection().blocks().first().unwrap().id;
+    let image = doc.projection().inline_images_for_region(&(doc.text().len() - 16..doc.text().len())).remove(0);
+    let (prepared, _) = doc.prepare_image_edit(doc.id(), doc.revision(), ImageEditIntent::Edit {
+        range: image.range, text: image.text, destination: image.destination, width: Some(320), height: Some(180),
+    }).unwrap();
+    assert_eq!(prepared.summary().projection_work().scope(), ProjectionWorkScope::RegionalHardLines);
+    assert!(prepared.summary().projection_work().decoded_source_bytes() < 1024);
+    assert_eq!(prepared.summary().projection_work().full_text_bytes_materialized(), 0);
+    doc.commit_model_transaction(prepared).unwrap();
+    assert_eq!(doc.projection().blocks().first().unwrap().id, before);
+    assert!(doc.source_bytes().ends_with(b"<img src=\"cat.png\" alt=\"cat\" title=\"kept\" width=\"320\" height=\"180\">\n\nend"));
+    assert!(doc.undo());
+    assert_eq!(doc.source_bytes(), source.as_bytes());
 }

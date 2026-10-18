@@ -5,7 +5,7 @@ using static Viem.Windows.Interop.Abi;
 
 namespace Viem.Windows.Core;
 
-internal sealed record MarkdownImage(ulong Start, ulong End, string Text, string Destination, bool Editable);
+internal sealed record MarkdownImage(ulong Start, ulong End, string Text, string Destination, bool Editable, uint? Width, uint? Height);
 internal sealed record ImageContext(ViemLogicalSelectionIdentityV1 Selection, bool CanInsert, string Text, MarkdownImage? Image);
 
 internal sealed unsafe partial class CoreView
@@ -29,7 +29,9 @@ internal sealed unsafe partial class CoreView
         MarkdownImage? image = value.ValueKind == JsonValueKind.Null ? null : new(
             value.GetProperty("start").GetUInt64(), value.GetProperty("end").GetUInt64(),
             value.GetProperty("text").GetString() ?? "", value.GetProperty("destination").GetString() ?? "",
-            value.GetProperty("editable").GetBoolean());
+            value.GetProperty("editable").GetBoolean(),
+            value.GetProperty("width").ValueKind == JsonValueKind.Null ? null : value.GetProperty("width").GetUInt32(),
+            value.GetProperty("height").ValueKind == JsonValueKind.Null ? null : value.GetProperty("height").GetUInt32());
         return new(selection, root.GetProperty("canInsert").GetBoolean(), root.GetProperty("text").GetString() ?? "", image);
     }
     public void ValidateImageContext(ImageContext expected)
@@ -52,7 +54,8 @@ internal sealed unsafe partial class CoreView
         ulong documentId = Document.State.document_id;
         Apply(outcome => viem_core_view_select_image(Document.Handle, Id, documentId, revision, offset, outcome));
     }
-    public void EditImage(ImageContext expected, string text, string destination, bool remove = false, bool insertAtCaret = false)
+    public void EditImage(ImageContext expected, string text, string destination, bool remove = false, bool insertAtCaret = false,
+        uint? width = null, uint? height = null)
     {
         ValidateImageContext(expected);
         using var arena = new NativeArena();
@@ -60,7 +63,9 @@ internal sealed unsafe partial class CoreView
         Apply(outcome => {
             var selection = expected.Selection;
             return viem_core_view_edit_image(Document.Handle, Id, &selection, remove ? 2u : !insertAtCaret && expected.Image != null ? 1u : 0u,
-                expected.Image?.Start ?? 0, expected.Image?.End ?? 0, label, target, outcome);
+                expected.Image?.Start ?? 0, expected.Image?.End ?? 0, label, target,
+                width ?? (!insertAtCaret ? expected.Image?.Width : null) ?? 0,
+                height ?? (!insertAtCaret ? expected.Image?.Height : null) ?? 0, outcome);
         });
     }
 }

@@ -2994,16 +2994,19 @@ ViemStatus viem_core_view_edit_link(ViemCoreHandle core, ViemViewId view,
                                    ViemCoreOutcomeV1 *outcome);
 /* Image popup has the link-context schema with "image" instead of "link".
  * The range is one atomic U+FFFC object in Markdown Preview.
+ * Image entries also contain nullable width/height pixel sizes.
  * No query fetches resources. Empty alternative text is allowed. */
 ViemStatus viem_core_view_copy_image_context(ViemCoreHandle core, ViemViewId view,
                                             uint8_t *output, uint64_t capacity,
                                             uint64_t *required);
-/* action: 0 inserts, 1 edits, 2 removes the whole image. */
+/* action: 0 inserts, 1 edits, 2 removes the whole image.
+ * Width/height are positive pixel sizes; zero clears that explicit dimension. */
 ViemStatus viem_core_view_edit_image(ViemCoreHandle core, ViemViewId view,
                                     const ViemLogicalSelectionIdentityV1 *expected,
                                     uint32_t action, uint64_t image_start,
                                     uint64_t image_end, ViemUtf8Slice text,
                                     ViemUtf8Slice destination,
+                                    uint32_t width, uint32_t height,
                                     ViemCoreOutcomeV1 *outcome);
 /* Select the complete WYSIWYG image independently of pointer preferences. */
 ViemStatus viem_core_view_select_image(ViemCoreHandle core, ViemViewId view,

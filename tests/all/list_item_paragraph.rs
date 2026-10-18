@@ -267,3 +267,17 @@ fn folded_quote_prefix_uses_encoded_boundaries_and_preserves_inline_scopes() {
         assert_eq!(reopened.projection().style_spans(), doc.projection().style_spans());
     }
 }
+
+#[test]
+fn splitting_an_empty_nested_list_paragraph_preserves_equivalent_tab_indentation() {
+    let source = "- parent\n  - a\n\n\t\n\n    b";
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let at = document.projection().blocks().iter().find(|block| block.range.is_empty()).unwrap().range.start;
+    split(&mut document, at);
+    let saved = document.source_bytes();
+    assert!(saved.starts_with(b"- parent\n  - a\n\n\t"), "{:?}", String::from_utf8_lossy(&saved));
+    assert!(saved.ends_with(b"\n\n    b"));
+    verify_reopen(&document);
+    assert!(document.undo()); assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo()); assert_eq!(document.source_bytes(), saved);
+}
