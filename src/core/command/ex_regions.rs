@@ -84,13 +84,40 @@ pub(super) fn prepare<R: ExRegisterReader + ?Sized>(
                             Some(ExNavigation::PhysicalSourceOffset(destination));
                     }
                 } else if let Some(lines) = exact_hard_lines(document, range)? {
-                    plan.stage_text_edits(
-                        document,
-                        vec![TextEdit::new(
-                            hard_line_deletion_range(document, lines)?,
-                            "",
-                        )],
-                    );
+                    let deletion = hard_line_deletion_range(document, lines)?;
+                    let last_start = document.hard_line_snapshot().line(lines.end)
+                        .ok_or(ExExecuteError::AddressOverflow)?.content_range().start;
+                    let touches_list = document.projection().blocks_for_region(&deletion)
+                        .iter().any(|block| (block.range.start < deletion.end
+                            && (deletion.start < block.range.end
+                                || block.range.is_empty() && deletion.start <= block.range.start)
+                            || block.range == (last_start..last_start))
+                            && block.containers.iter().any(|member| matches!(member.container.kind,
+                                crate::document::ContainerKind::ListItem)));
+                    // At EOF the deletion includes the preceding separator.
+                    // A table's terminal caret is not selected cell content
+                    // when all addressed lines start after that table.
+                    let follows_table = document.projection().table_at(deletion.start)
+                        .is_some_and(|table| table.range.end == deletion.start
+                            && range.text.start > table.range.end);
+                    if document.projection().range_intersects_table(&deletion)
+                        || touches_list && !follows_table {
+                        // A table hard line names one cell, not the displayed
+                        // row matched by :global. Keep the text-range policy:
+                        // its synthetic boundary requires an explicit row action.
+                        // List rows likewise retain their existing join policy
+                        // for unselected continuations and nested children.
+                        plan.stage_text_edits(document, vec![TextEdit::new(deletion, "")]);
+                    } else {
+                        // Complete displayed lines own their block syntax. A
+                        // generic text deletion can retain a heading prefix on
+                        // the next table or carry code treatment into prose.
+                        plan.mutation = ExMutation::Model(ModelRequest::DeleteLines {
+                            document: document.id(),
+                            revision: document.revision(),
+                            range: deletion,
+                        });
+                    }
                     plan.outcome.navigation = Some(ExNavigation::TextOffset(
                         line_start_after_deletion(document, lines)?,
                     ));
