@@ -109,6 +109,27 @@ fn filling_an_empty_item_among_list_siblings_keeps_projection_work_local() {
 }
 
 #[test]
+fn filling_empty_items_beside_blank_lines_recomputes_list_looseness() {
+    for source in ["- \n\n- ## ", "1. \n\n2. ## ", "> - \n>\n> - ## ", "- parent\n  - \n\n  - ## ",
+        "Before\n\n- parent\n  - a\n\n    <span></span>\n  - \n\n    b\n\nAfter"] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let empty = document.projection().blocks().iter().filter(|block| block.range.is_empty())
+            .map(|block| block.range.start).collect::<Vec<_>>();
+        for at in empty {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            document.insert(at, "X").unwrap_or_else(|error| panic!("{source:?} at {at}: {error:?}"));
+            let changed = document.source_bytes();
+            let reopened = Document::from_bytes(changed.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), document.text());
+            assert_eq!(reopened.projection().blocks().iter().map(|block| (&block.range, &block.kind, block.list_loose)).collect::<Vec<_>>(),
+                document.projection().blocks().iter().map(|block| (&block.range, &block.kind, block.list_loose)).collect::<Vec<_>>(), "{source:?} at {at}");
+            assert!(document.undo()); assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo()); assert_eq!(document.source_bytes(), changed);
+        }
+    }
+}
+
+#[test]
 fn list_continuation_body_whitespace_matches_reopened_projection() {
     let source = "- ```\n  A\n  ```";
     let mut document =

@@ -335,6 +335,16 @@ impl Document {
                         || matches!(block.kind, super::super::BlockKind::ListItem { .. })) {
                     syntax.insert(0, ' ');
                 }
+                if block.style.0.starts_with("Heading") {
+                    // An empty ATX body's separator can also precede its
+                    // closing hashes. Keep those hashes closing syntax after
+                    // inserting the break, just as ordinary text insertion does.
+                    let hash = self.encoding().encode_fragment("#")?;
+                    if self.state().source.bytes_in(source_at..(source_at + hash.len()).min(line.end))
+                        .is_some_and(|bytes| bytes == hash) {
+                        syntax.push(' ');
+                    }
+                }
             }
         }
         let in_code = self.projection().style_spans_for_region(
@@ -386,8 +396,19 @@ impl Document {
                 .into_iter()
                 .find(|next| next.range == (start..end))
                 .ok_or(DocumentError::VerificationFailed)?;
-            if target.style != block.style
-                || target.kind != block.kind
+            // A raw empty separator becomes an explicit continuation when
+            // its first hard break supplies a source-backed body. Validate
+            // that exact list owner and generated style, not its old placeholder kind.
+            let materialized_list_body = block.range.is_empty()
+                && block.kind == super::super::BlockKind::Paragraph
+                && target.quote_depth == block.quote_depth
+                && target.containers.iter().map(|member| &member.container)
+                    .eq(block.containers.iter().map(|member| &member.container))
+                && matches!(target.kind, super::super::BlockKind::ListItem {
+                    ordered, level, item_start: false, ..
+                } if block.list_level() == Some(level)
+                    && target.style == self.projection().style_sheet().list_style_id(ordered, level));
+            if (!materialized_list_body && (target.style != block.style || target.kind != block.kind))
                 || target.direct_paragraph != block.direct_paragraph
                 || target.direct_default_character != block.direct_default_character
             {

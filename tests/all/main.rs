@@ -202,6 +202,7 @@ mod audit_format_regressions;
 mod local_word_motion;
 
 mod markdown_table_suffix_locality;
+mod markdown_boundary_edits;
 
 mod list_item_paragraph;
 mod list_item_paragraph_input;
