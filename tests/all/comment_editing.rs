@@ -141,7 +141,8 @@ fn manual_leaders_customize_code_but_cannot_redefine_strings() {
     assert_eq!(document.text(), "# custom\n# \n");
 
     let (mut commands, mut document) = code("\"quoted text\"", "cpp");
-    set(&mut commands, &mut document, "comments=:\" fo+=ro");
+    // As in Vim, an unescaped `"` starts a comment after `:set`.
+    set(&mut commands, &mut document, "comments=:\\\" fo+=ro");
     keys(&mut commands, &mut document, "o");
     assert_eq!(document.text(), "\"quoted text\"\n\n");
 

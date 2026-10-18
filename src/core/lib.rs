@@ -7,6 +7,7 @@ pub mod command;
 pub mod document;
 pub mod ffi;
 pub mod layout;
+pub mod vimscript;
 
 mod coordinator;
 

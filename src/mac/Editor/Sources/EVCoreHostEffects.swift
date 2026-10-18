@@ -167,6 +167,7 @@ struct EVExHostEffect: Equatable {
     var readAfterOffset: UInt64? = nil
     var readAfterIsSource: Bool = false
     var exitStatus: UInt32? = nil
+    var scriptContinuation: UInt64? = nil
 }
 
 struct EVHostEffectBatch: Equatable {
@@ -177,7 +178,7 @@ struct EVHostEffectBatch: Equatable {
     let navigationRestoresHistory: Bool
     let substitutionCount: UInt64
     var clipboardWrites: [EVClipboardWriteEffect]
-    let exEffects: [EVExHostEffect]
+    var exEffects: [EVExHostEffect]
 }
 
 @MainActor
@@ -451,7 +452,8 @@ private extension EVRawEffectBatch {
                 argumentNavigation: argumentNavigation,
                 readAfterOffset: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil,
                 readAfterIsSource: request.flags & UInt32(VIEM_EX_FRONTEND_READ_SOURCE) != 0,
-                exitStatus: exitStatus
+                exitStatus: exitStatus,
+                scriptContinuation: request.kind == UInt32(VIEM_EX_FRONTEND_SCRIPT_CONTINUATION) ? request.window_count : nil
             )
         }
 

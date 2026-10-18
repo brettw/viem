@@ -1,0 +1,36 @@
+
+7 9 0 0
+0 -9223372036854775808 0
+-9223372036854775808
+31 5 15 15 19
+8 16 4 1 0 -24
+0.333333 1.0e20 1.0e-6 1.234568e8 1500.0 1500.0 0.025
+inf -inf nan
+34
+125
+a15
+it's tab	here a"b AéA
+b  bc ab bc bcde 
+3 [2, 3] [1, 2] [] []
+1 1 1 0 0 0
+0 1 1 1 0
+1 1 0
+1 0 1 1
+1 0 1
+v:true v:false v:null v:none 1 1
+yes no default x
+1 0 7
+0 1 0 1
+8 16
+0z0102 0z0102FF 3
+x=2 s {literal} abc
+0 1 2 3 4 5 6 7 10
+[1, 'a', [2], {'k': 'v'}] function('strlen') function('tr', [1])
+[1, 'a'] {'k': [1]} strlen
+42
+line 32:
+E111: Missing ']'
+line 33:
+E111: Missing ']'
+1 1 called
+2

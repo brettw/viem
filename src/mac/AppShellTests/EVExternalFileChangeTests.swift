@@ -187,8 +187,8 @@ final class EVExternalFileChangeTests: XCTestCase {
           let quit = EVDocumentHostRequest(kind: .quit, documentID: 1, documentRevision: 0, force: true)
           window.perform(documentHostRequests: [request, quit]) { result in
             switch result {
-            case .success(let message): XCTAssertNil(message)
-            case .failure(let error): XCTFail("Cancellation should remain silent: \(error)")
+            case .failure(let error): XCTAssertEqual((error as? CocoaError)?.code, .userCancelled)
+            case .success: XCTFail("Cancelled host request must report cancellation")
             }
             cancelled.fulfill()
           }
@@ -229,8 +229,8 @@ final class EVExternalFileChangeTests: XCTestCase {
     let completed = expectation(description: "cancel forced ranged write")
     window.perform(documentHostRequests: [request]) { result in
       switch result {
-      case .success(let message): XCTAssertNil(message)
-      case .failure(let error): XCTFail("Cancellation should remain silent: \(error)")
+      case .failure(let error): XCTAssertEqual((error as? CocoaError)?.code, .userCancelled)
+      case .success: XCTFail("Cancelled host request must report cancellation")
       }
       completed.fulfill()
     }

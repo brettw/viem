@@ -1,0 +1,3 @@
+interface:
+  display_name: "Update Themes"
+  short_description: "Promote local Viem themes to bundled defaults"

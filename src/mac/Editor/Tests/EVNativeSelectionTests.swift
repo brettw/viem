@@ -102,7 +102,7 @@ final class EVNativeSelectionTests: XCTestCase {
         for selectmode in ["mouse,key", ""] {
             let (_, surface, session, window) = try fixture("one 👩‍💻 end")
             defer { window.close() }
-            surface.performInput { _ = try session.sourceLine("set noautoselect selectmode=\(selectmode)", depth: 1) }
+            surface.performInput { _ = try session.executeCommandLine("set noautoselect selectmode=\(selectmode)") }
             let range = NSRange(location: 4, length: 5)
             surface.editorView.setAccessibilitySelectedTextRange(range)
             XCTAssertEqual(surface.editorView.accessibilitySelectedTextRange(), range)
@@ -173,14 +173,14 @@ final class EVNativeSelectionTests: XCTestCase {
     func testAlternateOptionsAndCommandSelectionsAreIndependent() throws {
         let (_, surface, session, window) = try fixture()
         defer { window.close() }
-        surface.performInput { _ = try session.sourceLine("set noautoselect selectmode= keymodel=startsel", depth: 1) }
+        surface.performInput { _ = try session.executeCommandLine("set noautoselect selectmode= keymodel=startsel") }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         surface.editorView.keyDown(with: try arrow(124, []))
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_CHARACTER))
         surface.performInput {
             _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-            _ = try session.sourceLine("set selectmode=cmd,key keymodel=", depth: 1)
+            _ = try session.executeCommandLine("set selectmode=cmd,key keymodel=")
         }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
@@ -197,7 +197,7 @@ final class EVNativeSelectionTests: XCTestCase {
         let (secondBackend, second, secondSession, secondWindow) = try fixture(configuration: config)
         defer { firstWindow.close(); secondWindow.close() }
         second.performInput { _ = try secondSession.sendText("i") }
-        first.performInput { _ = try firstSession.sourceLine("set noautoselect km= slm=cmd", depth: 1) }
+        first.performInput { _ = try firstSession.executeCommandLine("set noautoselect km= slm=cmd") }
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_KEYMODEL), from: secondBackend), "")
         XCTAssertEqual(try EVSelectionPreferences.read(UInt32(VIEM_EX_OPTION_SELECTMODE), from: secondBackend), "cmd")
         XCTAssertEqual(second.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
@@ -233,7 +233,7 @@ final class EVNativeSelectionTests: XCTestCase {
         let (backend, surface, session, window) = try fixture("abcd")
         defer { window.close() }
         surface.performInput {
-            _ = try session.sourceLine("set noautoselect keymodel=startsel,stopsel selectmode=key", depth: 1)
+            _ = try session.executeCommandLine("set noautoselect keymodel=startsel,stopsel selectmode=key")
         }
         surface.editorView.keyDown(with: try arrow())
         XCTAssertEqual(surface.statusBarState.mode, "SELECT")

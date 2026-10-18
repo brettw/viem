@@ -62,7 +62,7 @@ import XCTest
         let session = try XCTUnwrap(view.session)
         // Exercise continuing Visual navigation explicitly; the native default
         // stopsel policy intentionally ends selection on an unshifted Page key.
-        if entry == "v" { _ = try session.sourceLine("set keymodel-=stopsel", depth: 1) }
+        if entry == "v" { _ = try session.executeCommandLine("set keymodel-=stopsel") }
         if !entry.isEmpty { _ = try session.sendText(entry) }
         view.refreshPresentation()
         let revision = try backend.revision()

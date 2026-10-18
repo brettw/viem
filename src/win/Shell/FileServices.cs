@@ -21,7 +21,7 @@ internal sealed partial class EditorWindow
     private async Task NavigateArgument(EditorPane pane, FrontendRequest request)
     {
         var r = request.Value;
-        if ((r.flags & VIEM_EX_FRONTEND_WRITE_FIRST) != 0) { await Save(pane); if (pane.Document.IsDirty) return; }
+        if ((r.flags & VIEM_EX_FRONTEND_WRITE_FIRST) != 0) { if (!await Save(pane) || pane.Document.IsDirty) throw new OperationCanceledException(); }
         ulong index = ResolveArgument(pane, r.argument_command, r.argument_count);
         await OpenPath(App.Instance.Arguments[checked((int)index)], false, (r.flags & VIEM_EX_FRONTEND_FORCE) != 0);
         var opened = App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath is string file && FileIdentity.Same(file, App.Instance.Arguments[(int)index]));

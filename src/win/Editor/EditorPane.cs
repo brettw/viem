@@ -243,6 +243,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
         View.Changed += Refresh; View.Effects += ApplyEffects;
+        bool applyStartup = !preferences.StartupApplicationOptionsApplied;
+        preferences.StartupApplicationOptionsApplied = true;
+        Run(() => View.TakeStartupEffects(applyStartup));
         if (InitialNumber is { } number) { View.Number(number); InitialNumber = null; }
         ApplyPreferences(); Refresh(); if (IsActive) FocusEditor();
         ready.TrySetResult(View);
@@ -278,7 +281,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.Dispose(); }
         Document = document; View = prepared;
         Document.Changed += DocumentChanged;
-        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; }
+        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; Run(() => View.TakeStartupEffects(false)); }
         mapping.Stop(); compositionRejected = composing; composing = false; ClearInput();
         snapshot = null; InvalidateDrawingCache(); Refresh();
     }
@@ -287,7 +290,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void ApplyPreferences()
     {
         Document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
-        View!.Padding(preferences.Margin("top"), preferences.Margin("left"), preferences.Margin("bottom"), preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes); View.MarkdownAutodetect(preferences.MarkdownAutodetect);
+        float top = preferences.Margin("top"), bottom = preferences.Margin("bottom");
+        if (preferences.ScriptScrollOff is { } rows) top = bottom = Math.Min(1000, rows * View!.DefaultLineHeight);
+        View!.Padding(top, preferences.Margin("left"), bottom, preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes); View.MarkdownAutodetect(preferences.MarkdownAutodetect);
     }
     private void ApplyTheme()
     {
@@ -389,7 +394,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         {
             await previous;
             if (disposed) return;
-            try { message.Text = ""; DismissCommandOutput(false); await action(); ResetBlink(); if (View?.HasPendingMapping == true) { mapping.Stop(); mapping.Start(); } }
+            try { message.Text = ""; DismissCommandOutput(false); await action(); ResetBlink(); if (View?.HasPendingMapping == true) { mapping.Stop(); if (preferences.ScriptTimeout) { mapping.Interval = TimeSpan.FromMilliseconds(Math.Max(1, preferences.ScriptTimeoutLength)); mapping.Start(); } } }
             catch (Exception e) { Report(e); }
         }
         inputQueue = Next(inputQueue);
@@ -461,6 +466,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public async Task Paste(bool plain = false) { if (await RefreshClipboard()) View?.Paste(plain); }
     private void ApplyEffects(HostEffects effects)
     {
+        bool failed = false;
         foreach (var write in effects.Clipboard)
         {
             var data = clipboardOverride ?? (write.Text, write.Fragment);
@@ -470,8 +476,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
             } catch (Exception error) {
                 // Core may already have committed the command. Keep its undo
                 // and finish publishing the new frame; never replay the input.
-                Report(error);
+                failed = true; Report(error);
             }
+        }
+        if (failed && effects.Requests.LastOrDefault(request => request.Value.kind == VIEM_EX_FRONTEND_SCRIPT_CONTINUATION) is { } continuation) {
+            View?.ResumeScript(continuation.Value.window_count, false); return;
         }
         _ = window.ApplyEffects(this, effects);
     }

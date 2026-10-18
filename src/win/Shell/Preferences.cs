@@ -50,7 +50,7 @@ internal sealed partial class Preferences
     }
     public T Get<T>(string section, string key, T fallback)
     { try { var node = section == "theme" ? activeTheme["theme"]?[key] : root[section]?[key]; return node == null ? fallback : node.GetValue<T>(); } catch { return fallback; } }
-    public bool ShowMenu => Get("windows", "showMenu", true);
+    public bool ShowMenu => ScriptShowMenu ?? Get("windows", "showMenu", true);
     private static string ToolbarFormatKey(uint format) => format switch {
         Native.VIEM_FORMAT_MARKDOWN => "markdown",
         Native.VIEM_FORMAT_CODE => "code", _ => "plainText"
@@ -63,7 +63,7 @@ internal sealed partial class Preferences
         if (!frame.IsValid) throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");
         Update(candidate => Merge(candidate, new JsonObject { ["windows"] = new JsonObject { ["documentFrame"] = frame.Json } }), notify: false);
     }
-    public bool ShowStatus => Get("appearance", "showStatusBar", true);
+    public bool ShowStatus => ScriptShowStatus ?? Get("appearance", "showStatusBar", true);
     public bool MarkdownAutodetect => Get("editing", "markdownAutodetect", true);
     public bool CaretHoverEffect => Get("editing", "caretHoverEffect", true);
     public bool SmartQuotes => Get("editing", "smartQuotes", false);
@@ -74,7 +74,11 @@ internal sealed partial class Preferences
     }
     public uint TextWidth => Get("editing", "textWidth", 80u);
     public byte[] Indentation => Json(root["editing"]?["indentation"], new JsonObject());
-    public byte[] Whitespace => Json(root["editing"]?["whitespacePresentation"], new JsonObject());
+    public byte[] Whitespace { get {
+        var value = root["editing"]?["whitespacePresentation"]?.DeepClone() ?? new JsonObject();
+        if (ScriptContinuationIndent is { } indent) value["codeWrappedLineIndent"] = indent;
+        return Json(value, new JsonObject());
+    } }
     public byte[] Associations => Json(root["code"]?["filenameAssociations"], new JsonArray());
     private static byte[] Json(JsonNode? value, JsonNode fallback) => JsonSerializer.SerializeToUtf8Bytes(value ?? fallback, FrontendJsonContext.Default.JsonNode);
     public JsonObject Editing => root["editing"] is JsonObject value ? (JsonObject)value.DeepClone() : new();

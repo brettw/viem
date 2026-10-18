@@ -1,0 +1,39 @@
+
+5
+[1, 0, [], 'none'] [1, 2, [2, 3], 2]
+[1, 10, 11] [1, 2, 3] [1, 10, 5]
+local explicit ['x', 'y']
+line 23:
+E121: Undefined variable: SID
+3628800
+42
+Ann
+line 1:
+E46: Cannot change read-only variable "count"
+line 1:
+E46: Cannot change read-only variable "count"
+0
+E46: Cannot change read-only variable "count" 0
+15
+101 7 102
+2
+1 0 1
+0
+line 1:
+E117: Unknown function: Undefined
+after abort
+line 1:
+E117: Unknown function: Undefined
+continues
+line 71:
+E119: Not enough arguments for function: TooFew
+line 72:
+E118: Too many arguments for function: TooFew
+line 79:
+E122: Function Dup already exists, add ! to replace it
+1
+line 83:
+E118: Too many arguments for function: Recurse
+[1, 2]
+[3, 2, 1]
+[1, 2, 3]

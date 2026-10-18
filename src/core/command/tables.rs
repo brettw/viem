@@ -367,7 +367,7 @@ impl CommandInterpreter {
                             ..CommandOutput::complete()
                         }));
                     }
-                    if let Err(output) = self.require_register_write(requested) {
+                    if let Err(output) = self.require_register_write_kind(requested, *operation == 'y') {
                         return Ok(Some(output));
                     }
                     let (fragment, _) = document.table_clipboard_fragment(

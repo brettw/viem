@@ -59,12 +59,14 @@ portable policy, which is precisely the rule the findings in section 8 break.
 ## 1. Deliberate non-goals
 
 Listed so the gaps that follow read as gaps rather than as settled decisions.
-`AGENTS.md:4701` places these outside the command commitment:
+[AGENTS.md](AGENTS.md) places these outside the command commitment:
 
-Vimscript/Vim9script, abbreviations, plugins, terminal jobs,
-shell filters and `:!`, tags, quickfix, diff mode, folding, spellchecking, tab
-pages, side-by-side splits, sessions/viminfo, remote server commands, and full
-option/regex parity.
+Vim9 script, automatic plugin/runtime loading, terminal jobs, shell filters and
+`:!`, tags, quickfix, diff mode, folding, spellchecking, tab pages,
+sessions/viminfo, remote server commands, and full option/regex parity.
+Legacy Vim script, abbreviations and side-by-side splits are supported within
+their documented profiles; see [Vim script support](docs/vimscript.md) and
+[split views](docs/window-panes.md).
 
 Normal-mode `U` is deliberately unsupported; see [AGENTS.md](AGENTS.md).
 
@@ -165,47 +167,39 @@ The remaining gaps are narrower than the original command-family omissions:
 - **Interactive confirmation inside `:global` is unsupported.** Global
   execution also rejects host/file commands and history navigation. Ordinary
   editing, `:normal`, printing, and nested current-line global predicates are
-  supported; command pipelines are still outside the supported grammar.
+  supported. The legacy script engine handles command bars for submitted Ex
+  lines; each command retains its own bar/comment grammar.
 - **Confirmation prompt scrolling is missing.** `:s///c` accepts
   `y`/`n`/`a`/`q`/`l`, Escape, and Ctrl-C, but not Vim's Ctrl-E/Ctrl-Y scrolling.
 - **Shell and key-script file commands remain unsupported.** `:read !command`
-  and `:source!` are not implemented. `:source` handles supported Ex commands
-  and mappings, not a general Vimscript runtime.
+  and `:source!` are not implemented. `:source` evaluates the documented legacy
+  Vim script profile, waits for native effects, and cancels its remainder if a
+  native operation fails, is cancelled, or changes its owning core/view.
 
 ## 6. `:set` options
 
-Supported options have full Vim `set` grammar (`no`, `!`, `?`, `&`, `<`, `+=`,
-`^=`, `-=`) and a real global/local split. Implemented: `wrap`, `ignorecase`,
-`smartcase`, `wrapscan`, `hlsearch`, `incsearch`, `textwidth`, `fileformat`, `fileformats`, `autoindent`,
-`tabstop`, `shiftwidth`, `softtabstop`, `expandtab`, `smarttab`, `list`,
-`listchars`, `formatoptions`, `comments`, `formatlistpat`, plus two
-comment-continuation options. Code formatting supports `qjro/n2w1`, defaulting
-to `qj`; see [Code formatting and comments](docs/code-formatting.md) for its
-scope and limits. Other `formatoptions` flags and configurable `nrformats`
-remain unsupported.
+Options use Vim `set` grammar (`no`, `!`, `?`, `&`, `<`, `+=`, `^=`, `-=`)
+and the existing per-option global/local policies. A multi-option script command
+applies left to right, stopping at its first error and retaining earlier changes.
+The compatibility table recognizes Vim options and distinguishes implemented,
+application-mapped, fixed-value, ignored and unsupported settings. Unknown names
+report E518; `exists('&name')` detects recognition and `exists('+name')` detects
+working support.
 
-The interesting finding is not which options are missing, but that three are
-already fully implemented and simply not reachable from `:set`.
+`readonly`, `fileencoding` and `bomb` now use model operations, and the scoped
+core options include `clipboard`, `gdefault`, `shiftround`, `joinspaces`,
+`whichwrap`, `startofline`, `history`, `iskeyword`, `filetype` and `syntax`.
+`number` and the existing editing/search/whitespace settings remain supported.
+Native mappings cover theme selection, mapping timeouts, Code fonts/spacing,
+continuation margins, scroll margins, status/menu visibility and window size.
+See [the option profile](docs/vimscript.md#options-and-native-settings) for exact
+limits and deliberate approximations.
 
-| Option | Already in the ABI |
-| --- | --- |
-| `linebreak` | `viem_core_view_set_linebreak` (`viem_core.h:2293`) plus a `VIEM_VIEWPORT_STATE_LINEBREAK` flag. |
-| `fileencoding` / `bomb` | `viem_core_view_set_encoding_with_effects`, four encodings, `VIEM_DOCUMENT_STATE_HAS_BOM`. Exposed in the Format menu but not from `:set`. |
-| `readonly` | `viem_core_set_read_only` and a dedicated `VIEM_COMMAND_STATUS_READ_ONLY`. |
-
-These are wiring, not features. They also fix an asymmetry a user will notice:
-the same setting behaves differently depending on whether you reach it from the
-menu or the colon prompt.
-
-**Not implemented:** `number`, `relativenumber`,
-`scrolloff`, `joinspaces`, `gdefault`, `iskeyword`, `whichwrap`, `startofline`,
-`report`, `undolevels`, `selection`, `clipboard`,
-`wrapmargin`, `modifiable`.
-
-Of these, `scrolloff` and `joinspaces` are the cheapest wins and both are felt
-constantly. `iskeyword` matters more than it looks: word motions, `*`,
-`C-r C-w`, and manual completion all pin the keyword class to
-Unicode-alphanumeric-or-underscore with no way to adjust it.
+`guicursor`, `cursorline`, `colorcolumn`, `relativenumber`, `statusline`,
+folding/spelling settings, `wrapmargin`, `modifiable` and many other settings
+remain recognized without an implementation. Backup/swap/undo-file options are
+ignored by design; they do not alter Viem's recovery or undo policies. This is
+not full Vim option parity.
 
 ## 7. Registers and marks
 

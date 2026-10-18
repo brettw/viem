@@ -160,7 +160,6 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     case printWorkingDirectory
     case checkTime
     case read
-    case source
     case file
     case only
     case changeDirectory
@@ -173,6 +172,11 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     case writeQuit
     case xit
     case writeAll
+    /// Select the application theme named by `path` (`:colorscheme`).
+    case theme
+    /// A Vim option mapped onto an application setting; `path` holds
+    /// `name=value` in `:set` spelling.
+    case applicationOption
   }
 
   public let kind: Kind
@@ -234,6 +238,8 @@ public protocol EVDocumentHostEffectHandling: AnyObject {
   /// one surface. The requesting surface identifies the focused pane.
  
   func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface)
+  func performScript(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) throws
+  func isCurrentScriptSurface(_ surface: any EVEditorSurface) -> Bool
 
   /// Link activation focuses an existing view of the target document, including
   /// an inactive pane. A document without an open view receives a new window.
@@ -253,6 +259,10 @@ public protocol EVDocumentHostEffectHandling: AnyObject {
 extension EVDocumentHostEffectHandling {
   public func documentURL(for surface: any EVEditorSurface) -> URL? { nil }
   public func perform(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) {}
+  public func performScript(windowRequests: [EVWindowRequest], from surface: any EVEditorSurface) throws {
+    throw EVDocumentHostError.unsupportedRequest
+  }
+  public func isCurrentScriptSurface(_ surface: any EVEditorSurface) -> Bool { true }
 
   public func openLinkedDocument(
     _ url: URL, fragment: String?, from surface: any EVEditorSurface,
@@ -390,7 +400,9 @@ public protocol EVEditorSurface: AnyObject {
   /// Startup line in the first argument; UInt64.max selects its last line.
   func goToLine(_ line: UInt64)
   func insertFileContents(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws
-  func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest]
+  func applyScriptAutoselect(_ enabled: Bool) throws
+  func applyScriptViewOptions() throws
+  func fireAutocmd(_ event: String, matched: String) throws
   func dismissCommandOutput()
   /// Resume editor input after leaving the selectable status message.
   func handleStatusMessageKey(_ event: NSEvent)
@@ -416,7 +428,9 @@ extension EVEditorSurface {
   public func htmlExportData() async throws -> Data { throw EVDocumentHostError.unsupportedRequest }
   public func goToLine(_ line: UInt64) {}
   public func insertFileContents(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws { throw EVDocumentHostError.unsupportedRequest }
-  public func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest] { throw EVDocumentHostError.unsupportedRequest }
+  public func applyScriptAutoselect(_ enabled: Bool) throws {}
+  public func applyScriptViewOptions() throws {}
+  public func fireAutocmd(_ event: String, matched: String) throws {}
   public func dismissCommandOutput() {}
   public func handleStatusMessageKey(_ event: NSEvent) {}
 }

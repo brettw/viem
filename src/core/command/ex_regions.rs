@@ -479,20 +479,14 @@ fn prepare_join(
             } else if let Some(comment_join) = &mut comment_join {
                 comment_join.prefix(range.start.index + pair_index, &pair[0].text, &following.text)
             } else {
-                following.text.len() - following.text.trim_start_matches(char::is_whitespace).len()
+                following.text.len() - following.text.trim_start_matches([' ', '\t']).len()
             };
             let end = *following
                 .boundaries
                 .get(&leading)
                 .ok_or(ExExecuteError::AddressOverflow)?;
-            let separator = if bang
-                || pair[0].text.chars().last().is_none_or(char::is_whitespace)
-                || following.text[leading..].is_empty()
-            {
-                ""
-            } else {
-                " "
-            };
+            let separator = if bang { "" } else { crate::command::options::join_separator(
+                pair[0].text.chars().last(), following.text[leading..].chars().next(), context.vim_options.flag("joinspaces")) };
             patches.push(SourcePatch::primary(
                 pair[0].separator.start..end,
                 document.encoding().encode_fragment(separator)?,
@@ -517,15 +511,9 @@ fn prepare_join(
                 .map_err(|_| ExExecuteError::AddressOverflow)?;
             let leading = if bang { 0 }
                 else if let Some(comment_join) = &mut comment_join { comment_join.prefix(snapshot.line_at_offset(pair[0].content.start).map_err(|_| ExExecuteError::AddressOverflow)?.index(), &before, &following) }
-                else { following.len() - following.trim_start_matches(char::is_whitespace).len() };
-            let separator = if bang
-                || before.chars().last().is_none_or(char::is_whitespace)
-                || following[leading..].is_empty()
-            {
-                ""
-            } else {
-                " "
-            };
+                else { following.len() - following.trim_start_matches([' ', '\t']).len() };
+            let separator = if bang { "" } else { crate::command::options::join_separator(
+                before.chars().last(), following[leading..].chars().next(), context.vim_options.flag("joinspaces")) };
             edits.push(TextEdit::new(
                 pair[0].content.end..pair[1].content.start + leading,
                 separator,
@@ -1038,6 +1026,7 @@ fn whitespace_edits(
     text: &str,
     action: &WhitespaceAction,
     options: crate::document::IndentationOptions,
+    round: bool,
 ) -> Result<Vec<TextEdit>, ExExecuteError> {
     let mut edits = Vec::new();
     match action {
@@ -1049,17 +1038,8 @@ fn whitespace_edits(
                 return Ok(edits);
             }
             let columns = options.columns(&text[..length]);
-            let shift = options
-                .shift_width()
-                .checked_mul(*amount)
+            let end = crate::command::options::shifted_columns(columns, options.shift_width(), *amount, *right, round)
                 .ok_or(ExExecuteError::AddressOverflow)?;
-            let end = if *right {
-                columns
-                    .checked_add(shift)
-                    .ok_or(ExExecuteError::AddressOverflow)?
-            } else {
-                columns.saturating_sub(shift)
-            };
             let replacement = options
                 .try_whitespace(0, end)
                 .map_err(|_| ExExecuteError::AddressOverflow)?;
@@ -1166,7 +1146,7 @@ fn prepare_whitespace(
         let units = source_units(document, source.clone())?;
         let mut patches = Vec::new();
         for unit in &units {
-            for edit in whitespace_edits(&unit.text, &action, options)? {
+            for edit in whitespace_edits(&unit.text, &action, options, context.vim_options.flag("shiftround"))? {
                 let start = *unit
                     .boundaries
                     .get(&edit.range.start)
@@ -1220,7 +1200,7 @@ fn prepare_whitespace(
             let text = snapshot
                 .slice_utf8(unit.content.clone())
                 .map_err(|_| ExExecuteError::AddressOverflow)?;
-            for edit in whitespace_edits(&text, &action, options)? {
+            for edit in whitespace_edits(&text, &action, options, context.vim_options.flag("shiftround"))? {
                 edits.push(TextEdit::new(
                     unit.content.start + edit.range.start..unit.content.start + edit.range.end,
                     edit.replacement,

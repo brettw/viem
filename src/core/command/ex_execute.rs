@@ -72,6 +72,8 @@ pub struct ExExecutionContext {
     pub indentation: crate::document::IndentationSetting,
     pub visible_whitespace: super::VisibleWhitespaceSetting,
     pub last_search_pattern: Option<String>,
+    /// Values of Vim options outside Viem's `:set` implementation.
+    pub vim_options: super::options::VimOptions,
 }
 
 impl Default for ExExecutionContext {
@@ -89,6 +91,7 @@ impl Default for ExExecutionContext {
             indentation: Default::default(),
             visible_whitespace: Default::default(),
             last_search_pattern: None,
+            vim_options: Default::default(),
         }
     }
 }
@@ -104,15 +107,6 @@ impl ExExecutionState {
     pub(super) fn remember_global_pattern(&mut self, pattern: &str) {
         if let Some(previous) = &mut self.last_substitute { previous.pattern = pattern.into(); }
     }
-    pub(crate) fn requests_confirmation(&self, action: &ExAction) -> bool {
-        let flags = match action {
-            ExAction::Substitute(substitute) => &substitute.flags,
-            ExAction::RepeatSubstitute { flags, .. } => flags,
-            _ => return false,
-        };
-        effective_flags(flags, self.last_substitute.as_ref()).confirm
-    }
-
     pub fn has_previous_substitute(&self) -> bool {
         self.last_substitute.is_some()
     }
@@ -289,6 +283,40 @@ pub enum ExOptionName {
     List, ListChars, KeyModel, SelectMode, AutoSelect,
 }
 
+impl ExOptionName {
+    /// The full option name as Vim spells it (Viem's own for Viem options).
+    pub fn vim_name(&self) -> &'static str {
+        match self {
+            Self::Wrap => "wrap",
+            Self::Number => "number",
+            Self::FileFormat => "fileformat",
+            Self::FileFormats => "fileformats",
+            Self::HlSearch => "hlsearch",
+            Self::IncSearch => "incsearch",
+            Self::IgnoreCase => "ignorecase",
+            Self::SmartCase => "smartcase",
+            Self::WrapScan => "wrapscan",
+            Self::TextWidth => "textwidth",
+            Self::FormatOptions => "formatoptions",
+            Self::Comments => "comments",
+            Self::FormatListPat => "formatlistpat",
+            Self::AutoIndent => "autoindent",
+            Self::TabStop => "tabstop",
+            Self::ShiftWidth => "shiftwidth",
+            Self::SoftTabStop => "softtabstop",
+            Self::ExpandTab => "expandtab",
+            Self::SmartTab => "smarttab",
+            Self::ContinueCommentsOnEnter => "continuecommentsonenter",
+            Self::ContinueCommentsOnOpenLine => "continuecommentsonopenline",
+            Self::List => "list",
+            Self::ListChars => "listchars",
+            Self::KeyModel => "keymodel",
+            Self::SelectMode => "selectmode",
+            Self::AutoSelect => "autoselect",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExOptionValue {
     Boolean(bool),
@@ -329,7 +357,6 @@ pub struct ExInsertionPoint {
 pub enum ExFileRequest {
     Only { force: bool },
     Read { path: Option<String>, after: ExInsertionPoint },
-    Source { path: String },
     File { path: Option<String>, truncate: bool },
     NavigateArgument {
         target: super::argument_list::ExArgumentTarget,
@@ -575,11 +602,28 @@ pub enum ExFrontendRequest {
     /// A `CTRL-W` window effect. The frontend owns pane geometry and focus;
     /// the core only resolves which effect the grammar named.
     Window(super::window::WindowRequest),
+    /// An application-wide setting requested by a script or command, such
+    /// as `:colorscheme`. The frontend owns these settings.
+    Application(ApplicationRequest),
+    /// Startup application configuration, applied once by each native process.
+    StartupApplication(ApplicationRequest),
+    /// A single-use acknowledgement after preceding native effects complete.
+    ScriptContinuation(u64),
     /// Internal continuation staged for the main command interpreter. The
     /// interpreter consumes this before publishing an Ex outcome; it is kept
     /// in this compatibility enum only to avoid widening `ExPlan` while Ex
     /// execution is incrementally migrated to typed controller plans.
     Normal(ExNormalRequest),
+}
+
+/// Application settings scripts can request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApplicationRequest {
+    /// Select the theme with this exact name (`:colorscheme`).
+    Theme(String),
+    /// A Vim option mapped onto an application setting, with its new value
+    /// in `:set` spelling (Booleans are "0" or "1").
+    Option { name: &'static str, value: String },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -608,6 +652,8 @@ pub struct ExOutcome {
     pub navigation: Option<ExNavigation>,
     pub register_effects: Vec<ExRegisterEffect>,
     pub option_effects: Vec<ExOptionEffect>,
+    /// Changes to Vim options outside Viem's `:set` implementation.
+    pub vim_option_effects: Vec<super::options::VimOptionEffect>,
     pub frontend_requests: Vec<ExFrontendRequest>,
     pub substitutions: usize,
 }
@@ -651,6 +697,7 @@ impl ExOutcome {
         }
         self.register_effects.extend(next.register_effects);
         self.option_effects.extend(next.option_effects);
+        self.vim_option_effects.extend(next.vim_option_effects);
         self.frontend_requests.extend(next.frontend_requests);
         self.substitutions = substitutions;
         Ok(())
@@ -881,7 +928,7 @@ impl fmt::Display for ExExecuteError {
                 write!(formatter, "invalid value {value:?} for option {option}")
             }
             Self::UnsupportedCommand(message) => formatter.write_str(message),
-            Self::UnsupportedOption(option) => write!(formatter, "unsupported option {option}"),
+            Self::UnsupportedOption(option) => write!(formatter, "E518: Unknown option: {option}"),
             Self::UnsupportedOptionOperation(option) => {
                 write!(formatter, "unsupported operation for option {option}")
             }
@@ -1323,7 +1370,6 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             };
             push_file(&mut plan, ExFileRequest::Read { path: path.clone(), after });
         }
-        ExAction::Source { path } => push_file(&mut plan, ExFileRequest::Source { path: path.clone() }),
         ExAction::File { path } => push_file(&mut plan, ExFileRequest::File { path: path.clone(), truncate: command.bang }),
         ExAction::DeleteMarks { .. } => return Err(ExExecuteError::UnsupportedCommand("mark deletion requires the command interpreter".into())),
         ExAction::NoHighlight => plan.outcome.suppress_search_highlight = true,
@@ -1414,6 +1460,17 @@ pub fn commit_ex(
         }
     };
 
+    if let Some(transaction) = &model_transaction {
+        for warning in transaction.summary().conversion_warnings() {
+            if let crate::document::ConversionWarning::UnrepresentableCharacters { encoding, count } = warning {
+                plan.outcome.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::Message(
+                    format!("{count} unrepresentable characters replaced with ? while converting to {encoding:?}"))));
+            }
+        }
+    }
+    for effect in &plan.outcome.vim_option_effects {
+        if effect.name == "readonly" { document.set_read_only(effect.new_value.number() != 0); }
+    }
     if let Some(next) = plan.next_substitute.take() {
         state.last_substitute = Some(next);
     }
@@ -1950,7 +2007,7 @@ fn prepare_substitute(
     } else {
         substitute.pattern.clone()
     };
-    let flags = effective_flags(&substitute.flags, state.last_substitute.as_ref());
+    let flags = effective_flags(&substitute.flags, state.last_substitute.as_ref(), context.vim_options.flag("gdefault"));
     let stored = StoredSubstitute {
         pattern,
         replacement: substitute.replacement.clone(),
@@ -1991,7 +2048,7 @@ fn prepare_repeat_substitute(
     let stored = StoredSubstitute {
         pattern,
         replacement: previous.replacement.clone(),
-        flags: effective_flags(flags, Some(previous)),
+        flags: effective_flags(flags, Some(previous), context.vim_options.flag("gdefault")),
     };
     plan_substitution(
         document,
@@ -2006,6 +2063,7 @@ fn prepare_repeat_substitute(
 fn effective_flags(
     requested: &SubstituteFlags,
     previous: Option<&StoredSubstitute>,
+    gdefault: bool,
 ) -> SubstituteFlags {
     let mut result = if requested.use_previous_flags {
         previous
@@ -2014,7 +2072,8 @@ fn effective_flags(
     } else {
         SubstituteFlags::default()
     };
-    result.global |= requested.global;
+    if !requested.use_previous_flags { result.global = gdefault; }
+    result.global ^= requested.global;
     result.confirm |= requested.confirm;
     result.print |= requested.print;
     result.number |= requested.number;
@@ -2373,7 +2432,9 @@ fn prepare_set(
         reflow_options: context.reflow_options.clone(),
         indentation: context.indentation,
         visible_whitespace: context.visible_whitespace.clone(),
+        vim_options: context.vim_options.clone(),
     };
+    values.vim_options.sync_document_policy(document);
     match operation {
         SetOperation::ShowChanged => {
             let mut shown = Vec::new();
@@ -2439,6 +2500,9 @@ fn prepare_set(
             plan.outcome
                 .frontend_requests
                 .push(ExFrontendRequest::Info(ExInfoRequest::Options(shown)));
+            if let Some(changed) = values.vim_options.changed_listing() {
+                plan.outcome.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::Message(changed)));
+            }
         }
         SetOperation::ShowAll => {
             plan.outcome
@@ -2451,6 +2515,30 @@ fn prepare_set(
             let original_file_format = values.file_format;
             for operation in operations {
                 apply_option_operation(scope, operation, &mut values, plan)?;
+            }
+            for effect in &plan.outcome.vim_option_effects {
+                let request = match effect.name.as_str() {
+                    "fileencoding" => {
+                        let value = effect.new_value.text();
+                        let target = match value.to_ascii_lowercase().as_str() {
+                            "" | "utf8" | "utf-8" => crate::document::Encoding::Utf8,
+                            "latin1" | "latin-1" | "iso-8859-1" => crate::document::Encoding::Latin1,
+                            "utf-16le" | "utf16le" | "ucs-2le" => crate::document::Encoding::Utf16Le,
+                            "utf-16" | "utf-16be" | "utf16" | "utf16be" | "ucs-2" => crate::document::Encoding::Utf16Be,
+                            _ => return Err(ExExecuteError::InvalidOptionValue { option: "fileencoding".into(), value }),
+                        };
+                        Some(ModelRequest::SetEncoding { document: document.id(), revision: document.revision(), target })
+                    }
+                    "bomb" => Some(ModelRequest::SetBomPolicy { document: document.id(), revision: document.revision(),
+                        policy: if effect.new_value.number() != 0 { crate::document::BomPolicy::Always } else { crate::document::BomPolicy::Never } }),
+                    _ => None,
+                };
+                if let Some(request) = request {
+                    if !matches!(plan.mutation, ExMutation::None) {
+                        return Err(ExExecuteError::ConflictingOptionChanges(effect.name.clone()));
+                    }
+                    plan.mutation = ExMutation::Model(request);
+                }
             }
             if values.file_format != original_file_format {
                 if !matches!(plan.mutation, ExMutation::None) {
@@ -2477,6 +2565,24 @@ struct PendingOptions {
     reflow_options: crate::document::ReflowOptions,
     indentation: crate::document::IndentationSetting,
     visible_whitespace: super::VisibleWhitespaceSetting,
+    vim_options: super::options::VimOptions,
+}
+
+/// Current values of the options `:set all` lists, for script `&name` reads.
+pub(crate) fn current_option_values(document: &Document, context: &ExExecutionContext) -> Vec<ExOptionDisplay> {
+    all_option_values(&PendingOptions {
+        wrap: context.wrap,
+        number: context.number,
+        file_format: document.file_format(),
+        fileformats: context.fileformats.clone(),
+        search_options: context.search_options,
+        selection_options: context.selection_options.clone(),
+        text_width: context.text_width,
+        reflow_options: context.reflow_options.clone(),
+        indentation: context.indentation,
+        visible_whitespace: context.visible_whitespace.clone(),
+        vim_options: Default::default(),
+    })
 }
 
 fn all_option_values(values: &PendingOptions) -> Vec<ExOptionDisplay> {
@@ -2757,7 +2863,7 @@ fn apply_option_operation(
             &mut values.search_options.ignorecase,
             plan,
         ),
-        "smartcase" | "sc" => apply_boolean_option(
+        "smartcase" | "scs" => apply_boolean_option(
             scope,
             ExOptionName::SmartCase,
             false,
@@ -2889,7 +2995,7 @@ fn apply_option_operation(
             }
             Ok(())
         }
-        _ => Err(ExExecuteError::UnsupportedOption(operation.name.clone())),
+        _ => super::options::apply_operation(scope, operation, &mut values.vim_options, &mut plan.outcome),
     }
 }
 
@@ -3792,15 +3898,21 @@ mod tests {
     fn removed_word_boundary_options_are_not_configurable_or_listed() {
         let document = Document::new("one two");
         let state = ExExecutionState::default();
-        for option in ["linebreak", "nolinebreak", "lbr", "nolbr", "linebreak?"] {
-            assert!(matches!(
-                prepare_ex(
-                    &document, &state, &context(0),
-                    &parse_ex(&format!(":set {option}")).unwrap(), &(),
-                ),
-                Err(ExExecuteError::UnsupportedOption(_))
-            ));
+        // Viem always wraps at word boundaries: `linebreak` is Vim's option
+        // with a fixed value, accepted without a core effect, and turning it
+        // off reports that it cannot change.
+        for (option, notice) in [("linebreak", false), ("lbr", false), ("nolinebreak", true), ("nolbr", true)] {
+            let plan = prepare_ex(
+                &document, &state, &context(0),
+                &parse_ex(&format!(":set {option}")).unwrap(), &(),
+            ).unwrap();
+            assert!(plan.outcome.option_effects.is_empty());
+            assert_eq!(!plan.outcome.frontend_requests.is_empty(), notice, "{option}");
         }
+        assert!(matches!(
+            prepare_ex(&document, &state, &context(0), &parse_ex(":set wordbreak").unwrap(), &()),
+            Err(ExExecuteError::UnsupportedOption(_))
+        ));
         let plan = prepare_ex(
             &document, &state, &context(0), &parse_ex(":set all").unwrap(), &(),
         ).unwrap();

@@ -608,6 +608,12 @@ public final class EVDocument: NSDocument {
     /// Keep AppKit in charge of save panels, coordinated replacement, file
     /// identity, versions, and change-count tokens while binding the bytes and
     /// the core acknowledgement to one exact source revision.
+    private func fireSaveAutocmd(_ event: String, destination: URL) throws {
+        for controller in windowControllers.compactMap({ $0 as? EVDocumentWindowController }) {
+            if try controller.fireDocumentAutocmd(self, event: event, matched: destination.path) { return }
+        }
+    }
+
     public override func save(
         to url: URL,
         ofType typeName: String,
@@ -633,6 +639,7 @@ public final class EVDocument: NSDocument {
                 typeName,
                 currentFormat: editorBackend.sourceFormat
             )
+            try fireSaveAutocmd("BufWritePre", destination: url)
             snapshot = try editorBackend.nativeSaveSnapshot(typeName: typeName)
         } catch {
             completionHandler(error)
@@ -672,14 +679,16 @@ public final class EVDocument: NSDocument {
                 typeName,
                 currentFormat: editorBackend.sourceFormat
             )
-            snapshot = try editorBackend.nativeSaveSnapshot(typeName: typeName)
-            guard snapshot.documentID == documentID,
-                  snapshot.documentRevision == documentRevision
+            let beforeAutocmd = editorBackend.persistenceState
+            guard beforeAutocmd.documentID == documentID,
+                  beforeAutocmd.documentRevision == documentRevision
             else {
                 completionHandler(EVDocumentHostError.staleRequest)
                 return
             }
             expectedFile = try authorizeExternalWrite(to: url).fingerprint
+            try fireSaveAutocmd("BufWritePre", destination: url)
+            snapshot = try editorBackend.nativeSaveSnapshot(typeName: typeName)
         } catch {
             completionHandler(error)
             return
@@ -733,6 +742,8 @@ public final class EVDocument: NSDocument {
                 if let bound = self.fileURL, EVDocumentIdentity.sameFile(bound, url) {
                     self.recordFileBaseline(snapshot.data, at: url)
                 }
+                do { try self.fireSaveAutocmd("BufWritePost", destination: url) }
+                catch { completionHandler(error); return }
                 self.synchronizeEditedState(self.editorBackend.persistenceState)
                 completionHandler(nil)
                 return
@@ -747,6 +758,7 @@ public final class EVDocument: NSDocument {
             }
             do {
                 try self.editorBackend.acknowledgeNativeSave(snapshot)
+                try self.fireSaveAutocmd("BufWritePost", destination: url)
                 self.wasRecovered = false
                 self.captureRecoveryNow()
                 self.synchronizeEditedState(self.editorBackend.persistenceState)

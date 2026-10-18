@@ -43,7 +43,7 @@ internal sealed partial class EditorWindow
         first.View.Scroll(0, 307); second.View.Scroll(0, 609);
         SetActive(first); first.FocusEditor();
         var before = new[] { CaptureReloadPosition(first), CaptureReloadPosition(second) };
-        var queuedQuit = first.View.SourceLine("q", 1)
+        var queuedQuit = first.View.ExecuteCommandLine("q")
             ?? throw new InvalidOperationException("Could not capture the pre-reload quit command.");
         if (!queuedQuit.Requests.Any(request => request.Value.kind == VIEM_EX_FRONTEND_QUIT))
             throw new InvalidOperationException("The captured command did not contain a quit request.");

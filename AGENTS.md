@@ -13,8 +13,10 @@ Viem is a modal, keyboard-first editor for human-language writing: gVim's
 composable editing model with word-processor typography, mixed styles,
 proportional fonts, optional soft wrapping, visual-row navigation, and responsive
 large-document editing. macOS and Windows are native frontends; Windows follows
-the macOS presentation and behavior with platform controls. A terminal frontend,
-a Vimscript runtime, and pixel-for-pixel gVim emulation are outside scope.
+the macOS presentation and behavior with platform controls. A terminal frontend, Vim9 script, plugin/runtime loading, and pixel-for-pixel
+gVim emulation are outside scope. The bounded legacy Vim script profile in
+[docs/vimscript.md](docs/vimscript.md) is supported for explicit configuration
+and editor automation.
 
 Text, Code, and Markdown are the source formats. Code is literal text with
 optional syntax highlighting; HTML files use Code. Markdown is presented as
@@ -1478,11 +1480,15 @@ Keep these deliberate restrictions and differences:
   is unsupported; literal/source alignment uses logical columns. `:read` decodes
   independently and inserts through the destination adapter; revalidate its
   document/revision after I/O. Shell filters and `++` overrides are unsupported.
-- `:source` executes supported UTF-8 Ex commands/mappings in order, preserving
-  meaningful trailing spaces and waiting for host operations. Bound file, line,
-  nesting, and execution work. Errors identify file/line and stop, retaining
-  successful earlier commands with ordinary undo units. Interactive confirmation,
-  `:source!`, and general Vimscript remain unsupported.
+- `:source`, startup and every submitted `:` line use the same bounded legacy
+  Vim script engine, including commands invoked from mappings and `:normal`.
+  Preserve meaningful trailing spaces and await native effects before continuing.
+  Script errors report file/line and normally continue at the next line; uncaught
+  exceptions and resource limits abort. Native failure/cancellation stops the
+  pending script without replaying completed effects. Continuing into a different
+  core or view is unsupported and cancels the remainder. Changes from one script
+  action share an undo unit, subject to explicit history synchronization.
+  Interactive confirmation in a script and `:source!` remain unsupported.
 - Sort is a source-preserving permutation, retaining encoding, final terminator,
   delimiter slots and moved position identities. Numeric ranges sort physical
   source lines and reproject in Markdown Preview. Contextual ranges use exact
@@ -1684,14 +1690,18 @@ clips; scrolled content continues through them. Include the last row's full ink
 and natural height before bottom scroll padding, even under exact line spacing.
 If row plus margins cannot fit, prioritize making the row visible.
 
-`startup.viem` is UTF-8 configuration, loaded once per profile/startup
-after JSON preferences and never rewritten by Settings. Startup creates an empty
-file and its profile directory if missing, without overwriting existing files;
-invalid lines report path/line and do not block later valid commands. Accept BOM
-and CRLF; bound input to 1 MiB. It supports configuration Ex commands and mappings,
-not edits, file/window actions, or Vimscript. Reject `fileformat` assignments
-because they change source and `fileformats` assignments until startup can affect
-pre-open decoding. See [startup guidance](docs/macos-development.md#startup-commands).
+`startup.viem` is UTF-8 legacy Vim script, read once per profile/startup after
+JSON preferences and never rewritten by Settings. Evaluate that snapshot for
+each new buffer; apply its application-setting requests only for the first
+buffer. Startup creates an empty file and its profile directory if missing,
+without overwriting existing files. Accept BOM and CRLF; bound input to 1 MiB.
+Ordinary errors report path/line and allow later valid lines to execute.
+Startup may define functions, mappings, abbreviations, commands and autocmds,
+and run configuration logic; immediate document edits and file/window actions
+are forbidden. Reject source-encoding, BOM, `fileformat` and `fileformats`
+assignments at startup. Never automatically load `.vimrc`, `.gvimrc`, plugins or
+runtime scripts; users can explicitly `:source` compatible files. See
+[startup guidance](docs/macos-development.md#startup-commands).
 
 Native and Ex operations share one persisted recent-file list. Successful
 opens/saves/reopens promote canonical file identity without symlink/hard-link
@@ -1856,19 +1866,27 @@ Displaying controls never rewrites source declarations.
 
 ## Mappings and explicit scope limits
 
-Interactive mappings are buffer-wide; startup mappings initialize every buffer.
-Preserve literal-operand bypass, nonrecursive replacement, trailing spaces, and
-bounded recursion/prefix waiting. F8/Shift-F10 retain native actions. Listing,
-mapping-command abbreviations, attributes (`<expr>`/`<buffer>`), and user
-abbreviations remain unsupported.
+Interactive mappings and abbreviations are buffer-wide; startup initializes
+all buffers. Preserve literal-operand bypass, nonrecursive replacement, trailing
+spaces, mapping attributes and bounded recursion/prefix waiting. Expression
+mappings/abbreviations cannot mutate text or change windows during resolution.
+F8/Shift-F10 retain native actions. Language/terminal mappings can be retained
+and queried, but have no active input mode in this frontend.
 
-Do not build speculative Vimscript/Vim9script, plugin/runtime execution,
+Legacy script state, including `g:` variables, functions, commands and autocmds,
+is per buffer, shared by its views; `w:` variables are view-local. This deliberately
+differs from Vim's process-global script state. All editor mutations use ordinary
+verified transactions, and native effects use acknowledged, revision-checked
+continuations. Recognized-but-unsupported options/events must not imply working
+features. Keep the supported profile and limitations in
+[docs/vimscript.md](docs/vimscript.md) current.
+
+Do not expand this scope into Vim9 script, automatic plugin/runtime execution,
 terminal jobs, shell filters/`:!`, tags, quickfix, diff, folding, spellchecking,
-Vim tab pages, sessions/viminfo, remote server commands, or
-full Vim option/regex parity. Adopted syntax providers and supported Vim syntax
-loading are exceptions only for syntax highlighting; they do not authorize a
-general runtime, Neovim Lua plugins, arbitrary autocommands, syntax-driven
-folding/concealment, or changing the Viem Regex dialect.
+Vim tab pages, sessions/viminfo, remote server commands, or full Vim option/regex
+parity. Adopted syntax providers and supported Vim syntax loading remain
+highlighting mechanisms; they do not authorize Neovim Lua plugins,
+syntax-driven folding/concealment, or changing the Viem Regex dialect.
 
 ## Layout and responsiveness
 

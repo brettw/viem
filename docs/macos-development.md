@@ -139,7 +139,7 @@ text store, selection model, or undo authority.
 ## Startup commands
 
 Viem creates an empty `~/.viem/startup.viem` on launch if it is missing. Edit it
-to configure mappings and supported Ex settings:
+to configure the editor with the [legacy Vim script profile](vimscript.md):
 
 ```vim
 " Yank from the cursor through the current line end (using $ semantics).
@@ -153,8 +153,10 @@ set nowrap
 set hlsearch incsearch
 ```
 
-Restart Viem after editing the file. Startup commands apply to every document
-and new view. `VIEM_CONFIG_DIR` overrides the profile directory for `config.json`,
+Restart Viem after editing the file. The startup snapshot is evaluated for each
+buffer; its mappings and definitions are shared by that buffer's views. Application
+settings from startup apply only for the first buffer. `VIEM_CONFIG_DIR` overrides
+the profile directory for `config.json`,
 the `themes` directory, and `startup.viem` together; native code resolves it through
 `EVProfileDirectory`. The startup file uses UTF-8, accepts a BOM and
 CRLF, and is limited to 1 MiB. Invalid lines report their path and line number
@@ -171,8 +173,15 @@ The default changes only the background, and the style is absent from style
 application menus.
 
 Use `noremap` to prevent recursive expansion, or mode-specific forms such as
-`nnoremap` and `imap`. Multi-key mappings wait up to one second for another key.
-Interactive mapping commands affect the current buffer and its views. Startup
-accepts configuration commands only; document/window actions belong in mapping
-replacements. Mapping listing, mapping attributes, Vimscript, and startup
-assignments to `fileformat` or `fileformats` are not supported.
+`nnoremap` and `imap`. `timeoutlen` sets the native mapping delay in milliseconds
+(default 1000); `notimeout` waits for another key. Listing, mapping attributes,
+`<Leader>`, `<expr>` and `<Cmd>` are supported, as are Insert/command-line
+abbreviations and legacy functions, conditionals, loops, commands and autocmds.
+Interactive definitions affect the current buffer and its views.
+
+Startup accepts configuration logic and definitions. Put document edits and
+file/window actions in functions, mappings or events to run after startup.
+Startup cannot change encoding, BOM, `fileformat` or `fileformats`. Viem does not
+automatically load `.vimrc` or `.gvimrc`; explicitly source a compatible file if
+wanted. See [Vim script support](vimscript.md) for native option mappings,
+script state, resource bounds, events and deliberate compatibility limits.

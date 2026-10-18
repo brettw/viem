@@ -209,6 +209,15 @@ refer to a file or directory actually named `~` in the working directory.
 
 Preferences, startup commands and style defaults use `%USERPROFILE%\.viem`.
 On launch, Viem creates an empty `startup.viem` there if it is missing.
+It accepts the same [legacy Vim script profile](../../docs/vimscript.md) as macOS:
+functions, configuration logic, mappings, abbreviations, commands and supported
+autocmds. Its snapshot runs for each buffer, while startup application options
+apply only for the first buffer. Immediate edits and file/window actions, encoding,
+BOM and line-ending changes are forbidden at startup. `.vimrc` and `.gvimrc` are
+loaded only by an explicit `:source`; there is no automatic plugin/runtime loader.
+`timeoutlen`/`timeout` control native mapping waits; `guioptions` maps `m` to menu
+visibility and `a` to automatic selection. Other native mappings and limitations
+are described in the profile.
 Set `VIEM_CONFIG_DIR` before launch for an isolated profile. Portable settings
 use the same JSON schema as macOS; unknown nested keys survive updates and
 invalid settings are not overwritten. Recovery uses separate owned swap files,

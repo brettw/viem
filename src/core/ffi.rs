@@ -48,6 +48,8 @@ mod html_export;
 pub use html_export::*;
 mod startup;
 mod ex_files;
+mod autocmds;
+pub use autocmds::*;
 pub use ex_files::*;
 pub use startup::*;
 
@@ -492,11 +494,18 @@ pub const VIEM_EX_FRONTEND_WINDOW: u32 = 22;
 pub const VIEM_EX_FRONTEND_NEW_PANE: u32 = 23;
 pub const VIEM_EX_FRONTEND_ARGUMENT: u32 = 24;
 pub const VIEM_EX_FRONTEND_READ: u32 = 25;
-pub const VIEM_EX_FRONTEND_SOURCE: u32 = 26;
 pub const VIEM_EX_FRONTEND_FILE: u32 = 27;
 pub const VIEM_EX_FRONTEND_ONLY: u32 = 28;
 /// Quit without writing; window_count carries the process exit status.
 pub const VIEM_EX_FRONTEND_CQUIT: u32 = 29;
+/// Select the application theme named by `text` (`:colorscheme`).
+pub const VIEM_EX_FRONTEND_THEME: u32 = 30;
+/// Apply a Vim option mapped onto an application setting; `text` is
+/// `name=value` in `:set` spelling, Booleans as `0` or `1`.
+pub const VIEM_EX_FRONTEND_APPLICATION_OPTION: u32 = 31;
+/// Single-use script acknowledgement token in `window_count`.
+pub const VIEM_EX_FRONTEND_SCRIPT_CONTINUATION: u32 = 32;
+pub const VIEM_EX_FRONTEND_STARTUP_APPLICATION: u32 = 1 << 15;
 
 pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
 pub const VIEM_WINDOW_FOCUS_UP: u32 = 2;
@@ -3492,7 +3501,10 @@ fn capture_ex_info_payloads(
             | ExFrontendRequest::Info(ExInfoRequest::Message(_))
             | ExFrontendRequest::File(_)
             | ExFrontendRequest::Window(_)
-            | ExFrontendRequest::Normal(_) => None,
+            | ExFrontendRequest::Application(_)
+            | ExFrontendRequest::StartupApplication(_)
+            | ExFrontendRequest::Normal(_)
+            | ExFrontendRequest::ScriptContinuation(_) => None,
         })
         .collect()
 }
@@ -3696,7 +3708,24 @@ fn export_ex_frontend_request(
         document_revision: document_revision.0,
         ..ViemExFrontendRequestV1::default()
     };
+    if matches!(request, ExFrontendRequest::StartupApplication(_)) {
+        output.flags |= VIEM_EX_FRONTEND_STARTUP_APPLICATION;
+    }
     match request {
+        ExFrontendRequest::ScriptContinuation(token) => {
+            output.kind = VIEM_EX_FRONTEND_SCRIPT_CONTINUATION;
+            output.window_count = *token;
+        }
+        ExFrontendRequest::Application(request) | ExFrontendRequest::StartupApplication(request) => match request {
+            crate::command::ex_execute::ApplicationRequest::Theme(name) => {
+                output.kind = VIEM_EX_FRONTEND_THEME;
+                output.text = push_effect_text(strings, name)?;
+            }
+            crate::command::ex_execute::ApplicationRequest::Option { name, value } => {
+                output.kind = VIEM_EX_FRONTEND_APPLICATION_OPTION;
+                output.text = push_effect_text(strings, &format!("{name}={value}"))?;
+            }
+        },
         ExFrontendRequest::Window(request) => {
             use crate::command::window::WindowRequest;
             output.kind = VIEM_EX_FRONTEND_WINDOW;
@@ -3783,10 +3812,6 @@ fn export_ex_frontend_request(
                 output.hard_line_start = checked_export_count(after.offset)?;
                 if after.source { output.flags |= VIEM_EX_FRONTEND_READ_SOURCE; }
                 set_ex_path(&mut output, strings, path.as_deref())?;
-            }
-            ExFileRequest::Source { path } => {
-                output.kind = VIEM_EX_FRONTEND_SOURCE;
-                set_ex_path(&mut output, strings, Some(path))?;
             }
             ExFileRequest::File { path, truncate } => {
                 output.kind = VIEM_EX_FRONTEND_FILE;
@@ -4612,7 +4637,7 @@ fn core_status(error: CoreError) -> ViemStatus {
             ViemStatus::PolicyRequired
         }
         CoreError::NoVisualSelection => ViemStatus::InvalidRange,
-        CoreError::StaleLogicalSelection => ViemStatus::StaleRevision,
+        CoreError::StaleLogicalSelection | CoreError::StaleScriptContinuation => ViemStatus::StaleRevision,
         _ => ViemStatus::CoreFailure,
     }
 }
@@ -10576,6 +10601,7 @@ pub unsafe extern "C" fn viem_core_copy_formatted_utf8(
 
 #[cfg(test)]
 mod tests {
+    mod script_tests;
     mod view_restoration_tests;
     mod prelayout_tests;
     mod html_export_tests;

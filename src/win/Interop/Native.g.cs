@@ -1545,10 +1545,13 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_FRONTEND_NEW_PANE = 23u;
     public const uint VIEM_EX_FRONTEND_ARGUMENT = 24u;
     public const uint VIEM_EX_FRONTEND_READ = 25u;
-    public const uint VIEM_EX_FRONTEND_SOURCE = 26u;
     public const uint VIEM_EX_FRONTEND_FILE = 27u;
     public const uint VIEM_EX_FRONTEND_ONLY = 28u;
     public const uint VIEM_EX_FRONTEND_CQUIT = 29u;
+    public const uint VIEM_EX_FRONTEND_THEME = 30u;
+    public const uint VIEM_EX_FRONTEND_APPLICATION_OPTION = 31u;
+    public const uint VIEM_EX_FRONTEND_SCRIPT_CONTINUATION = 32u;
+    public const uint VIEM_EX_FRONTEND_STARTUP_APPLICATION = (1u << 15);
     public const uint VIEM_ARGUMENT_NEXT = 1u;
     public const uint VIEM_ARGUMENT_PREVIOUS = 2u;
     public const uint VIEM_ARGUMENT_FIRST = 3u;
@@ -1964,9 +1967,6 @@ internal static unsafe partial class Native
     public const uint VIEM_DOCUMENT_MODE_MARKDOWN = 2u;
     public const uint VIEM_DOCUMENT_MODE_CODE = 3u;
     public static readonly uint VIEM_SET_DOCUMENT_MODE_V1_SIZE = ((uint)sizeof(ViemSetDocumentModeV1));
-    public const uint VIEM_SOURCE_MAX_BYTES = 1048576u;
-    public const uint VIEM_SOURCE_MAX_COMMANDS = 10000u;
-    public const uint VIEM_SOURCE_MAX_DEPTH = 16u;
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_parse_launch_arguments(byte* @input, ulong @input_length, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2370,5 +2370,13 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_read_file(ulong @core, ulong @view, ulong @document_id, ulong @revision, uint @source, ulong @after_offset, byte* @bytes, ulong @length, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_source_line(ulong @core, ulong @view, uint @depth, byte* @text, ulong @length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    public static extern uint viem_core_view_execute_command_line(ulong @core, ulong @view, byte* @text, ulong @length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_fire_autocmd(ulong @core, ulong @view, byte* @event, ulong @event_length, byte* @matched, ulong @matched_length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_resume_script(ulong @core, ulong @view, ulong @token, uint @success, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_take_startup_effects(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_set_theme_names(byte* @names, ulong @length);
 }

@@ -50,6 +50,7 @@ pub struct VimPattern {
     pub(super) minimum_chars: usize,
     start_marker: Vec<usize>,
     end_marker: Vec<usize>,
+    registers: Vec<usize>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VimRegexMatch {
@@ -217,6 +218,7 @@ impl VimPattern {
             source: source.into(),
             start_marker: translation.starts,
             end_marker: translation.ends,
+            registers: translation.registers,
             eol,
             minimum_chars,
         })
@@ -233,6 +235,10 @@ impl VimPattern {
         } else {
             Self::compile_with_keyword(&self.source, self.ignore_case, limits, keyword)
         }
+    }
+    /// Capture indexes of `\1`..`\9`: the user's `\(...\)` groups in order.
+    pub fn register_captures(&self) -> &[usize] {
+        &self.registers
     }
     pub fn memory_usage(&self) -> usize {
         self.nfa.as_ref().map_or(0, |nfa| nfa.memory_usage())

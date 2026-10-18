@@ -2,24 +2,11 @@
 use super::*;
 
 impl<P: TextMeasurementProvider> Core<P> {
-    pub fn finish_sourced_line(&mut self, view: ViewId) {
-        if let Some(target) = self.views.get_mut(&view) {
-            target.commands.finish_sourced_line();
-        }
-    }
-
-    pub fn queue_sourced_line(
-        &mut self,
-        view: ViewId,
-        text: &str,
-        depth: u32,
-    ) -> Result<bool, String> {
-        let target = self
-            .views
-            .get_mut(&view)
-            .ok_or("source view is no longer available")?;
+    /// Stage a command line as if typed after `:`; dispatching Enter runs it.
+    pub fn stage_command_line(&mut self, view: ViewId, text: &str) -> Result<(), String> {
+        let target = self.views.get_mut(&view).ok_or("command view is no longer available")?;
         target.commands.install_buffer_state(&self.buffer_commands);
-        target.commands.queue_sourced_line(text, depth)
+        target.commands.stage_command_line(text)
     }
 
     pub(super) fn complete_read_file(

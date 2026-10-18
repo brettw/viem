@@ -347,11 +347,19 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_NEW_PANE 23u
 #define VIEM_EX_FRONTEND_ARGUMENT 24u
 #define VIEM_EX_FRONTEND_READ 25u
-#define VIEM_EX_FRONTEND_SOURCE 26u
 #define VIEM_EX_FRONTEND_FILE 27u
 #define VIEM_EX_FRONTEND_ONLY 28u
 /* Quit without writing; window_count carries the process exit status. */
 #define VIEM_EX_FRONTEND_CQUIT 29u
+/* Select the application theme named by text (`:colorscheme`). */
+#define VIEM_EX_FRONTEND_THEME 30u
+/* A Vim option mapped onto an application setting; text is `name=value` in
+   `:set` spelling, Booleans as 0 or 1. */
+#define VIEM_EX_FRONTEND_APPLICATION_OPTION 31u
+/* Single-use acknowledgement token in window_count; always last in its batch. */
+#define VIEM_EX_FRONTEND_SCRIPT_CONTINUATION 32u
+/* Apply startup application configuration only for the first document. */
+#define VIEM_EX_FRONTEND_STARTUP_APPLICATION (1u << 15)
 #define VIEM_ARGUMENT_NEXT 1u
 #define VIEM_ARGUMENT_PREVIOUS 2u
 #define VIEM_ARGUMENT_FIRST 3u
@@ -3054,18 +3062,35 @@ ViemStatus viem_core_view_copy_layout_diagnostics(ViemCoreHandle core, ViemViewI
    runs, including undefined names. Does not parse, publish, or scan source. */
 ViemStatus viem_core_copy_syntax_style_names(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 
-/* Host-loaded Ex continuations. Source files are UTF-8, at most 1 MiB,
-   with at most 10,000 executed lines per invocation and 16 nested files. */
-#define VIEM_SOURCE_MAX_BYTES 1048576u
-#define VIEM_SOURCE_MAX_COMMANDS 10000u
-#define VIEM_SOURCE_MAX_DEPTH 16u
+/* Host-loaded `:read` continuation. */
 ViemStatus viem_core_view_read_file(ViemCoreHandle core, ViemViewId view,
     uint64_t document_id, uint64_t revision, uint32_t source, uint64_t after_offset,
     const uint8_t *bytes, uint64_t length, ViemCoreOutcomeV1 *out_outcome);
-ViemStatus viem_core_view_source_line(ViemCoreHandle core, ViemViewId view,
-    uint32_t depth, const uint8_t *text, uint64_t length,
+/* Run one command line as if typed after `:` (Vim script: `|`-separated
+   commands, :let, :call, :source). The view must be in Normal mode. */
+ViemStatus viem_core_view_execute_command_line(ViemCoreHandle core, ViemViewId view,
+    const uint8_t *text, uint64_t length,
     const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
     ViemEffectBatchHandle *out_effects);
+/* Fire a native lifecycle event. Call BufWritePre before capturing save
+   bytes and BufWritePost only after a successful write. Empty match uses
+   the buffer filename. Returns ordinary command effects. */
+ViemStatus viem_core_view_fire_autocmd(ViemCoreHandle core, ViemViewId view,
+    const uint8_t *event, uint64_t event_length,
+    const uint8_t *matched, uint64_t matched_length,
+    const ViemCommandTurnContextV2 *context, ViemCoreOutcomeV1 *out_outcome,
+    ViemEffectBatchHandle *out_effects);
+/* Resume after all preceding native requests succeed, or cancel on failure.
+   Pass the original core/view and returned token. Stale tokens are rejected. */
+ViemStatus viem_core_view_resume_script(ViemCoreHandle core, ViemViewId view,
+    uint64_t token, uint32_t success, const ViemCommandTurnContextV2 *context,
+    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+/* Drain startup application effects once the first native view exists. */
+ViemStatus viem_core_view_take_startup_effects(ViemCoreHandle core, ViemViewId view,
+    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+/* Replace the theme names `:colorscheme` matches, ignoring case: UTF-8
+   names separated by NUL bytes. Call at startup and when themes change. */
+ViemStatus viem_set_theme_names(const uint8_t *names, uint64_t length);
 
 #ifdef __cplusplus
 }

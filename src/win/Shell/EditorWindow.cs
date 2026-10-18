@@ -83,6 +83,10 @@ internal sealed partial class EditorWindow : Window
                 activePane.Run(() => styleInspector?.FollowActiveView(view));
             foreach (var pane in Panes) { pane.CaretHoverFocusChanged(); pane.Canvas.Invalidate(); }
             if (IsWindowActive) RequestExternalFileChecks();
+            if (ActivePane is { View: { } focusView } focusPane) Safe(async () => {
+                if (focusView.FireAutocmd(IsWindowActive ? "FocusGained" : "FocusLost") is { } effects)
+                    await ExecuteEffects(focusPane, effects, focusView);
+            });
         };
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
@@ -417,7 +421,7 @@ internal sealed partial class EditorWindow : Window
                 var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme, Title = "Existing editing session", Content = content, PrimaryButtonText = "Open", CloseButtonText = "Cancel" };
                 ContentDialogResult decision = ContentDialogResult.None;
                 await DeferExternalFileReviews(async () => { decision = await dialog.ShowAsync(); });
-                if (decision != ContentDialogResult.Primary) return;
+                if (decision != ContentDialogResult.Primary) throw new OperationCanceledException();
                 ValidateTarget();
                 readOnly = choices.SelectedIndex == 0;
                 if (choices.SelectedIndex == recoverIndex && recoveryCandidate != null)
@@ -523,6 +527,10 @@ internal sealed partial class EditorWindow : Window
         }
         else if (File.Exists(path) && explicitPath != null && !samePath && !force)
         { if (await Dialog("Replace file?", $"{path} already exists.", "Replace", "Cancel") != ContentDialogResult.Primary) return false; }
+        if (pane.View.FireAutocmd("BufWritePre", path) is { } beforeEffects && !await ExecuteEffects(pane, beforeEffects, pane.View))
+            throw new OperationCanceledException();
+        if (pane.View.Outcome.command_status is not (VIEM_COMMAND_STATUS_NONE or VIEM_COMMAND_STATUS_COMPLETE))
+            throw new InvalidOperationException("BufWritePre autocommands failed.");
         var state = doc.State; byte[] bytes = doc.Source(state.document_revision);
         DocumentRecovery? replacementRecovery = null;
         try
@@ -546,6 +554,7 @@ internal sealed partial class EditorWindow : Window
             if (!samePath) doc.RedetectLanguage();
             preferences.Remember(path);
         }
+        if (pane.View.FireAutocmd("BufWritePost", path) is { } afterEffects) await ExecuteEffects(pane, afterEffects, pane.View);
         pane.SetMessage($"Saved {Path.GetFileName(path)}"); UpdateTitle();
         return true;
     }
@@ -610,11 +619,14 @@ internal sealed partial class EditorWindow : Window
     {
         GlobalSelectionOptions.Observe(pane.Document, effects.SelectionOptions);
         Task previous = effectQueue;
-        async Task Next() { await previous; await ExecuteEffects(pane, effects, 0); }
+        var origin = pane.View;
+        async Task Next() { await previous; await ExecuteEffects(pane, effects, origin); }
         return effectQueue = Next();
     }
-    private async Task ExecuteEffects(EditorPane pane, HostEffects effects, uint sourceDepth)
+    private async Task<bool> ExecuteEffects(EditorPane pane, HostEffects effects, CoreView? origin)
     {
+            var continuation = effects.Requests.LastOrDefault(request => request.Value.kind == VIEM_EX_FRONTEND_SCRIPT_CONTINUATION);
+            bool succeeded = false;
             try
             {
                 if (effects.Output.Length > 0) pane.ShowCommandOutput(string.Join("\n", effects.Output));
@@ -623,9 +635,10 @@ internal sealed partial class EditorWindow : Window
                     var r = request.Value; bool force = (r.flags & VIEM_EX_FRONTEND_FORCE) != 0;
                     // Reload retains the pane but replaces its document. A
                     // queued command still belongs to the document that emitted it.
-                    if (pane.View == null || r.document_id != pane.Document.State.document_id) break;
+                    if (pane.View != origin || pane.View == null || r.document_id != pane.Document.State.document_id) throw new OperationCanceledException();
                     switch (r.kind)
                     {
+                        case VIEM_EX_FRONTEND_SCRIPT_CONTINUATION: break;
                         case VIEM_EX_FRONTEND_SPLIT:
                             if (request.Text.Length > 0) await OpenPath(request.Text, true, force, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, vertical: (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0, targetPane: pane);
                             else SplitPane(pane, pane.Document, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0);
@@ -634,32 +647,38 @@ internal sealed partial class EditorWindow : Window
                             RequireSplitRoom(pane, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0);
                             SplitPane(pane, NewDocument(), (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0);
                             break;
-                        case VIEM_EX_FRONTEND_NEW: if (force || await ConfirmDiscard(pane)) AddPane(NewDocument(), replacing: pane); break;
+                        case VIEM_EX_FRONTEND_NEW:
+                            if (!force && !await ConfirmDiscard(pane)) throw new OperationCanceledException();
+                            AddPane(NewDocument(), replacing: pane); break;
                         case VIEM_EX_FRONTEND_EDIT: if (request.Text.Length > 0 && !string.Equals(ResolvePath(request.Text), pane.Document.FilePath, StringComparison.OrdinalIgnoreCase)) await OpenPath(request.Text, false, force, targetPane: pane); else if (pane.Document.FilePath != null) await Reload(pane, force); break;
                         case VIEM_EX_FRONTEND_EDIT_NEW_WINDOW:
                             if (request.Text.Length > 0) await OpenPath(request.Text, targetPane: pane, newWindow: true);
                             else NewWindow(null);
                             break;
-                        case VIEM_EX_FRONTEND_WRITE: case VIEM_EX_FRONTEND_SAVE_AS: await ExWrite(pane, request); break;
-                        case VIEM_EX_FRONTEND_QUIT: await ClosePane(pane, force); break;
+                        case VIEM_EX_FRONTEND_WRITE: case VIEM_EX_FRONTEND_SAVE_AS:
+                            if (!await ExWrite(pane, request)) throw new OperationCanceledException(); break;
+                        case VIEM_EX_FRONTEND_QUIT:
+                            await ClosePane(pane, force); if (!closed && Panes.Contains(pane)) throw new OperationCanceledException(); break;
                         case VIEM_EX_FRONTEND_CQUIT:
                             int exitCode = unchecked((int)r.window_count);
                             App.Instance.BlockingEdits.Abort(exitCode);
                             foreach (var w in App.Instance.Windows.ToArray()) { w.closing = true; w.Close(); }
                             Environment.Exit(exitCode);
                             break;
-                        case VIEM_EX_FRONTEND_QUIT_ALL: foreach (var w in App.Instance.Windows.ToArray()) { if (force) { w.closing = true; w.Close(); } else await w.RequestClose(); } break;
+                        case VIEM_EX_FRONTEND_QUIT_ALL: foreach (var w in App.Instance.Windows.ToArray()) { if (force) { w.closing = true; w.Close(); } else { await w.RequestClose(); if (!w.closing) throw new OperationCanceledException(); } } break;
                         case VIEM_EX_FRONTEND_WRITE_QUIT: case VIEM_EX_FRONTEND_XIT:
                             if (r.kind == VIEM_EX_FRONTEND_WRITE_QUIT || pane.Document.IsDirty || request.Text.Length > 0)
-                                if (!await ExWrite(pane, request)) break;
-                            if (pane.Document.State.document_revision != r.document_revision) throw new InvalidOperationException("The file was saved, but newer edits remain open.");
+                                if (!await ExWrite(pane, request)) throw new OperationCanceledException();
+                            if (pane.Document.IsDirty) throw new InvalidOperationException("The file was saved, but newer edits remain open.");
                             await ClosePane(pane, true); break;
-                        case VIEM_EX_FRONTEND_WRITE_ALL: foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).DistinctBy(p => p.Document).Where(p => p.Document.IsDirty).ToArray()) await Save(doc, false, null, force, native: false); break;
+                        case VIEM_EX_FRONTEND_WRITE_ALL: foreach (var doc in App.Instance.Windows.SelectMany(w => w.Panes).DistinctBy(p => p.Document).Where(p => p.Document.IsDirty).ToArray()) if (!await Save(doc, false, null, force, native: false)) throw new OperationCanceledException(); break;
                         case VIEM_EX_FRONTEND_WINDOW:
                             if (r.window_command == VIEM_WINDOW_RESIZE_INDEXED) ResizeWindow(pane, r.argument_count, (r.flags & VIEM_EX_FRONTEND_VERTICAL) != 0, r.argument_command, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : null);
                             else await WindowCommand(pane, r.window_command, (r.flags & VIEM_EX_FRONTEND_HAS_COUNT) != 0 ? r.window_count : 0);
                             break;
-                        case VIEM_EX_FRONTEND_ONLY: await WindowCommand(pane, VIEM_WINDOW_CLOSE_OTHERS, 1); break;
+                        case VIEM_EX_FRONTEND_ONLY:
+                            await WindowCommand(pane, VIEM_WINDOW_CLOSE_OTHERS, 1);
+                            if (Panes.Any(other => other != pane)) throw new OperationCanceledException(); break;
                         case VIEM_EX_FRONTEND_PWD: pane.SetMessage(Environment.CurrentDirectory); break;
                         case VIEM_EX_FRONTEND_CD: ChangeDirectory(pane, ResolvePath(request.Text)); break;
                         case VIEM_EX_FRONTEND_FILE: if (request.Text.Length > 0) await RenameDocument(pane, ResolvePath(request.Text)); UpdateTitle(); break;
@@ -672,35 +691,42 @@ internal sealed partial class EditorWindow : Window
                                 : ResolvePath(request.Text);
                             byte[] read = await File.ReadAllBytesAsync(readPath);
                             pane.View.ReadFile(read, r.document_id, r.document_revision, r.hard_line_start, (r.flags & VIEM_EX_FRONTEND_READ_SOURCE) != 0); break;
-                        case VIEM_EX_FRONTEND_SOURCE:
-                            if (sourceDepth >= 16) throw new InvalidOperationException("Maximum :source nesting depth reached.");
-                            string scriptPath = ResolvePath(request.Text);
-                            if (new FileInfo(scriptPath).Length > 1_048_576) throw new InvalidOperationException(":source files are limited to 1 MiB.");
-                            string source = await File.ReadAllTextAsync(scriptPath, new System.Text.UTF8Encoding(false, true));
-                            var commands = source.Split('\n'); if (commands.Length > 10_000) throw new InvalidOperationException(":source is limited to 10,000 lines.");
-                            foreach (string line in commands)
-                            {
-                                var effectsFromLine = pane.View.SourceLine(line.TrimEnd('\r'), sourceDepth + 1);
-                                if (effectsFromLine != null) {
-                                    GlobalSelectionOptions.Observe(pane.Document, effectsFromLine.SelectionOptions);
-                                    await ExecuteEffects(pane, effectsFromLine, sourceDepth + 1);
-                                }
-                                if (pane.View == null) break;
-                            }
+                        case VIEM_EX_FRONTEND_THEME:
+                            // `:colorscheme`: the core matched the name against the published catalogue.
+                            preferences.SelectTheme(string.Equals(request.Text, "Default", StringComparison.OrdinalIgnoreCase) ? null : request.Text);
+                            break;
+                        case VIEM_EX_FRONTEND_APPLICATION_OPTION:
+                            ApplyScriptApplicationOption(pane, request.Text);
                             break;
                         case VIEM_EX_FRONTEND_CHECKTIME: await CheckExternalChanges(); break;
                     }
                 }
+                succeeded = true;
             }
-            catch (OperationCanceledException) { if (sourceDepth > 0) throw; }
+            catch (OperationCanceledException) { }
             catch (Exception e) { pane.Report(e); }
+            finally
+            {
+                if (continuation != null && origin is { Id: not 0 } && origin.Document.Handle != 0)
+                {
+                    bool accept = succeeded;
+                    // Re-enter on the dispatcher only after this batch has left
+                    // the queue. Synchronous :pwd loops cannot grow the stack.
+                    DispatcherQueue.TryEnqueue(() => {
+                        bool same = !closed && Panes.Contains(pane) && ActivePane == pane && pane.View == origin;
+                        try { origin.ResumeScript(continuation.Value.window_count, accept && same); }
+                        catch (Exception error) { if (pane.View == origin) pane.Report(error); }
+                    });
+                }
+            }
+            return succeeded;
     }
     private async Task Reload(EditorPane pane, bool force = false, byte[]? reviewedBytes = null)
     {
         var old = pane.Document;
         string? path = old.FilePath; if (path == null) return;
         var expected = old.State;
-        if (!force && old.IsDirty && await Dialog("Revert to saved file?", "Unsaved changes will be discarded.", "Revert", "Cancel") != ContentDialogResult.Primary) return;
+        if (!force && old.IsDirty && await Dialog("Revert to saved file?", "Unsaved changes will be discarded.", "Revert", "Cancel") != ContentDialogResult.Primary) throw new OperationCanceledException();
         byte[] bytes = reviewedBytes ?? await File.ReadAllBytesAsync(path);
         if (old.Handle == 0 || old.FilePath != path || old.State.document_revision != expected.document_revision) return;
         var replacement = NewDocument(bytes, path, expected.format);
@@ -763,7 +789,8 @@ internal sealed partial class EditorWindow : Window
             case VIEM_WINDOW_MOVE_TO_LEFT: paneGrid.Action(pane, 4, 2); SyncPaneOrder(); break;
             case VIEM_WINDOW_MOVE_TO_RIGHT: paneGrid.Action(pane, 4, 3); SyncPaneOrder(); break;
             case VIEM_WINDOW_EXCHANGE: paneGrid.Action(pane, 3, count); SyncPaneOrder(); break;
-            case VIEM_WINDOW_CLOSE_OTHERS: foreach (var p in Panes.Where(p => p != pane).ToArray()) await ClosePane(p); break;
+            case VIEM_WINDOW_CLOSE_OTHERS:
+                foreach (var p in Panes.Where(p => p != pane).ToArray()) { await ClosePane(p); if (Panes.Contains(p)) throw new OperationCanceledException(); } break;
             case VIEM_WINDOW_EQUALIZE_HEIGHTS: paneGrid.Equalize(); break;
             case VIEM_WINDOW_EQUALIZE_HEIGHT_ONLY: paneGrid.Equalize(1); break;
             case VIEM_WINDOW_EQUALIZE_WIDTH_ONLY: paneGrid.Equalize(2); break;

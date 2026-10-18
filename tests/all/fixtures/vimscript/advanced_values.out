@@ -1,0 +1,23 @@
+
+['value 42', '  nested {literal} OK']
+['{amount} remains literal', '  \ continued-looking text']
+[[1, 3], {'x': [2]}]
+E741
+E741
+[[1, 3], {'x': [5]}]
+pre:first:value
+pre:changed:again
+[3, 2, 1]
+[1, 3, 4] [1, 3, 4]
+42 1 0
+1 1 0
+2 1 1 0
+'
+captured text'
+'
+tail'
+line 65:
+E743: Variable nested too deep for (un)lock
+line 66:
+E743: Variable nested too deep for (un)lock
+2 ok

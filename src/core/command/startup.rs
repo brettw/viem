@@ -178,74 +178,41 @@ pub struct StartupDiagnostic {
 }
 
 impl super::CommandInterpreter {
-    /// Execute configuration-only Ex lines without allowing startup to change
-    /// the source artifact or invoke host file/window actions.
+    /// Run `startup.viem` as Vim script. Startup may configure options,
+    /// mappings, abbreviations, variables, functions, commands and
+    /// autocommands, but cannot change the source artifact or invoke host
+    /// file/window actions. Errors become diagnostics with their line and
+    /// later lines still run, as in Vim.
     pub fn configure_startup(
         &mut self,
         document: &mut crate::document::Document,
         text: &str,
     ) -> Vec<StartupDiagnostic> {
-        use super::{
-            ex::{ExAction, OptionAction, SetOperation},
-            CommandStatus,
-        };
-        let mut diagnostics = Vec::new();
-        for (index, line) in text
-            .strip_prefix('\u{feff}')
-            .unwrap_or(text)
-            .lines()
-            .enumerate()
-        {
-            let line = line.trim_start();
-            if line.is_empty() || line.starts_with('"') {
-                continue;
-            }
-            let result = if let Some(result) = self.mappings.execute(line) {
-                result
-            } else {
-                (|| {
-                    let command = super::ex::parse_ex(line).map_err(|error| error.to_string())?;
-                    if command.action == ExAction::NoHighlight {
-                        self.search_highlight_suppressed = true;
-                        return Ok(());
-                    }
-                    let ExAction::Set(set) = &command.action else {
-                        return Err("startup supports mapping commands, set, setlocal, and nohlsearch".into());
-                    };
-                    if let SetOperation::Options(options) = &set.operation {
-                        if options.iter().any(|option| {
-                            ["fileformat", "ff", "fileformats", "ffs"]
-                                .iter()
-                                .any(|name| option.name.eq_ignore_ascii_case(name))
-                                && option.action != OptionAction::Query
-                        }) {
-                            return Err("startup cannot change fileformat or configure the fileformats file-opening policy".into());
-                        }
-                    }
-                    let output = self.execute_ex_command(document, line);
-                    match output.status {
-                        CommandStatus::Complete => Ok(()),
-                        CommandStatus::Error(message) | CommandStatus::Unsupported(message) => {
-                            Err(message)
-                        }
-                        CommandStatus::ExError(super::ExCommandError::Parse(error)) => {
-                            Err(error.to_string())
-                        }
-                        CommandStatus::ExError(super::ExCommandError::Execute(error)) => {
-                            Err(error.to_string())
-                        }
-                        status => Err(format!("startup command failed: {status:?}")),
-                    }
-                })()
-            };
-            if let Err(message) = result {
-                diagnostics.push(StartupDiagnostic {
-                    line: index + 1,
-                    message,
-                });
-            }
+        self.configure_startup_with_effects(document, text).0
+    }
+
+    pub(crate) fn configure_startup_with_effects(
+        &mut self, document: &mut crate::document::Document, text: &str,
+    ) -> (Vec<StartupDiagnostic>, Vec<super::ex_execute::ExFrontendRequest>) {
+        use crate::vimscript::Runtime;
+        let mut runtime = Runtime::new(self.script.clone());
+        runtime.restricted = true;
+        if let Err(error) = runtime.push_script("startup.viem", text.as_bytes()) {
+            return (vec![StartupDiagnostic { line: 1, message: error.text() }], Vec::new());
         }
-        diagnostics
+        self.script_depth += 1;
+        let mut host = super::scripting::InterpreterHost::new(self, document);
+        host.startup = true;
+        runtime.run(&mut host);
+        host.commands.script_depth -= 1;
+        let effects = host.merged.take().and_then(|output| output.ex_outcome)
+            .map(|outcome| outcome.frontend_requests).unwrap_or_default();
+        let diagnostics = runtime
+            .errors
+            .iter()
+            .map(|error| StartupDiagnostic { line: error.lnum.unwrap_or(1), message: error.error.text() })
+            .collect();
+        (diagnostics, effects)
     }
 
     pub(crate) fn startup_view_options(&self) -> (bool, super::VisibleWhitespaceSetting, bool) {

@@ -1,0 +1,25 @@
+
+2
+abc
+1 2 1 2 [3, 4]
+[10, 20, 30]
+v w 6
+0
+[20, 30]
+g g 1 1
+0
+one
+two
+const: Vim(let):E741: Value is locked: c1
+['first', '  second', 'third']
+['  kept  indentation']
+4 4
+register
+register more
+1
+set
+locked: Vim(call):E741: Value is locked: add() argument
+[1, 2, 3, 4]
+0
+line 77:
+E121: Undefined variable: l:

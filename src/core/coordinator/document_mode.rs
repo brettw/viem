@@ -157,6 +157,7 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     pub(super) fn set_document_mode(&mut self, view: ViewId, document: DocumentId, revision: Revision,
                                    mode: DocumentMode) -> Result<CoreOutcome, CoreError> {
+        let previous_filetype = self.reflow_language();
         let automatic = self.detect_code_language(&LanguageSelection::Automatic);
         let target = match &mode {
             DocumentMode::PlainText => Format::PlainText,
@@ -192,6 +193,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         // Syntax changes are presentation only, including selecting another
         // language while already in Code. Native observers still refresh.
         outcome.layout_changed = true;
+        if previous_filetype != self.reflow_language() {
+            if let Some(fired) = self.fire_autocmds(view, &["FileType"])? {
+                let mut combined = CoreOutcomeAccumulator::new(outcome);
+                combined.merge(fired)?;
+                outcome = combined.finish();
+            }
+        }
         Ok(outcome)
     }
 }

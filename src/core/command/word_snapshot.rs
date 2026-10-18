@@ -2,15 +2,16 @@
 //! whole-document text or per-grapheme vector is retained by a command.
 use super::text::{class_for, WordClass};
 use crate::document::HardLineSnapshot;
+use super::options::KeywordSet;
 
-fn class(lines: &HardLineSnapshot, at: usize, big: bool) -> WordClass {
+fn class(lines: &HardLineSnapshot, at: usize, big: bool, keywords: &KeywordSet) -> WordClass {
     let chunk = lines.byte_chunk_at(at);
     let width = chunk.first().map_or(0, |byte| match byte { 0..=127 => 1, 128..=223 => 2, 224..=239 => 3, _ => 4 });
     let character = std::str::from_utf8(&chunk[..width]).expect("tree leaves are UTF-8").chars().next();
     class_for(big, match character {
         None => WordClass::White,
         Some(c) if c.is_whitespace() => WordClass::White,
-        Some(c) if c.is_alphanumeric() || c == '_' => WordClass::Keyword,
+        Some(c) if keywords.contains(c) => WordClass::Keyword,
         Some(_) => WordClass::Punctuation,
     })
 }
@@ -34,8 +35,13 @@ fn needs_item_boundary<'a>(lines: &'a HardLineSnapshot, mut at: usize, mut len: 
     false
 }
 
-pub(super) fn forward(lines: &HardLineSnapshot, at: usize, big: bool, count: usize) -> usize {
-    let mut items = ForwardGraphemes::new(lines, at).peekable();
+#[cfg(test)]
+fn forward(lines: &HardLineSnapshot, at: usize, big: bool, count: usize) -> usize {
+    forward_with_keywords(lines, at, big, count, super::options::VimOptions::default().keywords())
+}
+
+pub(super) fn forward_with_keywords(lines: &HardLineSnapshot, at: usize, big: bool, count: usize, keywords: &KeywordSet) -> usize {
+    let mut items = ForwardGraphemes::new(lines, at, keywords).peekable();
     let mut preceding_newline = at == 0 || lines.previous_grapheme_boundary(at).is_some_and(|p| newline(lines, p));
     for _ in 0..count.max(1) {
         let Some(current) = items.peek().copied() else { return lines.text_length(); };
@@ -53,13 +59,18 @@ pub(super) fn forward(lines: &HardLineSnapshot, at: usize, big: bool, count: usi
     items.peek().map_or(lines.text_length(), |item| item.at)
 }
 
-pub(super) fn end(lines: &HardLineSnapshot, at: usize, big: bool, count: usize, stop: bool) -> usize {
+#[cfg(test)]
+fn end(lines: &HardLineSnapshot, at: usize, big: bool, count: usize, stop: bool) -> usize {
+    end_with_keywords(lines, at, big, count, stop, super::options::VimOptions::default().keywords())
+}
+
+pub(super) fn end_with_keywords(lines: &HardLineSnapshot, at: usize, big: bool, count: usize, stop: bool, keywords: &KeywordSet) -> usize {
     let len = lines.text_length();
     if len == 0 { return 0; }
     let last = lines.previous_grapheme_boundary(len).unwrap_or(0);
     let at = if at >= len { last } else { at };
     let first = if stop { at } else { lines.next_grapheme_boundary(at).unwrap_or(len) };
-    let mut items = ForwardGraphemes::new(lines, first).peekable();
+    let mut items = ForwardGraphemes::new(lines, first, keywords).peekable();
     let mut last_nonwhite = at;
     for _ in 0..count.max(1) {
         while items.peek().is_some_and(|item| item.class == WordClass::White) { items.next(); }
@@ -80,14 +91,15 @@ pub(super) fn end(lines: &HardLineSnapshot, at: usize, big: bool, count: usize, 
 
 struct ForwardGraphemes<'a> {
     lines: &'a HardLineSnapshot,
+    keywords: &'a KeywordSet,
     cursor: unicode_segmentation::GraphemeCursor,
     chunk: &'a str,
     start: usize,
 }
 
 impl<'a> ForwardGraphemes<'a> {
-    fn new(lines: &'a HardLineSnapshot, at: usize) -> Self {
-        Self { lines, cursor: unicode_segmentation::GraphemeCursor::new(at, lines.text_length(), true),
+    fn new(lines: &'a HardLineSnapshot, at: usize, keywords: &'a KeywordSet) -> Self {
+        Self { lines, keywords, cursor: unicode_segmentation::GraphemeCursor::new(at, lines.text_length(), true),
             chunk: std::str::from_utf8(lines.byte_chunk_at(at)).expect("grapheme boundary in UTF-8 leaf"), start: at }
     }
 }
@@ -103,7 +115,7 @@ impl Iterator for ForwardGraphemes<'_> {
             self.chunk = std::str::from_utf8(self.lines.byte_chunk_at(at)).expect("UTF-8 leaf");
         }
         let tail = &self.chunk[at - self.start..];
-        let mut item = WordRun::new(at, tail.chars().next().expect("following grapheme"));
+        let mut item = WordRun::new(at, tail.chars().next().expect("following grapheme"), self.keywords);
         // Adjacent ASCII scalars are independent graphemes, apart from CRLF.
         // Stop before the final ASCII byte beside non-ASCII text or a leaf
         // boundary: a following combining scalar may join that last byte.
@@ -111,7 +123,7 @@ impl Iterator for ForwardGraphemes<'_> {
         let mut skip = 0;
         while skip + 1 < bytes.len() && bytes[skip].is_ascii() && bytes[skip + 1].is_ascii()
             && !matches!(bytes[skip], b'\r' | b'\n')
-            && WordRun::new(0, bytes[skip] as char).class == item.class {
+            && WordRun::new(0, bytes[skip] as char, self.keywords).class == item.class {
             skip += 1;
         }
         if skip > 0 {
@@ -124,7 +136,7 @@ impl Iterator for ForwardGraphemes<'_> {
                 Ok(Some(end)) => {
                     if needs_item_boundary(self.lines, at, end - at, tail.as_bytes()) {
                         let end = self.lines.next_grapheme_boundary(at).expect("following logical item");
-                        *self = Self::new(self.lines, end);
+                        *self = Self::new(self.lines, end, self.keywords);
                     }
                     return Some(item);
                 },
@@ -148,6 +160,7 @@ impl Iterator for ForwardGraphemes<'_> {
 /// when a cluster or a regional-indicator sequence crosses a leaf boundary.
 struct ReverseGraphemes<'a> {
     lines: &'a HardLineSnapshot,
+    keywords: &'a KeywordSet,
     cursor: unicode_segmentation::GraphemeCursor,
     chunk: &'a str,
     start: usize,
@@ -157,18 +170,18 @@ struct ReverseGraphemes<'a> {
 struct WordRun { at: usize, last: usize, class: WordClass, newline: bool }
 
 impl WordRun {
-    fn new(at: usize, character: char) -> Self {
+    fn new(at: usize, character: char, keywords: &KeywordSet) -> Self {
         let class = if character.is_whitespace() { WordClass::White }
-            else if character.is_alphanumeric() || character == '_' { WordClass::Keyword }
+            else if keywords.contains(character) { WordClass::Keyword }
             else { WordClass::Punctuation };
         Self { at, last: at, class, newline: character == '\n' }
     }
 }
 
 impl<'a> ReverseGraphemes<'a> {
-    fn new(lines: &'a HardLineSnapshot, at: usize) -> Self {
+    fn new(lines: &'a HardLineSnapshot, at: usize, keywords: &'a KeywordSet) -> Self {
         let bytes = lines.byte_chunk_before(at);
-        Self { lines, cursor: unicode_segmentation::GraphemeCursor::new(at, lines.text_length(), true),
+        Self { lines, keywords, cursor: unicode_segmentation::GraphemeCursor::new(at, lines.text_length(), true),
             chunk: std::str::from_utf8(bytes).expect("grapheme boundary in UTF-8 leaf"), start: at - bytes.len() }
     }
 }
@@ -182,13 +195,13 @@ impl Iterator for ReverseGraphemes<'_> {
         let bytes = self.chunk.as_bytes();
         if local >= 2 && bytes[local - 1].is_ascii() && bytes[local - 2].is_ascii()
             && !matches!(bytes[local - 1], b'\r' | b'\n') {
-            let mut item = WordRun::new(end - 1, bytes[local - 1] as char);
+            let mut item = WordRun::new(end - 1, bytes[local - 1] as char, self.keywords);
             let mut first = local - 1;
             // Keep an ASCII predecessor as proof that the new run boundary
             // is not inside a grapheme beginning in preceding Unicode text.
             while first >= 2 && bytes[first - 2].is_ascii() && bytes[first - 1].is_ascii()
                 && !matches!(bytes[first - 1], b'\r' | b'\n')
-                && WordRun::new(0, bytes[first - 1] as char).class == item.class {
+                && WordRun::new(0, bytes[first - 1] as char, self.keywords).class == item.class {
                 first -= 1;
             }
             item.at = self.start + first;
@@ -203,12 +216,12 @@ impl Iterator for ReverseGraphemes<'_> {
                     } else { &self.chunk[at - self.start..] };
                     if needs_item_boundary(self.lines, at, end - at, tail.as_bytes()) {
                         let at = self.lines.previous_grapheme_boundary(end).expect("preceding logical item");
-                        *self = Self::new(self.lines, at);
+                        *self = Self::new(self.lines, at, self.keywords);
                         let tail = std::str::from_utf8(self.lines.byte_chunk_at(at)).expect("UTF-8 leaf");
-                        return Some(WordRun::new(at, tail.chars().next().expect("preceding logical item")));
+                        return Some(WordRun::new(at, tail.chars().next().expect("preceding logical item"), self.keywords));
                     }
                     let character = tail.chars().next().expect("preceding grapheme");
-                    return Some(WordRun::new(at, character));
+                    return Some(WordRun::new(at, character, self.keywords));
                 }
                 Ok(None) => return None,
                 Err(GraphemeIncomplete::PrevChunk) => {
@@ -226,8 +239,13 @@ impl Iterator for ReverseGraphemes<'_> {
     }
 }
 
-pub(super) fn backward(lines: &HardLineSnapshot, at: usize, big: bool, count: usize) -> usize {
-    let mut previous = ReverseGraphemes::new(lines, at).peekable();
+#[cfg(test)]
+fn backward(lines: &HardLineSnapshot, at: usize, big: bool, count: usize) -> usize {
+    backward_with_keywords(lines, at, big, count, super::options::VimOptions::default().keywords())
+}
+
+pub(super) fn backward_with_keywords(lines: &HardLineSnapshot, at: usize, big: bool, count: usize, keywords: &KeywordSet) -> usize {
+    let mut previous = ReverseGraphemes::new(lines, at, keywords).peekable();
     let Some(mut current) = previous.next() else { return 0; };
     for iteration in 0..count.max(1) {
         if iteration > 0 {
@@ -251,9 +269,14 @@ pub(super) fn backward(lines: &HardLineSnapshot, at: usize, big: bool, count: us
     current.at
 }
 
-pub(super) fn end_backward(lines: &HardLineSnapshot, mut at: usize, big: bool, count: usize) -> usize {
-    let mut previous = ReverseGraphemes::new(lines, at);
-    let mut current_class = if at < lines.text_length() { class(lines, at, big) } else { WordClass::White };
+#[cfg(test)]
+fn end_backward(lines: &HardLineSnapshot, at: usize, big: bool, count: usize) -> usize {
+    end_backward_with_keywords(lines, at, big, count, super::options::VimOptions::default().keywords())
+}
+
+pub(super) fn end_backward_with_keywords(lines: &HardLineSnapshot, mut at: usize, big: bool, count: usize, keywords: &KeywordSet) -> usize {
+    let mut previous = ReverseGraphemes::new(lines, at, keywords);
+    let mut current_class = if at < lines.text_length() { class(lines, at, big, keywords) } else { WordClass::White };
     for _ in 0..count.max(1) {
         let mut candidate = previous.next();
         if current_class != WordClass::White {

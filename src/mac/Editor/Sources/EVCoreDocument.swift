@@ -616,7 +616,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             configurationWarning = ([configurationWarning].compactMap { $0 } + [warning]).joined(separator: "\n")
         }
         EVStartupPerformance.mark("core.styles.loaded")
-        let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile)
+        let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile, themeNames: configuration.availableThemeNames)
         try configureOptional("selection settings") { try EVSelectionPreferences.attach(self) }
         if !startupDiagnostics.isEmpty {
             configurationWarning = ([configurationWarning].compactMap { $0 } + startupDiagnostics).joined(separator: "\n")
@@ -1050,13 +1050,33 @@ final class EVCoreViewSession {
         return outcome
     }
 
-    func sourceLine(_ text: String, depth: UInt32) throws -> ViemCoreOutcomeV1 {
+    /// Run one command line as if typed after `:` (Vim script).
+    @discardableResult
+    func executeCommandLine(_ text: String) throws -> ViemCoreOutcomeV1 {
         let data = Data(text.utf8)
-        return try performHostEffectTurn("Execute sourced command") { outcome, effects in
+        return try performHostEffectTurn("Execute command line") { outcome, effects in
             withCommandTurnContext { context in
                 data.withUnsafeBytes { raw in
-                    viem_core_view_source_line(document.core, viewID, depth,
+                    viem_core_view_execute_command_line(document.core, viewID,
                         raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count), context, outcome, effects)
+                }
+            }
+        }
+    }
+
+    /// Fire a native lifecycle event through the same effect pipeline as input.
+    @discardableResult
+    func fireAutocmd(_ event: String, matched: String = "") throws -> ViemCoreOutcomeV1 {
+        let eventData = Data(event.utf8), matchedData = Data(matched.utf8)
+        return try performHostEffectTurn("Run \(event) autocommands") { outcome, effects in
+            withCommandTurnContext { context in
+                eventData.withUnsafeBytes { eventBytes in
+                    matchedData.withUnsafeBytes { matchedBytes in
+                        viem_core_view_fire_autocmd(document.core, viewID,
+                            eventBytes.bindMemory(to: UInt8.self).baseAddress, UInt64(eventBytes.count),
+                            matchedBytes.bindMemory(to: UInt8.self).baseAddress, UInt64(matchedBytes.count),
+                            context, outcome, effects)
+                    }
                 }
             }
         }
@@ -1147,6 +1167,31 @@ final class EVCoreViewSession {
         }
     }
 
+    func resumeScript(token: UInt64, success: Bool) throws {
+        guard viewID != 0, coreHandle == document.core else { return }
+        _ = try performHostEffectTurn("Continue Vim script") { outcome, effects in
+            withCommandTurnContext { context in
+                viem_core_view_resume_script(coreHandle, viewID, token, success ? 1 : 0, context, outcome, effects)
+            }
+        }
+    }
+
+    func takeStartupEffects() throws {
+        var outcome = ViemCoreOutcomeV1()
+        outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        var effects: ViemEffectBatchHandle = 0
+        let status = viem_core_view_take_startup_effects(document.core, viewID, &outcome, &effects)
+        var batch: EVHostEffectBatch?
+        if effects != 0 { batch = try copyAndReleaseHostEffectBatch(effects) }
+        try checked(status, operation: "Apply startup effects")
+        guard var batch else { return }
+        let options = document.configuration.scriptOptions
+        if options.startupApplicationOptionsApplied {
+            batch.exEffects.removeAll { $0.flags & UInt32(VIEM_EX_FRONTEND_STARTUP_APPLICATION) != 0 }
+        } else { options.startupApplicationOptionsApplied = true }
+        try commandTurnHost?.applyHostEffectBatch(batch)
+    }
+
     func hasPendingMapping() throws -> Bool {
         var pending: UInt8 = 0
         try checked(viem_core_view_has_pending_mapping(document.core, viewID, &pending),
@@ -1167,8 +1212,9 @@ final class EVCoreViewSession {
     private func scheduleMappingTimeout() {
         mappingTimer?.invalidate()
         mappingTimer = nil
-        guard viewID != 0, (try? hasPendingMapping()) == true else { return }
-        let timer = Timer(timeInterval: 1, repeats: false) { [weak self] _ in
+        let options = document.configuration.scriptOptions
+        guard options.timeout, viewID != 0, (try? hasPendingMapping()) == true else { return }
+        let timer = Timer(timeInterval: max(0.001, Double(options.timeoutLength) / 1000), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if let surface = self.commandTurnHost as? EVEditorSurfaceController {

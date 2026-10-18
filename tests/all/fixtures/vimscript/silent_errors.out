@@ -1,0 +1,4 @@
+
+['after-echo', 'after-let', 'in-try']
+E117: Unknown function: Nosuch
+['in-function', 'after-function']
