@@ -30,7 +30,8 @@ internal sealed partial class EditorPane
         {
             foreach (var item in snapshot.Decorations)
             {
-                if ((item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) == 0) continue;
+                if ((item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) == 0
+                    || (item.flags & VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) != 0) continue;
                 var bounds = OffsetRect(item.typographic_bounds, viewport);
                 if (bounds.Contains(point)) { next = bounds; break; }
             }
@@ -42,6 +43,7 @@ internal sealed partial class EditorPane
 
     internal float CodeBlockLanguageOpacity(ViemLayoutDecorationV1 item)
     {
+        if ((item.flags & VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) != 0) return .25f;
         bool hovered = codeBlockLanguageHoverRect == OffsetRect(item.typographic_bounds, viewport);
         bool menuOpen = snapshot != null && codeBlockLanguageMenuTarget is { } target
             && target.Document == snapshot.Info.identity.document_id
@@ -65,7 +67,8 @@ internal sealed partial class EditorPane
         if (snapshot == null || View == null) return false;
         foreach (var item in snapshot.Decorations)
         {
-            if ((item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) == 0) continue;
+            if ((item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) == 0
+                || (item.flags & VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) != 0) continue;
             var bounds = OffsetRect(item.typographic_bounds, viewport);
             if (!bounds.Contains(point)) continue;
             var row = snapshot.Rows.FirstOrDefault(row => row.row_index == item.row_index);

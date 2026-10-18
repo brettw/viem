@@ -378,7 +378,11 @@ fn markdown_patches(
     unindent: bool,
 ) -> Result<Vec<SourcePatch>, DocumentError> {
     let original = input;
-    let mut quotes = super::super::markdown_quotes::classify(input);
+    let syntax = super::super::markdown_syntax::Blocks::parse_with_start(
+        &super::super::markdown_syntax::grammar_text(input),
+        input.source_at(0) == document.projection().source_content_start(),
+    ).to_source(input);
+    let mut quotes = super::super::markdown_quotes::classify_with_syntax(input, &syntax);
     // Move the item's inner quotes with it. Only quotes enclosing the list
     // remain outside the indentation patch; stripping every quote would add
     // whitespace to the quote body instead of moving its marker.
@@ -396,7 +400,9 @@ fn markdown_patches(
     let stripped = super::super::markdown_quotes::strip(input, &quotes);
     let input = &stripped;
     let lines = super::super::paragraph_flow::source_lines(input);
-    let contexts = super::super::markdown_blocks::classify(input);
+    // Reuse original ownership: removing quote markers cannot turn a quoted
+    // leading thematic rule into a document-leading metadata delimiter.
+    let contexts = super::super::markdown_blocks::classify_with_syntax(input, &syntax);
     let converter = super::super::rich_text::Builder::new(input, Revision(0));
     let line_for = |block: &Block| -> Result<usize, DocumentError> {
         let at = block_source_at(document, block)?;
@@ -654,4 +660,28 @@ fn markdown_patches(
         }
     }
     Ok(patches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::Encoding;
+
+    #[test]
+    fn front_matter_recognition_does_not_hide_quote_stripped_list_indentation() {
+        let source = "> ---\n> - parent\n> - child\n> ---";
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let before = document.text().to_owned();
+        assert!(document.projection().blocks().iter().all(|block| !block.front_matter));
+        let at = before.find("child").unwrap();
+        let transaction = document.prepare_list_indent(at..at, false).unwrap();
+        document.commit_model_transaction(transaction).unwrap();
+        assert_eq!(document.text(), before);
+        assert_eq!(document.source_bytes(), b"> ---\n> - parent\n>   - child\n> ---");
+        assert!(document.projection().blocks().iter().all(|block| !block.front_matter));
+        let levels: Vec<_> = document.projection().blocks().iter().filter_map(Block::list_level).collect();
+        assert_eq!(levels, [0, 1]);
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+    }
 }

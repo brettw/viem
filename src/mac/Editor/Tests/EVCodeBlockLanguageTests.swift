@@ -189,6 +189,69 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
     }
 
+    func testFrontMatterLabelHasNoLanguagePickerOrHover() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-front-matter-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
+        let source = Data("---\nname: viem\n---\n\nbody".utf8)
+        try backend.read(source: source, typeName: EVDocument.markdownType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        surface.view.frame = NSRect(x: 0, y: 0, width: 850, height: 350)
+        let window = EVTestFocusWindow(contentRect: NSRect(x: 100, y: 100, width: 850, height: 350),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = surface.view
+        defer { window.close() }
+        surface.viewDidLayout()
+        window.makeKeyAndOrderFront(nil)
+        window.setKeyWindowForTesting(true)
+        XCTAssertTrue(window.makeFirstResponder(surface.editorView))
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let label = try XCTUnwrap(snapshot.decorations.first { $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 })
+        XCTAssertNotEqual(label.flags & UInt32(VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED), 0)
+        let start = Int(label.label_byte_start), end = start + Int(label.label_byte_length)
+        XCTAssertEqual(String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self), "front matter")
+        XCTAssertFalse(EVCodeLanguage.all.contains { $0.id == "front matter" || $0.name == "front matter" })
+        let rect = surface.editorView.viewRect(label.typographic_bounds)
+        let location = surface.editorView.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil)
+        let move = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: location, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 0, pressure: 0))
+        surface.editorView.mouseMoved(with: move)
+        XCTAssertNil(surface.editorView.codeBlockLanguageHoverRect)
+        XCTAssertEqual(surface.editorView.codeBlockLanguageOpacity(for: label, in: snapshot), 0.25)
+        var pickerOpened = false
+        let observer = NotificationCenter.default.addObserver(forName: NSMenu.didBeginTrackingNotification, object: nil, queue: .main) { note in
+            MainActor.assumeIsolated {
+                if let menu = note.object as? NSMenu, menu.title == "Code block language" { pickerOpened = true }
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        // Bound the regression path if this disabled label accidentally opens a menu.
+        let windowNumber = window.windowNumber
+        let timer = Timer(timeInterval: 0.05, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                guard let escape = NSEvent.keyEvent(with: .keyDown, location: location, modifierFlags: [], timestamp: 0,
+                    windowNumber: windowNumber, context: nil, characters: "\u{1b}",
+                    charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53) else {
+                    XCTFail("Could not create Escape event to dismiss the language picker")
+                    return
+                }
+                NSApplication.shared.postEvent(escape, atStart: true)
+            }
+        }
+        RunLoop.current.add(timer, forMode: .eventTracking)
+        defer { timer.invalidate() }
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+            if type == .leftMouseDown { surface.editorView.mouseDown(with: event) }
+            else { surface.editorView.mouseUp(with: event) }
+        }
+        XCTAssertFalse(pickerOpened)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
+    }
+
     func testSelectorHoverPaintsBeneathCodeWithoutChangingGeometry() throws {
         let previousTheme = EVThemeStore.shared.theme
         var theme = previousTheme

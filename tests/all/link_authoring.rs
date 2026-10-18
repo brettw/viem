@@ -434,6 +434,37 @@ fn literal_markdown_heading_fragments_navigate_from_source() {
 }
 
 #[test]
+fn front_matter_does_not_change_heading_fragments_between_preview_and_literal_markdown() {
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be] {
+        for (file_format, ending) in [(FileFormat::Unix, "\n"), (FileFormat::Dos, "\r\n"), (FileFormat::Mac, "\r")] {
+            for bom in [false, true] {
+                let source = format!("{}---{ending}# Same{ending}title: literal{ending}---{ending}{ending}# Same{ending}{ending}# Same",
+                    if bom { "\u{feff}" } else { "" });
+                let bytes: Vec<u8> = match encoding {
+                    Encoding::Utf8 => source.as_bytes().to_vec(),
+                    Encoding::Utf16Le => source.encode_utf16().flat_map(u16::to_le_bytes).collect(),
+                    Encoding::Utf16Be => source.encode_utf16().flat_map(u16::to_be_bytes).collect(),
+                    _ => unreachable!(),
+                };
+                let preview = Document::from_bytes_with_file_format(bytes.clone(), encoding, Format::Markdown, file_format).unwrap();
+                let literal = Document::from_bytes_with_file_format(bytes.clone(), encoding, Format::Code, file_format).unwrap();
+                let names: Vec<_> = preview.link_headings().unwrap().headings.into_iter()
+                    .map(|heading| heading.destination).collect();
+                assert_eq!(names, ["#same", "#same-1"]);
+                let locations: Vec<_> = literal.text().match_indices("# Same").map(|(at, _)| at).collect();
+                assert_eq!(locations.len(), 3);
+                assert_eq!(literal.find_markdown_source_fragment("same").unwrap(), Some(locations[1]),
+                    "{encoding:?} {file_format:?} bom={bom}");
+                assert_eq!(literal.find_markdown_source_fragment("same-1").unwrap(), Some(locations[2]));
+                assert_eq!(literal.find_markdown_source_fragment("same-2").unwrap(), None);
+                assert_eq!(literal.find_markdown_source_fragment("title-literal").unwrap(), None);
+                assert_eq!(literal.source_bytes(), bytes);
+            }
+        }
+    }
+}
+
+#[test]
 fn distant_line_fragment_navigation_is_indexed_and_materializes_only_a_viewport() {
     use viem_core::command::InputEvent;
     use viem_core::layout::{LayoutCoverage, MockTextMeasurementProvider};

@@ -1695,15 +1695,17 @@ impl Document {
             return Ok(Some(0));
         }
         let bytes = self.state().source.bytes();
-        let decoded = self.encoding().decode_region(&bytes, 0)?;
+        let decoded = self.encoding().decode(&bytes)?;
         let input = super::line_endings::normalize(&decoded, self.file_format());
-        let text = input.text.as_str();
+        let grammar = super::markdown_syntax::grammar_text(&input);
+        let parse_start = super::markdown_front_matter::recognize(&grammar)
+            .map_or(0, |front| front.range.end);
         let mut slugs = std::collections::HashMap::<String, usize>::new();
         let mut heading: Option<(usize, String)> = None;
         let options = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES;
-        for (event, range) in pulldown_cmark::Parser::new_ext(text, options).into_offset_iter() {
+        for (event, range) in pulldown_cmark::Parser::new_ext(&grammar[parse_start..], options).into_offset_iter() {
             match event {
-                Event::Start(Tag::Heading { .. }) => heading = Some((range.start, String::new())),
+                Event::Start(Tag::Heading { .. }) => heading = Some((range.start + parse_start, String::new())),
                 Event::Text(value) | Event::Code(value) => {
                     if let Some((_, label)) = heading.as_mut() {
                         label.push_str(&value);
@@ -1719,7 +1721,7 @@ impl Document {
                     if unique_heading_slug(&label, &mut slugs) != fragment {
                         continue;
                     }
-                    let line = text[..start].bytes().filter(|byte| *byte == b'\n').count();
+                    let line = input.endings.partition_point(|ending| ending.normalized.start < start);
                     return self
                         .state()
                         .source_hard_lines

@@ -1474,6 +1474,8 @@ typedef struct ViemPositionedClusterV1 {
 #define VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND (1u << 2)
 #define VIEM_LAYOUT_DECORATION_BLOCK_BORDER (1u << 3)
 #define VIEM_LAYOUT_DECORATION_CODE_LANGUAGE (1u << 4)
+/* Fixed language label: no picker interaction or dropdown indicator. */
+#define VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED (1u << 5)
 /* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
 typedef struct ViemLayoutDecorationV1 {

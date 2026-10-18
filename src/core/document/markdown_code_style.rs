@@ -9,6 +9,9 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(range)?;
         let blocks = structural_style::selected_blocks(self, range);
+        if !enabled && blocks.iter().any(|block| block.front_matter) {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
         if !enabled && self.format() == Format::Markdown {
             let mut indented = Vec::new();
             for block in &blocks {

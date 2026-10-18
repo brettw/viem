@@ -42,6 +42,9 @@ impl Document {
                 block.style.0 == "Code Block" && block.range.start <= at && at <= block.range.end
             })
             .ok_or(DocumentError::UnsupportedFormatting)?;
+        if block.front_matter {
+            return Err(DocumentError::UnsupportedFormatting.into());
+        }
         let expected = language.map(super::super::syntax::detection::canonical_language);
         if block.markdown_html {
             let patches = self.passive_pre_language_patches(&block, language)?;

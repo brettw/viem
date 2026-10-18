@@ -1842,6 +1842,7 @@ pub const VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER: u32 = 1 << 1;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND: u32 = 1 << 2;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BORDER: u32 = 1 << 3;
 pub const VIEM_LAYOUT_DECORATION_CODE_LANGUAGE: u32 = 1 << 4;
+pub const VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED: u32 = 1 << 5;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViemLayoutDecorationsInfoV1 {
@@ -8424,7 +8425,8 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                                 crate::layout::DecorationKind::BlockQuoteBorder | crate::layout::DecorationKind::ThematicBreak => VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER,
                                 crate::layout::DecorationKind::BlockBackground => VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND,
                                 crate::layout::DecorationKind::BlockBorder => VIEM_LAYOUT_DECORATION_BLOCK_BORDER,
-                                crate::layout::DecorationKind::CodeLanguage => VIEM_LAYOUT_DECORATION_CODE_LANGUAGE,
+                                crate::layout::DecorationKind::CodeLanguage { picker_disabled } => VIEM_LAYOUT_DECORATION_CODE_LANGUAGE
+                                    | if picker_disabled { VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED } else { 0 },
                                 _ => 0,
                             },
                             row_index: checked_export_count(row_index)?,

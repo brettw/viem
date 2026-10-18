@@ -61,6 +61,7 @@ fn probe_source() -> String {
 #include "viem_core.h"
 #include <stddef.h>
 _Static_assert(VIEM_CORE_ABI_VERSION == {abi}, "ABI version");
+_Static_assert(VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED == {language_picker_disabled}, "fixed code language decoration flag");
 _Static_assert(VIEM_KEY_ALT_ENTER == {alt_enter}, "list paragraph key");
 _Static_assert(VIEM_LIST_CAN_INSERT_PARAGRAPH == {list_paragraph_capability}, "list paragraph capability");
 static ViemStatus (*insert_list_paragraph)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_list_paragraph;
@@ -708,6 +709,7 @@ static void typecheck(void) {{
         line_number_region_top = std::mem::offset_of!(ViemLineNumberRegionV1, top),
         abi = VIEM_CORE_ABI_VERSION,
         alt_enter = VIEM_KEY_ALT_ENTER,
+        language_picker_disabled = VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED,
         list_paragraph_capability = VIEM_LIST_CAN_INSERT_PARAGRAPH,
         selection_character = VIEM_MODE_SELECTION_CHARACTER,
         selection_line = VIEM_MODE_SELECTION_LINE,

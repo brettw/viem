@@ -165,13 +165,6 @@ pub(super) fn marker_prefix_geometry(text: &str) -> Option<(usize, usize)> {
         .map(|marker| (marker.content_start, marker.content_indent))
 }
 
-pub(super) fn classify(input: &NormalizedText) -> Vec<Option<ListLine>> {
-    let syntax =
-        super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(input))
-            .to_source(input);
-    classify_with_syntax(input, &syntax)
-}
-
 /// Reuse the original grammar ownership after quote prefixes or whitespace
 /// have been projected. Source identities, rather than the cooked spelling,
 /// decide which item owns each physical row.

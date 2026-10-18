@@ -79,7 +79,7 @@ fn rich_defaults_separate_paragraphs_and_code_without_changing_source() {
         let caption = rows[1]
             .decorations
             .iter()
-            .find(|decoration| decoration.kind == viem_core::layout::DecorationKind::CodeLanguage)
+            .find(|decoration| matches!(decoration.kind, viem_core::layout::DecorationKind::CodeLanguage { .. }))
             .unwrap();
         assert_eq!(caption.text, "None ▾");
         assert!(caption.typographic_bounds.height > 0. && caption.typographic_bounds.height <= 16.);

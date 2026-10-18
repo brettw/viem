@@ -36,6 +36,9 @@ pub(super) fn patches(
     }
     for block in document.projection().blocks_for_region(range) {
         if block.range.start <= range.start && range.end <= block.range.end {
+            if block.front_matter {
+                return front_matter_body_patches(document, &block, range, replacement).map(Some);
+            }
             if let Some(code) = super::markdown_indented_code::source_block(document, &block)? {
                 let source = if range.is_empty() {
                     let at = super::source_edit::insertion_point(document.projection(), range.start, None)
@@ -329,6 +332,51 @@ pub(super) fn patches(
 /// Keep literal edits inside their current fence. Only the touched physical
 /// lines and delimiter runs are inspected; untouched body bytes stay outside
 /// the supporting indentation and fence-growth patches.
+/// Front matter has fixed delimiters: ordinary body edits remain literal and
+/// local, but a new delimiter row cannot be represented inside this owner.
+fn front_matter_body_patches(
+    document: &Document,
+    block: &super::Block,
+    range: &Range<usize>,
+    replacement: &str,
+) -> Result<Vec<(Range<usize>, String)>, DocumentError> {
+    let projection = document.projection();
+    let fence = fenced_source(document, block)?.ok_or(DocumentError::AmbiguousProjection)?;
+    let start = if block.range.is_empty() { fence.body.start } else {
+        projection.source_insertion_point(range.start, range.start != block.range.end)
+            .ok_or(DocumentError::AmbiguousProjection)?
+    };
+    let end = if range.is_empty() { start } else {
+        projection.source_insertion_point(range.end, range.end != block.range.end)
+            .ok_or(DocumentError::AmbiguousProjection)?
+    };
+    let first = projection.hard_line_at_offset(range.start)
+        .and_then(|index| projection.hard_line_range(index))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let last = projection.hard_line_at_offset(range.end)
+        .and_then(|index| projection.hard_line_range(index))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let mut changed = projection.text_tree().slice(first.start..range.start)
+        .map_err(DocumentError::FormattedTextStorage)?;
+    changed.push_str(replacement);
+    changed.push_str(&projection.text_tree().slice(range.end..last.end)
+        .map_err(DocumentError::FormattedTextStorage)?);
+    if changed.split('\n').any(front_matter_delimiter) {
+        return Err(DocumentError::UnsupportedFormatting);
+    }
+    let mut syntax = replacement.replace('\n', document.file_format().spelling());
+    if block.range.is_empty() && !replacement.is_empty()
+        && fence.closing.as_ref().is_some_and(|closing| closing.start == start)
+    {
+        syntax.push_str(document.file_format().spelling());
+    }
+    Ok(vec![(start..end, syntax)])
+}
+
+fn front_matter_delimiter(line: &str) -> bool {
+    super::markdown_front_matter::is_delimiter(line)
+}
+
 fn fenced_body_patches(
     document: &Document,
     block: &super::Block,
@@ -648,7 +696,10 @@ fn join_following_paragraph(
         .slice(last_line.start..range.start)
         .map_err(DocumentError::FormattedTextStorage)?;
     joined_tail.push_str(&appended);
-    let needed = joined_tail
+    if code.front_matter && joined_tail.split('\n').any(front_matter_delimiter) {
+        return Err(DocumentError::UnsupportedFormatting);
+    }
+    let needed = if code.front_matter { opening_width } else { joined_tail
         .lines()
         .filter_map(|line| {
             let line = line.trim();
@@ -657,7 +708,7 @@ fn join_following_paragraph(
         })
         .max()
         .unwrap_or(opening_width)
-        .max(opening_width);
+        .max(opening_width) };
     let mut patches = Vec::new();
     if needed > opening_width {
         let start = fence.opening_marker;
@@ -841,9 +892,14 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         .ok_or(DocumentError::AmbiguousProjection)?;
     let lines = &document.state().source_hard_lines;
     let first = lines.line_at_offset(body.start).ok_or(DocumentError::AmbiguousProjection)?;
-    let Some(opening) = lines.get(first.saturating_sub(1)) else {
+    let Some(mut opening) = lines.get(first.saturating_sub(1)) else {
         return Ok(None);
     };
+    if block.front_matter {
+        // The physical first row also owns the BOM. The metadata envelope
+        // starts after it, including when a linewise edit removes that owner.
+        opening.start = document.projection().source_content_start();
+    }
     let read = |line: &Range<usize>| {
         let bytes = document.state().source.bytes_in(line.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
@@ -851,7 +907,14 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
     };
     let text = read(&opening)?;
     let prefix = super::markdown_quotes::container_prefix(&text.text);
-    let Some((delimiter, width)) = super::projection::markdown_fence(&text.text[prefix..]) else {
+    let marker = if block.front_matter {
+        let normalized = super::line_endings::normalize(&text, document.file_format());
+        front_matter_delimiter(normalized.text.trim_end_matches('\n'))
+            .then_some((b'-', 3))
+    } else {
+        super::projection::markdown_fence(&text.text[prefix..])
+    };
+    let Some((delimiter, width)) = marker else {
         return Ok(None);
     };
     let opening_marker = opening.start + document.encoding().encode_fragment(&text.text[..prefix])?.len();
@@ -878,7 +941,8 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         let container = if matches!(block.kind, super::BlockKind::ListItem { .. }) { result.body_prefix[super::markdown_quotes::prefix(&result.body_prefix)..].len() } else { 0 };
         let trim = line_body.bytes().take(container).take_while(|b| *b == b' ').count();
         let value = &line_body[trim..];
-        if super::markdown_syntax::fence_close(value, delimiter, width) {
+        if if block.front_matter { front_matter_delimiter(value) }
+            else { super::markdown_syntax::fence_close(value, delimiter, width) } {
             result.closing_content_end = Some(normalized.endings.last()
                 .filter(|ending| ending.source.end == line.end)
                 .map_or(line.end, |ending| ending.source.start));

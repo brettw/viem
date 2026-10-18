@@ -27,6 +27,7 @@ pub(super) struct LineSignature {
     kind: super::BlockKind,
     quote_depth: usize,
     code_language: Option<String>,
+    front_matter: bool,
     thematic_break: bool,
     containers: Vec<(super::ContainerKind, StyleId, Option<std::sync::Arc<super::BlockDirectFormatting>>)>,
     style: StyleId,
@@ -186,7 +187,7 @@ pub(crate) fn plan(
         .collect::<Vec<_>>()
         .join("\n");
     let expected_hard_breaks = hard_break_offsets(&origins, &contents)?;
-    let expected_signatures = signatures.map(|signatures| {
+    let expected_signatures: Option<Vec<LineSignature>> = signatures.map(|signatures| {
         origins
             .iter()
             .map(|origin| {
@@ -208,6 +209,7 @@ pub(crate) fn plan(
     if apply_text_edits(snapshot.text(), &text_edits)? != expected_text {
         return Err(DocumentError::HardLineTransferProjectionMismatch);
     }
+    preserve_leading_thematic_rule(document, &mut source_patches, expected_signatures.as_deref())?;
     preserve_source_blank_rows(document, &mut source_patches, &expected_text)?;
 
     Ok(Some(HardLineTransferPlan {
@@ -218,6 +220,55 @@ pub(crate) fn plan(
         origins,
         expected_signatures,
     }))
+}
+
+/// A transferred or newly exposed leading `---` rule can pair with another
+/// rule and become YAML metadata. Change only that first marker's spelling,
+/// and only when the tentative source would acquire that different owner.
+fn preserve_leading_thematic_rule(
+    document: &Document,
+    patches: &mut Vec<PlannedSourcePatch>,
+    signatures: Option<&[LineSignature]>,
+) -> Result<(), DocumentError> {
+    if !document.format().is_markdown()
+        || signatures.and_then(|items| items.first()).is_none_or(|line| !line.thematic_break)
+    {
+        return Ok(());
+    }
+    patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    let mut candidate = document.source_bytes();
+    for patch in patches.iter().rev() {
+        candidate.splice(patch.range.clone(), patch.replacement.iter().copied());
+    }
+    let decoded = document.encoding().decode(&candidate)?;
+    let normalized = normalize(&decoded, document.file_format());
+    if super::markdown_front_matter::recognize(&super::markdown_syntax::grammar_text(&normalized)).is_none() {
+        return Ok(());
+    }
+    let replacement = document.encoding().encode_fragment("***")?;
+    let marker = decoded.bom_len..decoded.bom_len + replacement.len();
+    let mut old_cursor = 0;
+    let mut new_cursor = 0;
+    for patch in patches.iter_mut() {
+        let start = new_cursor + patch.range.start - old_cursor;
+        let end = start + patch.replacement.len();
+        if marker.end <= start { break; }
+        if start <= marker.start && marker.end <= end {
+            patch.replacement.splice(marker.start - start..marker.end - start, replacement);
+            return Ok(());
+        }
+        if marker.start < end && start < marker.end {
+            // Transfers own complete physical rows: a marker split across
+            // candidate contributors cannot be safely rewritten here.
+            return Err(DocumentError::HardLineTransferProjectionMismatch);
+        }
+        old_cursor = patch.range.end;
+        new_cursor = end;
+    }
+    let start = old_cursor + marker.start - new_cursor;
+    patches.push(PlannedSourcePatch { range: start..start + replacement.len(), replacement });
+    patches.sort_by_key(|patch| (patch.range.start, patch.range.end));
+    Ok(())
 }
 
 /// Joining transferred separator bytes can hide an intended empty Source
@@ -779,6 +830,7 @@ pub(super) fn projection_signatures(
                 },
                 quote_depth: block.quote_depth,
                 code_language: block.code_language.clone(),
+                front_matter: block.front_matter,
                 thematic_break: block.thematic_break,
                 containers: block.containers.iter().filter(|member| {
                     let container = &member.container;

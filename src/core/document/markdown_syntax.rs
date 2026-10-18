@@ -79,13 +79,22 @@ fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &st
 }
 
 pub(super) fn definitions(text: &str) -> (String, Vec<Range<usize>>) {
+    definitions_with_start(text, true)
+}
+
+pub(super) fn definitions_with_start(text: &str, document_start: bool) -> (String, Vec<Range<usize>>) {
     if !text.contains("]:") { return (String::new(), Vec::new()); }
-    let parser = Parser::new(text);
-    let mut ranges: Vec<_> = parser.reference_definitions().iter().map(|(_, value)| value.span.clone()).collect();
+    let parse_start = if document_start {
+        super::markdown_front_matter::recognize(text).map_or(0, |front| front.range.end)
+    } else { 0 };
+    let parser = Parser::new(&text[parse_start..]);
+    let mut ranges: Vec<_> = parser.reference_definitions().iter()
+        .map(|(_, value)| value.span.start + parse_start..value.span.end + parse_start).collect();
     ranges.sort_by_key(|range| range.start);
     let known = ranges.clone();
     let mut occupied = Vec::<Range<usize>>::new();
     for (event, range) in parser.into_offset_iter() {
+        let range = range.start + parse_start..range.end + parse_start;
         if matches!(event, Event::Start(Tag::Paragraph | Tag::Heading { .. }
             | Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::Table(_))) {
             if let Some(previous) = occupied.last_mut().filter(|previous| range.start <= previous.end) {
@@ -100,7 +109,7 @@ pub(super) fn definitions(text: &str) -> (String, Vec<Range<usize>>) {
     // visible reference treatment, including after a line copy.
     let mut offset = 0;
     for line in text.split_inclusive('\n') {
-        if line.trim_start_matches(' ').starts_with('[') && line.contains("]:")
+        if offset >= parse_start && line.trim_start_matches(' ').starts_with('[') && line.contains("]:")
             && !known.get(known.partition_point(|range| range.end <= offset))
                 .is_some_and(|range| range.start <= offset && offset < range.end)
             && !occupied.get(occupied.partition_point(|range| range.end <= offset))
@@ -123,6 +132,45 @@ pub(super) fn definitions(text: &str) -> (String, Vec<Range<usize>>) {
 
 #[cfg(test)]
 mod definition_tests {
+    #[test]
+    fn front_matter_does_not_supply_markdown_definitions_or_inline_scopes() {
+        let source = "---\n[ref]: /metadata\ntext: **literal**\n---\n\n[ref]: /document\n\n**body**";
+        let (context, ranges) = super::definitions(source);
+        assert_eq!(ranges.len(), 1);
+        assert!(context.contains("/document"));
+        assert!(!context.contains("/metadata"));
+        let syntax = super::Blocks::parse(source);
+        assert!(syntax.inline_code.is_empty());
+        assert!(syntax.inline_links.is_empty());
+        assert!(syntax.inline_html.is_empty());
+    }
+
+    #[test]
+    fn physical_inline_parsing_does_not_assume_a_regional_slice_is_document_leading() {
+        let source = "---\ntext: **literal**\n---\n";
+        let inlines = super::source_inlines(source);
+        assert_eq!(inlines.len(), 1);
+        assert_eq!(&source[inlines.values().next().unwrap().range.clone()], "**literal**");
+    }
+
+    #[test]
+    fn front_matter_grammar_owns_literal_lines_only_at_the_document_start() {
+        let source = "---\n# literal\n- item\n\n> quote\n---\n\n# Heading";
+        let syntax = super::Blocks::parse(source);
+        assert!(syntax.front_matter.is_some());
+        assert_eq!(syntax.code.len(), 1);
+        assert!(syntax.containers.is_empty());
+        assert_eq!(syntax.blocks.len(), 1);
+        assert!(matches!(syntax.blocks[0].role, super::BlockRole::Heading(1)));
+        assert_eq!(&source[syntax.blocks[0].content.clone()], "Heading");
+        let regional = super::Blocks::parse_with_start(source, false);
+        assert!(regional.front_matter.is_none());
+        assert!(regional.code.is_empty());
+        assert!(!regional.containers.is_empty());
+        let (_, definitions) = super::definitions_with_start("---\n[ref]: /inside\n---", false);
+        assert_eq!(definitions.len(), 1);
+    }
+
     #[test]
     fn duplicate_definitions_keep_their_source_context() {
         let source = "[ref]: /first\n\n[ref]: /second\n\n```\n[code]: /hidden\n```\n\nprose\n[inline]: /literal";
@@ -222,6 +270,7 @@ pub(super) struct CodeSyntax {
 }
 #[derive(Default)]
 pub(super) struct Blocks {
+    pub front_matter: Option<super::markdown_front_matter::FrontMatter>,
     pub paragraphs: Vec<Range<usize>>,
     pub soft_breaks: Vec<Range<usize>>,
     pub hard_breaks: Vec<Range<usize>>,
@@ -237,21 +286,32 @@ pub(super) struct Blocks {
 }
 impl Blocks {
     pub fn parse(text: &str) -> Self {
+        Self::parse_with_start(text, true)
+    }
+
+    pub fn parse_with_start(text: &str, document_start: bool) -> Self {
         super::work_statistics::record(|work| {
             work.markdown_block_parse_calls += 1;
             work.markdown_block_parsed_bytes += text.len();
         });
         use pulldown_cmark::TagEnd;
-        let parser = Parser::new_ext(text, Options::ENABLE_TABLES);
         let mut result = Self::default();
+        result.front_matter = document_start.then(|| super::markdown_front_matter::recognize(text)).flatten();
+        let parse_start = result.front_matter.as_ref().map_or(0, |front| front.range.end);
+        let parser = Parser::new_ext(&text[parse_start..], Options::ENABLE_TABLES);
         let mut tables = super::markdown_tables::TableParser::default();
-        result.definitions = definitions(text).1;
+        result.definitions = definitions_with_start(text, document_start).1;
+        if let Some(front) = &result.front_matter {
+            result.owners.push(super::containers::SourceContainer::new(front.range.clone(), super::ContainerKind::CodeBlock));
+            result.code.push(CodeSyntax { range: front.range.clone(), body_end: front.body.end, fenced: true });
+        }
         let mut quotes = 0;
         let mut lists: Vec<(Range<usize>, Option<u64>, bool, usize)> = Vec::new();
         let mut items: Vec<usize> = Vec::new();
         let mut active = None;
         let mut active_code = None;
         for (event, range) in parser.into_offset_iter() {
+            let range = range.start + parse_start..range.end + parse_start;
             tables.event(text, &event, &range);
             if matches!(event, Event::InlineHtml(_)) { result.inline_html.push(range.clone()); }
             match &event {
@@ -370,6 +430,10 @@ impl Blocks {
     }
     pub fn to_source(mut self, input: &super::line_endings::NormalizedText) -> Self {
         let at = |at| input.source_at(at);
+        if let Some(front) = &mut self.front_matter {
+            front.range = at(front.range.start)..at(front.range.end);
+            front.body = at(front.body.start)..at(front.body.end);
+        }
         self.tables = self.tables.into_iter().map(|table| table.to_source(input)).collect();
         for block in &mut self.blocks { block.range = at(block.range.start)..at(block.range.end); block.content = at(block.content.start)..at(block.content.end); }
         for owner in &mut self.owners { owner.range = at(owner.range.start)..at(owner.range.end); }

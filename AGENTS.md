@@ -365,6 +365,14 @@ inventory. Preview table borders honor resolved edge colors.
 
 Deliberate presentation exceptions:
 
+- Document-leading YAML front matter enclosed by `---` lines appears as a
+  Code Block with YAML highlighting. Preview hides the delimiters and labels
+  the block `front matter`, with its language picker disabled. Its body remains
+  literal and editable, including incomplete YAML; it never controls editor
+  settings. Preserve comments, quoting, whitespace and source delimiters through
+  body edits. Front matter is not a selectable code language, and Preview does
+  not offer creation or conversion into front matter. Unclosed or nonleading
+  delimiter pairs retain ordinary Markdown interpretation.
 - Reference links and reference definitions retain literal bracket syntax in
   Preview with the light-purple `Markdown reference` style (`#A673D1`). Images
   are atomic inline objects in Preview; Code retains their full notation.

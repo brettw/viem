@@ -155,8 +155,9 @@ impl Document {
                 &self.encoding().decode_region(&bytes, source.start)?,
                 self.file_format(),
             );
-            let (_, retained_definitions) =
-                super::super::markdown_syntax::definitions(&candidate.text);
+            let (_, retained_definitions) = super::super::markdown_syntax::definitions_with_start(
+                &candidate.text, source.start == self.projection().source_content_start(),
+            );
             let structural_prefix = candidate.text.lines().any(|line| {
                 let body = line.trim_start_matches([' ', '\t']);
                 body.starts_with("* ")
