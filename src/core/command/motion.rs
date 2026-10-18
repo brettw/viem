@@ -87,16 +87,16 @@ impl CommandInterpreter {
             }
             Motion::InsertionLineEnd => line_end(&lines, self.cursor),
             Motion::WordForward(big) => {
-                let target = word_snapshot::forward(&lines, self.cursor, big, count);
+                let target = word_snapshot::forward_with_keywords(&lines, self.cursor, big, count, self.vim_options.keywords());
                 if matches!(self.mode, Mode::Insert | Mode::Replace) {
                     target
                 } else {
                     normalize_normal_cursor_snapshot(&lines, target)
                 }
             }
-            Motion::WordEnd(big) => word_snapshot::end(&lines, self.cursor, big, count, false),
-            Motion::WordBackward(big) => word_snapshot::backward(&lines, self.cursor, big, count),
-            Motion::WordEndBackward(big) => word_snapshot::end_backward(&lines, self.cursor, big, count),
+            Motion::WordEnd(big) => word_snapshot::end_with_keywords(&lines, self.cursor, big, count, false, self.vim_options.keywords()),
+            Motion::WordBackward(big) => word_snapshot::backward_with_keywords(&lines, self.cursor, big, count, self.vim_options.keywords()),
+            Motion::WordEndBackward(big) => word_snapshot::end_backward_with_keywords(&lines, self.cursor, big, count, self.vim_options.keywords()),
             Motion::LastNonBlank => {
                 let mut position = self.cursor;
                 for _ in 1..count {
@@ -160,8 +160,9 @@ impl CommandInterpreter {
     pub(super) fn goto_line(&mut self, document: &Document, one_based: usize) -> CommandOutput {
         let old = self.cursor;
         let lines = document.hard_line_snapshot();
-        self.cursor = first_nonblank_document(document, &lines,
-            nth_line_start(&lines, one_based.min(document.addressable_hard_line_count())));
+        let target = nth_line_start(&lines, one_based.min(document.addressable_hard_line_count()));
+        self.cursor = if self.vim_options.flag("startofline") { first_nonblank_document(document, &lines, target) }
+            else { options::at_logical_column(&lines, target, options::logical_column(&lines, old)) };
         self.preferred_column = None;
         let output = CommandOutput {
             cursor_moved: old != self.cursor,

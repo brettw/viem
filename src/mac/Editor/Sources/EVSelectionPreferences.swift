@@ -46,6 +46,12 @@ enum EVSelectionPreferences {
         }
     }
 
+    static func setAutoselect(_ enabled: Bool, on document: EVCoreDocumentBackend) throws {
+        let option = UInt32(VIEM_EX_OPTION_AUTOSELECT)
+        try set(enabled ? "1" : "0", option: option, on: document)
+        try apply([EVExOptionEffect(name: option, value: .boolean(enabled))], from: document)
+    }
+
     static func read(_ option: UInt32, from document: EVCoreDocumentBackend) throws -> String {
         var required: UInt64 = 0
         let status = viem_core_copy_selection_option(document.core, option, nil, 0, &required)

@@ -2115,26 +2115,9 @@ impl Document {
     /// Explicitly add/remove a BOM as one source transaction. `Preserve` is a
     /// no-op and Latin-1 rejects `Always` because it has no BOM.
     pub fn set_bom_policy(&mut self, policy: BomPolicy) -> Result<(), DocumentError> {
-        let should_have = match policy {
-            BomPolicy::Preserve => return Ok(()),
-            BomPolicy::Always => true,
-            BomPolicy::Never => false,
-        };
-        if should_have == self.state().has_bom {
-            return Ok(());
-        }
-        let bom = self.state().encoding.bom_bytes();
-        if should_have && bom.is_empty() {
-            return Err(DocumentError::UnsupportedBom(self.state().encoding));
-        }
-        let mut source = self.state().source.clone();
-        if should_have {
-            source = source.replace(0, 0, bom.to_vec()).unwrap();
-        } else {
-            let length = bom.len();
-            source = source.replace(0, length, Vec::new()).unwrap();
-        }
-        self.commit_candidate(source, self.state().file_format, self.text().to_owned())
+        self.execute_compat_request(ModelRequest::SetBomPolicy {
+            document: self.id, revision: self.revision(), policy,
+        })
     }
 
     pub fn line_count(&self) -> usize {
@@ -2391,15 +2374,6 @@ impl Document {
             }
         }
         Ok(false)
-    }
-
-    fn commit_candidate(
-        &mut self,
-        source: SourceSnapshot,
-        file_format: FileFormat,
-        expected_text: String,
-    ) -> Result<(), DocumentError> {
-        self.execute_compat_source_metadata_candidate(source, file_format, expected_text)
     }
 
     fn position_map_to_history_node(

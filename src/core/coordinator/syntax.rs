@@ -221,6 +221,11 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.refresh_code_detection();
         self.syntax.detected_for_code = self.document.format().is_code();
     }
+    /// The buffer's file name as the frontend reported it (for `%` and
+    /// autocommand patterns); empty for an unnamed buffer.
+    pub(super) fn buffer_filename(&self) -> &str {
+        &self.syntax.filename
+    }
     pub fn code_language_detection(&self) -> Option<&Detection> {
         self.syntax.detection.as_ref()
     }

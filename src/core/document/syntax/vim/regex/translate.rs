@@ -28,6 +28,8 @@ pub(super) struct Translation {
     pub case: Option<bool>,
     pub specials: Vec<Special>,
     pub groups: usize,
+    /// Capture indexes of the user-visible `\(...\)` groups, in order.
+    pub registers: Vec<usize>,
 }
 
 /// Parse Vim's magic grammar before passing the regular atoms to regex-syntax.
@@ -411,6 +413,7 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
                 .ok_or("Vim backreference names an absent capture")?;
         }
     }
+    t.registers = registers;
     Ok(t)
 }
 

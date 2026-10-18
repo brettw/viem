@@ -67,11 +67,11 @@ impl CommandInterpreter {
                 "Substitute confirmation is not available inside :global",
             );
         }
-        if self.source_replay_depth > 0 {
+        if self.script_depth > 0 {
             return CommandOutput {
                 status: CommandStatus::ExError(ExCommandError::Execute(
                     ExExecuteError::UnsupportedCommand(
-                        "Substitute confirmation is not available in sourced commands".into(),
+                        "Substitute confirmation is not available in scripts".into(),
                     ),
                 )),
                 ..CommandOutput::complete()

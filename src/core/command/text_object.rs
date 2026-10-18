@@ -75,10 +75,10 @@ impl TextObjectKind {
 }
 
 pub(super) fn resolve_document_text_object(
-    document: &crate::document::Document, cursor: usize, object: TextObject, count: usize,
+    document: &crate::document::Document, cursor: usize, object: TextObject, count: usize, keywords: &super::options::KeywordSet,
 ) -> Result<Range<usize>, TextObjectError> {
     if object.kind != TextObjectKind::Paragraph || !document.format().is_markdown() {
-        return resolve_text_object(document.text(), &document.hard_line_snapshot(), cursor, object, count);
+        return resolve_text_object_with_keywords(document.text(), &document.hard_line_snapshot(), cursor, object, count, Some(keywords));
     }
     if count == 0 { return Err(TextObjectError::ZeroCount); }
     validate_cursor(document.text(), cursor)?;
@@ -104,6 +104,13 @@ pub fn resolve_text_object(
     object: TextObject,
     count: usize,
 ) -> Result<Range<usize>, TextObjectError> {
+    resolve_text_object_with_keywords(text, lines, cursor, object, count, None)
+}
+
+fn resolve_text_object_with_keywords(
+    text: &str, lines: &HardLineSnapshot, cursor: usize, object: TextObject, count: usize,
+    keywords: Option<&super::options::KeywordSet>,
+) -> Result<Range<usize>, TextObjectError> {
     if count == 0 {
         return Err(TextObjectError::ZeroCount);
     }
@@ -116,12 +123,12 @@ pub fn resolve_text_object(
                 line.and_then(|line| {
                     if line.is_empty() { Some(line) } else {
                         resolve_word(&text[line.clone()], cursor.min(line.end) - line.start,
-                            object.scope, count, object.kind == TextObjectKind::BigWord)
+                            object.scope, count, object.kind == TextObjectKind::BigWord, keywords)
                             .map(|range| range.start + line.start..range.end + line.start)
                     }
                 })
             } else {
-                resolve_word(text, cursor, object.scope, count, object.kind == TextObjectKind::BigWord)
+                resolve_word(text, cursor, object.scope, count, object.kind == TextObjectKind::BigWord, keywords)
             }
         },
         TextObjectKind::Sentence => resolve_sentence(text, lines, cursor, object.scope, count),
@@ -169,10 +176,10 @@ enum WordClass {
     Punctuation,
 }
 
-fn word_class(grapheme: &str, big: bool) -> WordClass {
+fn word_class(grapheme: &str, big: bool, keywords: Option<&super::options::KeywordSet>) -> WordClass {
     if grapheme.chars().all(char::is_whitespace) {
         WordClass::Space
-    } else if big || grapheme.chars().next().is_some_and(|ch| ch.is_alphanumeric() || ch == '_') {
+    } else if big || grapheme.chars().next().is_some_and(|ch| keywords.map_or_else(|| ch.is_alphanumeric() || ch == '_', |keywords| keywords.contains(ch))) {
         WordClass::Keyword
     } else {
         WordClass::Punctuation
@@ -187,7 +194,7 @@ pub(super) fn pointer_word_range(lines: &HardLineSnapshot, offset: usize) -> Opt
     let at = if offset == line.end { lines.previous_grapheme_boundary(offset)? } else { offset };
     let class_at = |at| {
         let range = lines.grapheme_range_at(at)?;
-        Some(word_class(&lines.slice_utf8(range).ok()?, false))
+        Some(word_class(&lines.slice_utf8(range).ok()?, false, None))
     };
     let class = class_at(at)?;
     let mut start = at;
@@ -215,8 +222,9 @@ fn resolve_word(
     scope: TextObjectScope,
     count: usize,
     big: bool,
+    keywords: Option<&super::options::KeywordSet>,
 ) -> Option<Range<usize>> {
-    let runs = word_runs(text, big);
+    let runs = word_runs(text, big, keywords);
     if runs.is_empty() {
         return None;
     }
@@ -276,11 +284,11 @@ fn resolve_word_from_space(
     Some(runs[previous].range.start..runs[current].range.end)
 }
 
-fn word_runs(text: &str, big: bool) -> Vec<WordRun> {
+fn word_runs(text: &str, big: bool, keywords: Option<&super::options::KeywordSet>) -> Vec<WordRun> {
     let mut result: Vec<WordRun> = Vec::new();
     for (start, grapheme) in text.grapheme_indices(true) {
         let end = start + grapheme.len();
-        let class = word_class(grapheme, big);
+        let class = word_class(grapheme, big, keywords);
         if let Some(last) = result.last_mut().filter(|last| last.class == class) {
             last.range.end = end;
         } else {

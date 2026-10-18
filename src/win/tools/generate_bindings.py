@@ -63,5 +63,7 @@ if "--check" in sys.argv:
         sys.exit("C# ABI declarations are stale. Run src/win/tools/generate_bindings.py.")
 else:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(text)
+    existing = OUTPUT.read_bytes() if OUTPUT.exists() else b""
+    newline = "\r\n" if b"\r\n" in existing else "\n"
+    OUTPUT.write_bytes(text.replace("\n", newline).encode("utf-8"))
 print(f"Verified {len(prototypes)} C ABI functions" if "--check" in sys.argv else f"Generated {OUTPUT}")

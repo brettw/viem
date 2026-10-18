@@ -588,7 +588,7 @@ mod tests {
     }
 
     #[test]
-    fn options_default_to_incremental_search_and_support_queries_toggles_resets_and_atomic_errors() {
+    fn options_support_queries_toggles_resets_and_left_to_right_errors() {
         let (mut document, mut commands) = setup("one two", "");
         assert!(!commands.search_presentation(&document).options.hlsearch);
         assert!(commands.search_presentation(&document).options.incsearch);
@@ -604,13 +604,12 @@ mod tests {
             keys(&mut commands, &mut document, ":set nohls nois nonsense<CR>").status,
             CommandStatus::ExError(_)
         ));
-        assert_eq!(
-            commands.search_presentation(&document).options,
-            state.options
-        );
-        keys(&mut commands, &mut document, ":setlocal hls! is!<CR>");
+        // Vim retains each completed argument before the failing one.
         assert!(!commands.search_presentation(&document).options.hlsearch);
         assert!(!commands.search_presentation(&document).options.incsearch);
+        keys(&mut commands, &mut document, ":setlocal hls! is!<CR>");
+        assert!(commands.search_presentation(&document).options.hlsearch);
+        assert!(commands.search_presentation(&document).options.incsearch);
         keys(
             &mut commands,
             &mut document,

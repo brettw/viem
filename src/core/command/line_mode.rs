@@ -190,6 +190,11 @@ impl CommandInterpreter {
         document: &Document,
         one_based: usize,
     ) -> CommandOutput {
+        self.goto_physical_line_with_column(document, one_based, !self.vim_options.flag("startofline"))
+    }
+    pub(super) fn goto_physical_line_with_column(
+        &mut self, document: &Document, one_based: usize, preserve_column: bool,
+    ) -> CommandOutput {
         let (source, point) = match self.physical_line_destination(document, one_based) {
             Ok(destination) => destination,
             Err(error) => {
@@ -201,6 +206,11 @@ impl CommandInterpreter {
         };
         let old = self.cursor;
         let old_source = self.physical_source_cursor(document).ok();
+        let (source, point) = if preserve_column {
+            let lines = document.hard_line_snapshot();
+            let target = options::at_logical_column(&lines, point, options::logical_column(&lines, old));
+            (document.projection().source_insertion_point(target, true).unwrap_or(source), target)
+        } else { (source, point) };
         self.cursor = point;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
@@ -943,7 +953,7 @@ impl CommandInterpreter {
             operator,
             Operator::Yank | Operator::Delete | Operator::Change
         ) {
-            if let Err(output) = self.require_register_write(register) {
+            if let Err(output) = self.require_register_write_kind(register, operator == Operator::Yank) {
                 return Ok(output);
             }
         }
@@ -1725,7 +1735,7 @@ impl CommandInterpreter {
             return Err(DocumentError::AmbiguousProjection);
         };
         let options = self.indentation_options();
-        let shift = applications
+        let _shift = applications
             .checked_mul(options.shift_width())
             .filter(|size| *size <= 1_000_000)
             .ok_or(DocumentError::UnsupportedFormatting)?;
@@ -1750,8 +1760,8 @@ impl CommandInterpreter {
             let prefix = crate::document::leading_whitespace_len(text);
             let old_columns = options.columns(&text[..prefix]);
             let columns = match operator {
-                Operator::Indent => old_columns.checked_add(shift).ok_or(DocumentError::UnsupportedFormatting)?,
-                Operator::Outdent => old_columns.saturating_sub(shift),
+                Operator::Indent | Operator::Outdent => options::shifted_columns(old_columns, options.shift_width(), applications, operator == Operator::Indent, self.vim_options.flag("shiftround"))
+                    .ok_or(DocumentError::UnsupportedFormatting)?,
                 Operator::Reindent => {
                     let lines = document.hard_line_snapshot();
                     let index = lines.line_at_offset(start).map_err(|_| DocumentError::AmbiguousProjection)?.index();
@@ -1830,7 +1840,7 @@ impl CommandInterpreter {
                 && !value.is_empty()
                 && !value.starts_with(')')
             {
-                joined.push(' ');
+                joined.push_str(options::join_separator(joined.chars().last(), value.chars().next(), self.vim_options.flag("joinspaces")));
             }
             joined.push_str(value);
             previous = content;

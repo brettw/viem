@@ -143,7 +143,6 @@ pub enum ExAction {
     DeleteMarks { names: Vec<char> },
     Only,
     Read { path: Option<String> },
-    Source { path: String },
     File { path: Option<String> },
     NoHighlight,
     Set(SetCommand),
@@ -201,6 +200,9 @@ pub struct SubstituteFlags {
 pub enum SetScope {
     GlobalAndLocal,
     Local,
+    /// `:setglobal`: Viem keeps buffer option state, so this behaves like
+    /// `:set` for options Viem implements.
+    Global,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -462,7 +464,7 @@ impl<'a> Parser<'a> {
         let args = match name {
             // A trailing Space is a real Normal-mode command.  Only the
             // whitespace separating `:normal[!]` from its payload is trivia.
-            CommandName::Normal | CommandName::Global | CommandName::VGlobal | CommandName::Set | CommandName::SetLocal => raw_args.trim_start(),
+            CommandName::Normal | CommandName::Global | CommandName::VGlobal | CommandName::Set | CommandName::SetLocal | CommandName::SetGlobal => raw_args.trim_start(),
             // For `:&` and `:~`, whitespace distinguishes a following line
             // count from an immediately adjacent occurrence number.  Keep
             // that leading separator for the substitute-tail parser.
@@ -815,11 +817,14 @@ impl<'a> Parser<'a> {
                 }
                 Ok(ExAction::Read { path: optional_string(args) })
             }
-            CommandName::Source => Ok(ExAction::Source { path: required_string(args, args_offset, "command file")? }),
+            // `:source` is a Vim script command; the script engine runs it
+            // before Ex parsing. The name remains for filename completion.
+            CommandName::Source => Err(ExParseError { offset: args_offset, kind: ExParseErrorKind::UnknownCommand("source".into()) }),
             CommandName::File => Ok(ExAction::File { path: optional_string(args) }),
             CommandName::NoHighlight => no_args(ExAction::NoHighlight),
             CommandName::Set => parse_set(args, SetScope::GlobalAndLocal, args_offset),
             CommandName::SetLocal => parse_set(args, SetScope::Local, args_offset),
+            CommandName::SetGlobal => parse_set(args, SetScope::Global, args_offset),
         }
     }
 
@@ -917,6 +922,7 @@ enum CommandName {
     NoHighlight,
     Set,
     SetLocal,
+    SetGlobal,
 }
 
 impl CommandName {
@@ -985,6 +991,7 @@ impl CommandName {
             Self::NoHighlight => "nohlsearch",
             Self::Set => "set",
             Self::SetLocal => "setlocal",
+            Self::SetGlobal => "setglobal",
         }
     }
 
@@ -1254,7 +1261,18 @@ const COMMANDS: &[CommandSpec] = &[
         spelling: "setlocal",
         minimum: 4,
     },
+    CommandSpec {
+        name: CommandName::SetGlobal,
+        spelling: "setglobal",
+        minimum: 4,
+    },
 ];
+
+/// Whether `name` (a full or abbreviated command name) is an Ex command
+/// Viem implements.
+pub fn is_supported_command(name: &str) -> bool {
+    resolve_command(name).is_ok()
+}
 
 fn resolve_command(input: &str) -> Result<CommandName, ExParseErrorKind> {
     match input { ">" => return Ok(CommandName::ShiftRight), "<" => return Ok(CommandName::ShiftLeft),

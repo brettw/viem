@@ -180,44 +180,114 @@ import XCTest
         XCTAssertEqual(try backend.formattedText(), "one\ntwo")
     }
 
-    func testSourceRunsMappingsEditsNestedFilesAndStopsAtPathLineError() async throws {
+    func testSourceRunsScriptsWithMappingsNestedFilesAndContinuesAfterErrors() throws {
         let (directory, backend, document, window) = try fixture()
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }
         try document.read(from: Data("b\na".utf8), ofType: EVDocument.plainTextType)
         document.fileType = EVDocument.plainTextType
+        let surface = try XCTUnwrap(window.editorSurface as? EVEditorSurfaceController)
+        let session = try XCTUnwrap(surface.session)
         let child = directory.appendingPathComponent("child.viem")
         try Data("map Y y$\nset hlsearch incsearch\n".utf8).write(to: child)
         let source = directory.appendingPathComponent("source.viem")
-        try Data("\u{feff}\" comment\r\n%sort\nsource \(child.path)\n1delete\n".utf8).write(to: source)
-        _ = try await perform(window, backend: backend, kind: .source, path: source.path).get()
+        try Data("\u{feff}\" comment\r\n%sort\nsource \(child.path)\n1delete\nlet g:done = 1\n".utf8).write(to: source)
+        let outcome = try session.executeCommandLine("source \(source.path)")
+        XCTAssertEqual(outcome.command_status, UInt32(VIEM_COMMAND_STATUS_COMPLETE))
         XCTAssertEqual(try backend.formattedText(), "b")
-        let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
         _ = try session.sendText("Y")
         XCTAssertEqual(try backend.formattedText(), "b", "sourced mapping yanks instead of inserting")
+        // As in Vim, an error reports its file and line, and the script
+        // continues with the next line.
         let bad = directory.appendingPathComponent("bad.viem")
         try Data("set nowrap\nnotacommand\n1delete\n".utf8).write(to: bad)
-        let result = await perform(window, backend: backend, kind: .source, path: bad.path)
-        guard case .failure(let error) = result else { return XCTFail("Invalid sourced line accepted") }
-        XCTAssertTrue(error.localizedDescription.contains("bad.viem:2:"), error.localizedDescription)
-        XCTAssertEqual(try backend.formattedText(), "b")
+        let failed = try session.executeCommandLine("source \(bad.path)")
+        XCTAssertEqual(failed.command_status, UInt32(VIEM_COMMAND_STATUS_ERROR))
+        let message = try XCTUnwrap(surface.commandOutput)
+        XCTAssertTrue(message.contains("bad.viem:2: E492: Not an editor command: notacommand"), message)
+        XCTAssertEqual(try backend.formattedText(), "")
     }
 
-    func testSourceRejectsConfirmationAndRecursiveFilesWithoutLeavingPrompt() async throws {
+    func testSourceWaitsForNativeReadBeforeRunningNextLine() async throws {
+        let (directory, backend, document, window) = try fixture()
+        defer { window.close(); try? FileManager.default.removeItem(at: directory) }
+        try document.read(from: Data("tail".utf8), ofType: EVDocument.plainTextType)
+        document.fileType = EVDocument.plainTextType
+        let surface = try XCTUnwrap(window.editorSurface as? EVEditorSurfaceController)
+        let session = try XCTUnwrap(surface.session)
+        let imported = directory.appendingPathComponent("import.txt")
+        try Data("head\n".utf8).write(to: imported)
+        let source = directory.appendingPathComponent("read.viem")
+        try Data("0read \(imported.path)\ncall setline(2, 'after')\necho 'finished'\n".utf8).write(to: source)
+        _ = try session.executeCommandLine("source \(source.path)")
+        let deadline = Date().addingTimeInterval(2)
+        while surface.commandOutput != "finished", Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(surface.commandOutput, "finished")
+        XCTAssertEqual(try backend.formattedText(), "head\nafter")
+    }
+
+    func testFailedNativeEffectCancelsRemainingSourceCommands() async throws {
+        let (directory, backend, document, window) = try fixture()
+        defer { window.close(); try? FileManager.default.removeItem(at: directory) }
+        try document.read(from: Data("original".utf8), ofType: EVDocument.plainTextType)
+        document.fileType = EVDocument.plainTextType
+        let surface = try XCTUnwrap(window.editorSurface as? EVEditorSurfaceController)
+        let session = try XCTUnwrap(surface.session)
+        _ = try session.executeCommandLine("call setline(1, 'prefix') | read \(directory.appendingPathComponent("missing.txt").path) | call setline(1, 'never')")
+        // The error path schedules acknowledgement on the main queue.
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(try backend.formattedText(), "prefix")
+        _ = try session.executeCommandLine("echo 'ready'")
+        XCTAssertEqual(surface.commandOutput, "ready")
+    }
+
+    func testQueuedScriptCancellationKeepsBorrowedDocumentAliveAfterSurfaceCloses() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-continuation-lifetime-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        weak var releasedBackend: EVCoreDocumentBackend?
+        weak var releasedSurface: EVEditorSurfaceController?
+        weak var releasedSession: EVCoreViewSession?
+        try autoreleasepool {
+            let configuration = EVConfigurationStore(directory: directory)
+            let backend = EVCoreDocumentBackend(configuration: configuration)
+            let document = EVDocument(editorBackend: backend)
+            try document.read(from: Data("text".utf8), ofType: EVDocument.plainTextType)
+            let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+            let session = try XCTUnwrap(surface.session)
+            releasedBackend = backend; releasedSurface = surface; releasedSession = session
+            // There is no native host. Rejection queues a cancellation, then
+            // every normal owner disappears before the main queue can run it.
+            XCTAssertThrowsError(try session.executeCommandLine("pwd | let g:unreachable = 1"))
+        }
+        XCTAssertNil(releasedSurface)
+        XCTAssertNotNil(releasedBackend, "the queued acknowledgement owns the borrowed document")
+        let deadline = Date().addingTimeInterval(2)
+        while releasedBackend != nil, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNil(releasedSession)
+        XCTAssertNil(releasedBackend, "the acknowledgement must release its temporary owner")
+    }
+
+    func testSourceRejectsConfirmationAndRecursiveFilesWithoutLeavingPrompt() throws {
         let (directory, backend, document, window) = try fixture()
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }
         try document.read(from: Data("one one".utf8), ofType: EVDocument.plainTextType)
         document.fileType = EVDocument.plainTextType
+        let surface = try XCTUnwrap(window.editorSurface as? EVEditorSurfaceController)
+        let session = try XCTUnwrap(surface.session)
         let source = directory.appendingPathComponent("confirm.viem")
         try Data("%s/one/two/gc\n".utf8).write(to: source)
-        if case .success = await perform(window, backend: backend, kind: .source, path: source.path) { XCTFail("Interactive source accepted") }
-        let surface = try XCTUnwrap(window.editorSurface as? EVEditorSurfaceController)
+        let confirmation = try session.executeCommandLine("source \(source.path)")
+        XCTAssertEqual(confirmation.command_status, UInt32(VIEM_COMMAND_STATUS_ERROR))
         surface.refreshPresentation()
         XCTAssertNil(surface.substituteConfirmationPrompt)
         XCTAssertEqual(try backend.formattedText(), "one one")
         try Data("source \(source.path)\n".utf8).write(to: source)
-        let result = await perform(window, backend: backend, kind: .source, path: source.path)
-        guard case .failure(let error) = result else { return XCTFail("Recursive source accepted") }
-        XCTAssertTrue(error.localizedDescription.contains("nesting limit"), error.localizedDescription)
+        let recursive = try session.executeCommandLine("source \(source.path)")
+        XCTAssertEqual(recursive.command_status, UInt32(VIEM_COMMAND_STATUS_ERROR))
+        XCTAssertTrue(surface.commandOutput?.contains("source nesting limit exceeded") == true, surface.commandOutput ?? "")
         XCTAssertEqual(try backend.formattedText(), "one one")
     }
 
@@ -241,10 +311,12 @@ import XCTest
         _ = try await perform(window, backend: backend, kind: .file, path: occupied.path).get()
         var reviews = 0
         document.externalSaveDecisionHandler = { _ in reviews += 1; return false }
-        // User cancellation is silent at the native host boundary. Verify the
-        // review and unchanged bytes rather than expecting an error message.
-        let cancelled = try await perform(window, backend: backend, kind: .write).get()
-        XCTAssertNil(cancelled)
+        // Keep cancellation distinct from success so a suspended script can
+        // abandon its remaining commands. The surface suppresses its message.
+        let cancelled = await perform(window, backend: backend, kind: .write)
+        if case .failure(let error) = cancelled {
+            XCTAssertEqual((error as? CocoaError)?.code, .userCancelled)
+        } else { XCTFail("cancelled save must not acknowledge script success") }
         XCTAssertEqual(reviews, 1)
         XCTAssertEqual(try Data(contentsOf: occupied), Data("do not overwrite".utf8))
         document.externalSaveDecisionHandler = { _ in true }
@@ -287,6 +359,24 @@ import XCTest
         if case .success = await perform(window, backend: backend, kind: .file, path: target.path) { XCTFail("A second document acquired the same file identity") }
         XCTAssertEqual(document.fileURL, original)
         XCTAssertEqual(document.fileBaseline, baseline)
+    }
+
+    func testSaveAutocommandsWritePreEditsAndKeepPostEditsOpenOnWriteQuit() async throws {
+        let (directory, backend, document, window) = try fixture()
+        defer { window.close(); try? FileManager.default.removeItem(at: directory) }
+        try document.read(from: Data("original".utf8), ofType: EVDocument.plainTextType)
+        document.fileType = EVDocument.plainTextType
+        let target = directory.appendingPathComponent("saved.txt")
+        document.fileURL = target
+        let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
+        _ = try session.executeCommandLine("autocmd BufWritePre * call setline(1, 'saved')")
+        _ = try session.executeCommandLine("autocmd BufWritePost * call setline(1, 'after')")
+        let result = await perform(window, backend: backend, kind: .writeQuit)
+        if case .success = result { XCTFail("BufWritePost edits must keep the document open") }
+        XCTAssertEqual(try Data(contentsOf: target), Data("saved".utf8))
+        XCTAssertEqual(try backend.formattedText(), "after")
+        XCTAssertTrue(backend.persistenceState.isDirty)
+        XCTAssertTrue(window.activeDocument === document)
     }
 
 }

@@ -4,7 +4,7 @@ use crate::command::composition::{
     CompositionRestoration, CompositionSession, CompositionTarget,
 };
 use crate::command::ex_execute::{
-    CompletedExArtifactWrite, ExFileRequest, ExFrontendRequest, ExOptionName, ExOptionValue,
+    CompletedExArtifactWrite, ExFileRequest, ExFrontendRequest, ExOptionName, ExOptionValue, ExOutcome,
     ExPostWriteDisposition, ExRequestTag, PreparedExArtifactWrite, PreparedExFileRequest,
     TaggedExFileRequest,
 };
@@ -52,6 +52,8 @@ mod ex_files;
 mod completion;
 mod completion_layout;
 mod search;
+mod scripting;
+mod autocmds;
 pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
 mod line_numbers;
@@ -655,6 +657,8 @@ pub enum CoreError {
     /// A revision-bound native action named a Visual selection which is no
     /// longer the invoking view's exact current logical selection.
     StaleLogicalSelection,
+    /// An acknowledgement belongs to an abandoned or already consumed script.
+    StaleScriptContinuation,
     /// Vim refuses to replace the current artifact with only a line range
     /// unless the command used `:write!` (E140). This policy is distinct from
     /// the storage provider's ordinary existing-destination check.
@@ -980,6 +984,7 @@ pub struct Core<P: TextMeasurementProvider> {
     buffer_commands: BufferCommandState,
     whitespace_defaults: crate::layout::WhitespacePresentationOptions,
     startup_view_options: Option<(bool, crate::command::VisibleWhitespaceSetting, bool)>,
+    startup_effects: Vec<ExFrontendRequest>,
     views: BTreeMap<ViewId, View<P>>,
     next_view: Option<u64>,
     next_layout_job: Option<u64>,
@@ -994,6 +999,12 @@ pub struct Core<P: TextMeasurementProvider> {
     /// continuation to the iterative runner through `queued_replay`.
     replay_undo_floor: Option<usize>,
     queued_replay: Option<ReplayPlan>,
+    pending_scripts: BTreeMap<ViewId, scripting::PendingReplay>,
+    /// Buffer-open autocommands have fired (first view attached).
+    buffer_opened: bool,
+    /// Autocommands are running; their own mode changes fire nothing.
+    firing_autocmds: bool,
+    autocmd_input_generation: u64,
     compound_replay_event_limit: usize,
     global_replay_time_limit: std::time::Duration,
     #[cfg(test)]
@@ -1055,11 +1066,13 @@ enum ReplayFrame {
         event: usize,
         line_started: bool,
     },
+    Script(Box<scripting::ScriptFrame>),
 }
 
 #[derive(Debug)]
 enum ReplayAction {
     Input { event: InputEvent, ex_normal: bool, remap: bool },
+    RunScript,
     BeginExNormalLine(ExNormalTarget),
     FinishExNormalLine,
     PopFrame,
@@ -1150,6 +1163,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             buffer_commands,
             whitespace_defaults: Default::default(),
             startup_view_options: None,
+            startup_effects: Vec::new(),
             views: BTreeMap::new(),
             next_view: Some(1),
             next_layout_job: Some(1),
@@ -1158,6 +1172,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             style_edit_group: None,
             replay_undo_floor: None,
             queued_replay: None,
+            pending_scripts: BTreeMap::new(),
+            buffer_opened: false,
+            firing_autocmds: false,
+            autocmd_input_generation: 0,
             compound_replay_event_limit: MACRO_REPLAY_EVENT_LIMIT,
             global_replay_time_limit: crate::command::ex_global::GLOBAL_REPLAY_TIME_BUDGET,
             #[cfg(test)]
@@ -1978,6 +1996,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             self.record_presentation_error(id, error);
         }
+        self.fire_buffer_open_events(id);
         Ok(id)
     }
 
@@ -1986,6 +2005,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// open undo group is closed. Any worker request owned by this view is
     /// cooperatively cancelled before the view state is dropped.
     pub fn remove_view(&mut self, view_id: ViewId) -> Result<ViewRemovalOutcome, CoreError> {
+        self.cancel_pending_script(view_id);
         if !self.views.contains_key(&view_id) {
             return Err(CoreError::UnknownView(view_id));
         }
@@ -5190,7 +5210,34 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     pub fn handle(&mut self, view_id: ViewId, event: CoreEvent) -> Result<CoreOutcome, CoreError> {
+        let autocmd_clipboard = match &event {
+            CoreEvent::InputWithClipboard { clipboard, .. } | CoreEvent::FlushMappingPrefixWithClipboard(clipboard) => Some(clipboard.clone()),
+            _ => None,
+        };
+        let cancelled = if self.replay_undo_floor.is_none()
+            && matches!(&event, CoreEvent::Input(_) | CoreEvent::InputWithClipboard { .. }) {
+            let token = self.pending_scripts.get(&view_id).map(|pending| pending.token);
+            token.map(|token| self.resume_script(view_id, token, false, autocmd_clipboard.clone())).transpose()?
+        } else { None };
+        let autocmd_generation = self.autocmd_input_generation;
+        let mode_before = self.views.get(&view_id).filter(|view| !view.commands.has_staged_script_action()).map(|view| view.commands.mode());
         let mut outcome = self.handle_without_search_presentation(view_id, event)?;
+        if let Some(cancelled) = cancelled {
+            let mut accumulator = CoreOutcomeAccumulator::new(cancelled);
+            accumulator.merge(outcome)?;
+            outcome = accumulator.finish();
+        }
+        if let Some(language) = autocmds::file_type_change(&outcome) {
+            self.set_code_language(language);
+        }
+        if let Some(before) = mode_before {
+            // Child replay inputs already emitted their individual transitions.
+            let before = if autocmd_generation != self.autocmd_input_generation {
+                self.views[&view_id].commands.mode()
+            } else { before };
+            self.fire_input_events(view_id, before, &mut outcome, autocmd_clipboard)?;
+        }
+
         let revealed_match = outcome.command.as_ref()
             .and_then(|command| command.revealed_search_match.clone())
             .filter(|matched| !outcome.document_changed
@@ -5267,7 +5314,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::FlushMappingPrefix | CoreEvent::FlushMappingPrefixWithClipboard(_) => {
                 let clipboard = match event { CoreEvent::FlushMappingPrefixWithClipboard(value) => Some(value), _ => None };
                 self.install_buffer_commands(view_id);
-                let plan = self.views.get_mut(&view_id).expect("validated view").commands.flush_mapping();
+                let plan = self.views.get_mut(&view_id).expect("validated view").commands.flush_mapping(&mut self.document);
                 let initial = CoreOutcome { command: Some(crate::command::mappings::empty_mapping_output()), document_changed: false, position_map: None, layout_changed: false, composition_changes: Vec::new() };
                 let Some(plan) = plan else { return Ok(initial); };
                 return self.run_compound_replay(view_id, clipboard, initial, ReplayPlan::Mapping(plan));
@@ -6659,7 +6706,19 @@ impl<P: TextMeasurementProvider> Core<P> {
         initial: CoreOutcome,
         initial_plan: ReplayPlan,
     ) -> Result<CoreOutcome, CoreError> {
-        let mapping_replay = matches!(&initial_plan, ReplayPlan::Mapping(_));
+        self.run_compound_replay_state(view_id, clipboard, initial, Some(initial_plan), None)
+    }
+
+    fn run_compound_replay_state(
+        &mut self,
+        view_id: ViewId,
+        clipboard: Option<ClipboardCommandContext>,
+        initial: CoreOutcome,
+        initial_plan: Option<ReplayPlan>,
+        pending: Option<scripting::PendingReplay>,
+    ) -> Result<CoreOutcome, CoreError> {
+        let mapping_replay = pending.as_ref().map_or_else(
+            || matches!(&initial_plan, Some(ReplayPlan::Mapping(_))), |pending| pending.mapping_replay);
         let editing = matches!(self.views[&view_id].commands.mode(), Mode::Insert | Mode::Replace);
         if mapping_replay && editing && self.edit_group_owner == Some(view_id)
             && self.document.edit_group_depth() > 0 {
@@ -6679,31 +6738,41 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
 
         let mut accumulator = CoreOutcomeAccumulator::new(initial);
-        let mut frames = Vec::new();
         let mut terminal_status = None;
-        let mut global_error = None;
-        let mut dispatched_events = 0usize;
-        let mut global_started: Option<std::time::Instant> = None;
-        let mut completed_global_targets = 0usize;
-        if self
-            .views
-            .get_mut(&view_id)
-            .expect("replay view remains attached")
-            .commands
-            .begin_replay_frame()
-        {
-            if matches!(&initial_plan, ReplayPlan::ExNormal(plan) if plan.global) {
-                self.views.get_mut(&view_id).unwrap().commands.global_replay_depth += 1;
+        let mut suspended_for_host = false;
+        let (mut frames, mut dispatched_events, mut global_error,
+            mut global_started, mut completed_global_targets) = match pending {
+            Some(pending) => (pending.frames, pending.dispatched_events, pending.global_error,
+                pending.global_started, pending.completed_global_targets),
+            None => (Vec::new(), 0, None, None, 0),
+        };
+        if let Some(initial_plan) = initial_plan {
+            if self.views.get_mut(&view_id).expect("replay view remains attached").commands.begin_replay_frame() {
+                if matches!(&initial_plan, ReplayPlan::ExNormal(plan) if plan.global) {
+                    self.views.get_mut(&view_id).unwrap().commands.global_replay_depth += 1;
+                }
+                frames.push(replay_frame(initial_plan, &self.views[&view_id].commands));
+            } else {
+                terminal_status = Some(CommandStatus::Error(format!(
+                    "compound replay recursion limit ({COMPOUND_REPLAY_LIMIT}) reached"
+                )));
             }
-            frames.push(replay_frame(initial_plan));
-        } else {
-            terminal_status = Some(CommandStatus::Error(format!(
-                "compound replay recursion limit ({COMPOUND_REPLAY_LIMIT}) reached"
-            )));
         }
 
+        let previous_autocmd_guard = self.firing_autocmds;
         let run_result = (|| -> Result<(), CoreError> {
             while terminal_status.is_none() && !frames.is_empty() {
+                // Cleanup inputs (notably :normal's implicit Escape) can
+                // emit automatic event frames just like ordinary replay keys.
+                if let Some(nested) = self.queued_replay.take() {
+                    if frames.len() >= COMPOUND_REPLAY_LIMIT
+                        || !self.views.get_mut(&view_id).expect("replay view").commands.begin_replay_frame() {
+                        terminal_status = Some(CommandStatus::Error(format!("compound replay recursion limit ({COMPOUND_REPLAY_LIMIT}) reached")));
+                        continue;
+                    }
+                    frames.push(replay_frame(nested, &self.views[&view_id].commands));
+                }
+                self.firing_autocmds = previous_autocmd_guard || frames.iter().any(|frame| matches!(frame, ReplayFrame::Script(script) if script.suppress_input_events));
                 let action = loop {
                     let Some(frame) = frames.last_mut() else {
                         break ReplayAction::PopFrame;
@@ -6765,10 +6834,49 @@ impl<P: TextMeasurementProvider> Core<P> {
                             }
                             break ReplayAction::FinishExNormalLine;
                         }
+                        ReplayFrame::Script(frame) => {
+                            break if frame.finished { ReplayAction::PopFrame } else { ReplayAction::RunScript };
+                        }
                     }
                 };
 
                 match action {
+                    ReplayAction::RunScript => {
+                        match self.run_script_frame(view_id, clipboard.as_ref(), &mut frames, &mut accumulator, &mut dispatched_events)? {
+                            scripting::ScriptStep::AwaitingHost => {
+                                suspended_for_host = true;
+                                break;
+                            }
+                            scripting::ScriptStep::Finished(None) => {}
+                            scripting::ScriptStep::Finished(Some(status)) => {
+                                if let Some(global) = frames.iter().rposition(|frame| matches!(frame, ReplayFrame::ExNormal { plan, .. } if plan.global)) {
+                                    global_error.get_or_insert(status);
+                                    while frames.len() > global + 1 {
+                                        self.release_replay_frame(view_id, frames.pop());
+                                        self.views.get_mut(&view_id).unwrap().commands.end_replay_frame();
+                                    }
+                                    if let ReplayFrame::ExNormal { plan, event, .. } = &mut frames[global] { *event = plan.events.len(); }
+                                    accumulator.command_mut().status = CommandStatus::Complete;
+                                } else {
+                                    terminal_status = Some(status);
+                                }
+                            }
+                            scripting::ScriptStep::Suspended(nested) => {
+                                if frames.len() >= COMPOUND_REPLAY_LIMIT
+                                    || !self.views.get_mut(&view_id).expect("replay view remains attached").commands.begin_replay_frame()
+                                {
+                                    terminal_status = Some(CommandStatus::Error(format!(
+                                        "compound replay recursion limit ({COMPOUND_REPLAY_LIMIT}) reached"
+                                    )));
+                                    continue;
+                                }
+                                if matches!(&nested, ReplayPlan::ExNormal(plan) if plan.global) {
+                                    self.views.get_mut(&view_id).unwrap().commands.global_replay_depth += 1;
+                                }
+                                frames.push(replay_frame(nested, &self.views[&view_id].commands));
+                            }
+                        }
+                    }
                     ReplayAction::PopFrame => {
                         let popped = frames.pop();
                         if matches!(&popped, Some(ReplayFrame::Mapping { plan, .. }) if plan.restore_select) {
@@ -6958,7 +7066,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 // edits or skip later selected identities.
                                 global_error.get_or_insert(status);
                                 while frames.len() > global + 1 {
-                                    frames.pop();
+                                    self.release_replay_frame(view_id, frames.pop());
                                     self.views.get_mut(&view_id).unwrap().commands.end_replay_frame();
                                 }
                                 if let ReplayFrame::ExNormal { plan, event, .. } = &mut frames[global] { *event = plan.events.len(); }
@@ -6968,6 +7076,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                             continue;
                         }
                         if host_action {
+                            if frames.iter().any(|frame| matches!(frame, ReplayFrame::Script(_))) {
+                                suspended_for_host = true;
+                                break;
+                            }
                             let mapping_finished = mapping_replay && frames.iter().all(|frame| {
                                 matches!(frame, ReplayFrame::Mapping { plan, event } if *event == plan.events.len())
                             });
@@ -7003,7 +7115,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             if matches!(&nested, ReplayPlan::ExNormal(plan) if plan.global) {
                                 self.views.get_mut(&view_id).unwrap().commands.global_replay_depth += 1;
                             }
-                            frames.push(replay_frame(nested));
+                            frames.push(replay_frame(nested, &self.views[&view_id].commands));
                         }
                     }
                 }
@@ -7027,8 +7139,28 @@ impl<P: TextMeasurementProvider> Core<P> {
             Ok(())
         })();
 
+        self.firing_autocmds = previous_autocmd_guard;
+
+        if suspended_for_host && run_result.is_ok() {
+            // Never keep a mutable transaction open across a native callback.
+            // Each completed prefix remains committed if the host cancels.
+            self.finish_replay_undo_segment(view_id)?;
+            let token = scripting::allocate_continuation_token().ok_or(CoreError::StaleScriptContinuation)?;
+            self.pending_scripts.insert(view_id, scripting::PendingReplay {
+                token, frames, dispatched_events, mapping_replay, global_error,
+                global_started, completed_global_targets,
+            });
+            accumulator.command_mut().ex_outcome.get_or_insert_with(ExOutcome::default)
+                .frontend_requests.push(ExFrontendRequest::ScriptContinuation(token));
+            self.publish_buffer_commands(view_id);
+            return Ok(accumulator.finish());
+        }
+
         while let Some(frame) = frames.pop() {
             if matches!(&frame, ReplayFrame::Mapping { plan, .. } if plan.restore_select) { self.views.get_mut(&view_id).unwrap().commands.finish_select_mapping(); }
+            if let ReplayFrame::Script(script) = &frame {
+                self.release_script_frame(view_id, script);
+            }
             if matches!(&frame, ReplayFrame::ExNormal { plan, .. } if plan.global) {
                 self.views.get_mut(&view_id).unwrap().commands.global_replay_depth -= 1;
             }
@@ -7059,11 +7191,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         if let Some(status) = terminal_status.or(global_error) {
             accumulator.command_mut().status = status;
         }
-        self.views
-            .get_mut(&view_id)
-            .expect("replay view remains attached")
-            .commands
-            .finish_deferred_insert_normal_once(&mut self.document, accumulator.command_mut());
+        // A synchronous native callback can run while an earlier script owns
+        // suspended replay frames. Its eventual resume/cancel owns completion.
+        if !self.pending_scripts.contains_key(&view_id) {
+            self.views
+                .get_mut(&view_id)
+                .expect("replay view remains attached")
+                .commands
+                .finish_deferred_insert_normal_once(&mut self.document, accumulator.command_mut());
+        }
         let resumes_edit = self
             .views
             .get(&view_id)
@@ -7806,8 +7942,9 @@ fn splice_paragraph_styles(
     Ok(output)
 }
 
-fn replay_frame(plan: ReplayPlan) -> ReplayFrame {
+fn replay_frame(plan: ReplayPlan, commands: &CommandInterpreter) -> ReplayFrame {
     match plan {
+        ReplayPlan::Script(plan) => ReplayFrame::Script(Box::new(scripting::ScriptFrame::new(plan, commands.script_state().clone()))),
         ReplayPlan::LiteralTerminator(_) => unreachable!("literal input continues before compound replay"),
         ReplayPlan::Mapping(plan) => ReplayFrame::Mapping { plan, event: 0 },
         ReplayPlan::Macro(plan) => ReplayFrame::Macro {
@@ -10302,9 +10439,13 @@ mod tests {
             let command = replay.command.unwrap();
             assert_eq!(command.status, CommandStatus::Complete, "replaying {name}");
             let outcome = command.ex_outcome.expect("informational Ex outcome");
-            assert_eq!(outcome.frontend_requests.len(), 1, "replaying {name}");
-            let matches_expected = matches!(
-                (expected, &outcome.frontend_requests[0]),
+            if expected != "options" {
+                assert_eq!(outcome.frontend_requests.len(), 1, "replaying {name}");
+            }
+            // :set also lists changed compatibility/script options.
+            assert!(outcome.frontend_requests.iter().all(|request| matches!(request, ExFrontendRequest::Info(_))));
+            let matches_expected = outcome.frontend_requests.iter().any(|request| matches!(
+                (expected, request),
                 ("marks", ExFrontendRequest::Info(ExInfoRequest::Marks(_)))
                     | (
                         "registers",
@@ -10319,7 +10460,7 @@ mod tests {
                         "print",
                         ExFrontendRequest::Info(ExInfoRequest::PrintLines { .. })
                     )
-            );
+            ));
             assert!(matches_expected, "replaying {name}");
             assert_eq!(core.document().text(), "bc", "later edit after {name}");
             core.handle(view, key('u')).unwrap();

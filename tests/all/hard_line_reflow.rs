@@ -532,26 +532,23 @@ fn ex_textwidth_aliases_queries_overrides_and_inheritance() {
     // `:set` lists only an explicit override; `:set all` shows the effective value.
     ex(&mut c, &mut d, ":set tw=33");
     let output = ex(&mut c, &mut d, ":set");
-    assert!(matches!(
-        output.ex_outcome.unwrap().frontend_requests.as_slice(),
-        [ExFrontendRequest::Info(ExInfoRequest::Options(options))]
+    assert!(output.ex_outcome.unwrap().frontend_requests.iter().any(|request| matches!(
+        request, ExFrontendRequest::Info(ExInfoRequest::Options(options))
             if options.iter().any(|option| option.name == ExOptionName::TextWidth
                 && option.value == ExOptionValue::Number(33))
-    ));
+    )));
     ex(&mut c, &mut d, ":set tw<");
     let output = ex(&mut c, &mut d, ":set");
-    assert!(matches!(
-        output.ex_outcome.unwrap().frontend_requests.as_slice(),
-        [ExFrontendRequest::Info(ExInfoRequest::Options(options))]
-            if !options.iter().any(|option| option.name == ExOptionName::TextWidth)
-    ));
+    assert!(!output.ex_outcome.unwrap().frontend_requests.iter().any(|request| matches!(
+        request, ExFrontendRequest::Info(ExInfoRequest::Options(options))
+            if options.iter().any(|option| option.name == ExOptionName::TextWidth)
+    )));
     let output = ex(&mut c, &mut d, ":set all");
-    assert!(matches!(
-        output.ex_outcome.unwrap().frontend_requests.as_slice(),
-        [ExFrontendRequest::Info(ExInfoRequest::Options(options))]
+    assert!(output.ex_outcome.unwrap().frontend_requests.iter().any(|request| matches!(
+        request, ExFrontendRequest::Info(ExInfoRequest::Options(options))
             if options.iter().any(|option| option.name == ExOptionName::TextWidth
                 && option.value == ExOptionValue::Number(100))
-    ));
+    )));
 }
 
 #[test]
@@ -1007,15 +1004,23 @@ fn deliberate_differences_from_vim_are_fixtured() {
     assert_eq!(d.text(), "aaa bbb\nccc\n");
 
     // 7. Formatting is internal portable policy: no `formatexpr`, `formatprg`,
-    //    or other Vimscript hook is consulted or configurable.
+    //    or other Vimscript hook is consulted. Vim's option names are
+    //    recognized and report that Viem does not support them.
     let (mut c, mut d) = text("a\n");
-    for command in [":set formatexpr=Foo()", ":set formatprg=fmt", ":set fo=tcq"] {
+    for command in [":set formatexpr=Foo()", ":set formatprg=fmt"] {
         let output = ex(&mut c, &mut d, command);
+        assert!(matches!(output.status, CommandStatus::Complete), "{command}");
+        let requests = &output.ex_outcome.as_ref().unwrap().frontend_requests;
         assert!(
-            matches!(output.status, CommandStatus::ExError(_)),
-            "{command}"
+            matches!(requests.as_slice(), [viem_core::command::ex_execute::ExFrontendRequest::Info(
+                viem_core::command::ex_execute::ExInfoRequest::Message(message))] if message.contains("does not support")),
+            "{command}: {requests:?}"
         );
     }
+    let output = ex(&mut c, &mut d, ":set fo=tcq");
+    assert!(matches!(output.status, CommandStatus::ExError(_)));
+    keys(&mut c, &mut d, "gqq");
+    assert_eq!(d.text(), "a\n");
 }
 
 
@@ -1048,11 +1053,15 @@ fn formatoptions_defaults_and_comment_overrides_survive_language_refresh() {
     assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("ro,q".into()));
     set_ok(&mut c, &mut d, ":set fo&");
     let before = d.source_bytes();
-    for command in [":set fo=qt", ":set com=s1:/*", r":set flp=\(", ":set fo=ro com=bad"] {
+    for command in [":set fo=qt", ":set com=s1:/*", r":set flp=\("] {
         assert!(matches!(ex(&mut c, &mut d, command).status, CommandStatus::ExError(_)), "{command}");
         assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("qj".into()));
         assert_eq!(d.source_bytes(), before);
     }
+    assert!(matches!(ex(&mut c, &mut d, ":set fo=ro com=bad").status, CommandStatus::ExError(_)));
+    assert_eq!(shown_option(&mut c, &mut d, ":set fo?"), ExOptionValue::String("ro".into()),
+        "the valid formatoptions prefix commits before invalid comments");
+    assert_eq!(d.source_bytes(), before);
 }
 
 #[test]

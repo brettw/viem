@@ -121,11 +121,11 @@ internal static class CommandStatusTests
             InvalidOperationException? rejected = null;
             try
             {
-                if (sourced) view.SourceLine("999p", 1);
+                if (sourced) view.ExecuteCommandLine("999p");
                 else view.Ex("999p");
             }
             catch (InvalidOperationException error) { rejected = error; }
-            string entry = sourced ? ":source" : "Ex entry";
+            string entry = sourced ? "Command line" : "Ex entry";
             check(rejected?.Message == "line address 999 is outside 1..=4"
                 && view.Outcome.command_status == VIEM_COMMAND_STATUS_ERROR,
                 $"{entry} throws the precise physical line address diagnostic");

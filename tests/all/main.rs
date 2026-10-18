@@ -206,3 +206,11 @@ mod markdown_table_suffix_locality;
 mod list_item_paragraph;
 mod list_item_paragraph_input;
 mod list_item_paragraph_integration;
+mod vimscript_core;
+
+mod vimscript_abbreviations;
+mod vimscript_events;
+
+mod vimscript_options;
+
+mod vimscript_continuation;

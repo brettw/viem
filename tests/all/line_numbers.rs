@@ -34,7 +34,7 @@ fn ex(
 }
 
 #[test]
-fn number_boolean_forms_are_view_local_atomic_and_source_preserving() {
+fn number_boolean_forms_are_view_local_source_preserving_and_commit_valid_prefixes() {
     let (mut core, view) = opened("first\nsecond", Format::PlainText, 250., 180.);
     let other = core.add_view(MockTextMeasurementProvider::new(), 250., 180.);
     let revision = core.document().revision();
@@ -69,8 +69,8 @@ fn number_boolean_forms_are_view_local_atomic_and_source_preserving() {
         CommandStatus::Complete
     );
     assert!(
-        core.number(view).unwrap(),
-        "failed compound set must not partially hide the gutter"
+        !core.number(view).unwrap(),
+        "the valid nonumber prefix commits before an unsupported option"
     );
     assert_eq!(core.document().source_bytes(), b"first\nsecond");
     assert_eq!(core.document().revision(), revision);

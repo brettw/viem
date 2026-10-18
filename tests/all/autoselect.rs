@@ -206,7 +206,7 @@ fn pointer_extension_preserves_an_existing_visual_selection_policy() {
 }
 
 #[test]
-fn boolean_option_grammar_startup_and_invalid_compound_changes_are_atomic() {
+fn boolean_option_grammar_startup_and_compound_failure_retains_valid_prefix() {
     let (mut d, mut c) = fixture();
     assert!(c.configure_startup(&mut d, "set noautoselect").is_empty());
     for (command, enabled) in [
@@ -222,7 +222,7 @@ fn boolean_option_grammar_startup_and_invalid_compound_changes_are_atomic() {
     text(&mut c, &mut d, ":set noautoselect slm=invalid");
     let result = c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
     assert!(matches!(result.status, CommandStatus::ExError(_)));
-    assert!(c.selection_options().autoselect);
+    assert!(!c.selection_options().autoselect, "the valid prefix commits before the invalid selectmode");
     text(&mut c, &mut d, ":set autoselect?");
     let result = c
         .handle(&mut d, InputEvent::Key(Key::Enter))

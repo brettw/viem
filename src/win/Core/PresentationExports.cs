@@ -64,6 +64,12 @@ internal sealed unsafe partial class CoreView
     }
     public void ReadFile(byte[] bytes, ulong document, ulong revision, ulong afterOffset, bool source)
         => Apply(o => { fixed (byte* p = bytes) return viem_core_view_read_file(Document.Handle, Id, document, revision, source ? 1u : 0u, afterOffset, p, (ulong)bytes.Length, o); });
-    public HostEffects? SourceLine(string line, uint depth)
-        => Send((c, o, e) => { byte[] bytes = Encoding.UTF8.GetBytes(line); fixed (byte* p = bytes) return viem_core_view_source_line(Document.Handle, Id, depth, p, (ulong)bytes.Length, c, o, e); }, false);
+    /// Run one command line as if typed after `:` (Vim script).
+    public HostEffects? ExecuteCommandLine(string line)
+        => Send((c, o, e) => { byte[] bytes = Encoding.UTF8.GetBytes(line); fixed (byte* p = bytes) return viem_core_view_execute_command_line(Document.Handle, Id, p, (ulong)bytes.Length, c, o, e); }, false);
+    /// Fire an event after reaching the corresponding native lifecycle boundary.
+    public HostEffects? FireAutocmd(string name, string matched = "")
+        => Send((c, o, e) => { byte[] eventBytes = Encoding.UTF8.GetBytes(name), matchBytes = Encoding.UTF8.GetBytes(matched);
+            fixed (byte* p = eventBytes) fixed (byte* m = matchBytes)
+                return viem_core_view_fire_autocmd(Document.Handle, Id, p, (ulong)eventBytes.Length, m, (ulong)matchBytes.Length, c, o, e); }, false);
 }

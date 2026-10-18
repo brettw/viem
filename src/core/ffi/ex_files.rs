@@ -46,15 +46,15 @@ pub unsafe extern "C" fn viem_core_view_read_file(
     })
 }
 
-/// Execute one sourced Ex line through the normal command pipeline. Blank and
-/// comment lines are no-ops. `depth` is the host's active source stack depth.
+/// Run one command line as if typed after `:`, through the ordinary command
+/// pipeline: it is Vim script, so `|`-separated commands, `:let`, `:call`
+/// and `:source` all work. The view must be in Normal mode.
 /// # Safety
 /// Input/context and disjoint outputs obey the ordinary command-turn contract.
 #[no_mangle]
-pub unsafe extern "C" fn viem_core_view_source_line(
+pub unsafe extern "C" fn viem_core_view_execute_command_line(
     handle: ViemCoreHandle,
     view: ViemViewId,
-    depth: u32,
     input: *const u8,
     length: u64,
     context: *const ViemCommandTurnContextV2,
@@ -77,16 +77,8 @@ pub unsafe extern "C" fn viem_core_view_source_line(
         }
         let reservation = reserve_effect_batch()?;
         let (summary, effects) = with_core_mut(handle, |core| {
-            if !core
-                .queue_sourced_line(ViewId(view), text, depth)
-                .map_err(|_| ViemStatus::InvalidArgument)?
-            {
-                return Ok((summarize_core_outcome(core, ViewId(view), None)?, None));
-            }
-            let result =
-                dispatch_input_with_effects(core, view, InputEvent::Key(Key::Enter), clipboard);
-            core.finish_sourced_line(ViewId(view));
-            result
+            core.stage_command_line(ViewId(view), text).map_err(|_| ViemStatus::InvalidArgument)?;
+            dispatch_input_with_effects(core, view, InputEvent::Key(Key::Enter), clipboard)
         })?;
         let effects = match effects {
             Some(effects) => reservation.commit(effects)?,
@@ -96,6 +88,25 @@ pub unsafe extern "C" fn viem_core_view_source_line(
             out_outcome.write(summary);
             out_effects.write(effects);
         }
+        Ok(())
+    })
+}
+
+/// Replace the theme names `:colorscheme` matches (ignoring case). `names`
+/// holds UTF-8 names separated by NUL bytes; the frontend calls this at
+/// startup and whenever its themes change.
+/// # Safety
+/// `names` must be readable for `length` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn viem_set_theme_names(names: *const u8, length: u64) -> ViemStatus {
+    ffi_boundary(|| {
+        if length > 1024 * 1024 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        let bytes = unsafe { input_bytes(names, length)? };
+        let text = str::from_utf8(bytes).map_err(|_| ViemStatus::InvalidUtf8)?;
+        let names = text.split('\0').filter(|name| !name.is_empty()).map(str::to_owned).collect();
+        crate::command::options::set_theme_names(names);
         Ok(())
     })
 }
@@ -118,12 +129,11 @@ mod tests {
             );
             let mut effects = 0;
             assert_eq!(
-                viem_core_view_source_line(
+                viem_core_view_execute_command_line(
                     0,
                     0,
-                    1,
                     std::ptr::null(),
-                    0,
+                    1,
                     std::ptr::null(),
                     &mut outcome,
                     &mut effects
@@ -132,4 +142,66 @@ mod tests {
             );
         }
     }
+}
+
+/// Resume/cancel exactly the script token returned in the last effect batch.
+/// Native I/O must complete outside the serial core lease. `success = 0`
+/// discards the remaining script after cancellation/failure; a stale token
+/// never consumes another pending script.
+/// # Safety
+/// Context and mutually disjoint outputs obey the command-turn contract.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_resume_script(
+    handle: ViemCoreHandle, view: ViemViewId, token: u64, success: u32,
+    context: *const ViemCommandTurnContextV2,
+    out_outcome: *mut ViemCoreOutcomeV1, out_effects: *mut ViemEffectBatchHandle,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        let regions = [typed_pointer_region(out_outcome, 1)?, typed_pointer_region(out_effects, 1)?];
+        validate_disjoint_regions(&regions)?;
+        let clipboard = unsafe { read_command_turn_context(context, &regions)? };
+        unsafe { clear_outcome(out_outcome)?; out_effects.write(0); }
+        if success > 1 || token == 0 { return Err(ViemStatus::InvalidArgument); }
+        let reservation = reserve_effect_batch()?;
+        let (summary, effects) = with_core_mut(handle, |core| {
+            let outcome = core.resume_script(ViewId(view), token, success != 0, Some(clipboard.clone())).map_err(core_status)?;
+            export_script_outcome(core, view, outcome, &clipboard)
+        })?;
+        let effects = match effects { Some(effects) => reservation.commit(effects)?, None => 0 };
+        unsafe { out_outcome.write(summary); out_effects.write(effects); }
+        Ok(())
+    })
+}
+
+/// Drain startup application effects after the first native view is ready.
+/// # Safety
+/// Outputs are valid, aligned and mutually disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_take_startup_effects(
+    handle: ViemCoreHandle, view: ViemViewId,
+    out_outcome: *mut ViemCoreOutcomeV1, out_effects: *mut ViemEffectBatchHandle,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(out_outcome, 1)?, typed_pointer_region(out_effects, 1)?])?;
+        unsafe { clear_outcome(out_outcome)?; out_effects.write(0); }
+        let reservation = reserve_effect_batch()?;
+        let (summary, effects) = with_core_mut(handle, |core| {
+            let outcome = core.take_startup_effects(ViewId(view)).map_err(core_status)?;
+            export_script_outcome(core, view, outcome, &ClipboardCommandContext::default())
+        })?;
+        let effects = match effects { Some(effects) => reservation.commit(effects)?, None => 0 };
+        unsafe { out_outcome.write(summary); out_effects.write(effects); }
+        Ok(())
+    })
+}
+
+fn export_script_outcome(core: &Core<CTextMeasurementProvider>, view: ViemViewId,
+    outcome: crate::coordinator::CoreOutcome, clipboard: &ClipboardCommandContext,
+) -> Result<(ViemCoreOutcomeV1, Option<OwnedEffectBatch>), ViemStatus> {
+    let id = ViewId(view);
+    let mut summary = summarize_core_outcome(core, id, Some(&outcome))?;
+    let effects = OwnedEffectBatch::from_command(core.document(),
+        core.command_state(id).ok_or(ViemStatus::InvalidView)?, clipboard, outcome.command);
+    if effects.is_some() { summary.flags |= VIEM_OUTCOME_HAS_EXTERNAL_EFFECTS; }
+    Ok((summary, effects))
 }

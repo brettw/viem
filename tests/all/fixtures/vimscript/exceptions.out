@@ -1,0 +1,20 @@
+
+caught custom
+caught Vim(call):E117: Unknown function: NoSuchFunction
+caught Vim(let):E121: Undefined variable: undefined_var
+inner finally
+outer caught inner
+in catch
+error in catch: Vim(call):E117: Unknown function: Undefined
+body
+error in finally: Vim(call):E117: Unknown function: Undefined2
+function threw: from function
+finally runs
+body
+second catch first
+finally after catch
+exception after  |
+Vim(throw):E608: Cannot :throw exceptions with 'Vim' prefix
+Vim(echoerr):from echoerr
+line 83:
+E730: Using a List as a String

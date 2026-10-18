@@ -1,52 +1,27 @@
 //! Portable policy for command files and linewise insertion of host-loaded data.
 use super::*;
 
-pub const SOURCE_MAX_DEPTH: u32 = 16;
-pub const SOURCE_MAX_BYTES: usize = 1024 * 1024;
-pub const SOURCE_MAX_COMMANDS: usize = 10_000;
-
 impl CommandInterpreter {
-    pub(crate) fn finish_sourced_line(&mut self) {
-        self.source_replay_depth = 0;
-    }
-
-    /// Prepare a sourced Ex line for the ordinary Enter dispatch. This bypasses
-    /// Normal-mode mappings while retaining the normal Ex command interpreter.
-    pub(crate) fn queue_sourced_line(&mut self, text: &str, depth: u32) -> Result<bool, String> {
-        if depth == 0 || depth > SOURCE_MAX_DEPTH {
-            return Err("source nesting limit exceeded".into());
-        }
-        if text.len() > SOURCE_MAX_BYTES {
-            return Err("source command is too large".into());
-        }
+    /// Stage `text` as a typed `:` command line; the caller dispatches Enter
+    /// through the ordinary command pipeline, which runs it as Vim script.
+    pub(crate) fn stage_command_line(&mut self, text: &str) -> Result<(), String> {
         if self.substitute_confirmation.is_some() {
-            return Err("finish substitute confirmation before sourcing commands".into());
+            return Err("finish substitute confirmation before running commands".into());
         }
         if self.mode != Mode::Normal {
-            return Err("source requires a completed Normal-mode command".into());
+            return Err("command lines run from a completed Normal-mode command".into());
         }
-        let text = text.strip_prefix('\u{feff}').unwrap_or(text).trim_start();
+        let text = text.strip_suffix('\n').unwrap_or(text);
         let text = text.strip_suffix('\r').unwrap_or(text);
-        let text = text.strip_prefix(':').unwrap_or(text).trim_start();
-        if text.is_empty() || text.starts_with('"') {
-            return Ok(false);
-        }
-        if let Ok(command) = ex::parse_ex(text) {
-            let confirmation = self.ex_state.requests_confirmation(&command.action);
-            if confirmation {
-                return Err(
-                    "interactive substitute confirmation is unavailable in source files".into(),
-                );
-            }
-        }
-        self.source_replay_depth = depth;
+        let text = text.trim_start();
+        let text = text.strip_prefix(':').unwrap_or(text);
         self.enter_command_line(CommandLineKind::Ex);
         self.command_line_state
             .as_mut()
             .expect("entered command line")
             .buffer
             .set(text.to_owned());
-        Ok(true)
+        Ok(())
     }
 }
 
@@ -163,51 +138,39 @@ mod tests {
         assert_eq!(document.history_status(), before);
     }
 
+    fn run(c: &mut CommandInterpreter, d: &mut Document, line: &str) -> CommandOutput {
+        c.stage_command_line(line).unwrap();
+        c.handle(d, InputEvent::Key(Key::Enter)).unwrap()
+    }
+
     #[test]
-    fn source_comments_limits_confirmation_and_mapping_trailing_spaces() {
+    fn staged_lines_run_as_scripts_and_keep_mapping_trailing_spaces() {
         let mut c = CommandInterpreter::new();
         let mut d = Document::new("first\nsecond");
-        assert!(!c.queue_sourced_line("\u{feff}  \" comment\r", 1).unwrap());
-        assert!(c.queue_sourced_line("set wrap", 0).is_err());
-        assert!(c
-            .queue_sourced_line("set wrap", SOURCE_MAX_DEPTH + 1)
-            .is_err());
-        assert!(c.queue_sourced_line("s/i/I/c", 1).is_err());
-        assert_eq!(c.mode(), Mode::Normal);
+        assert!(matches!(run(&mut c, &mut d, "  \" comment\r").status, CommandStatus::Complete));
         assert_eq!(d.revision(), Revision(0));
-        assert!(c.queue_sourced_line("map Y iabc  \r", 1).unwrap());
-        assert_eq!(c.command_line(), Some("map Y iabc  "));
-        assert!(matches!(
-            c.handle(&mut d, InputEvent::Key(Key::Enter))
-                .unwrap()
-                .status,
-            CommandStatus::Complete
-        ));
+        assert!(matches!(run(&mut c, &mut d, "map Y iabc  \r").status, CommandStatus::Complete));
         c.handle(&mut d, InputEvent::Key(Key::Char('Y'))).unwrap();
         assert!(d.text().starts_with("abc  first"), "{}", d.text());
     }
+
     #[test]
-    fn sourced_normal_rejects_nested_confirmation_and_effective_flags() {
+    fn scripts_reject_substitute_confirmation_including_nested_normal() {
         let mut c = CommandInterpreter::new();
         let mut d = Document::new("one one");
-        assert!(c.queue_sourced_line("normal :s/one/two/gc\n", 1).unwrap());
-        let output = c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
-        c.finish_sourced_line();
+        let output = run(&mut c, &mut d, "exe \"normal :s/one/two/gc\\r\" | echo 'after'");
         assert!(!matches!(output.status, CommandStatus::Pending));
         assert!(c.substitute_confirmation_prompt().is_none());
         assert_eq!(d.text(), "one one");
+        let output = run(&mut c, &mut d, "s/one/two/gc | echo 'after'");
+        assert!(format!("{:?}", output.status).contains("Substitute confirmation is not available in scripts"), "{output:?}");
+        assert!(c.substitute_confirmation_prompt().is_none());
 
-        c.enter_command_line(CommandLineKind::Ex);
-        c.command_line_state
-            .as_mut()
-            .unwrap()
-            .buffer
-            .set("s/one/two/gc".into());
-        c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
+        // Typed alone, the command keeps its interactive prompt.
+        run(&mut c, &mut d, "s/one/two/gc");
         assert!(c.substitute_confirmation_prompt().is_some());
-        assert!(c.queue_sourced_line("set wrap", 1).is_err());
+        assert!(c.stage_command_line("set wrap").is_err());
         c.handle(&mut d, InputEvent::Key(Key::Char('q'))).unwrap();
-        assert!(c.queue_sourced_line("&&", 1).is_err());
         assert!(c.substitute_confirmation_prompt().is_none());
         assert_eq!(d.text(), "one one");
     }

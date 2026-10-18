@@ -1,4 +1,5 @@
 import AppKit
+import CViemCore
 
 /// Application appearance uses portable sRGB values, independently of a
 /// document's style sheet.
@@ -75,6 +76,7 @@ public final class EVThemeStore {
     observer = NotificationCenter.default.addObserver(forName: .viemThemeDidChange, object: configuration, queue: .main) { [weak self] _ in
       MainActor.assumeIsolated { self?.reload() }
     }
+    publishThemeNames()
   }
 
   deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
@@ -100,7 +102,16 @@ public final class EVThemeStore {
     chromeStyles = EVChromeStyleResolver.resolve(configuration: configuration, theme: theme)
     generation &+= 1
     if generation == 0 { generation = 1 }
+    publishThemeNames()
     center.post(name: .viemThemeDidChange, object: self)
+  }
+
+  /// `:colorscheme` in the portable core matches these names.
+  private func publishThemeNames() {
+    let names = Data((["Default"] + configuration.availableThemeNames).joined(separator: "\0").utf8)
+    _ = names.withUnsafeBytes { raw in
+      viem_set_theme_names(raw.bindMemory(to: UInt8.self).baseAddress, UInt64(raw.count))
+    }
   }
 
   public func update(_ value: EVTheme) {

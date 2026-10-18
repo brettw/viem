@@ -176,15 +176,15 @@ mod tests {
     }
 
     #[test]
-    fn invalid_ex_batch_and_invalid_defaults_leave_options_and_geometry_untouched() {
+    fn failed_set_argument_retains_prefix_and_invalid_defaults_preserve_geometry() {
         let mut core = Core::new(Document::new(" a  "));
         let id = core.add_view(MockTextMeasurementProvider::new(), 200.0, 100.0);
-        let before = core.layout(id).unwrap().configuration_generation();
         assert!(!matches!(
             ex(&mut core, id, ":set nolist lcs=tab:x"),
             CommandStatus::Complete
         ));
-        assert!(core.views[&id].commands.visible_whitespace().enabled());
+        assert!(!core.views[&id].commands.visible_whitespace().enabled());
+        let before = core.layout(id).unwrap().configuration_generation();
         let mut options = WhitespacePresentationOptions::default();
         options.visible_whitespace.style.size = Some((-1.0).into());
         assert!(core.set_whitespace_presentation_defaults(options).is_err());

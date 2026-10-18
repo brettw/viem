@@ -1767,7 +1767,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             return
         }
         guard let session = surface.session, let kind = keyKind(for: selector) else {
-            NSSound.beep()
+            surface.backend.configuration.scriptOptions.beep()
             return
         }
         let modifiers = NSStringFromSelector(selector).contains("AndModifySelection")

@@ -971,13 +971,13 @@ mod tests {
     }
 
     #[test]
-    fn invalid_ex_is_atomic_and_buffer_options_survive_view_state_install() {
+    fn invalid_set_argument_preserves_completed_options_and_buffer_state() {
         let mut d = Document::new("unchanged");
         let mut c = CommandInterpreter::new();
         keys(&mut c, &mut d, ":set ts=8 sw=-1");
         let output = c.handle(&mut d, InputEvent::Key(Key::Enter)).unwrap();
         assert_ne!(output.status, CommandStatus::Complete);
-        assert_eq!(c.indentation_options(), IndentationOptions::default());
+        assert_eq!(c.indentation_options(), IndentationOptions { tabstop: 8, ..IndentationOptions::default() });
         ex(&mut c, &mut d, "set ts=8 noai");
         let mut other = CommandInterpreter::new();
         other.install_buffer_state(&c.export_buffer_state());

@@ -8,7 +8,7 @@ use super::super::formatted_text::{FormattedLeafLocation, LeafBoundarySide};
 use super::{Coverage, SyntaxInputIdentity, SyntaxInputSnapshot, SyntaxRun, SyntaxStyleName};
 use checkpoints::Checkpoints;
 pub use regex::{
-    VimPattern, VimRegexContinuation, VimRegexLimits, VimRegexMatch, VimRegexProgress,
+    VimKeyword, VimPattern, VimRegexContinuation, VimRegexLimits, VimRegexMatch, VimRegexProgress,
 };
 use std::{collections::BTreeMap, ops::Range, path::Path, sync::Arc};
 

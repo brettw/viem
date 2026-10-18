@@ -40,6 +40,9 @@ pub mod visual_block;
 pub mod window;
 pub mod startup;
 pub mod mappings;
+mod abbreviations;
+pub(crate) mod options;
+pub(crate) mod scripting;
 
 mod command_line_completion;
 mod command_line_edit;
@@ -85,7 +88,7 @@ use ex_execute::{
     ExNavigation, ExNormalRequest, ExOptionEffect, ExOptionName, ExOptionValue, ExOutcome,
     ExRegisterEffectKind, ExRegisterKind, ExRegisterReader, ExRegisterValue,
 };
-use insert_motion::{ctrl_u_delete_range_since_snapshot, ctrl_w_delete_range, ctrl_w_delete_range_snapshot};
+use insert_motion::{ctrl_u_delete_range_since_snapshot, ctrl_w_delete_range_with_keywords, ctrl_w_delete_range_snapshot};
 use layout_motion::{
     align_viewport, g0, g_caret, g_dollar_for_document, gj, gk, screen_motion, viewport_line,
     LayoutMotionError, ScreenMotion, Viewport, ViewportAlignment, ViewportLine, VisualPosition,
@@ -1183,6 +1186,7 @@ pub(crate) enum ReplayPlan {
     Mapping(mappings::MappingReplayPlan),
     Macro(MacroReplayPlan),
     ExNormal(ExNormalReplayPlan),
+    Script(scripting::ScriptPlan),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1349,6 +1353,10 @@ pub(crate) struct BufferCommandState {
     pub(crate) text_width: crate::document::TextWidthSetting,
     pub(crate) reflow_options: crate::document::ReflowOptions,
     pub(crate) indentation: crate::document::IndentationSetting,
+    /// Shared Vim script state: variables, functions, commands, autocmds.
+    script: crate::vimscript::ScriptState,
+    /// Values of Vim options outside the core `:set` implementation.
+    vim_options: options::VimOptions,
 }
 
 /// Per-view Vim controller state.
@@ -1358,6 +1366,7 @@ pub struct CommandInterpreter {
     table_tab_selection: bool,
     mappings: mappings::KeyMappings,
     mapping_pending: Vec<Key>,
+    pub(crate) pending_yank_event: Option<scripting::YankEvent>,
     mapping_suppressed: bool,
     mode: Mode,
     selection_behavior: SelectionBehavior,
@@ -1444,7 +1453,9 @@ pub struct CommandInterpreter {
     last_macro: Option<char>,
     compound_replay_depth: usize,
     pub(crate) global_replay_depth: usize,
-    pub(crate) source_replay_depth: u32,
+    /// Running Vim scripts (command lines with several commands, sourced
+    /// files, functions); interactive confirmation is unavailable inside.
+    pub(crate) script_depth: u32,
     macro_recording_suppressed: bool,
     /// Core-facing dispatch asks compound commands to emit a replay plan.
     /// Direct `CommandInterpreter` users retain the legacy headless executor
@@ -1470,6 +1481,22 @@ pub struct CommandInterpreter {
     visible_whitespace: VisibleWhitespaceSetting,
     /// Canonical language selecting the reflow comment profile.
     reflow_language: Option<String>,
+    /// The buffer's Vim script state, shared by its views.
+    script: crate::vimscript::ScriptState,
+    /// A host command or editor action staged by a running script; the
+    /// next submitted command line executes it directly.
+    script_action: Option<scripting::ScriptAction>,
+    /// Synchronous native lifecycle callbacks may edit the core but cannot
+    /// start another native operation or publish an application option.
+    pub(crate) native_requests_blocked: bool,
+    /// `v:count` for `<expr>` mappings while they evaluate.
+    script_count: Option<usize>,
+    /// Text of a `<Cmd>` mapping command line being collected.
+    cmd_key: Option<String>,
+    /// An abbreviation's keys are being input; they cannot expand again.
+    expanding_abbreviation: bool,
+    /// Values of Vim options outside the core `:set` implementation.
+    vim_options: options::VimOptions,
 }
 
 #[derive(Clone, Debug)]
@@ -1542,6 +1569,7 @@ impl CommandInterpreter {
         Self {
             mappings: Default::default(),
             mapping_pending: Vec::new(),
+            pending_yank_event: None,
             mapping_suppressed: false,
             mode: Mode::Normal,
             table_cells: None,
@@ -1615,7 +1643,7 @@ impl CommandInterpreter {
             last_macro: None,
             compound_replay_depth: 0,
             global_replay_depth: 0,
-            source_replay_depth: 0,
+            script_depth: 0,
             macro_recording_suppressed: false,
             plan_compound_replay: false,
             pending_replay: None,
@@ -1631,6 +1659,13 @@ impl CommandInterpreter {
             restored_indent: None,
             visible_whitespace: Default::default(),
             reflow_language: None,
+            script: crate::vimscript::ScriptState::new(),
+            script_action: None,
+            native_requests_blocked: false,
+            script_count: None,
+            cmd_key: None,
+            expanding_abbreviation: false,
+            vim_options: Default::default(),
         }
     }
 
@@ -1659,6 +1694,8 @@ impl CommandInterpreter {
             text_width: self.text_width,
             reflow_options: self.reflow_options.clone(),
             indentation: self.indentation,
+            script: self.script.clone(),
+            vim_options: self.vim_options.clone(),
         }
     }
 
@@ -1687,6 +1724,8 @@ impl CommandInterpreter {
         let defaults = state.indentation.defaults();
         self.reflow_options.set_continuation_defaults(defaults.continue_comments_on_enter, defaults.continue_comments_on_open_line);
         self.indentation = state.indentation;
+        self.script = state.script.clone();
+        self.vim_options.clone_from(&state.vim_options);
     }
 
     pub fn mode(&self) -> Mode {
@@ -2930,7 +2969,7 @@ impl CommandInterpreter {
         name: char,
     ) -> Result<Option<RegisterValue>, RegisterReadError> {
         self.registers.read(
-            name,
+            self.clipboard_register(name),
             RegisterReadContext::new(
                 clipboard,
                 document.artifact_binding().map(|binding| binding.path()),
@@ -3080,7 +3119,7 @@ impl CommandInterpreter {
         self.clear_pending();
         self.position_revision = Some(document.revision());
         let line = usize::try_from(line).unwrap_or(usize::MAX).max(1);
-        let mut output = self.goto_physical_line(document, line);
+        let mut output = self.goto_physical_line_with_column(document, line, false);
         output.mode_changed = old_mode != Mode::Normal;
         output
     }
@@ -3170,6 +3209,16 @@ impl CommandInterpreter {
             return self.paste_platform_clipboard(document, None, key);
         }
         if let Some(output) = self.handle_mapping(document, &event)? { return Ok(output); }
+        if let Some(output) = self.handle_cmd_key(document, &event) { return Ok(output); }
+        if let Some((mut output, consumed)) = self.handle_abbreviation(document, &event)? {
+            if !consumed {
+                self.expanding_abbreviation = true;
+                let next = self.handle(document, event);
+                self.expanding_abbreviation = false;
+                output.merge(next?);
+            }
+            return Ok(output);
+        }
         let event = self.normalized_input_event(event);
         let image_navigation = self.is_inline_image_navigation(&event);
         let image_navigation_revision = document.revision();
@@ -3400,7 +3449,8 @@ impl CommandInterpreter {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
 
-        if self.substitute_confirmation.is_some() || self.mapping_applies(&event) || self.selection_input_requires_legacy(&event) {
+        if self.substitute_confirmation.is_some() || self.mapping_applies(&event) || self.selection_input_requires_legacy(&event)
+            || self.cmd_key_applies(&event) || self.abbreviation_applies(&event) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         let event = self.normalized_input_event(event);
@@ -4248,6 +4298,7 @@ impl CommandInterpreter {
         document: &Document,
         name: char,
     ) -> Result<Option<RegisterValue>, RegisterReadError> {
+        let name = self.clipboard_register(name);
         if self.mode != Mode::CommandLine {
             if let Some(target) = clipboard::ClipboardTarget::from_register(name) {
                 return self.clipboard_context.read(target)
@@ -4286,18 +4337,61 @@ impl CommandInterpreter {
         }
     }
 
+    fn clipboard_register(&self, name: char) -> char {
+        if name != '"' { return name; }
+        if self.vim_options.has_item("clipboard", "unnamedplus") { '+' }
+        else if self.vim_options.has_item("clipboard", "unnamed") { '*' }
+        else { name }
+    }
+
     fn validate_register_write(&self, requested: Option<char>) -> Result<(), RegisterWriteError> {
-        self.registers
-            .validate_write(requested, &self.clipboard_context)
+        self.registers.validate_write(requested, &self.clipboard_context)?;
+        if requested.is_none_or(|name| name == '"') {
+            self.registers.validate_write(Some(self.clipboard_register('"')), &self.clipboard_context)?;
+        }
+        Ok(())
+    }
+
+    fn write_unnamed_clipboards(&mut self, requested: Option<char>, value: &RegisterValue, yank: bool) {
+        if requested.is_some_and(|name| name != '"') { return; }
+        let plus = self.vim_options.has_item("clipboard", "unnamedplus");
+        // With both flags Vim duplicates yanks to the primary selection, while
+        // delete/change and put use the clipboard selected by unnamedplus.
+        for (enabled, name) in [
+            (self.vim_options.has_item("clipboard", "unnamed") && (yank || !plus), '*'),
+            (plus, '+'),
+        ] {
+            if enabled {
+                let target = clipboard::ClipboardTarget::from_register(name).unwrap();
+                self.pending_clipboard_writes.push(ClipboardWriteRequest::from_register(target, value.clone()));
+            }
+        }
     }
 
     #[allow(clippy::result_large_err)]
     fn require_register_write(&self, requested: Option<char>) -> Result<(), CommandOutput> {
-        self.validate_register_write(requested)
-            .map_err(|error| CommandOutput {
-                status: CommandStatus::RegisterWriteError(error),
-                ..CommandOutput::complete()
-            })
+        self.require_register_write_kind(requested, false)
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn require_register_write_kind(&self, requested: Option<char>, yank: bool) -> Result<(), CommandOutput> {
+        let result = self.validate_register_write(requested).and_then(|()| {
+            if yank && requested.is_none_or(|name| name == '"') && self.vim_options.has_item("clipboard", "unnamed") {
+                self.registers.validate_write(Some('*'), &self.clipboard_context)?;
+            }
+            Ok(())
+        });
+        result.map_err(|error| CommandOutput {
+            status: CommandStatus::RegisterWriteError(error),
+            ..CommandOutput::complete()
+        })
+    }
+
+    pub(crate) fn write_script_register(&mut self, name: char, value: RegisterValue) -> Result<(), RegisterWriteError> {
+        self.registers.validate_write(Some(name), &self.clipboard_context)?;
+        let effect = self.registers.write_script(name, value);
+        self.collect_register_write(effect);
+        Ok(())
     }
 
     fn collect_register_write(&mut self, effect: RegisterWriteEffect) {
@@ -4313,6 +4407,16 @@ impl CommandInterpreter {
             }
         }
         self.clipboard_copy_as_seen = false;
+        self.write_unnamed_clipboards(requested, &value, true);
+        let text = if value.kind == RegisterKind::Linewise { value.text.strip_suffix('\n').unwrap_or(&value.text) } else { &value.text };
+        self.pending_yank_event = (requested != Some('_')).then(|| scripting::YankEvent {
+            contents: text.split('\n').map(str::to_owned).collect(),
+            register: requested.map(|name| name.to_string()).unwrap_or_default(),
+            kind: match value.kind { RegisterKind::Linewise => "V".into(), RegisterKind::Characterwise => "v".into(),
+                RegisterKind::Blockwise => format!("\u{16}{}", text.split('\n').map(|row| row.chars().count()).max().unwrap_or(0)), },
+            inclusive: true,
+            visual: matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock),
+        });
         let effect = self.registers.yank(requested, value);
         self.collect_register_write(effect);
     }
@@ -4323,6 +4427,7 @@ impl CommandInterpreter {
         value: RegisterValue,
         class: DeletionClass,
     ) {
+        self.write_unnamed_clipboards(requested, &value, false);
         let effect = self.registers.delete(requested, value, class);
         self.collect_register_write(effect);
     }
@@ -4364,6 +4469,20 @@ impl CommandInterpreter {
             ));
         }
         if let Some(output) = self.handle_mapping(document, &event)? {
+            return Ok(output);
+        }
+        if let Some(output) = self.handle_cmd_key(document, &event) {
+            return Ok(output);
+        }
+        if let Some((mut output, consumed)) = self.handle_abbreviation(document, &event)? {
+            // The expansion changed the text, so the supplied layout is stale;
+            // trigger keys (blanks, punctuation, <CR>, <Esc>) need none.
+            if !consumed {
+                self.expanding_abbreviation = true;
+                let next = self.handle(document, event);
+                self.expanding_abbreviation = false;
+                output.merge(next?);
+            }
             return Ok(output);
         }
         let event = self.normalized_input_event(event);
@@ -4809,6 +4928,7 @@ impl CommandInterpreter {
             Pending::SaveQuit => {
                 self.clear_pending();
                 return Some(match key {
+                    Key::Char('Z') if self.native_requests_blocked => scripting::native_request_error(),
                     Key::Char('Z') if document.is_read_only() => CommandOutput {
                         status: CommandStatus::ExError(ExCommandError::Execute(ExExecuteError::ReadOnly)),
                         ..CommandOutput::complete()
@@ -5097,10 +5217,10 @@ impl CommandInterpreter {
             Key::Left => self.move_cursor(document, Motion::ArrowHorizontal(-1), count),
             Key::Right => self.move_cursor(document, Motion::ArrowHorizontal(1), count),
             Key::Char('h') | Key::Backspace => {
-                self.move_cursor(document, Motion::Horizontal(-1), count)
+                self.move_cursor(document, self.horizontal_key_motion(key), count)
             }
             Key::Char('l') | Key::Char(' ') => {
-                self.move_cursor(document, Motion::Horizontal(1), count)
+                self.move_cursor(document, self.horizontal_key_motion(key), count)
             }
             Key::Char('j') | Key::Down => self.move_cursor(document, Motion::Vertical(1), count),
             Key::Char('k') | Key::Up => self.move_cursor(document, Motion::Vertical(-1), count),
@@ -5379,7 +5499,7 @@ impl CommandInterpreter {
                 self.move_cursor(document, Motion::Horizontal(-1), count)
             }
             Key::Char('l') | Key::Char(' ') => {
-                self.move_cursor(document, Motion::Horizontal(1), count)
+                self.move_cursor(document, self.horizontal_key_motion(key), count)
             }
             Key::Char('j') | Key::Down => self.move_cursor(document, Motion::Vertical(1), count),
             Key::Char('k') | Key::Up => self.move_cursor(document, Motion::Vertical(-1), count),
@@ -7796,7 +7916,7 @@ impl CommandInterpreter {
                     }
                     let Some(start) = document.line_start(first) else { continue; };
                     let Some(end) = document.line_end(last) else { continue; };
-                    let line_edits = match indent_edits(&document.hard_line_snapshot(), &(start..end), Operator::Reindent, 1, self.indentation_options()) {
+                    let line_edits = match indent_edits(&document.hard_line_snapshot(), &(start..end), Operator::Reindent, 1, self.indentation_options(), self.vim_options.flag("shiftround")) {
                         Ok(edits) => edits,
                         Err(error) => return Ok(error.into_command_output()),
                     };
@@ -7891,7 +8011,7 @@ impl CommandInterpreter {
             });
         }
         if matches!(operator, Operator::Delete | Operator::Yank) {
-            if let Err(output) = self.require_register_write(register) {
+            if let Err(output) = self.require_register_write_kind(register, operator == Operator::Yank) {
                 return Ok(output);
             }
         }
@@ -9191,6 +9311,7 @@ impl CommandInterpreter {
                 return CommandOutput::unsupported(format!("window command {key:?}"))
             }
         };
+        if self.native_requests_blocked { return scripting::native_request_error(); }
         let mut outcome = ExOutcome::default();
         outcome.frontend_requests.push(request);
         CommandOutput {
@@ -9356,7 +9477,10 @@ impl CommandInterpreter {
             }
             Some(OperatorMotion::Percentage)
         } else {
-            operator_motion_for_key(key)
+            if matches!(key, Key::Char('h') | Key::Backspace | Key::Left)
+                && self.vim_options.has_item("whichwrap", match key { Key::Char('h') => "h", Key::Backspace => "b", _ => "<" }) {
+                Some(OperatorMotion::WrappingLeft)
+            } else { operator_motion_for_key(key) }
         };
         let Some(motion) = motion else {
             return Ok(CommandOutput::unsupported("operator motion"));
@@ -9389,7 +9513,7 @@ impl CommandInterpreter {
                     .and_then(|range| document.projection().text_tree().slice(range).ok())
                     .is_some_and(|text| !text.chars().all(char::is_whitespace))
                 {
-                    let end = word_snapshot::end(&lines, self.cursor, big, count, true);
+                    let end = word_snapshot::end_with_keywords(&lines, self.cursor, big, count, true, self.vim_options.keywords());
                     return Some(MotionExtent {
                         range: self.cursor..lines.next_grapheme_boundary(end).unwrap_or(end),
                         kind: MotionKind::Characterwise,
@@ -9409,6 +9533,11 @@ impl CommandInterpreter {
         let lines = document.hard_line_snapshot();
         let origin = self.cursor.min(lines.text_length());
         let local_destination = match motion {
+            OperatorMotion::WrappingLeft => {
+                let mut at = origin;
+                for _ in 0..count { let Some(previous) = lines.previous_grapheme_boundary(at) else { break; }; at = previous; }
+                Some(at)
+            },
             OperatorMotion::Left => Some(move_horizontal(&lines, origin, directional_count(count, false))),
             OperatorMotion::Right => {
                 let mut end = origin;
@@ -9440,9 +9569,9 @@ impl CommandInterpreter {
             });
         }
         let word_target = match motion {
-            OperatorMotion::WordForward(big) => Some((word_snapshot::forward(&lines, origin, big, count), false)),
-            OperatorMotion::WordBackward(big) => Some((word_snapshot::backward(&lines, origin, big, count), false)),
-            OperatorMotion::WordEndBackward(big) => Some((word_snapshot::end_backward(&lines, origin, big, count), true)),
+            OperatorMotion::WordForward(big) => Some((word_snapshot::forward_with_keywords(&lines, origin, big, count, self.vim_options.keywords()), false)),
+            OperatorMotion::WordBackward(big) => Some((word_snapshot::backward_with_keywords(&lines, origin, big, count, self.vim_options.keywords()), false)),
+            OperatorMotion::WordEndBackward(big) => Some((word_snapshot::end_backward_with_keywords(&lines, origin, big, count, self.vim_options.keywords()), true)),
             OperatorMotion::WordEnd(big) => {
                 let target = if let Some((_, _, cell)) = document.projection().table_cell_at(origin)
                 {
@@ -9451,7 +9580,7 @@ impl CommandInterpreter {
                     let text = lines.slice_utf8(cell.range.clone()).ok()?;
                     cell.range.start + move_word_end(&text, origin - cell.range.start, big, count)
                 } else {
-                    word_snapshot::end(&lines, origin, big, count, false)
+                    word_snapshot::end_with_keywords(&lines, origin, big, count, false, self.vim_options.keywords())
                 };
                 Some((target, true))
             }
@@ -9482,7 +9611,7 @@ impl CommandInterpreter {
             }
         };
         match motion {
-            OperatorMotion::Left | OperatorMotion::Right | OperatorMotion::LineStart =>
+            OperatorMotion::Left | OperatorMotion::WrappingLeft | OperatorMotion::Right | OperatorMotion::LineStart =>
                 unreachable!("local operator motions returned before materializing text"),
             OperatorMotion::Down | OperatorMotion::Up => {
                 let amount = directional_count(count, motion == OperatorMotion::Down);
@@ -9601,11 +9730,13 @@ impl CommandInterpreter {
             operator,
             Operator::Yank | Operator::Delete | Operator::Change
         ) {
-            if let Err(output) = self.require_register_write(register) {
+            if let Err(output) = self.require_register_write_kind(register, operator == Operator::Yank) {
                 return Ok(output);
             }
         }
         let lines = document.hard_line_snapshot();
+        let retained_column = (!self.vim_options.flag("startofline") && extent.kind == MotionKind::Linewise)
+            .then(|| options::logical_column(&lines, self.cursor));
         document.validate_hard_line_snapshot(&lines)?;
         if operator.is_format() {
             // Reflow never reads registers and counts complete hard lines
@@ -9730,9 +9861,10 @@ impl CommandInterpreter {
                     if extent.kind == MotionKind::Linewise && self.literal_indentation(document) {
                         self.cursor = cursor_after_linewise_deletion(document, self.cursor);
                     }
-                    self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
-                        self.cursor,
-                    );
+                    if let Some(column) = retained_column {
+                        self.cursor = options::at_logical_column(&document.hard_line_snapshot(), self.cursor, column);
+                    }
+                    self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), self.cursor);
                 }
                 Ok(output)
             }
@@ -9743,6 +9875,7 @@ impl CommandInterpreter {
                     operator,
                     application_count,
                     self.indentation_options(),
+                    self.vim_options.flag("shiftround"),
                 ) {
                     Ok(edits) => edits,
                     Err(error) => return Ok(error.into_command_output()),
@@ -9752,9 +9885,9 @@ impl CommandInterpreter {
                 }
                 document.validate_hard_line_snapshot(&lines)?;
                 document.apply_edits(edits)?;
-                self.cursor = first_nonblank_document(document, &document.hard_line_snapshot(),
-                    extent.range.start,
-                );
+                let current = document.hard_line_snapshot();
+                self.cursor = if let Some(column) = retained_column { options::at_logical_column(&current, extent.range.start, column) }
+                    else { first_nonblank_document(document, &current, extent.range.start) };
                 Ok(CommandOutput {
                     document_changed: true,
                     cursor_moved: true,
@@ -10311,6 +10444,7 @@ impl CommandInterpreter {
             self.cursor,
             TextObject { scope, kind },
             count,
+            self.vim_options.keywords(),
         ) {
             Ok(range) if !range.is_empty() || matches!(kind, TextObjectKind::Word | TextObjectKind::BigWord) => range,
             Ok(_) => {
@@ -11064,10 +11198,11 @@ impl CommandInterpreter {
                     .visual_block_insert
                     .as_mut()
                     .expect("deferred block insert checked above");
-                match ctrl_w_delete_range(
+                match ctrl_w_delete_range_with_keywords(
                     &session.payload,
                     0..session.payload.len(),
                     session.payload.len(),
+                    self.vim_options.keywords(),
                 ) {
                     Ok(range) => session.truncate_payload(range.start),
                     Err(error) => {
@@ -11276,7 +11411,7 @@ impl CommandInterpreter {
         let (name, range) = match step {
             EditSessionStep::DeleteWord => (
                 "Ctrl-W",
-                ctrl_w_delete_range_snapshot(&snapshot, line, self.cursor),
+                ctrl_w_delete_range_snapshot(&snapshot, line, self.cursor, self.vim_options.keywords()),
             ),
             EditSessionStep::DeleteToLineStart => {
                 let floor = self.insert_session.as_ref()
@@ -12634,8 +12769,10 @@ impl CommandInterpreter {
     ) -> Result<CommandOutput, DocumentError> {
         let lines = document.hard_line_snapshot();
         let mut end = self.cursor;
-        let limit = line_end(&lines, self.cursor);
+        let wrap = self.vim_options.has_item("whichwrap", "~");
+        let limit = if wrap { lines.text_length() } else { line_end(&lines, self.cursor) };
         for _ in 0..count {
+            if wrap && end == line_end(&lines, end) { end = next_line_start(&lines, end).unwrap_or(end); }
             if end >= limit { break; }
             let Some(next) = lines.next_grapheme_boundary(end) else { break; };
             end = next.min(limit);
@@ -12663,7 +12800,11 @@ impl CommandInterpreter {
         }
         let replacement_end = start + replacement.len();
         let lines = document.hard_line_snapshot();
-        self.cursor = if replacement_end < line_end(&lines, start) {
+        self.cursor = if wrap {
+            if replacement_end == line_end(&lines, replacement_end) {
+                next_line_start(&lines, replacement_end).unwrap_or_else(|| normalize_normal_cursor_snapshot(&lines, replacement_end))
+            } else { normalize_normal_cursor_snapshot(&lines, replacement_end) }
+        } else if replacement_end < line_end(&lines, start) {
             replacement_end
         } else {
             normalize_normal_cursor_snapshot(&lines, line_end(&lines, start))
@@ -12746,13 +12887,11 @@ impl CommandInterpreter {
                     && !joined_last.is_some_and(|character| matches!(character, ' ' | '\t'))
                     && trimmed_len>0
                     && document_char_at(document,trimmed_start)!=Some(')');
-                edits.push(TextEdit::new(
-                    separator.start..trimmed_start,
-                    if insert_separator { " " } else { "" },
-                ));
-                if insert_separator {
-                    joined_len+=1;joined_last=Some(' ');
-                }
+                let space = if insert_separator {
+                    options::join_separator(joined_last, document_char_at(document, trimmed_start), self.vim_options.flag("joinspaces"))
+                } else { "" };
+                edits.push(TextEdit::new(separator.start..trimmed_start, space));
+                if insert_separator { joined_len += space.len(); joined_last = Some(' '); }
                 joined_len+=trimmed_len;
                 if trimmed_len>0{joined_last=document_char_before(document,next_range.end);}
             } else {
@@ -12999,6 +13138,7 @@ impl CommandInterpreter {
                     self.cursor,
                     *object,
                     count,
+            self.vim_options.keywords(),
                 ) {
                     Ok(range) => Some(text_object_extent(document, *object, range)),
                     Err(error) => {
@@ -13477,7 +13617,7 @@ impl CommandInterpreter {
                     && (state.operator.is_none()
                         || matches!(output.status, CommandStatus::Complete))
                 {
-                    push_history(&mut self.search_history, pattern.clone());
+                    push_history(&mut self.search_history, pattern.clone(), self.vim_options.number("history") as usize);
                     self.last_search = Some((direction, pattern));
                 }
                 Ok(if state.operator.is_some() {
@@ -13487,6 +13627,17 @@ impl CommandInterpreter {
                 })
             }
             CommandLineKind::Ex => {
+                if let Some(action) = self.script_action.take() {
+                    // A host command or editor action from a running script.
+                    let output = self.execute_script_action(document, action.clone(),
+                        state.retained_visual_range.as_ref());
+                    if matches!(output.status, CommandStatus::NeedsMoreLayout(_)) {
+                        self.script_action = Some(action);
+                        self.mode = Mode::CommandLine;
+                        self.command_line_state = Some(state);
+                    }
+                    return Ok(output);
+                }
                 let command = state.buffer.input.clone();
                 if command.is_empty() {
                     return Ok(CommandOutput {
@@ -13496,8 +13647,12 @@ impl CommandInterpreter {
                 }
                 let previous_last_command = self.last_command_line.clone();
                 if self.global_replay_depth == 0 { self.last_command_line = Some(command.clone()); }
-                let output = self.execute_ex_command_with_visual_range(document, &command,
-                    state.retained_visual_range.as_ref());
+                let mut output = self.submit_ex_line(document, &command, state.retained_visual_range.as_ref());
+                if self.pending_replay.as_ref().is_some_and(|plan| matches!(plan, ReplayPlan::Script(_))) {
+                    // The coordinator adds history when the script succeeds.
+                    return Ok(output);
+                }
+                scripting::surface_error_text(&mut output);
                 if matches!(output.status, CommandStatus::NeedsMoreLayout(_)) {
                     self.last_command_line = previous_last_command;
                     self.mode = Mode::CommandLine;
@@ -13508,7 +13663,7 @@ impl CommandInterpreter {
                     output.status,
                     CommandStatus::Error(_) | CommandStatus::ExError(_)
                 ) {
-                    push_history(&mut self.ex_history, command);
+                    push_history(&mut self.ex_history, command, self.vim_options.number("history") as usize);
                 }
                 Ok(output)
             }
@@ -13573,7 +13728,7 @@ impl CommandInterpreter {
             return self.execute_ex_global(document, &command, &addresses);
         }
         if let ExAction::Delete(arguments) | ExAction::Yank(arguments) = &command.action {
-            if let Err(mut output) = self.require_register_write(arguments.register) {
+            if let Err(mut output) = self.require_register_write_kind(arguments.register, matches!(command.action, ExAction::Yank(_))) {
                 output.mode_changed = true;
                 return output;
             }
@@ -13582,7 +13737,7 @@ impl CommandInterpreter {
             ExAction::Put { register } => {
                 let name = register.unwrap_or('"');
                 match self.read_register_value_for_put(document, name) {
-                    Ok(Some(value)) if matches!(name, '+' | '*' | '%') => {
+                    Ok(Some(value)) if matches!(name, '+' | '*' | '%') || self.clipboard_register(name) != name => {
                         Some((*register, register_to_ex_value(&value)))
                     }
                     Ok(_) => None,
@@ -13606,6 +13761,9 @@ impl CommandInterpreter {
             ExAction::Substitute(_) | ExAction::RepeatSubstitute { .. }
         );
         let old_cursor = self.cursor;
+        let retained_column = (!self.vim_options.flag("startofline")
+            && matches!(command.action, ExAction::GoToLine(_) | ExAction::Delete(_) | ExAction::Shift { .. }))
+            .then(|| options::logical_column(&document.hard_line_snapshot(), self.cursor));
         let jump_origin = records_jump.then(|| {
             document.text_point(old_cursor).ok().and_then(|point| {
                 document
@@ -13635,6 +13793,7 @@ impl CommandInterpreter {
             last_search_pattern: address_search.as_ref().or(self.last_search.as_ref())
                 .map(|(_, pattern)| pattern.clone()),
             visible_whitespace: self.visible_whitespace.clone(),
+            vim_options: self.vim_options.clone(),
         };
         let plan = match prepare_ex(
             document,
@@ -13655,6 +13814,10 @@ impl CommandInterpreter {
                 };
             }
         };
+        if self.native_requests_blocked && plan.outcome.frontend_requests.iter().any(|request|
+            matches!(request, ExFrontendRequest::File(_) | ExFrontendRequest::Window(_) | ExFrontendRequest::Application(_))) {
+            return scripting::native_request_error();
+        }
         // Substitution can record a jump before the coordinator gets its
         // transaction result. Rebase retained jumps first so deduplication
         // never interprets old byte offsets in the newly edited text.
@@ -13731,11 +13894,7 @@ impl CommandInterpreter {
                     global: false,
                     global_map: None,
                     literal: request.literal,
-                    events: request
-                        .commands
-                        .chars()
-                        .map(|character| InputEvent::Key(Key::Char(character)))
-                        .collect(),
+                    events: mappings::script_keys(request.commands.as_bytes()).into_iter().map(InputEvent::Key).collect(),
                     targets,
                 }));
                 return CommandOutput {
@@ -13763,6 +13922,7 @@ impl CommandInterpreter {
 
         self.apply_ex_register_effects(&outcome);
         self.apply_ex_option_effects(&outcome.option_effects);
+        self.apply_vim_option_effects(&outcome.vim_option_effects);
         let mapped_jump_origin = jump_origin.and_then(|origin| {
             outcome
                 .model_transaction()
@@ -13801,6 +13961,10 @@ impl CommandInterpreter {
                     );
                 }
             }
+        }
+        if let Some(column) = retained_column {
+            self.cursor = options::at_logical_column(&document.hard_line_snapshot(), self.cursor, column);
+            self.physical_cursor = None;
         }
         self.preferred_column = None;
         self.visual_position = None;
@@ -13973,14 +14137,14 @@ impl CommandInterpreter {
         let mut output = CommandOutput::complete();
         let mut failure = None;
 
-        for character in commands.chars() {
-            if self.mode == Mode::Normal && self.pending == Pending::None && character == 'q' {
+        for key in mappings::script_keys(commands.as_bytes()) {
+            if self.mode == Mode::Normal && self.pending == Pending::None && key == Key::Char('q') {
                 failure = Some(CommandStatus::Unsupported(
                     ":normal macro recording is not supported".into(),
                 ));
                 break;
             }
-            match self.handle(document, InputEvent::Key(Key::Char(character))) {
+            match self.handle(document, InputEvent::Key(key)) {
                 Ok(next) => {
                     let stop = command_status_stops_compound(&next.status);
                     output.merge(next);
@@ -14068,6 +14232,39 @@ impl CommandInterpreter {
                 ExRegisterEffectKind::Delete => {
                     self.delete_register(effect.requested, value, DeletionClass::Large)
                 }
+            }
+        }
+    }
+
+    /// The option values an Ex command sees, without address context.
+    pub(crate) fn option_context(&self) -> ExExecutionContext {
+        ExExecutionContext {
+            wrap: self.wrap,
+            number: self.number,
+            fileformats: self.fileformats.clone(),
+            search_options: self.search_options,
+            selection_options: self.selection_options.clone(),
+            text_width: self.text_width,
+            reflow_options: self.reflow_options.clone(),
+            indentation: self.indentation,
+            visible_whitespace: self.visible_whitespace.clone(),
+            vim_options: self.vim_options.clone(),
+            ..ExExecutionContext::default()
+        }
+    }
+
+    fn apply_vim_option_effects(&mut self, effects: &[options::VimOptionEffect]) {
+        for effect in effects {
+            self.vim_options.apply(effect);
+            if effect.name == "history" {
+                let limit = effect.new_value.number() as usize;
+                self.ex_history.drain(..self.ex_history.len().saturating_sub(limit));
+                self.search_history.drain(..self.search_history.len().saturating_sub(limit));
+            }
+            if effect.name == "filetype" {
+                let language = effect.new_value.text();
+                self.reflow_options.set_language((!language.is_empty()).then_some(language.as_str()));
+                self.generated_indent = None;
             }
         }
     }
@@ -14434,6 +14631,7 @@ impl CommandInterpreter {
             self.cursor,
             TextObject { scope, kind },
             count,
+            self.vim_options.keywords(),
         ) {
             Ok(range) => range,
             Err(error) => {
@@ -15607,6 +15805,7 @@ fn active_visual_block_from_selection(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OperatorMotion {
     Left,
+    WrappingLeft,
     Right,
     Down,
     Up,
@@ -16302,8 +16501,9 @@ fn indent_edits(
     operator: Operator,
     count: usize,
     options: crate::document::IndentationOptions,
+    round: bool,
 ) -> Result<Vec<TextEdit>, TextRepetitionError> {
-    let shift_width = options.shift_width().checked_mul(count)
+    let _shift_width = options.shift_width().checked_mul(count)
         .filter(|width| *width <= isize::MAX as usize)
         .ok_or_else(|| TextRepetitionError::new(count))?;
     let first = lines.line_at_offset(range.start).expect("valid indent start").index();
@@ -16326,8 +16526,8 @@ fn indent_edits(
         let whitespace = crate::document::leading_whitespace_len(&line);
         let old_columns = options.columns(&line[..whitespace]);
         let columns = match operator {
-            Operator::Indent => old_columns.checked_add(shift_width).ok_or_else(|| TextRepetitionError::new(count))?,
-            Operator::Outdent => old_columns.saturating_sub(shift_width),
+            Operator::Indent | Operator::Outdent => options::shifted_columns(old_columns, options.shift_width(), count, operator == Operator::Indent, round)
+                .ok_or_else(|| TextRepetitionError::new(count))?,
             Operator::Reindent => if whitespace == line.len() { 0 } else { previous },
             _ => unreachable!(),
         };
@@ -16629,10 +16829,12 @@ pub(crate) fn command_status_stops_compound(status: &CommandStatus) -> bool {
     )
 }
 
-fn push_history(history: &mut Vec<String>, entry: String) {
-    if history.last() != Some(&entry) {
-        history.push(entry);
-    }
+fn push_history(history: &mut Vec<String>, entry: String, limit: usize) {
+    if limit == 0 { history.clear(); return; }
+    if let Some(index) = history.iter().position(|old| old == &entry) { history.remove(index); }
+    history.push(entry);
+    let remove = history.len().saturating_sub(limit);
+    history.drain(..remove);
 }
 
 fn navigate_history(buffer: &mut CommandLineBuffer, history: &[String], older: bool) {

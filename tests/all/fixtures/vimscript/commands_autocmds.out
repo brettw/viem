@@ -1,0 +1,24 @@
+
+hello
+one two
+['a', 'b c', 'd']
+bang: 
+bang:! x
+first
+after bar
+3
+5
+line 17:
+E464: Ambiguous use of user-defined command: Hel
+two
+line 20:
+E488: Trailing characters: extra: NoArgs extra
+2 3 3 0
+1
+user event fired
+pattern OtherThing
+only once
+No matching autocommands: User Once
+1 1 1 0
+No matching autocommands: User MyEvent
+end

@@ -365,6 +365,12 @@ pub enum ModelRequest {
         revision: Revision,
         target: super::Encoding,
     },
+    /// Explicitly change BOM presence without changing visible content.
+    SetBomPolicy {
+        document: DocumentId,
+        revision: Revision,
+        policy: super::BomPolicy,
+    },
     /// Reorder a nonempty hard-line span, optionally removing duplicates.
     /// `order` contains distinct pre-edit ordinals inside `source_lines`.
     ReorderHardLines {
@@ -412,6 +418,7 @@ impl ModelRequest {
             | Self::SetFileFormat { document, .. }
             | Self::SetViewFormat { document, .. }
             | Self::SetEncoding { document, .. }
+            | Self::SetBomPolicy { document, .. }
             | Self::ReorderHardLines { document, .. }
             | Self::TransferHardLines { document, .. }
             | Self::NavigateHistory { document, .. } => *document,
@@ -439,6 +446,7 @@ impl ModelRequest {
             | Self::SetFileFormat { revision, .. }
             | Self::SetViewFormat { revision, .. }
             | Self::SetEncoding { revision, .. }
+            | Self::SetBomPolicy { revision, .. }
             | Self::ReorderHardLines { revision, .. }
             | Self::TransferHardLines { revision, .. }
             | Self::NavigateHistory { revision, .. } => *revision,
@@ -1296,6 +1304,7 @@ impl Document {
 
             ModelRequest::SetViewFormat { target, .. } => self.prepare_view_format_change(target),
             ModelRequest::SetEncoding { target, .. } => self.prepare_encoding(target),
+            ModelRequest::SetBomPolicy { policy, .. } => self.prepare_bom_policy(policy),
             ModelRequest::ReorderHardLines {
                 source_lines,
                 order,
@@ -1722,20 +1731,6 @@ impl Document {
             self.next_projected_block_id,
             PreparedPublication::State(candidate),
         ))
-    }
-
-    pub(super) fn execute_compat_source_metadata_candidate(
-        &mut self,
-        source: super::source::SourceSnapshot,
-        file_format: FileFormat,
-        expected_text: String,
-    ) -> Result<(), DocumentError> {
-        let prepared = self
-            .prepare_source_metadata_candidate(source, file_format, expected_text)
-            .map_err(compat_document_error)?;
-        self.commit_model_transaction(prepared)
-            .map(|_| ())
-            .map_err(compat_document_error)
     }
 
     fn validate_request_target(&self, request: &ModelRequest) -> Result<(), ModelTransactionError> {
@@ -4497,6 +4492,23 @@ impl Document {
             next_id,
             PreparedPublication::State(candidate),
         ))
+    }
+
+    fn prepare_bom_policy(&self, policy: super::BomPolicy) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let should_have = match policy {
+            super::BomPolicy::Preserve => return Ok(self.no_op_prepared()),
+            super::BomPolicy::Always => true,
+            super::BomPolicy::Never => false,
+        };
+        if should_have == self.state().has_bom { return Ok(self.no_op_prepared()); }
+        let bom = self.state().encoding.bom_bytes();
+        if should_have && bom.is_empty() { return Err(DocumentError::UnsupportedBom(self.state().encoding).into()); }
+        let source = if should_have {
+            self.state().source.replace(0, 0, bom.to_vec()).unwrap()
+        } else {
+            self.state().source.replace(0, bom.len(), Vec::new()).unwrap()
+        };
+        self.prepare_source_metadata_candidate(source, self.state().file_format, self.text().to_owned())
     }
 
     fn prepare_encoding(

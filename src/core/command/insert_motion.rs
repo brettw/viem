@@ -27,7 +27,7 @@ fn validate_snapshot_boundary(snapshot: &HardLineSnapshot, offset: usize) -> Res
 /// Inspect only the preceding whitespace/word through bounded UTF-8 chunks.
 /// A single unusually large grapheme may require a larger local chunk.
 pub(super) fn ctrl_w_delete_range_snapshot(
-    snapshot: &HardLineSnapshot, line: Range<usize>, caret: usize,
+    snapshot: &HardLineSnapshot, line: Range<usize>, caret: usize, keywords: &super::options::KeywordSet,
 ) -> Result<Range<usize>, InsertMotionError> {
     validate_snapshot_boundary(snapshot, caret)?;
     let mut at = caret;
@@ -42,7 +42,9 @@ pub(super) fn ctrl_w_delete_range_snapshot(
         }
         let text = snapshot.slice_utf8(start..at).map_err(|_| InsertMotionError::NotGraphemeBoundary(start))?;
         for (relative, grapheme) in text.grapheme_indices(true).rev() {
-            let class = classify_grapheme(grapheme);
+            let class = if grapheme.chars().all(char::is_whitespace) { GraphemeClass::Space }
+                else if grapheme.chars().next().is_some_and(|c| keywords.contains(c)) { GraphemeClass::Keyword }
+                else { GraphemeClass::Punctuation };
             if word_class.is_some_and(|word| word != class) { return Ok(at..caret); }
             if class != GraphemeClass::Space { word_class = Some(class); }
             at = start + relative;
@@ -67,8 +69,24 @@ pub fn ctrl_w_delete_range(
     line: Range<usize>,
     caret: usize,
 ) -> Result<Range<usize>, InsertMotionError> {
+    ctrl_w_delete_range_with_keywords(text, line, caret, &super::options::KeywordSet::default())
+}
+
+pub(super) fn ctrl_w_delete_range_with_keywords(
+    text: &str, line: Range<usize>, caret: usize, keywords: &super::options::KeywordSet,
+) -> Result<Range<usize>, InsertMotionError> {
     validate_boundary(text, caret)?;
-    Ok(previous_word_boundary_unchecked(text, line.start, caret)..caret)
+    let mut at = caret;
+    let mut word_class = None;
+    for (relative, grapheme) in text[line.start..caret].grapheme_indices(true).rev() {
+        let class = if grapheme.chars().all(char::is_whitespace) { GraphemeClass::Space }
+            else if grapheme.chars().next().is_some_and(|c| keywords.contains(c)) { GraphemeClass::Keyword }
+            else { GraphemeClass::Punctuation };
+        if word_class.is_some_and(|word| word != class) { break; }
+        if class != GraphemeClass::Space { word_class = Some(class); }
+        at = line.start + relative;
+    }
+    Ok(at..caret)
 }
 
 /// Within-line component of Insert `Ctrl-U` without an Insert-session floor.
@@ -279,7 +297,7 @@ mod tests {
             let snapshot = document.hard_line_snapshot();
             for caret in text.grapheme_indices(true).map(|(at, _)| at)
                 .step_by(97).chain(std::iter::once(text.len())) {
-                assert_eq!(super::ctrl_w_delete_range_snapshot(&snapshot, 0..text.len(), caret),
+                assert_eq!(super::ctrl_w_delete_range_snapshot(&snapshot, 0..text.len(), caret, super::super::options::VimOptions::default().keywords()),
                     super::ctrl_w_delete_range(&text, 0..text.len(), caret));
                 assert_eq!(super::ctrl_u_delete_range_since_snapshot(&snapshot, 0..text.len(), caret, 0),
                     super::ctrl_u_delete_range_since(&text, 0..text.len(), caret, 0));

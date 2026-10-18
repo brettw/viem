@@ -20,10 +20,25 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     lazy var formattingToolbar = EVFormattingToolbarView(surface: self)
     lazy var linkPopover = EVInlineContentPopoverController(surface: self, kind: .link)
     lazy var imagePopover = EVInlineContentPopoverController(surface: self, kind: .image)
-    public weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
+    public weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)? {
+        didSet { applyStartupHostEffects() }
+    }
+
+    private static var enteredGUI = false
+
+    private func applyStartupHostEffects() {
+        guard documentHostEffectHandler != nil, let session else { return }
+        do {
+            try session.takeStartupEffects()
+            if !Self.enteredGUI {
+                Self.enteredGUI = true
+                try fireAutocmd("VimEnter", matched: "")
+                try fireAutocmd("GUIEnter", matched: "")
+            }
+        } catch { report(error) }
+    }
 
     let backend: EVCoreDocumentBackend
-    private var sourcedLineRequests: [EVDocumentHostRequest]?
     private(set) var session: EVCoreViewSession?
     var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize, EVViewMargins) throws -> EVCoreViewSession = { document, size, margins in
         try EVCoreViewSession(document: document, width: size.width, height: size.height, margins: margins)
@@ -140,12 +155,39 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if isViewLoaded { refreshPresentation() }
     }
 
+    public func fireAutocmd(_ event: String, matched: String) throws {
+        guard let session else { return }
+        let outcome = try session.fireAutocmd(event, matched: matched)
+        refreshPresentation()
+        guard outcome.command_status == UInt32(VIEM_COMMAND_STATUS_NONE)
+            || outcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE) else {
+            throw EVCoreFrontendError.command(operation: "Run \(event) autocommands", status: outcome.command_status)
+        }
+    }
+
+    public func applyScriptAutoselect(_ enabled: Bool) throws {
+        try EVSelectionPreferences.setAutoselect(enabled, on: backend)
+    }
+
+    public func applyScriptViewOptions() throws {
+        let options = backend.configuration.scriptOptions
+        var margins = viewPreferences.margins
+        if let rows = options.scrolloff {
+            let inset = min(1000, Double(rows) * Double(defaultLineHeight ?? 20))
+            margins.top = inset; margins.bottom = inset
+        }
+        try session?.setViewMargins(margins)
+        appliedMargins = margins
+        if let indent = options.continuationIndent {
+            var presentation = backend.configuration.whitespacePresentation
+            presentation.codeWrappedLineIndent = indent
+            try backend.configureWhitespace(indentation: backend.configuration.indentation, presentation: presentation)
+        }
+        if isViewLoaded { refreshPresentation() }
+    }
+
     private func applyViewMargins() {
-        let margins = viewPreferences.margins
-        do {
-            if appliedMargins != margins { try session?.setViewMargins(margins); appliedMargins = margins }
-            if isViewLoaded { refreshPresentation() }
-        } catch { report(error) }
+        do { try applyScriptViewOptions() } catch { report(error) }
     }
 
     @available(*, unavailable)
@@ -222,7 +264,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         attachedSession.commandTurnHost = self
         session = attachedSession
+        applyStartupHostEffects()
         appliedMargins = viewPreferences.margins
+        do { try applyScriptViewOptions() } catch { report(error) }
         lastErrorMessage = backend.configurationWarning ?? ""
         if isViewLoaded { refreshPresentation() }
         if isViewLoaded, let warning = backend.configurationWarning { publishHostMessage(warning) }
@@ -656,7 +700,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             return true
         } catch {
             report(error)
-            NSSound.beep()
+            backend.configuration.scriptOptions.beep()
             return false
         }
     }
@@ -714,7 +758,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         } catch {
             refreshPresentation()
             report(error)
-            NSSound.beep()
+            backend.configuration.scriptOptions.beep()
         }
     }
 
@@ -767,7 +811,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             refreshPresentation()
         } catch {
             report(error)
-            NSSound.beep()
+            backend.configuration.scriptOptions.beep()
         }
     }
 
@@ -881,17 +925,17 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .useSelectionForFind:
             useCurrentSelectionForFind(session: session)
         case .jumpToSelection:
-            guard hasSelection else { NSSound.beep(); return }
+            guard hasSelection else { backend.configuration.scriptOptions.beep(); return }
             performInput { _ = try session.revealSelection() }
         case .makeUppercase:
-            guard hasSelection else { NSSound.beep(); return }
+            guard hasSelection else { backend.configuration.scriptOptions.beep(); return }
             performInput { _ = try self.sendCommandCharacter("U", session: session) }
         case .makeLowercase:
-            guard hasSelection else { NSSound.beep(); return }
+            guard hasSelection else { backend.configuration.scriptOptions.beep(); return }
             performInput { _ = try self.sendCommandCharacter("u", session: session) }
         case .toggleCase:
             guard hasSelection || viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) else {
-                NSSound.beep()
+                backend.configuration.scriptOptions.beep()
                 return
             }
             performInput { _ = try self.sendCommandCharacter("~", session: session) }
@@ -972,7 +1016,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // document and must not be submitted as one.
             return
         default:
-            NSSound.beep()
+            backend.configuration.scriptOptions.beep()
         }
     }
 
@@ -1290,7 +1334,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func copyOrCutSelection(cut: Bool) {
-        guard hasSelection, let session else { NSSound.beep(); return }
+        guard hasSelection, let session else { backend.configuration.scriptOptions.beep(); return }
         performInput {
             // Native Copy and Cut preserve the selected text exactly, including an
             // absent final newline. The core's internal linewise register can
@@ -1322,7 +1366,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     private func copySelectedSource() {
         let ranges = selectedUTF8Ranges()
-        guard !ranges.isEmpty, let snapshot = formattedSnapshot else { NSSound.beep(); return }
+        guard !ranges.isEmpty, let snapshot = formattedSnapshot else { backend.configuration.scriptOptions.beep(); return }
         performInput {
             let fragments = try ranges.map {
                 let fragment = try backend.clipboardFragment(in: $0, snapshot: snapshot)
@@ -1343,7 +1387,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
               let text = selectionText(),
               !text.isEmpty
         else {
-            NSSound.beep()
+            backend.configuration.scriptOptions.beep()
             return
         }
         performInput {
@@ -1431,7 +1475,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                   value.selection.struct_size
                     >= UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
             else {
-                NSSound.beep()
+                backend.configuration.scriptOptions.beep()
                 return
             }
 
@@ -1448,11 +1492,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                 enabled = true
                 requiredCapability = UInt32(VIEM_SEMANTIC_STYLE_CAN_SET)
             default:
-                NSSound.beep()
+                backend.configuration.scriptOptions.beep()
                 return
             }
             guard value.flags & requiredCapability != 0 else {
-                NSSound.beep()
+                backend.configuration.scriptOptions.beep()
                 return
             }
 
@@ -1472,7 +1516,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             // state that led to the attempted action; never retry another
             // inferred range.
             refreshPresentation()
-            NSSound.beep()
+            backend.configuration.scriptOptions.beep()
         }
     }
 
@@ -1480,7 +1524,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         guard pasteboard.viemString() != nil,
               let session
         else {
-            NSSound.beep()
+            backend.configuration.scriptOptions.beep()
             return
         }
         // Markdown Preview interprets ordinary pasted text as Markdown; Paste
@@ -1751,6 +1795,26 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
     }
 
     func applyHostEffectBatch(_ batch: EVHostEffectBatch) throws {
+        let continuations = batch.exEffects.compactMap(\.scriptContinuation)
+        guard continuations.count <= 1 else { throw EVCoreFrontendError.invalidHostEffect }
+        let continuation = continuations.first
+        let origin = session
+        // A session borrows its document. The surface may close or replace its
+        // backend before either a native completion or the queued ack runs.
+        let originDocument = backend
+        var dispatched = false
+        func complete(_ success: Bool) {
+            guard let continuation, let origin else { return }
+            DispatchQueue.main.async { [weak self, origin, originDocument] in
+                withExtendedLifetime(originDocument) {
+                    guard let self else { try? origin.resumeScript(token: continuation, success: false); return }
+                    let sameView = self.session === origin && self.documentHostEffectHandler?.isCurrentScriptSurface(self) == true
+                    do { try origin.resumeScript(token: continuation, success: success && sameView) }
+                    catch { self.report(error) }
+                }
+            }
+        }
+        defer { if !dispatched { complete(false) } }
         let state = try backend.documentState()
         guard state.document_id == batch.documentID,
               state.document_revision == batch.documentRevision
@@ -1763,6 +1827,10 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             guard effect.documentID == batch.documentID,
                   effect.documentRevision == batch.documentRevision
             else { throw EVCoreFrontendError.invalidHostEffect }
+            if effect.kind == UInt32(VIEM_EX_FRONTEND_SCRIPT_CONTINUATION) {
+                guard effect.scriptContinuation != nil, effect == batch.exEffects.last else { throw EVCoreFrontendError.invalidHostEffect }
+                continue
+            }
             if effect.kind == UInt32(VIEM_EX_FRONTEND_WINDOW) {
                 windowRequests.append(try windowRequest(from: effect))
             } else if let request = try documentHostRequest(from: effect) {
@@ -1813,26 +1881,26 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
             guard let documentHostEffectHandler else {
                 throw EVCoreFrontendError.unsupportedHostEffect
             }
-            documentHostEffectHandler.perform(windowRequests: windowRequests, from: self)
+            if continuation != nil { try documentHostEffectHandler.performScript(windowRequests: windowRequests, from: self) }
+            else { documentHostEffectHandler.perform(windowRequests: windowRequests, from: self) }
         }
-        if sourcedLineRequests != nil {
-            sourcedLineRequests?.append(contentsOf: documentRequests)
-            return
-        }
-        guard !documentRequests.isEmpty else { return }
+        guard !documentRequests.isEmpty else { dispatched = true; complete(true); return }
         guard let documentHostEffectHandler else {
             throw EVCoreFrontendError.unsupportedHostEffect
         }
+        dispatched = true
         documentHostEffectHandler.perform(documentHostRequests: documentRequests) {
             [weak self] result in
+            if case .success = result { complete(true) } else { complete(false) }
             guard let self else { return }
             switch result {
             case let .success(message):
                 if let message, !message.isEmpty { self.publishHostMessage(message) }
                 self.refreshPresentation()
             case let .failure(error):
+                if (error as? CocoaError)?.code == .userCancelled { return }
                 self.report(error)
-                NSSound.beep()
+                self.backend.configuration.scriptOptions.beep()
             }
         }
     }
@@ -1843,30 +1911,22 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         refreshPresentation()
     }
 
-    public func executeSourcedLine(_ text: String, depth: UInt32) throws -> [EVDocumentHostRequest] {
-        guard let session, sourcedLineRequests == nil else { throw EVCoreFrontendError.unsupportedHostEffect }
-        sourcedLineRequests = []
-        defer { sourcedLineRequests = nil }
-        let outcome = try session.sourceLine(text, depth: depth)
-        refreshPresentation()
-        guard outcome.command_status == UInt32(VIEM_COMMAND_STATUS_COMPLETE)
-            || outcome.command_status == UInt32(VIEM_COMMAND_STATUS_NONE) else {
-            throw EVCoreFrontendError.command(operation: "Execute sourced command", status: outcome.command_status)
-        }
-        return sourcedLineRequests ?? []
-    }
-
     private func documentHostRequest(
         from effect: EVExHostEffect
     ) throws -> EVDocumentHostRequest? {
         let force = effect.flags & UInt32(VIEM_EX_FRONTEND_FORCE) != 0
-        let path = effect.flags & UInt32(VIEM_EX_FRONTEND_HAS_PATH) != 0
+        var path = effect.flags & UInt32(VIEM_EX_FRONTEND_HAS_PATH) != 0
             ? effect.text
             : nil
         let kind: EVDocumentHostRequest.Kind
         switch effect.kind {
         case UInt32(VIEM_EX_FRONTEND_READ): kind = .read
-        case UInt32(VIEM_EX_FRONTEND_SOURCE): kind = .source
+        case UInt32(VIEM_EX_FRONTEND_THEME):
+            kind = .theme
+            path = effect.text
+        case UInt32(VIEM_EX_FRONTEND_APPLICATION_OPTION):
+            kind = .applicationOption
+            path = effect.text
         case UInt32(VIEM_EX_FRONTEND_FILE): kind = .file
         case UInt32(VIEM_EX_FRONTEND_ONLY): kind = .only
         case UInt32(VIEM_EX_FRONTEND_SPLIT): kind = .split

@@ -163,7 +163,7 @@ fn navigation_skips_unusable_scalar_starts_without_rounding_them() {
     assert_eq!(c.cursor(), d.text().len() - 1);
 }
 #[test]
-fn search_options_validate_atomically_and_apply_to_substitution() {
+fn search_options_commit_valid_prefixes_and_apply_to_substitution() {
     let mut d = Document::new("cat CAT Cat");
     let mut c = CommandInterpreter::new();
     success(command(&mut c, &mut d, ":set ic sc nows"));
@@ -180,8 +180,9 @@ fn search_options_validate_atomically_and_apply_to_substitution() {
         format!("{:?}", command(&mut c, &mut d, ":set noic unknown")).contains("UnsupportedOption")
     );
     success(command(&mut c, &mut d, ":%s/cat/dog/g"));
-    assert_eq!(d.text(), "dog dog dog");
+    assert_eq!(d.text(), "dog CAT Cat", "valid noic commits before the unknown option");
     assert!(d.undo());
+    success(command(&mut c, &mut d, ":set ic"));
     success(command(&mut c, &mut d, ":%s/cat/dog/gI"));
     assert_eq!(d.text(), "dog CAT Cat");
     assert!(d.undo());

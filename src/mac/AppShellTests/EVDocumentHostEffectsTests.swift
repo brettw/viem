@@ -15,15 +15,9 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
         weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
         var defaultLineHeight: CGFloat? { 20 }
-        var sourcedLines: [String] = []
-        var sourcedRequest: ((String) -> [EVDocumentHostRequest])?
 
         func perform(menuCommand _: EVMenuCommand, sender _: Any?) {}
         func presentation(for _: EVMenuCommand) -> EVMenuItemPresentation { .disabled }
-        func executeSourcedLine(_ text: String, depth _: UInt32) throws -> [EVDocumentHostRequest] {
-            sourcedLines.append(text)
-            return sourcedRequest?(text) ?? []
-        }
     }
 
     private final class Backend: EVDocumentBackend {
@@ -653,28 +647,17 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         }
     }
 
-    func testDirectoryCancellationStopsSourceBeforeNextLine() throws {
-        let directory = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let script = directory.appendingPathComponent("commands.viem")
-        try Data("pick\nnext".utf8).write(to: script)
-        let backend = Backend(data: Data("source".utf8), dirty: false)
+    func testUnknownColorschemeThemeFailsWithoutChangingTheDocument() throws {
+        let backend = Backend(data: Data("text".utf8), dirty: false)
         let (original, controller) = makeController(backend: backend)
-        defer { controller.openFilePanelPresenter = nil; controller.close() }
-        let surface = try XCTUnwrap(controller.editorSurface as? Surface)
-        surface.sourcedRequest = { _ in [EVDocumentHostRequest(
-            kind: .split, documentID: backend.persistenceState.documentID,
-            documentRevision: backend.persistenceState.documentRevision, path: directory.path)] }
-        controller.openFilePanelPresenter = { _, _, choose in choose(nil) }
+        defer { controller.close() }
         var result: Result<String?, Error>?
         controller.perform(documentHostRequests: [EVDocumentHostRequest(
-            kind: .source, documentID: backend.persistenceState.documentID,
+            kind: .theme, documentID: backend.persistenceState.documentID,
             documentRevision: backend.persistenceState.documentRevision,
-            path: script.path)]) { result = $0 }
-        XCTAssertNil(try XCTUnwrap(result).get())
-        XCTAssertEqual(surface.sourcedLines, ["pick"])
+            path: "No Such Viem Theme")]) { result = $0 }
+        XCTAssertThrowsError(try XCTUnwrap(result).get())
         XCTAssertTrue(controller.activeDocument === original)
-        XCTAssertEqual(controller.paneCount, 1)
     }
 
     func testDirectoryPathsResolveDotRelativeHomeAndSymlinkBeforePicker() throws {
@@ -699,7 +682,10 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             controller.perform(documentHostRequests: [EVDocumentHostRequest(
                 kind: .edit, documentID: backend.persistenceState.documentID,
                 documentRevision: backend.persistenceState.documentRevision, path: path)]) { result = $0 }
-            XCTAssertNil(try XCTUnwrap(result).get())
+            switch try XCTUnwrap(result) {
+            case .failure(let error): XCTAssertEqual((error as? CocoaError)?.code, .userCancelled)
+            case .success: XCTFail("Cancelled host request must report cancellation")
+            }
             XCTAssertTrue(presented, path)
         }
     }

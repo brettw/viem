@@ -187,6 +187,8 @@ fn grammar_rejects_invalid_arguments_and_keeps_existing_abbreviations() {
         ":left -2",
         ":read !echo hi",
         ":source! file",
+        // `:source` is a Vim script command run by the script engine.
+        ":so file",
     ] {
         assert!(parse_ex(command).is_err(), "{command}");
     }
@@ -203,7 +205,6 @@ fn grammar_rejects_invalid_arguments_and_keeps_existing_abbreviations() {
         ":delm a-z<>",
         ":on",
         ":0r file",
-        ":so file",
         ":f file",
     ] {
         assert!(

@@ -152,6 +152,7 @@ internal static class FrontendSmokeTests
             && CoreDocument.FormatForPath("document.XHTML") == VIEM_FORMAT_CODE,
             "Markdown paths default to source presentation and HTML paths use Code");
         GlobalSelectionOptionTests.Run(device, dispatcher, Check);
+        ScriptApplicationOptionTests.Run(Check);
         BidiControlTests.Run(device, dispatcher, Check);
         CodeBlockLanguageTests.Run(device, dispatcher, Check);
         void Scenario(string text, uint format, Action<CoreDocument, CoreView> run)

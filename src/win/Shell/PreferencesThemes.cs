@@ -57,7 +57,7 @@ internal sealed partial class Preferences
             string temporary = Path.Combine(DirectoryPath, ".theme-" + Guid.NewGuid().ToString("N") + ".tmp");
             try {
                 using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { output.Write(bytes); output.Flush(true); }
-                try { File.Move(temporary, path); }
+                try { File.Move(temporary, path); PublishThemeNames(); }
                 catch (IOException) when (File.Exists(path)) { continue; }
                 if (SelectedThemePath == path) PublishTheme(JsonNode.Parse(bytes)!.AsObject(), SelectedTheme, () => { }, path);
             }
@@ -191,7 +191,14 @@ internal sealed partial class Preferences
         catch { ApplyTheme(previous); throw; }
         activeTheme = candidate; SelectedTheme = name; SelectedThemePath = name == null ? null : path ?? FindTheme(name).Path;
         foreach (var document in changed) document.NotifyChanged();
+        PublishThemeNames();
         ThemesChanged?.Invoke(); Changed?.Invoke();
+    }
+    /// `:colorscheme` in the portable core matches these names, ignoring case.
+    private unsafe void PublishThemeNames()
+    {
+        byte[] names = System.Text.Encoding.UTF8.GetBytes(string.Join('\0', new[] { "Default" }.Concat(ThemeNames)));
+        fixed (byte* p = names) viem_set_theme_names(p, (ulong)names.Length);
     }
     private static void SetThemeSelection(JsonObject configuration, string? name, string? path)
     {

@@ -554,6 +554,21 @@ impl Registers {
         }
     }
 
+    /// `:let @r = value` and `setreg()`: write register `r` and make the
+    /// unnamed register refer to it, as Vim's `write_reg_contents` does.
+    pub(crate) fn write_script(&mut self, name: char, value: RegisterValue) -> RegisterWriteEffect {
+        if name == '_' {
+            return RegisterWriteEffect::default();
+        }
+        let requested = (name != '"').then_some(name);
+        let (unnamed, effect) = self.write_explicit(requested, &value);
+        if requested.is_none() {
+            self.values.insert('0', StoredRegister::text(value));
+        }
+        self.values.insert('"', StoredRegister::text(unnamed));
+        effect
+    }
+
     fn rotate_numbered(&mut self, value: RegisterValue) {
         for number in (2_u8..=9).rev() {
             let previous = char::from(b'0' + number - 1);

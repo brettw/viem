@@ -94,6 +94,26 @@ internal sealed unsafe partial class CoreView : IDisposable
         byte[] bytes = Encoding.UTF8.GetBytes(text);
         fixed (byte* p = bytes) return viem_core_view_send_text_with_host_context_v2(Document.Handle, Id, p, (ulong)bytes.Length, context, outcome, effects);
     });
+    private static bool enteredGui;
+    public void ResumeScript(ulong token, bool success)
+    {
+        if (Id == 0 || Document.Handle == 0) return;
+        Send((c, o, e) => viem_core_view_resume_script(Document.Handle, Id, token, success ? 1u : 0u, c, o, e));
+    }
+    public void TakeStartupEffects(bool applyApplicationOptions)
+    {
+        var effects = Send((c, o, e) => viem_core_view_take_startup_effects(Document.Handle, Id, o, e), publish: false);
+        if (effects != null) {
+            if (!applyApplicationOptions) effects = effects with { Requests = effects.Requests.Where(request =>
+                (request.Value.flags & VIEM_EX_FRONTEND_STARTUP_APPLICATION) == 0).ToArray() };
+            Effects?.Invoke(effects);
+        }
+        if (!enteredGui) {
+            enteredGui = true;
+            if (FireAutocmd("VimEnter") is { } entered) Effects?.Invoke(entered);
+            if (FireAutocmd("GUIEnter") is { } gui) Effects?.Invoke(gui);
+        }
+    }
     public void FlushMapping() => Send((c, o, e) => viem_core_view_flush_mapping_with_host_context_v2(Document.Handle, Id, c, o, e));
     public void Command(string keys) { foreach (var rune in keys.EnumerateRunes()) Key(VIEM_KEY_CHARACTER, (uint)rune.Value); }
     public void Ex(string command) { Key(VIEM_KEY_ESCAPE); Command(":"); Text(command); Key(VIEM_KEY_ENTER); }

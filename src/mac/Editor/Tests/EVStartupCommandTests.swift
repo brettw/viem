@@ -30,6 +30,35 @@ final class EVStartupCommandTests: XCTestCase {
         surface.editorView.insertText(keys, replacementRange: NSRange(location: NSNotFound, length: 0))
     }
 
+    func testStartupApplicationOptionsApplyOnceAndRuntimeChangesSurviveOpeningAnotherDocument() throws {
+        let config = try configuration("set timeoutlen=20 laststatus=0 scrolloff=2\nmap g l\nmap gg $\n")
+        let (first, a) = try surface(config)
+        let firstDocument = EVDocument(editorBackend: first)
+        let firstWindow = EVDocumentWindowController(document: firstDocument, editorSurface: a, configuration: config)
+        defer { firstWindow.close() }
+        XCTAssertEqual(config.scriptOptions.timeoutLength, 20)
+        XCTAssertEqual(config.scriptOptions.showStatusBar, false)
+        XCTAssertEqual(config.scriptOptions.scrolloff, 2)
+        type("g", in: a)
+        let session = try XCTUnwrap(a.session)
+        let deadline = Date().addingTimeInterval(0.5)
+        while try session.hasPendingMapping(), Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+        XCTAssertFalse(try session.hasPendingMapping())
+        XCTAssertEqual(a.viewPresentation.cursor_utf8_offset, 1)
+        _ = try session.executeCommandLine("set timeoutlen=300 laststatus=2")
+        XCTAssertEqual(config.scriptOptions.timeoutLength, 300)
+        let resumed = Date().addingTimeInterval(0.5)
+        while config.scriptOptions.showStatusBar != true, Date() < resumed { RunLoop.main.run(until: Date().addingTimeInterval(0.005)) }
+        let (second, b) = try surface(config)
+        let secondDocument = EVDocument(editorBackend: second)
+        let secondWindow = EVDocumentWindowController(document: secondDocument, editorSurface: b, configuration: config)
+        defer { secondWindow.close() }
+        XCTAssertEqual(config.scriptOptions.timeoutLength, 300)
+        XCTAssertEqual(config.scriptOptions.showStatusBar, true)
+        XCTAssertFalse(first.persistenceState.isDirty)
+        XCTAssertFalse(second.persistenceState.isDirty)
+    }
+
     func testStartupYankMappingUsesNamedRegisterWithoutChangingSource() throws {
         let (backend, surface) = try surface(configuration("map Y y$\n"))
         type("\"aY", in: surface)

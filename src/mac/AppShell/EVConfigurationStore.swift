@@ -21,6 +21,7 @@ public struct EVCodeFilenameAssociation: Codable, Equatable, Sendable {
 public final class EVConfigurationStore {
   public static let shared = EVConfigurationStore()
   public let directory: URL
+  public let scriptOptions = EVScriptApplicationOptions()
   /// All buffers share the first read of startup.viem until this profile is
   /// reopened, normally at the next application launch.
   public private(set) lazy var startupFile = EVStartupFile.load(directory: directory)

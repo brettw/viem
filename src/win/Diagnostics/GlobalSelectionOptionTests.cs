@@ -27,7 +27,7 @@ internal static class GlobalSelectionOptionTests
         using var secondSplit = new CoreView(second, device, dispatcher, 600, 300);
         secondView.Command("v"); secondSplit.Command("i");
         var selected = secondView.LogicalSelection();
-        var effects = firstView.SourceLine("set autoselect keymodel=startsel,stopsel selectmode=mouse,key", 1)!;
+        var effects = firstView.ExecuteCommandLine("set autoselect keymodel=startsel,stopsel selectmode=mouse,key")!;
         GlobalSelectionOptions.Observe(first, effects.SelectionOptions);
         check(second.SelectionOption(VIEM_EX_OPTION_KEYMODEL) == "startsel,stopsel"
             && second.SelectionOption(VIEM_EX_OPTION_SELECTMODE) == "mouse,key" && second.SelectionOption(VIEM_EX_OPTION_AUTOSELECT) == "1", "runtime selection option changes propagate across document cores");

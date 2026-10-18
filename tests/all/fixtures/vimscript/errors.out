@@ -1,0 +1,29 @@
+
+line 2:
+E121: Undefined variable: undefined_variable
+after undefined
+line 4:
+E492: Not an editor command: notacommand
+after unknown command
+x
+line 6:
+E117: Unknown function: NoSuchFunction
+next line
+line 8:
+E684: List index out of range: 5
+line 10:
+E716: Key not present in Dictionary: "missing"
+line 11:
+E897: List or Blob required
+line 12:
+E745: Using a List as a Number
+line 13:
+E114: Missing double quote: "unterminated
+if body
+line 16:
+E588: :endwhile without :while: endwhile
+line 18:
+E588: :endfor without :for: endfor
+line 19:
+E475: Invalid argument: = 5
+done
