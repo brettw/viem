@@ -215,7 +215,10 @@ In Preview Insert/Replace within a cell:
   Shift-Tab in the first header cell stays there; it never creates a row above.
 - Boundary Backspace/Delete without a selection does not merge neighboring
   cells or destroy table structure. Internal hard breaks and graphemes remain
-  normally deletable. Structural widgets handle row/column deletion.
+  normally deletable. The same boundary protection applies to Insert-mode
+  Ctrl-W/Ctrl-U, and to the separator between a table and adjacent prose:
+  a key that would join these owners does nothing. Structural widgets handle
+  row/column deletion.
 - Native arrows and selection extension use exact cell geometry and existing
   grapheme/bidi rules. Movement beyond the table reaches adjacent prose; provide
   an editable ordinary boundary at document edges when insertion requires it.

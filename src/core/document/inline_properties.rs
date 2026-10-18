@@ -27,7 +27,7 @@ pub(crate) fn resolved_inline_boolean(
     }
 }
 
-fn tags(property: StyleProperty) -> Result<&'static [&'static str], DocumentError> {
+pub(super) fn tags(property: StyleProperty) -> Result<&'static [&'static str], DocumentError> {
     match property {
         StyleProperty::CharacterUnderline => Ok(&["ins", "u"]),
         StyleProperty::CharacterSuperscript => Ok(&["sup"]),
@@ -37,7 +37,7 @@ fn tags(property: StyleProperty) -> Result<&'static [&'static str], DocumentErro
 }
 
 impl Document {
-    fn inline_scope_delimiters(
+    pub(super) fn inline_scope_delimiters(
         &self,
         scope: &Range<usize>,
         names: &[&str],
@@ -46,6 +46,18 @@ impl Document {
             .projection()
             .source_range(scope.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
+        self.inline_scope_delimiters_around(scope, names, &full)
+    }
+
+    /// Find the next exact wrapper outside a known source interval. Clipboard
+    /// extraction walks outward to retain nested scopes with identical visible
+    /// ranges, including attributes on an otherwise redundant outer wrapper.
+    pub(super) fn inline_scope_delimiters_around(
+        &self,
+        scope: &Range<usize>,
+        names: &[&str],
+        full: &Range<usize>,
+    ) -> Result<(Range<usize>, Range<usize>, Vec<u8>, Vec<u8>), ModelTransactionError> {
         let mut delimiters = None;
         for name in names {
             let open = self.encoding().encode_fragment(&format!("<{name}>"))?;
@@ -73,6 +85,16 @@ impl Document {
                     downstream_formatted,
                     ..
                 }) if upstream_formatted == downstream_formatted => upstream_formatted,
+                Err(SourceToTextError::InteriorHiddenSyntax {
+                    upstream_formatted: None,
+                    downstream_formatted: Some(0),
+                    ..
+                }) => Some(0),
+                Err(SourceToTextError::InteriorHiddenSyntax {
+                    upstream_formatted: Some(at),
+                    downstream_formatted: None,
+                    ..
+                }) if at == self.projection().text_tree().byte_len() => Some(at),
                 _ => None,
             };
             let scan = |mut first: usize, last: usize| -> Result<_, ModelTransactionError> {
@@ -306,9 +328,14 @@ impl Document {
                 }
             }
         }
+        let mut edits = formatted.formatted_edits();
+        let patches = sources.source_patches();
+        if edits.is_empty() && !patches.is_empty() {
+            edits.push(TextEdit::new(range.start..range.start, ""));
+        }
         self.prepare_text_edits_with_patch_policy(
-            formatted.formatted_edits(),
-            Some(sources.source_patches()),
+            edits,
+            Some(patches),
             true,
         )
     }
@@ -466,7 +493,12 @@ impl Document {
                 patches.push(SourcePatch::primary(source.end..source.end, boundary));
             }
         }
-        let prepared = self.prepare_text_edits_with_patch_policy(Vec::new(), Some(patches), true)?;
+        // The semantic selection supplies the exact local verification seed.
+        // A removed delimiter can start inside the hidden gap between adjacent
+        // scopes, where reverse-mapping its source offset is intentionally
+        // ambiguous even though the selected visible boundary is known.
+        let prepared = self.prepare_text_edits_with_patch_policy(
+            vec![TextEdit::new(range.start..range.start, "")], Some(patches), true)?;
         if let PreparedPublication::State(candidate) = &prepared.publication {
             let spans = candidate.projection.style_spans_for_region(&range);
             let mut boundaries = BTreeSet::from([range.start, range.end]);

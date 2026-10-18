@@ -208,14 +208,48 @@ impl Document {
         if self.projection().table_cell_at(at).is_some() {return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);}
         let block = super::super::edit_boundary::paragraph_at(self, at)?
             .ok_or(DocumentError::AmbiguousProjection)?;
-        if self.format() == Format::Markdown
-            && self.projection().style_spans_for_region(&(at..at)).iter().any(|span|
+        if let Some(comment) = self.projection().style_spans_for_region(&(at..at)).into_iter().find(|span|
                 span.application == StyleApplication::Automatic("Comment".into())
                     && span.range.start < at && at < span.range.end)
         {
-            // Visible comment contents are literal, so backslash and <br>
-            // would appear as text. Its own source newline is the hard break.
-            let prepared = self.prepare_text_edits(vec![TextEdit::new(at..at, "\n")])?;
+            let text = self.projection().text_tree();
+            let has_opener = comment.range.len() >= 4
+                && text.slice(comment.range.start..comment.range.start + 4).as_deref() == Ok("<!--");
+            let has_closer = comment.range.len() >= 3
+                && text.slice(comment.range.end - 3..comment.range.end).as_deref() == Ok("-->");
+            let body = comment.range.start + 4..comment.range.end
+                - if has_closer { 3 } else { 0 };
+            // Comment bodies retain literal source newlines. Splitting an
+            // opener or closer instead retires that exact comment syntax;
+            // protect its retained literal characters before inserting <br>.
+            let patches = if has_opener
+                && body.start <= at && at <= body.end {
+                let continuation = if block.list_level().is_some() {
+                    self.markdown_list_continuation_context(at)?.2
+                } else if block.quote_depth > 0 {
+                    let first = self.projection().source_insertion_point(block.range.start, true)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    let row = self.physical_line_at_source(first)?;
+                    let bytes = self.source_bytes_in(row.content_range.start..first)?;
+                    let decoded = self.encoding().decode_region(&bytes, row.content_range.start)?;
+                    decoded.text[..super::super::markdown_quotes::prefix(&decoded.text)].to_owned()
+                } else { String::new() };
+                let syntax = format!("{}{continuation}", self.file_format().spelling());
+                if let Some(patch) = self.comment_tab_break_patch(at, &syntax)? {
+                    vec![patch]
+                } else {
+                    let source = self.projection().source_insertion_point(at, true)
+                        .ok_or(DocumentError::AmbiguousProjection)?;
+                    vec![SourcePatch::primary(source..source, self.encoding().encode_fragment(&syntax)?)]
+                }
+            } else {
+                let source = self.projection().source_insertion_point(at, true)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                self.hard_break_comment_patches(comment.range.clone(), &block, at, source)?
+            };
+            let prepared = self.prepare_text_edits_with_patches(
+                vec![TextEdit::new(at..at, "\n")], Some(patches),
+            )?;
             return self.verify_hard_break_paragraph(prepared, &block);
         }
         if self.format() == Format::Markdown {
@@ -229,10 +263,9 @@ impl Document {
                 // A break beside a block comment must join its existing
                 // literal lines in the same paragraph. Retire that opener
                 // locally, protecting the comment's existing hard breaks.
-                let mut patches = self.literal_comment_support(comment.range.clone())?;
                 let source = self.projection().source_insertion_point(at, at == comment.range.start)
                     .ok_or(DocumentError::AmbiguousProjection)?;
-                patches.push(SourcePatch::primary(source..source, self.encoding().encode_fragment("<br>")?));
+                let patches = self.hard_break_comment_patches(comment.range.clone(), &block, at, source)?;
                 let prepared = self.prepare_text_edits_with_patches(
                     vec![TextEdit::new(at..at, "\n")], Some(patches),
                 )?;
@@ -280,10 +313,23 @@ impl Document {
                     .and_then(|bytes| self.encoding().decode_region(&bytes, range.start).ok())
                     .is_some_and(|decoded| !normalize(&decoded, self.file_format()).endings.is_empty())
             });
+        let delimiter_edge = self.projection().style_spans_touching(&(at..at)).into_iter().any(|span|
+            (span.range.start == at || span.range.end == at)
+                && (matches!(span.application, StyleApplication::Semantic(SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis))
+                    || matches!(span.application, StyleApplication::Automatic(ref style) if style.0 == "Strikethrough")));
         let inline_html = self.format() == Format::Markdown
             && (matches!(block.kind, super::super::BlockKind::Heading(_))
+                || block.markdown_html
                 || at == block.range.end
                 || before_folded_ending
+                // A physical newline beside an emphasis delimiter changes
+                // its flanking. Keep the actual affinity-selected source side
+                // and use a break tag that leaves the delimiter active.
+                || delimiter_edge
+                // Physical continuation indentation would consume this
+                // retained space or tab instead of displaying it after the break.
+                || self.projection().text_tree().byte_chunk_at(at).first()
+                    .is_some_and(|byte| matches!(byte, b' ' | b'\t'))
                 || self.text()[block.range.clone()].trim().is_empty());
         let mut syntax = if inline_html {
             // An ATX heading cannot span physical lines. Bare br is also
@@ -351,8 +397,13 @@ impl Document {
             &(at.saturating_sub(1)..at.saturating_add(1).min(self.text().len())),
         ).into_iter().any(|span| span.range.start <= at && at <= span.range.end
             && (matches!(span.application, StyleApplication::Semantic(SemanticInlineStyle::Code))
-                || matches!(span.application, StyleApplication::Named(ref id) if id.0 == "Code")));
-        let patches = if self.format() == Format::Markdown && (!inline_html || in_code) {
+                || matches!(span.application, StyleApplication::Named(ref id) if id.0 == "Code"))
+            && self.projection().source_range(span.range).is_some_and(|body|
+                body.start <= source_at && source_at <= body.end));
+        // Emphasis and links already span a hard break inside their paragraph.
+        // Closing and reopening them would change flanking beside whitespace.
+        // Literal code alone needs to end before authored break syntax.
+        let patches = if self.format() == Format::Markdown && in_code {
             markdown_split::hard_break_patches(self, at, source_at, &syntax)?
         } else {
             None
@@ -367,6 +418,83 @@ impl Document {
         let prepared =
             self.prepare_text_edits_with_patches(vec![TextEdit::new(at..at, "\n")], Some(patches))?;
         self.verify_hard_break_paragraph(prepared, &block)
+    }
+
+    fn comment_tab_break_patch(&self, at: usize, syntax: &str) -> Result<Option<SourcePatch>, DocumentError> {
+        let tab = self.encoding().encode_fragment("\t")?;
+        for span in self.projection().provenance_touching(&(at..at)) {
+            if !(span.formatted.start <= at && at < span.formatted.end)
+                || span.formatted.len() > 3
+                || self.source_bytes_in(span.source.clone())? != tab {
+                continue;
+            }
+            let visible = self.projection().text_tree().slice(span.formatted.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            if visible.is_empty() || !visible.bytes().all(|byte| byte == b' ') { continue; }
+            let line = self.physical_line_at_source(span.source.start)?;
+            let bytes = self.source_bytes_in(line.content_range.start..span.source.start)?;
+            let prefix = self.encoding().decode_region(&bytes, line.content_range.start)?.text;
+            let quote = super::super::markdown_quotes::prefix(&prefix);
+            let mut columns = 0usize;
+            for byte in prefix[quote..].bytes() {
+                columns += if byte == b'\t' { 4 - columns % 4 } else { 1 };
+            }
+            let Some(owned) = (4 - columns % 4).checked_sub(visible.len()).filter(|owned| *owned > 0) else { continue; };
+            // The same tab contributes hidden item indentation and visible
+            // spaces. Moving it after a new prefix would change its tab stop;
+            // rewrite that single contributor with its retained literal spaces.
+            let offset = at - span.formatted.start;
+            let replacement = format!("{}{}{syntax}{}", " ".repeat(owned), &visible[..offset], &visible[offset..]);
+            return Ok(Some(SourcePatch::primary(span.source, self.encoding().encode_fragment(&replacement)?)));
+        }
+        Ok(None)
+    }
+
+    fn hard_break_comment_patches(
+        &self,
+        range: Range<usize>,
+        block: &super::super::Block,
+        at: usize,
+        source: usize,
+    ) -> Result<Vec<SourcePatch>, DocumentError> {
+        if !block.markdown_html {
+            let mut patches = self.literal_comment_support(range)?;
+            patches.push(SourcePatch::primary(source..source, self.encoding().encode_fragment("<br>")?));
+            return Ok(patches);
+        }
+        // Retiring a comment inside passive HTML uses entities, not Markdown
+        // escapes. If the comment itself supplied the HTML paragraph, retain
+        // that paragraph's existing style with the smallest explicit owner.
+        let wrap = range == block.range;
+        let text = self.projection().text_tree().slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let mut patches = Vec::new();
+        for (offset, ch) in text.char_indices() {
+            let literal = match ch {
+                '<' => "&lt;", '&' => "&amp;", '\\' => "&#92;",
+                ' ' => "&#32;", '\t' => "&#9;", '\n' => "<br>", '\r' => "&#13;",
+                _ => continue,
+            };
+            let character = range.start + offset;
+            let source = self.projection().source_range(character..character + ch.len_utf8())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let syntax = if wrap && offset == 0 {
+                format!("<p>{}{literal}", if at == range.start { "<br>" } else { "" })
+            } else { literal.to_owned() };
+            patches.push(SourcePatch::primary(source, self.encoding().encode_fragment(&syntax)?));
+        }
+        if wrap {
+            let end = self.projection().source_insertion_point(range.end, false)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let closing = if at == range.end { "<br></p>" } else { "</p>" };
+            patches.push(SourcePatch::primary(end..end, self.encoding().encode_fragment(closing)?));
+        }
+        // At a wrapped paragraph edge the break belongs inside its new owner,
+        // and shares that supporting patch rather than a competing insertion.
+        if !wrap || range.start < at && at < range.end {
+            patches.push(SourcePatch::primary(source..source, self.encoding().encode_fragment("<br>")?));
+        }
+        Ok(patches)
     }
 
     fn verify_hard_break_paragraph(

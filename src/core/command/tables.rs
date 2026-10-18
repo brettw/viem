@@ -192,6 +192,7 @@ impl CommandInterpreter {
     ) -> bool {
         self.table_cells.is_some()
             || self.table_tab_selection
+            || self.table_edge_key_is_no_op(document, event)
             || (document.format() == Format::Markdown
                 && self.mode == Mode::Normal
                 && matches!(event, InputEvent::Key(Key::Char('p' | 'P')))
@@ -208,8 +209,38 @@ impl CommandInterpreter {
                             | Key::ShiftEnter
                             | Key::Backspace
                             | Key::Delete
+                            | Key::Ctrl('w' | 'W' | 'u' | 'U')
                     )
                 ))
+    }
+
+    fn table_edge_key_is_no_op(&self, document: &Document, event: &InputEvent) -> bool {
+        if document.format() != Format::Markdown
+            || !matches!(self.mode, Mode::Insert | Mode::Replace)
+        {
+            return false;
+        }
+        let lines = document.hard_line_snapshot();
+        match event {
+            InputEvent::Key(Key::Backspace | Key::Ctrl('w' | 'W' | 'u' | 'U'))
+                if self.mode == Mode::Insert =>
+            {
+                lines
+                    .previous_grapheme_boundary(self.cursor)
+                    .and_then(|at| document.projection().table_at(at).map(|table| (at, table)))
+                    .is_some_and(|(at, table)| at == table.range.end && self.cursor > at)
+                    // Backspace may remove list/code treatment without
+                    // joining the preceding table. Let that semantic action
+                    // run before protecting the inter-owner separator.
+                    && (!matches!(event, InputEvent::Key(Key::Backspace))
+                        || matches!(self.paragraph_key_request(document, Key::Backspace), Ok(None)))
+            }
+            InputEvent::Key(Key::Delete) => lines
+                .next_grapheme_boundary(self.cursor)
+                .and_then(|at| document.projection().table_at(at).map(|table| (at, table)))
+                .is_some_and(|(at, table)| at == table.range.start && self.cursor < at),
+            _ => false,
+        }
     }
 
     /// Private matrix payloads retain their rectangular meaning. Plain text,
@@ -499,6 +530,12 @@ impl CommandInterpreter {
         if !matches!(self.mode, Mode::Insert | Mode::Replace) && !self.table_tab_selection {
             return Ok(None);
         }
+        // Paragraph/table separators are structural, just like separators
+        // between cells. A single editing key cannot merge the owners from
+        // either side; selections and row actions retain their own policies.
+        if self.table_edge_key_is_no_op(document, event) {
+            return Ok(Some(CommandOutput::complete()));
+        }
         let Some((table, row, cell)) = document.projection().table_cell_at(self.cursor) else {
             return Ok(None);
         };
@@ -579,7 +616,10 @@ impl CommandInterpreter {
             }
             return self.insert_text(document, "\n").map(Some);
         }
-        if (matches!(event, InputEvent::Key(Key::Backspace)) && self.cursor == range.start)
+        if (matches!(
+            event,
+            InputEvent::Key(Key::Backspace | Key::Ctrl('w' | 'W' | 'u' | 'U'))
+        ) && self.cursor == range.start)
             || (matches!(event, InputEvent::Key(Key::Delete)) && self.cursor == range.end)
         {
             return Ok(Some(CommandOutput::complete()));

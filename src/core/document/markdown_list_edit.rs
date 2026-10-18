@@ -4,6 +4,45 @@ use super::replacement::PatchComposition;
 use super::*;
 use crate::document::{edit_boundary, BlockKind, ContainerKind};
 
+/// Continue the innermost item on a row without starting its outer items again.
+/// The decoded prefix ends at a proven body boundary, so inline openers are
+/// excluded even when they resemble an empty list marker in isolation.
+pub(super) fn sibling_prefix(
+    text: &str,
+    nonempty_body: bool,
+    ordered: bool,
+    ordinal: u64,
+) -> Result<String, DocumentError> {
+    let mut at = 0;
+    let mut markers = Vec::new();
+    loop {
+        let quote = crate::document::markdown_quotes::prefix(&text[at..]);
+        if quote > 0 { at += quote; continue; }
+        let Some((bytes, columns)) = crate::document::markdown_blocks::marker_prefix_geometry(&text[at..]) else { break; };
+        if nonempty_body && at + bytes == text.len() && !text.ends_with([' ', '\t']) { break; }
+        markers.push((at..at + bytes, columns));
+        at += bytes;
+    }
+    let Some((last, _)) = markers.last() else { return Err(DocumentError::AmbiguousProjection); };
+    let marker = &text[last.clone()];
+    let indentation = marker.len() - marker.trim_start_matches([' ', '\t']).len();
+    let delimiter = marker[indentation..].chars().find(|ch| !ch.is_ascii_digit())
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let mut result = String::new();
+    let mut copied = 0;
+    for (range, columns) in &markers[..markers.len() - 1] {
+        result.push_str(&text[copied..range.start]);
+        result.push_str(&" ".repeat(*columns));
+        copied = range.end;
+    }
+    result.push_str(&text[copied..last.start + indentation]);
+    if ordered { result.push_str(&ordinal.to_string()); }
+    result.push(delimiter);
+    result.push(' ');
+    result.push_str(&text[last.end..at]);
+    Ok(result)
+}
+
 impl Document {
     /// Resolve continuation syntax from the owning item, including separator
     /// paragraphs whose own physical row has no marker or indentation.
@@ -946,28 +985,12 @@ impl Document {
         let bytes = self
             .state()
             .source
-            .bytes_in(source_line.clone())
+            .bytes_in(source_line.start..body_source)
             .ok_or(DocumentError::AmbiguousProjection)?;
         let decoded = self.encoding().decode_region(&bytes, source_line.start)?;
-        let quote = crate::document::markdown_quotes::prefix(&decoded.text);
-        let quote_prefix = &decoded.text[..quote];
-        let prefix_len =
-            crate::document::markdown_blocks::marker_prefix_length(&decoded.text[quote..])
-                .ok_or(DocumentError::AmbiguousProjection)?;
-        let prefix = &decoded.text[quote..quote + prefix_len];
-        let indentation_len = prefix.len() - prefix.trim_start_matches([' ', '\t']).len();
-        let indentation = &prefix[..indentation_len];
-        let delimiter = prefix[indentation_len..]
-            .chars()
-            .find(|ch| !ch.is_ascii_digit())
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let label = if ordered {
-            format!("{}{delimiter} ", ordinal.saturating_add(1))
-        } else {
-            format!("{delimiter} ")
-        };
+        let prefix = sibling_prefix(&decoded.text, !first_paragraph.range.is_empty(), ordered, ordinal.saturating_add(1))?;
         let replacement = self.encoding().encode_fragment(&format!(
-            "{}{quote_prefix}{indentation}{label}",
+            "{}{prefix}",
             self.file_format().spelling()
         ))?;
         let source_at = self
@@ -977,6 +1000,23 @@ impl Document {
         let edit = TextEdit::new(at..at, "\n");
         let mut range = source_at..source_at;
         let mut replacement = replacement;
+        let inner_quote = block.containers.iter().rposition(|member|
+            member.container.kind == ContainerKind::ListItem)
+            .is_some_and(|item| block.containers[item + 1..].iter().any(|member|
+                member.container.kind == ContainerKind::Quote));
+        if inner_quote {
+            // Bare quote syntax within the item has no paragraph leaf.
+            // Materialize either empty side of the split without changing
+            // its list or quote ownership or adding visible content.
+            if at == block.range.start && block.id == first_paragraph.id {
+                let mut body = self.encoding().encode_fragment("<span></span>")?;
+                body.extend(replacement);
+                replacement = body;
+            }
+            if at == block.range.end {
+                replacement.extend(self.encoding().encode_fragment("<span></span>")?);
+            }
+        }
         let mut materializes_empty_body = block.range.is_empty() && block.kind == BlockKind::Paragraph;
         if at == block.range.start && block.id != first_paragraph.id {
             if matches!(block.kind, BlockKind::Paragraph) {
