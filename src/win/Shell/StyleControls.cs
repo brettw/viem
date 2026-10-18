@@ -106,7 +106,7 @@ internal sealed partial class StyleWindow
         var combo = new ComboBox { Width = 162, ItemsSource = choices };
         Property(row, label, property, combo);
         refreshFields.Add(() => combo.SelectedIndex = ShowsValue(property) ? Array.IndexOf(values, selected.Value(property).enum_value) : -1);
-        combo.SelectionChanged += (_, _) => { if (!loading && combo.SelectedIndex >= 0) Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Enum(valueKind, values[combo.SelectedIndex]))); };
+        combo.SelectionChanged += (_, _) => { if (!loading && combo.SelectedIndex >= 0) Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property, CoreView.Enum(valueKind, values[combo.SelectedIndex]))); };
     }
     private void Boolean(Panel row, string label, uint property)
     {
@@ -124,7 +124,7 @@ internal sealed partial class StyleWindow
         ToolTipService.SetToolTip(button, name);
         Property(row, name, property, button, caption: false, reserveCaption: true);
         refreshFields.Add(() => button.IsChecked = ShowsValue(property) && selected.Value(property).enum_value != 0);
-        button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
+        button.Click += (_, _) => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
             CoreView.Enum(property == VIEM_STYLE_PROPERTY_CHARACTER_SLANT ? VIEM_STYLE_VALUE_FONT_SLANT : VIEM_STYLE_VALUE_BOOLEAN, button.IsChecked == true ? 1u : 0u)));
     }
     private void SetColor(uint property, global::Windows.UI.Color color, ViemStyleEditGroupV1? group = null)
@@ -158,7 +158,7 @@ internal sealed partial class StyleWindow
         foreach (var (label, glyph, value) in new[] { ("Align start", "\uE8E4", 1u), ("Align center", "\uE8E3", 3u), ("Align end", "\uE8E2", 2u) }) {
             var button = new ToggleButton { Content = new FontIcon { Glyph = glyph, FontSize = 16 }, Width = 36, MinWidth = 0, Padding = new(0) };
             AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label); alignment.Children.Add(button); buttons.Add(button);
-            button.Click += (_, _) => Try(() => view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, CoreView.Enum(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, value)));
+            button.Click += (_, _) => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, CoreView.Enum(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, value)));
             refreshFields.Add(() => button.IsChecked = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT) && selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value == value);
         }
         var alignmentGroup = Property(top, "Alignment", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, alignment, caption: false, reserveCaption: true);
@@ -229,6 +229,6 @@ internal sealed partial class StyleWindow
             number = (float)RoundLineSpacing(number);
         }
         var value = CoreView.Enum(VIEM_STYLE_VALUE_LINE_SPACING, kind); value.number = number;
-        view.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, value);
+        EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, value);
     }
 }

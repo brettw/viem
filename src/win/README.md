@@ -218,6 +218,12 @@ The main Settings window has no Code category. From a Code view, F8 or Style > E
 style inspector. The Style > Paragraph and Character menus also open the
 selected Code definition for editing, including names from accepted syntax
 highlighting; they do not apply manual formatting to Code text.
+Settings > Editing > Edit Style opens or reuses that inspector with Code and
+Visible whitespace selected. Its character controls, Undo/Redo and Restore
+Defaults edit the global whitespace presentation settings in `config.json`,
+independently of the Code theme stylesheet and document source. Visible
+whitespace cannot inherit from a named style or be another style's parent, and
+its font size uses points.
 Filename associations remain supported through
 `code.filenameAssociations` in `config.json`, and syntax load/compiler messages
 remain available through the existing diagnostics mechanisms. Vim syntax always

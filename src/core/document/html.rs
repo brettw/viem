@@ -60,7 +60,7 @@ pub(super) fn image_metadata(
     };
     Some(super::InlineImage {
         range, text: tag.attribute("alt").unwrap_or_default().to_owned(), destination: destination.to_owned(),
-        width: dimension("width"), height: dimension("height"), source, inline: false, html: true,
+        width: dimension("width"), height: dimension("height"), title: tag.attribute("title").unwrap_or_default().to_owned(), source, inline: false, html: true,
     })
 }
 #[derive(Clone, Debug)]

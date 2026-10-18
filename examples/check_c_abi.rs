@@ -70,6 +70,7 @@ static ViemStatus (*copy_source_bytes)(ViemCoreHandle, uint64_t, uint64_t, uint6
 static ViemStatus (*wait_for_syntax)(ViemCoreHandle, ViemViewId, uint8_t *) = viem_core_view_wait_for_syntax;
 static ViemStatus (*font_en_width)(ViemCoreHandle, ViemViewId, uint64_t, float *) = viem_core_view_font_en_width;
 static ViemStatus (*navigate_link_fragment)(ViemCoreHandle, ViemViewId, uint64_t, uint64_t, ViemUtf8Slice, uint8_t *, ViemCoreOutcomeV1 *) = viem_core_view_navigate_link_fragment;
+static ViemStatus (*edit_image)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, uint32_t, uint64_t, uint64_t, ViemUtf8Slice, ViemUtf8Slice, uint32_t, uint32_t, ViemCoreOutcomeV1 *) = viem_core_view_edit_image;
 static ViemStatus (*strikethrough_state)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_core_view_strikethrough_state;
 static ViemStatus (*set_strikethrough)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, uint8_t, ViemCoreOutcomeV1 *) = viem_core_view_set_strikethrough;
 _Static_assert(sizeof(ViemTableContextV1) == {table_context}, "table context size");

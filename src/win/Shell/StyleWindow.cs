@@ -250,6 +250,11 @@ internal sealed partial class StyleWindow : Window
     }
     private void LoadParents(StyleDefinition[] styles)
     {
+        if (IsWhitespaceStyle)
+        {
+            parent.ItemsSource = new[] { "Underlying text" }; parent.SelectedIndex = 0; parent.IsEnabled = false;
+            return;
+        }
         bool isBase = (selected.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0;
         bool localEditable = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_PARENT);
         bool editable = localEditable || selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS);
@@ -287,7 +292,7 @@ internal sealed partial class StyleWindow : Window
         loading = true;
         try
         {
-            sheet = snapshot ?? view.Styles();
+            sheet = InspectorStyles(snapshot ?? view.Styles());
             if (followCaret) key = CurrentCaretStyle(sheet);
 #if DEBUG
             StyleLoads++;
@@ -371,6 +376,7 @@ internal sealed partial class StyleWindow : Window
     {
         lastStyleFailureStatus = null;
         if (loading || updating || closed) return false;
+        if (IsWhitespaceStyle) return TryWhitespaceEdit(action, reload);
         if (preferences.EnsureCurrentThemeExists()) return false;
         if (!PrepareThemeEdit()) return false;
         if (reload) DismissColorPickers();

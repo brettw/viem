@@ -148,6 +148,8 @@ fn authored_syntax_in_blank_line_paragraphs_reopens_as_displayed() {
                 "image" => {
                     core.edit_image(view, expected, viem_core::document::ImageEditIntent::Insert {
                         range, text: "alt".into(), destination: "pic.png".into(),
+                        width: None,
+                        height: None,
                     }).unwrap_or_else(|error| panic!("{source:?} {action}: {error:?}"));
                 }
                 text => {

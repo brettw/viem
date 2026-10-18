@@ -6,6 +6,8 @@ import ViemAppShell
 enum EVStyleNamespace: UInt32, Hashable {
     case block = 1
     case character = 2
+    // Native settings definitions never cross the core style ABI.
+    case applicationSetting = 3
 }
 
 struct EVStyleID: Hashable, RawRepresentable, CustomStringConvertible {
@@ -29,6 +31,7 @@ struct EVStyleKey: Hashable, CustomStringConvertible {
 
     static let baseParagraph = EVStyleKey(namespace: .block, id: .baseParagraph)
     static let defaultParagraph = EVStyleKey(namespace: .character, id: .defaultParagraph)
+    static let visibleWhitespace = EVStyleKey(namespace: .applicationSetting, id: EVStyleID(rawValue: "Visible whitespace"))
 }
 
 enum EVStyleKind: Int, CaseIterable {
@@ -57,6 +60,8 @@ struct EVStyleSheetIdentity: Equatable {
     let documentID: UInt64
     let documentRevision: UInt64
     let styleSheetRevision: UInt64
+    // Covers application-owned definitions displayed beside core styles.
+    var settingsRevision: UInt64 = 0
 
     init(documentID: UInt64, documentRevision: UInt64, styleSheetRevision: UInt64) {
         self.documentID = documentID

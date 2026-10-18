@@ -153,7 +153,13 @@ width. Click an image or move the caret onto it to see its selection
 outline and location popup; Edit expands that popup to change its location and
 alternative text. With Preview off, Code shows the complete image notation.
 The folder button beside Location chooses a local file and fills the draft with
-a relative path where possible. Apply commits the change.
+a relative path where possible. Insert adds the new image; Apply updates an
+existing image. Eligible local previews load immediately after either action.
+Expand **Specify size** for pixel Width and Height fields. The lock keeps the
+natural aspect ratio, and **Use image size** restores the image's pixel dimensions.
+Explicit sizes reopen expanded; clearing both fields restores intrinsic sizing
+when applied. Folding the controls preserves their values. Sizes are saved as
+passive HTML image attributes.
 
 Standalone images use the **Image** paragraph style. Edit that style to change
 margins, borders and padding; its font also applies to image location labels.

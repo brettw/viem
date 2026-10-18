@@ -41,7 +41,10 @@ separately in [BUGS.md](BUGS.md).
   preview; one dimension preserves intrinsic proportions, while both specify
   the displayed proportions. Content width and the same display caps still
   apply. Location edits preserve dimensions and other untouched attributes;
-  dimension controls are not exposed. Remote URLs are
+  native image popups expose optional pixel dimensions, an ephemeral natural-aspect
+  lock, and Use image size. Sizing a Markdown image converts only that occurrence
+  to passive HTML while preserving its alternative text, destination and title.
+  Remote URLs are
   text placeholders and are never fetched.
   Explicitly opening a remote location launches the default browser.
   The editable Image paragraph style supplies margins, padding and borders for

@@ -813,12 +813,16 @@ impl Document {
             .map_err(DocumentError::FormattedTextStorage);
         let before = slice(self.projection(), before_start..range.start)?;
         let after = slice(self.projection(), range.end..after_end)?;
-        let candidate_before = slice(&state.projection,
-            mapped(before_start, Association::BeforeInsertion)?..table.range.start)?;
-        let candidate_after = slice(&state.projection,
-            table.range.end..mapped(after_end, Association::AfterInsertion)?)?;
-        if candidate_before.trim_end_matches('\n') != before.trim_end_matches('\n')
-            || candidate_after.trim_start_matches('\n') != after.trim_start_matches('\n')
+        // An empty paragraph's retained source boundary can map before the
+        // inserted table, even with AfterInsertion association. It has no
+        // surviving prose to compare and must not form a reversed text slice.
+        let before_preserved = before.is_empty() || slice(&state.projection,
+            mapped(before_start, Association::BeforeInsertion)?..table.range.start)?
+            .trim_end_matches('\n') == before.trim_end_matches('\n');
+        let after_preserved = after.is_empty() || slice(&state.projection,
+            table.range.end..mapped(after_end, Association::AfterInsertion)?)?
+            .trim_start_matches('\n') == after.trim_start_matches('\n');
+        if !before_preserved || !after_preserved
         {
             return Err(unsupported(
                 "This insertion cannot preserve the surrounding inline structure.",

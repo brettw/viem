@@ -96,7 +96,9 @@ fn url_only_edits_and_resource_generations_retire_cached_geometry() {
     install_layout_job(&mut view,LayoutInstallTarget { document_id:document.id(),document_revision:document.revision(),
         measurement_environment_id:engine.provider().measurement_environment_id(),metrics_generation:engine.provider().metrics_generation() },first).unwrap();
     let (edit,_)=document.prepare_image_edit(document.id(),document.revision(),ImageEditIntent::Edit {
-        range:0..3,text:"wide".into(),destination:"small.png".into() }).unwrap();
+        range:0..3,text:"wide".into(),destination:"small.png".into(),
+        width: None,
+        height: None, }).unwrap();
     document.commit_model_transaction(edit).unwrap();
     assert_eq!(document.text(),"\u{fffc}");
     let second=region(&document,&mut view,&mut engine,2,0..1);
@@ -174,7 +176,9 @@ fn destination_only_change_retires_offscreen_table_width_contribution() {
     let old_revision=document.revision();
     let old_lines=document.line_count();
     let (edit,_)=document.prepare_image_edit(document.id(),document.revision(),ImageEditIntent::Edit {
-        range:image_at..image_at+3,text:"wide".into(),destination:"small.png".into() }).unwrap();
+        range:image_at..image_at+3,text:"wide".into(),destination:"small.png".into(),
+        width: None,
+        height: None, }).unwrap();
     document.commit_model_transaction(edit).unwrap();
     engine.rebase_document_change(&super::engine::DocumentLayoutChange::Local {
         old_revision,new_revision:document.revision(),old_hull:image_at..image_at+3,new_hull:image_at..image_at+3,
@@ -327,4 +331,27 @@ fn large_html_image_document_shapes_only_requested_region_with_authored_dimensio
         assert!((cluster.advance - 100.).abs() < 0.001);
         assert!((cluster.typographic_bounds.height - 40.).abs() < 0.001);
     }
+}
+
+
+#[test]
+fn authored_image_size_edits_invalidate_cached_geometry_and_undo_restores_it() {
+    let mut document = document("![wide](wide.png)");
+    let mut engine = LayoutEngine::new(Images::new());
+    let mut view = ViewLayout::new(900., 500.);
+    engine.relayout(&document, &mut view).unwrap();
+    assert_eq!(image(view.snapshot().unwrap(), 0).advance, 600.);
+    let (edit, _) = document.prepare_image_edit(document.id(), document.revision(), ImageEditIntent::Edit {
+        range: 0..3, text: "wide".into(), destination: "wide.png".into(), width: Some(320), height: Some(180),
+    }).unwrap();
+    document.commit_model_transaction(edit).unwrap();
+    engine.relayout(&document, &mut view).unwrap();
+    let sized = image(view.snapshot().unwrap(), 0);
+    assert!((sized.advance - 320.).abs() < 0.001);
+    assert!((sized.typographic_bounds.height - 180.).abs() < 0.001);
+    assert!(document.undo());
+    engine.relayout(&document, &mut view).unwrap();
+    let natural = image(view.snapshot().unwrap(), 0);
+    assert!((natural.advance - 600.).abs() < 0.001);
+    assert!((natural.typographic_bounds.height - 300.).abs() < 0.001);
 }

@@ -64,12 +64,12 @@ internal sealed class LocalImagePreview(CanvasBitmap bitmap, uint width, uint he
 
     /// Intrinsic oriented dimensions from the verified file's header, with the
     /// same safety and admission checks as decoding but no pixel decode. For
-    /// background layout workers only: it blocks on file and header reads.
-    internal static (uint Width, uint Height, LocalImagePreviewStatus Status) ProbeDimensions(string path)
+    /// background layout and draft workers only: it blocks on file and header reads.
+    internal static (uint Width, uint Height, LocalImagePreviewStatus Status) ProbeDimensions(string path, CancellationToken cancellation = default)
     {
         try
         {
-            var read = ReadLocalRaster(path, CancellationToken.None);
+            var read = ReadLocalRaster(path, cancellation);
             if (read.Limited) return (300, 64, LocalImagePreviewStatus.Limited);
             if (read.Bytes is not { } bytes) return (300, 64, LocalImagePreviewStatus.Broken);
             using var stream = new InMemoryRandomAccessStream();
@@ -79,7 +79,7 @@ internal sealed class LocalImagePreview(CanvasBitmap bitmap, uint width, uint he
             }
             stream.Seek(0);
             var decoder = BitmapDecoder.CreateAsync(stream).AsTask().GetAwaiter().GetResult();
-            if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0) return (300, 64, LocalImagePreviewStatus.Broken);
+            if (decoder.PixelWidth == 0 || decoder.PixelHeight == 0 || cancellation.IsCancellationRequested) return (300, 64, LocalImagePreviewStatus.Broken);
             if (decoder.PixelWidth > MaximumDimension || decoder.PixelHeight > MaximumDimension) return (300, 64, LocalImagePreviewStatus.Limited);
             return (decoder.OrientedPixelWidth, decoder.OrientedPixelHeight, LocalImagePreviewStatus.Ready);
         }

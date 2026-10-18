@@ -165,6 +165,52 @@ fn table_insertion_and_following_typing_have_separate_undo_units() {
 }
 
 #[test]
+fn insert_table_on_opened_blank_line_after_heading() {
+    for source in ["## Heading\n\nFollowing paragraph", "Heading\n-------\n\nFollowing paragraph"] {
+        for keys in [vec![Key::Char('o')], vec![Key::Char('A'), Key::Enter], vec![Key::Char('j'), Key::Char('O')]] {
+            let (mut core, view) = editor(source);
+            for key in &keys {
+                core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(*key))).unwrap();
+            }
+            assert_eq!(core.document().text(), "Heading\n\nFollowing paragraph", "{source:?}, {keys:?}");
+            let opened = core.document().source_bytes();
+            let range = core.list_selection_identity(view).unwrap().range();
+            assert_eq!(range, 8..8);
+            core.handle(view, CoreEvent::TableEdit {
+                document: core.document().id(),
+                revision: core.document().revision(),
+                intent: TableEditIntent::Insert { range, columns: 2, body_rows: 1 },
+            }).unwrap_or_else(|error| panic!("{source:?}, {keys:?}: {error:?}"));
+            let table = &core.document().projection().tables()[0];
+            assert_eq!(table.columns.len(), 2);
+            assert_eq!(table.rows.len(), 2);
+            assert_eq!(core.command_state(view).unwrap().cursor(), table.rows[0].cells[0].range.start);
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::Insert);
+            assert_eq!(core.document().projection().blocks()[0].style.0, "Heading2");
+            assert!(core.document().text().starts_with("Heading\n"));
+            assert!(core.document().text().ends_with("\nFollowing paragraph"));
+            let inserted = core.document().source_bytes();
+            let reopened = Document::from_bytes(inserted.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), core.document().text());
+            assert_eq!(reopened.projection().tables()[0].range, table.range);
+            assert_eq!(reopened.projection().blocks()[0].style.0, "Heading2");
+
+            core.handle(view, CoreEvent::Input(InputEvent::text("Header"))).unwrap();
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+            let typed = core.document().source_bytes();
+            for expected in [&inserted[..], &opened[..], source.as_bytes()] {
+                core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+                assert_eq!(core.document().source_bytes(), expected);
+            }
+            for expected in [&opened, &inserted, &typed] {
+                core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+                assert_eq!(&core.document().source_bytes(), expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn stale_rectangle_style_does_not_mutate_after_another_view_edits() {
     let (mut core, view) = editor(SOURCE);
     let second = core.add_view(MockTextMeasurementProvider::new(), 500., 300.);

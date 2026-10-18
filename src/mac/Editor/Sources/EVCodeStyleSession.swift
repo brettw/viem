@@ -20,7 +20,8 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
     private static var initializationError: String?
     private static var fileMonitor: EVCodeStyleFileMonitor?
     let configuration: EVConfigurationStore
-    let undoManager = UndoManager()
+    let undoManager: UndoManager
+    private let whitespaceSession: EVVisibleWhitespaceStyleSession
     private var cachedStyleSheet: EVStyleSheetSnapshot?
     private var groupStart: Data?
     private(set) var lastError: String?
@@ -29,16 +30,27 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
 
     init(configuration: EVConfigurationStore) throws {
         self.configuration = configuration
+        let history = UndoManager()
+        undoManager = history
+        whitespaceSession = EVVisibleWhitespaceStyleSession(configuration: configuration, undoManager: history)
         undoManager.groupsByEvent = false
         do { try Self.initialize(configuration: configuration) }
         catch { lastError = error.localizedDescription }
         lastError = lastError ?? Self.initializationError ?? configuration.lastError
+        whitespaceSession.onChange = { [weak self] in
+            guard let self else { return }
+            self.lastError = self.whitespaceSession.lastError
+            NotificationCenter.default.post(name: .viemStyleSettingsSessionDidChange, object: self)
+        }
         changeObserver = NotificationCenter.default.addObserver(forName: .viemGlobalCodeStyleDidChange, object: nil, queue: .main) { [weak self] notification in
             MainActor.assumeIsolated {
-                guard notification.userInfo?["external"] as? Bool == true, let self else { return }
-                self.groupStart = nil
-                self.undoManager.removeAllActions()
-                self.lastError = nil
+                guard let self else { return }
+                if notification.userInfo?["external"] as? Bool == true {
+                    self.groupStart = nil
+                    self.undoManager.removeAllActions()
+                    self.lastError = nil
+                }
+                NotificationCenter.default.post(name: .viemStyleSettingsSessionDidChange, object: self)
             }
         }
     }
@@ -104,6 +116,14 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
     }
 
     func snapshot() throws -> EVStyleSheetSnapshot {
+        let core = try coreSnapshot()
+        var identity = core.identity
+        identity.settingsRevision = whitespaceSession.revision
+        return EVStyleSheetSnapshot(identity: identity,
+            definitions: core.definitions + [whitespaceSession.style.definition(in: core)])
+    }
+
+    private func coreSnapshot() throws -> EVStyleSheetSnapshot {
         let identity = try EVCoreStyleBridge.styleIdentity(core: 0)
         if let cachedStyleSheet, cachedStyleSheet.identity == identity { return cachedStyleSheet }
         for _ in 0..<3 {
@@ -116,30 +136,57 @@ final class EVCodeStyleSession: EVStyleSettingsSession {
     func beginGroup() throws {
         guard groupStart == nil else { return }
         groupStart = try Self.exportGlobalJSON()
+        whitespaceSession.beginGroup()
     }
 
     func endGroup() {
+        defer { whitespaceSession.endGroup() }
         guard let before = groupStart else { return }
         groupStart = nil
         if let after = try? Self.exportGlobalJSON(), before != after { registerUndo(before) }
     }
 
     func edit(key: EVStyleKey, expected: EVStyleSheetIdentity, mutation: EVStyleMutation) throws {
+        try validate(expected)
+        if key == .visibleWhitespace {
+            guard whitespaceSession.apply([mutation]) else { throw whitespaceError() }
+            lastError = nil
+            return
+        }
         try mutate { try EVCoreStyleBridge.applyCodeStyle(key: key, expected: expected, mutation: mutation) }
     }
 
     func create(key: EVStyleKey, name: String, expected: EVStyleSheetIdentity) throws {
+        try validate(expected)
         try mutate { try EVCoreStyleBridge.createCodeStyle(key: key, name: name, expected: expected) }
     }
 
     func delete(key: EVStyleKey, expected: EVStyleSheetIdentity) throws {
+        try validate(expected)
         try mutate { try EVCoreStyleBridge.deleteCodeStyle(key: key, expected: expected) }
     }
 
-    func restoreDefaults() throws {
+    func restoreDefaults(for key: EVStyleKey? = nil) throws {
         endGroup()
+        if key == .visibleWhitespace {
+            guard whitespaceSession.restoreDefaults() else { throw whitespaceError() }
+            lastError = nil
+            return
+        }
         try mutate(replacingInvalidFile: true) { try Self.replaceGlobalJSON(Data()) }
         Self.initializationError = nil
+    }
+
+    private func validate(_ expected: EVStyleSheetIdentity) throws {
+        guard try expected == snapshot().identity else {
+            throw EVStyleBridgeError.core(status: UInt32(VIEM_STATUS_STALE_REVISION))
+        }
+    }
+
+    private func whitespaceError() -> NSError {
+        let message = whitespaceSession.lastError ?? "The Visible whitespace style could not be saved."
+        lastError = message
+        return NSError(domain: "Viem.VisibleWhitespaceStyle", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 
     private func mutate(replacingInvalidFile: Bool = false, _ action: () throws -> Void) throws {

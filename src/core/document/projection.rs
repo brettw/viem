@@ -276,13 +276,14 @@ pub struct InlineImage {
     pub destination: String,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub(super) title: String,
     pub(super) source: Range<usize>,
     pub(super) inline: bool,
     pub(super) html: bool,
 }
 impl RangedItem for InlineImage {
     fn range(&self) -> &Range<usize> { &self.range }
-    fn owned_heap_bytes(&self) -> usize { self.text.capacity() + self.destination.capacity() }
+    fn owned_heap_bytes(&self) -> usize { self.text.capacity() + self.destination.capacity() + self.title.capacity() }
     fn with_range(&self, range: Range<usize>) -> Self { Self { range, ..self.clone() } }
     fn with_transform(&self, range: Range<usize>, auxiliary_shift: i128, _: Option<u64>) -> Option<Self> {
         Some(Self { range, source: shift_range_i128(&self.source, auxiliary_shift)?, ..self.clone() })
@@ -6614,11 +6615,11 @@ impl<'a> MarkdownBuilder<'a> {
                 use super::markdown_syntax::InlineKind;
                 let output = self.output.len();
                 match inline.kind {
-                    InlineKind::Image { destination, text, inline: is_inline } => {
+                    InlineKind::Image { destination, text, title, inline: is_inline } => {
                         let source = self.unit_at(at).unwrap().source.start..self.unit_at(inline.range.end - 1).unwrap().source.end;
                         self.output.push('\u{fffc}');
                         self.push_provenance(ProvenanceSpan { formatted: output..self.output.len(), source: source.clone() });
-                        self.inline_images.push(InlineImage { range: output..self.output.len(), text, destination,
+                        self.inline_images.push(InlineImage { range: output..self.output.len(), text, destination, title,
                             source, inline: is_inline,
                             width: None, height: None, html: false });
                     }

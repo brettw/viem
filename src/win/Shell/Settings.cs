@@ -17,6 +17,7 @@ internal sealed partial class SettingsWindow : Window
     private readonly SolidColorBrush sectionBorder = new();
     private readonly List<ScrollViewer> sections = [];
     private bool loading = true;
+    internal Action? EditVisibleWhitespaceStyle { get; set; }
 
     internal SettingsWindow(Preferences preferences)
     {
@@ -118,6 +119,10 @@ internal sealed partial class SettingsWindow : Window
         Number(page, "Wrapped line indent (Code)", whitespace["codeWrappedLineIndent"]?.GetValue<int>() ?? 4, 0, 1024, n => Whitespace("codeWrappedLineIndent", n), 250);
         Check(page, "Show invisible characters", visible["enabled"]?.GetValue<bool>() ?? true, value => Whitespace("visibleWhitespace", new JsonObject { ["enabled"] = value }));
         Text(page, "Visible whitespace (listchars)", visible["listchars"]?.GetValue<string>() ?? "tab:>-,trail:*,extends:>,precedes:<", value => Whitespace("visibleWhitespace", new JsonObject { ["listchars"] = value }));
+        var editStyle = new Button { Content = "Edit Style…", HorizontalAlignment = HorizontalAlignment.Left };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(editStyle, "Edit visible whitespace style");
+        editStyle.Click += (_, _) => Commit(() => EditVisibleWhitespaceStyle?.Invoke());
+        page.Children.Add(editStyle);
     }
 #if DEBUG
     internal FrameworkElement RootControl => root;

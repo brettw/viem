@@ -49,6 +49,11 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   @discardableResult
   public func reloadImage(_ destination: String) -> Bool { imageResources.reload(destination) }
 
+  public func requestImageDimensions(_ destination: String,
+    completion: @escaping @MainActor @Sendable (CGSize?) -> Void) -> Operation {
+    imageResources.requestDimensions(destination, completion: completion)
+  }
+
   /// Bitmap and admission changes preserve measured document heights. The
   /// frontend acknowledges this resource-only generation before refreshing.
   public func invalidateImageResources(_ changedDimensions: [String] = []) {
