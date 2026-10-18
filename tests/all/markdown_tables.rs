@@ -4,6 +4,51 @@ use viem_core::document::{
 fn doc(source: &str, format: Format) -> Document {
     Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap()
 }
+
+#[test]
+fn table_insertion_at_paragraph_boundaries_preserves_neighbors_and_history() {
+    let mut failures = Vec::new();
+    for source in ["", "\n\n", "\n\n\n\n", "## H\n\nP", "H\n---\n\nP",
+        "\n\n## H\n\n\n\nP", "one\n\n\n\ntwo", "> H\n>\n>\n>\n> P",
+        "- H\n\n  P", "- H\n\n  \n\n  P", "- H\n\n\n\n  P",
+        "12. H\n\n    \n\n    P", "> - H\n>\n>   \n>\n>   P",
+        "- > H\n  >\n  >\n  >\n  > P", "- H\n  - I\n\n    \n\n    P", "---\n\nP", "![alt](image.png)\n\nP",
+        "-", "1.", "- *word*", "- **word**", "> -\tword",
+        "- a\n\n  > q\n\n  ```\n  c\n  ```\n\n- b", "- > q\n\n  a",
+        "**bold**\n\nP", "é猫\n\n\n\n終", "## \n\nP", "> ## \n>\n> P"] {
+        let original = doc(source, Format::Markdown);
+        let text = original.text().to_string();
+        let offsets: Vec<_> = text.char_indices().map(|(at, _)| at).chain(std::iter::once(text.len())).collect();
+        for at in offsets {
+            let mut document = doc(source, Format::Markdown);
+            if !document.can_insert_table(at..at) { continue; }
+            let owner = document.projection().blocks().iter().find(|block|
+                block.range.start <= at && at <= block.range.end).unwrap().clone();
+            let result = document.prepare_table_edit(document.id(), document.revision(),
+                TableEditIntent::Insert { range: at..at, columns: 2, body_rows: 1 });
+            let (prepared, _) = match result {
+                Ok(prepared) => prepared,
+                Err(error) => { failures.push(format!("{source:?} at {at}: {error:?}")); continue; }
+            };
+            document.commit_model_transaction(prepared).unwrap();
+            let table_start = document.projection().tables()[0].range.start;
+            let header = document.projection().blocks().iter().find(|block|
+                block.range.start == table_start).unwrap();
+            assert_eq!(header.quote_depth, owner.quote_depth, "{source:?} at {at}: table quote owner");
+            let list_depth = |block: &viem_core::document::Block| block.containers.iter()
+                .filter(|container| matches!(container.container.kind, viem_core::document::ContainerKind::List { .. })).count();
+            assert_eq!(list_depth(header), list_depth(&owner), "{source:?} at {at}: table list owner");
+            assert_eq!(document.text().replace('\n', ""), text.replace('\n', ""), "{source:?} at {at}");
+            let saved = document.source_bytes();
+            assert_eq!(doc(std::str::from_utf8(&saved).unwrap(), Format::Markdown).text(), document.text());
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), saved);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
 fn action(document: &mut Document, intent: TableEditIntent) -> usize {
     let (prepared, caret) = document
         .prepare_table_edit(document.id(), document.revision(), intent)

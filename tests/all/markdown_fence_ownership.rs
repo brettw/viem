@@ -165,3 +165,31 @@ fn opening_a_paragraph_inside_quoted_code_keeps_its_closer_in_the_quote() {
         assert_eq!(core.document().source_bytes(), saved);
     }
 }
+
+
+#[test]
+fn empty_list_owned_fence_materializes_body_before_its_preserved_closer() {
+    for (opening, continuation) in [("- ```", "  "), ("> - ```", ">   ")] {
+        let source = format!("Before\n\n{opening}\n{continuation}```\n\nAfter");
+        for replacement in ["X", "\nX"] {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let at = document.projection().blocks().iter()
+                .find(|block| block.style.0 == "Code Block").unwrap().range.start;
+            document.insert(at, replacement).unwrap_or_else(|error| panic!("{source:?}, {replacement:?}: {error:?}"));
+            let expected = format!("Before\n\n{opening}\n{continuation}{}\n{continuation}```\n\nAfter",
+                replacement.replace('\n', &format!("\n{continuation}")));
+            assert_eq!(document.source_bytes(), expected.as_bytes());
+            assert_eq!(document.text(), format!("Before\n{replacement}\nAfter"));
+            let code = document.projection().blocks().iter().find(|block| block.style.0 == "Code Block").unwrap();
+            assert!(matches!(code.kind, BlockKind::ListItem { .. }));
+            assert_eq!(code.range, at..at + replacement.len());
+            let saved = document.source_bytes();
+            let reopened = Document::from_bytes(saved.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+            assert_eq!(reopened.text(), document.text());
+            assert_eq!(reopened.projection().blocks().iter().map(|block| (&block.range, &block.attributes)).collect::<Vec<_>>(),
+                document.projection().blocks().iter().map(|block| (&block.range, &block.attributes)).collect::<Vec<_>>());
+            assert!(document.undo()); assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo()); assert_eq!(document.source_bytes(), saved);
+        }
+    }
+}

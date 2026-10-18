@@ -2989,9 +2989,14 @@ impl FormattedDocument {
             BoundaryAffinity::Upstream => (&upstream, &downstream),
             BoundaryAffinity::Downstream => (&downstream, &upstream),
         };
-        if let Some(formatted_offset) = unique_candidate(source_offset, preferred)?
-            .or(unique_candidate(source_offset, fallback)?)
-        {
+        // The opposite side is a fallback only when this affinity has no
+        // contributor. Its ambiguity cannot invalidate a unique requested
+        // side, and an ambiguous requested side must still be rejected.
+        let selected = match unique_candidate(source_offset, preferred)? {
+            Some(offset) => Some(offset),
+            None => unique_candidate(source_offset, fallback)?,
+        };
+        if let Some(formatted_offset) = selected {
             return self.checked_source_mapping(
                 source_offset,
                 formatted_offset,
@@ -7589,6 +7594,39 @@ mod tests {
                 .formatted_offset,
             2
         );
+    }
+
+    #[test]
+    fn source_boundary_unique_preferred_side_ignores_ambiguous_opposite_side() {
+        for (source_ranges, source_offset, affinity, expected, ambiguous) in [
+            ([0..1, 1..2, 1..3], 1, BoundaryAffinity::Upstream, 1, vec![1, 2]),
+            ([0..2, 1..2, 2..3], 2, BoundaryAffinity::Downstream, 2, vec![1, 2]),
+        ] {
+            let projected = FormattedDocument::from_parts(
+                Revision(7), "abc".to_owned(), blocks_for_plain_text("abc"), Vec::new(),
+                source_ranges.into_iter().enumerate().map(|(at, source)| ProvenanceSpan {
+                    formatted: at..at + 1, source,
+                }).collect(),
+                Vec::new(), StyleSheet::default(), 0, 3,
+            );
+            assert_eq!(projected.map_source_boundary(Revision(7), source_offset, affinity)
+                .unwrap().formatted_offset, expected);
+            let opposite = match affinity {
+                BoundaryAffinity::Upstream => BoundaryAffinity::Downstream,
+                BoundaryAffinity::Downstream => BoundaryAffinity::Upstream,
+            };
+            assert_eq!(projected.map_source_boundary(Revision(7), source_offset, opposite),
+                Err(SourceToTextError::AmbiguousBoundary { source_offset, candidates: ambiguous }));
+        }
+    }
+
+    #[test]
+    fn implicit_html_paragraph_close_keeps_its_downstream_source_boundary() {
+        for (source, boundary, expected) in [("<p>a<p>b", 4, 1), ("<p><p>b", 3, 0)] {
+            let projected = markdown(source);
+            assert_eq!(projected.map_source_boundary(projected.revision(), boundary,
+                BoundaryAffinity::Downstream).unwrap().formatted_offset, expected, "{source}");
+        }
     }
 
     #[test]

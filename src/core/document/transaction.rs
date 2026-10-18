@@ -3311,13 +3311,33 @@ impl Document {
                 container_prefix = super::markdown_quotes::container_prefix(&decoded.text);
             }
             let body = &decoded.text[container_prefix..];
+            let (old_prefix, _) = super::projection::markdown_block_prefix(body, 0, body.len());
+            let old_prefix =
+                super::markdown_blocks::marker_prefix_length(body).unwrap_or(old_prefix);
+            // The parsed heading owner also admits a tab delimiter and a bare
+            // opening marker. Keep those valid empty headings editable without
+            // interpreting a literal prose prefix as structural syntax.
+            let old_prefix = if self.projection().blocks_for_region(&line).iter()
+                .any(|block| block.style.0.starts_with("Heading")) {
+                let indent = body.bytes().take_while(|byte| *byte == b' ').count();
+                let hashes = body[indent..].bytes().take_while(|byte| *byte == b'#').count();
+                let end = indent + hashes;
+                if indent <= 3 && (1..=6).contains(&hashes)
+                    && body.as_bytes().get(end).is_none_or(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n')) {
+                    end + usize::from(body.as_bytes().get(end).is_some_and(|byte| matches!(byte, b' ' | b'\t')))
+                } else { old_prefix }
+            } else { old_prefix };
             if level == 0 && self.format() == Format::Markdown {
                 let tail = body.trim_end_matches(['\r', '\n', ' ', '\t']);
                 let hashes = tail.bytes().rev().take_while(|byte| *byte == b'#').count();
                 if hashes > 0 {
                     let before = &tail[..tail.len() - hashes];
                     if before.ends_with([' ', '\t']) {
-                        let start = decoded.source_boundary(container_prefix + before.trim_end_matches([' ', '\t']).len())
+                        // An empty heading can share the space between its
+                        // opening and closing hashes. The prefix patch owns
+                        // that space; removing it twice would overlap patches.
+                        let closing_start = before.trim_end_matches([' ', '\t']).len().max(old_prefix);
+                        let start = decoded.source_boundary(container_prefix + closing_start)
                             .ok_or(DocumentError::AmbiguousProjection)?;
                         let end = decoded.source_boundary(container_prefix + body.trim_end_matches(['\r', '\n']).len())
                             .ok_or(DocumentError::AmbiguousProjection)?;
@@ -3328,9 +3348,6 @@ impl Document {
                     }
                 }
             }
-            let (old_prefix, _) = super::projection::markdown_block_prefix(body, 0, body.len());
-            let old_prefix =
-                super::markdown_blocks::marker_prefix_length(body).unwrap_or(old_prefix);
             if body[..old_prefix] == prefix {
                 continue;
             }
@@ -5991,6 +6008,27 @@ impl Document {
                     block.range == edit.range
                         && matches!(block.kind, super::BlockKind::ListItem { item_start: true, .. })
                 })
+                || edit.range.is_empty() && !edit.replacement.trim().is_empty()
+                    && self.projection().blocks_for_region(&edit.range).iter().any(|block| {
+                        if block.range != edit.range
+                            || !matches!(block.kind, super::BlockKind::ListItem { item_start: true, .. }) {
+                            return false;
+                        }
+                        // Filling an empty item beside a blank separator can
+                        // change looseness in either direction, including in
+                        // ancestor lists as continuation ownership changes.
+                        // Retaining any old looseness is unsound here.
+                        let at = block.range.start;
+                        let length = self.projection().text_tree().byte_len();
+                        [at.checked_sub(1).map(|before| (before, before)),
+                            (at < length).then_some((at + 1, at))]
+                            .into_iter().flatten().any(|(neighbor, boundary)| {
+                                self.projection().blocks_for_region(&(neighbor..neighbor)).iter()
+                                    .any(|neighbor| neighbor.list_level().is_some())
+                                    && self.markdown_source_separator_count(boundary..boundary + 1)
+                                        .map_or(true, |count| count > 1)
+                            })
+                    })
                 || markdown_list_structure::empty_insertion_patches(self, &edit.range, &edit.replacement)
                 .is_ok_and(|patches| patches.is_some())
                 || edit.range.is_empty() && !edit.replacement.is_empty()

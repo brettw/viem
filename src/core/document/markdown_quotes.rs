@@ -52,8 +52,14 @@ pub(super) fn empty_insertion_patches(
         .ok_or(super::DocumentError::AmbiguousProjection)?;
     let decoded = document.encoding().decode_region(&bytes, line.start)?;
     let prefix = prefix(&decoded.text);
-    if prefix == 0 || !decoded.text[prefix..].trim().is_empty() {
+    if prefix == 0 {
         return Err(super::DocumentError::AmbiguousProjection);
+    }
+    if !decoded.text[prefix..].trim().is_empty() {
+        // A visually empty paragraph can retain inline markup. This adapter
+        // owns only physically blank quote rows; ordinary contributor-based
+        // insertion preserves the hidden body and verifies its projection.
+        return Ok(None);
     }
     let at = line.start
         + document

@@ -431,30 +431,35 @@ fn empty_body_patches(
             .body_prefix
             .bytes()
             .all(|byte| matches!(byte, b' ' | b'\t' | b'>'))
-            && document
-                .state()
-                .source_hard_lines
-                .line_at_offset(fence.body.start)
-                .and_then(|index| document.state().source_hard_lines.get(index))
-                .and_then(|line| document.state().source.bytes_in(fence.body.start..line.end))
-                .and_then(|bytes| {
-                    document
-                        .encoding()
-                        .decode_region(&bytes, fence.body.start)
-                        .ok()
-                })
-                .is_some_and(|decoded| {
-                    super::line_endings::normalize(&decoded, document.file_format())
-                        .text
-                        .trim_end_matches('\n')
-                        .is_empty()
-                })
+            && (fence.closing.as_ref().is_some_and(|closing| closing.contains(&fence.body.start))
+                || document
+                    .state()
+                    .source_hard_lines
+                    .line_at_offset(fence.body.start)
+                    .and_then(|index| document.state().source_hard_lines.get(index))
+                    .and_then(|line| document.state().source.bytes_in(fence.body.start..line.end))
+                    .and_then(|bytes| {
+                        document
+                            .encoding()
+                            .decode_region(&bytes, fence.body.start)
+                            .ok()
+                    })
+                    .is_some_and(|decoded| {
+                        super::line_endings::normalize(&decoded, document.file_format())
+                            .text
+                            .trim_end_matches('\n')
+                            .is_empty()
+                    }))
     }) {
-        // An explicit blank body already supplies a local insertion seed,
-        // including the indentation of a list-owned fence. No document scan
-        // is needed to materialize the first character.
+        // The empty body seed is either on an explicit blank body row or
+        // after the container prefix of its closing fence. In the latter
+        // case, materializing text also gives the closer its own physical row.
         let separator = format!("{}{}", document.file_format().spelling(), fence.body_prefix);
-        let mut patches = vec![(fence.body.clone(), replacement.replace('\n', &separator))];
+        let mut syntax = replacement.replace('\n', &separator);
+        if fence.closing.as_ref().is_some_and(|closing| closing.contains(&fence.body.start)) {
+            syntax.push_str(&separator);
+        }
+        let mut patches = vec![(fence.body.clone(), syntax)];
         let needed = replacement
             .lines()
             .filter_map(|line| {
@@ -859,7 +864,13 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         closing_text: None, delimiter, width, opening_marker, body_prefix };
     for index in [last, last + 1] {
         let Some(line) = lines.get(index) else { continue; };
-        if line.start < result.body.end { continue; }
+        // An empty body may be anchored after the closing row's container
+        // prefix. That row still owns the closer even though its start lies
+        // before the zero-width insertion point.
+        if line.start < result.opening.end
+            || line.start < result.body.end && !result.body.is_empty() {
+            continue;
+        }
         let decoded = read(&line)?;
         let normalized = super::line_endings::normalize(&decoded, document.file_format());
         let quote = super::markdown_quotes::prefix(&normalized.text);
