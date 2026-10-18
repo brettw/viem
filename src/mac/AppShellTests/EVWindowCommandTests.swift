@@ -149,6 +149,37 @@ final class EVWindowCommandTests: XCTestCase {
     return order.firstIndex { $0 === (controller.editorSurface as? Surface) }
   }
 
+  func testInteractiveSplitFocusesNewUpperOrLeftPaneAndAppliesCount() throws {
+    for vertical in [false, true] {
+      let (controller, backend, document) = try makeWindow(panes: 1)
+      defer { document.close() }
+      let original = try XCTUnwrap(controller.editorSurface as? Surface)
+      let state = backend.persistenceState
+      var result: Result<String?, Error>?
+      controller.perform(documentHostRequests: [EVDocumentHostRequest(
+        kind: .split, documentID: state.documentID, documentRevision: state.documentRevision,
+        initialHeightRows: vertical ? 24 : 4, verticalSplit: vertical)
+      ]) { result = $0 }
+      _ = try XCTUnwrap(result).get()
+      let added = try XCTUnwrap(controller.editorSurface as? Surface)
+      XCTAssertFalse(added === original)
+      XCTAssertTrue(added === backend.surfaces.last)
+      func frame(_ surface: Surface) -> NSRect {
+        surface.viewController.view.convert(surface.viewController.view.bounds, to: nil)
+      }
+      if vertical {
+        XCTAssertLessThan(frame(added).minX, frame(original).minX)
+        XCTAssertEqual(frame(added).width, 24 * 8, accuracy: 0.001)
+      } else {
+        XCTAssertGreaterThan(frame(added).minY, frame(original).minY)
+        XCTAssertEqual(frame(added).height, 4 * 20, accuracy: 0.001)
+      }
+      XCTAssertTrue(controller.window?.firstResponder === added.viewController.view)
+      controller.perform(windowRequests: [.focusLastAccessed], from: added)
+      XCTAssertTrue(controller.editorSurface as? Surface === original)
+    }
+  }
+
   func testFocusCommandsWalkClampAndWrapThroughStackedPanes() throws {
     let (controller, backend, document) = try makeWindow(panes: 3)
     defer { document.close() }
@@ -367,7 +398,10 @@ final class EVWindowCommandTests: XCTestCase {
 
   func testExactlyOneBarOfRoomAllowsSplitAndTouchingBars() throws {
     let bar = EVStatusBarView.preferredHeight
-    let container = try stack(panes: 1, height: bar * 2)
+    let bottomBar = EVStatusBarView(frame: .zero)
+    bottomBar.hidesBottomBorder = true
+    // The window edge clips the bottom border, which may be nonzero in a theme.
+    let container = try stack(panes: 1, height: bar + bottomBar.visiblePreferredHeight)
     try container.insert(EVDocumentContentViewController(editorSurface: Surface()))
     XCTAssertEqual(container.panes.count, 2)
     XCTAssertEqual(container.panes[0].editorSurface.viewController.view.bounds.height, 0, accuracy: 0.001)

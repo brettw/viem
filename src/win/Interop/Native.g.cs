@@ -1983,7 +1983,7 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_pane_layout_can_split(ulong @handle, ulong @pane, uint @orientation, double @status_height);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_pane_layout_split(ulong @handle, ulong @pane, uint @orientation, double @status_height, ulong* @out_pane);
+    public static extern uint viem_pane_layout_split(ulong @handle, ulong @pane, uint @orientation, double @status_height, uint @placement, ulong* @out_pane);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_pane_layout_remove(ulong @handle, ulong @pane);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

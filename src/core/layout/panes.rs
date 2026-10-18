@@ -11,6 +11,11 @@ pub enum Axis {
     Height,
     Width,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SplitPlacement {
+    Before,
+    After,
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
     pub x: f64,
@@ -131,6 +136,7 @@ impl Node {
         new: Node,
         group_id: u64,
         axis: Axis,
+        placement: SplitPlacement,
         chrome: &HashMap<u64, f64>,
     ) -> bool {
         if self.id == pane && matches!(self.kind, Kind::Pane) {
@@ -165,7 +171,10 @@ impl Node {
                 rect,
                 kind: Kind::Group {
                     axis,
-                    children: vec![old, new],
+                    children: match placement {
+                        SplitPlacement::Before => vec![new, old],
+                        SplitPlacement::After => vec![old, new],
+                    },
                 },
             };
             return true;
@@ -173,7 +182,7 @@ impl Node {
         if let Kind::Group { children, .. } = &mut self.kind {
             for child in children {
                 if child.contains(pane) {
-                    return child.split(pane, new, group_id, axis, chrome);
+                    return child.split(pane, new, group_id, axis, placement, chrome);
                 }
             }
         }
@@ -486,7 +495,13 @@ impl PaneLayout {
             Ok(())
         }
     }
-    pub fn split(&mut self, pane: u64, axis: Axis, status_height: f64) -> Result<u64, Error> {
+    pub fn split(
+        &mut self,
+        pane: u64,
+        axis: Axis,
+        status_height: f64,
+        placement: SplitPlacement,
+    ) -> Result<u64, Error> {
         self.can_split(pane, axis, status_height)?;
         let id = self.next_id;
         self.next_id += 2;
@@ -496,7 +511,8 @@ impl PaneLayout {
             rect: Rect::default(),
             kind: Kind::Pane,
         };
-        self.root.split(pane, leaf, id + 1, axis, &self.chrome);
+        self.root
+            .split(pane, leaf, id + 1, axis, placement, &self.chrome);
         self.root.normalize();
         self.place();
         Ok(id)
@@ -811,13 +827,47 @@ mod tests {
         p.frames().into_iter().filter(|f| !f.splitter).collect()
     }
     #[test]
+    fn split_placement_preserves_identity_and_sizes_the_new_pane() {
+        for axis in [Axis::Height, Axis::Width] {
+            for placement in [SplitPlacement::Before, SplitPlacement::After] {
+                let mut p = layout(800.0, 600.0);
+                let new = p.split(1, axis, 25.0, placement).unwrap();
+                let expected = if placement == SplitPlacement::Before {
+                    vec![new, 1]
+                } else {
+                    vec![1, new]
+                };
+                assert_eq!(panes(&p).iter().map(|f| f.id).collect::<Vec<_>>(), expected);
+                p.resize(new, axis, Some(150.0), false).unwrap();
+                let rect = p.pane_rect(new).unwrap();
+                assert_eq!(
+                    rect.extent(axis),
+                    if axis == Axis::Height { 175.0 } else { 150.0 }
+                );
+                // Splitting an existing pane again inserts adjacent to that
+                // pane even after equal-axis groups have been flattened.
+                let next = p.split(1, axis, 25.0, placement).unwrap();
+                let expected = if placement == SplitPlacement::Before {
+                    vec![new, next, 1]
+                } else {
+                    vec![1, next, new]
+                };
+                assert_eq!(panes(&p).iter().map(|f| f.id).collect::<Vec<_>>(), expected);
+            }
+        }
+    }
+    #[test]
     fn width_admission_and_failed_split_are_atomic() {
         let mut p = layout(204.0, 500.0);
         let before = p.frames();
-        assert_eq!(p.split(1, Axis::Width, 25.0), Err(Error::NoRoom));
+        assert_eq!(
+            p.split(1, Axis::Width, 25.0, SplitPlacement::After),
+            Err(Error::NoRoom)
+        );
         assert_eq!(p.frames()[0].rect, before[0].rect);
         p.update(205.0, 500.0, &[(1, 25.0)]).unwrap();
-        p.split(1, Axis::Width, 25.0).unwrap();
+        p.split(1, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
         assert!(panes(&p).iter().all(|f| f.rect.width == 100.0));
         assert_eq!(
             p.frames().iter().find(|f| f.splitter).unwrap().rect.width,
@@ -827,8 +877,12 @@ mod tests {
     #[test]
     fn pushing_collects_widths_and_reversal_releases_at_edge() {
         let mut p = layout(700.0, 600.0);
-        let b = p.split(1, Axis::Width, 25.0).unwrap();
-        let c = p.split(b, Axis::Width, 25.0).unwrap();
+        let b = p
+            .split(1, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
+        let c = p
+            .split(b, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
         p.equalize(None);
         let boundary = p.frames().iter().find(|f| f.splitter).unwrap().id;
         p.drag(boundary, false, 10000.0).unwrap();
@@ -845,8 +899,12 @@ mod tests {
     #[test]
     fn mixed_tree_status_handles_and_directional_focus() {
         let mut p = layout(605.0, 500.0);
-        let right = p.split(1, Axis::Width, 25.0).unwrap();
-        let bottom = p.split(right, Axis::Height, 25.0).unwrap();
+        let right = p
+            .split(1, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
+        let bottom = p
+            .split(right, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
         let f = panes(&p);
         assert!(!f[0].status_draggable);
         assert!(f[1].status_draggable);
@@ -862,8 +920,12 @@ mod tests {
     #[test]
     fn root_moves_collapse_and_axis_resize_preserve_minimums() {
         let mut p = layout(605.0, 600.0);
-        let b = p.split(1, Axis::Height, 25.0).unwrap();
-        let c = p.split(b, Axis::Width, 25.0).unwrap();
+        let b = p
+            .split(1, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
+        let c = p
+            .split(b, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
         p.move_edge(c, 2).unwrap();
         assert_eq!(panes(&p)[0].id, c);
         assert_eq!(panes(&p)[0].rect.height, 600.0);
@@ -877,8 +939,12 @@ mod tests {
     #[test]
     fn nested_rotations_use_sibling_counts_and_invalid_group_ids_are_atomic() {
         let mut p = layout(600.0, 600.0);
-        let right = p.split(1, Axis::Width, 25.0).unwrap();
-        let bottom = p.split(right, Axis::Height, 25.0).unwrap();
+        let right = p
+            .split(1, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
+        let bottom = p
+            .split(right, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
         let before = panes(&p).iter().map(|f| f.id).collect::<Vec<_>>();
         p.rotate(right, 6, true).unwrap();
         assert_eq!(panes(&p).iter().map(|f| f.id).collect::<Vec<_>>(), before);
@@ -909,8 +975,12 @@ mod tests {
     #[test]
     fn splitter_top_cap_is_owned_by_a_full_status_bar_even_when_content_collapses() {
         let mut p = layout(605.25, 500.5);
-        let lower = p.split(1, Axis::Height, 25.0).unwrap();
-        let right = p.split(lower, Axis::Width, 25.0).unwrap();
+        let lower = p
+            .split(1, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
+        let right = p
+            .split(lower, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
         assert!(splitter(&p, right).suppress_splitter_top_border);
         assert!(
             panes(&p)
@@ -950,9 +1020,15 @@ mod tests {
     fn aligned_and_partial_cross_junctions_keep_caps_until_the_full_span_meets_status() {
         for width in [605.0, 605.7, 811.125] {
             let mut p = layout(width, 500.25);
-            let lower = p.split(1, Axis::Height, 25.0).unwrap();
-            let upper_right = p.split(1, Axis::Width, 25.0).unwrap();
-            let lower_right = p.split(lower, Axis::Width, 25.0).unwrap();
+            let lower = p
+                .split(1, Axis::Height, 25.0, SplitPlacement::After)
+                .unwrap();
+            let upper_right = p
+                .split(1, Axis::Width, 25.0, SplitPlacement::After)
+                .unwrap();
+            let lower_right = p
+                .split(lower, Axis::Width, 25.0, SplitPlacement::After)
+                .unwrap();
             assert!(p
                 .frames()
                 .iter()
@@ -986,12 +1062,23 @@ mod tests {
     #[test]
     fn nested_splitters_inherit_the_actual_preceding_status_boundary() {
         let mut p = layout(1005.5, 800.25);
-        let lower = p.split(1, Axis::Height, 25.0).unwrap();
-        let upper_right = p.split(1, Axis::Width, 25.0).unwrap();
-        let upper_bottom_right = p.split(upper_right, Axis::Height, 25.0).unwrap();
-        let lower_right = p.split(lower, Axis::Width, 25.0).unwrap();
-        p.split(lower, Axis::Height, 25.0).unwrap();
-        let inner_right = p.split(lower, Axis::Width, 25.0).unwrap();
+        let lower = p
+            .split(1, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
+        let upper_right = p
+            .split(1, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
+        let upper_bottom_right = p
+            .split(upper_right, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
+        let lower_right = p
+            .split(lower, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
+        p.split(lower, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
+        let inner_right = p
+            .split(lower, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
         assert!(
             splitter(&p, inner_right).suppress_splitter_top_border,
             "inherited top neighbor spans a deeper lower subtree"
@@ -1018,9 +1105,15 @@ mod tests {
     #[test]
     fn zero_height_nodes_do_not_hide_the_real_preceding_boundary() {
         let mut p = layout(605.0, 500.0);
-        let zero = p.split(1, Axis::Height, 0.0).unwrap();
-        let lower = p.split(zero, Axis::Height, 25.0).unwrap();
-        let right = p.split(lower, Axis::Width, 25.0).unwrap();
+        let zero = p
+            .split(1, Axis::Height, 0.0, SplitPlacement::After)
+            .unwrap();
+        let lower = p
+            .split(zero, Axis::Height, 25.0, SplitPlacement::After)
+            .unwrap();
+        let right = p
+            .split(lower, Axis::Width, 25.0, SplitPlacement::After)
+            .unwrap();
         p.resize(zero, Axis::Height, Some(0.0), false).unwrap();
         assert_eq!(p.pane_rect(zero).unwrap().height, 0.0);
         assert!(splitter(&p, right).suppress_splitter_top_border);
@@ -1031,10 +1124,14 @@ mod tests {
         let mut p = layout(100.0, 256.0 * 25.0);
         for _ in 1..MAX_PANES {
             p.resize(1, Axis::Height, None, false).unwrap();
-            p.split(1, Axis::Height, 25.0).unwrap();
+            p.split(1, Axis::Height, 25.0, SplitPlacement::After)
+                .unwrap();
         }
         assert_eq!(panes(&p).len(), MAX_PANES);
-        assert_eq!(p.split(1, Axis::Height, 25.0), Err(Error::TooManyPanes));
+        assert_eq!(
+            p.split(1, Axis::Height, 25.0, SplitPlacement::After),
+            Err(Error::TooManyPanes)
+        );
         let chrome: Vec<_> = panes(&p).iter().map(|f| (f.id, 25.0)).collect();
         p.update(50.0, 1.0, &chrome).unwrap();
         assert!(panes(&p)

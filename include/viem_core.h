@@ -82,7 +82,7 @@ ViemStatus viem_pane_layout_destroy(uint64_t handle);
 ViemStatus viem_pane_layout_update(uint64_t handle, double width, double height, const ViemPaneChrome *chrome, uint64_t count);
 ViemStatus viem_pane_layout_copy(uint64_t handle, ViemPaneFrame *frames, uint64_t capacity, ViemPaneSnapshot *out_snapshot);
 ViemStatus viem_pane_layout_can_split(uint64_t handle, uint64_t pane, uint32_t orientation, double status_height);
-ViemStatus viem_pane_layout_split(uint64_t handle, uint64_t pane, uint32_t orientation, double status_height, uint64_t *out_pane);
+ViemStatus viem_pane_layout_split(uint64_t handle, uint64_t pane, uint32_t orientation, double status_height, uint32_t placement, uint64_t *out_pane);
 ViemStatus viem_pane_layout_remove(uint64_t handle, uint64_t pane);
 ViemStatus viem_pane_layout_drag(uint64_t handle, uint64_t id, uint32_t kind, double delta);
 /* Operations: focus=1(direction=count, steps=value, caret=x/y), rotate=2

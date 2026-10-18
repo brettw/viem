@@ -1591,8 +1591,10 @@ open new windows. Drops never insert paths or write files. Read successfully
 and revalidate pane/document/revision/dirty state after dialogs or asynchronous
 work before replacement; failures preserve the original.
 
-Horizontal and vertical splits may nest in one native window. New splits open
-below or to the right of the current pane. Views share document/history
+Horizontal and vertical splits may nest in one native window. Interactive splits
+open and focus a new pane above or to the left of the current pane, matching Vim
+defaults. Startup splits retain command-line file order from top to bottom or
+left to right. Views share document/history
 but own cursor, selection, viewport, wrapping, line mode, status, and scrollbar.
 Focus controls save/style/menu routing; final-view closure reviews unsaved changes.
 Window commands are core grammar with shared portable geometry and frontend
@@ -1903,8 +1905,9 @@ font-name aliases to the application.
 Family/fallback, explicit face/base weight, and variable-axis coordinates form
 one inherited font-face group. Size and semantic Bold/Italic remain separate;
 removing an emphasis modifier restores the saved base coordinates. Variable
-axes use integer slider steps, two labeled sliders per inspector row, and
-font-provided named presets, with Custom for unmatched coordinates. Bold uses an applicable style link or
+axes use integer slider steps except CRSV, whose Off (0), Auto (0.5), and On (1)
+states must all be selectable and labeled. Use two labeled sliders per inspector
+row and font-provided named presets, with Custom for unmatched coordinates. Bold uses an applicable style link or
 +300 weight, clamped to the font range; Italic prefers a designed italic face or
 ital=1, then a supported slnt target of -12 degrees, preserving stronger slant.
 Family changes preserve matching face style

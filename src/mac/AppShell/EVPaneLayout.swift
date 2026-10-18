@@ -24,9 +24,9 @@ final class EVPaneLayout {
   func requireSplit(_ pane: UInt64, vertical: Bool, height: CGFloat) throws {
     try check(viem_pane_layout_can_split(handle, pane, vertical ? 1 : 0, height))
   }
-  func split(_ pane: UInt64, vertical: Bool, height: CGFloat) throws -> UInt64 {
+  func split(_ pane: UInt64, vertical: Bool, height: CGFloat, before: Bool) throws -> UInt64 {
     var id: UInt64 = 0
-    try check(viem_pane_layout_split(handle, pane, vertical ? 1 : 0, height, &id))
+    try check(viem_pane_layout_split(handle, pane, vertical ? 1 : 0, height, before ? 0 : 1, &id))
     return id
   }
   func remove(_ pane: UInt64) { precondition(viem_pane_layout_remove(handle, pane) == VIEM_STATUS_OK) }

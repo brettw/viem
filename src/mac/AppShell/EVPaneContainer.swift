@@ -144,10 +144,10 @@ final class EVPaneContainer: NSViewController {
         window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).width))
     if next != window.frame { window.setFrame(next, display: true); layoutStack() }
   }
-  func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false) throws {
+  func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false, before: Bool = false) throws {
     let source = source ?? activePane
     try requireSplitRoom(in: source, vertical: vertical)
-    let newID = try geometry.split(id(source), vertical: vertical, height: pane.statusBarHeight)
+    let newID = try geometry.split(id(source), vertical: vertical, height: pane.statusBarHeight, before: before)
     ids[ObjectIdentifier(pane)] = newID; panes.append(pane)
     addChild(pane); stack.addSubview(pane.view); pane.view.autoresizingMask = []; bind(pane); layoutStack(); focus(pane)
   }

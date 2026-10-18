@@ -110,12 +110,12 @@ internal sealed partial class EditorWindow
         foreach (string path in paths.Take(split))
         {
             if (first != null && ActivePane != null) paneGrid.Action(ActivePane, 5, args.VerticalSplits ? 1u : 0u, flags: 2);
-            await OpenPath(path, first != null, vertical: args.VerticalSplits);
+            await OpenPath(path, first != null, vertical: args.VerticalSplits, splitBefore: false);
             paneGrid.Equalize();
             if (closed) return;
             first ??= App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath is string file && FileIdentity.Same(file, path));
         }
-        while (Panes.Count < split) { paneGrid.Action(ActivePane!, 5, args.VerticalSplits ? 1u : 0u, flags: 2); RequireSplitRoom(vertical: args.VerticalSplits); var added = SplitPane(ActivePane!, NewDocument(), vertical: args.VerticalSplits); paneGrid.Equalize(); first ??= added; }
+        while (Panes.Count < split) { paneGrid.Action(ActivePane!, 5, args.VerticalSplits ? 1u : 0u, flags: 2); RequireSplitRoom(vertical: args.VerticalSplits); var added = SplitPane(ActivePane!, NewDocument(), vertical: args.VerticalSplits, before: false); paneGrid.Equalize(); first ??= added; }
         if (first != null)
         {
             foreach (var pane in Panes) await pane.Ready.WaitAsync(TimeSpan.FromSeconds(15));

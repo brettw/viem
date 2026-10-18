@@ -1,7 +1,7 @@
 # Split views
 
-`:split` (`:sp`, Control-W s) opens another view below the current one.
-`:vsplit` (`:vs`, Control-W v) opens one to its right. Both views share the
+`:split` (`:sp`, Control-W s) opens and focuses another view above the current one.
+`:vsplit` (`:vs`, Control-W v) opens and focuses one to its left. Both views share the
 buffer, edits, and history, with independent cursors, selections, scrolling,
 wrapping, and line modes. Horizontal and vertical splits can nest.
 

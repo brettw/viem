@@ -500,7 +500,7 @@ extension EVDocumentWindowController {
           } else {
             paneContainer.focusPane(at: paneCount - 1)
             paneContainer.perform(vertical ? .setWidth(columns: nil) : .setHeight(rows: nil))
-            do { try addPane(document: opened, vertical: vertical) } catch {
+            do { try addPane(document: opened, vertical: vertical, before: false) } catch {
               closeIfUnrepresented(opened)
               finish(.failure(error)); return
             }
@@ -1404,9 +1404,9 @@ extension EVDocumentWindowController {
     return pane
   }
 
-  fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false) throws {
+  fileprivate func addPane(document: EVDocument, initialHeightRows: Int? = nil, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false, before: Bool = true) throws {
     try paneContainer.requireSplitRoom(in: source, vertical: vertical)
-    try paneContainer.insert(makePane(document: document, from: source), splitting: source, vertical: vertical)
+    try paneContainer.insert(makePane(document: document, from: source), splitting: source, vertical: vertical, before: before)
     if let rows = initialHeightRows {
       paneContainer.perform(vertical ? .setWidth(columns: rows) : .setHeight(rows: rows))
     }

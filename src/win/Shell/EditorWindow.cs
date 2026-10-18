@@ -195,7 +195,7 @@ internal sealed partial class EditorWindow : Window
         OnPaneReady(pane);
     }
     partial void OnPaneReady(EditorPane pane);
-    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null)
+    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         // Include any visible toolbar before attaching a canvas that can start
@@ -221,7 +221,7 @@ internal sealed partial class EditorWindow : Window
             if (lastPane == replacing) lastPane = null;
             if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); App.Instance.BlockingEdits.Released(replacing.Document); replacing.Document.Dispose(); }
         }
-        else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical); }
+        else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical, splitBefore); }
         SetActive(pane);
         TrackExternalFile(doc);
         // Attaching can finish PaneReady before the new pane becomes active.
@@ -244,7 +244,7 @@ internal sealed partial class EditorWindow : Window
         foreach (var item in Panes) item.IsActive = item == pane;
         UpdateTitle(); RefreshStyleMenus();
     }
-    private void RebuildPanes(int? splitIndex = null, bool vertical = false) => paneGrid.Rebuild(Panes, splitIndex, vertical);
+    private void RebuildPanes(int? splitIndex = null, bool vertical = false, bool splitBefore = false) => paneGrid.Rebuild(Panes, splitIndex, vertical, splitBefore);
     private void SyncPaneOrder() { var next = paneGrid.OrderedPanes.ToArray(); Panes.Clear(); Panes.AddRange(next); }
 
     internal void RequireSplitRoom(EditorPane? pane = null, bool vertical = false)
@@ -254,10 +254,10 @@ internal sealed partial class EditorWindow : Window
         paneGrid.RequireSplitRoom(pane, preferences.StatusHeight, vertical);
     }
 
-    internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null, bool vertical = false)
+    internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null, bool vertical = false, bool before = true)
     {
         RequireSplitRoom(pane, vertical);
-        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical);
+        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical, splitBefore: before);
         if (pane.View is { } origin) {
             if (added.View is { } attached) attached.Number(origin.NumberEnabled);
             else added.InitialNumber = origin.NumberEnabled;
@@ -342,7 +342,7 @@ internal sealed partial class EditorWindow : Window
         return (await picker.PickSingleFileAsync())?.Path;
     }
     internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null,
-        bool vertical = false, EditorPane? targetPane = null, bool newWindow = false, string? linkFragment = null, bool reuseOpenDocument = false)
+        bool vertical = false, EditorPane? targetPane = null, bool newWindow = false, string? linkFragment = null, bool reuseOpenDocument = false, bool splitBefore = true)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         var old = targetPane ?? ActivePane;
@@ -486,7 +486,7 @@ internal sealed partial class EditorWindow : Window
         {
             int index = old == null ? Panes.Count : Panes.IndexOf(old) + (split ? 1 : 0);
             ulong argument = old?.RememberedArgument ?? ulong.MaxValue;
-            var opened = split && splitSource != null ? SplitPane(splitSource, doc, splitLines, vertical) : AddPane(doc, Math.Min(index, Panes.Count), replacing: old);
+            var opened = split && splitSource != null ? SplitPane(splitSource, doc, splitLines, vertical, before: splitBefore) : AddPane(doc, Math.Min(index, Panes.Count), replacing: old);
             opened.RememberedArgument = argument;
         }
         preferences.Remember(path);
