@@ -2,6 +2,8 @@
 
 Open this file, then turn on Markdown Preview with the title-bar button. With Preview off, the same source is edited literally as Code with Markdown syntax highlighting. The original source is preserved when switching views and when saving without edits.
 
+<img src="Word%20style.png" alt="" width="700" height="736">
+
 The [front-matter example](markdown_front_matter_demo.md) begins with YAML that
 appears as a code block labeled **front matter**, with YAML highlighting and a
 disabled language picker. Preview hides its `---` delimiters while keeping the

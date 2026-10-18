@@ -19,6 +19,15 @@ namespace Viem.Windows.Editor;
 internal sealed partial class EditorPane
 {
     private Border? imagePopup;
+    private string originalImageDestination = "", displayedImageDestination = "";
+    private string ImageDraftDestination => imageDestination!.Text == displayedImageDestination
+        ? originalImageDestination : imageDestination.Text;
+    private void SetImageDestination(string value)
+    {
+        originalImageDestination = value;
+        displayedImageDestination = ImageLocation.Display(value);
+        imageDestination!.Text = displayedImageDestination;
+    }
     private StackPanel? imageActions, imageEditor;
     private Button? imageDestinationButton;
     private TextBox? imageText, imageDestination;
@@ -137,7 +146,7 @@ internal sealed partial class EditorPane
         imageBrowse!.IsEnabled = !PickingImageLocation;
         updatingImageSize = true;
         imageText!.Text = insertingImageAtCaret ? "" : context.Image?.Text ?? context.Text;
-        imageDestination!.Text = insertingImageAtCaret ? "" : context.Image?.Destination ?? "";
+        SetImageDestination(insertingImageAtCaret ? "" : context.Image?.Destination ?? "");
         var edited = insertingImageAtCaret ? null : context.Image;
         imageSize.Reset(edited?.Width, edited?.Height);
         updatingImageSize = false;
@@ -193,7 +202,7 @@ internal sealed partial class EditorPane
             try { view.ValidateImageContext(context); }
             catch (Exception error) when (error is InvalidOperationException || error is Viem.Windows.Interop.CoreException { Status: VIEM_STATUS_STALE_REVISION })
             { DismissImagePopup(suppress: false); return; }
-            imageDestination!.Text = ImageLocation.PickedDestination(path, documentPath);
+            SetImageDestination(ImageLocation.PickedDestination(path, documentPath));
             PositionImagePopup();
         }
         catch (Exception error)
@@ -221,7 +230,7 @@ internal sealed partial class EditorPane
         if (!editingImage || shownImage is not { } context || View is not { } view) return;
         try
         {
-            string target = imageDestination!.Text.Trim();
+            string target = ImageDraftDestination.Trim();
             if (target.Length == 0) throw new InvalidOperationException("Enter a location for the image.");
             // Validate supported schemes before creating an image; relative paths
             // may be authored before a document is first saved.
@@ -272,9 +281,9 @@ internal sealed partial class EditorPane
         { DismissImagePopup(suppress: false); return; }
         DismissLinkPopup(suppress: false);
         EnsureImagePopup(); shownImage = context; insertingImageAtCaret = false;
-        ((TextBlock)imageDestinationButton!.Content).Text = context.Image.Destination;
-        AutomationProperties.SetName(imageDestinationButton, "Open " + context.Image.Destination);
-        ToolTipService.SetToolTip(imageDestinationButton, context.Image.Destination);
+        ((TextBlock)imageDestinationButton!.Content).Text = ImageLocation.Display(context.Image.Destination);
+        AutomationProperties.SetName(imageDestinationButton, "Open " + ImageLocation.Display(context.Image.Destination));
+        ToolTipService.SetToolTip(imageDestinationButton, ImageLocation.Display(context.Image.Destination));
         foreach (var button in imageActions!.Children.OfType<Button>().Skip(2)) button.IsEnabled = context.Image.Editable;
         imageReload!.IsEnabled = ImageLocation.LocalPreviewPath(context.Image.Destination, Document.FilePath) != null;
         imageActions.Visibility = Visibility.Visible; imageEditor!.Visibility = Visibility.Collapsed;
@@ -336,8 +345,7 @@ internal sealed partial class EditorPane
         ((TextBlock)imageDestinationButton.Content).MaxWidth = imageDestinationButton.Width - 12;
         imagePopup.Measure(new Size(imagePopup.Width, double.PositiveInfinity));
         double height = imagePopup.DesiredSize.Height;
-        double y = imageAnchor.Bottom + 4;
-        if (y + height > Canvas.ActualHeight) y = Math.Max(4, imageAnchor.Top - height - 4);
+        double y = Math.Clamp(imageAnchor.Bottom + 4, 4, Math.Max(4, Canvas.ActualHeight - height - 4));
         Microsoft.UI.Xaml.Controls.Canvas.SetLeft(imagePopup, Math.Clamp(imageAnchor.Left, 4, Math.Max(4, Canvas.ActualWidth - imagePopup.Width - 4)));
         Microsoft.UI.Xaml.Controls.Canvas.SetTop(imagePopup, y);
     }

@@ -111,7 +111,7 @@ internal sealed partial class EditorPane
     private void RefreshImageSizeNatural()
     {
         if (!ImageEditorVisible || imageEditDraft is not { } draft || View is not { } view || shownImage is not { } context) return;
-        string destination = imageDestination!.Text.Trim();
+        string destination = ImageDraftDestination.Trim();
         if (destination == imageSizeDestination) return;
         CancelImageSizeProbe();
         imageSize.ClearNatural(); UpdateImageSizeControls();
@@ -148,7 +148,7 @@ internal sealed partial class EditorPane
                     var result = await Task.Run(() => LocalImagePreview.ProbeDimensions(request.Path, cancellation), cancellation);
                     if (disposed || cancellation.IsCancellationRequested || !ImageEditorVisible
                         || !ReferenceEquals(imageEditDraft, request.Draft) || !ReferenceEquals(View, request.Owner)
-                        || !SameImageContext(shownImage, request.Context) || imageDestination!.Text.Trim() != request.Destination
+                        || !SameImageContext(shownImage, request.Context) || ImageDraftDestination.Trim() != request.Destination
                         || !string.Equals(Document.FilePath, request.DocumentPath, StringComparison.OrdinalIgnoreCase)) continue;
                     request.Owner.ValidateImageContext(request.Context);
                     if (result.Status == LocalImagePreviewStatus.Ready)

@@ -59,6 +59,21 @@ import XCTest
         XCTAssertFalse(backend.persistenceState.isDirty)
     }
 
+    func testRepeatedNativeTabsDescendAUniqueHiddenDirectory() throws {
+        let (directory, backend, surface, session, window) = try makeSurface()
+        defer { window.close(); try? FileManager.default.removeItem(at: directory) }
+        let nested = directory.appendingPathComponent(".agents/skills", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        try Data().write(to: nested.appendingPathComponent("SKILL.md"))
+        surface.performInput { _ = try session.sendText(":e \(directory.path)/.age") }
+        for suffix in [".agents/", ".agents/skills/", ".agents/skills/SKILL.md"] {
+            surface.editorView.keyDown(with: try key(48))
+            XCTAssertEqual(surface.commandLine?.text, "e \(directory.path)/\(suffix)")
+        }
+        XCTAssertEqual(try backend.formattedText(), "document")
+        XCTAssertFalse(backend.persistenceState.isDirty)
+    }
+
     func testNativeSlashAcceptsDirectoryWithoutDuplicationAndCompletesItsChild() throws {
         let (directory, backend, surface, session, window) = try makeSurface()
         defer { window.close(); try? FileManager.default.removeItem(at: directory) }

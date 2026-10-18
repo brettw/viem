@@ -28,6 +28,14 @@ impl CommandLineBuffer {
     }
 
     fn complete_filename(&mut self, reverse: bool) {
+        // A unique directory is a completed path component, not a one-item
+        // menu. The next Tab starts discovery inside it, as in zsh's
+        // menucomplete. An ambiguous menu still cycles among its siblings.
+        if self.completion.as_ref().is_some_and(|completion| {
+            completion.candidates.len() == 1 && completion.candidates[0].ends_with('/')
+        }) {
+            self.completion = None;
+        }
         let completion = if let Some(mut completion) = self.completion.take() {
             let count = completion.candidates.len();
             completion.selected = if reverse {

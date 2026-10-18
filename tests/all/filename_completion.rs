@@ -195,6 +195,72 @@ fn directory_slash_accepts_without_duplication_for_portable_and_native_input() {
 }
 
 #[test]
+fn repeated_tabs_descend_unique_directories_then_cycle_children() {
+    let fixture = Fixture::new();
+    fixture.directory(".agents/skills/update-themes");
+    fixture.file(".agents/skills/update-themes/SKILL.md");
+    fixture.file(".agents/AGENTS.md");
+    for reverse in [false, true] {
+        let key = if reverse { Key::BackTab } else { Key::Tab };
+        let mut prompt = Prompt::new(&fixture.command(".age"));
+        prompt.key(key);
+        prompt.assert_text(&fixture.command(".agents/"));
+        prompt.key(key);
+        prompt.assert_text(&fixture.command(if reverse { ".agents/skills/" } else { ".agents/AGENTS.md" }));
+        prompt.key(key);
+        prompt.assert_text(&fixture.command(if reverse { ".agents/AGENTS.md" } else { ".agents/skills/" }));
+        // An ambiguous directory candidate stays in the siblings menu.
+        prompt.key(Key::Ctrl('e'));
+        prompt.assert_text(&fixture.command(".agents/"));
+    }
+    let mut prompt = Prompt::new(&fixture.command(".agents/sk"));
+    for expected in [".agents/skills/", ".agents/skills/update-themes/", ".agents/skills/update-themes/SKILL.md"] {
+        prompt.key(Key::Tab);
+        prompt.assert_text(&fixture.command(expected));
+    }
+    prompt.key(Key::Ctrl('e'));
+    prompt.assert_text(&fixture.command(".agents/skills/update-themes/"));
+}
+
+#[test]
+fn unique_directory_descent_handles_spaces_empty_and_changing_directories() {
+    let fixture = Fixture::new();
+    fixture.directory("Space Dir/Empty");
+    let mut prompt = Prompt::new(&fixture.command("Space D"));
+    for expected in ["Space Dir/", "Space Dir/Empty/", "Space Dir/Empty/"] {
+        prompt.key(Key::Tab);
+        prompt.assert_text(&fixture.command(expected));
+    }
+    fixture.file("Space Dir/Empty/new file.txt");
+    prompt.key(Key::Tab);
+    prompt.assert_text(&fixture.command("Space Dir/Empty/new file.txt"));
+
+    let mut prompt = Prompt::new(&fixture.command("Space D"));
+    prompt.key(Key::Tab);
+    fs::remove_dir_all(fixture.0.join("Space Dir")).unwrap();
+    let directory = prompt.snapshot();
+    prompt.key(Key::Tab);
+    assert_eq!(prompt.snapshot(), directory, "a removed directory remains editable");
+}
+
+#[test]
+fn directory_descent_keeps_the_native_caret_suffix_and_acceptance_rules() {
+    let fixture = Fixture::new();
+    fixture.directory("Folder");
+    fixture.file("Folder/Child.txt");
+    let original = fixture.command("Fo.keep");
+    let mut prompt = Prompt::new(&original);
+    let cursor = original.len() - ".keep".len();
+    prompt.edit(CommandLineEditAction::Select { anchor: cursor, active: cursor });
+    prompt.key(Key::Tab);
+    prompt.assert_text(&fixture.command("Folder/.keep"));
+    prompt.key(Key::Tab);
+    prompt.assert_text(&fixture.command("Folder/Child.txt.keep"));
+    prompt.key(Key::Ctrl('e'));
+    prompt.assert_text(&fixture.command("Folder/.keep"));
+}
+
+#[test]
 fn ordinary_movement_typing_and_backspace_accept_the_current_filename() {
     let fixture = Fixture::new();
     fixture.file("Alpha.txt");

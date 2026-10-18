@@ -461,7 +461,11 @@ Use image size restores natural pixel dimensions. Header inspection follows
 the same local-only resource limits; unavailable natural dimensions still allow
 manual sizes but cannot offer proportional adjustment or Use image size.
 The edit transition follows the link popup's native controls and reduced-motion
-behavior. Clicking a Preview image selects its entire atomic range independently
+behavior. Opening prepares geometry before showing the popup; draft refreshes
+and image-dimension results must not restart its appearance animation. Size
+expansion grows downward to the available display edge, then moves the top up
+only far enough to fit, rather than flipping above its anchor.
+Clicking a Preview image selects its entire atomic range independently
 of automatic text-selection preferences. Explicit Insert/Replace navigation onto
 an image selects its atomic range; subsequent arrow movement leaves that
 selection and resumes its typing mode. Normal-mode motion keeps Vim's mode and
@@ -475,7 +479,9 @@ that updates only the draft. Picked files use document-relative destinations
 when this does not ascend through the filesystem root; otherwise retain an
 absolute file destination, including unsaved documents and different Windows
 drives or shares. Encode filename punctuation as path content rather than
-fragments or queries. Cancellation or a stale draft cannot change source or a
+fragments or queries. Image location labels and fields display `%20` as a space,
+while preserving other escapes and the original destination when the location
+field is unchanged. Cancellation or a stale draft cannot change source or a
 later draft. Opening an image location is explicit native URL interaction, never
 a resource fetch for a preview. Clipboard plain-text image fallbacks and HTML
 export retain passive location text rather than creating automatic remote loads.
@@ -1455,6 +1461,13 @@ text cannot become active markup, and require no network resources. Native
 frontends only choose the destination and write the portable core's bytes.
 
 ## File lifecycle, Ex, and views
+
+Ex filename completion follows zsh's menu traversal: after a unique directory
+completion, another Tab discovers its children; ambiguous matches keep cycling
+siblings. Keep case-insensitive matching with the filename's actual spelling,
+and literal Ex filename arguments rather than shell quoting or new arguments.
+Completion changes only the command draft. See
+[filename completion](docs/filename-completion.md) for acceptance and audit cases.
 
 ### Persistence and external changes
 

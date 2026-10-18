@@ -23,6 +23,8 @@ internal static class ImageInteractionTests
     internal static async Task Run(Preferences preferences)
     {
         await ClipboardSerializationTests.Run();
+        Check(ImageLocation.Display("folder%20name/a%2520%23%3F.png") == "folder name/a%2520%23%3F.png",
+            "image locations show spaces without decoding reserved punctuation or literal escapes");
         Check(ImageLocation.LocalPreviewPath("https://example.invalid/a.png", null) == null
             && ImageLocation.LocalPreviewPath("file://server/share/a.png", null) == null,
             "image preview resolution rejects web and network file resources before opening them");
@@ -190,7 +192,7 @@ internal static class ImageInteractionTests
             Check(pane.ImageEditorVisible && pane.ImageTextValue == "draft alt" && pane.ImageDestinationValue == "draft.png",
                 "native picker focus and window deactivation preserve the image edit draft");
             window.Activate(); choice.SetResult(path); await pending;
-            Check(pane.ImageDestinationValue == "picked%20%23%25.png" && pane.ImageTextValue == "draft alt"
+            Check(pane.ImageDestinationValue == "picked %23%25.png" && pane.ImageTextValue == "draft alt"
                 && CoreView.SameSelection(view.LogicalSelection(), selection) && document.State.document_revision == revision && Source() == source,
                 "choosing an image updates only its escaped relative location draft without changing document or selection");
             await other.ClosePane(other.ActivePane!, force: true); App.Instance.Windows.Remove(other); other = null;

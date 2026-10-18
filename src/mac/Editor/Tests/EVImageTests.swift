@@ -61,6 +61,96 @@ final class EVImageTests: XCTestCase {
             relativeTo: URL(fileURLWithPath: "/document.md")), "images/image.png")
     }
 
+    func testImagePopupGrowthClampsToScreenBottomWithoutFlipping() {
+        for visible in [NSRect(x: 0, y: 0, width: 1000, height: 700),
+                        NSRect(x: -1400, y: -900, width: 1200, height: 800)] {
+            let anchor = NSRect(x: visible.minX + 80, y: visible.minY + 240, width: 2, height: 20)
+            func frame(_ height: CGFloat) -> NSRect {
+                EVInlineContentPopoverController.imagePopupFrame(anchor: anchor,
+                    size: NSSize(width: 388, height: height), visible: visible)
+            }
+            let compact = frame(160), expanded = frame(300), taller = frame(350)
+            XCTAssertEqual(compact.maxY, anchor.minY - 5)
+            XCTAssertEqual(expanded.minY, visible.minY + 4)
+            XCTAssertEqual(expanded.maxY - compact.maxY, 300 - 160 - (compact.minY - visible.minY - 4))
+            XCTAssertEqual(taller.minY, expanded.minY)
+            XCTAssertEqual(taller.maxY - expanded.maxY, 50)
+            XCTAssertEqual(frame(160), compact, "Collapsing returns to the caret anchor")
+            XCTAssertTrue(visible.contains(taller))
+        }
+    }
+
+    func testImageDraftRefreshesKeepTheSamePanelFrameAndFocus() throws {
+        let (backend, surface, window) = try editor("text", type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        surface.formattingToolbar.insertImage.performClick(nil)
+        let popup = surface.imagePopover
+        let panel = try XCTUnwrap(popup.textField.window)
+        let frame = popup.popupFrame
+        let responder = panel.firstResponder
+        func assertFullyVisible(file: StaticString = #filePath, line: UInt = #line) {
+            var ancestor: NSView? = popup.imageSizeControls
+            while let view = ancestor {
+                XCTAssertEqual(view.alphaValue, 1, "Draft refreshes must not fade the form", file: file, line: line)
+                ancestor = view.superview
+            }
+        }
+        assertFullyVisible()
+        for size in [nil, NSSize(width: 200, height: 100), nil] {
+            popup.imageSizeControls.setNaturalSize(size)
+            assertFullyVisible()
+            popup.refresh()
+            XCTAssertTrue(popup.isOpen && popup.isEditing)
+            XCTAssertTrue(popup.textField.window === panel)
+            XCTAssertTrue(panel.firstResponder === responder)
+            XCTAssertEqual(popup.popupFrame, frame)
+        }
+        popup.imageSizeControls.disclosure.performClick(nil)
+        assertFullyVisible()
+        XCTAssertGreaterThan(popup.popupFrame.height, frame.height)
+        let expanded = popup.popupFrame
+        popup.imageSizeControls.setNaturalSize(NSSize(width: 200, height: 100))
+        assertFullyVisible()
+        popup.refresh()
+        XCTAssertEqual(popup.popupFrame, expanded)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("text".utf8))
+    }
+
+    func testImageLocationShowsSpacesAndPreservesEscapesOnApplyAndAltTextEdit() throws {
+        let destination = "folder%20name/image%20with%2520%23%3F.png"
+        let source = "![alt](<\(destination)>)"
+        let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        let popup = surface.imagePopover
+        surface.refreshPresentation()
+        XCTAssertEqual(popup.destinationButton.title, "folder name/image with%2520%23%3F.png")
+        popup.editButton.performClick(nil)
+        XCTAssertEqual(popup.destinationField.stringValue, "folder name/image with%2520%23%3F.png")
+        popup.applyButton.performClick(nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        popup.refresh(); popup.editButton.performClick(nil)
+        popup.textField.stringValue = "new alt"
+        popup.applyButton.performClick(nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data("![new alt](<\(destination)>)".utf8))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+    }
+
+    func testPickedImageShowsSpacesButSavesTheEncodedFilename() throws {
+        let (backend, surface, window) = try editor("", type: EVDocument.markdownType)
+        defer { surface.imagePopover.close(); window.close() }
+        surface.formattingToolbar.insertImage.performClick(nil)
+        let popup = surface.imagePopover
+        let file = URL(fileURLWithPath: "/tmp/a space %20 #.png")
+        popup.imageFilePanelPresenter = { _, _, completion in completion(file) }
+        popup.chooseImageButton.performClick(nil)
+        XCTAssertEqual(popup.destinationField.stringValue, EVImageFileLocation.display(file.absoluteString))
+        XCTAssertTrue(popup.destinationField.stringValue.contains("a space %2520 %23.png"))
+        popup.applyButton.performClick(nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("![](<\(file.absoluteString)>)".utf8))
+    }
+
     func testRemoteImageIsAtomicURLPlaceholderAndOnlyExplicitOpenLaunchesBrowser() throws {
         let source = "before ![A picture](https://example.invalid/photo.png) after"
         let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)

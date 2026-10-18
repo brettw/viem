@@ -3,6 +3,12 @@ import CViemCore
 import ViemAppShell
 
 enum EVImageFileLocation {
+    /// Show spaces without decoding reserved delimiters or double-decoding a
+    /// filename containing literal percent escapes (for example, a%2520.png).
+    static func display(_ destination: String) -> String {
+        destination.replacingOccurrences(of: "%20", with: " ")
+    }
+
     /// Keep selected filenames as URI path components so punctuation cannot
     /// turn a local filename into a fragment, query or scheme.
     static func destination(for file: URL, relativeTo document: URL?) -> String {

@@ -46,6 +46,17 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     private var anchor = NSRect.zero
     private var headingChoices: [EVLinkHeadingList.Heading] = []
     private var selectingDestination = false
+    private var originalDestination = ""
+    private var displayedDestination = ""
+    private var draftDestination: String {
+        kind == .image && destinationField.stringValue == displayedDestination
+            ? originalDestination : destinationField.stringValue
+    }
+    private func setDestination(_ value: String) {
+        originalDestination = value
+        displayedDestination = kind == .image ? EVImageFileLocation.display(value) : value
+        destinationField.stringValue = displayedDestination
+    }
     private var destinationDraft: NSObject?
     private var scheduledDestinationDraft: NSObject?
     private var pendingDestination: (index: Int, text: String, destination: String)?
@@ -138,7 +149,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
             imageSizeControls.didChange = { [weak self] in
                 guard let self else { return }
                 self.setValidationMessage(""); self.updateValidation()
-                if self.isEditing { self.position(animated: true) }
+                if self.isEditing { self.position() }
             }
         }
         destinationField.placeholderString = kind == .image ? "image.png or https://…" : "https://…, document.md, or #heading"
@@ -271,7 +282,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         if isEditing {
             guard let expected, expected.isSameSelection(as: selection), window === originWindow,
                   anchorRect(for: context?.item) != nil else { close(); return }
-            position(animated: false)
+            position()
             return
         }
         guard window.isKeyWindow, window.firstResponder === surface.editorView,
@@ -280,12 +291,12 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
               (!surface.hasSelection || (kind == .image && selection.text_start == link.start && selection.text_end == link.end)),
               let rect = anchorRect(for: link) else { close(); return }
         context = next; expected = selection; anchor = rect
-        let label = kind == .link ? link.text : link.destination
+        let label = kind == .link ? link.text : EVImageFileLocation.display(link.destination)
         let empty = label.isEmpty
         destinationButton.attributedTitle = NSAttributedString(string: empty ? "empty" : label, attributes: [
             .font: empty ? NSFontManager.shared.convert(NSFont.systemFont(ofSize: 12), toHaveTrait: .italicFontMask) : NSFont.systemFont(ofSize: 12)
         ])
-        destinationButton.toolTip = link.destination
+        destinationButton.toolTip = kind == .image ? EVImageFileLocation.display(link.destination) : link.destination
         editButton.isEnabled = link.editable
         removeButton.isEnabled = link.editable
         show(editing: false)
@@ -313,7 +324,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
             combo.deselectItem(at: combo.indexOfSelectedItem)
         }
         textField.stringValue = context.item?.text ?? context.text
-        destinationField.stringValue = context.item?.destination ?? ""
+        setDestination(context.item?.destination ?? "")
         applyButton.title = kind == .image && context.item == nil ? "Insert" : "Apply"
         if kind == .image {
             imageSizeControls.reset(width: context.item?.width, height: context.item?.height)
@@ -336,13 +347,23 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         isEditing = editing
         panel.takesKeyboardFocus = editing
         summary.isHidden = editing; form.isHidden = !editing
-        if !isOpen {
-            isOpen = true; originWindow = window
+        let opening = !isOpen
+        isOpen = true; originWindow = window
+        panel.appearance = window.effectiveAppearance
+        position()
+        // Prepare geometry before attaching a visible child window. Routine
+        // validation and image-header updates must never restart this fade.
+        form.alphaValue = animate && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 1
+        if opening {
             window.addChildWindow(panel, ordered: .above)
             installDismissal()
         }
-        panel.appearance = window.effectiveAppearance
-        position(animated: animate)
+        if form.alphaValue == 0 {
+            NSAnimationContext.runAnimationGroup { animation in
+                animation.duration = 0.16
+                form.animator().alphaValue = 1
+            }
+        }
         if !editing { panel.orderFront(nil) }
     }
 
@@ -369,7 +390,15 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         return rect.intersects(editor.textViewportRect) ? rect : nil
     }
 
-    private func position(animated: Bool) {
+    static func imagePopupFrame(anchor: NSRect, size: NSSize, visible: NSRect) -> NSRect {
+        let x = min(max(anchor.minX, visible.minX + 4), max(visible.minX + 4, visible.maxX - size.width - 4))
+        // Grow downward until the bottom reaches the screen edge, then move
+        // only as far upward as necessary instead of flipping over the anchor.
+        let y = max(visible.minY + 4, min(anchor.minY - 5 - size.height, visible.maxY - size.height - 4))
+        return NSRect(origin: NSPoint(x: x, y: y), size: size)
+    }
+
+    private func position() {
         guard let surface, let window = originWindow else { return }
         if let current = anchorRect(for: context?.item) { anchor = current }
         let screenRect = window.convertToScreen(surface.editorView.convert(anchor, to: nil))
@@ -391,24 +420,18 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         let x = min(max(screenRect.minX, visible.minX + 4), visible.maxX - size.width - 4)
         let below = screenRect.minY - 5 - size.height
         let y = below >= visible.minY + 4 ? below : min(screenRect.maxY + 5, visible.maxY - size.height - 4)
-        let frame = NSRect(origin: NSPoint(x: x, y: y), size: size)
+        let frame = kind == .image ? Self.imagePopupFrame(anchor: screenRect, size: size, visible: visible)
+            : NSRect(origin: NSPoint(x: x, y: y), size: size)
         summary.frame = NSRect(origin: .zero, size: NSSize(width: compactWidth, height: 34))
         destinationButton.frame = NSRect(x: 6, y: 4, width: labelWidth, height: 26)
         for (index, button) in actions.enumerated() {
             button.frame = NSRect(x: labelWidth + 10 + CGFloat(index) * 32, y: 4, width: 29, height: 26)
         }
-        panel.setFrame(frame, display: true)
         if isEditing {
             form.frame = NSRect(x: 14, y: 12, width: formSize.width, height: formSize.height)
             form.layoutSubtreeIfNeeded()
         }
-        if animated && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-            form.alphaValue = 0
-            NSAnimationContext.runAnimationGroup { animation in
-                animation.duration = 0.16
-                form.animator().alphaValue = 1
-            }
-        } else { form.alphaValue = 1 }
+        if panel.frame != frame { panel.setFrame(frame, display: false) }
     }
 
     private func installDismissal() {
@@ -509,7 +532,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         panel.allowsMultipleSelection = false
         panel.allowsOtherFileTypes = true
         panel.directoryURL = document?.deletingLastPathComponent()
-        if let existing = try? EVLinkOpener.destinationURL(destinationField.stringValue, relativeTo: document), existing.isFileURL {
+        if let existing = try? EVLinkOpener.destinationURL(draftDestination, relativeTo: document), existing.isFileURL {
             panel.directoryURL = existing.deletingLastPathComponent()
         }
         imageFilePicker = panel
@@ -526,7 +549,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
                 return
             }
             if let file, file.isFileURL {
-                self.destinationField.stringValue = EVImageFileLocation.destination(for: file, relativeTo: document)
+                self.setDestination(EVImageFileLocation.destination(for: file, relativeTo: document))
                 self.setValidationMessage(""); self.updateValidation()
                 self.requestImageDimensions()
             }
@@ -547,7 +570,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         var succeeded = false
         surface.performInput {
             do {
-                let destination = destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let destination = draftDestination.trimmingCharacters(in: .whitespacesAndNewlines)
                 if action != 2 { try EVLinkOpener.validateForAuthoring(destination) }
                 _ = try session.editInlineContent(kind, action: action, context: context, expected: expected,
                     text: kind == .link && textField.stringValue.isEmpty ? destination : textField.stringValue, destination: destination,
@@ -573,7 +596,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     private func requestImageDimensions() {
         guard kind == .image, isEditing, let surface, let session = surface.session,
               let draft = destinationDraft, let expected else { return }
-        let location = destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let location = draftDestination.trimmingCharacters(in: .whitespacesAndNewlines)
         let document = surface.documentHostEffectHandler?.documentURL(for: surface)
         guard location != probedImageLocation || document != probedImageDocument else { return }
         probedImageLocation = location; probedImageDocument = document
@@ -649,7 +672,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         guard errorLabel.stringValue != message || errorLabel.isHidden != hidden else { return }
         errorLabel.stringValue = message
         errorLabel.isHidden = hidden
-        if isEditing { position(animated: true) }
+        if isEditing { position() }
     }
     private func updateValidation() {
         applyButton.isEnabled = !destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
