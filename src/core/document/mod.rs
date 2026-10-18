@@ -43,6 +43,7 @@ mod markdown_table_rows;
 pub use markdown_table_rows::TableRows;
 pub use markdown_tables::{MarkdownTable, MarkdownTableCell, MarkdownTableRow, MarkdownTableSourceRow, TableAlignment, TableEditIntent};
 mod markdown_syntax;
+mod markdown_front_matter;
 mod markdown_code;
 mod markdown_indented_code;
 mod markdown_quotes;

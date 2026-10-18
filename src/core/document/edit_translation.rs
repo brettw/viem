@@ -120,8 +120,9 @@ impl Document {
     ) -> Result<Option<(Range<usize>, Range<usize>)>, DocumentError> {
         let Some(input) = self.guarded_markdown_input(block.range.clone())
             .map_err(compat_document_error)? else { return Ok(None); };
-        let syntax = super::super::markdown_syntax::Blocks::parse(
+        let syntax = super::super::markdown_syntax::Blocks::parse_with_start(
             &super::super::markdown_syntax::grammar_text(&input),
+            input.source_at(0) == self.projection().source_content_start(),
         ).to_source(&input);
         let source = self.projection().source_range(block.range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;

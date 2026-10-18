@@ -191,13 +191,18 @@ fn selected_emphasis_keeps_passive_html_and_table_cell_boundaries() {
         for style in [SemanticInlineStyle::Strong, SemanticInlineStyle::Emphasis] {
             let (mut core, view) = open(source);
             let original = core.document().text().to_owned();
+            // Front matter is literal YAML code. Exercise prose formatting
+            // beside that owner without trying to style its literal body.
+            let selection_start = if source.starts_with("---\n") {
+                original.find("body").unwrap()
+            } else { 0 };
             core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('i')))
                 .unwrap();
             core.handle_with_layout(
                 view,
                 CoreEvent::BeginPointerGesture {
                     document_revision: core.document().revision(),
-                    text_offset: 0,
+                    text_offset: selection_start,
                     affinity: BoundaryAffinity::Downstream,
                 },
             )
@@ -222,6 +227,9 @@ fn selected_emphasis_keeps_passive_html_and_table_cell_boundaries() {
                 },
             )
             .unwrap_or_else(|e| panic!("{source:?}, {style:?}: {e:?}"));
+            if selection_start > 0 {
+                assert!(core.document().source_bytes().starts_with(b"---\ntitle: hello\n---\n\n"));
+            }
             assert!(core
                 .document()
                 .projection()

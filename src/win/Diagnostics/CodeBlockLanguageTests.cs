@@ -133,6 +133,40 @@ internal static class CodeBlockLanguageTests
                 "closing a pane with its native language menu open retires selector ownership without querying detached geometry");
         }
         finally { menu?.Hide(); await window.ClosePane(window.ActivePane!, force: true); App.Instance.Windows.Remove(window); }
+        await CheckFrontMatterMenu(preferences);
+    }
+
+    private static async Task CheckFrontMatterMenu(Preferences preferences)
+    {
+        void Check(bool value, string name)
+        { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+        const string source = "---\nname: viem\n---\n\nbody";
+        var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window); window.Activate();
+        try
+        {
+            var pane = window.ActivePane!; var view = await pane.Ready;
+            await InputRoutingTests.Settle();
+            var snapshot = view.Layout();
+            var label = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
+            Check((label.flags & VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) != 0
+                && Encoding.UTF8.GetString(snapshot.DecorationLabels, checked((int)label.label_byte_start), checked((int)label.label_byte_length)) == "front matter",
+                "front matter exports a fixed native language label without a dropdown indicator");
+            Check(!DocumentModes.Languages.Any(language => language.Id == "front matter" || language.Name == "front matter"),
+                "front matter is not an authorable code language choice");
+            var viewport = view.Viewport;
+            var center = new global::Windows.Foundation.Point(label.typographic_bounds.x - viewport.left + label.typographic_bounds.width / 2,
+                label.typographic_bounds.y - viewport.top + label.typographic_bounds.height / 2);
+            pane.MoveCodeBlockLanguageHover(center);
+            Check(pane.CodeBlockLanguageOpacity(label) == .25f, "the fixed front matter label has no picker hover state");
+            await InputRoutingTests.Drag(window, pane.Canvas,
+                new global::Windows.Foundation.Point[] { new(center.X / pane.Canvas.ActualWidth, center.Y / pane.Canvas.ActualHeight) },
+                _ => Check(pane.CodeBlockLanguageFlyout == null, "clicking front matter language furniture does not open a native picker"), focusTarget: false);
+            Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
+                "front matter label interaction preserves original YAML and delimiters");
+        }
+        finally { await window.ClosePane(window.ActivePane!, force: true); App.Instance.Windows.Remove(window); }
     }
 
     internal static void Run(CanvasDevice device, DispatcherQueue dispatcher, Action<bool, string> check)

@@ -24,6 +24,8 @@ mod markdown_block_styles;
 mod markdown_code_style;
 #[path = "markdown_code_language.rs"]
 mod markdown_code_language;
+#[path = "markdown_front_matter_edit.rs"]
+mod markdown_front_matter_edit;
 #[path = "markdown_gfm_edit.rs"]
 mod markdown_gfm_edit;
 #[path = "markdown_reference_edit.rs"]
@@ -2248,6 +2250,7 @@ impl Document {
             self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
         let added_bom = self.protect_leading_feff(&mut source_patches)?;
+        self.prevent_accidental_front_matter(&mut source_patches)?;
 
         let persistent_edits = edits
             .iter()
@@ -2814,6 +2817,7 @@ impl Document {
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
+        self.prevent_accidental_front_matter(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
         let built = self.build_verified_text_edit_candidate(
@@ -3042,6 +3046,7 @@ impl Document {
             return Ok(self.no_op_prepared());
         }
         validate_source_patches(&mut patches)?;
+        self.prevent_accidental_front_matter(&mut patches)?;
         let source = apply_source_patches(&self.state().source, &patches)?;
         let revision = Revision(self.next_revision);
         let candidate = self.build_verified_candidate(
@@ -3698,6 +3703,7 @@ impl Document {
         }
 
         validate_source_patches(&mut source_patches)?;
+        self.prevent_accidental_front_matter(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
         let after_revision = Revision(self.next_revision);
         let unchanged = self

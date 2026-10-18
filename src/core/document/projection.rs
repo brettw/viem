@@ -94,6 +94,8 @@ pub struct BlockAttributes {
     pub list_loose: bool,
     pub thematic_break: bool,
     pub markdown_html: bool,
+    /// A document-leading YAML envelope, displayed with Code Block geometry.
+    pub front_matter: bool,
     /// Authored fenced-code language; empty means unspecified.
     pub code_language: Option<String>,
     pub(crate) code_language_label: bool,
@@ -120,13 +122,13 @@ impl Block {
             BlockKind::ListItem { item_start, .. } => ListEditing { item_start, indent: true, unindent: true },
             _ => ListEditing::default(),
         };
-        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_language: None, code_language_label: false }) }
+        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, front_matter: false, code_language: None, code_language_label: false }) }
     }
 
     pub fn paragraph(id: u64, range: Range<usize>) -> Self {
         static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
         Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
-            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_language: None, code_language_label: false,
+            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, front_matter: false, code_language: None, code_language_label: false,
             list_editing: ListEditing::default(),
         })).clone() }
     }
@@ -191,7 +193,7 @@ impl PartialEq for BlockAttributes {
                 a.starts_here == b.starts_here && a.ends_here == b.ends_here
                     && a.container.kind == b.container.kind && a.container.style == b.container.style
                     && a.container.direct_formatting == b.container.direct_formatting
-            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
+            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.front_matter == other.front_matter && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
 
@@ -205,7 +207,7 @@ impl RangedItem for Block {
             minimum_start: if self.list_editing.item_start { key } else { u16::MAX },
             flags: u16::from(!self.list_editing.indent && !owned_paragraph)
                 | (u16::from(!self.list_editing.unindent && !owned_paragraph) << 1)
-                | if self.style.0 == "Code Block" { 4 } else { 0 }
+                | if self.style.0 == "Code Block" && !self.front_matter { 4 } else { 0 }
                 | if matches!(self.kind, BlockKind::Heading(_)) || self.style.0.strip_prefix("Heading")
                     .and_then(|level| level.parse::<u8>().ok()).is_some_and(|level| (1..=6).contains(&level)) { 8 } else { 0 }
                 // A list grammar restart may cross ordinary empty paragraphs,
@@ -3305,6 +3307,7 @@ impl FormattedDocument {
             field!("list_editing", a.list_editing, b.list_editing);
             field!("thematic_break", a.thematic_break, b.thematic_break);
             field!("markdown_html", a.markdown_html, b.markdown_html);
+            field!("front_matter", a.front_matter, b.front_matter);
             field!("code_language", a.code_language, b.code_language);
             let containers = |attributes: &BlockAttributes| attributes.containers.iter()
                 .map(|member| (member.container.kind.clone(), member.container.style.clone(), member.starts_here, member.ends_here))
@@ -3369,6 +3372,7 @@ impl FormattedDocument {
     }
 
     /// Find the nearest code paragraph without traversing unrelated paragraphs.
+    /// Front matter has a fixed language and never supplies a creation default.
     pub(crate) fn default_code_language(&self, at: usize) -> Option<String> {
         let index = self.blocks.partition_point_start(at);
         let prior = self.blocks.find_navigation(0..index, true, |summary| summary.flags & 4 != 0);
@@ -5866,8 +5870,8 @@ fn project_markdown(
     source_content_end: usize,
     document_start: bool,
 ) -> FormattedDocument {
-    let syntax = super::markdown_syntax::Blocks::parse(&super::markdown_syntax::grammar_text(normalized)).to_source(normalized);
-    let definitions = super::markdown_syntax::definitions(&normalized.text).0;
+    let syntax = super::markdown_syntax::Blocks::parse_with_start(&super::markdown_syntax::grammar_text(normalized), document_start).to_source(normalized);
+    let definitions = super::markdown_syntax::definitions_with_start(&normalized.text, document_start).0;
     let quote_context = super::markdown_quotes::source_context_with_syntax(normalized, &syntax);
     let indented = super::markdown_indented_code::classify_with_syntax(normalized, &syntax);
     let list_context = super::markdown_blocks::source_context_with_syntax(normalized, &syntax);
@@ -6169,7 +6173,10 @@ fn project_markdown_lines(
         });
         let fence = syntax.code.get(syntax.code.partition_point(|code| code.range.end <= at))
             .filter(|code| code.fenced && code.range.start <= source_end && at < code.range.end);
-        if let Some(((delimiter, length), fence)) = markdown_fence(&normalized.text[fence_start..line.end]).zip(fence) {
+        let front_matter = syntax.front_matter.as_ref().filter(|front| front.range.start == at);
+        let fence_marker = front_matter.map(|_| (b'-', 3))
+            .or_else(|| markdown_fence(&normalized.text[fence_start..line.end]));
+        if let Some(((delimiter, length), fence)) = fence_marker.zip(fence) {
             let mut closing = line_index + 1;
             let mut closed = false;
             while closing < input_lines.len() {
@@ -6180,15 +6187,18 @@ fn project_markdown_lines(
                     && source == fence.range.end && input_lines[closing].is_empty();
                 if source >= fence.range.end && !terminal_body { break; }
                 let raw = &normalized.text[input_lines[closing].clone()];
-                if super::markdown_syntax::fence_close(raw, delimiter, length) {
+                if front_matter.map_or_else(|| super::markdown_syntax::fence_close(raw, delimiter, length),
+                    |front| source == front.body.end) {
                     closed = true;
                     break;
                 }
                 closing += 1;
             }
-            let language = normalized.text[fence_start..line.end].trim_start_matches([' ', '\t'])
-                [length..].split_whitespace().next().filter(|value| !value.is_empty())
-                .map(super::syntax::detection::canonical_language);
+            let language = if front_matter.is_some() { Some("yaml".to_owned()) } else {
+                normalized.text[fence_start..line.end].trim_start_matches([' ', '\t'])
+                    [length..].split_whitespace().next().filter(|value| !value.is_empty())
+                    .map(super::syntax::detection::canonical_language)
+            };
             let after = (closing + usize::from(closed)).min(input_lines.len());
             let body_start = line_index + 1;
             let body_end = closing;
@@ -6239,6 +6249,7 @@ fn project_markdown_lines(
                 block.quote_depth = quote_depth;
                 block.code_language = language;
                 block.code_language_label = true;
+                block.front_matter = front_matter.is_some();
             }
             if let Some(ending) = normalized.endings.get(after - 1) {
                 hard_breaks.push(builder.output.len());
@@ -7104,6 +7115,65 @@ mod tests {
 
     fn markdown(source: &str) -> FormattedDocument {
         markdown_at(source, Revision(1))
+    }
+
+    #[test]
+    fn markdown_front_matter_projects_literal_yaml_with_hidden_delimiters() {
+        let source = "---\nname: **literal**\ndescription: [unfinished\n\n----\n> literal\n---\n\n# Heading";
+        let projected = markdown(source);
+        let expected = "name: **literal**\ndescription: [unfinished\n\n----\n> literal\nHeading";
+        assert_eq!(projected.text(), expected);
+        assert_eq!(projected.blocks().len(), 2);
+        let metadata = &projected.blocks()[0];
+        assert!(metadata.front_matter);
+        assert_eq!(metadata.style.0, "Code Block");
+        assert_eq!(metadata.code_language.as_deref(), Some("yaml"));
+        assert!(metadata.code_language_label);
+        assert_eq!(metadata.quote_depth, 0);
+        assert!(!projected.blocks()[1].front_matter);
+        assert_eq!(projected.blocks()[1].kind, BlockKind::Heading(1));
+        assert!(projected.default_code_language(0).is_none());
+        assert_eq!(projected.map_source_boundary(Revision(1), 4, BoundaryAffinity::Downstream)
+            .unwrap().formatted_offset, 0);
+    }
+
+    #[test]
+    fn markdown_front_matter_empty_body_has_an_owned_caret_boundary() {
+        for source in ["---\n---", "---\n\n---"] {
+            let projected = markdown(source);
+            assert_eq!(projected.text(), "");
+            assert_eq!(projected.blocks().len(), 1);
+            assert!(projected.blocks()[0].front_matter);
+            assert_eq!(projected.blocks()[0].range, 0..0);
+            assert_eq!(projected.map_source_boundary(Revision(1), 4, BoundaryAffinity::Downstream)
+                .unwrap().formatted_offset, 0);
+        }
+    }
+
+    #[test]
+    fn markdown_front_matter_recognition_is_disabled_in_nonleading_bands() {
+        let source = "---\nname: Example\n---";
+        let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
+        let normalized = normalize(&decoded, FileFormat::Unix);
+        let projected = project_band(&normalized, Format::Markdown, Revision(1), 0, source.len(), false);
+        assert!(projected.blocks().iter().all(|block| !block.front_matter));
+        assert!(projected.blocks().iter().any(|block| block.thematic_break));
+        assert!(projected.blocks().iter().any(|block| block.kind == BlockKind::Heading(2)));
+    }
+
+    #[test]
+    fn markdown_front_matter_preserves_normalized_encoded_body_provenance() {
+        for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+            let ending = match file_format { FileFormat::Unix => "\n", FileFormat::Dos => "\r\n", FileFormat::Mac => "\r" };
+            let source = ["---", "name: café", "second: true", "---"].join(ending);
+            let decoded = Encoding::Utf8.decode(source.as_bytes()).unwrap();
+            let normalized = normalize(&decoded, file_format);
+            let projected = project(&normalized, Format::Markdown, Revision(1), 0, source.len());
+            assert_eq!(projected.text(), "name: café\nsecond: true");
+            assert!(projected.blocks()[0].front_matter);
+            assert_eq!(projected.map_source_boundary(Revision(1), 3 + ending.len(), BoundaryAffinity::Downstream)
+                .unwrap().formatted_offset, 0);
+        }
     }
 
     #[test]

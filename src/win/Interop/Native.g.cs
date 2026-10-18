@@ -1824,6 +1824,7 @@ internal static unsafe partial class Native
     public const uint VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND = (1u << 2);
     public const uint VIEM_LAYOUT_DECORATION_BLOCK_BORDER = (1u << 3);
     public const uint VIEM_LAYOUT_DECORATION_CODE_LANGUAGE = (1u << 4);
+    public const uint VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED = (1u << 5);
     public static readonly uint VIEM_LAYOUT_DECORATION_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationV1));
     public static readonly uint VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationsInfoV1));
     public static readonly uint VIEM_POSITIONED_CARET_V1_SIZE = ((uint)sizeof(ViemPositionedCaretV1));

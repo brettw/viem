@@ -2202,6 +2202,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
            let snapshot = surface?.layoutSnapshot,
            let item = snapshot.decorations.first(where: {
                $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0
+                   && $0.flags & UInt32(VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) == 0
                    && viewRect($0.typographic_bounds).contains(point)
            }) {
             codeBlockLanguageHoverRect = viewRect(item.typographic_bounds)
@@ -2212,6 +2213,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     func codeBlockLanguageOpacity(for item: ViemLayoutDecorationV1, in snapshot: EVLayoutExport) -> CGFloat {
+        guard item.flags & UInt32(VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) == 0 else { return 0.25 }
         let hovered = codeBlockLanguageHoverRect == viewRect(item.typographic_bounds)
         let menuOpen = codeBlockLanguageMenuTarget.map { target in
             target.documentID == snapshot.info.identity.document_id
@@ -2289,7 +2291,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               surface.refreshGeometryBeforeInteraction(), let snapshot = surface.layoutSnapshot else { return false }
         let point = convert(event.locationInWindow, from: nil)
         guard let item = snapshot.decorations.first(where: {
-            $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 && viewRect($0.typographic_bounds).contains(point)
+            $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0
+                && $0.flags & UInt32(VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED) == 0
+                && viewRect($0.typographic_bounds).contains(point)
         }), let row = row(for: item.row_index, in: snapshot.rows) else { return false }
         let start = Int(item.label_byte_start), end = start + Int(item.label_byte_length)
         let label = String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self)

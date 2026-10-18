@@ -486,7 +486,7 @@ fn shrinking_final_code_block_keeps_scroll_origin_and_real_blank_tail() {
         .rows
         .iter()
         .flat_map(|row| &row.decorations)
-        .find(|item| item.kind == DecorationKind::CodeLanguage)
+        .find(|item| matches!(item.kind, DecorationKind::CodeLanguage { .. }))
         .unwrap();
     let requested_top = (label.typographic_bounds.y - 5.).max(0.);
     core.handle(
@@ -558,6 +558,8 @@ fn language_labels_are_nontext_furniture_inside_code_border_including_empty_bloc
         ("<pre lang=rust>let x = 1;</pre>", false),
         ("<pre></pre>", false),
         ("```\nx\n```", true),
+        ("---\nname: viem\n---\n\nbody", false),
+        ("---\n---", false),
     ] {
         let mut document =
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
@@ -580,17 +582,20 @@ fn language_labels_are_nontext_furniture_inside_code_border_including_empty_bloc
             .rows
             .iter()
             .flat_map(|row| &row.decorations)
-            .filter(|item| item.kind == DecorationKind::CodeLanguage)
+            .filter(|item| matches!(item.kind, DecorationKind::CodeLanguage { .. }))
             .collect::<Vec<_>>();
         assert_eq!(labels.len(), 1, "{source}");
-        assert!(labels[0].text.ends_with(" ▾"));
+        let front_matter = source.starts_with("---\n");
+        assert_eq!(labels[0].kind, DecorationKind::CodeLanguage { picker_disabled: front_matter });
+        if front_matter { assert_eq!(labels[0].text, "front matter"); }
+        else { assert!(labels[0].text.ends_with(" ▾")); }
         let row = snapshot
             .rows
             .iter()
             .find(|row| {
                 row.decorations
                     .iter()
-                    .any(|item| item.kind == DecorationKind::CodeLanguage)
+                    .any(|item| matches!(item.kind, DecorationKind::CodeLanguage { .. }))
             })
             .unwrap();
         if compact {
@@ -615,7 +620,7 @@ fn language_labels_are_nontext_furniture_inside_code_border_including_empty_bloc
         let geometry = |snapshot: &viem_core::layout::LayoutSnapshot| {
             let mut rows = snapshot.rows.as_ref().clone();
             for row in &mut rows {
-                row.decorations.retain(|item| item.kind != DecorationKind::CodeLanguage);
+                row.decorations.retain(|item| !matches!(item.kind, DecorationKind::CodeLanguage { .. }));
             }
             (rows, snapshot.total_height, snapshot.content_width)
         };
@@ -627,19 +632,19 @@ fn language_labels_are_nontext_furniture_inside_code_border_including_empty_bloc
         assert_eq!(geometry(&reference), geometry(layout.snapshot().unwrap()),
             "restoring selector presentation after cache invalidation retains exact geometry");
         assert_eq!(layout.snapshot().unwrap().rows.iter().flat_map(|row| &row.decorations)
-            .filter(|item| item.kind == DecorationKind::CodeLanguage).count(), 1);
+            .filter(|item| matches!(item.kind, DecorationKind::CodeLanguage { .. })).count(), 1);
         assert_eq!(core.document().text(), text);
         assert_eq!(core.document().source_bytes(), source.as_bytes());
         assert!(!core.document().is_dirty());
     }
-    for source in ["```rust\nx\n```", "<pre lang=rust>x</pre>"] {
+    for source in ["```rust\nx\n```", "<pre lang=rust>x</pre>", "---\nname: viem\n---"] {
         let mut core = Core::new(
             Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap(),
         );
         let view = core.add_view(MockTextMeasurementProvider::new(), 500., 200.);
         assert!(!core.layout(view).unwrap().snapshot().unwrap().rows.iter()
             .flat_map(|row| &row.decorations)
-            .any(|item| item.kind == DecorationKind::CodeLanguage), "{source}");
+            .any(|item| matches!(item.kind, DecorationKind::CodeLanguage { .. })), "{source}");
     }
 }
 
@@ -1073,7 +1078,7 @@ fn changing_markdown_style_defaults_refreshes_highlighted_code_without_source_or
         .rows
         .iter()
         .flat_map(|row| &row.decorations)
-        .find(|item| item.kind == DecorationKind::CodeLanguage)
+        .find(|item| matches!(item.kind, DecorationKind::CodeLanguage { .. }))
         .unwrap();
     assert_eq!(
         label.paint.foreground,
@@ -1092,13 +1097,25 @@ fn changing_markdown_style_defaults_refreshes_highlighted_code_without_source_or
 
 #[test]
 fn giant_code_block_requests_and_layout_remain_regional_and_scrolling_retires_old_metrics() {
+    check_giant_code_block_layout(false);
+}
+
+#[test]
+fn giant_front_matter_requests_and_layout_remain_regional_and_scrolling_retires_old_metrics() {
+    check_giant_code_block_layout(true);
+}
+
+fn check_giant_code_block_layout(front_matter: bool) {
     use viem_core::layout::{
         compute_layout_job, inspect_layout_provider, install_layout_job, prepare_layout_job,
         LayoutCancellationToken, LayoutEngine, LayoutExecutionContext, LayoutInstallTarget,
         LayoutJobId, LayoutJobPriority, LayoutJobRegion, ViewLayout, ViewportLayoutRegion,
     };
-    let body = "let x = 1;\n".repeat(100_000);
-    let source = format!("```rust\n{body}```\n\n{}", "after the code\n\n".repeat(80));
+    let language = if front_matter { "yaml" } else { "rust" };
+    let body = if front_matter { "name: viem\n" } else { "let x = 1;\n" }.repeat(100_000);
+    let open = if front_matter { "---" } else { "```rust" };
+    let close = if front_matter { "---" } else { "```" };
+    let source = format!("{open}\n{body}{close}\n\n{}", "after the code\n\n".repeat(80));
     let mut document =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     let mut defaults: serde_json::Value =
@@ -1130,7 +1147,7 @@ fn giant_code_block_requests_and_layout_remain_regional_and_scrolling_retires_ol
     {
         let calls = calls.lock().unwrap();
         assert!(!calls.is_empty());
-        assert!(calls.iter().all(|(language, bytes, range)| language == "rust" && *bytes == body.len() - 1 && range.len() < 4_096),
+        assert!(calls.iter().all(|(captured_language, bytes, range)| captured_language == language && *bytes == body.len() - 1 && range.len() < 4_096),
             "providers receive a shared complete body snapshot and only visible regional requests: {calls:?}");
     }
     let assert_fresh = |core: &Core<MockTextMeasurementProvider>| {
@@ -1201,8 +1218,8 @@ fn giant_code_block_requests_and_layout_remain_regional_and_scrolling_retires_ol
             "retained geometry must match a fresh shaping/wrapping cache"
         );
         let labels = |snapshot: &viem_core::layout::LayoutSnapshot| snapshot.rows.iter()
-            .flat_map(|row| &row.decorations).filter(|item| item.kind == DecorationKind::CodeLanguage)
-            .map(|item| (item.text.clone(), item.typographic_bounds)).collect::<Vec<_>>();
+            .flat_map(|row| &row.decorations).filter(|item| matches!(item.kind, DecorationKind::CodeLanguage { .. }))
+            .map(|item| (item.kind, item.text.clone(), item.typographic_bounds)).collect::<Vec<_>>();
         assert_eq!(labels(snapshot), labels(fresh_view.snapshot().unwrap()),
             "regional cache rebuilds retain the selector overlay at the same code boundary");
     };

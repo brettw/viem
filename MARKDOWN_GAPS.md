@@ -1,6 +1,6 @@
 # Markdown compatibility with GitHub
 
-Updated October 9, 2026. The target is GitHub's rendering of repository
+Updated October 18, 2026. The target is GitHub's rendering of repository
 Markdown files, using the [GFM specification](https://github.github.com/gfm/)
 for syntax. This inventory distinguishes deliberate Viem presentation choices
 from deferred work. It does not claim complete GFM conformance. Parsing and
@@ -73,6 +73,13 @@ separately in [BUGS.md](BUGS.md).
   Preview blocks highlight specified languages with the Code syntax system and
   offer a native language selector. None retains the Code Block style. New
   blocks inherit the preceding language or, without a preceding block, the next.
+- **YAML front matter:** document-leading `---` delimiter pairs enclose an
+  editable literal Code Block with YAML highlighting. Preview hides the
+  delimiters and shows the fixed label `front matter` with a disabled language
+  picker. Comments, indentation, quoting and original source bytes are
+  preserved. Incomplete YAML remains literal metadata; unclosed or nonleading
+  pairs retain ordinary Markdown parsing. Front matter is not a language-picker
+  choice and does not supply the inherited language for new code blocks.
 - **Headings and thematic breaks:** Setext underlines, optional closing ATX
   markers and horizontal rules, including the relevant block precedence.
 - **Strikethrough:** GFM single/double-tilde spans use the generated
@@ -167,6 +174,10 @@ Markdown caret, deletion, replacement, formatting and layout audits.
    GitHub's cmark-gfm decodes them as the C1 control code points. The current
    behavior is covered by a test, so this is a deliberate choice to confirm
    or revisit.
+12. **YAML front-matter presentation.** Viem deliberately shows the literal
+   YAML body as a code block instead of GitHub's metadata table. Preview does
+   not create front matter or convert other code blocks into it; author the
+   delimiters in Code mode. Its contents have no effect on editor settings.
 
 ## P3 — unchanged and not implemented in this pass
 
@@ -184,10 +195,6 @@ Markdown caret, deletion, replacement, formatting and layout audits.
    GitHub itself
    [does not create issue/PR reference autolinks in repository files](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls),
    so those are outside this repository-Markdown compatibility target.
-12. **YAML front matter.** GitHub renders valid YAML front matter as a metadata
-   table. Viem has no front-matter recognition: for example,
-   `---\ntitle: Example\n---` becomes a thematic break followed by a Setext
-   H2. More complex metadata follows ordinary Markdown block parsing.
 13. **Collapsible sections.** `<details>` and `<summary>` render as flat
    text, with the summary and body always visible and no disclosure control.
 14. **HTML alignment attributes.** `align` on passive HTML is ignored, for

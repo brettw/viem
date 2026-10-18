@@ -431,7 +431,7 @@ impl Document {
         // Only a whole-document selection copies the whole source; a part
         // reads and interprets just the source lines around it.
         let source_bytes = if range == (0..self.projection().text_tree().byte_len()) {
-            self.source_bytes()
+            clipboard_whole_source(self)?
         } else if range.is_empty() {
             Vec::new()
         } else {
@@ -723,6 +723,7 @@ impl Document {
             .map_or(source_runs[0].start, |plan| plan.insertion);
         let insertion_index = plan.as_ref().map_or(Some(0), |plan| plan.insertion_run());
         let preserved = |range: Range<usize>| -> Result<Vec<u8>, DocumentError> {
+            if range.is_empty() { return Ok(Vec::new()); }
             let text = self
                 .projection()
                 .text_tree()
@@ -765,6 +766,27 @@ impl Document {
                 .collect::<Vec<_>>();
             if insertion_index.is_none() {
                 patches.push(SourcePatch::primary(insertion..insertion, replacement));
+            }
+            let bom = self.encoding().bom_bytes();
+            let artifact_has_bom = !bom.is_empty() && patches[0].replacement.starts_with(bom);
+            if whole && artifact_has_bom != self.state().has_bom {
+                // This source is a complete copied artifact: its leading BOM
+                // is metadata, not inserted U+FEFF content. Decode it fully so
+                // regional origins cannot retain the old artifact's BOM extent.
+                self.prevent_accidental_front_matter(&mut patches)?;
+                let source = apply_source_patches(&self.state().source, &patches)?;
+                let candidate = self.build_verified_candidate(
+                    source, self.file_format(), self.file_format_origin(), Revision(self.next_revision),
+                    CandidateVerification {
+                        expected_text: text.to_owned(),
+                        expected_hard_breaks: Some(&export.hard_breaks),
+                        mismatch_error: DocumentError::VerificationFailed,
+                    },
+                )?;
+                let prepared = self.prepare_reprojected_source_candidate(
+                    patches, candidate, ModelChangeKind::TextEdits,
+                )?;
+                return verify_styles(prepared, &export, range.clone(), whole, self);
             }
             self.prepare_text_edits_with_patches(
                 vec![TextEdit::new(range.clone(), text)],
@@ -1250,6 +1272,84 @@ fn source_hull(document: &Document, range: &Range<usize>) -> Result<Range<usize>
         .ok_or(DocumentError::AmbiguousProjection)
 }
 
+/// Metadata is a document envelope rather than a portable authoring style.
+/// A Preview copy carries the same literal body in ordinary YAML code fences;
+/// source-view copies continue to carry the exact source artifact.
+fn clipboard_whole_source(document: &Document) -> Result<Vec<u8>, DocumentError> {
+    let mut bytes = document.source_bytes();
+    if !document.format().is_markdown() { return Ok(bytes); }
+    let Some(block) = document.projection().blocks_for_region(&(0..0)).into_iter()
+        .find(|block| block.front_matter) else { return Ok(bytes); };
+    let body = document.projection().text_tree().slice(block.range.clone())
+        .map_err(DocumentError::FormattedTextStorage)?;
+    let marker = code_fence_marker(&body);
+    let fence = super::super::markdown_code::fenced_source(document, &block)?
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let closing = fence.closing.ok_or(DocumentError::AmbiguousProjection)?;
+    let closing_end = fence.closing_content_end.ok_or(DocumentError::AmbiguousProjection)?;
+    let opening_end = document.physical_line_at_source(fence.opening.start)?.content_range.end;
+    bytes.splice(closing.start..closing_end, document.encoding().encode_fragment(&marker)?);
+    bytes.splice(fence.opening.start..opening_end, document.encoding().encode_fragment(&format!("{marker}yaml"))?);
+    Ok(bytes)
+}
+
+fn code_fence_marker(body: &str) -> String {
+    "`".repeat(body.split(|ch| ch != '`').map(str::len).max().unwrap_or(0).max(2) + 1)
+}
+
+fn selected_front_matter_source(
+    document: &Document,
+    range: &Range<usize>,
+    blocks: bool,
+) -> Result<Option<Vec<u8>>, DocumentError> {
+    if !document.format().is_markdown() || range.is_empty() { return Ok(None); }
+    let Some(block) = document.projection().blocks_for_region(range).into_iter().find(|block|
+        block.front_matter && block.range.start <= range.start
+            && (range.start < block.range.end || block.range.is_empty()))
+    else { return Ok(None); };
+    if range.end > block.range.end {
+        // A selection can leave the metadata owner and continue into prose.
+        // Balance its code prefix and replace only the copied closing marker;
+        // ordinary selection handling retains the following prose's scopes.
+        let hull = source_hull(document, range)?;
+        let band = selected_source_band(document, range, &hull)?;
+        let mut copied = selected_markdown_source(document, range, false, hull.clone(), band)?;
+        let fence = super::super::markdown_code::fenced_source(document, &block)?
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let closing = fence.closing.ok_or(DocumentError::AmbiguousProjection)?;
+        let closing_end = fence.closing_content_end.ok_or(DocumentError::AmbiguousProjection)?;
+        let visible = document.projection().text_tree().slice(range.start..block.range.end)
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let marker = code_fence_marker(&visible);
+        let start = closing.start.checked_sub(hull.start).ok_or(DocumentError::AmbiguousProjection)?;
+        let end = closing_end.checked_sub(hull.start).ok_or(DocumentError::AmbiguousProjection)?;
+        if end > copied.len() { return Err(DocumentError::AmbiguousProjection); }
+        copied.splice(start..end, document.encoding().encode_fragment(&marker)?);
+        let mut result = document.encoding().encode_fragment(&format!("{marker}yaml{}", document.file_format().spelling()))?;
+        result.extend(copied);
+        return Ok(Some(result));
+    }
+    let visible = document.projection().text_tree().slice(range.clone())
+        .map_err(DocumentError::FormattedTextStorage)?;
+    let source = source_hull(document, range)?;
+    let body = document.state().source.bytes_in(source).ok_or(DocumentError::AmbiguousProjection)?;
+    let (opening, closing) = if blocks || visible.contains('\n') {
+        let marker = code_fence_marker(&visible);
+        let ending = document.file_format().spelling();
+        (format!("{marker}yaml{ending}"), format!("{ending}{marker}"))
+    } else {
+        let marker = "`".repeat(visible.split(|ch| ch != '`').map(str::len).max().unwrap_or(0) + 1);
+        let padding = if visible.starts_with('`') || visible.ends_with('`')
+            || visible.starts_with(' ') && visible.ends_with(' ') && !visible.trim().is_empty()
+        { " " } else { "" };
+        (format!("{marker}{padding}"), format!("{padding}{marker}"))
+    };
+    let mut result = document.encoding().encode_fragment(&opening)?;
+    result.extend(body);
+    result.extend(document.encoding().encode_fragment(&closing)?);
+    Ok(Some(result))
+}
+
 fn selected_source(
     document: &Document,
     range: &Range<usize>,
@@ -1257,6 +1357,9 @@ fn selected_source(
 ) -> Result<Vec<u8>, DocumentError> {
     if range.is_empty() {
         return Ok(Vec::new());
+    }
+    if let Some(source) = selected_front_matter_source(document, range, blocks)? {
+        return Ok(source);
     }
     let hull = source_hull(document, range)?;
     let bytes = |range: Range<usize>| document.state().source.bytes_in(range)
@@ -1301,8 +1404,10 @@ fn selected_markdown_source(
     let input = super::super::line_endings::normalize(&decoded, document.file_format());
     let builder = super::super::rich_text::Builder::new(&input, Revision(0));
     if blocks {
-        let syntax = super::super::markdown_syntax::Blocks::parse(
-            &super::super::markdown_syntax::grammar_text(&input)).to_source(&input);
+        let syntax = super::super::markdown_syntax::Blocks::parse_with_start(
+            &super::super::markdown_syntax::grammar_text(&input),
+            input.source_at(0) == document.projection().source_content_start(),
+        ).to_source(&input);
         if let Some(owner) = document.projection().blocks_for_region(range).iter()
             .find(|block| block.range == *range && matches!(block.kind, super::super::BlockKind::Heading(_))) {
             if let Some(heading) = syntax.blocks.iter().find(|heading|

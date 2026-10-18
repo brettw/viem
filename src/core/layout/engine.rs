@@ -390,7 +390,7 @@ pub enum DecorationKind {
     ThematicBreak,
     BlockBackground,
     BlockBorder,
-    CodeLanguage,
+    CodeLanguage { picker_disabled: bool },
 }
 
 /// Drawable block furniture. It has no formatted text range or caret stops.
@@ -506,7 +506,7 @@ impl VisualRow {
             .chain(
                 self.decorations
                     .iter()
-                    .filter(|decoration| decoration.kind != DecorationKind::CodeLanguage)
+                    .filter(|decoration| !matches!(decoration.kind, DecorationKind::CodeLanguage { .. }))
                     .map(|decoration| decoration.ink_bounds),
             );
         let mut bounds = ink.next()?;
@@ -3697,7 +3697,7 @@ fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
     // absolute right edge must not acquire the text content box's trailing
     // inset again, or fitting padded blocks create horizontal overflow.
     let decoration_right = row.decorations.iter()
-        .filter(|item| !matches!(item.kind, DecorationKind::Text | DecorationKind::CodeLanguage))
+        .filter(|item| !matches!(item.kind, DecorationKind::Text | DecorationKind::CodeLanguage { .. }))
         .flat_map(|item| [item.x + item.advance, item.ink_bounds.x + item.ink_bounds.width])
         .fold(viewport_width, f32::max);
     if let Some(cell) = &row.table_cell {
@@ -7109,7 +7109,7 @@ fn decorate_block_row_with(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle
             if let Some(language) = &style.language_label {
                 // Native frontends paint this overlay beneath the code glyphs;
                 // its bounds never reserve space in the normal-flow box.
-                let text = format!("{language} ▾");
+                let text = if style.language_picker_disabled { language.clone() } else { format!("{language} ▾") };
                 let inset_x = (4.0 * scale).min(inner_rect.width * 0.5);
                 let inset_y = (2.0 * scale).min(inner_rect.height);
                 let width = (text.chars().count() as f32 * 6.7 * scale).min(220.0 * scale)
@@ -7120,7 +7120,7 @@ fn decorate_block_row_with(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle
                 let mut label_paint = ResolvedTextPaint::default();
                 label_paint.foreground = style.foreground;
                 label_paint.foreground_is_default = style.foreground_is_default;
-                row.decorations.push(PositionedDecoration { kind: DecorationKind::CodeLanguage,
+                row.decorations.push(PositionedDecoration { kind: DecorationKind::CodeLanguage { picker_disabled: style.language_picker_disabled },
                     owner: Some(owner), text, x: bounds.x, advance: width, typographic_bounds: bounds,
                     ink_bounds: bounds, render_run: None, paint: label_paint, font_size: 11.0 * scale });
             }
