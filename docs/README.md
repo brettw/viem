@@ -14,6 +14,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 - [Markdown feature contracts](markdown-feature-contracts.md): early integration coverage and parser/owner boundaries.
 - [macOS development](macos-development.md): build, run, test and startup setup.
 - [Blocking editor](blocking-editor.md): Git integration and document completion.
+- [Filename completion](filename-completion.md): Ex menu traversal, acceptance,
+  and comparisons with zsh.
 - [Split views](window-panes.md): window commands, resize units, and mouse dragging.
 - [Windows development](../src/win/README.md): native build, packaging and tests.
 - [C ABI validation](abi-validation.md): matching the Rust core and native headers.

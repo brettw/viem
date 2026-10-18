@@ -2,6 +2,9 @@ namespace Viem.Windows.Shell;
 
 internal static class ImageLocation
 {
+    // Decode only spaces: %23/%3F delimiters and literal %2520 names retain identity.
+    internal static string Display(string value) => value.Replace("%20", " ", StringComparison.Ordinal);
+
     internal static bool IsWeb(string value) => Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https";
 
     internal static void Validate(string value)
