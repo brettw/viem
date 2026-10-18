@@ -87,60 +87,23 @@ fn native_setup_rejects_unsupported_commands_and_unbounded_recursion_atomically(
             "{source}"
         );
     }
-    let cancelled = AtomicBool::new(true);
-    let mut setup = Setup::new(&VimSetupContext::default(), Some(&cancelled));
-    assert!(setup.evaluate("1").unwrap_err().contains("cancelled"));
-    let deep = format!("{}1{}", "(".repeat(100), ")".repeat(100));
-    assert!(Setup::new(&VimSetupContext::default(), None)
-        .evaluate(&deep)
-        .unwrap_err()
-        .contains("depth"));
+    let cancelled = Arc::new(AtomicBool::new(true));
+    assert!(compile_cancellable("cancel.vim", "let x = 1", VimLoadLimits::default(), cancelled).is_err());
+    let deep = format!("let x = {}1{}", "(".repeat(1000), ")".repeat(1000));
+    assert!(compile("deep.vim", &deep, VimLoadLimits::default()).is_err());
 }
 
 #[test]
-fn native_setup_bounds_expression_values_and_source_before_publication() {
-    let mut setup = Setup::new(&VimSetupContext::default(), None);
-    let huge_expression = "1 ".repeat(40_000);
-    assert!(setup
-        .evaluate(&huge_expression)
-        .unwrap_err()
-        .contains("byte budget"));
-    setup
-        .assign(&format!("s:chunk = '{}'", "x".repeat(8192)))
-        .unwrap();
-    let list = format!(
-        "[{}]",
-        std::iter::repeat_n("s:chunk", 33)
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-    assert!(setup
-        .evaluate(&list)
-        .unwrap_err()
-        .contains("value byte budget"));
+fn native_setup_bounds_source_and_shared_execution_before_publication() {
     let source = "syn keyword Good good\nsyn keyword Other other\n";
-    let limits = VimLoadLimits {
-        source_bytes: 32,
-        ..Default::default()
-    };
-    let errors = compile("oversized.vim", source, limits).unwrap_err();
-    assert!(errors.iter().any(|d| d.message.contains("budget")));
-    // Replacing one small binding repeatedly still observes the shared setup
-    // declaration budget; entering another script scope cannot reset it.
-    let mut setup = Setup::new(&VimSetupContext::default(), None);
-    let declaration = format!("s:value = '{}'", "x".repeat(8192));
-    let mut exhausted = false;
-    for _ in 0..300 {
-        let outer = setup.begin_script();
-        let result = setup.assign(&declaration);
-        setup.end_script(outer);
-        if let Err(error) = result {
-            assert!(error.contains("aggregate storage"), "{error}");
-            exhausted = true;
-            break;
-        }
-    }
-    assert!(exhausted);
+    let limits = VimLoadLimits { source_bytes: 32, ..Default::default() };
+    assert!(compile("oversized.vim", source, limits).unwrap_err().iter().any(|d|d.message.contains("budget")));
+    let mut loader = Loader::new(VimLoadLimits::default(), None);
+    let mut rt = loader.new_script_runtime();
+    rt.set_fuel(100);
+    loader.script_runtime = Some(rt);
+    loader.source("loop.vim", "while 1\nlet x = 1\nendwhile");
+    assert!(loader.finish().unwrap_err().iter().any(|d|d.message.contains("budget")));
 }
 
 #[test]
@@ -429,7 +392,7 @@ fn recursive_includes_use_guarded_setup_state_and_stay_confined() {
         super::directory(&directory, "cycle", VimLoadLimits::default())
             .unwrap_err()
             .iter()
-            .any(|e| e.message.contains("cyclic"))
+            .any(|e| e.message.contains("budget"))
     );
     std::fs::write(
         directory.join("child/base.vim"),

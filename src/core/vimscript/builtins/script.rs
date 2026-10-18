@@ -283,7 +283,7 @@ pub(crate) fn exists(rt: &mut Runtime, host: &mut dyn ScriptHost, query: &str) -
         if name.is_empty() {
             return Ok(0);
         }
-        if let Ok(Value::Funcref(_)) = rt.get_variable(host, name.as_bytes()) {
+        if let Ok(Value::Funcref(_)) = rt.lookup_variable(host, name.as_bytes(), false) {
             return Ok(1);
         }
         return Ok(rt.function_exists(host, name.as_bytes()) as i64);
@@ -328,7 +328,7 @@ pub(crate) fn exists(rt: &mut Runtime, host: &mut dyn ScriptHost, query: &str) -
             if name.is_empty() {
                 return Ok(false);
             }
-            let value = match eval.rt.get_variable(eval.host, &name) {
+            let value = match eval.rt.lookup_variable(eval.host, &name, false) {
                 Ok(value) => value,
                 Err(_) => return Ok(false),
             };

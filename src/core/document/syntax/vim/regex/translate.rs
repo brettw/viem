@@ -182,9 +182,8 @@ pub(super) fn translate(source: &str, keyword: &super::VimKeyword) -> Result<Tra
                 }
                 _ => return Err("invalid Vim postfix assertion".into()),
             };
-            if limit.is_some() && !matches!(kind, AssertionKind::Behind { .. }) {
-                return Err("byte limits apply only to Vim lookbehind assertions".into());
-            }
+            // Vim accepts the numeric modifier on every postfix assertion;
+            // only lookbehind uses it to limit the search window.
             let body = t.regex.split_off(begin);
             let id = t.specials.len();
             t.specials.push(Special::Assertion(kind));

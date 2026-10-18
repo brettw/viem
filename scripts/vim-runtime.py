@@ -17,6 +17,8 @@ import unicodedata
 
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets" / "vim"
+# Explicit syntax dependency closure, never the host's plugin/autoload tree.
+SYNTAX_AUTOLOAD = ("ada", "freebasic", "modula2")
 
 
 def inventory(runtime):
@@ -95,6 +97,11 @@ def import_runtime(source, version, assets=ASSETS):
         runtime.mkdir()
         shutil.copyfile(source / "LICENSE", runtime / "LICENSE")
         shutil.copytree(source / "syntax", runtime / "syntax", symlinks=True)
+        for name in SYNTAX_AUTOLOAD:
+            if (source / "syntax" / f"{name}.vim").is_file():
+                (runtime / "autoload").mkdir(exist_ok=True)
+                shutil.copyfile(source / "autoload" / f"{name}.vim",
+                                runtime / "autoload" / f"{name}.vim")
         files = inventory(runtime)
         manifest = {
             "version": 1,

@@ -7,6 +7,7 @@ use super::{
 mod colors;
 mod commands;
 mod setup;
+mod script;
 #[cfg(test)]
 mod tests;
 pub(super) use colors::colorscheme;
@@ -26,28 +27,28 @@ struct Loader<'a> {
     limits: VimLoadLimits,
     errors: Vec<VimDiagnostic>,
     root: Option<PathBuf>,
-    active: BTreeSet<(PathBuf, u64)>,
     bytes: usize,
     files: usize,
     compiled_bytes: usize,
     case_ignore: bool,
     cancel: Option<&'a AtomicBool>,
     setup: Setup<'a>,
-    command_depth: usize,
-    expanded_bytes: usize,
     group_pattern_fuel: usize,
     statement_fuel: usize,
-    statement_depth: usize,
     highlight_definitions: BTreeSet<String>,
     keyword: VimKeyword,
     keyword_option: String,
     syntax_keyword_option: Option<String>,
     current_source: Option<PathBuf>,
-    loop_depth: usize,
     include_stack: Vec<Option<String>>,
     /// Color scheme import evaluates the same bounded setup language into a
     /// highlight table instead of a syntax program.
     colors: Option<colors::ColorSession>,
+    script_runtime: Option<crate::vimscript::Runtime>,
+    script_options: BTreeMap<String, crate::vimscript::Value>,
+    loaded_autoload: BTreeSet<String>,
+    highlight_ids: Vec<String>,
+    script_highlights: super::colorscheme::VimHighlights,
 }
 pub(super) fn compile(
     name: &str,
@@ -154,16 +155,16 @@ pub(super) fn directory_with_reads(
         "ksh" => {
             // Let sh.vim's shebang branches select a precise ksh release when
             // supplied; the default only selects generic KornShell without one.
-            l.setup.assign("g:is_kornshell = 1").map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
+            l.setup.flags.insert("g:is_kornshell".into(), 1);
             "sh"
         }
         "dash" => {
-            l.setup.assign(&format!("b:is_{language} = 1")).map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
+            l.setup.flags.insert(format!("b:is_{language}"), 1);
             "sh"
         }
         "mksh" => {
-            l.setup.assign("b:is_kornshell = 1").map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
-            l.setup.assign("b:is_mksh = 1").map_err(|error| vec![VimDiagnostic::new(language, 0, &error)])?;
+            l.setup.flags.insert("b:is_kornshell".into(), 1);
+            l.setup.flags.insert("b:is_mksh".into(), 1);
             "sh"
         }
         _ => language,
@@ -206,26 +207,26 @@ impl<'a> Loader<'a> {
             limits,
             errors: Vec::new(),
             root,
-            active: BTreeSet::new(),
             bytes: 0,
             files: 0,
             compiled_bytes: 0,
             case_ignore: false,
             cancel: None,
             setup: Setup::new(&VimSetupContext::default(), None),
-            command_depth: 0,
-            expanded_bytes: 0,
             group_pattern_fuel: 1_000_000,
             statement_fuel: 100_000,
-            statement_depth: 0,
             highlight_definitions: BTreeSet::new(),
             keyword: VimKeyword::default(),
             keyword_option: "@,48-57,_,192-255".into(),
             syntax_keyword_option: None,
             current_source: None,
-            loop_depth: 0,
             include_stack: Vec::new(),
             colors: None,
+            script_runtime: None,
+            script_options: BTreeMap::new(),
+            loaded_autoload: BTreeSet::new(),
+            highlight_ids: Vec::new(),
+            script_highlights: super::colorscheme::VimHighlights::syntax_setup(),
         }
     }
     fn err(&mut self, file: &str, line: usize, message: impl AsRef<str>) {
@@ -337,237 +338,13 @@ impl<'a> Loader<'a> {
         }
     }
     fn file(&mut self, name: &str) {
-        if self
-            .cancel
-            .as_ref()
-            .is_some_and(|c| c.load(Ordering::Relaxed))
-        {
-            self.err(name, 0, "syntax compilation cancelled");
-            return;
-        }
-        let Some(root) = self.root.clone() else {
-            self.err(name, 0, "includes require a syntax directory");
-            return;
-        };
-        let relative;
-        let name = if let Some(tail) = name
-            .strip_prefix("<sfile>:p:h/")
-            .or_else(|| name.strip_prefix("<sfile>:h/"))
-        {
-            relative = self
-                .current_source
-                .as_ref()
-                .and_then(|p| p.parent())
-                .unwrap_or(&root)
-                .join(tail)
-                .to_string_lossy()
-                .into_owned();
-            relative.as_str()
-        } else {
-            name
-        };
-        let name = name
-            .strip_prefix("$VIMRUNTIME/syntax/")
-            .or_else(|| name.strip_prefix("syntax/"))
-            .unwrap_or(name);
-        let path = match root.join(name).canonicalize() {
-            Ok(p) => p,
-            Err(e) => {
-                self.err(name, 0, format!("E484: {e}"));
-                return;
-            }
-        };
-        if !path.starts_with(&root) {
-            self.err(name, 0, "include escapes configured syntax directory");
-            return;
-        }
-        let environment = match self.setup.environment_fingerprint() {
-            Ok(value) => value,
-            Err(error) => {
-                self.err(name, 0, error);
-                return;
-            }
-        };
-        let active_key = (path.clone(), environment);
-        if self.active.contains(&active_key) {
-            self.err(name, 0, "cyclic syntax include");
-            return;
-        }
-        if self.files >= self.limits.files {
-            self.err(name, 0, "syntax file budget exceeded");
-            return;
-        }
-        let metadata = match std::fs::metadata(&path) {
-            Ok(m) => m,
-            Err(e) => {
-                self.err(name, 0, format!("E484: {e}"));
-                return;
-            }
-        };
-        if metadata.len() > self.limits.source_bytes.saturating_sub(self.bytes) as u64 {
-            self.err(name, 0, "syntax source byte budget exceeded");
-            return;
-        }
-        let remaining = self.limits.source_bytes.saturating_sub(self.bytes);
-        let mut bytes = Vec::new();
-        let read = std::fs::File::open(&path).and_then(|f| {
-            f.take(remaining.saturating_add(1) as u64)
-                .read_to_end(&mut bytes)
-        });
-        if let Err(e) = read {
-            self.err(name, 0, format!("E484: {e}"));
-            return;
-        }
-        if bytes.len() > remaining {
-            self.err(name, 0, "syntax source byte budget exceeded");
-            return;
-        }
-        let text = match commands::decode_source(&bytes) {
-            Ok(text) => text,
-            Err(error) => {
-                self.err(name, 0, error);
-                return;
-            }
-        };
-        self.bytes = self
-            .bytes
-            .saturating_add(bytes.len().saturating_sub(text.len()));
-        for b in bytes {
-            self.program.generation =
-                (self.program.generation ^ u64::from(b)).wrapping_mul(1099511628211);
-        }
-        self.active.insert(active_key.clone());
-        self.source(&path.display().to_string(), &text);
-        self.active.remove(&active_key);
+        let mut rt = self.new_script_runtime();
+        let result = self.script_file(&mut rt, name);
+        self.finish_script_call(&mut rt, name, result);
+        self.script_runtime = Some(rt);
     }
     fn source(&mut self, file: &str, text: &str) {
-        let scope = self.setup.begin_script();
-        let script_file = self.setup.set_source_file(file);
-        let caller = self.current_source.replace(PathBuf::from(file));
-        self.source_body(file, text);
-        self.current_source = caller;
-        self.setup.set_source_file(&script_file);
-        self.setup.end_script(scope);
-    }
-    fn source_body(&mut self, file: &str, text: &str) {
-        self.bytes = self.bytes.saturating_add(text.len());
-        self.files += 1;
-        if self.bytes > self.limits.source_bytes || self.files > self.limits.files {
-            self.err(file, 0, "syntax load budget exceeded");
-            return;
-        }
-        self.program.source_files.push(file.into());
-        for (i, b) in file.bytes().chain(text.bytes()).enumerate() {
-            if i & 4095 == 0
-                && self
-                    .cancel
-                    .as_ref()
-                    .is_some_and(|c| c.load(Ordering::Relaxed))
-            {
-                self.err(file, 0, "syntax compilation cancelled");
-                return;
-            }
-            self.program.generation =
-                (self.program.generation ^ u64::from(b)).wrapping_mul(1099511628211);
-        }
-        match commands::logical_lines(text) {
-            Ok(lines) => {
-                self.statements(file, &lines);
-            }
-            Err((line, error)) => self.err(file, line, error),
-        }
-    }
-    fn condition(&mut self, s: &str) -> Result<bool, String> {
-        self.setup.evaluate(s)?.truth()
-    }
-    fn command(&mut self, text: &str) -> Result<(), String> {
-        if self.command_depth >= 32 {
-            return Err("syntax command expansion depth budget exceeded".into());
-        }
-        if self
-            .cancel
-            .as_ref()
-            .is_some_and(|c| c.load(Ordering::Relaxed))
-        {
-            return Err("syntax compilation cancelled".into());
-        }
-        self.command_depth += 1;
-        let result = self.command_inner(text);
-        self.command_depth -= 1;
-        result
-    }
-    fn command_inner(&mut self, text: &str) -> Result<(), String> {
-        let (cmd, rest) = word(text)?;
-        if let Some((expanded, scope)) = self.setup.expand_macro(cmd, rest)? {
-            let caller = self.setup.replace_script(scope);
-            let result = self.expanded_command(&expanded);
-            self.setup.end_script(caller);
-            return result;
-        }
-        let forced = cmd.ends_with('!');
-        if self.colors.is_some() {
-            if let Some(result) = self.colorscheme_command(cmd, rest, forced) {
-                return result;
-            }
-        }
-        match commands::command_name(cmd) {
-            "syn" | "sy" | "syntax" => self.syntax(rest),
-            "highlight" => self.highlight(rest, forced),
-            "let" => {
-                if let Some((name, expression)) = rest.split_once('=') {
-                    if matches!(
-                        name.trim(),
-                        "&isk" | "&iskeyword" | "&l:isk" | "&l:iskeyword"
-                    ) {
-                        let value = self.setup.evaluate(expression)?.text()?;
-                        return self.set_buffer_keyword(&value);
-                    }
-                }
-                self.setup.assign(rest)
-            }
-            "set" | "setlocal" => self.set_options(rest),
-            "unlet" | "unlet!" => self.setup.unlet(rest, forced),
-            "com" | "com!" | "command" | "command!" => self.setup.define_macro(rest),
-            "delc" | "delcommand" => self.setup.delete_macro(rest),
-            "exe" | "execute" => {
-                let expanded = self.setup.evaluate_execute(rest)?;
-                self.expanded_command(&expanded)
-            }
-            "runtime" | "runtime!" => {
-                self.runtime(rest, forced)?;
-                Ok(())
-            }
-            "scriptencoding" if matches!(rest, "utf-8" | "utf8" | "") => Ok(()),
-            "call" => {
-                for command in self.setup.call_statement(rest)? {
-                    self.expanded_command(&command)?;
-                }
-                Ok(())
-            }
-            "delfunction" => self.setup.delete_function(rest, forced),
-            "source" => {
-                self.file(rest);
-                Ok(())
-            }
-            _ => Err(format!("unsupported native setup command: {cmd}")),
-        }
-    }
-    fn expanded_command(&mut self, text: &str) -> Result<(), String> {
-        self.expanded_bytes = self.expanded_bytes.saturating_add(text.len());
-        if self.expanded_bytes > self.limits.source_bytes {
-            return Err("syntax command expansion byte budget exceeded".into());
-        }
-        if text.contains(['\n', '\r']) {
-            return Err("multiline syntax command expansion is unsupported".into());
-        }
-        let lines = commands::logical_lines(text).map_err(|(_, message)| message)?;
-        let before = self.errors.len();
-        self.expanded_statements(&lines)?;
-        if self.errors.len() != before {
-            let errors = self.errors.split_off(before);
-            return Err(errors[0].message.clone());
-        }
-        Ok(())
+        self.script_source(file, text);
     }
     fn syntax(&mut self, rest: &str) -> Result<(), String> {
         let (kind, rest) = word(rest)?;
@@ -583,7 +360,6 @@ impl<'a> Loader<'a> {
                 self.program.clusters.clear();
                 self.setup.clear_syntax_cluster(None);
                 self.program.multiline = false;
-                self.setup.unlet("b:current_syntax", true)?;
             } else {
                 for group in rest.split_whitespace() {
                     if let Some(cluster) = group.strip_prefix('@') {
@@ -607,41 +383,17 @@ impl<'a> Loader<'a> {
             };
             return Ok(());
         }
-        if kind == "spell" && matches!(rest, "toplevel" | "notoplevel" | "default") {
+        if kind == "spell" && matches!(rest.trim(), "toplevel" | "notoplevel" | "default") {
             return Ok(());
         }
-        if kind == "conceal" && matches!(rest, "on" | "off") {
+        if kind == "conceal" && matches!(rest.trim(), "on" | "off") {
             return Ok(());
         }
         if kind == "sync" {
             return self.synchronization(rest);
         }
         if kind == "include" {
-            let (first, tail) = word(rest)?;
-            let (cluster, source) = if let Some(name) = first.strip_prefix('@') {
-                validate_groups(&[name.to_owned()])?;
-                (Some(self.program.intern_cluster_name(name)), tail)
-            } else {
-                (None, rest)
-            };
-            if source.is_empty() {
-                return Err("syntax include requires a source file".into());
-            }
-            if let Some(cluster) = &cluster {
-                let groups = self.program.clusters.entry(cluster.clone()).or_default();
-                self.setup.update_syntax_cluster(cluster, groups)?;
-            }
-            self.include_stack.push(cluster);
-            let result = if let Some(patterns) = source.strip_prefix("runtime! ") {
-                self.runtime(patterns, true)
-            } else if let Some(patterns) = source.strip_prefix("runtime ") {
-                self.runtime(patterns, false)
-            } else {
-                self.file(source);
-                Ok(())
-            };
-            self.include_stack.pop();
-            return result;
+            return Err("syntax includes require the script host".into());
         }
 
         let (group, rest) = word(rest)?;
@@ -821,6 +573,24 @@ impl<'a> Loader<'a> {
                 )?)
             }
             "match" => {
+                // A word-delimited union of literal keyword characters can
+                // match at most one distinct word at a position. Partitioning
+                // it preserves ordered-choice and rule-priority semantics,
+                // while keeping every individual NFA within its normal limits.
+                if patterns[0].1.len() > regexlimits.pattern_bytes {
+                    if let Some(chunks) = literal_word_union_chunks(&patterns[0].1, &self.keyword) {
+                        for chunk in chunks {
+                            let pattern = VimPattern::compile_with_keyword(
+                                &chunk, self.case_ignore, regexlimits, &self.keyword,
+                            )?;
+                            validate_pattern_offsets("match", PatternOffsets {
+                                ms: options.ms, ..Default::default()
+                            }, pattern.minimum_chars)?;
+                            self.add_rule(group, RuleKind::Match(pattern), options.clone())?;
+                        }
+                        return Ok(());
+                    }
+                }
                 let p = VimPattern::compile_with_keyword(
                     &patterns[0].1,
                     self.case_ignore,
@@ -1166,6 +936,30 @@ fn cluster_cycle(
     }
     result
 }
+fn literal_word_union_chunks(source: &str, keyword: &VimKeyword) -> Option<Vec<String>> {
+    let (prefix, body) = source.split_once("\\<\\%(")?;
+    if !prefix.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'#')) {
+        return None;
+    }
+    let body = body.strip_suffix("\\)\\>")?;
+    let words = body.split("\\|").collect::<Vec<_>>();
+    if words.iter().any(|word| word.is_empty() || !word.chars().all(|c|
+        c.is_ascii() && (c.is_alphanumeric() || c == '_') && keyword.contains(c))) {
+        return None;
+    }
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    for word in words {
+        if !current.is_empty() && prefix.len() + current.len() + word.len() + 16 > 4096 {
+            chunks.push(format!("{prefix}\\<\\%({current}\\)\\>"));
+            current.clear();
+        }
+        if !current.is_empty() { current.push_str("\\|"); }
+        current.push_str(word);
+    }
+    chunks.push(format!("{prefix}\\<\\%({current}\\)\\>"));
+    Some(chunks)
+}
 fn validate_groups(groups: &[String]) -> Result<(), String> {
     if groups.iter().any(|g| {
         g.is_empty()
@@ -1255,71 +1049,9 @@ fn delimited(s: &str) -> Result<(String, &str), String> {
     if delim.is_alphanumeric() || delim.is_whitespace() || delim == '\\' {
         return Err("invalid pattern delimiter".into());
     }
-    let mut escaped = false;
-    let mut magic_brackets = true;
-    let mut multiline_class = false;
-    let mut indices = s.char_indices().skip(1).peekable();
-    while let Some((i, c)) = indices.next() {
-        if c == delim && !escaped {
-            return Ok((s[delim.len_utf8()..i].to_owned(), &s[i + c.len_utf8()..]));
-        }
-        if c == '[' && (escaped != magic_brackets || multiline_class) {
-            if let Some(end) = bracket_end(s, i) {
-                while indices.peek().is_some_and(|(i, _)| *i <= end) {
-                    indices.next();
-                }
-                escaped = false;
-                multiline_class = false;
-                continue;
-            }
-        }
-        if escaped {
-            match c {
-                'm' | 'v' => magic_brackets = true,
-                'M' | 'V' => magic_brackets = false,
-                _ => {}
-            }
-        }
-        multiline_class = escaped && c == '_';
-        if c == '\\' {
-            escaped = !escaped;
-        } else {
-            escaped = false;
-        }
-    }
-    Err("unterminated syntax pattern".into())
-}
-fn bracket_end(source: &str, start: usize) -> Option<usize> {
-    let mut chars = source[start + 1..].char_indices().peekable();
-    if chars.peek().is_some_and(|(_, c)| *c == '^') {
-        chars.next();
-    }
-    if chars.peek().is_some_and(|(_, c)| *c == ']') {
-        chars.next();
-    }
-    while let Some((at, ch)) = chars.next() {
-        if ch == '\\' {
-            chars.next();
-            continue;
-        }
-        if ch == ']' {
-            return Some(start + 1 + at);
-        }
-        if ch == '['
-            && chars
-                .peek()
-                .is_some_and(|(_, c)| matches!(c, ':' | '.' | '='))
-        {
-            let (_, marker) = chars.next()?;
-            while let Some((_, ch)) = chars.next() {
-                if ch == marker && chars.peek().is_some_and(|(_, c)| *c == ']') {
-                    chars.next();
-                    break;
-                }
-            }
-        }
-    }
-    None
+    let end = crate::vimscript::regex::delimited_pattern_end(s.as_bytes())
+        .ok_or("unterminated syntax pattern")?;
+    Ok((s[delim.len_utf8()..end-delim.len_utf8()].to_owned(), &s[end..]))
 }
 fn attached_offsets(s: &str) -> Result<(PatternOffsets, &str), String> {
     if s.is_empty()
@@ -1421,8 +1153,9 @@ fn parse_option(s: &str, o: &mut RuleOptions) -> Result<bool, String> {
         "conceal" | "concealends" => {}
         _ => {
             if let Some(v) = s.strip_prefix("cchar=") {
-                if v.chars().count() != 1 || v.chars().any(char::is_control) {
-                    return Err("invalid syntax conceal character".into());
+                use unicode_segmentation::UnicodeSegmentation;
+                if v.graphemes(true).count() != 1 || v.chars().any(char::is_control) {
+                    return Err(format!("invalid syntax conceal character: {v:?}"));
                 }
             } else if let Some(v) = s.strip_prefix("contains=") {
                 o.contains = v
@@ -1485,6 +1218,14 @@ fn parse_option(s: &str, o: &mut RuleOptions) -> Result<bool, String> {
 }
 
 fn option_word(source: &str) -> Result<(String, &str), String> {
+    // A space is a valid cchar, and may be the last byte in a declaration.
+    // Consume it before the ordinary whitespace-delimited option scanner.
+    let source = source.trim_start();
+    if source.get(..6).is_some_and(|prefix| prefix.eq_ignore_ascii_case("cchar="))
+        && source.as_bytes().get(6) == Some(&b' ')
+    {
+        return Ok((source[..7].to_owned(), source[7..].trim_start()));
+    }
     let (token, mut rest) = word(source)?;
     let mut token = token.to_owned();
     let name = token.split('=').next().unwrap_or("").to_ascii_lowercase();

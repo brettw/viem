@@ -141,6 +141,19 @@ pub(crate) fn run_script(text: &str) -> String {
     host.output
 }
 
+#[test]
+fn locked_variables_can_be_unlet_and_named_calls_allow_whitespace() {
+    let output = run_script("let x = [1]\nlockvar x\nunlet x\nfunction F(x)\nreturn a:x\nendfunction\ncall F (2)\necho exists('x') F (3)\n");
+    assert_eq!(output, "\n0 3");
+    let output = run_script("const x = 1\nunlet x\n");
+    assert!(output.contains("E741:"), "{output}");
+}
+
+#[test]
+fn skipped_expression_commands_keep_quoted_strings_and_bar_boundaries() {
+    assert_eq!(run_script("if 0 | throw \"quoted | bar\" | endif\nif 0 | return \"quoted | bar\" | endif\necho 'done'\n"), "\ndone");
+}
+
 pub(crate) fn run_with(host: &mut MemoryHost, text: &str) -> Runtime {
     let mut rt = Runtime::new(ScriptState::new());
     rt.push_script("test.vim", text.as_bytes()).unwrap();

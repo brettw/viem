@@ -12,7 +12,7 @@ pub use regex::{
 };
 use std::{collections::BTreeMap, ops::Range, path::Path, sync::Arc};
 
-pub const NATIVE_PROFILE_VERSION: u32 = 5;
+pub const NATIVE_PROFILE_VERSION: u32 = 6;
 
 /// Bounded, immutable input available while compiling a syntax program. This
 /// supplies runtime dialect detection without exposing editor commands or

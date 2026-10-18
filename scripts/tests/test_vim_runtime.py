@@ -38,6 +38,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual((self.assets / "README.md").read_bytes(), b"keep provenance instructions")
         self.assertEqual(vim.verify(self.assets), 3)
 
+    def test_import_pins_only_the_syntax_autoload_dependencies(self):
+        (self.source / "autoload").mkdir()
+        for name in vim.SYNTAX_AUTOLOAD:
+            (self.source / "syntax" / f"{name}.vim").write_bytes(b'" owner\n')
+            (self.source / "autoload" / f"{name}.vim").write_bytes(b'" helper \xe9\r\n')
+        (self.source / "autoload" / "unrelated.vim").write_bytes(b'" not a syntax dependency')
+        self.assertEqual(vim.import_runtime(self.source, "fixture", self.assets), 9)
+        self.assertEqual(sorted(p.stem for p in (self.assets / "runtime/autoload").iterdir()),
+                         list(vim.SYNTAX_AUTOLOAD))
+        for name in vim.SYNTAX_AUTOLOAD:
+            self.assertEqual((self.assets / "runtime/autoload" / f"{name}.vim").read_bytes(), b'" helper \xe9\r\n')
+
     def test_verification_rejects_changed_missing_and_unexpected_files(self):
         for change in ["changed", "missing", "unexpected"]:
             with self.subTest(change=change):

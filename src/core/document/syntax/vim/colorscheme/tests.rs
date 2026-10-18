@@ -115,7 +115,7 @@ fn unsupported_statements_are_reported_without_rejecting_the_scheme() {
     assert_eq!(gui(&highlights, "Constant").0, rgb(0xff0000));
     assert_eq!(gui(&highlights, "Comment").0, rgb(0x0000ff));
     let lines = warnings.iter().map(|warning| warning.line).collect::<Vec<_>>();
-    assert_eq!(lines, [2, 3, 4, 5, 6], "{warnings:?}");
+    assert_eq!(lines, [3, 4, 5, 6], "{warnings:?}");
     // Budgets still end evaluation.
     let looping = b"let s:n = 0\nwhile 1\n  let s:n += 1\nendwhile\n";
     assert!(evaluate_colorscheme("loop.vim", looping).is_err());

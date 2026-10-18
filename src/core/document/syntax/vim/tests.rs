@@ -410,7 +410,7 @@ fn inactive_throw_messages_preserve_following_inline_endif() {
     assert!(
         errors.iter().any(|error| error
             .message
-            .contains("unsupported native setup command: throw")),
+            .contains("uncaught exception: old | version")),
         "{errors:?}"
     );
     assert!(

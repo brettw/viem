@@ -1,10 +1,12 @@
-# Native Vim syntax profile 5
+# Native Vim syntax profile 6
 
-The native compiler evaluates the bounded setup language below and emits ordered
-syntax declarations. Compilation is atomic. An active unsupported command, option, pattern, include,
-or nonprogressing include cycle produces a file/line diagnostic and rejects the program.
-The directory loader confines transitive includes to the selected syntax root.
-Program generations incorporate transitive file names and contents.
+The native compiler hosts the shared [`vimscript`](../../../vimscript/mod.rs)
+interpreter. Editor automation, syntax setup, and color schemes have one value,
+expression, function, command and control-flow implementation. Their hosts differ
+in permitted effects and queries. Syntax compilation publishes an ordered
+program atomically; an active unsupported operation or exhausted budget rejects
+it with diagnostics. Includes and autoload helpers stay in the pinned runtime,
+and generations incorporate transitive file names and original contents.
 
 The bundled MacVim 9.1.1887 snapshot in `assets/vim/runtime/syntax` supplies
 portable runtime fixtures, including `conf.vim`, `dosini.vim`, and nested
@@ -36,49 +38,28 @@ end at that boundary still closes the region immediately.
 Transparent children retain the containing syntax state's highlight when they
 extend past a parent's match or highlight-offset boundary.
 
-The compiler accepts line continuations, trailing comments, bar-separated Ex
-statements, common command abbreviations, literal heredocs, and the usual
-`b:current_syntax` guard. Bounded `if`/`elseif`, `for`/`while`, `break`/`continue`,
-`finish`, variable assignment, `unlet`, and saved/restored `cpoptions` support
-runtime setup. A `vim9script` header enables hash comments and simple `var`,
-`const`, and bare assignments; this does not implement a general Vim9 runtime.
-Script-local variables/functions retain separate scopes for included files.
-Global helper functions retain their defining script's scope when called later.
-Literal `source`, `<sfile>` relative paths, `runtime` wildcards, and syntax
-includes stay confined to the selected root. A guarded recursive include may
-reenter with different shared setup state; a repeated path/state is rejected.
-All recursion also observes the aggregate file and instruction limits.
+Script lexing, continuations, literal/interpolated heredocs, expression and
+command evaluation, reference-valued collections, dictionary functions, lambdas,
+user commands, and `try`/`catch`/`finally` use the shared interpreter. Imports run
+synchronously in that runtime with their own script scopes. Generated declarations
+are applied before the next query; `execute()` uses the same host and captures
+its output. It cannot bypass confinement. Unused editor callbacks can be retained
+in private script state, but an unsupported effect cannot run, including through
+`silent!` or an exception handler. Supported Vim errors remain catchable.
 
-Setup expressions include scalar/list/dictionary values, indexing, Boolean and
-arithmetic operators, comparisons, concatenation, ternaries, and bounded string
-and collection helpers. Syntax-generating functions and command wrappers emit
-only declarations accepted by the same loader. Function bodies are stored as
-bounded data and evaluated only when called during compilation; unused editor
-callbacks never run. Helper-generated output is applied in order after the helper
-returns and is restricted to syntax/highlight declarations. Generated setup
-mutations, includes, control flow, and `hlexists()` after pending output are
-rejected because they would require immediate feedback during evaluation.
-Active unsupported editor, process, file-writing, or network
-commands still reject the whole program. Runtime `try` handlers can handle
-supported setup errors; they cannot conceal a compatibility failure.
+The shared source reader has an explicit syntax profile for the declaration-only
+Vim9 surface used in these resources. It lowers simple `var`/assignments and a
+parameterless typed helper to shared execution; it does not provide general Vim9
+support. General typed signatures, imports, and Vim9 scope/type behavior remain
+compatibility work and must not be reported as supported.
 
-Scalar `is`/`isnot` comparisons preserve types and support `#`/`?` case modifiers,
-including the bundled YAML schema selection. Collection identity remains
-unsupported because setup collections do not retain Vim reference identities.
-YAML provider and coordinator regressions cover keys, scalars, comments and
-quoted strings in standalone files, Markdown front matter and fenced blocks.
-
-Setup functions also support bounded `try`/`catch`/`finally`, preserving returns,
-loop flow and the enclosing exception state. Only modeled Vim setup errors are
-catchable; unsupported operations, cancellation and exhausted budgets remain
-fatal. The `execute()` expression accepts only a read-only `syntax list @cluster`
-query against preceding declarations, returning cluster names and membership.
-Unknown clusters raise E392, as used by the bundled Zsh containment helper.
-Setup functions also accept the equivalent read-only `syntax list @cluster`
-statement, optionally prefixed by `silent`, as used by Scala's containment helper.
-The wrapper does not grant any other Ex-command capability.
-Queries after deferred generated declarations are rejected to avoid stale reads;
-`execute()` never provides arbitrary Ex execution or editor access.
+The confined host supplies syntax/highlight declarations, private options,
+immutable buffer queries, and bundled resource resolution. Autoload variables
+and functions use the same scopes and identities; `exists()` does not trigger
+a load. The pinned Ada, FreeBASIC, and Modula-2 helpers are part of the runtime
+manifest and packaging verifier. Syntax events resolve their language resources;
+they do not load the host's plugins or filetype scripts. Matchit and fold requests
+carry no highlighting effects and do not change editor state.
 
 Highlight group and cluster identities are case-insensitive and retain their
 first spelling. `hlexists()` observes native default highlight identities and
@@ -90,6 +71,9 @@ clearing is ignored as in Vim, all new rules are contained, and each include
 cluster receives its immediate top-level declarations, including sync group names.
 Nested includes retain their own cluster ownership. Large inventories split
 into equivalent bounded keyword rules, without increasing per-pattern limits.
+Long word-delimited literal unions may also split when every alternative consists
+of keyword characters: at a given position only one distinct word can match, so
+partitioning cannot change ordered choice. Other oversized patterns still fail.
 Concrete `highlight` attributes establish named-group/link precedence; visual
 properties come from the global Code stylesheet.
 
@@ -103,13 +87,15 @@ line ending does not manufacture an extra Vim buffer line; preceding explicit
 blank lines remain. Each queried line is limited to 64 KiB, with at most 256
 queried lines and 256 KiB of retained query data per compilation.
 
-Setup `search()` uses a frozen origin at the first source byte and requires the
-non-moving `n` flag. It supports `c`, `w`, `W`, and a stop line without changing
-the user's caret. Each snapshot search has a 1 MiB inspected-prefix limit,
-one million matcher instructions, a maximum 100 ms deadline, and cancellation;
-all calls also share the compilation instruction budget. Exhaustion rejects the
-program with a diagnostic rather than returning a guessed no-match result.
-These queries neither alter source nor provide general editor access.
+Setup has a private query cursor, initially at line 1, column 1. Cursor helpers
+and `search()` operate only on that scratch view of the immutable snapshot;
+they cannot move the user's caret or change source. Supported search flags are
+`c`, `n`, `w`, and `W`, with optional stop line and timeout. Each snapshot search
+has a 1 MiB inspected-prefix limit, one million matcher instructions, a maximum
+100 ms deadline, and cancellation. Queries record their actual dependencies,
+including misses and clamping. Exhaustion rejects the program rather than
+returning a guessed no-match result. This scratch cursor is **not** an
+implementation of the view-dependent regex assertion `\%#`.
 
 Workers track queried line values, line counts, and inspected search prefixes,
 including dependencies of failed queries. Setup and cached failures survive

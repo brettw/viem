@@ -15,6 +15,28 @@ fn assert_style(result: &SyntaxResult, text: &str, token: &str, style: &str) {
 }
 
 #[test]
+fn injected_vim_availability_uses_resources_then_the_actual_child_context() {
+    let _registry = treesitter::package_registry_test_guard();
+    let fixture = Fixture::new("contextual", "if line('$') == 1 && getline(1) =~# 'first'\nsyn keyword First first\nelse\nsyn keyword Second second\nendif\n");
+    let mut provider = BackendProvider::default();
+    for (revision, body, style) in [(1,"first","First"),(2,"second","Second")] {
+        let text = format!("```contextual\n{body}\n```\n");
+        let mut req = request(&text, "markdown", revision);
+        req.configuration.vim_directory = fixture.0.to_string_lossy().into_owned();
+        let result = finish(&mut provider, &req);
+        assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_style(&result, &text, body, style);
+        let fresh = finish(&mut BackendProvider::default(), &req);
+        assert_eq!(result.runs, fresh.runs);
+    }
+    let mut cache = BTreeMap::new();
+    assert!(!injectable_language(&mut cache, fixture.0.to_str().unwrap(), "../contextual", &AtomicBool::new(false)));
+    assert!(!injectable_language(&mut cache, fixture.0.to_str().unwrap(), "contextual", &AtomicBool::new(true)));
+    assert!(!cache.contains_key("contextual"));
+}
+
+#[test]
 fn markdown_blocks_inline_tables_and_fenced_languages_share_literal_coordinates() {
     let _registry = treesitter::package_registry_test_guard();
     let text = concat!(

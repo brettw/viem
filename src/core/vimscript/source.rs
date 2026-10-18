@@ -77,9 +77,96 @@ pub fn script_lines(text: &[u8]) -> Vec<SourceLine> {
     lines
 }
 
+/// The declaration-only Vim9 surface used by bundled syntax files. Execution
+/// still uses the shared values, expressions, functions and control frames.
+/// This is deliberately an explicit host profile, not general Vim9 support for
+/// editor configuration. Legacy scripts always retain the ordinary lexer,
+/// including heredocs, command bodies, comments and physical line numbers.
+pub(crate) fn syntax_script_lines(text: &[u8]) -> Result<(Vec<SourceLine>, bool), (usize, String)> {
+    let mut vim9 = false;
+    let mut in_def = false;
+    let mut heredoc: Option<(Vec<u8>, bool)> = None;
+    let mut result = Vec::new();
+    for mut line in script_lines(text) {
+        if let Some((marker, trim)) = &heredoc {
+            let raw = line.text.as_bytes();
+            let start = if *trim {raw.iter().position(|b| !b.is_ascii_whitespace()).unwrap_or(raw.len())} else {0};
+            if &raw[start..] == marker {heredoc = None;}
+            result.push(line);
+            continue;
+        }
+        heredoc = heredoc_marker(line.text.as_bytes());
+        let original = line.text.to_str_lossy();
+        let mut source = original.trim_start().trim_start_matches(':').trim_start();
+        if source == "vim9script" || source.starts_with("vim9script ") {
+            vim9 = true;
+            continue;
+        }
+        if (vim9 || in_def) && source.starts_with('#') {
+            continue;
+        }
+        if vim9 || in_def {source = vim9_comment_prefix(source);}
+        let lowered = if let Some(signature) = source.strip_prefix("def ") {
+            let Some((name, returns)) = signature.split_once("()") else {
+                return Err((line.lnum, "unsupported typed syntax helper signature".into()));
+            };
+            if !matches!(returns.trim(), "" | ": void") || in_def {
+                return Err((line.lnum, "unsupported typed syntax helper declaration".into()));
+            }
+            in_def = true;
+            Some(format!("function! {name}()"))
+        } else if source == "enddef" && in_def {
+            in_def = false;
+            Some("endfunction".into())
+        } else if vim9 || in_def {
+            if let Some(rest) = source.strip_prefix("var ") {
+                Some(format!("let {rest}"))
+            } else if let Some((name, rest)) = source.split_once(char::is_whitespace) {
+                if ["=", "+=", "-=", "..="].iter().any(|op|rest.trim_start().starts_with(op)) && name.chars().all(|c|
+                    c.is_alphanumeric() || matches!(c, '_' | ':')) {
+                    Some(format!("let {source}"))
+                } else { None }
+            } else { None }
+        } else { None };
+        let text = lowered.unwrap_or_else(||source.to_owned());
+        // Legacy text retains indentation and literal trailing bytes.
+        if vim9 || in_def || text != source {line.text = text.into();}
+        result.push(line);
+    }
+    Ok((result, vim9))
+}
+
+fn vim9_comment_prefix(source: &str) -> &str {
+    let command=source.split_whitespace().next().unwrap_or("");
+    // Pattern delimiters and keyword payloads are owned by :syntax's lexer.
+    if command.len()>=2 && "syntax".starts_with(command) {return source;}
+    let bytes=source.as_bytes();
+    let mut quote=None;
+    let mut at=0;
+    while at<bytes.len() {
+        let byte=bytes[at];
+        if let Some(delimiter)=quote {
+            if byte==b'\\' && delimiter==b'"' {at+=2;continue;}
+            if byte==delimiter {
+                if delimiter==b'\'' && bytes.get(at+1)==Some(&delimiter) {at+=2;continue;}
+                quote=None;
+            }
+        } else if matches!(byte,b'\''|b'"') {quote=Some(byte);}
+        else if byte==b'#' && at>0 && bytes[at-1].is_ascii_whitespace() {return source[..at].trim_end();}
+        at+=1;
+    }
+    source
+}
+
 /// A heredoc body is physical text: its backslashes and quotes do not
 /// participate in the surrounding script's continuation syntax.
 fn heredoc_marker(line: &[u8]) -> Option<(Vec<u8>, bool)> {
+    // Pattern text (notably :syntax's lookbehind followed by <<) can contain
+    // =<< too. Only assignments introduce a physical heredoc body.
+    let command = line.split(u8::is_ascii_whitespace).find(|word|!word.is_empty())?;
+    let command = command.strip_prefix(b":").unwrap_or(command);
+    if !matches!(command, b"var" | b"final")
+        && !matches!(std::str::from_utf8(command).ok().and_then(super::excmds::lookup), Some("let" | "const")) { return None; }
     let mut at = 0;
     let mut quote = None;
     while at < line.len() {
@@ -418,6 +505,21 @@ mod tests {
         assert_eq!(lines[0].lnum, 1);
         assert_eq!(lines[1].text.as_bytes(), b"echo x");
         assert_eq!(lines[1].lnum, 5);
+    }
+
+    #[test]
+    fn syntax_profile_preserves_heredoc_bodies_and_lowers_helper_comments() {
+        let (lines, _)=syntax_script_lines(b"let text =<< END\ndef Literal()\nvar literal = 1\n# literal\nEND\ndef s:Helper(): void\n var x = 1 # comment\n x += 1 # comment\nenddef\n").unwrap();
+        assert_eq!(lines[1].text.as_bytes(),b"def Literal()");
+        assert_eq!(lines[2].text.as_bytes(),b"var literal = 1");
+        assert_eq!(lines[3].text.as_bytes(),b"# literal");
+        assert_eq!(lines[5].text.as_bytes(),b"function! s:Helper()");
+        assert_eq!(lines[6].text.as_bytes(),b"let x = 1");
+        assert_eq!(lines[7].text.as_bytes(),b"let x += 1");
+        assert_eq!(lines[8].text.as_bytes(),b"endfunction");
+        let lines=script_lines(b"syn region X start=+\\@<=<<+\n  \\ end=/x/\n");
+        assert_eq!(lines.len(),1);
+        assert!(lines[0].text.to_str_lossy().ends_with(" end=/x/"));
     }
 
     #[test]
