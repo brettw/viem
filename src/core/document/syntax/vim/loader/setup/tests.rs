@@ -677,3 +677,28 @@ fn yaml_expression_substitutions_and_slices_stay_bounded() {
         .is_err());
     assert!(setup.evaluate("submatch(0)").is_err());
 }
+
+#[test]
+fn scalar_identity_comparisons_preserve_types_and_case_modifiers() {
+    let mut setup = Setup::new(&VimSetupContext::default(), None);
+    setup.assign("b:yaml_schema = 'core'").unwrap();
+    setup.assign("island = 3").unwrap();
+    for (expression, expected) in [
+        ("b:yaml_schema is# 'core'", 1),
+        ("b:yaml_schema is# \"core\"", 1),
+        ("b:yaml_schema is# 'CORE'", 0),
+        ("b:yaml_schema is? 'CORE'", 1),
+        ("b:yaml_schema isnot# 'CORE'", 1),
+        ("b:yaml_schema isnot? 'CORE'", 0),
+        ("3 is 3 && island isnot 4", 1),
+        ("3 is '3'", 0),
+        ("3 isnot# '3'", 1),
+        ("'x' is 'X'", 0),
+        ("['core'][0] is# b:yaml_schema", 1),
+    ] {
+        assert_eq!(setup.evaluate(expression).unwrap(), Value::Number(expected), "{expression}");
+    }
+    for expression in ["[] is []", "{} isnot# {}"] {
+        assert!(setup.evaluate(expression).unwrap_err().contains("collection identity"));
+    }
+}

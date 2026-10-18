@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn bundled_yaml_highlights_mapping_keys_scalars_and_comments() {
+    let _registry = treesitter::package_registry_test_guard();
+    let text = "name: update-themes\nenabled: true\ncount: 42\ntitle: \"Writer\"\n# settings\n";
+    let mut req = request(text, "yaml", 1);
+    req.configuration.vim_directory =
+        concat!(env!("CARGO_MANIFEST_DIR"), "/assets/vim/runtime/syntax").into();
+    req.configuration.filename = Some("/writing/settings.yaml".into());
+    let mut provider = BackendProvider::default();
+    let result = finish(&mut provider, &req);
+    assert_eq!(result.coverage, Coverage::Exact, "{:?}", result.diagnostics);
+    for (token, style) in [("name", "Identifier"), ("true", "Constant"), ("42", "Number"),
+        ("Writer", "String"), ("# settings", "Comment")] {
+        let start = text.find(token).unwrap();
+        assert!(result.runs.iter().any(|run| run.range.contains(&start) && run.name.as_str() == style),
+            "{token}: {:?}; {:?}", result.runs, result.diagnostics);
+    }
+    let changed = text.replace("update-themes", "updated").replace("true", "false");
+    req.input = request(&changed, "yaml", 2).input;
+    req.range = 0..changed.len();
+    let incremental = finish(&mut provider, &req);
+    let fresh = finish(&mut BackendProvider::default(), &req);
+    assert_eq!(incremental.coverage, Coverage::Exact);
+    assert_eq!(incremental.runs, fresh.runs);
+    assert_eq!(incremental.diagnostics, fresh.diagnostics);
+}
+
+#[test]
 fn bundled_zsh_highlights_shell_options_and_commands() {
     let _registry = treesitter::package_registry_test_guard();
     let text = "autoload -Uz compinit\nsetopt auto_cd\nrepeat 3 do\n  print \"${(U)USER}\"\ndone\n";

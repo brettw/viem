@@ -50,8 +50,13 @@ final class EVStyleColorWell: NSColorWell {
         if window == nil { dismissColorControls() }
     }
 
+    override func viewDidHide() {
+        super.viewDidHide()
+        dismissColorControls()
+    }
+
     @objc func showColorPanel() {
-        guard isEnabled, window != nil else { return }
+        guard isEnabled, window != nil, !isHiddenOrHasHiddenAncestor else { return }
         let panel = NSColorPanel.shared
         // Commit a completed color gesture once, rather than every drag sample.
         panel.isContinuous = false

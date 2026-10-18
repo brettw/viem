@@ -135,6 +135,20 @@ impl Setup<'_> {
             }
             "==" | "==#" => Value::Number(i64::from(equal(&left, &right)?)),
             "!=" | "!=#" => Value::Number(i64::from(!equal(&left, &right)?)),
+            "is" | "is#" | "is?" | "isnot" | "isnot#" | "isnot?" => {
+                // Scalar identity compares types as well as values. Collections
+                // need reference identities, which setup values do not retain.
+                let same = match (&left, &right) {
+                    (Value::Number(left), Value::Number(right)) => left == right,
+                    (Value::Text(left), Value::Text(right)) => {
+                        if operator.ends_with('?') { left.to_lowercase() == right.to_lowercase() }
+                        else { left == right }
+                    }
+                    (Value::Number(_), Value::Text(_)) | (Value::Text(_), Value::Number(_)) => false,
+                    _ => return Err("syntax setup collection identity is unsupported".into()),
+                };
+                Value::Number(i64::from(same ^ operator.starts_with("isnot")))
+            }
             "==?" | "!=?" => {
                 let same = match (&left, &right) {
                     (Value::Text(left), Value::Text(right)) => {

@@ -738,7 +738,7 @@ fn same_line_assertions_preserve_local_repair_and_bounded_lookbehind() {
         ),
         VimRegexProgress::Complete(Some(_))
     ));
-    for source in [r"[\n]", r"[^x\n]", r"a\_s\+b", r"\%(a\n\)\@<=b"] {
+    for source in [r"[\n]", r"\_[^x\n]", r"a\_s\+b", r"\%(a\n\)\@<=b"] {
         assert!(
             VimPattern::compile(source, false, VimRegexLimits::default())
                 .unwrap()
@@ -746,7 +746,7 @@ fn same_line_assertions_preserve_local_repair_and_bounded_lookbehind() {
             "{source}"
         );
     }
-    for source in [r"[[:space:]]", r"a\@=a", r"\(a\)\1"] {
+    for source in [r"[^x\n]", r"[[:space:]]", r"a\@=a", r"\(a\)\1"] {
         assert!(
             !VimPattern::compile(source, false, VimRegexLimits::default())
                 .unwrap()
@@ -755,7 +755,11 @@ fn same_line_assertions_preserve_local_repair_and_bounded_lookbehind() {
         );
     }
     assert_eq!(find(r"[[:space:]]", "\n", 1), None);
-    assert_eq!(find(r"[^x\n]", "\n", 1), Some(0..1));
+    assert_eq!(find(r"[^x\n]", "\n", 1), None);
+    assert_eq!(find(r"\_[^x\n]", "\n", 1), Some(0..1));
+    for slice in [1, 8192] {
+        assert_eq!(find(r"[^\n\r\uFEFF \t]\+", "first\nsecond: true", slice), Some(0..5));
+    }
 }
 
 #[test]

@@ -678,7 +678,10 @@ fn class(
             *i += 1;
             match next {
                 't' | 'r' | 'n' => {
-                    newline |= next == 'n';
+                    // An explicit \n includes a boundary in a positive
+                    // collection, but excludes it in a negated collection.
+                    // The \_ prefix includes it independently of negation.
+                    newline |= next == 'n' && !negate;
                     if next != 'n' {
                         out.push('\\');
                         out.push(next);

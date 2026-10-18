@@ -164,7 +164,8 @@ impl Parser {
                 "||" => 2,
                 "&&" => 3,
                 "==" | "!=" | "==#" | "!=#" | "==?" | "!=?" | "<" | "<=" | ">" | ">=" | "=~#"
-                | "!~#" | "=~?" | "!~?" | "=~" | "!~" => 4,
+                | "!~#" | "=~?" | "!~?" | "=~" | "!~" | "is" | "is#" | "is?"
+                | "isnot" | "isnot#" | "isnot?" => 4,
                 ".." | "." | "+" | "-" => 5,
                 "*" | "/" | "%" => 6,
                 _ => break,
@@ -385,7 +386,19 @@ fn lex(source: &str, trailing_comment: bool) -> Result<Vec<Token>, String> {
                 let (at, c) = chars.next().unwrap();
                 end = at + c.len_utf8();
             }
-            tokens.push(Token::Name(source[at..end].into()));
+            let name = &source[at..end];
+            let follows_value = tokens.last().is_some_and(|token| {
+                matches!(token, Token::Name(_) | Token::Number(_) | Token::String(_) | Token::Member(_))
+                    || matches!(token, Token::Symbol(symbol) if matches!(symbol.as_str(), ")" | "]" | "}"))
+            });
+            if follows_value && matches!(name, "is" | "is#" | "isnot" | "isnot#") {
+                if !name.ends_with('#') && chars.peek().is_some_and(|(_, ch)| *ch == '?') {
+                    end = chars.next().unwrap().0 + 1;
+                }
+                tokens.push(Token::Symbol(source[at..end].into()));
+            } else {
+                tokens.push(Token::Name(name.into()));
+            }
             continue;
         }
         let operator = [

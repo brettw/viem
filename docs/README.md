@@ -33,6 +33,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
   native option mappings, compatibility limits, engine invariants and oracle tests.
 - [Vim theme import](vim-theme-import.md): color scheme evaluation, the base
   preset, and how Vim highlight groups map onto theme styles.
+- [Highlighter compatibility](highlighter-compatibility.md): bundled syntax gaps,
+  dependency coverage, and load-versus-execution audit requirements.
 - [Comment language coverage](comment-language-coverage.md): supported forms, limits, defaults, and pinned Vim provenance.
 - [Markdown demo](markdown_demo.md): loadable examples of supported syntax and
   deliberate presentation exceptions.
