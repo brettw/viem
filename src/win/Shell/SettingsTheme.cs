@@ -16,7 +16,8 @@ internal sealed partial class SettingsWindow
     private readonly TextBlock previewSelection = new() { Text = "Keep your own rhythm.", FontSize = 15, Padding = new(3, 1, 3, 1) };
     private readonly TextBlock previewStatus = new() { Text = "NORMAL      ○ Ln 1, Col 1     UTF-8     Markdown", Padding = new(12, 5, 12, 5) };
     private readonly Border previewBody = new() { Height = 108 }, previewFooter = new(), selectionPaint = new(), caretPaint = new() { Width = 11, Height = 22, Margin = new(2, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-    private readonly ComboBox themePicker = new() { MinWidth = 230, HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox themePicker = new() { MinWidth = 230, HorizontalAlignment = HorizontalAlignment.Stretch,
+        VerticalAlignment = VerticalAlignment.Stretch, VerticalContentAlignment = VerticalAlignment.Center };
     private readonly Button newTheme = new() { Content = "New…" }, deleteTheme = new() { Content = "Delete" }, importTheme = new() { Content = "Import…" };
 #if DEBUG
     internal Func<string?, Task<string?>>? PickVimFileForTesting { get; set; }
@@ -43,8 +44,6 @@ internal sealed partial class SettingsWindow
         ColorControl(row, 0, "foreground", "Text", theme.Foreground); ColorControl(row, 1, "background", "Canvas", theme.Background);
         row = ColorRow(editor);
         ColorControl(row, 0, "caret", "Caret", theme.Caret); ColorControl(row, 1, "selection", "Selection", theme.Selection);
-        var status = ThemeSection(page, "Status bar");
-        status.Children.Add(new TextBlock { Text = "Edit Status bar and Status bar command in the built-in styles.", TextWrapping = TextWrapping.Wrap });
         RefreshThemeControls();
         preferences.ThemesChanged += RefreshThemeControls;
         Closed += (_, _) => preferences.ThemesChanged -= RefreshThemeControls;
