@@ -1,9 +1,10 @@
 # Vim script support
 
-Viem supports a bounded legacy Vim script profile for configuration and editor
-automation. `startup.viem`, `:source`, submitted `:` lines, mapping commands and
-`:normal` share one engine. This is not a complete Vim runtime or a plugin host;
-Vim9 script is unsupported and a `vim9script` declaration stops that script.
+Viem supports legacy Vim script and Vim9 script for configuration and editor
+automation within a bounded host profile. `startup.viem`, `:source`, submitted
+`:` lines, mapping commands, `:normal`, syntax setup and color schemes share one
+engine. A `vim9script` declaration selects Vim9 semantics for its script. This
+does not turn Viem into a complete Vim runtime or an automatic plugin host.
 
 ## Loading and state
 
@@ -58,8 +59,71 @@ Blobs, Funcrefs, partials and lambdas; scoped variables and option/register acce
 `let`, `const`, `unlet`, locking; `if`, loops, functions and returns;
 `try`/`catch`/`finally`/`throw`; `echo`, `execute`, `eval`, `call` and `source`.
 It supports expression operators, indexing/slicing, method calls and closures.
-Strings retain Vim's byte-oriented indexing; Unicode character functions remain
-separate. Dictionaries iterate in sorted key order rather than Vim's hash order.
+Legacy strings use byte-oriented indexing; Vim9 indexes a character together
+with its composing marks. Both retain their original bytes. Dictionaries iterate
+in sorted key order rather than Vim's hash order.
+
+## Vim9 language
+
+`vim9script` must be the first real command. A fresh source clears its script
+declarations; `vim9script noclear` retains them. Functions may cross dialects:
+legacy functions keep legacy evaluation, while `def` bodies use Vim9 semantics
+even when declared in a legacy script. `legacy` and `vim9cmd` select the dialect
+of a command without creating another interpreter.
+
+The implementation includes:
+
+- `var`, `final` and `const`, inferred or explicit types, casts, type aliases,
+  typed destructuring, nullable values, tuples, typed collection mutations and
+  reference-preserving aliases. `final` fixes the binding; `const` also locks
+  nested values. Assignments validate before changing their target.
+- Script and lexical block scopes, per-iteration closure bindings, typed `def`
+  functions, optional/default and variadic arguments, typed expression/block
+  lambdas, partials, function references and explicitly specialized generics.
+- `defcompile`, validation of called functions, missing-return and block-pairing
+  checks, compile-time constant branches, and LIFO `defer` during return and
+  exception unwinding. Analysis does not execute the function body or sample
+  callbacks to discover their types.
+- `import`, `import autoload` and `export`, cached live module namespaces,
+  export visibility, imported types and lazy initialization through the host.
+  Linking an explicitly imported type or function can run that module's
+  initializer; those effects use ordinary host permissions and error rules.
+- Classes, constructors, instance/static members, inheritance, `this`/`super`,
+  interfaces, abstract classes/methods, access restrictions, final/const fields
+  and enums, including generic methods and constructors. Object `empty()`,
+  `len()` and `string()` hooks use ordinary typed calls; display also honors
+  `string()` for objects nested in collections. Reloaded classes have distinct
+  identities; existing objects keep their original class and methods.
+- Vim9 booleans, operators, whitespace/comment rules, implicit continuations,
+  literal/interpolated heredocs and character indexing. A heredoc containing
+  `enddef` or `endclass` cannot terminate the surrounding definition.
+
+For example, the function below edits through the same document transaction as
+its legacy equivalent:
+
+```vim
+vim9script
+
+def g:UppercaseCurrentLine()
+  var original = getline('.')
+  setline('.', toupper(original))
+enddef
+
+nnoremap <Leader>u <Cmd>call UppercaseCurrentLine()<CR>
+```
+
+The language is implemented by typed validation followed by shared runtime
+frames. It does not embed Vim's bytecode VM or implement Vim's disassembler,
+debugger or profiler. Job/channel type names do not enable unavailable host
+features. Imports cannot broaden a syntax or color-scheme host's capabilities.
+
+Conformance is checked with recorded Vim 9.2.0000 examples plus direct tests of
+imports, compilation without body effects, editor transactions, resource limits,
+reload identity and teardown. These are targeted regressions, not an exhaustive
+execution of Vim's upstream language suite; passing them is not proof of 100%
+behavioral or diagnostic parity. The host restrictions below remain deliberate.
+
+## Builtins and host operations
 
 Builtins cover arithmetic, string/Unicode handling, Lists/Dictionaries/Blobs,
 conversion, JSON, formatting, regular expressions, callbacks, assertions and
@@ -97,6 +161,8 @@ An ordinary script error reports its location and continues at the next line,
 skipping the remainder of the failing line. `abort` functions, exceptions,
 `silent!` and `try` follow their legacy control-flow rules. An uncaught exception
 or exhausted resource budget stops the run. Successful earlier edits remain.
+Vim9 scripts and typed functions stop on uncaught errors. Deferred calls run
+through the same bounded runtime and cannot bypass cancellation or host policy.
 Changes from one script action share a compound undo unit; explicit history
 operations can synchronize that grouping.
 
@@ -126,6 +192,16 @@ flattened lists are limited to one million items; string/blob repetition and
 million, and flattening rejects cycles or more than 256 active list levels.
 Individual script regex text is limited to 256 KiB. Core command replay has its
 own finite budget. Recursive mappings and abbreviations cannot run indefinitely.
+
+Vim9 type syntax and validation have a maximum depth of 100. Type validation
+visits at most 1,000,001 nodes per operation and memoizes shared containers;
+inference falls back to `any` after 20 levels or its node budget. Compilation
+nesting is limited to 50, loops to 10 nested levels in typed functions, and each
+function invocation to 10,000 deferred calls. A script state retains at most
+100,000 function definitions, 100,000 tracked closure/object scopes and 10,000
+class identities. Class metadata remains available to aliases and objects after
+reload. Teardown drains ownership registries before an iterative cycle walk;
+the walk never nests container/registry locks or recurses on the native stack.
 
 ## Mappings, abbreviations and commands
 
@@ -242,6 +318,8 @@ and suspension.
 | --- | --- |
 | `value.rs`, `error.rs`, `vvars.rs` | Byte strings (`VStr`), scalar/container values, conversions and display, Vim errors/exceptions, and writable versus read-only `v:` variables. |
 | `expr.rs` | Evaluate while parsing, including skipped branches, subscripts, method calls, lambdas, interpolated strings and curly-brace names. |
+| `vim9.rs`, `types.rs`, `compiler.rs` | Vim9 declarations and dialect rules, shared type checks, and static analysis through the same expression parser. Dependency groups become compiled only after every member validates. |
+| `objects.rs` | Class/interface/enum metadata and access/constructor rules. Methods are ordinary shared runtime functions. |
 | `exec.rs`, `state.rs` | Runtime frames and unwinding, host interface, per-buffer script state, functions, closures and per-view `w:` state. |
 | `commands.rs`, `excmds.rs` | Command resolution, modifiers, ranges and command-specific bar/comment rules; the catalogue is based on Vim 9.1. |
 | `let_cmd.rs`, `function_cmd.rs`, `user_commands.rs`, `autocmd.rs` | Assignments and locking, heredocs, function/user-command definitions, autocmd groups and file patterns. |
@@ -252,6 +330,18 @@ and suspension.
 Evaluation while parsing is deliberate: runtime types decide whether `dict.key`
 is member access or `.` is concatenation, and can make `x .. 2.5` parse as
 `x .. 2 . 5`. Preserve this behavior when changing expression parsing.
+That ambiguity belongs to the legacy dialect; Vim9 has distinct member and
+concatenation syntax. There is no syntax-loader expression parser or Vim9
+declaration-rewriting adapter.
+
+Builtin names, arities, method argument positions and Vim9 type rules come from
+[`builtins/signatures_data.rs`](../src/core/vimscript/builtins/signatures_data.rs),
+derived from Vim v9.2.0000 `src/evalfunc.c` under the repository's Vim license.
+Compilation and runtime checks consume the same table. To regenerate it, run
+`python3 scripts/update-vim-builtin-signatures.py /path/to/evalfunc.c`; the tool
+checks the pinned source hash. Builds and tests read committed metadata and do
+not download source. A name's presence in this table does not grant a host
+implementation or permission to run it.
 
 Statement-level user-function calls, `execute`, `source`, autocmds and user
 commands push frames on one explicit runtime stack. `ScriptHost::should_suspend`
@@ -405,8 +495,8 @@ refactoring rather than substituting more familiar language semantics.
 Portable language fixtures and integration tests run without an installed Vim:
 
 ```sh
-cargo test --lib vimscript::
-cargo test --test all vimscript_
+python3 scripts/validate.py check focused --tests lib --filter vimscript:: --filter document::syntax::vim::
+python3 scripts/validate.py focused --tests all --filter vimscript_
 ```
 
 The fixtures live in [`tests/all/fixtures/vimscript/`](../tests/all/fixtures/vimscript/),
@@ -414,8 +504,7 @@ with `.vim` inputs and exact `.out` recordings. Select one fixture or run an
 ad-hoc file through the in-memory host:
 
 ```sh
-VIEM_VIMSCRIPT_FIXTURE=silent_errors cargo test --lib vimscript::
-VIEM_DEBUG_SCRIPT=/path/example.vim cargo test --lib vimscript::tests::debug_script -- --ignored --nocapture
+VIEM_VIMSCRIPT_FIXTURE=silent_errors python3 scripts/validate.py focused --tests lib --filter vimscript::tests::fixtures_match_vim_output
 ```
 
 Refresh oracle output explicitly with
@@ -441,6 +530,11 @@ under `tests/all/vimscript_*.rs` cover actual publication/undo, source and start
 mappings/abbreviations, events, options and native continuation cancellation.
 Resource tests include overflowing ranges, oversized repeat/printf, recursive
 flattening, bounded glob traversal and bounded regular-file reads.
+The `vim9_*.vim` recordings use Vim 9.2.0000 and cover the language constructs
+above, including compile-time rejection before body effects. Lifecycle tests
+retain weak references to reloaded enum and orphaned closure graphs and require
+their release when the buffer's script state closes. A shared type-graph test
+has 49 nodes but 2^48 paths, guarding against exponential validation.
 
 Native tests exercise ordered source/read effects, failed and cancelled host
 actions, queued-continuation owner teardown/release, save callbacks, startup

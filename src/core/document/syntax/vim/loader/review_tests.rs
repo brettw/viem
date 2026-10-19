@@ -1,10 +1,10 @@
 use super::super::*;
-use crate::vimscript::source::syntax_script_lines;
+use crate::vimscript::source::script_lines;
 
 #[test]
 fn continuation_bytes_and_heredoc_comments_preserve_native_commands() {
     let source = "syn match Joined /\\\n  \\%(a\\|b\\)\\\n  \\+/\nsyn keyword Spaced \n  \\word\nlet s:lines =<< trim END \" a comment\n  first\n  second\nEND\nif join(s:lines) !=# 'first second'\n  unsupported heredoc\nendif\n";
-    let (statements, _) = syntax_script_lines(source.as_bytes()).unwrap();
+    let statements = script_lines(source.as_bytes());
     assert_eq!(statements[0].text.to_str_lossy(), "syn match Joined /\\%(a\\|b\\)\\+/");
     assert_eq!(statements[1].text.to_str_lossy(), "syn keyword Spaced word");
     let program = compile("continuation.vim", source, VimLoadLimits::default()).unwrap();
@@ -335,4 +335,22 @@ impl Loader<'_> {
         self.script_runtime = Some(rt);
         result
     }
+}
+
+#[test]
+fn vim9_typed_helpers_and_confined_modules_share_the_evaluator() {
+    let directory = Directory::new();
+    let syntax = directory.0.join("syntax");
+    let imports = directory.0.join("import");
+    std::fs::create_dir(&syntax).unwrap();
+    std::fs::create_dir(&imports).unwrap();
+    std::fs::write(imports.join("groups.vim"), "vim9script\nexport def Define(name: string, words: list<string>)\n  execute 'syn keyword ' .. name .. ' ' .. join(words)\nenddef\n").unwrap();
+    std::fs::write(syntax.join("owner.vim"), "vim9script\nimport '../import/groups.vim' as groups\nvar words = ['first', 'second']\ngroups.Define('Generated', words)\n").unwrap();
+    let program = directory_with_context(&syntax, "owner", VimLoadLimits::default(), &VimSetupContext::default(), None).unwrap();
+    assert_eq!(program.source_files.len(), 2);
+    assert!(program.rules.iter().all(|rule|rule.group == "Generated"));
+    assert!(!program.rules.is_empty());
+    std::fs::write(directory.0.join("outside.vim"), "vim9script\nexport var escaped = 1\n").unwrap();
+    std::fs::write(syntax.join("escape.vim"), "vim9script\ntry\n  import '../outside.vim' as outside\ncatch\nendtry\n").unwrap();
+    assert!(directory_with_context(&syntax, "escape", VimLoadLimits::default(), &VimSetupContext::default(), None).is_err());
 }

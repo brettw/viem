@@ -1,0 +1,12 @@
+
+builtin compile rejected 0
+builtin runtime rejected
+arity rejected
+callback rejected
+class rejected 0
+1
+constructor rejected 0
+7
+inferred callback rejected
+loop binding retained 1
+loop binding retained 2

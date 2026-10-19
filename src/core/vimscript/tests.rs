@@ -1,5 +1,6 @@
 //! Engine tests with an in-memory host. Fixture scripts under
-//! `tests/all/fixtures/vimscript` have expected output recorded from Vim 9.1
+//! `tests/all/fixtures/vimscript` have legacy output recorded from Vim 9.1
+//! and Vim9 language output recorded from Vim 9.2.0000
 //! (`scripts/vimscript-oracle.sh` regenerates them).
 use super::error::{EvalResult, Fail, VimError};
 use super::exec::{HostCommand, Message, OptionScope, RunState, Runtime, ScriptHost};

@@ -1,0 +1,13 @@
+
+namespace rejected
+3 [1, 2] 4
+5
+reserved rejected
+missing type rejected
+void type rejected
+block pairing rejected
+loop return rejected
+['enddef', 'endclass', 'function']
+3
+loop shadow rejected 0
+2

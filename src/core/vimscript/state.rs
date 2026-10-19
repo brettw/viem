@@ -20,6 +20,12 @@ pub struct StateInner {
     window_vars: Mutex<BTreeMap<u64, Dict>>,
     scripts: Mutex<Vec<ScriptEntry>>,
     functions: Mutex<BTreeMap<VStr, Arc<UserFunction>>>,
+    /// Weak ownership inventory includes cycles orphaned by reload/unlet.
+    /// It does not keep an otherwise unused container alive.
+    cyclic_scopes: Mutex<BTreeMap<usize, std::sync::Weak<Mutex<super::value::DictData>>>>,
+    /// Type aliases and compiled signatures may outlive a reloaded namespace.
+    /// Retain their class identities until this bounded script state closes.
+    classes: Mutex<BTreeMap<String, Arc<super::objects::Class>>>,
     counters: Mutex<Counters>,
     commands: Mutex<BTreeMap<String, Arc<UserCommand>>>,
     autocmds: Mutex<super::autocmd::AutocmdTable>,
@@ -30,12 +36,18 @@ pub struct StateInner {
 struct Counters {
     lambda: u64,
     numbered: u64,
+    class: u64,
 }
 
 #[derive(Clone, Debug)]
 pub struct ScriptEntry {
     pub name: String,
     pub vars: Dict,
+    pub vim9: bool,
+    pub imports: BTreeMap<VStr, String>,
+    pub types: BTreeMap<String, super::types::Type>,
+    pub loaded: bool,
+    pub loading: bool,
 }
 
 impl std::fmt::Debug for ScriptState {
@@ -52,16 +64,20 @@ impl Default for ScriptState {
 
 impl Drop for StateInner {
     fn drop(&mut self) {
-        // Lists and dictionaries may reference each other; break the cycles.
-        self.globals.clear_recursive();
-        self.buffer_vars.clear_recursive();
-        self.tab_vars.clear_recursive();
-        for (_, dict) in std::mem::take(&mut *self.window_vars.lock().unwrap_or_else(|p| p.into_inner())) {
-            dict.clear_recursive();
-        }
-        for script in std::mem::take(&mut *self.scripts.lock().unwrap_or_else(|p| p.into_inner())) {
-            script.vars.clear_recursive();
-        }
+        // Drain registry locks before walking values. A single iterative walk
+        // handles shared graphs and does not consume the native call stack.
+        let windows = std::mem::take(self.window_vars.get_mut().unwrap_or_else(|p|p.into_inner()));
+        let scripts = std::mem::take(self.scripts.get_mut().unwrap_or_else(|p|p.into_inner()));
+        let functions = std::mem::take(self.functions.get_mut().unwrap_or_else(|p|p.into_inner()));
+        let scopes = std::mem::take(self.cyclic_scopes.get_mut().unwrap_or_else(|p|p.into_inner()));
+        let classes = std::mem::take(self.classes.get_mut().unwrap_or_else(|p|p.into_inner()));
+        let mut values = vec![Value::Dict(self.globals.clone()), Value::Dict(self.vim_vars.clone()), Value::Dict(self.buffer_vars.clone()), Value::Dict(self.tab_vars.clone())];
+        values.extend(windows.into_values().map(Value::Dict));
+        values.extend(scripts.into_iter().map(|s|Value::Dict(s.vars)));
+        values.extend(scopes.into_values().filter_map(|d|d.upgrade()).map(|d|Value::Dict(Dict::from_shared(d))));
+        values.extend(functions.into_values().map(|f|Value::Funcref(super::Funcref::named(f.name.clone()).specialized(f))));
+        values.extend(classes.into_values().map(Value::Class));
+        Value::clear_values(values);
     }
 }
 
@@ -79,6 +95,8 @@ impl ScriptState {
             window_vars: Mutex::new(BTreeMap::new()),
             scripts: Mutex::new(Vec::new()),
             functions: Mutex::new(BTreeMap::new()),
+            cyclic_scopes: Mutex::new(BTreeMap::new()),
+            classes: Mutex::new(BTreeMap::new()),
             counters: Mutex::new(Counters::default()),
             commands: Mutex::new(BTreeMap::new()),
             autocmds: Mutex::new(Default::default()),
@@ -135,7 +153,7 @@ impl ScriptState {
         if let Some(index) = scripts.iter().position(|script| script.name == name) {
             return index + 1;
         }
-        scripts.push(ScriptEntry { name: name.to_string(), vars: Dict::new() });
+        scripts.push(ScriptEntry { name: name.to_string(), vars: Dict::new(), vim9: false, imports: BTreeMap::new(), types: BTreeMap::new(), loaded: false, loading: false });
         scripts.len()
     }
     /// A fresh script context that never matches a file, e.g. for the
@@ -149,12 +167,88 @@ impl ScriptState {
     pub fn scripts(&self) -> Vec<ScriptEntry> {
         lock(&self.0.scripts).clone()
     }
+    pub(crate) fn type_alias(&self, sid: usize, name: &str) -> Option<super::types::Type> {
+        sid.checked_sub(1).and_then(|i|lock(&self.0.scripts).get(i).and_then(|s|s.types.get(name).cloned()))
+    }
+    pub(crate) fn define_type(&self, sid: usize, name: String, ty: super::types::Type) -> Result<(), super::VimError> {
+        let mut scripts = lock(&self.0.scripts);
+        let script = sid.checked_sub(1).and_then(|i|scripts.get_mut(i)).ok_or_else(||super::VimError::new(1094, "Type outside script"))?;
+        if script.types.contains_key(&name) {return Err(super::VimError::new(1041, "Redefining type"));} script.types.insert(name, ty); Ok(())
+    }
+    pub(crate) fn reset_vim9_script(&self, sid: usize) {
+        let vars = {
+            let mut scripts = lock(&self.0.scripts);
+            let Some(script) = sid.checked_sub(1).and_then(|i|scripts.get_mut(i)) else {return;};
+            script.types.clear(); script.imports.clear(); script.vars.clone()
+        };
+        {let mut data = vars.data(); data.items.clear(); data.declarations.clear(); if let Some(exports) = &mut data.exports {exports.clear();}}
+        lock(&self.0.functions).retain(|name, function| function.sid != sid || !name.as_bytes().starts_with(b"<SNR>") || function.signature.as_ref().is_some_and(|s|s.owner.is_some()));
+    }
+    pub fn script_is_vim9(&self, sid: usize) -> bool {
+        sid.checked_sub(1).and_then(|i|lock(&self.0.scripts).get(i).map(|s|s.vim9)).unwrap_or(false)
+    }
+    pub fn set_script_vim9(&self, sid: usize, value: bool) {
+        if let Some(index) = sid.checked_sub(1) {
+            if let Some(script) = lock(&self.0.scripts).get_mut(index) {script.vim9 = value;}
+        }
+    }
+    pub fn module_status(&self, sid: usize) -> (bool, bool) {
+        lock(&self.0.scripts).get(sid - 1).map_or((false, false), |s|(s.loaded, s.loading))
+    }
+    pub fn module_loading(&self, sid: usize, loading: bool, loaded: bool) {
+        if let Some(s) = lock(&self.0.scripts).get_mut(sid - 1) {s.loading = loading; s.loaded = loaded;}
+    }
+    pub fn import(&self, sid: usize, alias: &[u8]) -> Option<String> {
+        sid.checked_sub(1).and_then(|i|lock(&self.0.scripts).get(i).and_then(|s|s.imports.get(alias).cloned()))
+    }
+    pub fn add_import(&self, sid: usize, alias: VStr, path: String) -> Result<(), super::VimError> {
+        let mut scripts = lock(&self.0.scripts);
+        let script = sid.checked_sub(1).and_then(|i|scripts.get_mut(i)).ok_or_else(||super::VimError::new(1094, "Import outside a script"))?;
+        if script.imports.contains_key(&alias) || script.imports.values().any(|p|p == &path) {
+            return Err(super::VimError::new(1088, "Script already imported"));
+        }
+        script.imports.insert(alias, path); Ok(())
+    }
 
     pub fn function(&self, name: &[u8]) -> Option<Arc<UserFunction>> {
         lock(&self.0.functions).get(name).cloned()
     }
-    pub fn define_function(&self, function: UserFunction) {
+    pub(crate) fn next_class_identity(&self) -> Result<u64, super::VimError> {
+        let mut counters = lock(&self.0.counters);
+        counters.class = counters.class.checked_add(1).ok_or_else(||super::VimError::new(342, "Class identity budget exhausted"))?;
+        Ok(counters.class)
+    }
+    pub(crate) fn register_class(&self, class: Arc<super::objects::Class>) -> Result<(), super::VimError> {
+        let mut classes = lock(&self.0.classes);
+        if classes.len() >= 10_000 {return Err(super::VimError::new(342, "Script class budget exhausted"));}
+        classes.insert(class.type_name(), class);
+        Ok(())
+    }
+    pub(crate) fn class(&self, identity: &str) -> Option<Arc<super::objects::Class>> {lock(&self.0.classes).get(identity).cloned()}
+    pub(crate) fn track_scope(&self, dict: &Dict) -> Result<(), super::VimError> {
+        const MAX_SCOPES: usize = 100_000;
+        let mut scopes = lock(&self.0.cyclic_scopes);
+        if scopes.contains_key(&dict.id()) {scopes.insert(dict.id(), dict.downgrade()); return Ok(());}
+        if scopes.len() >= MAX_SCOPES {
+            scopes.retain(|_, scope|scope.strong_count() != 0);
+            if scopes.len() >= MAX_SCOPES {return Err(super::VimError::new(342, "Script scope budget exhausted"));}
+        }
+        scopes.insert(dict.id(), dict.downgrade());
+        Ok(())
+    }
+    pub fn define_function(&self, function: UserFunction) -> Result<(), super::VimError> {
+        let mut outer = function.outer.clone();
+        while let Some(scope) = outer {
+            self.track_scope(&scope.locals)?;
+            self.track_scope(&scope.args)?;
+            outer = scope.outer.clone();
+        }
+        {
+            let functions = lock(&self.0.functions);
+            if functions.len() >= 100_000 && !functions.contains_key(&function.name) {return Err(super::VimError::new(342, "Script function budget exhausted"));}
+        }
         lock(&self.0.functions).insert(function.name.clone(), Arc::new(function));
+        Ok(())
     }
     pub fn delete_function(&self, name: &[u8]) -> bool {
         lock(&self.0.functions).remove(name).is_some()
@@ -266,11 +360,13 @@ pub struct UserFunction {
     pub def_lnum: usize,
     /// Captured scope of the defining function for closures and lambdas.
     pub outer: Option<Arc<FunctionScope>>,
+    pub signature: Option<super::vim9::Signature>,
 }
 
 /// The `l:` and `a:` scopes of one function invocation.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FunctionScope {
+    pub self_object: Option<Arc<super::objects::Object>>,
     pub locals: Dict,
     pub args: Dict,
     pub self_dict: Option<Dict>,

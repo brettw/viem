@@ -153,6 +153,10 @@ pub trait ScriptHost {
     fn read_file(&mut self, path: &str) -> Result<Vec<u8>, VimError> {
         super::source::read_script_file(path)
     }
+    /// Confined hosts load modules through their resource resolver, preserving
+    /// dependency identities and budgets. Others use their read_file service.
+    fn import_module(&mut self, _rt: &mut Runtime, _path: &str) -> Option<EvalResult<()>> {None}
+    fn resolve_import(&mut self, _from: &str, _name: &str, _autoload: bool) -> Option<EvalResult<String>> {None}
     /// Checked between commands; true asks the runtime to stop at the next
     /// command boundary where it can resume later.
     fn should_suspend(&mut self) -> bool {
@@ -194,6 +198,7 @@ pub enum FrameKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CondKind {
+    Block,
     If,
     While,
     For,
@@ -228,6 +233,7 @@ pub(crate) enum Pending {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Cond {
+    pub locals: Dict,
     pub kind: CondKind,
     /// Commands inside the current block execute.
     pub active: bool,
@@ -252,6 +258,7 @@ pub(crate) struct Cond {
 impl Cond {
     pub fn new(kind: CondKind, active: bool, outer_active: bool) -> Self {
         Self {
+            locals: Dict::new(),
             kind,
             active,
             taken: active,
@@ -275,6 +282,9 @@ impl Cond {
 }
 
 pub(crate) struct Frame {
+    pub deferred: Vec<super::expr::Callee>,
+    pub class_context: Option<Arc<super::objects::Class>>,
+    pub vim9: bool,
     pub kind: FrameKind,
     pub lines: Arc<[SourceLine]>,
     pub line: usize,
@@ -307,6 +317,9 @@ impl Frame {
     pub(crate) fn new(kind: FrameKind, lines: Arc<[SourceLine]>, sid: usize) -> Self {
         let autocmd = matches!(kind, FrameKind::Autocmd { .. });
         Self {
+            deferred: vec![],
+            class_context: None,
+            vim9: false,
             kind,
             lines,
             line: 0,
@@ -356,14 +369,14 @@ pub(crate) enum Redirect {
 
 pub struct Runtime {
     pub state: ScriptState,
-    /// Implicit script scope for the syntax host's Vim9 declaration profile.
-    /// Ordinary legacy editor scripts retain their global default scope.
-    script_local_sids: std::collections::BTreeSet<usize>,
     pub(crate) frames: Vec<Frame>,
     /// Synchronous nesting depth; suspension is impossible while positive.
     pub(crate) nested: usize,
     pub(crate) nested_result: Option<EvalResult<Value>>,
     pub(crate) call_depth: usize,
+    pub(crate) compile_depth: usize,
+    pub(crate) compile_seen: std::collections::HashSet<String>,
+    pub(crate) compile_pending: Vec<Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) source_depth: usize,
     /// Open `:try` conditionals across all frames.
     pub(crate) trylevel: usize,
@@ -400,11 +413,13 @@ impl Runtime {
     pub fn new(state: ScriptState) -> Self {
         Self {
             state,
-            script_local_sids: Default::default(),
             frames: Vec::new(),
             nested: 0,
             nested_result: None,
             call_depth: 0,
+            compile_depth: 0,
+            compile_seen: Default::default(),
+            compile_pending: vec![],
             source_depth: 0,
             trylevel: 0,
             emsg_silent: 0,
@@ -469,13 +484,12 @@ impl Runtime {
 
     /// Execute an already decoded script synchronously while preserving its
     /// physical source locations and the calling runtime's scopes and budget.
-    pub(crate) fn source_lines_now(&mut self, host: &mut dyn ScriptHost, path: &str, lines: Vec<SourceLine>, script_local: bool) -> EvalResult<()> {
+    pub(crate) fn source_lines_now(&mut self, host: &mut dyn ScriptHost, path: &str, lines: Vec<SourceLine>) -> EvalResult<()> {
         if self.nested == 0 { self.interrupt_context = None; }
         if self.frames.len() >= MAX_NESTING {
             return Err(Fail::Error(VimError::new(169, "Command too recursive")));
         }
         let sid = self.state.script_id(path);
-        if script_local {self.script_local_sids.insert(sid);} else {self.script_local_sids.remove(&sid);}
         let mut frame = Frame::new(FrameKind::Script { path: path.to_owned() }, lines.into(), sid);
         frame.boundary = true;
         let base = self.frames.len();
@@ -573,6 +587,7 @@ impl Runtime {
         let lines: Arc<[SourceLine]> = Vec::new().into();
         let mut frame = Frame::new(FrameKind::Execute, lines, sid);
         frame.scope = scope;
+        frame.vim9 = self.vim9() || self.state.script_is_vim9(sid);
         frame.boundary = true;
         self.frames.push(frame);
         let base = self.frames.len() - 1;
@@ -633,7 +648,6 @@ impl Runtime {
                     frame.line = line;
                     frame.col = col;
                 }
-                Next::Unchanged => {}
             }
         }
         let result = result.and_then(|()| self.fire_queued_events(host));
@@ -812,6 +826,7 @@ impl Runtime {
         if let Some(kind) = self.frames[index].cstack.last().map(|cond| cond.kind) {
             if !self.frames[index].finished {
                 let error = match kind {
+                    CondKind::Block => VimError::new(1026, "Missing }"),
                     CondKind::If => VimError::new(171, "Missing :endif"),
                     CondKind::While => VimError::new(170, "Missing :endwhile"),
                     CondKind::For => VimError::new(170, "Missing :endfor"),
@@ -829,7 +844,8 @@ impl Runtime {
     }
 
     /// Pop the top frame normally, delivering a boundary frame's value.
-    pub(crate) fn pop_frame(&mut self, host: Option<&mut dyn ScriptHost>) {
+    pub(crate) fn pop_frame(&mut self, mut host: Option<&mut dyn ScriptHost>) {
+        if let Some(host) = host.as_deref_mut() {self.run_defers(host);}
         let Some(frame) = self.frames.pop() else { return };
         self.release_frame(&frame);
         if frame.boundary && self.nested_result.is_none() {
@@ -841,6 +857,23 @@ impl Runtime {
                 let _ = self.fire_queued_events(host);
             }
         }
+    }
+
+    fn run_defers(&mut self, host: &mut dyn ScriptHost) {
+        let Some(frame) = self.frames.last_mut() else {return;};
+        let calls = std::mem::take(&mut frame.deferred);
+        if calls.is_empty() {return;}
+        let saved_result = self.nested_result.take();
+        let saved = (self.did_emsg, self.call_aborted);
+        for callee in calls.into_iter().rev() {
+            match self.call_funcref(host, &callee.funcref, callee.args, None) {
+                Ok(_) => {}, Err(Fail::Error(error)) => self.report(host, error),
+                Err(Fail::Exception(exception)) => self.report(host, uncaught_error(&exception)),
+                Err(Fail::Interrupt(_)) => break, Err(Fail::Aborted) => {},
+            }
+        }
+        self.nested_result = saved_result;
+        (self.did_emsg, self.call_aborted) = saved;
     }
 
     fn pop_frame_silently(&mut self) {
@@ -1032,6 +1065,7 @@ impl Runtime {
                     frame.finished = true;
                     let boundary = frame.boundary;
                     let function = frame.is_function();
+                    if let Some(host) = host.as_deref_mut() {self.run_defers(host);}
                     self.frames.pop().map(|frame| self.release_frame(&frame));
                     if boundary {
                         // The caller's expression continues with -1.
@@ -1055,6 +1089,7 @@ impl Runtime {
                 Unwind::Exception(exception) => {
                     self.truncate_conds(index, 0);
                     let boundary = self.frames[index].boundary;
+                    if let Some(host) = host.as_deref_mut() {self.run_defers(host);}
                     self.frames.pop().map(|frame| self.release_frame(&frame));
                     if boundary {
                         self.nested_result = Some(Err(Fail::Exception(exception)));
@@ -1080,6 +1115,12 @@ impl Runtime {
     /// The script ID of the innermost frame.
     pub fn current_sid(&self) -> usize {
         self.frames.last().map_or(0, |frame| frame.sid)
+    }
+    pub(crate) fn current_class(&self) -> Option<Arc<super::objects::Class>> {
+        self.current_frame().and_then(|f|f.class_context.clone().or_else(||f.function.as_ref().and_then(|f|f.signature.as_ref()).and_then(|s|s.owner.clone())))
+    }
+    pub(crate) fn vim9(&self) -> bool {
+        self.current_frame().is_some_and(|frame|frame.vim9)
     }
 
     pub(crate) fn current_scope(&self) -> Option<Arc<FunctionScope>> {
@@ -1166,6 +1207,7 @@ impl Runtime {
             }
             let lines: Arc<[SourceLine]> = super::source::split_command_lines(autocmd.command.as_bytes(), 1).into();
             let mut frame = Frame::new(FrameKind::Autocmd { event, matched: matched.to_string() }, lines, autocmd.sid);
+            frame.vim9 = self.state.script_is_vim9(autocmd.sid);
             frame.autocmd_nested = autocmd.nested;
             frame.autocmd_level = level + 1;
             frames.push(frame);
@@ -1207,6 +1249,7 @@ impl Runtime {
     /// Resolve a variable name (with optional scope) to its scope dictionary
     /// and key. Unprefixed names are local in functions, global elsewhere.
     pub(crate) fn variable_slot(&self, host: &dyn ScriptHost, name: &[u8]) -> Result<(Dict, Vec<u8>, char), VimError> {
+        super::vim9::validate_namespace(self, name)?;
         let illegal = || VimError::new(461, format!("Illegal variable name: {}", String::from_utf8_lossy(name)));
         if name.len() >= 2 && name[1] == b':' {
             let key = name[2..].to_vec();
@@ -1225,9 +1268,16 @@ impl Runtime {
             };
             return Ok((dict, key, name[0] as char));
         }
+        if self.vim9() {
+            if let Some(frame) = self.current_frame() {
+                for cond in frame.cstack.iter().rev() {
+                    if cond.locals.contains(name) {return Ok((cond.locals.clone(), name.to_vec(), 'l'));}
+                }
+            }
+        }
         match self.current_scope() {
             Some(scope) => Ok((scope.locals.clone(), name.to_vec(), 'l')),
-            None if self.script_local_sids.contains(&self.current_sid()) => Ok((self.state.script_vars(self.current_sid()).ok_or_else(illegal)?, name.to_vec(), 's')),
+            None if self.vim9() => Ok((self.state.script_vars(self.current_sid()).ok_or_else(illegal)?, name.to_vec(), 's')),
             None => Ok((self.state.globals().clone(), name.to_vec(), 'g')),
         }
     }
@@ -1236,12 +1286,32 @@ impl Runtime {
         self.lookup_variable(host, name, true)
     }
     pub(crate) fn lookup_variable(&mut self, host: &mut dyn ScriptHost, name: &[u8], autoload: bool) -> EvalResult<Value> {
-        if let Some(value) = host.dynamic_variable(name) {
-            return Ok(value);
+        super::vim9::validate_namespace(self, name)?;
+        if let Some(path) = self.state.import(self.current_sid(), name.strip_prefix(b"s:").unwrap_or(name)) {
+            if autoload {return super::vim9::module(self, host, &path);}
+            return Ok(Value::Number(1));
+        }
+        if !self.vim9() || name.get(1) == Some(&b':') || name.starts_with(b"<") {
+            if let Some(value) = host.dynamic_variable(name) {return Ok(value);}
         }
         if name.len() == 2 && name[1] == b':' {
             let (dict, _, _) = self.variable_slot(host, name)?;
             return Ok(Value::Dict(dict));
+        }
+        if self.vim9() && matches!(name, b"this" | b"super") {
+            let mut scope = self.current_scope();
+            while let Some(current) = scope {
+                if let Some(object) = &current.self_object {
+                    if name == b"this" {return Ok(Value::Object(object.clone()));}
+                    let base = self.current_frame().and_then(|f|f.function.as_ref()).and_then(|f|f.signature.as_ref())
+                        .and_then(|s|s.owner.as_ref()).and_then(|c|c.base.as_ref());
+                    if let Some(base) = base {
+                        return Ok(Value::Dict(Dict::from_pairs(base.methods.iter().map(|(key, function)|
+                            (key.clone().into(), Value::Funcref(Funcref::object_method(function.clone(), object.clone())))))));
+                    }
+                }
+                scope = current.outer.clone();
+            }
         }
         if name == b"self" {
             if let Some(dict) = self.current_scope().and_then(|scope| scope.self_dict.clone()) {
@@ -1257,7 +1327,7 @@ impl Runtime {
             if let Some(value) = dict.get(&key) { return Ok(value); }
         }
         // Old names for v: variables ("count") come before closure scopes.
-        if !explicit {
+        if !explicit && !self.vim9() {
             if let Some(value) = compat_vvar(name).and_then(|vname| self.state.vim_vars().get(vname.as_bytes())) {
                 return Ok(value);
             }
@@ -1273,16 +1343,58 @@ impl Runtime {
                 outer = found.outer.clone();
             }
         }
+        if self.vim9() && !explicit {
+            if let Some(owner) = self.current_class() {
+                if let Some(value) = owner.statics.get(name) {return Ok(value);}
+                if let Some(method) = owner.static_methods.get(String::from_utf8_lossy(name).as_ref()) {return Ok(Value::Funcref(Funcref::named(method.clone())));}
+            }
+            if let Some(value) = self.state.script_vars(self.current_sid()).and_then(|s|s.get(name)) {return Ok(value);}
+            match name {
+                b"true" => return Ok(Value::Bool(true)), b"false" => return Ok(Value::Bool(false)),
+                b"null" => return Ok(Value::Null),
+                b"null_list" => {let value = List::new(vec![]); value.data().null = true; return Ok(Value::List(value));},
+                b"null_dict" => {let value = Dict::new(); value.data().null = true; return Ok(Value::Dict(value));},
+                b"null_blob" => {let value = super::value::Blob::new(vec![]); value.data().null = true; return Ok(Value::Blob(value));},
+                b"null_string" => return Ok(Value::null_typed(super::types::Type::String)),
+                b"null_tuple" => return Ok(Value::null_typed(super::types::Type::Tuple(vec![], None))),
+                b"null_function" | b"null_partial" => return Ok(Value::null_typed(super::types::Type::Func {args:vec![],optional:0,rest:Some(Box::new(super::types::Type::Any)),result:Box::new(super::types::Type::Any)})),
+                b"null_job" => return Ok(Value::null_typed(super::types::Type::Job)),
+                b"null_channel" => return Ok(Value::null_typed(super::types::Type::Channel)),
+                b"null_class" => return Ok(Value::null_typed(super::types::Type::Named("class".into()))),
+                b"null_object" => return Ok(Value::null_typed(super::types::Type::Named("object".into()))),
+                _ => {}
+            }
+            let function = self.canonical_function_name(name);
+            if let Some(definition) = self.state.function(function.as_bytes()) {return Ok(Value::Funcref(Funcref::named(function).with_type(super::compiler::signature(&definition))));}
+        }
         Err(Fail::Error(VimError::undefined_variable(name)))
+    }
+
+    pub(crate) fn declaration_scope(&self) -> Dict {
+        self.current_frame().and_then(|f|f.cstack.last()).map(|c|c.locals.clone())
+            .or_else(||self.current_scope().map(|s|s.locals.clone()))
+            .or_else(||self.state.script_vars(self.current_sid())).unwrap_or_else(||self.state.globals().clone())
+    }
+    pub(crate) fn capture_scope(&self) -> Option<Arc<FunctionScope>> {
+        let mut outer = self.current_scope();
+        if self.vim9() {
+            if let Some(frame) = self.current_frame() {
+                for cond in &frame.cstack {
+                    outer = Some(Arc::new(FunctionScope {locals: cond.locals.clone(), args: Dict::new(), self_dict: None, self_object: None, outer, function: VStr::empty()}));
+                }
+            }
+        }
+        outer
     }
 
     /// Assign a variable, honoring locks, read-only `v:` variables and the
     /// Funcref naming rule. `lock` makes the binding constant (`:const`).
     pub fn set_variable(&mut self, host: &mut dyn ScriptHost, name: &[u8], value: Value, lock: bool) -> EvalResult<()> {
+        if matches!(value, Value::Void | Value::TypeAlias(_)) {super::types::Type::Any.check(value.clone())?;}
         let (mut dict, key, mut scope) = self.variable_slot(host, name)?;
         let explicit = name.len() >= 2 && name[1] == b':';
         if !explicit && !dict.contains(&key) {
-            if let Some(vname) = compat_vvar(name) {
+            if let Some(vname) = (!self.vim9()).then(||compat_vvar(name)).flatten() {
                 // "count" names v:count, which is read-only.
                 if !super::vvars::writable(vname) {
                     return Err(Fail::Error(VimError::new(46, format!("Cannot change read-only variable \"{}\"", String::from_utf8_lossy(name)))));
@@ -1321,11 +1433,20 @@ impl Runtime {
             return Ok(());
         }
         if let Value::Funcref(_) = &value {
-            check_funcref_name(name, scope)?;
+            if !self.vim9() {check_funcref_name(name, scope)?;}
             if matches!(scope, 'g' | 'l') && self.state.function(&key).is_some() {
                 return Err(Fail::Error(VimError::new(705, format!("Variable name conflicts with existing function: {}", String::from_utf8_lossy(name)))));
             }
         }
+        if self.vim9() && !explicit && !dict.contains(&key) {
+            if let Some(script) = self.state.script_vars(self.current_sid()).filter(|s|s.contains(&key)) {dict = script;}
+            else if let Some(class) = self.current_class().filter(|c|c.statics.contains(&key)) {
+                return super::objects::assign(self, &Value::Class(class), &String::from_utf8_lossy(&key), value);
+            }
+            else {return Err(VimError::undefined_variable(name).into());}
+        }
+        let declared = dict.data().declarations.get(key.as_slice()).cloned();
+        let value = if let Some(ty) = declared {ty.check(value)?} else {value};
         let mut data = dict.data();
         match data.items.get_mut(key.as_slice()) {
             Some(item) => {
@@ -1353,7 +1474,7 @@ impl Runtime {
 
     // ----- functions --------------------------------------------------------
 
-    pub(crate) fn define_lambda(&mut self, params: Vec<Param>, varargs: bool, body: VStr) -> VStr {
+    pub(crate) fn define_lambda(&mut self, params: Vec<Param>, varargs: bool, body: VStr) -> EvalResult<VStr> {
         let name = self.state.next_lambda_name();
         let function = UserFunction {
             name: name.clone(),
@@ -1364,9 +1485,10 @@ impl Runtime {
             sid: self.current_sid(),
             def_lnum: 0,
             outer: self.current_scope(),
+            signature: None,
         };
-        self.state.define_function(function);
-        name
+        self.state.define_function(function)?;
+        Ok(name)
     }
 
     /// Resolve a function name used in a call: a Funcref variable, a script
@@ -1374,7 +1496,7 @@ impl Runtime {
     pub fn resolve_function_name(&mut self, host: &mut dyn ScriptHost, name: &[u8]) -> EvalResult<Funcref> {
         let scoped = name.len() > 2 && name[1] == b':';
         let first = if scoped { name[2] } else { name[0] };
-        let could_be_variable = !name.starts_with(b"<SNR>")
+        let could_be_variable = self.vim9() || !name.starts_with(b"<SNR>")
             && !name.contains(&b'#')
             && (first.is_ascii_uppercase() || (scoped && matches!(name[0], b'l' | b'a' | b'g' | b's' | b'b' | b'w' | b't' | b'v')));
         if could_be_variable {
@@ -1382,7 +1504,9 @@ impl Runtime {
                 return Ok(funcref);
             }
         }
-        Ok(Funcref::named(self.canonical_function_name(name)))
+        let name = self.canonical_function_name(name);
+        let reference = Funcref::named(name.clone());
+        Ok(self.state.function(name.as_bytes()).map_or(reference.clone(), |f|reference.with_type(super::compiler::signature(&f))))
     }
 
     /// `s:Foo` and `<SID>Foo` become `<SNR>{sid}_Foo`; `g:Foo` becomes `Foo`.
@@ -1397,6 +1521,10 @@ impl Runtime {
         if name.len() > 5 && name[..5].eq_ignore_ascii_case(b"<SID>") {
             return format!("<SNR>{}_{}", self.current_sid(), String::from_utf8_lossy(&name[5..])).into();
         }
+        if self.vim9() && !name.starts_with(b"<") && !is_builtin_name(name) && !name.contains(&b'#') {
+            let local: VStr = format!("<SNR>{}_{}", self.current_sid(), String::from_utf8_lossy(name)).into();
+            if self.state.function(local.as_bytes()).is_some() {return local;}
+        }
         VStr::from(name)
     }
 
@@ -1404,6 +1532,12 @@ impl Runtime {
     pub fn call_funcref(&mut self, host: &mut dyn ScriptHost, funcref: &Funcref, args: Vec<Value>, self_dict: Option<Dict>) -> EvalResult<Value> {
         let mut all = funcref.args().to_vec();
         all.extend(args);
+        if let Some(class) = funcref.class() {return super::objects::construct(self, host, class, &funcref.name().to_str_lossy(), all, funcref.specialization());}
+        if let Some(function) = funcref.specialization() {return self.call_user_function_inner(host, function, all, self_dict, None, funcref.receiver());}
+        if let Some(receiver) = funcref.receiver() {
+            let function = self.state.function(funcref.name().as_bytes()).ok_or_else(||VimError::unknown_function(funcref.name().as_bytes()))?;
+            return self.call_user_function_receiver(host, function, all, Some(receiver));
+        }
         let dict = match (funcref.dict(), self_dict) {
             (Some(bound), _) if !funcref.auto_bound() => Some(bound.clone()),
             (_, Some(dict)) => Some(dict),
@@ -1423,14 +1557,16 @@ impl Runtime {
         }
         if is_builtin_name(name) {
             let text = String::from_utf8_lossy(name).into_owned();
+            let result_type = if self.vim9() {super::builtins::signatures::check(self, &text, &args, false)?} else {super::types::Type::Any};
+            let normalize = |value| if result_type == super::types::Type::Void {Value::Void} else {value};
             if let Some(result) = host.override_builtin(self, &text, &args) {
-                return result;
+                return result.map(normalize);
             }
             if let Some(result) = super::builtins::call(self, host, &text, args.clone()) {
-                return result;
+                return result.map(normalize);
             }
             if let Some(result) = host.call_function(self, &text, &args) {
-                return result;
+                return result.map(normalize);
             }
             if super::builtins::is_vim_builtin(&text) {
                 return Err(Fail::Error(VimError::new(117, format!("Unknown function: {text} (not supported by Viem)"))));
@@ -1461,6 +1597,8 @@ impl Runtime {
         self_dict: Option<Dict>,
         range: Option<(i64, i64)>,
     ) -> EvalResult<Arc<FunctionScope>> {
+        if function.signature.as_ref().is_some_and(|s|!s.generics.is_empty()) {return Err(VimError::new(1559, "Generic function requires type arguments").into());}
+        super::compiler::ensure(self, host, function)?;
         let name = function.name.to_str_lossy().into_owned();
         if function.flags.dict && self_dict.is_none() {
             return Err(Fail::Error(VimError::new(725, format!("Calling dict function without Dictionary: {name}"))));
@@ -1484,6 +1622,7 @@ impl Runtime {
             self_dict: if function.flags.dict || is_lambda || self_dict.is_some() { self_dict } else { None },
             outer: if function.flags.closure || is_lambda { function.outer.clone() } else { None },
             function: function.name.clone(),
+            self_object: None,
         });
         {
             let (first, last) = match range {
@@ -1498,12 +1637,15 @@ impl Runtime {
         }
         let mut args = args.into_iter();
         // Lambda arguments are local variables; a: holds only a:0/a:000.
-        let parameters = if is_lambda { scope.locals.clone() } else { arguments.clone() };
-        for param in &function.params {
+        let parameters = if is_lambda || function.signature.is_some() { scope.locals.clone() } else { arguments.clone() };
+        for (index, param) in function.params.iter().enumerate() {
             let value = match args.next() {
                 Some(Value::None) | None if param.default.is_some() => {
                     let default = param.default.clone().unwrap();
                     self.with_context(Some(scope.clone()), function.sid, |rt| {
+                        let frame = rt.current_frame_mut().unwrap();
+                        frame.vim9 = function.signature.is_some();
+                        frame.function = Some(function.clone());
                         let mut eval = Eval::new(rt, host, default.as_bytes(), 0, true);
                         eval.eval1()
                     })?
@@ -1511,9 +1653,21 @@ impl Runtime {
                 Some(value) => value,
                 None => Value::Number(0),
             };
+            let value = if let Some(signature) = &function.signature {
+                let ty = &signature.parameters[index];
+                let value = ty.check(value)?;
+                ty.attach(&value);
+                parameters.data().declarations.insert(param.name.clone(), ty.clone());
+                value
+            } else {value};
             parameters.insert(param.name.clone(), value);
         }
         let rest: Vec<Value> = args.collect();
+        if let Some((name, ty)) = function.signature.as_ref().and_then(|s|s.rest.as_ref()) {
+            let value = ty.check(Value::list(rest.clone()))?;
+            parameters.insert(name.clone(), value);
+            parameters.data().declarations.insert(name.clone(), ty.clone());
+        }
         {
             arguments.insert("0", (rest.len() as i64).into());
             for (index, value) in rest.iter().enumerate() {
@@ -1543,6 +1697,7 @@ impl Runtime {
         };
         let mut frame = Frame::new(FrameKind::Function, lines, function.sid);
         frame.scope = Some(scope);
+        frame.vim9 = function.signature.is_some();
         frame.abort_on_error = function.flags.abort || matches!(function.body, FunctionBody::Lambda(_));
         frame.function = Some(function);
         frame
@@ -1550,14 +1705,28 @@ impl Runtime {
 
     /// Call a user function synchronously and return its value.
     pub fn call_user_function(
+        &mut self, host: &mut dyn ScriptHost, function: Arc<UserFunction>, args: Vec<Value>,
+        self_dict: Option<Dict>, range: Option<(i64, i64)>,
+    ) -> EvalResult<Value> {
+        self.call_user_function_inner(host, function, args, self_dict, range, None)
+    }
+    pub(crate) fn call_user_function_receiver(
+        &mut self, host: &mut dyn ScriptHost, function: Arc<UserFunction>, args: Vec<Value>,
+        receiver: Option<Arc<super::objects::Object>>,
+    ) -> EvalResult<Value> {
+        self.call_user_function_inner(host, function, args, None, None, receiver)
+    }
+    fn call_user_function_inner(
         &mut self,
         host: &mut dyn ScriptHost,
         function: Arc<UserFunction>,
         args: Vec<Value>,
         self_dict: Option<Dict>,
         range: Option<(i64, i64)>,
+        receiver: Option<Arc<super::objects::Object>>,
     ) -> EvalResult<Value> {
-        let scope = self.prepare_call(host, &function, args, self_dict, range)?;
+        let mut scope = self.prepare_call(host, &function, args, self_dict, range)?;
+        if let Some(receiver) = receiver {Arc::make_mut(&mut scope).self_object = Some(receiver);}
         let mut frame = self.function_frame(function, scope);
         frame.boundary = true;
         self.call_depth += 1;
@@ -1565,7 +1734,12 @@ impl Runtime {
         let base = self.frames.len() - 1;
         let saved = (self.did_emsg, self.call_aborted);
         self.call_aborted = false;
-        let result = self.run_nested(host, base);
+        let result_type = self.frames[base].function.as_ref().and_then(|f|f.signature.as_ref()).map(|s|s.result.clone());
+        let result = self.run_nested(host, base).and_then(|v|match result_type {
+            Some(super::types::Type::Void) => Ok(Value::Void),
+            None => Ok(v),
+            Some(t) => t.check(v).map_err(Fail::from),
+        });
         // Errors inside a function without abort do not reach the caller.
         self.did_emsg = saved.0 || self.call_aborted;
         self.call_aborted = saved.1;
@@ -1631,7 +1805,6 @@ pub(crate) enum Next {
     Column(usize),
     NextLine,
     Position(usize, usize),
-    Unchanged,
 }
 
 pub(crate) struct CommandOutcome {

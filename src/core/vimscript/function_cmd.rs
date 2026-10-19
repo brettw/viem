@@ -20,60 +20,11 @@ enum Definition {
 /// frame: returns the body lines and the index of the `:endfunction` line.
 fn collect_body(rt: &Runtime, start: usize) -> Result<(Vec<SourceLine>, usize), VimError> {
     let frame = rt.current_frame().expect("function runs in a frame");
-    let mut depth = 1usize;
-    let mut body = Vec::new();
-    let mut index = start + 1;
-    let mut heredoc: Option<(Vec<u8>, bool)> = None;
-    while index < frame.lines.len() {
-        let line = &frame.lines[index];
-        let text = line.text.as_bytes();
-        if let Some((marker, trim)) = &heredoc {
-            let candidate = if *trim { &text[text.iter().take_while(|b| is_white(**b)).count()..] } else { text };
-            if candidate == marker.as_slice() {
-                heredoc = None;
-            }
-            body.push(SourceLine { text: line.text.clone(), lnum: body.len() + 1 });
-            index += 1;
-            continue;
-        }
-        if let Some((name, after, _)) = super::commands::line_command_name(text) {
-            match name {
-                "endfunction" => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return Ok((body, index));
-                    }
-                }
-                "function" => {
-                    // Only a definition (name followed by '(') nests.
-                    let rest = &text[after..];
-                    if rest.contains(&b'(') {
-                        depth += 1;
-                    }
-                }
-                "let" | "const" => {
-                    if let Some(at) = find_subslice(text, b"=<<") {
-                        let words: Vec<&[u8]> = text[at + 3..].split(|b| is_white(*b)).filter(|w| !w.is_empty()).collect();
-                        let trim = words.iter().any(|w| *w == b"trim");
-                        if let Some(marker) = words.iter().find(|w| **w != b"trim" && **w != b"eval") {
-                            if !marker.starts_with(b"\"") {
-                                heredoc = Some((marker.to_vec(), trim));
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        body.push(SourceLine { text: line.text.clone(), lnum: body.len() + 1 });
-        index += 1;
-    }
-    Err(VimError::new(126, "Missing :endfunction"))
+    let end = super::source::definition_end(&frame.lines, start, "endfunction")?;
+    let body = frame.lines[start + 1..end].iter().enumerate().map(|(index, line)|SourceLine {text: line.text.clone(), lnum: index + 1}).collect();
+    Ok((body, end))
 }
 
-fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack.windows(needle.len()).position(|window| window == needle)
-}
 
 pub(crate) fn function_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize, bang: bool, executing: bool) -> CommandOutcome {
     let at = skip_white(src, at);
@@ -255,6 +206,14 @@ fn define(
     bang: bool,
     def_lnum: usize,
 ) -> EvalResult<()> {
+    if rt.vim9() && rt.current_scope().is_some() && members.is_empty() && !name.starts_with(b"g:") {
+        let locals = rt.declaration_scope();
+        if locals.contains(name) && !bang {return Err(VimError::new(1073, "Name already defined").into());}
+        let internal = rt.state.next_lambda_name();
+        rt.state.define_function(UserFunction {name: internal.clone(), params, varargs, body: FunctionBody::Lines(body.into()), flags, sid: rt.current_sid(), def_lnum, outer: None, signature: None})?;
+        locals.insert(name, Value::Funcref(Funcref::named(internal)));
+        return Ok(());
+    }
     let definition = if members.is_empty() {
         let canonical = rt.canonical_function_name(name);
         let bytes = canonical.as_bytes();
@@ -297,7 +256,7 @@ fn define(
     let sid = rt.current_sid();
     match definition {
         Definition::Named(canonical) => {
-            rt.state.define_function(UserFunction { name: canonical, params, varargs, body: FunctionBody::Lines(body.into()), flags, sid, def_lnum, outer });
+            rt.state.define_function(UserFunction { name: canonical, params, varargs, body: FunctionBody::Lines(body.into()), flags, sid, def_lnum, outer, signature: None })?;
         }
         Definition::Member { dict, key } => {
             // Replacing reuses the existing numbered function name.
@@ -306,7 +265,7 @@ fn define(
                 _ => None,
             };
             let numbered = existing.unwrap_or_else(|| rt.state.next_numbered_name());
-            rt.state.define_function(UserFunction { name: numbered.clone(), params, varargs, body: FunctionBody::Lines(body.into()), flags, sid, def_lnum, outer });
+            rt.state.define_function(UserFunction { name: numbered.clone(), params, varargs, body: FunctionBody::Lines(body.into()), flags, sid, def_lnum, outer, signature: None })?;
             if dict.data().lock.is_locked() {
                 return Err(Fail::Error(VimError::new(741, "Value is locked")));
             }

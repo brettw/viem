@@ -47,11 +47,15 @@ its output. It cannot bypass confinement. Unused editor callbacks can be retaine
 in private script state, but an unsupported effect cannot run, including through
 `silent!` or an exception handler. Supported Vim errors remain catchable.
 
-The shared source reader has an explicit syntax profile for the declaration-only
-Vim9 surface used in these resources. It lowers simple `var`/assignments and a
-parameterless typed helper to shared execution; it does not provide general Vim9
-support. General typed signatures, imports, and Vim9 scope/type behavior remain
-compatibility work and must not be reported as supported.
+Vim9 declarations, typed functions, lexical scopes, closures, generic functions,
+imports, type aliases, classes, interfaces and enums use the same language engine
+as editor scripts. There is no syntax-specific Vim9 lowering or evaluator.
+The shared source reader preserves heredocs and both dialects' definition
+boundaries. Static expression analysis reuses the evaluator's parser and the
+pinned Vim 9.2 builtin signature table. Imported modules still pass through this
+host's resource confinement; language support cannot authorize editor or ambient
+filesystem effects. See [the scripting guide](../../../../../docs/vimscript.md)
+for semantics, budgets and conformance evidence.
 
 The confined host supplies syntax/highlight declarations, private options,
 immutable buffer queries, and bundled resource resolution. Autoload variables
