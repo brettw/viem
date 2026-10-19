@@ -268,10 +268,14 @@ controls, which honor family, face stretch, size, weight, slant and tracking;
 custom variable axes and OpenType features are not applied to that output.
 `test-win.ps1 -Suite Chrome` runs the native gutter and status-style diagnostics.
 
-The normative list of known Mac differences is in the **Windows**
-section of [`AGENTS.md`](../../AGENTS.md). In particular,
-printing, AppKit text services and Versions, full document accessibility,
-per-font OpenType discovery are not claimed as implemented.
+Known gaps relative to macOS: there is no full UI Automation TextPattern or
+Narrator text editing, no printing, and no equivalent of macOS Services,
+Dictionary, spelling and grammar panels, app dictation or Versions. The style
+inspector lacks OpenType feature discovery, full paragraph preview and
+click-through activation of inherited controls. Per-span explicit bidi
+overrides are preserved but not rendered; Unicode bidi and paragraph direction
+work. IME protocol tests don't establish compatibility with every installed
+IME or speech service. Update this list and the native tests when these ship.
 
 ## Code boundaries and validation
 
