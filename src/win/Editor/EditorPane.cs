@@ -828,6 +828,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         InvalidateDrawingCache();
         pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
         statusPointer = null; statusPointerSource = null; statusDragging = statusSelectingOutput = false;
+        statusDragTarget = null; statusDragNeedsSplit = false;
         Canvas.ReleasePointerCaptures(); lineNumberCanvas.ReleasePointerCaptures();
         status.ReleasePointerCaptures();
         ProtectedCursor = null; gutterCursor?.Dispose(); textArrowCursor.Dispose(); textInsertionCursor.Dispose();

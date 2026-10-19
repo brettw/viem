@@ -379,7 +379,7 @@ final class EVWindowCommandTests: XCTestCase {
 
   func testBottomBarIsFixedAndSplitAdmissionUsesOnlyTheCurrentEditorGap() throws {
     let container = try stack(panes: 3)
-    XCTAssertNil(container.panes.last!.statusBar.dragDidMove)
+    XCTAssertNotNil(container.panes.last!.statusBar.dragDidMove)
     let start = barTops(container)
     container.dragStatusBar(of: container.panes.last!, by: -300)
     XCTAssertEqual(barTops(container), start)
@@ -429,10 +429,10 @@ final class EVWindowCommandTests: XCTestCase {
     container.perform(.rotateDown(count: 1))
     XCTAssertTrue(container.panes[0] === oldBottom)
     XCTAssertNotNil(oldBottom.statusBar.dragDidMove)
-    XCTAssertNil(container.panes.last!.statusBar.dragDidMove)
+    XCTAssertNotNil(container.panes.last!.statusBar.dragDidMove)
     XCTAssertTrue(container.activePane === focused)
     container.remove(container.panes.last!)
-    XCTAssertNil(container.panes.last!.statusBar.dragDidMove)
+    XCTAssertNotNil(container.panes.last!.statusBar.dragDidMove)
     checkBars(container)
   }
 
@@ -503,6 +503,90 @@ final class EVWindowCommandTests: XCTestCase {
     await withCheckedContinuation { continuation in
       DispatchQueue.main.async { continuation.resume() }
     }
+  }
+
+  func testBottomStatusDragSharesDocumentAndPreservesFocus() throws {
+    let (controller, backend, document) = try makeWindow(panes: 2)
+    defer { document.close() }
+    let container = try XCTUnwrap(backend.surfaces[0].viewController.parent?.parent as? EVPaneContainer)
+    let original = container.panes.last!
+    let focused = container.activePane
+    let responder = controller.window?.firstResponder
+    let state = document.editorBackend.persistenceState
+    let top = original.view.frame.maxY - original.statusBarHeight
+    func move(to y: CGFloat, delta: CGFloat = -10) {
+      original.statusBar.dragDidMove?(delta, container.view.convert(NSPoint(x: 200, y: y), to: nil))
+    }
+    original.statusBar.dragDidBegin?()
+    move(to: top + 4)
+    move(to: top)
+    XCTAssertEqual(container.panes.count, 2, "the pointer must cross above the top")
+    move(to: top - 10)
+    XCTAssertEqual(container.panes.count, 3)
+    let added = container.panes[1]
+    XCTAssertTrue(added.document === original.document)
+    XCTAssertTrue(container.panes.last === original)
+    XCTAssertEqual(added.view.frame.maxY, top - 10, accuracy: 1)
+    move(to: top - 35, delta: -25)
+    XCTAssertEqual(added.view.frame.maxY, top - 35, accuracy: 1)
+    XCTAssertEqual(container.panes.count, 3, "one split per gesture")
+    XCTAssertTrue(container.activePane === focused)
+    XCTAssertTrue(controller.window?.firstResponder === responder)
+    XCTAssertEqual(document.editorBackend.persistenceState.documentRevision, state.documentRevision)
+    original.statusBar.dragDidEnd?()
+    // Collapse the bottom editor. A failed admission is attempted only once.
+    container.dragStatusBar(of: added, by: 10_000)
+    var attempts = 0
+    let split = container.splitForStatusDrag
+    container.splitForStatusDrag = { source in attempts += 1; return try XCTUnwrap(split)(source) }
+    original.statusBar.dragDidBegin?()
+    move(to: top - 20)
+    move(to: top - 30)
+    original.statusBar.dragDidEnd?()
+    XCTAssertEqual(attempts, 1)
+    XCTAssertEqual(container.panes.count, 3)
+    checkBars(container)
+  }
+
+  func testBottomStatusNativeDragCreatesUpperPaneAndContinuesAcrossReversal() async throws {
+    let container = try stack(panes: 1)
+    let original = container.panes[0]
+    let left = EVDocumentContentViewController(editorSurface: Surface())
+    try container.insert(left, splitting: original, vertical: true, before: true)
+    container.splitForStatusDrag = { [weak container] source in
+      let container = try XCTUnwrap(container)
+      let pane = EVDocumentContentViewController(editorSurface: Surface())
+      try container.insert(pane, splitting: source, before: true, focusNewPane: false)
+      return pane
+    }
+    let window = PointerTestWindow(contentRect: container.view.bounds, styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false; window.tabbingMode = .disallowed
+    window.contentView = container.view
+    defer { window.close() }
+    prepareForPointerEvents(in: window)
+    container.focusPane(at: 0)
+    let leftFrame = left.view.frame
+    let bar = original.statusBar
+    let top = bar.convert(NSPoint(x: bar.bounds.midX, y: bar.bounds.maxY), to: nil)
+    let grab = bar.convert(NSPoint(x: bar.bounds.midX, y: bar.bounds.midY), to: nil)
+    XCTAssertFalse(bar.resizeCursorRects.isEmpty, "bottom background has the resize cursor")
+    var cursors: [Bool] = []
+    let move = bar.dragDidMove
+    bar.dragDidMove = { delta, point in cursors.append(NSCursor.current == .resizeUpDown); move?(delta, point) }
+    try await pointerGesture(window: window, points: [grab, NSPoint(x: grab.x, y: grab.y - 30), grab])
+    XCTAssertEqual(container.panes.count, 2, "downward dragging does not split")
+    XCTAssertEqual(cursors.first, true)
+    try await pointerGesture(window: window, points: [grab,
+      NSPoint(x: top.x, y: top.y + 10), NSPoint(x: top.x, y: top.y + 60),
+      NSPoint(x: top.x, y: top.y + 45), NSPoint(x: top.x, y: top.y + 45)])
+    XCTAssertEqual(container.panes.count, 3)
+    let added = container.panes[1]
+    XCTAssertFalse(added === original)
+    XCTAssertEqual(added.view.frame.maxY, container.view.bounds.height - original.statusBarHeight - 45, accuracy: 1)
+    XCTAssertEqual(original.view.frame.maxY, container.view.bounds.height, accuracy: 1)
+    XCTAssertEqual(left.view.frame, leftFrame, "only the dragged column splits")
+    XCTAssertTrue(container.activePane === left)
+    XCTAssertEqual((original.editorSurface as? Surface)?.statusClicks, 0)
   }
 
   func testVerticalSplitterTranslucentCornersArePaintedOnce() throws {
@@ -619,7 +703,7 @@ final class EVWindowCommandTests: XCTestCase {
     XCTAssertEqual(container.view.bounds.size, NSSize(width: 600, height: 600),
       "window frame: \(window.frame), content frame: \(container.view.frame), root bounds: \(container.view.bounds), screen: \(String(describing: window.screen))")
     XCTAssertTrue(container.panes.allSatisfy { $0.view.frame.width >= 100 })
-    XCTAssertTrue(container.panes.allSatisfy { $0.statusBar.dragDidMove == nil })
+    XCTAssertTrue(container.panes.allSatisfy { $0.statusBar.dragDidMove != nil })
     let divider = try XCTUnwrap(container.view.subviews.compactMap { $0 as? EVVerticalSplitter }.sorted { $0.frame.minX < $1.frame.minX }.first)
     XCTAssertEqual(divider.frame.width,5)
     let grab = divider.convert(NSPoint(x:2.5,y:divider.bounds.midY),to:nil)
@@ -653,15 +737,15 @@ final class EVWindowCommandTests: XCTestCase {
     let point = second.statusBar.convert(NSPoint(x:second.statusBar.bounds.midX,y:second.statusBar.bounds.midY),to:nil)
     var statusCursorTransitions: [Bool] = []
     let statusMove = second.statusBar.dragDidMove
-    second.statusBar.dragDidMove = { delta in
+    second.statusBar.dragDidMove = { delta, point in
       statusCursorTransitions.append(NSCursor.current == NSCursor.resizeUpDown)
-      statusMove?(delta)
+      statusMove?(delta, point)
     }
     try await pointerGesture(window:window,points:[point,NSPoint(x:point.x,y:point.y-30),NSPoint(x:point.x,y:point.y-30)])
     XCTAssertEqual(statusCursorTransitions.first, true,
       "The first native drag must install the resize cursor; observed: \(statusCursorTransitions)")
     XCTAssertTrue(container.activePane === third,"a status-bar drag preserves focus")
-    XCTAssertNil(below.statusBar.dragDidMove)
+    XCTAssertNotNil(below.statusBar.dragDidMove)
   }
 
   func testCloseOthersLeavesOnlyTheFocusedPane() throws {

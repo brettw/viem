@@ -195,12 +195,12 @@ internal sealed partial class EditorWindow : Window
         OnPaneReady(pane);
     }
     partial void OnPaneReady(EditorPane pane);
-    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false)
+    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false, bool focusNewPane = true)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
         // Include any visible toolbar before attaching a canvas that can start
         // its native resources and first document layout immediately.
-        PrepareFormattingToolbar(doc);
+        if (focusNewPane) PrepareFormattingToolbar(doc);
         if (!savedSources.ContainsKey(doc))
         {
             var owner = App.Instance.Windows.FirstOrDefault(w => !w.closed
@@ -222,13 +222,13 @@ internal sealed partial class EditorWindow : Window
             if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); App.Instance.BlockingEdits.Released(replacing.Document); replacing.Document.Dispose(); }
         }
         else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical, splitBefore); }
-        SetActive(pane);
+        if (focusNewPane) SetActive(pane);
         TrackExternalFile(doc);
         // Attaching can finish PaneReady before the new pane becomes active.
         // Complete native focus after layout so an old input host cannot
         // restore the previous action target when the window is activated.
         paneGrid.UpdateLayout();
-        FocusPane(pane);
+        if (focusNewPane) FocusPane(pane);
         return pane;
     }
     internal void FocusPane(EditorPane pane, bool keepStatusFocus = false) { SetActive(pane); if (!keepStatusFocus) pane.FocusEditor(); }
@@ -254,10 +254,10 @@ internal sealed partial class EditorWindow : Window
         paneGrid.RequireSplitRoom(pane, preferences.StatusHeight, vertical);
     }
 
-    internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null, bool vertical = false, bool before = true)
+    internal EditorPane SplitPane(EditorPane pane, CoreDocument document, ulong? lines = null, bool vertical = false, bool before = true, bool focusNewPane = true)
     {
         RequireSplitRoom(pane, vertical);
-        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical, splitBefore: before);
+        var added = AddPane(document, Panes.IndexOf(pane) + 1, splitIndex: Panes.IndexOf(pane), vertical: vertical, splitBefore: before, focusNewPane: focusNewPane);
         if (pane.View is { } origin) {
             if (added.View is { } attached) attached.Number(origin.NumberEnabled);
             else added.InitialNumber = origin.NumberEnabled;
@@ -269,7 +269,7 @@ internal sealed partial class EditorWindow : Window
         // Adding the visual can initialize its core before SetActive runs.
         // Complete the split's existing activation after layout, so native
         // focus cannot remain in the old pane and restore it on activation.
-        FocusPane(added);
+        if (focusNewPane) FocusPane(added);
         return added;
     }
 

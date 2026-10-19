@@ -114,7 +114,7 @@ final class EVStatusLineTests: XCTestCase {
 
   func testResizeHoverCoversOnlyEmptyMovableBackgroundAndFollowsPresentation() throws {
     let bar = makeBar(width: 900)
-    bar.dragDidMove = { _ in }
+    bar.dragDidMove = { _, _ in }
     func resizeCursor(at point: NSPoint) -> Bool { bar.resizeCursorRects.contains { $0.contains(point) } }
     let empty = NSPoint(x: bar.commandAreaRect.maxX - 2, y: bar.bounds.midY)
     XCTAssertTrue(resizeCursor(at: empty))
@@ -138,7 +138,7 @@ final class EVStatusLineTests: XCTestCase {
     bar.layoutSubtreeIfNeeded()
     XCTAssertTrue(resizeCursor(at: empty))
     bar.dragDidMove = nil
-    XCTAssertTrue(bar.resizeCursorRects.isEmpty, "a bottom status bar retains normal hover cursors")
+    XCTAssertTrue(bar.resizeCursorRects.isEmpty, "a detached status bar retains normal hover cursors")
   }
 
   func testStatusPixelsAfterNarrowingAndWideningMatchFreshLayout() throws {
@@ -326,7 +326,7 @@ final class EVStatusLineTests: XCTestCase {
 
   func testOrdinaryStatusAndCommandPromptsDoNotConstructOutputControls() throws {
     let bar = makeBar()
-    bar.dragDidMove = { _ in }
+    bar.dragDidMove = { _, _ in }
     for state in [
       EVStatusBarState(mode: "INSERT", message: "Saved", location: "Ln 12, Col 34"),
       EVStatusBarState(commandLine: EVStatusCommandLine(prompt: ":", text: "set", cursorUTF8Offset: 3), isActive: true),

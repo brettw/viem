@@ -102,6 +102,14 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     window.titleVisibility = .visible
 
     super.init(window: window)
+    paneContainer.splitForStatusDrag = { [weak self] source in
+      guard let self, let document = source.document else { throw EVDocumentHostError.staleRequest }
+      try self.paneContainer.requireSplitRoom(in: source)
+      let pane = self.makePane(document: document, from: source)
+      try self.paneContainer.insert(pane, splitting: source, before: true, focusNewPane: false)
+      self.updateActiveDocumentChrome()
+      return pane
+    }
     window.delegate = self
     Self.instances.removeAll { $0.value == nil }
     Self.instances.append(EVWeakDocumentWindow(self))
