@@ -80,7 +80,6 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
         var next = new ViemPaneFrame[511]; ViemPaneSnapshot snapshot = default;
         fixed (ViemPaneFrame* output = next) Check(viem_pane_layout_copy(handle, output, (ulong)next.Length, &snapshot));
         frames = next.Take((int)snapshot.count).ToArray(); MinimumSize = new(snapshot.minimum_width, snapshot.minimum_height);
-        foreach (var pane in ids.Keys.Where(p => !CanDragBar(p))) pane.ClearStatusResizeHover();
         var live = frames.Where(f => f.kind == 1).Select(f => f.id).ToHashSet();
         foreach (ulong id in splitters.Keys.Where(id => !live.Contains(id)).ToArray())
         { var splitter = splitters[id]; Children.Remove(splitter); splitter.Dispose(); splitters.Remove(id); }

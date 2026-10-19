@@ -58,9 +58,13 @@ Other windows take gutter space from the corresponding content view.
 
 Click a status bar to focus the buffer above it. Clicking the eye also toggles
 line mode. Dragging consumes the click and preserves focus. Status bars use an
-up/down cursor during dragging; each column's bottom bar is fixed. Status bars
+up/down cursor during dragging. Drag a column's bottom bar upward past its top
+to open a new pane of the same document above it and continue dragging the new
+pane's status bar. Focus stays put, the original bottom bar stays at the window
+edge, and dragging it downward does nothing. Each gesture creates at most one
+split and needs room for another status bar. Status bars
 use the same height and centered text regardless of split width. Empty
-background in a movable status bar also shows the up/down cursor on hover;
+background in any status bar also shows the up/down cursor on hover;
 text and controls keep their usual hover cursors. Editor areas
 can collapse completely, but status bars may only touch, never overlap. A
 horizontal split needs room for another status bar in the current view.

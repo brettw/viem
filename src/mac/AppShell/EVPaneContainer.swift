@@ -18,6 +18,9 @@ final class EVPaneContainer: NSViewController {
     return placementGutters[ObjectIdentifier(first)] ?? first.editorSurface.lineNumberGutterWidth
   }
   private weak var lastAccessedPane: EVDocumentContentViewController?
+  var splitForStatusDrag: ((EVDocumentContentViewController) throws -> EVDocumentContentViewController)?
+  private weak var statusDragTarget: EVDocumentContentViewController?
+  private var statusDragNeedsSplit = false
 
   init(first: EVDocumentContentViewController) {
     panes = [first]; ids[ObjectIdentifier(first)] = 1
@@ -112,6 +115,32 @@ final class EVPaneContainer: NSViewController {
     layoutStack()
   }
   private func bind(_ pane: EVDocumentContentViewController) {
+    pane.statusBar.dragDidBegin = { [weak self, weak pane] in
+      guard let self, let pane else { return }
+      self.statusDragTarget = pane
+      self.statusDragNeedsSplit = self.geometry.snapshot().frames.contains {
+        $0.kind == 0 && $0.id == self.id(pane) && $0.flags & UInt32(VIEM_PANE_FRAME_STATUS_DRAGGABLE) == 0
+      }
+    }
+    pane.statusBar.dragDidEnd = { [weak self] in
+      self?.statusDragTarget = nil; self?.statusDragNeedsSplit = false
+    }
+    pane.statusBar.dragDidMove = { [weak self, weak pane] delta, point in
+      guard let self, let pane, let target = self.statusDragTarget,
+            self.panes.contains(where: { $0 === target }) else { return }
+      if self.statusDragNeedsSplit {
+        let y = self.stack.convert(point, from: nil).y
+        guard y < pane.view.frame.maxY - pane.statusBarHeight else { return }
+        // Attempt once per gesture. The original bar keeps mouse capture while
+        // its new upper neighbour becomes the moving boundary.
+        self.statusDragNeedsSplit = false
+        do {
+          guard let added = try self.splitForStatusDrag?(pane) else { return }
+          self.statusDragTarget = added
+          self.dragStatusBar(of: added, by: y - added.view.frame.maxY)
+        } catch { pane.editorSurface.showDocumentMessage(error.localizedDescription) }
+      } else { self.dragStatusBar(of: target, by: delta) }
+    }
     pane.statusBar.clicked = { [weak self, weak pane] in
       guard let self, let pane, let index = self.panes.firstIndex(where: { $0 === pane }) else { return }
       if let responder = self.view.window?.firstResponder as? NSView, responder.isDescendant(of: pane.statusBar) { self.noteFocus(movingTo: index) }
@@ -129,6 +158,7 @@ final class EVPaneContainer: NSViewController {
   private func unbind(_ pane: EVDocumentContentViewController) {
     placementGutters.removeValue(forKey: ObjectIdentifier(pane))
     pane.statusBar.dragDidMove = nil; pane.statusBar.clicked = nil; pane.statusBarHeightDidChange = nil
+    pane.statusBar.dragDidBegin = nil; pane.statusBar.dragDidEnd = nil
     pane.editorSurface.lineNumberGutterWidthWillChange = nil
   }
   private func reserveGutterSpace(in pane: EVDocumentContentViewController, delta: CGFloat) {
@@ -144,12 +174,13 @@ final class EVPaneContainer: NSViewController {
         window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).width))
     if next != window.frame { window.setFrame(next, display: true); layoutStack() }
   }
-  func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false, before: Bool = false) throws {
+  func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false, before: Bool = false, focusNewPane: Bool = true) throws {
     let source = source ?? activePane
     try requireSplitRoom(in: source, vertical: vertical)
     let newID = try geometry.split(id(source), vertical: vertical, height: pane.statusBarHeight, before: before)
     ids[ObjectIdentifier(pane)] = newID; panes.append(pane)
-    addChild(pane); stack.addSubview(pane.view); pane.view.autoresizingMask = []; bind(pane); layoutStack(); focus(pane)
+    addChild(pane); stack.addSubview(pane.view); pane.view.autoresizingMask = []; bind(pane); layoutStack()
+    if focusNewPane { focus(pane) }
   }
   func remove(_ pane: EVDocumentContentViewController) {
     guard panes.count > 1, let index = panes.firstIndex(where: { $0 === pane }) else { return }
@@ -194,8 +225,6 @@ final class EVPaneContainer: NSViewController {
         splitter.updateBorderVisibility(frame: frame, containerHeight: stack.bounds.height)
       } else if let pane = panes.first(where: { id($0) == frame.id }) {
         pane.view.frame = rect; pane.layoutContent(); next.append(pane)
-        if frame.flags & UInt32(VIEM_PANE_FRAME_STATUS_DRAGGABLE) == 0 { pane.statusBar.dragDidMove = nil }
-        else if pane.statusBar.dragDidMove == nil { pane.statusBar.dragDidMove = { [weak self,weak pane] delta in if let pane { self?.dragStatusBar(of:pane,by:delta) } } }
       }
     }
     for token in Array(splitters.keys) where !visibleSplitters.contains(token) { splitters.removeValue(forKey:token)?.removeFromSuperview() }

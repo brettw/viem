@@ -39,8 +39,8 @@ internal static class PaneLayoutTests
             window.PaneStack.Equalize(); window.PaneStack.UpdateLayout(); await Task.Delay(80);
             var positionOrigin = first.LocationToggleControl.TransformToVisual(first.StatusControl).TransformPoint(new Point());
             var empty = new Point(positionOrigin.X - 2, first.StatusControl.ActualHeight / 2);
-            Check(first.StatusResizeHoverAt(empty) && !third.StatusResizeHoverAt(empty),
-                "only movable status backgrounds show the resize hover cursor");
+            Check(first.StatusResizeHoverAt(empty) && third.StatusResizeHoverAt(empty),
+                "all status backgrounds including the bottom bar show the resize hover cursor");
             var fileOrigin = first.FilePathControl.TransformToVisual(first.StatusControl).TransformPoint(new Point());
             Check(!first.StatusResizeHoverAt(new(fileOrigin.X + 2, fileOrigin.Y + first.FilePathControl.ActualHeight / 2))
                 && !first.StatusResizeHoverAt(new(positionOrigin.X + 4, first.StatusControl.ActualHeight / 2)),
@@ -105,8 +105,23 @@ internal static class PaneLayoutTests
                 (global::Windows.Foundation.Point[])[new(backgroundX, .5)], _ => { }, focusTarget: false);
             Check(window.ActivePane == first, "a plain movable-status background click focuses its buffer");
             double fixedBottom = Bars()[2];
-            await InputRoutingTests.Drag(window, third.StatusControl, (global::Windows.Foundation.Point[])[new(.3, .5), new(.3, -.5)], _ => { });
-            Check(Bars()[2] == fixedBottom, "native pointer dragging cannot move the bottom status bar");
+            double bottomX = (third.LocationToggleControl.TransformToVisual(third.StatusControl).TransformPoint(new Point()).X - 2)
+                / third.StatusControl.ActualWidth;
+            await InputRoutingTests.Drag(window, third.StatusControl,
+                (Point[])[new(bottomX, .5), new(bottomX, .85), new(bottomX, .1)],
+                _ => Check(window.Panes.Count == 3, "dragging down or within the bottom bar does not split"), focusTarget: false);
+            ulong beforeDragRevision = third.Document.State.document_revision;
+            double bottomHeight = third.StatusControl.ActualHeight;
+            await InputRoutingTests.Drag(window, third.StatusControl,
+                (Point[])[new(bottomX, .5), new(bottomX, -10 / bottomHeight),
+                    new(bottomX, -60 / bottomHeight), new(bottomX, -45 / bottomHeight)], _ => { }, focusTarget: false);
+            Check(window.Panes.Count == 4 && window.Panes[3] == third && Bars()[3] == fixedBottom,
+                "crossing above the bottom bar creates exactly one upper pane while keeping the bottom edge fixed");
+            var dragPane = window.Panes[2]; await dragPane.Ready;
+            Check(dragPane.Document == third.Document && window.ActivePane == first
+                && Math.Abs(Bars()[2] + dragPane.StatusBarHeight - (fixedBottom - 45)) < 2
+                && third.Document.State.document_revision == beforeDragRevision,
+                "the new upper bar follows continued dragging and reversal without changing focus or source");
             view.Ex("only"); await window.PendingEffectsForTesting;
             window.FocusPane(first);
             ulong revision = first.Document.State.document_revision;

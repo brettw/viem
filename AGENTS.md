@@ -1630,9 +1630,12 @@ their inheritance relationships remain variant-local. Status bar
 command inherits that container with only inverse colors and no borders by
 default. Its font cannot affect bar layout: clip the existing command region
 inside the bar border and center its text inside the container's padding.
-Show the up/down hover cursor only over empty background in a movable bar;
+Show the up/down hover cursor only over empty background in any status bar;
 text, controls and command selection retain their usual hover cursors.
-The bottom bar in each column is fixed. Bars may touch but
+Dragging a column's bottom status bar upward past its top creates a shared-document
+pane above it, preserves focus, and continues dragging the new upper pane's bar.
+The original bottom bar stays at the window edge; downward drags do nothing.
+Create at most one split per gesture, subject to the usual room check. Bars may touch but
 never overlap, and editor areas may collapse to zero. Dragging pushes bars met in
 the current direction; reversing releases previously pushed bars immediately,
 including after reaching an edge. Splitting requires room for one additional

@@ -56,8 +56,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     return gesture
   }()
   public var preferredHeightDidChange: (() -> Void)?
-  /// Top-to-bottom window delta; nil for the fixed bottom status bar.
-  var dragDidMove: ((CGFloat) -> Void)? {
+  var dragDidBegin: (() -> Void)?
+  var dragDidEnd: (() -> Void)?
+  /// Top-to-bottom delta and pointer location in window coordinates.
+  var dragDidMove: ((CGFloat, NSPoint) -> Void)? {
     didSet {
       resizeGesture.isEnabled = dragDidMove != nil
       if (oldValue == nil) != (dragDidMove == nil) { window?.invalidateCursorRects(for: self) }
@@ -334,13 +336,17 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   @objc private func resizePanes(_ gesture: NSPanGestureRecognizer) {
     switch gesture.state {
     case .began, .changed:
-      if gesture.state == .began { lastDragTranslation = 0; NSCursor.resizeUpDown.push(); dragCursorPushed = true }
+      if gesture.state == .began {
+        lastDragTranslation = 0; NSCursor.resizeUpDown.push(); dragCursorPushed = true
+        dragDidBegin?()
+      }
       let translation = -gesture.translation(in: nil).y
       let delta = translation - lastDragTranslation
       lastDragTranslation = translation // Discard blocked overshoot at an edge.
-      dragDidMove?(delta)
+      dragDidMove?(delta, gesture.location(in: nil))
     default:
       lastDragTranslation = 0
+      dragDidEnd?()
       if dragCursorPushed { NSCursor.pop(); dragCursorPushed = false }
     }
   }

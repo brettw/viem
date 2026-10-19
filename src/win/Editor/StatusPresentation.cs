@@ -28,6 +28,8 @@ internal sealed partial class EditorPane
     private DependencyObject? statusPointerSource;
     private global::Windows.Foundation.Point statusPress, statusLastPoint;
     private bool statusDragging;
+    private EditorPane? statusDragTarget;
+    private bool statusDragNeedsSplit;
     private bool statusSelectingOutput;
     private double filePathTextWidth, modeTextWidth, messageTextWidth;
     private (string Mode, string Message, string Family, double Size)? resizeHoverTextIdentity;
@@ -59,10 +61,9 @@ internal sealed partial class EditorPane
         return false;
     }
 
-    internal void ClearStatusResizeHover() => status.SetResizeHover(false);
     internal bool StatusResizeHoverAt(global::Windows.Foundation.Point point)
     {
-        if (status.Visibility != Visibility.Visible || !window.PaneStack.CanDragBar(this)
+        if (status.Visibility != Visibility.Visible
             || point.X < 0 || point.Y < 0 || point.X >= status.ActualWidth || point.Y >= status.ActualHeight) return false;
         bool Over(FrameworkElement control, double? textWidth = null)
         {
@@ -165,6 +166,7 @@ internal sealed partial class EditorPane
             if (!point.Properties.IsLeftButtonPressed) return;
             statusPointer = e.Pointer.PointerId; statusPress = statusLastPoint = point.Position; statusDragging = false; statusSelectingOutput = !outputScroll.Visibility.Equals(Visibility.Collapsed) && e.OriginalSource is DependencyObject source && IsOutputDescendant(source);
             statusPointerSource = e.OriginalSource as DependencyObject;
+            statusDragTarget = this; statusDragNeedsSplit = !window.PaneStack.CanDragBar(this);
             // Empty background has no child control to retain pointer events.
             // Capture immediately so a first move beyond the bar still reaches
             // the threshold handler, without taking focus or starting a drag.
@@ -175,30 +177,49 @@ internal sealed partial class EditorPane
             status.SetResizeHover(StatusResizeHoverAt(e.GetCurrentPoint(status).Position));
             if (statusPointer != e.Pointer.PointerId) return;
             var point = e.GetCurrentPoint(window.PaneStack);
-            if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false); return; }
+            if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusPointerSource = null; statusDragTarget = null; statusDragNeedsSplit = false; statusDragging = false; status.SetDragging(false); return; }
             if (!statusDragging)
             {
                 if (Math.Abs(point.Position.Y - statusPress.Y) < 4 && Math.Abs(point.Position.X - statusPress.X) < 4) return;
                 statusDragging = true;
-                if (window.PaneStack.CanDragBar(this)) status.SetDragging(true);
+                status.SetDragging(true);
                 if (!statusSelectingOutput) {
                     bool captured = CaptureStatusDragPointer(e);
-                    if (!captured) { statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false); return; }
+                    if (!captured) { statusPointer = null; statusPointerSource = null; statusDragTarget = null; statusDragNeedsSplit = false; statusDragging = false; status.SetDragging(false); return; }
                 }
             }
             double delta = point.Position.Y - statusLastPoint.Y;
             statusLastPoint = point.Position; // No blocked overshoot survives a reversal.
-            window.PaneStack.DragBar(this, delta); e.Handled = true;
+            if (statusDragNeedsSplit)
+            {
+                double top = status.TransformToVisual(window.PaneStack).TransformPoint(new global::Windows.Foundation.Point()).Y;
+                if (point.Position.Y < top)
+                {
+                    // Keep capture on this bar and move the new upper boundary.
+                    // Admission failures are reported only once per gesture.
+                    statusDragNeedsSplit = false;
+                    Run(() => {
+                        var added = window.SplitPane(this, Document, focusNewPane: false);
+                        statusDragTarget = added;
+                        double bottom = added.status.TransformToVisual(window.PaneStack)
+                            .TransformPoint(new global::Windows.Foundation.Point(0, added.StatusBarHeight)).Y;
+                        window.PaneStack.DragBar(added, point.Position.Y - bottom);
+                    });
+                }
+            }
+            else if (statusDragTarget is { } target) window.PaneStack.DragBar(target, delta);
+            e.Handled = true;
         }), true);
         status.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, e) => {
             if (statusPointer != e.Pointer.PointerId) return;
             bool dragged = statusDragging;
+            statusDragTarget = null; statusDragNeedsSplit = false;
             statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false);
             if (!dragged) window.FocusPane(this, keepStatusFocus: statusSelectingOutput);
             if (!statusSelectingOutput) { status.ReleasePointerCapture(e.Pointer); if (dragged) e.Handled = true; }
         }), true);
         status.PointerCaptureLost += (_, e) => {
-            if (ReferenceEquals(e.OriginalSource, status)) { statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false); }
+            if (ReferenceEquals(e.OriginalSource, status)) { statusPointer = null; statusPointerSource = null; statusDragging = false; statusDragTarget = null; statusDragNeedsSplit = false; status.SetDragging(false); }
         };
         status.PointerExited += (_, e) => { if (ReferenceEquals(e.OriginalSource, status)) status.SetResizeHover(false); };
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
