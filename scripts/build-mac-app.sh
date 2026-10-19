@@ -96,6 +96,7 @@ package_app() {
     cp "$swift_bin_dir/blocking-viem" "$macos_dir/blocking-viem.new"
     mv -f "$macos_dir/blocking-viem.new" "$macos_dir/blocking-viem"
     cp "$project_dir/src/mac/App/Resources/Info.plist" "$contents_dir/Info.plist"
+    cp "$project_dir/src/mac/App/Resources/Credits.rtf" "$resources_dir/Credits.rtf"
     cp "$project_dir/assets/icon/Viem.icns" "$resources_dir/Viem.icns"
     # Theme presets are versioned resources. Profiles copy these when first made;
     # the core embeds Midnight as its fallback when runtime resources are missing.
