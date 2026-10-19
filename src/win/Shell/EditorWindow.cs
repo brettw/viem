@@ -527,9 +527,10 @@ internal sealed partial class EditorWindow : Window
         }
         else if (File.Exists(path) && explicitPath != null && !samePath && !force)
         { if (await Dialog("Replace file?", $"{path} already exists.", "Replace", "Cancel") != ContentDialogResult.Primary) return false; }
-        if (pane.View.FireAutocmd("BufWritePre", path) is { } beforeEffects && !await ExecuteEffects(pane, beforeEffects, pane.View))
+        var view = pane.View ?? throw new InvalidOperationException("The document has no editor view.");
+        if (view.FireAutocmd("BufWritePre", path) is { } beforeEffects && !await ExecuteEffects(pane, beforeEffects, view))
             throw new OperationCanceledException();
-        if (pane.View.Outcome.command_status is not (VIEM_COMMAND_STATUS_NONE or VIEM_COMMAND_STATUS_COMPLETE))
+        if (view.Outcome.command_status is not (VIEM_COMMAND_STATUS_NONE or VIEM_COMMAND_STATUS_COMPLETE))
             throw new InvalidOperationException("BufWritePre autocommands failed.");
         var state = doc.State; byte[] bytes = doc.Source(state.document_revision);
         DocumentRecovery? replacementRecovery = null;
@@ -554,7 +555,7 @@ internal sealed partial class EditorWindow : Window
             if (!samePath) doc.RedetectLanguage();
             preferences.Remember(path);
         }
-        if (pane.View.FireAutocmd("BufWritePost", path) is { } afterEffects) await ExecuteEffects(pane, afterEffects, pane.View);
+        if (view.FireAutocmd("BufWritePost", path) is { } afterEffects) await ExecuteEffects(pane, afterEffects, view);
         pane.SetMessage($"Saved {Path.GetFileName(path)}"); UpdateTitle();
         return true;
     }
