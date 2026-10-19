@@ -6,6 +6,7 @@ use super::value::{Blob, Dict, Lock, VStr, Value};
 
 /// An assignment target.
 enum Target {
+    ObjectField { object: Value, key: String },
     Variable(Vec<u8>),
     Option(String, OptionScope),
     Register(char),
@@ -100,9 +101,15 @@ fn parse_target(eval: &mut Eval) -> EvalResult<Option<Target>> {
                 }
                 continue;
             }
-            let Some(Value::Dict(dict)) = current else {
+            if let Some(object @ (Value::Class(_) | Value::Object(_))) = &current {
+                if last {return Ok(Some(Target::ObjectField {object: object.clone(), key: key.to_str_lossy().into_owned()}));}
+                container = Some(super::objects::member(eval.rt, object, &key.to_str_lossy())?);
+                continue;
+            }
+            let Some(Value::Dict(dict) | Value::Module(dict)) = current else {
                 return Err(Fail::Error(VimError::new(1203, format!("Dot can only be used on a dictionary: {}", String::from_utf8_lossy(&eval.src[start - 1..])))));
             };
+            dict.exported_member(key.as_bytes())?;
             if last {
                 return Ok(Some(Target::DictKey { dict, key }));
             }
@@ -199,6 +206,7 @@ fn combine(old: Value, op: &str, value: Value) -> EvalResult<Value> {
 
 fn current_value(eval: &mut Eval, target: &Target) -> EvalResult<Value> {
     match target {
+        Target::ObjectField {object, key} => super::objects::member(eval.rt, object, key),
         Target::Variable(name) => eval.rt.get_variable(eval.host, name),
         Target::Option(name, scope) => eval.host.get_option(name, *scope).map_err(Fail::Error),
         Target::Register(name) => eval.host.get_register(*name).map_err(Fail::Error),
@@ -211,6 +219,7 @@ fn current_value(eval: &mut Eval, target: &Target) -> EvalResult<Value> {
 
 fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Value, constant: bool) -> EvalResult<()> {
     match target {
+        Target::ObjectField {object, key} => super::objects::assign(rt, &object, &key, value),
         Target::Variable(name) => {
             if constant {
                 if let Ok((dict, key, _)) = rt.variable_slot(host, &name) {
@@ -231,6 +240,7 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
         Target::Index { container, key } => match container {
             Value::List(list) => {
                 list.check_writable()?;
+                let value = list.checked_value(value)?;
                 let mut data = list.data();
                 let len = data.items.len() as i64;
                 let mut index = key.to_number()?;
@@ -252,6 +262,7 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
                 assign_dict(&dict, key, value)
             }
             Value::Blob(blob) => {
+                blob.check_writable()?;
                 let mut data = blob.data();
                 let len = data.bytes.len() as i64;
                 let mut index = key.to_number()?;
@@ -296,7 +307,7 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
                 return Err(Fail::Error(VimError::new(709, "[:] requires a List or Blob value")));
             };
             list.check_writable()?;
-            let source = source.snapshot();
+            let source = source.snapshot().into_iter().map(|v|list.checked_value(v)).collect::<Result<Vec<_>, _>>()?;
             let mut data = list.data();
             let len = data.items.len() as i64;
             let mut start = first.map(|f| f.to_number()).transpose()?.unwrap_or(0);
@@ -349,7 +360,10 @@ fn assign(rt: &mut Runtime, host: &mut dyn ScriptHost, target: Target, value: Va
 }
 
 fn assign_dict(dict: &Dict, key: VStr, value: Value) -> EvalResult<()> {
+    dict.exported_member(key.as_bytes())?;
+    let value = dict.checked_value(key.as_bytes(), value)?;
     let mut data = dict.data();
+    data.null = false;
     match data.items.get_mut(&key) {
         Some(item) => {
             if item.lock.is_locked() {
@@ -427,7 +441,7 @@ fn lock_value_inner(value: &Value, depth: i64, lock: bool, recursive: bool,
 
 /// Lines of a `=<<` heredoc after the current line; returns them and the
 /// position after the end marker.
-fn heredoc(rt: &Runtime, src: &[u8], at: usize) -> Result<(Vec<Vec<u8>>, usize, bool, bool), VimError> {
+pub(crate) fn heredoc(rt: &Runtime, src: &[u8], at: usize) -> Result<(Vec<Vec<u8>>, usize, bool, bool), VimError> {
     let mut words = String::from_utf8_lossy(&src[at..]).split_whitespace().map(str::to_string).collect::<Vec<_>>();
     let mut trim = false;
     let mut eval = false;
@@ -520,7 +534,7 @@ pub(crate) fn skip_let(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], 
 
 pub(crate) fn let_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize, constant: bool) -> CommandOutcome {
     let at = skip_white(src, at);
-    if at >= src.len() || src[at] == b'|' || src[at] == b'"' {
+    if at >= src.len() || src[at] == b'|' || matches!(src[at], b'"' | b'#') {
         let next = after(src, at).unwrap_or(Next::NextLine);
         list_variables(rt, host, &[]);
         return outcome(next, Ok(()));
@@ -572,10 +586,11 @@ pub(crate) fn let_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8
             Ok(value) => value,
             Err(fail) => return outcome(next, Err(fail)),
         };
-        let Value::List(list) = value else {
-            return outcome(next, Err(Fail::Error(VimError::new(714, "List required"))));
+        let items = match value {
+            Value::List(list) => list.snapshot(),
+            Value::Tuple(items) if rt.vim9() => items.as_ref().clone(),
+            _ => return outcome(next, Err(Fail::Error(VimError::new(714, "List required")))),
         };
-        let items = list.snapshot();
         if items.len() < targets.len() {
             return outcome(next, Err(Fail::Error(VimError::new(688, "More targets than List items"))));
         }
@@ -654,24 +669,20 @@ pub(crate) fn let_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8
 }
 
 fn let_heredoc(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize, target: Target, constant: bool) -> CommandOutcome {
-    let (lines, end_index, _trim, eval_lines) = match heredoc(rt, src, at) {
-        Ok(parsed) => parsed,
-        Err(err) => return outcome(Next::NextLine, Err(Fail::Error(err))),
-    };
-    let next = Next::Position(end_index + 1, 0);
-    let result = (|| {
-        let mut items = Vec::new();
-        for line in lines {
-            if eval_lines {
-                let mut eval = Eval::new(rt, host, &line, 0, true);
-                items.push(eval.interpolate_heredoc()?);
-            } else {
-                items.push(Value::String(line.into()));
-            }
-        }
-        assign(rt, host, target, Value::list(items), constant)
-    })();
-    outcome(next, result)
+    let result = heredoc_value(rt, host, src, at);
+    match result {
+        Ok((value, end)) => outcome(Next::Position(end + 1, 0), assign(rt, host, target, value, constant)),
+        Err(fail) => outcome(Next::NextLine, Err(fail)),
+    }
+}
+
+pub(crate) fn heredoc_value(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize) -> EvalResult<(Value, usize)> {
+    let (lines, end, _, interpolate) = heredoc(rt, src, at)?;
+    let mut items = vec![];
+    for line in lines {
+        items.push(if interpolate {Eval::new(rt, host, &line, 0, true).interpolate_heredoc()?} else {Value::String(line.into())});
+    }
+    Ok((Value::list(items), end))
 }
 
 fn list_variables(rt: &mut Runtime, host: &mut dyn ScriptHost, names: &[Vec<u8>]) {
@@ -723,6 +734,7 @@ pub(crate) fn unlet_command(rt: &mut Runtime, host: &mut dyn ScriptHost, argumen
         };
         let missing = |name: &[u8]| Fail::Error(VimError::new(108, format!("No such variable: \"{}\"", String::from_utf8_lossy(name))));
         match target {
+            Target::ObjectField {..} => return Err(VimError::new(1377, "Cannot unlet an object or class variable").into()),
             Target::Variable(name) => {
                 if name.len() >= 2 && name[1] == b':' && matches!(name[0], b'a' | b'v') {
                     return Err(Fail::Error(VimError::new(795, format!("Cannot delete variable {}", String::from_utf8_lossy(&name)))));

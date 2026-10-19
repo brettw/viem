@@ -1,5 +1,6 @@
-//! Legacy Vim script values. Strings are byte strings, as in Vim: indexing,
-//! slicing and `strlen()` count bytes. Lists, dictionaries and blobs are
+//! Shared Vim script values. Strings retain bytes; legacy indexing counts
+//! bytes, while Vim9 indexing includes a character's composing marks.
+//! Lists, dictionaries and blobs are
 //! reference types whose mutations are visible through every alias.
 use super::error::VimError;
 use std::collections::BTreeMap;
@@ -86,16 +87,22 @@ impl Lock {
 
 #[derive(Debug, Default)]
 pub struct ListData {
+    pub null: bool,
     pub items: Vec<Value>,
     pub lock: Lock,
+    pub member_type: Option<super::types::Type>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct List(Arc<Mutex<ListData>>);
 
 impl List {
+    pub fn checked_value(&self, value: Value) -> Result<Value, VimError> {
+        let ty = self.data().member_type.clone();
+        match ty {Some(t) => {let value = t.check(value)?; t.attach(&value); Ok(value)}, None => Ok(value)}
+    }
     pub fn new(items: Vec<Value>) -> Self {
-        Self(Arc::new(Mutex::new(ListData { items, lock: Lock::Unlocked })))
+        Self(Arc::new(Mutex::new(ListData { null: false, items, lock: Lock::Unlocked, member_type: None })))
     }
     /// Never hold the guard while evaluating or touching another container.
     pub fn data(&self) -> MutexGuard<'_, ListData> {
@@ -123,6 +130,7 @@ impl List {
         Arc::as_ptr(&self.0) as *const () as usize
     }
     pub fn check_writable(&self) -> Result<(), VimError> {
+        if self.data().null {return Err(VimError::new(1130, "Cannot add to null list"));}
         if self.data().lock.is_locked() {
             Err(VimError::new(741, "Value is locked"))
         } else {
@@ -131,6 +139,7 @@ impl List {
     }
     /// Locked check for a builtin's argument, e.g. "add() argument".
     pub fn check_argument(&self, function: &str) -> Result<(), VimError> {
+        if self.data().null {return Err(VimError::new(1130, "Cannot add to null list"));}
         if self.data().lock.is_locked() {
             Err(VimError::new(741, format!("Value is locked: {function}() argument")))
         } else {
@@ -153,14 +162,29 @@ impl DictItem {
 
 #[derive(Debug, Default)]
 pub struct DictData {
+    pub null: bool,
     pub items: BTreeMap<VStr, DictItem>,
     pub lock: Lock,
+    pub member_type: Option<super::types::Type>,
+    pub declarations: BTreeMap<VStr, super::types::Type>,
+    pub exports: Option<std::collections::BTreeSet<VStr>>,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Dict(Arc<Mutex<DictData>>);
 
 impl Dict {
+    pub(crate) fn downgrade(&self) -> std::sync::Weak<Mutex<DictData>> {Arc::downgrade(&self.0)}
+    pub(crate) fn from_shared(value: Arc<Mutex<DictData>>) -> Self {Self(value)}
+    pub fn exported_member(&self, key: &[u8]) -> Result<(), VimError> {
+        if self.data().exports.as_ref().is_some_and(|exports| !exports.contains(key)) {
+            Err(VimError::new(1049, format!("Item not exported: {}", String::from_utf8_lossy(key))))
+        } else {Ok(())}
+    }
+    pub fn checked_value(&self, key: &[u8], value: Value) -> Result<Value, VimError> {
+        let ty = {let data = self.data(); data.declarations.get(key).cloned().or_else(||data.member_type.clone())};
+        match ty {Some(t) => {let value = t.check(value)?; t.attach(&value); Ok(value)}, None => Ok(value)}
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -233,6 +257,7 @@ impl Dict {
 
 #[derive(Debug, Default)]
 pub struct BlobData {
+    pub null: bool,
     pub bytes: Vec<u8>,
     pub lock: Lock,
 }
@@ -241,8 +266,14 @@ pub struct BlobData {
 pub struct Blob(Arc<Mutex<BlobData>>);
 
 impl Blob {
+    pub fn check_writable(&self) -> Result<(), VimError> {
+        let data = self.data();
+        if data.null {return Err(VimError::new(1131, "Cannot add to null blob"));}
+        if data.lock.is_locked() {return Err(VimError::new(741, "Value is locked"));}
+        Ok(())
+    }
     pub fn new(bytes: Vec<u8>) -> Self {
-        Self(Arc::new(Mutex::new(BlobData { bytes, lock: Lock::Unlocked })))
+        Self(Arc::new(Mutex::new(BlobData { null: false, bytes, lock: Lock::Unlocked })))
     }
     pub fn data(&self) -> MutexGuard<'_, BlobData> {
         self.0.lock().unwrap_or_else(|poison| poison.into_inner())
@@ -266,7 +297,7 @@ impl Blob {
 #[derive(Clone, Debug)]
 pub struct Funcref(Arc<FuncrefData>);
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct FuncrefData {
     pub name: VStr,
     pub args: Vec<Value>,
@@ -274,15 +305,55 @@ pub struct FuncrefData {
     /// A dictionary bound implicitly by `dict.Func` access, which a later
     /// explicit binding replaces.
     pub auto_bound: bool,
+    pub receiver: Option<Arc<super::objects::Object>>,
+    pub constructor: Option<Arc<super::objects::Class>>,
+    pub specialization: Option<Arc<super::state::UserFunction>>,
+    pub ty: Option<super::types::Type>,
 }
 
 impl Funcref {
     pub fn named(name: impl Into<VStr>) -> Self {
-        Self(Arc::new(FuncrefData { name: name.into(), args: Vec::new(), dict: None, auto_bound: false }))
+        Self(Arc::new(FuncrefData { name: name.into(), args: Vec::new(), dict: None, auto_bound: false, receiver: None, constructor: None, specialization: None, ty: None }))
     }
     pub fn partial(name: VStr, args: Vec<Value>, dict: Option<Dict>, auto_bound: bool) -> Self {
-        Self(Arc::new(FuncrefData { name, args, dict, auto_bound }))
+        Self(Arc::new(FuncrefData { name, args, dict, auto_bound, receiver: None, constructor: None, specialization: None, ty: None }))
     }
+    pub fn object_method(name: VStr, receiver: Arc<super::objects::Object>) -> Self {
+        Self(Arc::new(FuncrefData {name, args: vec![], dict: None, auto_bound: false, receiver: Some(receiver), constructor: None, specialization: None, ty: None}))
+    }
+    pub fn constructor(class: Arc<super::objects::Class>, name: &str) -> Self {
+        // Generated constructors take optional, dynamically typed fields; an
+        // explicit constructor replaces this signature through specialized().
+        let ty = super::types::Type::Func {args: vec![super::types::Type::Any; class.fields.len()], optional: class.fields.len(), rest: None, result: Box::new(super::types::Type::Named(class.type_name()))};
+        Self(Arc::new(FuncrefData {name: name.into(), args: vec![], dict: None, auto_bound: false, receiver: None, constructor: Some(class), specialization: None, ty: Some(ty)}))
+    }
+    pub(crate) fn specialized(&self, function: Arc<super::state::UserFunction>) -> Self {
+        let mut data = self.0.as_ref().clone();
+        let mut ty = super::compiler::signature(&function);
+        if let (Some(class), super::types::Type::Func {result, ..}) = (&data.constructor, &mut ty) {
+            **result = super::types::Type::Named(class.type_name());
+        }
+        data.ty = Some(ty); data.specialization = Some(function); Self(Arc::new(data))
+    }
+    pub(crate) fn with_type(&self, ty: super::types::Type) -> Self {let mut data = self.0.as_ref().clone(); data.ty = Some(ty); Self(Arc::new(data))}
+    pub(crate) fn bind(&self, args: Vec<Value>, dict: Option<Dict>, auto_bound: bool) -> Self {
+        let mut data = self.0.as_ref().clone();
+        // Binding must retain a method's receiver and a generic function's
+        // specialization. Only the remaining arguments are visible to callers.
+        if let Some(super::types::Type::Func {args: parameters, optional, ..}) = &mut data.ty {
+            let additional = args.len().saturating_sub(data.args.len()).min(parameters.len());
+            parameters.drain(..additional);
+            *optional = (*optional).min(parameters.len());
+        }
+        data.args = args;
+        data.dict = dict;
+        data.auto_bound = auto_bound;
+        Self(Arc::new(data))
+    }
+    pub(crate) fn declared_type(&self) -> Option<super::types::Type> {self.0.ty.clone()}
+    pub(crate) fn specialization(&self) -> Option<Arc<super::state::UserFunction>> {self.0.specialization.clone()}
+    pub fn receiver(&self) -> Option<Arc<super::objects::Object>> {self.0.receiver.clone()}
+    pub fn class(&self) -> Option<Arc<super::objects::Class>> {self.0.constructor.clone()}
     pub fn name(&self) -> &VStr {
         &self.0.name
     }
@@ -301,7 +372,24 @@ impl Funcref {
 }
 
 #[derive(Clone, Debug)]
+pub struct TypeAlias {
+    pub name: VStr,
+    pub ty: super::types::Type,
+}
+
+#[derive(Clone, Debug)]
 pub enum Value {
+    TypeAlias(Arc<TypeAlias>),
+    /// A typed function completed without returning a value.
+    Void,
+    NullTyped(Box<super::types::Type>),
+    /// An expression type produced only by the shared parser in analysis mode.
+    Type(Box<super::types::Type>),
+    /// A namespace can only be consumed by member selection, never as a Dict.
+    Module(Dict),
+    Tuple(Arc<Vec<Value>>),
+    Class(Arc<super::objects::Class>),
+    Object(Arc<super::objects::Object>),
     Number(i64),
     Float(f64),
     String(VStr),
@@ -364,6 +452,14 @@ impl From<Vec<u8>> for Value {
 }
 
 impl Value {
+    // Keep the value tagged union small: recursive expression evaluation holds
+    // several values per native stack frame, including in legacy scripts.
+    pub(crate) fn type_value(ty: super::types::Type) -> Self { Self::Type(Box::new(ty)) }
+    pub(crate) fn null_typed(ty: super::types::Type) -> Self { Self::NullTyped(Box::new(ty)) }
+
+    pub(crate) fn is_null(&self) -> bool {
+        match self {Self::Null | Self::NullTyped(_) => true, Self::List(l) => l.data().null, Self::Dict(d) => d.data().null, Self::Blob(b) => b.data().null, _ => false}
+    }
     pub fn str(text: &str) -> Self {
         Value::String(text.into())
     }
@@ -372,6 +468,10 @@ impl Value {
     }
     pub fn type_number(&self) -> i64 {
         match self {
+            Value::NullTyped(t) => match t.as_ref() {super::types::Type::String => 1, super::types::Type::Tuple(..) => 17, super::types::Type::Func {..} => 2, super::types::Type::Job => 8, super::types::Type::Channel => 9, super::types::Type::Named(n) if n == "class" => 12, _ => 13},
+            Value::TypeAlias(_) => 14,
+            Value::Void | Value::Type(_) | Value::Module(_) => -1, Value::Tuple(_) => 17,
+            Value::Class(c) => if c.enumeration {15} else {12}, Value::Object(o) => if o.class.enumeration {16} else {13},
             Value::Number(_) => VAR_NUMBER,
             Value::String(_) => VAR_STRING,
             Value::Funcref(_) => VAR_FUNC,
@@ -385,6 +485,9 @@ impl Value {
     }
     pub fn type_name(&self) -> &'static str {
         match self {
+            Value::TypeAlias(_) => "typealias",
+            Value::Void => "void", Value::NullTyped(_) => "Null", Value::Type(_) => "Type", Value::Module(_) => "Module", Value::Tuple(_) => "Tuple",
+            Value::Class(_) => "Class", Value::Object(_) => "Object",
             Value::Number(_) => "Number",
             Value::String(_) => "String",
             Value::Funcref(_) => "Funcref",
@@ -400,6 +503,10 @@ impl Value {
     /// `tv_get_number()`: legacy conversion of scalars to Number.
     pub fn to_number(&self) -> Result<i64, VimError> {
         match self {
+            Value::TypeAlias(alias) => Err(VimError::new(1403, format!("Type alias \"{}\" cannot be used as a value", alias.name.to_str_lossy()))),
+            Value::Void => Err(VimError::new(1031, "Cannot use void value")),
+            Value::NullTyped(t) if **t == super::types::Type::String => Ok(0),
+            Value::NullTyped(_) => Err(VimError::new(1320, "Using null as a Number")),
             Value::Number(number) => Ok(*number),
             Value::String(text) => Ok(str2nr(text.as_bytes(), true).0),
             Value::Bool(value) => Ok(*value as i64),
@@ -409,6 +516,7 @@ impl Value {
             Value::Dict(_) => Err(VimError::new(728, "Using a Dictionary as a Number")),
             Value::Funcref(_) => Err(VimError::new(703, "Using a Funcref as a Number")),
             Value::Blob(_) => Err(VimError::new(974, "Using a Blob as a Number")),
+            Value::Class(_) | Value::Object(_) | Value::Module(_) | Value::Type(_) | Value::Tuple(_) => Err(VimError::new(1320, "Using a Class or Object as a Number")),
         }
     }
 
@@ -419,6 +527,9 @@ impl Value {
 
     pub fn to_float(&self) -> Result<f64, VimError> {
         match self {
+            Value::TypeAlias(alias) => Err(VimError::new(1403, format!("Type alias \"{}\" cannot be used as a value", alias.name.to_str_lossy()))),
+            Value::Void => Err(VimError::new(1031, "Cannot use void value")),
+            Value::NullTyped(_) => Err(VimError::new(1321, "Using null as a Float")),
             Value::Float(value) => Ok(*value),
             Value::Number(number) => Ok(*number as f64),
             Value::Bool(value) => Ok(*value as i64 as f64),
@@ -428,12 +539,17 @@ impl Value {
             Value::Dict(_) => Err(VimError::new(894, "Using a Dictionary as a Float")),
             Value::Funcref(_) => Err(VimError::new(891, "Using a Funcref as a Float")),
             Value::Blob(_) => Err(VimError::new(975, "Using a Blob as a Float")),
+            Value::Class(_) | Value::Object(_) | Value::Module(_) | Value::Type(_) | Value::Tuple(_) => Err(VimError::new(1321, "Using a Class or Object as a Float")),
         }
     }
 
     /// `tv_get_string()`: legacy conversion of scalars to String.
     pub fn to_vstr(&self) -> Result<VStr, VimError> {
         match self {
+            Value::TypeAlias(alias) => Err(VimError::new(1403, format!("Type alias \"{}\" cannot be used as a value", alias.name.to_str_lossy()))),
+            Value::Void => Err(VimError::new(1031, "Cannot use void value")),
+            Value::NullTyped(t) if **t == super::types::Type::String => Ok(VStr::empty()),
+            Value::NullTyped(_) => Err(VimError::new(1324, "Using null as a String")),
             Value::String(text) => Ok(text.clone()),
             Value::Number(number) => Ok(number.to_string().into()),
             Value::Float(value) => Ok(format_float(*value).into()),
@@ -445,6 +561,7 @@ impl Value {
             Value::Dict(_) => Err(VimError::new(731, "Using a Dictionary as a String")),
             Value::Funcref(_) => Err(VimError::new(729, "Using a Funcref as a String")),
             Value::Blob(_) => Err(VimError::new(976, "Using a Blob as a String")),
+            Value::Class(_) | Value::Object(_) | Value::Module(_) | Value::Type(_) | Value::Tuple(_) => Err(VimError::new(1324, "Using a Class or Object as a String")),
         }
     }
 
@@ -461,10 +578,25 @@ impl Value {
     pub fn echo_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         let mut seen = Vec::new();
-        write_value(&mut out, self, false, &mut seen, 0);
+        write_value(&mut out, self, false, &mut seen, 0, false);
         out
     }
 
+    pub fn display_bytes(&self, vim9: bool, repr: bool) -> Vec<u8> {
+        let mut out = vec![];
+        write_value(&mut out, self, repr, &mut vec![], 0, vim9);
+        out
+    }
+    pub fn display(&self, vim9: bool, repr: bool) -> String {
+        String::from_utf8_lossy(&self.display_bytes(vim9, repr)).into_owned()
+    }
+    pub(crate) fn display_with_hook<F>(&self, vim9: bool, repr: bool, hook: &mut F) -> super::EvalResult<Vec<u8>>
+    where F: FnMut(&Value, usize) -> super::EvalResult<Option<Vec<u8>>> {
+        let mut out = vec![];
+        write_value_with(&mut out, self, repr, &mut vec![], 0, vim9, hook)?;
+        if out.len() > super::builtins::MAX_STRING_BYTES {return Err(VimError::new(342, "Value display exceeds the string budget").into());}
+        Ok(out)
+    }
     pub fn echo_string(&self) -> String {
         String::from_utf8_lossy(&self.echo_bytes()).into_owned()
     }
@@ -473,7 +605,7 @@ impl Value {
     pub fn string_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         let mut seen = Vec::new();
-        write_value(&mut out, self, true, &mut seen, 0);
+        write_value(&mut out, self, true, &mut seen, 0, false);
         out
     }
 
@@ -495,6 +627,8 @@ impl Value {
                     return copied.clone();
                 }
                 let new = List::new(Vec::new());
+                let (null, member_type) = {let data = list.data(); (data.null, data.member_type.clone())};
+                {let mut data = new.data(); data.null = null; data.member_type = member_type;}
                 copies.push((list.id(), Value::List(new.clone())));
                 let items = list.snapshot();
                 let items = if deep && depth < 100 {
@@ -510,6 +644,8 @@ impl Value {
                     return copied.clone();
                 }
                 let new = Dict::new();
+                let (null, member_type, declarations) = {let data = dict.data(); (data.null, data.member_type.clone(), data.declarations.clone())};
+                {let mut data = new.data(); data.null = null; data.member_type = member_type; data.declarations = declarations;}
                 copies.push((dict.id(), Value::Dict(new.clone())));
                 for (key, value) in dict.snapshot() {
                     let value = if deep && depth < 100 { value.copy_inner(true, copies, depth + 1) } else { value };
@@ -517,40 +653,55 @@ impl Value {
                 }
                 Value::Dict(new)
             }
-            Value::Blob(blob) => Value::Blob(Blob::new(blob.bytes())),
+            Value::Blob(blob) => {let result = Blob::new(blob.bytes()); let null = blob.data().null; result.data().null = null; Value::Blob(result)},
             other => other.clone(),
         }
     }
 
+    pub(crate) fn clear_values(values: Vec<Value>) {
+        Self::clear_worklist(values, &mut Default::default());
+    }
     fn clear_recursive(self, seen: &mut std::collections::HashSet<usize>) {
-        match self {
-            Value::List(list) => {
-                if seen.insert(list.id()) {
+        Self::clear_worklist(vec![self], seen);
+    }
+    fn clear_worklist(mut pending: Vec<Value>, seen: &mut std::collections::HashSet<usize>) {
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Class(class) if seen.insert(Arc::as_ptr(&class) as usize) => {
+                    pending.push(Value::Dict(class.statics.clone()));
+                    pending.extend(class.base.iter().chain(&class.interfaces).cloned().map(Value::Class));
+                }
+                Value::Object(object) if seen.insert(Arc::as_ptr(&object) as usize) => {
+                    pending.push(Value::Dict(object.fields.clone())); pending.push(Value::Class(object.class.clone()));
+                }
+                Value::Tuple(items) if seen.insert(Arc::as_ptr(&items) as usize) => pending.extend(items.iter().cloned()),
+                Value::List(list) if seen.insert(list.id()) => {
                     let items = std::mem::take(&mut list.data().items);
-                    for item in items {
-                        item.clear_recursive(seen);
-                    }
+                    pending.extend(items);
                 }
-            }
-            Value::Dict(dict) => {
-                if seen.insert(dict.id()) {
+                Value::Dict(dict) | Value::Module(dict) if seen.insert(dict.id()) => {
                     let items = std::mem::take(&mut dict.data().items);
-                    for (_, item) in items {
-                        item.value.clear_recursive(seen);
-                    }
+                    pending.extend(items.into_values().map(|item|item.value));
                 }
-            }
-            Value::Funcref(funcref) => {
-                if let Some(dict) = funcref.dict() {
-                    if seen.insert(dict.id()) {
-                        let items = std::mem::take(&mut dict.data().items);
-                        for (_, item) in items {
-                            item.value.clear_recursive(seen);
+                Value::Funcref(funcref) if seen.insert(Arc::as_ptr(&funcref.0) as usize) => {
+                    pending.extend(funcref.args().iter().cloned());
+                    pending.extend(funcref.dict().cloned().map(Value::Dict));
+                    pending.extend(funcref.receiver().map(Value::Object));
+                    pending.extend(funcref.class().map(Value::Class));
+                    if let Some(function) = funcref.specialization() {
+                        pending.extend(function.signature.as_ref().and_then(|s|s.owner.clone()).map(Value::Class));
+                        let mut outer = function.outer.clone();
+                        while let Some(scope) = outer {
+                            if !seen.insert(Arc::as_ptr(&scope) as usize) {break;}
+                            pending.push(Value::Dict(scope.locals.clone())); pending.push(Value::Dict(scope.args.clone()));
+                            pending.extend(scope.self_dict.clone().map(Value::Dict));
+                            pending.extend(scope.self_object.clone().map(Value::Object));
+                            outer = scope.outer.clone();
                         }
                     }
                 }
+                _ => {},
             }
-            _ => {}
         }
     }
 
@@ -563,8 +714,10 @@ impl Value {
             Value::Dict(dict) => dict.is_empty(),
             Value::Blob(blob) => blob.is_empty(),
             Value::Funcref(funcref) => funcref.name().is_empty(),
+            Value::TypeAlias(_) | Value::Void | Value::Class(_) | Value::Object(_) | Value::Module(_) | Value::Type(_) => false,
+            Value::Tuple(items) => items.is_empty(),
             Value::Bool(value) => !value,
-            Value::None | Value::Null => true,
+            Value::None | Value::Null | Value::NullTyped(_) => true,
         }
     }
 }
@@ -580,8 +733,38 @@ fn write_string_repr(out: &mut Vec<u8>, bytes: &[u8]) {
     out.push(b'\'');
 }
 
-fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usize>, depth: usize) {
+fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usize>, depth: usize, vim9: bool) {
+    write_value_with(out, value, repr, seen, depth, vim9, &mut |_, _| Ok(None)).expect("pure display cannot fail");
+}
+
+fn write_value_with<F>(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usize>, depth: usize, vim9: bool, hook: &mut F) -> super::EvalResult<()>
+where F: FnMut(&Value, usize) -> super::EvalResult<Option<Vec<u8>>> {
+    if depth > 100 {out.extend_from_slice(b"..."); return Ok(());}
+    if let Some(bytes) = hook(value, out.len())? {out.extend_from_slice(&bytes); return Ok(());}
     match value {
+        Value::TypeAlias(alias) => out.extend_from_slice(alias.name.as_bytes()),
+        Value::Void => out.extend_from_slice(b"<void>"),
+        Value::NullTyped(t) => match t.as_ref() {super::types::Type::String => {if repr {out.extend_from_slice(b"''");}}, super::types::Type::Tuple(..) => out.extend_from_slice(b"()"), _ => out.extend_from_slice(b"null")},
+        Value::Type(t) => out.extend_from_slice(t.to_string().as_bytes()),
+        Value::Module(_) => out.extend_from_slice(b"<module>"),
+        Value::Tuple(items) => {
+            out.push(b'(');
+            for (i, item) in items.iter().enumerate() {if i > 0 {out.extend_from_slice(b", ");} write_value_with(out, item, true, seen, depth + 1, vim9, hook)?;}
+            if items.len() == 1 {out.push(b',');} out.push(b')');
+        }
+        Value::Class(class) => out.extend_from_slice(format!("class {}", class.name).as_bytes()),
+        Value::Object(object) => {
+            out.extend_from_slice(format!("object of {} {{", object.class.name).as_bytes());
+            if seen.contains(&object.fields.id()) {out.extend_from_slice(b"...}"); return Ok(());}
+            seen.push(object.fields.id());
+            let mut names: Vec<&str> = object.class.fields.iter().map(|f|f.name.as_str()).collect();
+            if object.class.enumeration {names.extend(["name", "ordinal"]);}
+            for (index, name) in names.iter().enumerate() {
+                if index > 0 {out.extend_from_slice(b", ");} out.extend_from_slice(name.as_bytes()); out.extend_from_slice(b": ");
+                if let Some(value) = object.fields.get(name.as_bytes()) {write_value_with(out, &value, true, seen, depth + 1, vim9, hook)?;}
+            }
+            seen.pop(); out.push(b'}');
+        }
         Value::String(text) => {
             if repr {
                 write_string_repr(out, text.as_bytes());
@@ -593,10 +776,10 @@ fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usiz
             out.extend_from_slice(number.to_string().as_bytes());
         }
         Value::Float(float) => out.extend_from_slice(format_float(*float).as_bytes()),
-        Value::Bool(true) => out.extend_from_slice(b"v:true"),
-        Value::Bool(false) => out.extend_from_slice(b"v:false"),
+        Value::Bool(true) => out.extend_from_slice(if vim9 {b"true"} else {b"v:true"}),
+        Value::Bool(false) => out.extend_from_slice(if vim9 {b"false"} else {b"v:false"}),
         Value::None => out.extend_from_slice(b"v:none"),
-        Value::Null => out.extend_from_slice(b"v:null"),
+        Value::Null => out.extend_from_slice(if vim9 {b"null"} else {b"v:null"}),
         Value::Blob(blob) => {
             out.extend_from_slice(b"0z");
             for byte in blob.bytes().iter() {
@@ -606,7 +789,7 @@ fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usiz
         Value::Funcref(funcref) => {
             if !repr && depth == 0 && !funcref.is_partial() {
                 out.extend_from_slice(funcref.name().as_bytes());
-                return;
+                return Ok(());
             }
             out.extend_from_slice(b"function(");
             write_string_repr(out, funcref.name().as_bytes());
@@ -616,20 +799,20 @@ fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usiz
                     if index > 0 {
                         out.extend_from_slice(b", ");
                     }
-                    write_value(out, arg, true, seen, depth + 1);
+                    write_value_with(out, arg, true, seen, depth + 1, vim9, hook)?;
                 }
                 out.push(b']');
             }
             if let Some(dict) = funcref.dict() {
                 out.extend_from_slice(b", ");
-                write_value(out, &Value::Dict(dict.clone()), true, seen, depth + 1);
+                write_value_with(out, &Value::Dict(dict.clone()), true, seen, depth + 1, vim9, hook)?;
             }
             out.push(b')');
         }
         Value::List(list) => {
             if seen.contains(&list.id()) || depth > 100 {
                 out.extend_from_slice(b"[...]");
-                return;
+                return Ok(());
             }
             seen.push(list.id());
             out.push(b'[');
@@ -637,7 +820,7 @@ fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usiz
                 if index > 0 {
                     out.extend_from_slice(b", ");
                 }
-                write_value(out, item, true, seen, depth + 1);
+                write_value_with(out, item, true, seen, depth + 1, vim9, hook)?;
             }
             out.push(b']');
             seen.pop();
@@ -645,7 +828,7 @@ fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usiz
         Value::Dict(dict) => {
             if seen.contains(&dict.id()) || depth > 100 {
                 out.extend_from_slice(b"{...}");
-                return;
+                return Ok(());
             }
             seen.push(dict.id());
             out.push(b'{');
@@ -655,12 +838,13 @@ fn write_value(out: &mut Vec<u8>, value: &Value, repr: bool, seen: &mut Vec<usiz
                 }
                 write_string_repr(out, key.as_bytes());
                 out.extend_from_slice(b": ");
-                write_value(out, item, true, seen, depth + 1);
+                write_value_with(out, item, true, seen, depth + 1, vim9, hook)?;
             }
             out.push(b'}');
             seen.pop();
         }
     }
+    Ok(())
 }
 
 /// Vim's own `%g`: fixed notation for 0.001 <= |f| < 1e7, otherwise
@@ -847,6 +1031,18 @@ pub fn values_equal(left: &Value, right: &Value, ignore_case: bool, depth: usize
         return Ok(false);
     }
     Ok(match (left, right) {
+        (Value::NullTyped(a), Value::NullTyped(b)) => a == b,
+        (Value::NullTyped(t), Value::String(s)) | (Value::String(s), Value::NullTyped(t)) if **t == super::types::Type::String => s.is_empty(),
+        (Value::NullTyped(ty), Value::Tuple(t)) | (Value::Tuple(t), Value::NullTyped(ty)) if matches!(ty.as_ref(), super::types::Type::Tuple(..)) => t.is_empty(),
+        (Value::NullTyped(_), _) | (_, Value::NullTyped(_)) => false,
+        (Value::Class(a), Value::Class(b)) => Arc::ptr_eq(a, b),
+        (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b) || Arc::ptr_eq(&a.class, &b.class) && values_equal(&Value::Dict(a.fields.clone()), &Value::Dict(b.fields.clone()), ignore_case, depth + 1)?,
+        (Value::Class(_) | Value::Object(_), _) | (_, Value::Class(_) | Value::Object(_)) => false,
+        (Value::Tuple(a), Value::Tuple(b)) => {
+            if a.len() != b.len() {return Ok(false);}
+            for (a,b) in a.iter().zip(b.iter()) {if !values_equal(a,b,ignore_case,depth + 1)? {return Ok(false);}} true
+        }
+        (Value::Tuple(_), _) | (_, Value::Tuple(_)) | (Value::Module(_), _) | (_, Value::Module(_)) => false,
         (Value::List(a), Value::List(b)) => {
             if a.ptr_eq(b) {
                 return Ok(true);
@@ -918,12 +1114,20 @@ pub fn compare_values(
     regex: &mut dyn FnMut(&[u8], &[u8], bool) -> Result<bool, VimError>,
 ) -> Result<bool, VimError> {
     use CompareOp::*;
+    if matches!(left, Value::NullTyped(_)) || matches!(right, Value::NullTyped(_)) {
+        let equal = if matches!(op, Is | IsNot) {matches!((left,right),(Value::NullTyped(a),Value::NullTyped(b)) if a == b)} else {values_equal(left,right,ignore_case,0)?};
+        return Ok(if matches!(op, NotEqual | IsNot) {!equal} else {equal});
+    }
     let is_container = |value: &Value| matches!(value, Value::List(_) | Value::Dict(_) | Value::Blob(_));
     if matches!(op, Is | IsNot) {
         let same = match (left, right) {
-            (Value::List(a), Value::List(b)) => a.ptr_eq(b),
-            (Value::Dict(a), Value::Dict(b)) => a.ptr_eq(b),
-            (Value::Blob(a), Value::Blob(b)) => a.ptr_eq(b),
+            (Value::Tuple(a), Value::Tuple(b)) => Arc::ptr_eq(a, b),
+            (Value::Module(a), Value::Module(b)) => a.ptr_eq(b),
+            (Value::Class(a), Value::Class(b)) => Arc::ptr_eq(a, b),
+            (Value::Object(a), Value::Object(b)) => Arc::ptr_eq(a, b),
+            (Value::List(a), Value::List(b)) => a.ptr_eq(b) || left.is_null() && right.is_null(),
+            (Value::Dict(a), Value::Dict(b)) => a.ptr_eq(b) || left.is_null() && right.is_null(),
+            (Value::Blob(a), Value::Blob(b)) => a.ptr_eq(b) || left.is_null() && right.is_null(),
             (Value::Funcref(a), Value::Funcref(b)) => values_equal(&Value::Funcref(a.clone()), &Value::Funcref(b.clone()), ignore_case, 0)?,
             _ if is_container(left) || is_container(right) => false,
             _ if left.type_number() != right.type_number() => false,
@@ -937,6 +1141,11 @@ pub fn compare_values(
         return Ok(if op == Is { same } else { !same });
     }
     match (left, right) {
+        (Value::Class(_) | Value::Object(_) | Value::Tuple(_), _) | (_, Value::Class(_) | Value::Object(_) | Value::Tuple(_)) => {
+            if !matches!(op, Equal | NotEqual) {return Err(VimError::new(1320, "Invalid operation for Class or Object"));}
+            let equal = values_equal(left, right, ignore_case, 0)?;
+            Ok(if op == Equal {equal} else {!equal})
+        }
         (Value::List(_), _) | (_, Value::List(_)) => {
             if !matches!((left, right), (Value::List(_), Value::List(_))) {
                 return Err(VimError::new(691, "Can only compare List with List"));

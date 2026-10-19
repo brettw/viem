@@ -281,3 +281,21 @@ fn colorscheme_selects_a_published_theme_and_fires_colorscheme() {
     let outcome = ex(&mut core, view, "colorscheme nosuch");
     assert_eq!(error_text(&outcome), "E185: Cannot find color scheme 'nosuch'");
 }
+
+#[test]
+fn vim9_source_and_legacy_calls_use_the_same_editor_transactions() {
+    let directory = std::env::temp_dir().join(format!("viem-vim9-core-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("main.vim");
+    std::fs::write(&path, "vim9script\nvar count = 0\ndef g:Vim9Update(prefix: string): number\n  count += 1\n  setline(1, prefix .. count)\n  return count\nenddef\nVim9Update('first ')\n").unwrap();
+    let (mut core, view) = editor("before\n");
+    let outcome = ex(&mut core, view, &format!("source {}", path.display()));
+    assert_eq!(status(&outcome), CommandStatus::Complete, "{outcome:?}");
+    assert_eq!(core.document().text(), "first 1\n");
+    let outcome = ex(&mut core, view, "echo Vim9Update('second ')");
+    assert_eq!(status(&outcome), CommandStatus::Complete, "{outcome:?}");
+    assert_eq!(core.document().text(), "second 2\n");
+    press(&mut core, view, InputEvent::Key(Key::Char('u')));
+    assert_eq!(core.document().text(), "first 1\n");
+    std::fs::remove_dir_all(directory).unwrap();
+}

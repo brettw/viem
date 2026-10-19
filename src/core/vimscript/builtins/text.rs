@@ -364,7 +364,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 }
             }
         }),
-        "string" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(args[0].string_bytes().into()))),
+        "string" => arity(name, args, 1, 1).and_then(|()| Ok(Value::String(crate::vimscript::objects::display(rt, host, &args[0], true)?.into()))),
         "base64_encode" => arity(name, args, 1, 1).and_then(|()| match &args[0] {
             Value::Blob(blob) => Ok(Value::String(base64_encode(&blob.bytes()).into())),
             _ => Err(Fail::Error(VimError::new(1238, "Blob required for argument 1"))),
@@ -764,16 +764,17 @@ fn json_encode(value: &Value, out: &mut String, js: bool, depth: usize) -> EvalR
         }
         Value::Bool(true) => out.push_str("true"),
         Value::Bool(false) => out.push_str("false"),
-        Value::Null => out.push_str("null"),
+        Value::Null | Value::NullTyped(_) => out.push_str("null"),
         Value::None => {
             if !js {
                 out.push_str("null");
             }
         }
         Value::String(text) => out.push_str(&serde_json::to_string(&text.to_str_lossy()).unwrap_or_default()),
-        Value::List(list) => {
+        Value::Tuple(_) | Value::List(_) => {
+            let items = match value {Value::Tuple(items) => items.as_ref().clone(), Value::List(list) => list.snapshot(), _ => unreachable!()};
             out.push('[');
-            for (index, item) in list.snapshot().iter().enumerate() {
+            for (index, item) in items.iter().enumerate() {
                 if index > 0 {
                     out.push(',');
                 }
@@ -808,7 +809,7 @@ fn json_encode(value: &Value, out: &mut String, js: bool, depth: usize) -> EvalR
             }
             out.push(']');
         }
-        Value::Funcref(_) => return Err(Fail::Error(VimError::new(474, "Invalid argument"))),
+        Value::TypeAlias(_) | Value::Void | Value::Funcref(_) | Value::Class(_) | Value::Object(_) | Value::Module(_) | Value::Type(_) => return Err(Fail::Error(VimError::new(474, "Invalid argument"))),
     }
     Ok(())
 }

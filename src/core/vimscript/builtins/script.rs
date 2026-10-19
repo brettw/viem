@@ -262,7 +262,7 @@ fn function(rt: &mut Runtime, host: &mut dyn ScriptHost, args: &[Value]) -> Eval
     let mut all = base.args().to_vec();
     all.extend(bound_args);
     let dict = bound_dict.or_else(|| base.dict().cloned());
-    Ok(Value::Funcref(Funcref::partial(base.name().clone(), all, dict, false)))
+    Ok(Value::Funcref(base.bind(all, dict, false)))
 }
 
 /// `exists()`.
@@ -385,7 +385,7 @@ pub(crate) fn has(host: &dyn ScriptHost, feature: &str) -> bool {
     let macos = cfg!(target_os = "macos");
     let windows = cfg!(windows);
     match lower.as_str() {
-        "eval" | "autocmd" | "syntax" | "user_commands" | "lambda" | "float" | "num64" | "multi_byte"
+        "vim9script" | "eval" | "autocmd" | "syntax" | "user_commands" | "lambda" | "float" | "num64" | "multi_byte"
         | "multi_byte_encoding" | "insert_expand" | "listcmds" | "localmap" | "modify_fname" | "mouse"
         | "path_extra" | "reltime" | "vertsplit" | "windows" | "cmdline_compl" | "cmdline_hist"
         | "comments" | "extra_search" | "file_in_path" | "find_in_path" | "jumplist" | "linebreak"
@@ -400,7 +400,7 @@ pub(crate) fn has(host: &dyn ScriptHost, feature: &str) -> bool {
         "win32" | "win64" | "win95" | "win16" | "win32unix" | "gui_win32" | "gui_win64" => windows && lower != "win32unix",
         "fname_case" => !macos && !windows,
         "gui_macvim" | "gui_gtk" | "gui_gtk2" | "gui_gtk3" | "gui_gnome" | "gui_kde" | "gui_motif" | "gui_athena" | "gui_photon"
-        | "gui_haiku" | "nvim" | "vim9script" | "terminal" | "job" | "channel" | "timers" | "python"
+        | "gui_haiku" | "nvim" | "terminal" | "job" | "channel" | "timers" | "python"
         | "python3" | "pythonx" | "python_compiled" | "python3_compiled" | "perl" | "lua" | "ruby"
         | "tcl" | "mzscheme" | "spell" | "conceal" | "signs" | "folding" | "diff" | "cscope"
         | "netbeans_intg" | "netbeans_enabled" | "balloon_eval" | "balloon_eval_term" | "balloon_multiline"

@@ -9,7 +9,7 @@ use super::exec::{
 };
 use super::expr::{is_name_char, is_white, skip_white, Eval};
 use super::state::{CommandArgs, UserCommand};
-use super::value::{VStr, Value};
+use super::value::{Dict, VStr, Value};
 use std::sync::Arc;
 
 const MAX_SOURCE_DEPTH: usize = 16;
@@ -227,8 +227,7 @@ fn parse_modifiers(src: &[u8], mut at: usize, modifiers: &mut Modifiers) -> Resu
             "lockmarks" => modifiers.lockmarks = true,
             "confirm" => modifiers.confirm = true,
             "browse" => modifiers.browse = true,
-            "legacy" => {}
-            "vim9cmd" => return Err(VimError::plain("Viem does not support Vim9 script: vim9cmd")),
+            "legacy" | "vim9cmd" => return Ok(at),
             "filter" => {
                 // :filter[!] {pattern} {command}; the pattern is ignored.
                 let mut at2 = rest;
@@ -439,12 +438,27 @@ fn trim(bytes: &[u8]) -> &[u8] {
 
 /// Execute (or, when `executing` is false, skip over) the command at `col`.
 pub(crate) fn execute_command(rt: &mut Runtime, host: &mut dyn ScriptHost, line: &VStr, col: usize, executing: bool) -> CommandOutcome {
+    if let Some(result) = super::vim9::execute(rt, host, line, col, executing) { return result; }
+    let normalized;
+    let line = if rt.vim9() {
+        normalized = VStr::from(&line.as_bytes()[..super::source::vim9_comment_end(line.as_bytes())]);
+        &normalized
+    } else {line};
     let src = line.as_bytes();
     let header = match parse_header(src, col) {
         Ok(Some(header)) => header,
         Ok(None) => return outcome(Next::NextLine, Ok(())),
         Err(err) => return if executing { error(Next::NextLine, err) } else { outcome(Next::NextLine, Ok(())) },
     };
+    if header.start > col {
+        let silent = header.modifiers.silent && !header.modifiers.unsilent;
+        let silent_errors = header.modifiers.silent_errors;
+        let before = rt.frames.len();
+        enter_silence(rt, silent, silent_errors);
+        let result = super::vim9::execute(rt, host, line, header.start, executing);
+        leave_silence(rt, before, silent, silent_errors);
+        if let Some(mut result) = result {if silent_errors {result.result = silence_error(rt, result.result);} return result;}
+    }
     // An empty command: ":|" or only a range.
     if header.name.is_empty() {
         let at = header.arg;
@@ -985,20 +999,7 @@ fn run_script_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], h
             };
             outcome(next, host.execute(rt, &command))
         }
-        Vim9script => {
-            let next = split_bar(src, at, true, false).1;
-            if matches!(rt.frames.last().map(|frame| &frame.kind), Some(FrameKind::Script { .. })) {
-                // Stop the file: Viem implements legacy script only.
-                let result = Err(Fail::Error(VimError::plain("Viem does not support Vim9 script; the rest of this file was skipped")));
-                if let Some(frame) = rt.current_frame_mut() {
-                    frame.finished = true;
-                    frame.line = frame.lines.len();
-                    frame.cstack.clear();
-                }
-                return outcome(Next::Unchanged, result);
-            }
-            error(next, VimError::new(1038, "\"vim9script\" can only be used in a script"))
-        }
+        Vim9script => outcome(Next::NextLine, super::vim9::start_script(rt, &src[at..])),
         Scriptencoding => {
             let (argument, next) = split_bar(src, at, true, false);
             let encoding = String::from_utf8_lossy(&argument).to_ascii_lowercase();
@@ -1105,7 +1106,7 @@ fn eval_condition(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: u
         Err(err) => return (Err(Fail::Error(err)), skip_to_bar(src, end)),
     };
     match value {
-        Ok(value) if evaluate => (value.to_bool().map_err(Fail::Error), next),
+        Ok(value) if evaluate => ((if rt.vim9() {super::vim9::truth(&value)} else {value.to_bool()}).map_err(Fail::Error), next),
         _ => (Ok(false), next),
     }
 }
@@ -1146,6 +1147,7 @@ fn cmd_elseif(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize
     if cond.had_else {
         return error(skip_to_bar(src, at), VimError::new(584, ":elseif after :else"));
     }
+    if rt.vim9() {rt.current_frame_mut().unwrap().cstack.last_mut().unwrap().locals = Dict::new();}
     let evaluate = cond.outer_active && !cond.taken;
     let (result, next) = eval_condition(rt, host, src, at, evaluate);
     let frame = rt.current_frame_mut().unwrap();
@@ -1177,6 +1179,7 @@ fn cmd_else(rt: &mut Runtime, src: &[u8], at: usize) -> CommandOutcome {
     if top.had_else {
         return error(next, VimError::new(583, "Multiple :else"));
     }
+    if frame.vim9 {top.locals = Dict::new();}
     top.had_else = true;
     top.active = top.outer_active && !top.taken;
     top.taken = true;
@@ -1215,7 +1218,9 @@ fn cmd_while(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &H
         Err(fail) => (false, Some(fail)),
     };
     if resuming {
+        let vim9 = rt.vim9();
         let top = rt.current_frame_mut().unwrap().cstack.last_mut().unwrap();
+        if vim9 {top.locals = Dict::new();}
         top.looping = false;
         top.continued = false;
         top.active = truth && failure.is_none();
@@ -1306,6 +1311,11 @@ fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Hea
             return if active { error(Next::NextLine, err) } else { outcome(Next::NextLine, Ok(())) };
         }
     };
+    if active && rt.vim9() {
+        for target in targets.iter().chain(rest.iter()) {
+            if target.as_bytes().get(1) != Some(&b':') && rt.lookup_variable(host, target.as_bytes(), false).is_ok() {return error(Next::NextLine, VimError::new(1254, "Cannot use declared variable in for loop"));}
+        }
+    }
     let mut eval = Eval::new(rt, host, src, expr_at, active);
     eval.skip_white();
     let value = eval.eval1();
@@ -1318,6 +1328,7 @@ fn cmd_for(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], header: &Hea
         (Ok(value), Ok(_)) if active => {
             let items = match value {
                 Value::List(list) => Some(ForItems::List(list)),
+                Value::Tuple(items) => Some(ForItems::List(super::value::List::new(items.as_ref().clone()))),
                 Value::String(text) => Some(ForItems::Chars(split_chars(text.as_bytes()))),
                 Value::Blob(blob) => Some(ForItems::Blob(blob.bytes())),
                 _ => {
@@ -1366,6 +1377,7 @@ fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
     let (value, targets, rest) = {
         let frame = rt.current_frame_mut().unwrap();
         let cond = frame.cstack.last_mut().unwrap();
+        if frame.vim9 {cond.locals = Dict::new();}
         cond.looping = false;
         cond.broken = false;
         let Some(state) = cond.for_state.as_mut() else {
@@ -1389,13 +1401,20 @@ fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
             }
         }
     };
-    if targets.len() == 1 && rest.is_none() {
-        return rt.set_variable(host, targets[0].as_bytes(), value, false);
+    if rt.vim9() {
+        let locals = rt.declaration_scope();
+        for name in targets.iter().chain(rest.iter()).filter(|n|n.as_bytes().get(1) != Some(&b':')) {locals.insert(name.clone(), Value::Number(0));}
     }
-    let Value::List(list) = value else {
-        return Err(Fail::Error(VimError::new(714, "List required")));
+    if targets.len() == 1 && rest.is_none() {
+        rt.set_variable(host, targets[0].as_bytes(), value, false)?;
+        if rt.vim9() && targets[0].as_bytes().get(1) != Some(&b':') {rt.declaration_scope().data().items.get_mut(targets[0].as_bytes()).unwrap().lock = crate::vimscript::value::Lock::Fixed;}
+        return Ok(());
+    }
+    let items = match value {
+        Value::List(list) => list.snapshot(),
+        Value::Tuple(items) if rt.vim9() => items.as_ref().clone(),
+        _ => return Err(Fail::Error(VimError::new(714, "List required"))),
     };
-    let items = list.snapshot();
     if items.len() < targets.len() {
         return Err(Fail::Error(VimError::new(688, "More targets than List items")));
     }
@@ -1405,8 +1424,13 @@ fn advance_for(rt: &mut Runtime, host: &mut dyn ScriptHost) -> EvalResult<()> {
     for (target, item) in targets.iter().zip(&items) {
         rt.set_variable(host, target.as_bytes(), item.clone(), false)?;
     }
-    if let Some(rest) = rest {
+    if let Some(rest) = &rest {
         rt.set_variable(host, rest.as_bytes(), Value::list(items[targets.len()..].to_vec()), false)?;
+    }
+    if rt.vim9() {
+        let scope = rt.declaration_scope();
+        let mut data = scope.data();
+        for name in targets.iter().chain(rest.iter()).filter(|n|n.as_bytes().get(1) != Some(&b':')) {data.items.get_mut(name.as_bytes()).unwrap().lock = crate::vimscript::value::Lock::Fixed;}
     }
     Ok(())
 }
@@ -1626,7 +1650,7 @@ fn cmd_return(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize
         return error(Next::NextLine, VimError::new(133, ":return not inside a function"));
     }
     let at = skip_white(src, at);
-    let (value, next) = if at >= src.len() || src[at] == b'|' || src[at] == b'"' {
+    let (value, next) = if at >= src.len() || src[at] == b'|' || src[at] == b'"' && !rt.vim9() {
         (Value::Number(0), after_expression(src, at, true).unwrap_or(Next::NextLine))
     } else {
         let mut eval = Eval::new(rt, host, src, at, true);
@@ -1779,6 +1803,7 @@ fn cmd_execute(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usiz
     };
     let mut frame = Frame::new(FrameKind::Execute, lines.into(), sid);
     frame.scope = scope;
+    frame.vim9 = rt.vim9();
     rt.frames.push(frame);
     outcome(next, Ok(()))
 }
@@ -1802,12 +1827,10 @@ fn cmd_echo(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], at: usize, 
             Ok(value) => value,
             Err(fail) => return outcome(next_after_failure(src, end), Err(fail)),
         };
-        let text = match command {
-            ScriptCommand::Echomsg | ScriptCommand::Echoerr => match &value {
-                Value::String(text) => text.to_str_lossy().into_owned(),
-                other => other.echo_string(),
-            },
-            _ => value.echo_string(),
+        if matches!(value, Value::Void) {return error(next_after_failure(src, end), VimError::new(1031, "Cannot use void value"));}
+        let text = match super::objects::display(rt, host, &value, false) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(fail) => return outcome(next_after_failure(src, end), Err(fail)),
         };
         if incremental {
             let message = match (command, started) {
@@ -2142,6 +2165,7 @@ fn run_user_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], hea
                 (frame.scope.clone(), if command.keepscript { frame.sid } else { command.sid })
             };
             let mut frame = Frame::new(FrameKind::UserCommand { name: command.name.clone() }, lines.into(), sid);
+            frame.vim9 = rt.state.script_is_vim9(sid);
             frame.scope = scope;
             rt.frames.push(frame);
             outcome(next, Ok(()))
@@ -2152,26 +2176,6 @@ fn run_user_command(rt: &mut Runtime, host: &mut dyn ScriptHost, src: &[u8], hea
             result
         }
     }
-}
-
-/// Heredoc and function-body collection need to know if a line starts with
-/// a given command.
-pub(crate) fn line_command_name(src: &[u8]) -> Option<(&'static str, usize, bool)> {
-    let mut at = skip_white(src, 0);
-    while src.get(at) == Some(&b':') {
-        at = skip_white(src, at + 1);
-    }
-    let start = at;
-    while at < src.len() && src[at].is_ascii_alphabetic() {
-        at += 1;
-    }
-    if at == start {
-        return None;
-    }
-    let name = std::str::from_utf8(&src[start..at]).ok()?;
-    let full = super::excmds::lookup(name)?;
-    let bang = src.get(at) == Some(&b'!');
-    Some((full, if bang { at + 1 } else { at }, bang))
 }
 
 pub(crate) fn command_args_from(text: &str) -> Option<CommandArgs> {

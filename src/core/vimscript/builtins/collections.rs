@@ -9,7 +9,7 @@ pub(super) const NAMES: &[&str] = &[
     "sort", "uniq", "reverse", "index", "indexof", "count", "join", "split", "range", "min", "max",
     "flatten", "flattennew", "slice", "keys", "values", "items", "has_key", "get", "len", "empty",
     "copy", "deepcopy", "list2str", "str2list", "list2blob", "blob2list", "islocked", "id",
-    "garbagecollect", "type", "typename",
+    "garbagecollect", "type", "typename", "list2tuple", "tuple2list", "instanceof",
 ];
 
 fn list_required(index: usize) -> Fail {
@@ -17,14 +17,33 @@ fn list_required(index: usize) -> Fail {
 }
 
 pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[Value]) -> Option<EvalResult<Value>> {
+    if args.len() == 1 && matches!(name, "len" | "empty") {
+        if let Some(result) = crate::vimscript::objects::builtin(rt, host, &args[0], name) {
+            return Some(result.and_then(|value| if name == "empty" {Ok(Value::Number(value.to_bool()? as i64))} else {Ok(value)}));
+        }
+    }
+    if let Some(Value::Tuple(items)) = args.first() {
+        if matches!(name, "len" | "get" | "index" | "indexof" | "count" | "join" | "min" | "max" | "reduce") {
+            let mut args = args.to_vec(); args[0] = Value::list(items.as_ref().clone()); return call(rt, host, name, &args);
+        }
+    }
     Some(match name {
+        "instanceof" => arity(name, args, 2, usize::MAX).and_then(|()| {
+            let Value::Object(object) = &args[0] else {return Ok(Value::Number(0));};
+            let classes = args[1..].iter().map(|value|match value {Value::TypeAlias(alias) => if let crate::vimscript::types::Type::Named(name) = &alias.ty {crate::vimscript::types::class_for_type(rt, name).map(Value::Class).unwrap_or_else(||value.clone())} else {value.clone()}, _ => value.clone()}).collect::<Vec<_>>();
+            for value in classes {let Value::Class(class) = value else {return Err(VimError::new(1354, "Class required").into());}; if object.class.is_a(&class.type_name()) {return Ok(Value::Number(1));}}
+            Ok(Value::Number(0))
+        }),
+        "list2tuple" => arity(name, args, 1, 1).and_then(|()|match &args[0] {Value::List(list) => Ok(Value::Tuple(std::sync::Arc::new(list.snapshot()))), _ => Err(list_required(0))}),
+        "tuple2list" => arity(name, args, 1, 1).and_then(|()|match &args[0] {Value::Tuple(items) => Ok(Value::list(items.as_ref().clone())), _ => Err(VimError::new(1530, "Tuple required").into())}),
         "add" => arity(name, args, 2, 2).and_then(|()| match &args[0] {
             Value::List(list) => {
                 list.check_argument(name)?;
-                list.push(args[1].clone());
+                list.push(list.checked_value(args[1].clone())?);
                 Ok(args[0].clone())
             }
             Value::Blob(blob) => {
+                blob.check_writable()?;
                 let byte = args[1].to_number()?;
                 blob.data().bytes.push(byte as u8);
                 Ok(args[0].clone())
@@ -42,10 +61,12 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 if index < 0 || index > len {
                     return Err(Fail::Error(VimError::new(684, format!("List index out of range: {}", opt_number(args, 2, 0)?))));
                 }
-                list.data().items.insert(index as usize, args[1].clone());
+                let value = list.checked_value(args[1].clone())?;
+                list.data().items.insert(index as usize, value);
                 Ok(args[0].clone())
             }
             Value::Blob(blob) => {
+                blob.check_writable()?;
                 let len = blob.len() as i64;
                 let index = opt_number(args, 2, 0)?;
                 if index < 0 || index > len {
@@ -84,6 +105,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
                 Ok(args[0].clone())
             }
             Value::Blob(blob) => {
+                blob.check_writable()?;
                 blob.data().bytes.reverse();
                 Ok(args[0].clone())
             }
@@ -246,6 +268,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             Ok(Value::Number(best.unwrap_or(0)))
         }),
         "flatten" | "flattennew" => arity(name, args, 1, 2).and_then(|()| {
+            if rt.vim9() && name == "flatten" {return Err(VimError::new(1158, "Cannot use flatten() in Vim9 script; use flattennew()").into());}
             let Value::List(list) = &args[0] else { return Err(list_required(0)) };
             let depth = opt_number(args, 1, 999_999)?;
             if depth < 0 {
@@ -347,6 +370,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             }
         }),
         "len" => arity(name, args, 1, 1).and_then(|()| match &args[0] {
+            Value::Object(_) => Ok(Value::Number(0)),
             Value::List(list) => Ok(Value::Number(list.len() as i64)),
             Value::Dict(dict) => Ok(Value::Number(dict.len() as i64)),
             Value::Blob(blob) => Ok(Value::Number(blob.len() as i64)),
@@ -354,7 +378,7 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
             Value::Number(number) => Ok(Value::Number(number.to_string().len() as i64)),
             _ => Err(Fail::Error(VimError::new(701, "Invalid type for len()"))),
         }),
-        "empty" => arity(name, args, 1, 1).and_then(|()| Ok(Value::Number(args[0].is_empty_value() as i64))),
+        "empty" => arity(name, args, 1, 1).and_then(|()| Ok(Value::Number((matches!(args[0], Value::Object(_)) || args[0].is_empty_value()) as i64))),
         "copy" => arity(name, args, 1, 1).and_then(|()| Ok(args[0].copy(false))),
         "deepcopy" => arity(name, args, 1, 2).and_then(|()| Ok(args[0].copy(true))),
         "list2str" => arity(name, args, 1, 2).and_then(|()| {
@@ -415,6 +439,13 @@ pub(super) fn call(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args
 
 fn typename(value: &Value) -> String {
     match value {
+        Value::Tuple(_) => super::super::types::Type::infer(value).to_string(),
+        Value::Module(_) => "module".into(),
+        Value::TypeAlias(alias) => format!("typealias<{}>", alias.ty),
+        Value::Void => "void".into(),
+        Value::NullTyped(t) | Value::Type(t) => t.to_string(),
+        Value::Class(c) => format!("class<{}>", c.name),
+        Value::Object(o) => format!("object<{}>", o.class.name),
         Value::Number(_) => "number".into(),
         Value::String(_) => "string".into(),
         Value::Float(_) => "float".into(),
@@ -557,7 +588,7 @@ fn extend(args: &[Value], new: bool) -> EvalResult<Value> {
         (Value::List(target), Value::List(source)) => {
             let target = if new { List::new(target.snapshot()) } else { target.clone() };
             target.check_writable()?;
-            let source = source.snapshot();
+            let source = source.snapshot().into_iter().map(|v|target.checked_value(v)).collect::<Result<Vec<_>, _>>()?;
             let len = target.len() as i64;
             let index = match args.get(2) {
                 Some(index) => {
@@ -580,6 +611,7 @@ fn extend(args: &[Value], new: bool) -> EvalResult<Value> {
             Ok(Value::List(target))
         }
         (Value::Dict(target), Value::Dict(source)) => {
+            if !new && target.data().null {return Err(VimError::new(1133, "Cannot extend a null dict").into());}
             let target = if new { Dict::from_pairs(target.snapshot()) } else { target.clone() };
             let how = match args.get(2) {
                 Some(how) => how.to_text()?,
@@ -599,12 +631,14 @@ fn extend(args: &[Value], new: bool) -> EvalResult<Value> {
                         _ => {}
                     }
                 }
+                let value = target.checked_value(key.as_bytes(), value)?;
                 target.insert(key, value);
             }
             Ok(Value::Dict(target))
         }
         (Value::Blob(target), Value::Blob(source)) => {
             let target = if new { Blob::new(target.bytes()) } else { target.clone() };
+            target.check_writable()?;
             let more = source.bytes();
             target.data().bytes.extend(more);
             Ok(Value::Blob(target))
@@ -670,6 +704,7 @@ fn map_filter(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[V
                 "mapnew" => Ok(Value::list(results)),
                 "foreach" => Ok(args[0].clone()),
                 _ => {
+                    let results = results.into_iter().map(|v|list.checked_value(v)).collect::<Result<Vec<_>, _>>()?;
                     list.data().items = results;
                     Ok(args[0].clone())
                 }
@@ -692,7 +727,7 @@ fn map_filter(rt: &mut Runtime, host: &mut dyn ScriptHost, name: &str, args: &[V
                         }
                     }
                     "foreach" => {}
-                    _ => target.insert(key, result),
+                    _ => {let result = target.checked_value(key.as_bytes(), result)?; target.insert(key, result);},
                 }
             }
             Ok(if name == "mapnew" { Value::Dict(target) } else { args[0].clone() })

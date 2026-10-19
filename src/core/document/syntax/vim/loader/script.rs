@@ -149,14 +149,10 @@ impl Loader<'_> {
             self.program.generation =
                 (self.program.generation ^ u64::from(byte)).wrapping_mul(1099511628211);
         }
-        let (lines, script_local) = crate::vimscript::source::syntax_script_lines(text.as_bytes())
-            .map_err(|(line, error)| {
-                self.err(file, line, &error);
-                fatal(error)
-            })?;
+        let lines = crate::vimscript::source::script_lines(text.as_bytes());
         let caller = self.current_source.replace(PathBuf::from(file));
         let previous = self.setup.set_source_file(file);
-        let result = rt.source_lines_now(self, file, lines, script_local);
+        let result = rt.source_lines_now(self, file, lines);
         self.setup.set_source_file(&previous);
         self.current_source = caller;
         result
@@ -197,7 +193,7 @@ impl Loader<'_> {
             .canonicalize()
             .map_err(|e| VimError::new(484, e.to_string()))?;
         let autoload = root.parent().unwrap_or(root).join("autoload");
-        if !path.starts_with(root) && !path.starts_with(&autoload) {
+        if !path.starts_with(root) && !path.starts_with(&autoload) && !path.starts_with(root.parent().unwrap_or(root).join("import")) {
             return Err(VimError::plain(
                 "include escapes configured syntax directory",
             ));
@@ -512,6 +508,20 @@ impl Loader<'_> {
     }
 }
 impl ScriptHost for Loader<'_> {
+    fn resolve_import(&mut self, from: &str, name: &str, autoload: bool) -> Option<EvalResult<String>> {
+        Some((|| {
+            let root = self.root.as_ref().ok_or_else(||fatal("imports require a syntax directory"))?;
+            let path = if name.starts_with('.') {
+                Path::new(from).parent().unwrap_or(root).join(name)
+            } else if Path::new(name).is_absolute() {PathBuf::from(name)}
+            else {root.parent().unwrap_or(root).join(if autoload {"autoload"} else {"import"}).join(name)};
+            self.script_path(&path.to_string_lossy()).map(|p|p.to_string_lossy().into_owned())
+                .map_err(|error|if error.code == 0 {fatal(error.message)} else {Fail::Error(error)})
+        })())
+    }
+    fn import_module(&mut self, rt: &mut Runtime, path: &str) -> Option<EvalResult<()>> {
+        Some(self.script_file(rt, path))
+    }
     fn autoload(&mut self, rt: &mut Runtime, name: &[u8]) -> EvalResult<bool> {
         let name = String::from_utf8_lossy(name);
         let Some((namespace, _)) = name.rsplit_once('#') else {
@@ -817,6 +827,7 @@ impl ScriptHost for Loader<'_> {
         Some(matches!(
             name,
             "syntax"
+                | "vim9script"
                 | "eval"
                 | "multi_byte"
                 | "multi_byte_encoding"

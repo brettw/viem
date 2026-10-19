@@ -16,6 +16,8 @@ pub struct Eval<'r, 'h, 's> {
     pub pos: usize,
     pub evaluate: bool,
     depth: usize,
+    analysis: Option<&'r super::compiler::Context>,
+    constant: bool,
 }
 
 pub fn is_name_start(byte: u8) -> bool {
@@ -25,7 +27,7 @@ pub fn is_name_char(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 pub fn is_white(byte: u8) -> bool {
-    byte == b' ' || byte == b'\t'
+    byte == b' ' || byte == b'\t' || byte == b'\n'
 }
 pub fn skip_white(src: &[u8], mut at: usize) -> usize {
     while at < src.len() && is_white(src[at]) {
@@ -43,9 +45,58 @@ pub struct Callee {
 
 impl<'r, 'h, 's> Eval<'r, 'h, 's> {
     pub fn new(rt: &'r mut Runtime, host: &'h mut dyn ScriptHost, src: &'s [u8], pos: usize, evaluate: bool) -> Self {
-        Self { rt, host, src, pos, evaluate, depth: 0 }
+        Self { rt, host, src, pos, evaluate, depth: 0, analysis: None, constant: false }
     }
 
+    pub(crate) fn analyze(rt: &'r mut Runtime, host: &'h mut dyn ScriptHost, src: &'s [u8], pos: usize, context: &'r super::compiler::Context) -> Self {
+        Self {rt, host, src, pos, evaluate: true, depth: 0, analysis: Some(context), constant: false}
+    }
+    pub(crate) fn constant(rt: &'r mut Runtime, host: &'h mut dyn ScriptHost, src: &'s [u8]) -> Self {
+        let mut eval = Self::new(rt, host, src, 0, true); eval.constant = true; eval
+    }
+    fn operator_space(&self, length: usize) -> EvalResult<()> {
+        if self.rt.vim9() && (self.pos == 0 || !is_white(self.src[self.pos - 1]) || !self.src.get(self.pos + length).is_some_and(|b|is_white(*b))) {
+            return Err(VimError::new(1004, "White space required before and after operator").into());
+        }
+        Ok(())
+    }
+    fn comma(&mut self) -> EvalResult<()> {
+        if self.rt.vim9() && !self.src.get(self.pos + 1).is_some_and(|b|is_white(*b) || matches!(b, b')' | b']' | b'}' | b'>')) {
+            return Err(VimError::new(1069, "White space required after comma").into());
+        }
+        self.pos += 1; Ok(())
+    }
+    fn analyzing(&self) -> bool {self.analysis.is_some() && self.evaluate}
+    fn variable(&mut self, name: &[u8]) -> EvalResult<Value> {
+        if self.constant && !matches!(name, b"true" | b"false" | b"null" | b"v:true" | b"v:false" | b"v:null" | b"v:none") {return Err(self.invalid());}
+        if self.analyzing() {
+            if let Some(path) = self.rt.state.import(self.rt.current_sid(), name) {return super::vim9::module(self.rt, self.host, &path);}
+        }
+        if let Some(context) = self.analysis {context.lookup(self.rt, name)} else {self.rt.get_variable(self.host, name)}
+    }
+    fn reference(&mut self, name: &[u8]) -> EvalResult<Funcref> {
+        if self.constant {return if matches!(name, b"has" | b"exists_compiled") {Ok(Funcref::named(name))} else {Err(self.invalid())};}
+        if let Some(context) = self.analysis {
+            let reference = Funcref::named(self.rt.canonical_function_name(name));
+            Ok(match context.lookup(self.rt, name) {
+                Ok(Value::Funcref(reference)) => reference,
+                Ok(value) => reference.with_type(super::types::Type::infer(&value)),
+                Err(_) => reference,
+            })
+        } else {self.rt.resolve_function_name(self.host, name)}
+    }
+    fn invoke(&mut self, funcref: &Funcref, args: Vec<Value>, dict: Option<Dict>) -> EvalResult<Value> {
+        if self.constant {
+            let name = funcref.name().as_bytes();
+            if !matches!(name, b"has" | b"exists_compiled") {return Err(self.invalid());}
+            if name == b"exists_compiled" && !args.first().is_some_and(|v|matches!(v, Value::String(s) if s.as_bytes().iter().all(|b|b.is_ascii_alphanumeric() || b"_:*!&+$#".contains(b)))) {return Err(self.invalid());}
+            return super::builtins::call(self.rt, self.host, &String::from_utf8_lossy(name), args).ok_or_else(||self.invalid())?;
+        }
+        if let Some(context) = self.analysis {
+            if let Some(function) = funcref.specialization().or_else(||self.rt.state.function(funcref.name().as_bytes())) {context.depend_on(function);}
+            if let Some(ty) = funcref.declared_type() {super::compiler::invoke(self.rt, &ty, &args)} else {super::compiler::call(self.rt, context, funcref.name().as_bytes(), &args)}
+        } else {self.rt.call_funcref(self.host, funcref, args, dict)}
+    }
     pub fn peek(&self) -> u8 {
         self.src.get(self.pos).copied().unwrap_or(0)
     }
@@ -92,23 +143,26 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         self.skip_white();
         if self.peek() == b'?' && self.peek_at(1) == b'?' {
             // Falsy operator.
+            self.operator_space(2)?;
             self.pos += 2;
             self.skip_white();
             let truthy = self.evaluate && !condition.is_empty_value();
             let saved = self.evaluate;
-            if truthy {
+            if truthy && !self.analyzing() {
                 self.evaluate = false;
             }
             let other = self.eval1()?;
             self.evaluate = saved;
+            if self.analyzing() {let a = super::types::Type::infer(&condition); let b = super::types::Type::infer(&other); return Ok(Value::type_value(if a == b {a} else {super::types::Type::Any}));}
             return Ok(if !self.evaluate || truthy { condition } else { other });
         }
         if self.peek() != b'?' {
             return Ok(condition);
         }
+        self.operator_space(1)?;
         self.pos += 1;
         self.skip_white();
-        let truth = if self.evaluate { condition.to_bool()? } else { false };
+        let truth = if self.analyzing() {super::types::Type::Bool.require(&super::types::Type::infer(&condition))?; true} else if self.evaluate { if self.rt.vim9() {super::vim9::truth(&condition)?} else {condition.to_bool()?} } else { false };
         let saved = self.evaluate;
         self.evaluate = saved && truth;
         let then_value = self.eval1()?;
@@ -117,11 +171,13 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         if self.peek() != b':' {
             return Err(Fail::Error(VimError::new(109, "Missing ':' after '?'")));
         }
+        self.operator_space(1)?;
         self.pos += 1;
         self.skip_white();
-        self.evaluate = saved && !truth;
+        self.evaluate = saved && (!truth || self.analysis.is_some());
         let else_value = self.eval1()?;
         self.evaluate = saved;
+        if self.analyzing() {let a = super::types::Type::infer(&then_value); let b = super::types::Type::infer(&else_value); return Ok(Value::type_value(if a == b {a} else {super::types::Type::Any}));}
         Ok(if !saved { Value::Number(0) } else if truth { then_value } else { else_value })
     }
 
@@ -132,19 +188,20 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             return Ok(left);
         }
         let saved = self.evaluate;
-        let mut result = if saved { left.to_bool()? } else { false };
+        let mut result = if self.analyzing() {super::types::Type::Bool.require(&super::types::Type::infer(&left))?; false} else if saved { if self.rt.vim9() {super::vim9::truth(&left)?} else {left.to_bool()?} } else { false };
         while self.peek() == b'|' && self.peek_at(1) == b'|' {
+            self.operator_space(2)?;
             self.pos += 2;
             self.skip_white();
-            self.evaluate = saved && !result;
+            self.evaluate = saved && (!result || self.analysis.is_some());
             let right = self.eval3()?;
             if self.evaluate {
-                result = right.to_bool()?;
+                result = if self.analyzing() {super::types::Type::Bool.require(&super::types::Type::infer(&right))?; false} else if self.rt.vim9() {super::vim9::truth(&right)?} else {right.to_bool()?};
             }
             self.skip_white();
         }
         self.evaluate = saved;
-        left = Value::Number(result as i64);
+        left = if self.rt.vim9() {Value::Bool(result)} else {Value::Number(result as i64)};
         Ok(left)
     }
 
@@ -155,19 +212,20 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             return Ok(left);
         }
         let saved = self.evaluate;
-        let mut result = if saved { left.to_bool()? } else { true };
+        let mut result = if self.analyzing() {super::types::Type::Bool.require(&super::types::Type::infer(&left))?; true} else if saved { if self.rt.vim9() {super::vim9::truth(&left)?} else {left.to_bool()?} } else { true };
         while self.peek() == b'&' && self.peek_at(1) == b'&' {
+            self.operator_space(2)?;
             self.pos += 2;
             self.skip_white();
-            self.evaluate = saved && result;
+            self.evaluate = saved && (result || self.analysis.is_some());
             let right = self.eval4()?;
             if self.evaluate {
-                result = right.to_bool()?;
+                result = if self.analyzing() {super::types::Type::Bool.require(&super::types::Type::infer(&right))?; false} else if self.rt.vim9() {super::vim9::truth(&right)?} else {right.to_bool()?};
             }
             self.skip_white();
         }
         self.evaluate = saved;
-        Ok(Value::Number(result as i64))
+        Ok(if self.rt.vim9() {Value::Bool(result)} else {Value::Number(result as i64)})
     }
 
     /// Recognize a comparison operator at `pos`, returning it and its length.
@@ -204,13 +262,19 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         let case = match self.src[self.pos + len - 1] {
             b'#' => CaseMode::Match,
             b'?' => CaseMode::Ignore,
+            _ if self.rt.vim9() => CaseMode::Match,
             _ => CaseMode::Option,
         };
+        self.operator_space(len)?;
         self.pos += len;
         self.skip_white();
         let right = self.eval5()?;
         if !self.evaluate {
             return Ok(Value::Number(0));
+        }
+        if self.analyzing() {return Ok(Value::type_value(super::types::Type::Bool));}
+        if self.rt.vim9() && (matches!(left, Value::Null) || matches!(right, Value::Null)) && matches!(op, CompareOp::Equal | CompareOp::NotEqual) {
+            let equal = left.is_null() && right.is_null(); return Ok(Value::Bool(if op == CompareOp::Equal {equal} else {!equal}));
         }
         let ignore_case = match case {
             CaseMode::Match => false,
@@ -221,7 +285,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         let result = compare_values(&left, &right, op, ignore_case, &mut |text, pattern, ic| {
             super::regex::string_matches(text, pattern, ic, fuel)
         })?;
-        Ok(Value::Number(result as i64))
+        Ok(if self.rt.vim9() {Value::Bool(result)} else {Value::Number(result as i64)})
     }
 
     fn eval5(&mut self) -> EvalResult<Value> {
@@ -233,10 +297,12 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             if !(shift_left || shift_right) {
                 return Ok(left);
             }
+            self.operator_space(2)?;
             self.pos += 2;
             self.skip_white();
             let right = self.eval6(false)?;
             if self.evaluate {
+                if self.analyzing() {super::types::Type::Number.require(&super::types::Type::infer(&left))?; super::types::Type::Number.require(&super::types::Type::infer(&right))?; left = Value::type_value(super::types::Type::Number); continue;}
                 let (value, amount) = (left.to_number()?, right.to_number()?);
                 if amount < 0 {
                     return Err(Fail::Error(VimError::new(1283, "Bitshift amount must be a positive number")));
@@ -260,10 +326,11 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 b'+' => "+",
                 b'-' => "-",
                 b'.' if self.peek_at(1) == b'.' => "..",
-                b'.' => ".",
+                b'.' if !self.rt.vim9() => ".",
                 _ => return Ok(left),
             };
             // "a.b" with a Dictionary was handled as a member in expr10.
+            self.operator_space(op.len())?;
             self.pos += op.len();
             if op == ".." && self.peek() == b'=' || op == "." && self.peek() == b'=' {
                 // Assignment operator; not part of an expression.
@@ -276,13 +343,18 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             if !self.evaluate {
                 continue;
             }
+            if self.analyzing() {left = super::compiler::binary(&left, &right, op)?; continue;}
             left = match op {
                 "." | ".." => {
-                    let mut bytes = left.to_bytes()?;
-                    bytes.extend_from_slice(&right.to_bytes()?);
+                    let bytes_for = |value: &Value| -> Result<Vec<u8>, VimError> {
+                        if self.rt.vim9() && matches!(value, Value::Bool(_) | Value::None | Value::Null) {Ok(value.display_bytes(true, false))} else {value.to_bytes()}
+                    };
+                    let mut bytes = bytes_for(&left)?;
+                    bytes.extend_from_slice(&bytes_for(&right)?);
                     Value::String(bytes.into())
                 }
                 "+" => match (&left, &right) {
+                    (Value::Tuple(a), Value::Tuple(b)) => {let mut items = a.as_ref().clone(); items.extend(b.iter().cloned()); Value::Tuple(std::sync::Arc::new(items))}
                     (Value::List(a), Value::List(b)) => {
                         let mut items = a.snapshot();
                         items.extend(b.snapshot());
@@ -293,9 +365,9 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                         bytes.extend(b.bytes());
                         Value::Blob(Blob::new(bytes))
                     }
-                    _ => arithmetic(&left, &right, b'+')?,
+                    _ => {if self.rt.vim9() {super::compiler::binary(&left, &right, "+")?;} arithmetic(&left, &right, b'+')?},
                 },
-                _ => arithmetic(&left, &right, b'-')?,
+                _ => {if self.rt.vim9() {super::compiler::binary(&left, &right, "-")?;} arithmetic(&left, &right, b'-')?},
             };
         }
     }
@@ -308,11 +380,12 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             if !matches!(op, b'*' | b'/' | b'%') {
                 return Ok(left);
             }
+            self.operator_space(1)?;
             self.pos += 1;
             self.skip_white();
             let right = self.eval9(false)?;
             if self.evaluate {
-                left = arithmetic(&left, &right, op)?;
+                left = if self.analyzing() {super::compiler::binary(&left, &right, &(op as char).to_string())?} else {if self.rt.vim9() {super::compiler::binary(&left, &right, &(op as char).to_string())?;} arithmetic(&left, &right, op)?};
             }
         }
     }
@@ -321,6 +394,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         self.skip_white();
         let start = self.pos;
         while matches!(self.peek(), b'!' | b'-' | b'+') {
+            if self.rt.vim9() && matches!(self.peek(), b'+' | b'-') && self.peek() == self.peek_at(1) {return Err(self.invalid());}
             self.pos += 1;
             self.skip_white();
         }
@@ -330,8 +404,9 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             return Ok(Value::Number(0));
         }
         for op in unary.iter().rev() {
+            if self.analyzing() {value = if *op == b'!' {Value::type_value(super::types::Type::Bool)} else {super::compiler::binary(&Value::Number(0), &value, "+")?}; continue;}
             value = match op {
-                b'!' => Value::Number(!value.to_bool()? as i64),
+                b'!' => if self.rt.vim9() {Value::Bool(value.is_empty_value())} else {Value::Number(!value.to_bool()? as i64)},
                 b'-' => match value {
                     Value::Float(f) => Value::Float(-f),
                     other => Value::Number(other.to_number()?.wrapping_neg()),
@@ -352,9 +427,28 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         result
     }
 
+    fn read_type(&mut self) -> EvalResult<super::types::Type> {
+        let mut at = self.pos;
+        let result = self.read_type_at(&mut at);
+        self.pos = at;
+        result
+    }
+
+    fn read_type_at(&mut self, at: &mut usize) -> EvalResult<super::types::Type> {
+        if self.evaluate && !self.constant {super::types::parse_active(self.src, at, self.rt, self.host)}
+        else {super::types::parse_in(self.src, at, self.rt).map_err(Into::into)}
+    }
+
     fn eval10_inner(&mut self, want_string: bool) -> EvalResult<Value> {
         let byte = self.peek();
         let value = match byte {
+            b'<' if self.rt.vim9() => {
+                self.pos += 1;
+                let ty = self.read_type()?;
+                self.skip_white(); if self.peek() != b'>' {return Err(VimError::new(1009, "Missing > after type cast").into());}
+                self.pos += 1; self.skip_white(); let value = self.eval9(want_string)?;
+                if self.analyzing() {Value::type_value(ty)} else if self.evaluate {ty.check(value)?} else {value}
+            }
             b'0'..=b'9' => self.number(want_string)?,
             b'"' => self.double_quoted()?,
             b'\'' => self.single_quoted()?,
@@ -362,9 +456,11 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             b'$' => self.environment()?,
             b'[' => self.list_literal()?,
             b'#' if self.peek_at(1) == b'{' => {
+                if self.rt.vim9() {return Err(VimError::new(1097, "Line not recognized: legacy Dictionary literal").into());}
                 self.pos += 1;
                 self.dict_literal(true)?
             }
+            b'{' if self.rt.vim9() => self.dict_literal(true)?,
             b'{' => {
                 if let Some(lambda) = self.lambda()? {
                     lambda
@@ -377,10 +473,19 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             b'&' => self.option_value()?,
             b'@' => self.register_value()?,
             b'(' => {
+                if self.rt.vim9() {
+                    if let Some(value) = self.vim9_lambda()? {return self.subscripts(value, None);}
+                }
                 self.pos += 1;
                 self.skip_white();
-                let value = self.eval1()?;
+                if self.rt.vim9() && self.peek() == b')' {self.pos += 1; return self.subscripts(Value::Tuple(std::sync::Arc::new(vec![])), None);}
+                let mut value = self.eval1()?;
                 self.skip_white();
+                if self.rt.vim9() && self.peek() == b',' {
+                    let mut items = vec![value];
+                    while self.peek() == b',' {self.comma()?; self.skip_white(); if self.peek() == b')' {break;} items.push(self.eval1()?); self.skip_white();}
+                    value = Value::Tuple(std::sync::Arc::new(items));
+                }
                 if self.peek() != b')' {
                     return Err(Fail::Error(VimError::new(110, "Missing ')'")));
                 }
@@ -450,7 +555,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 }
             }
         }
-        let (value, used) = str2nr(rest, true);
+        let (value, used) = str2nr(rest, !self.rt.vim9());
         if used == 0 {
             return Err(self.invalid());
         }
@@ -675,6 +780,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                         let text = match &value {
                             Value::String(text) => text.as_bytes().to_vec(),
                             Value::List(_) | Value::Dict(_) | Value::Blob(_) | Value::Funcref(_) => value.string_bytes(),
+                            Value::Type(_) if self.analyzing() => vec![],
                             other => other.to_bytes()?,
                         };
                         out.extend(text);
@@ -699,6 +805,8 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             return Ok(Value::Number(0));
         }
         let name = String::from_utf8_lossy(&self.src[start..self.pos]).into_owned();
+        if self.analyzing() {return Ok(Value::type_value(super::types::Type::String));}
+        if self.constant {return Err(self.invalid());}
         Ok(Value::String(self.rt.get_env(self.host, &name).into()))
     }
 
@@ -720,7 +828,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             }
             self.skip_white();
             match self.peek() {
-                b',' => self.pos += 1,
+                b',' => self.comma()?,
                 b']' => {
                     self.pos += 1;
                     break;
@@ -755,6 +863,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 if self.evaluate {
                     match &key {
                         Value::Float(_) => return Err(Fail::Error(VimError::new(806, "Using a Float as a String"))),
+                        Value::Type(_) if self.analyzing() => format!("<key{}>", dict.len()).into(),
                         other => other.to_vstr()?,
                     }
                 } else {
@@ -765,6 +874,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             if self.peek() != b':' {
                 return Err(Fail::Error(VimError::new(720, format!("Missing colon in Dictionary: {}", String::from_utf8_lossy(self.rest())))));
             }
+            if self.rt.vim9() && !self.src.get(self.pos + 1).is_some_and(|b|is_white(*b)) {return Err(VimError::new(1069, "White space required after colon").into());}
             self.pos += 1;
             self.skip_white();
             let value = self.eval1()?;
@@ -776,7 +886,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             }
             self.skip_white();
             match self.peek() {
-                b',' => self.pos += 1,
+                b',' => self.comma()?,
                 b'}' => {
                     self.pos += 1;
                     break;
@@ -785,6 +895,76 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             }
         }
         Ok(if self.evaluate { Value::Dict(dict) } else { Value::Number(0) })
+    }
+
+    fn vim9_lambda(&mut self) -> EvalResult<Option<Value>> {
+        use super::types::Type;
+        let start = self.pos;
+        let Some(close) = delimited_end(self.src, start, b'(', b')') else {return Ok(None);};
+        let mut at = skip_white(self.src, close);
+        let mut result_type = Type::Any;
+        let infer_result = self.src.get(at) != Some(&b':');
+        let result_at = at + 1;
+        // Identify the lambda before resolving types or importing modules.
+        // A grouping expression can be followed by a ternary's colon.
+        if !infer_result {
+            at += 1;
+            if super::types::parse(self.src, &mut at).is_err() {return Ok(None);}
+            at = skip_white(self.src, at);
+        }
+        if !self.src.get(at..).is_some_and(|s|s.starts_with(b"=>")) {return Ok(None);}
+        let body_at = skip_white(self.src, at + 2);
+        if !infer_result {let mut at = result_at; result_type = self.read_type_at(&mut at)?;}
+        let mut params = vec![]; let mut types = vec![]; let mut rest = None; at = start + 1;
+        while at < close - 1 {
+            at = skip_white(self.src, at);
+            if at == close - 1 {break;}
+            if rest.is_some() {return Err(VimError::new(1069, "Variable arguments must be last").into());}
+            let variadic = self.src[at..].starts_with(b"...");
+            if variadic {at += 3;}
+            let begin = at;
+            while self.src.get(at).is_some_and(|b|is_name_char(*b)) {at += 1;}
+            if begin == at {return Err(self.invalid());}
+            let name = VStr::from(&self.src[begin..at]);
+            if name.as_bytes() != b"_" && params.iter().any(|p: &super::state::Param|p.name == name) {return Err(VimError::new(853, "Duplicate argument name").into());}
+            let ty = if self.src.get(at) == Some(&b':') {at += 1; self.read_type_at(&mut at)?} else {Type::Any};
+            if variadic {
+                if !matches!(ty, Type::List(_)) {return Err(VimError::new(1012, "Variable arguments require a List type").into());}
+                rest = Some((name, ty));
+            } else {params.push(super::state::Param {name, default: None}); types.push(ty);}
+            at = skip_white(self.src, at);
+            if self.src.get(at) == Some(&b'=') {return Err(VimError::new(1172, "Cannot use default values in a lambda").into());}
+            if self.src.get(at) == Some(&b',') {at += 1;}
+            else if at != close - 1 {return Err(self.invalid());}
+        }
+        self.pos = body_at;
+        let body = if self.peek() == b'{' {
+            let end = delimited_end(self.src, self.pos, b'{', b'}').ok_or_else(||self.invalid())?;
+            self.pos = end;
+            super::state::FunctionBody::Lines(super::source::split_command_lines(&self.src[body_at + 1..end - 1], 1).into())
+        } else {
+            let saved = self.evaluate; self.evaluate = false;
+            let parsed = self.eval1(); self.evaluate = saved; parsed?;
+            super::state::FunctionBody::Lambda(VStr::from(&self.src[body_at..self.pos]))
+        };
+        if !self.evaluate {return Ok(Some(Value::Number(0)));}
+        if self.constant {return Err(self.invalid());}
+        let mut function = super::state::UserFunction {
+            name: VStr::empty(), params, varargs: rest.is_some(), body,
+            flags: super::state::FunctionFlags {abort: true, closure: true, ..Default::default()},
+            sid: self.rt.current_sid(), def_lnum: 0, outer: self.rt.capture_scope(),
+            signature: Some(super::vim9::Signature {generics: vec![], lexical_types: self.analysis.map_or_else(Default::default, |c|c.variables.clone()), bindings: self.rt.current_frame().and_then(|f|f.function.as_ref()).and_then(|f|f.signature.as_ref()).map_or_else(Default::default, |s|s.bindings.clone()), checked: Default::default(), parameters: types, rest, result: result_type, owner: self.analysis.and_then(|c|c.owner.clone()).or_else(||self.rt.current_class())}),
+        };
+        super::compiler::analyze_lambda(self.rt, self.host, &mut function, self.analysis.cloned().unwrap_or_default(), infer_result)?;
+        if self.analysis.is_some() {
+            return Ok(Some(Value::type_value(super::compiler::signature(&function))));
+        }
+        if self.constant {return Err(self.invalid());}
+        let name = self.rt.state.next_lambda_name();
+        let mut function = function; function.name = name.clone();
+        let ty = super::compiler::signature(&function);
+        self.rt.state.define_function(function)?;
+        Ok(Some(Value::Funcref(Funcref::named(name).with_type(ty))))
     }
 
     /// `{args -> expr}`; returns None (without moving) when this is not a lambda.
@@ -845,7 +1025,8 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             return Ok(Some(Value::Number(0)));
         }
         let body = VStr::from(&self.src[body_start..body_end]);
-        let name = self.rt.define_lambda(params, varargs, body);
+        if self.constant {return Err(self.invalid());}
+        let name = self.rt.define_lambda(params, varargs, body)?;
         Ok(Some(Value::Funcref(Funcref::named(name))))
     }
 
@@ -893,6 +1074,8 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         if !self.evaluate {
             return Ok(Value::Number(0));
         }
+        if self.analyzing() {return Ok(Value::type_value(super::types::Type::Any));}
+        if self.constant {return Err(self.invalid());}
         self.host.get_option(&name, scope).map_err(Fail::Error)
     }
 
@@ -910,6 +1093,8 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             return Ok(Value::Number(0));
         }
         let name = if name == '@' { '"' } else { name };
+        if self.analyzing() {return Ok(Value::type_value(super::types::Type::String));}
+        if self.constant {return Err(self.invalid());}
         self.host.get_register(name).map_err(Fail::Error)
     }
 
@@ -960,6 +1145,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
     }
 
     fn curly(&mut self, name: &mut Vec<u8>) -> EvalResult<()> {
+        if self.rt.vim9() {return Err(VimError::new(1079, "Cannot use curly braces in a name").into());}
         self.pos += 1;
         self.skip_white();
         let value = self.eval1()?;
@@ -987,8 +1173,19 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         // Legacy Vim permits whitespace between a named function and `(`.
         // Keep it untouched otherwise: adjacent expressions can be arguments
         // of :echo and :execute.
+        if self.rt.vim9() && self.peek() == b'<' && self.pos > 0 && !is_white(self.src[self.pos - 1]) {
+            let types = self.type_arguments()?;
+            let call = self.peek() == b'(';
+            let args = if call {self.call_arguments()?} else {vec![]};
+            if !self.evaluate {return self.subscripts_after(Value::Number(0), None, call);}
+            let reference = self.reference(&name)?;
+            let reference = super::vim9::specialize(self.rt, &reference, types)?;
+            let value = if call {self.invoke(&reference, args, None)?} else {Value::Funcref(reference)};
+            return self.subscripts_after(value, None, call);
+        }
         let after_name = skip_white(self.src, self.pos);
         if self.src.get(after_name) == Some(&b'(') {
+            if self.rt.vim9() && after_name != self.pos {return Err(VimError::new(1068, "No white space allowed before (").into());}
             self.pos = after_name;
         }
         if self.peek() == b'(' {
@@ -996,14 +1193,16 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             if !self.evaluate {
                 return self.subscripts_after(Value::Number(0), None, true);
             }
-            let funcref = self.rt.resolve_function_name(self.host, &name)?;
-            let value = self.rt.call_funcref(self.host, &funcref, args, None)?;
+            if let Some(context) = self.analysis {let value = super::compiler::call(self.rt, context, &name, &args)?; return self.subscripts_after(value, None, true);}
+            let funcref = self.reference(&name)?;
+            let value = self.invoke(&funcref, args, None)?;
             return self.subscripts_after(value, None, true);
         }
         if !self.evaluate {
             return self.subscripts(Value::Number(0), None);
         }
-        let value = match self.rt.get_variable(self.host, &name) {
+        if self.analysis.is_some() {let value = self.variable(&name)?; return self.subscripts(value, None);}
+        let value = match self.variable(&name) {
             Ok(value) => value,
             Err(Fail::Error(error)) if error.code == 121 => {
                 // A function name used as a value (legacy allows bare names
@@ -1013,7 +1212,19 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             }
             Err(other) => return Err(other),
         };
+        if matches!(value, Value::Module(_)) && self.peek() != b'.' {return Err(VimError::new(1060, "Expected dot after import name").into());}
         self.subscripts(value, None)
+    }
+
+    pub(crate) fn type_arguments(&mut self) -> EvalResult<Vec<super::types::Type>> {
+        self.pos += 1; let mut types = vec![];
+        if self.src.get(skip_white(self.src, self.pos)) == Some(&b'>') {return Err(VimError::new(1555, "Empty type argument list").into());}
+        loop {
+            types.push(self.read_type()?); self.skip_white();
+            if self.peek() == b'>' {self.pos += 1; break;}
+            if self.peek() != b',' {return Err(VimError::new(1556, "Missing > after type arguments").into());} self.pos += 1;
+        }
+        Ok(types)
     }
 
     /// Parse `(arg, ...)` at `pos`.
@@ -1036,7 +1247,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             }
             self.skip_white();
             match self.peek() {
-                b',' => self.pos += 1,
+                b',' => self.comma()?,
                 b')' => {
                     self.pos += 1;
                     break;
@@ -1065,18 +1276,36 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 after_call = false;
             }
             match self.peek() {
+                b'<' if self.rt.vim9() && self.pos > 0 && !is_white(self.src[self.pos - 1]) => {
+                    let types = self.type_arguments()?;
+                    if self.evaluate {
+                        let Value::Funcref(reference) = &value else {return Err(VimError::new(1558, "Not a generic function").into());};
+                        value = Value::Funcref(super::vim9::specialize(self.rt, reference, types)?);
+                    }
+                }
+                b'.' if self.analyzing() && is_name_char(self.peek_at(1)) => {
+                    self.pos += 1; let start = self.pos; while is_name_char(self.peek()) {self.pos += 1;}
+                    value = self.analysis.unwrap().member(self.rt, &value, &self.src[start..self.pos])?;
+                }
                 b'[' => {
                     self_dict = None;
                     value = self.index(value)?;
                 }
-                b'.' if self.evaluate && matches!(value, Value::Dict(_)) && is_name_char(self.peek_at(1)) => {
+                b'.' if self.evaluate && matches!(value, Value::Class(_) | Value::Object(_)) && is_name_char(self.peek_at(1)) => {
+                    self.pos += 1; let start = self.pos;
+                    while is_name_char(self.peek()) {self.pos += 1;}
+                    value = super::objects::member(self.rt, &value, &String::from_utf8_lossy(&self.src[start..self.pos]))?;
+                    self_dict = None;
+                }
+                b'.' if self.evaluate && matches!(value, Value::Dict(_) | Value::Module(_)) && is_name_char(self.peek_at(1)) => {
                     self.pos += 1;
                     let start = self.pos;
                     while is_name_char(self.peek()) {
                         self.pos += 1;
                     }
                     let key = &self.src[start..self.pos];
-                    let Value::Dict(dict) = &value else { unreachable!() };
+                    let (Value::Dict(dict) | Value::Module(dict)) = &value else { unreachable!() };
+                    dict.exported_member(key)?;
                     match dict.get(key) {
                         Some(found) => {
                             self_dict = Some(dict.clone());
@@ -1096,17 +1325,20 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 }
                 b'(' => {
                     let args = self.call_arguments()?;
-                    if self.evaluate {
+                    if self.analyzing() {
+                        value = if let Value::Funcref(reference) = &value {self.invoke(reference, args, None)?}
+                            else {super::compiler::invoke(self.rt, &super::types::Type::infer(&value), &args)?};
+                    } else if self.evaluate {
                         let Value::Funcref(funcref) = &value else {
                             if let Value::String(name) = &value {
-                                let funcref = self.rt.resolve_function_name(self.host, name.as_bytes())?;
-                                value = self.rt.call_funcref(self.host, &funcref, args, self_dict.take())?;
+                                let funcref = self.reference(name.as_bytes())?;
+                                value = self.invoke(&funcref, args, self_dict.take())?;
                                 continue;
                             }
                             return Err(Fail::Error(VimError::new(109, "Not a Funcref")));
                         };
                         let funcref = funcref.clone();
-                        value = self.rt.call_funcref(self.host, &funcref, args, self_dict.take())?;
+                        value = self.invoke(&funcref, args, self_dict.take())?;
                     }
                     self_dict = None;
                     after_call = true;
@@ -1136,7 +1368,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 return Ok(Value::Number(0));
             }
             let Value::Funcref(funcref) = lambda else { unreachable!() };
-            return self.rt.call_funcref(self.host, &funcref, args, None);
+            return self.invoke(&funcref, args, None);
         }
         if self.peek() == b'(' {
             // base->(expr)(args)
@@ -1157,10 +1389,10 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             }
             let funcref = match callee {
                 Value::Funcref(funcref) => funcref,
-                Value::String(name) => self.rt.resolve_function_name(self.host, name.as_bytes())?,
+                Value::String(name) => self.reference(name.as_bytes())?,
                 _ => return Err(Fail::Error(VimError::new(1275, "String or function required for ->(expr)"))),
             };
-            return self.rt.call_funcref(self.host, &funcref, args, None);
+            return self.invoke(&funcref, args, None);
         }
         let Some(name) = self.parse_name()? else {
             return Err(Fail::Error(VimError::new(260, "Missing name after ->")));
@@ -1170,7 +1402,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         while matches!(self.peek(), b'.' | b'[') {
             let (current, _) = match callee.take() {
                 Some(found) => found,
-                None => (if self.evaluate { self.rt.get_variable(self.host, &name)? } else { Value::Number(0) }, None),
+                None => (if self.evaluate { self.variable(&name)? } else { Value::Number(0) }, None),
             };
             if self.peek() == b'[' {
                 callee = Some((self.index(current)?, None));
@@ -1203,28 +1435,28 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
             Some((Value::Funcref(funcref), dict)) => {
                 let mut all = vec![base];
                 all.extend(args);
-                self.rt.call_funcref(self.host, &funcref, all, dict)
+                self.invoke(&funcref, all, dict)
             }
             Some((Value::String(callee_name), dict)) => {
-                let funcref = self.rt.resolve_function_name(self.host, callee_name.as_bytes())?;
+                let funcref = self.reference(callee_name.as_bytes())?;
                 let mut all = vec![base];
                 all.extend(args);
-                self.rt.call_funcref(self.host, &funcref, all, dict)
+                self.invoke(&funcref, all, dict)
             }
             Some(_) => Err(Fail::Error(VimError::new(109, "Not a Funcref"))),
             None => {
                 // A variable holding a Funcref takes precedence for scoped or
                 // capitalized names, like a direct call.
-                let funcref = self.rt.resolve_function_name(self.host, &name)?;
+                let funcref = self.reference(&name)?;
                 let position = if funcref.args().is_empty() && funcref.dict().is_none() {
-                    super::builtins::method_base_position(funcref.name().as_bytes())
+                    super::builtins::method_base_position(funcref.name().as_bytes())?
                 } else {
                     0
                 };
                 let mut all = args;
                 let position = position.min(all.len());
                 all.insert(position, base);
-                self.rt.call_funcref(self.host, &funcref, all, None)
+                self.invoke(&funcref, all, None)
             }
         }
     }
@@ -1245,6 +1477,8 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         }
         let mut second = None;
         if range {
+            if self.rt.vim9() && (!self.src.get(self.pos.wrapping_sub(1)).is_some_and(|b|is_white(*b) || *b == b'[')
+                || !self.src.get(self.pos + 1).is_some_and(|b|is_white(*b) || *b == b']')) {return Err(VimError::new(1004, "White space required before and after ':'").into());}
             self.pos += 1;
             self.skip_white();
             if self.peek() != b']' {
@@ -1258,6 +1492,28 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         self.pos += 1;
         if !self.evaluate {
             return Ok(Value::Number(0));
+        }
+        if self.analyzing() {
+            use super::types::Type;
+            let ty = Type::infer(&value);
+            let item = match ty {
+                Type::List(t) => if range {Type::List(t)} else {*t},
+                Type::Dict(t) => *t,
+                Type::String => Type::String, Type::Blob => if range {Type::Blob} else {Type::Number},
+                Type::Tuple(items, rest) => if range {Type::Tuple(items, rest)} else {
+                    first.as_ref().and_then(|v|v.to_number().ok()).and_then(|n|items.get(if n < 0 {(items.len() as i64 + n) as usize} else {n as usize})).cloned().or(rest.map(|t|*t)).unwrap_or(Type::Any)
+                },
+                Type::Any => Type::Any, _ => return Err(VimError::new(689, "Cannot index this type").into()),
+            }; return Ok(Value::type_value(item));
+        }
+        if self.rt.vim9() {
+            if let Value::String(text) = &value {
+                return super::vim9::string_index(text, first.as_ref(), second.as_ref(), range);
+            }
+        }
+        if let Value::Tuple(items) = &value {
+            let result = index_value(&Value::list(items.as_ref().clone()), first.as_ref(), second.as_ref(), range)?;
+            return Ok(if let Value::List(items) = result {Value::Tuple(std::sync::Arc::new(items.snapshot()))} else {result});
         }
         index_value(&value, first.as_ref(), second.as_ref(), range)
     }
@@ -1277,7 +1533,7 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         while matches!(self.peek(), b'.' | b'[') {
             let current = match target.take() {
                 Some(value) => value,
-                None => match self.rt.get_variable(self.host, &name) {
+                None => match self.variable(&name) {
                     Ok(value) => value,
                     Err(_) => {
                         self.pos = start;
@@ -1295,23 +1551,28 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
                 target = Some(self.index(current)?);
                 self_dict = Some(dict);
             } else {
-                let Value::Dict(dict) = &current else {
-                    self.pos = start;
-                    return Ok(None);
-                };
                 self.pos += 1;
                 let key_start = self.pos;
                 while is_name_char(self.peek()) {
                     self.pos += 1;
                 }
                 let key = &self.src[key_start..self.pos];
-                let Some(found) = dict.get(key) else {
-                    return Err(Fail::Error(VimError::new(716, format!("Key not present in Dictionary: \"{}\"", String::from_utf8_lossy(key)))));
+                let found = match &current {
+                    Value::Dict(dict) | Value::Module(dict) => {
+                        if matches!(current, Value::Module(_)) {dict.exported_member(key)?; self_dict = None;}
+                        else {self_dict = Some(dict.clone());}
+                        dict.get(key).ok_or_else(||VimError::new(716, format!("Key not present in Dictionary: \"{}\"", String::from_utf8_lossy(key))))?
+                    }
+                    Value::Class(_) | Value::Object(_) => {
+                        self_dict = None;
+                        super::objects::member(self.rt, &current, &String::from_utf8_lossy(key))?
+                    }
+                    _ => {self.pos = start; return Ok(None);}
                 };
-                self_dict = Some(dict.clone());
                 target = Some(found);
             }
         }
+        let specialization = if self.rt.vim9() && self.peek() == b'<' {Some(self.type_arguments()?)} else {None};
         self.skip_white();
         if self.peek() != b'(' {
             self.pos = start;
@@ -1319,19 +1580,39 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
         }
         let funcref = match target {
             Some(Value::Funcref(funcref)) => funcref,
-            Some(Value::String(callee)) => self.rt.resolve_function_name(self.host, callee.as_bytes())?,
+            Some(Value::String(callee)) => self.reference(callee.as_bytes())?,
             Some(_) => return Err(Fail::Error(VimError::new(109, "Not a Funcref"))),
-            None => self.rt.resolve_function_name(self.host, &name)?,
+            None => self.reference(&name)?,
         };
+        let funcref = if let Some(types) = specialization {super::vim9::specialize(self.rt, &funcref, types)?} else {funcref};
         let args = self.call_arguments()?;
         let funcref = match self_dict {
             Some(dict) if funcref.dict().is_none() || funcref.auto_bound() => {
-                Funcref::partial(funcref.name().clone(), funcref.args().to_vec(), Some(dict), true)
+                funcref.bind(funcref.args().to_vec(), Some(dict), true)
             }
             _ => funcref,
         };
         Ok(Some(Callee { funcref, args }))
     }
+}
+
+/// Find a balanced delimiter while preserving quoted strings as opaque bytes.
+fn delimited_end(src: &[u8], start: usize, open: u8, close: u8) -> Option<usize> {
+    let mut depth = 1; let mut at = start + 1; let mut quote = None;
+    while at < src.len() {
+        let byte = src[at];
+        if let Some(delimiter) = quote {
+            if byte == b'\\' && delimiter == b'"' {at += 2; continue;}
+            if byte == delimiter {
+                if delimiter == b'\'' && src.get(at + 1) == Some(&delimiter) {at += 2; continue;}
+                quote = None;
+            }
+        } else if matches!(byte, b'\'' | b'"') {quote = Some(byte);}
+        else if byte == open {depth += 1;}
+        else if byte == close {depth -= 1; if depth == 0 {return Some(at + 1);}}
+        at += 1;
+    }
+    None
 }
 
 /// `expr[i]` and `expr[a : b]` for String, List, Dictionary and Blob.

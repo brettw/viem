@@ -1,10 +1,10 @@
-//! Legacy Vim script (the language of `.vimrc` files in Vim 8 and Vim 9's
-//! legacy dialect). Viem uses one engine for every script it loads:
+//! Legacy Vim script and Vim9 script. Viem uses one engine for every script it loads:
 //! `startup.viem`, `:source`, commands typed at the `:` prompt, syntax setup,
 //! and imported color schemes. Each host supplies its permitted effects.
 //!
 //! This module is independent of the command interpreter; the editor plugs
-//! in through `ScriptHost`. Vim9 script is not supported.
+//! in through `ScriptHost`. Vim9 analysis reuses the expression parser and
+//! builtin signatures; typed calls execute on the same runtime frame stack.
 pub mod autocmd;
 mod builtins;
 pub(crate) mod commands;
@@ -20,6 +20,10 @@ pub(crate) mod regex;
 pub mod source;
 pub mod state;
 mod user_commands;
+pub mod types;
+mod vim9;
+mod compiler;
+pub mod objects;
 pub mod value;
 pub mod vvars;
 

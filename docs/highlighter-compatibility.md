@@ -41,7 +41,7 @@ These architectural gaps remain:
 | Region and match offsets | Java/Groovy, Tcl, Procmail, RST, Yacc and dependents | Match Vim's offset scheduling, including valid negative starts/end offsets, without rewriting published exact coverage. Verify containment, skips, boundaries and incremental checkpoints against Vim. |
 | View-dependent patterns | `bst.vim`, `gitconfig.vim` use `\%#` | Carry actual view cursor identity and invalidate dependent results. The private setup cursor is not a substitute. |
 | Composing-character matching | `m17ndb.vim` uses `\Z`; Vim also defines `\%C` | Implement composing-character semantics in both matching paths, including leading combining marks and ordinary literal behavior. |
-| Vim9 setup surface | Some bundled files use Vim9 declarations; XPM contains a typed helper | The shared source reader currently lowers only a small declaration surface. General typed calls, scope/type behavior and imports remain unsupported. Do not claim full Vim9 semantics from a passing default branch. |
+| Vim9 branch conformance | Some bundled files use Vim9 declarations; XPM contains a typed helper | Typed calls, scopes, imports and object types now use the shared evaluator. Continue differential coverage of alternative setup branches; the language fixtures and a passing default branch do not prove every bundled script path. |
 | Setup host coverage | Alternative runtime branches, option combinations, highlight queries and buffer-sensitive helpers | Add named nonempty fixtures and differential branch coverage; successful empty-input loads do not prove every branch. Keep effects confined and resource budgets explicit. |
 
 The top-level `chicken.vim` is supplemental Scheme syntax and produces no rules

@@ -13,8 +13,8 @@ Viem is a modal, keyboard-first editor for human-language writing: gVim's
 composable editing model with word-processor typography, mixed styles,
 proportional fonts, optional soft wrapping, visual-row navigation, and responsive
 large-document editing. macOS and Windows are native frontends; Windows follows
-the macOS presentation and behavior with platform controls. A terminal frontend, Vim9 script, plugin/runtime loading, and pixel-for-pixel
-gVim emulation are outside scope. The bounded legacy Vim script profile in
+the macOS presentation and behavior with platform controls. A terminal frontend, automatic plugin/runtime loading, and pixel-for-pixel
+gVim emulation are outside scope. Legacy Vim script and Vim9 script use the bounded host profile in
 [docs/vimscript.md](docs/vimscript.md) is supported for explicit configuration
 and editor automation.
 
@@ -1946,7 +1946,13 @@ continuations. Recognized-but-unsupported options/events must not imply working
 features. Keep the supported profile and limitations in
 [docs/vimscript.md](docs/vimscript.md) current.
 
-Do not expand this scope into Vim9 script, automatic plugin/runtime execution,
+Vim9 script is a required language alongside legacy Vim script, using the same
+evaluator for editor automation, syntax setup and color schemes. Language
+support includes types, functions, closures, modules and object-oriented
+constructs; the existing host capabilities and confinement still apply.
+Track implementation and conformance evidence in the scripting guide; accepting
+a declaration or loading default branches is not full language compatibility.
+Do not expand this scope into automatic plugin/runtime execution,
 terminal jobs, shell filters/`:!`, tags, quickfix, diff, folding, spellchecking,
 Vim tab pages, sessions/viminfo, remote server commands, or full Vim option/regex
 parity. Adopted syntax providers and supported Vim syntax loading remain
