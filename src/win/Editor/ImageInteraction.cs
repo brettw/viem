@@ -152,7 +152,7 @@ internal sealed partial class EditorPane
         updatingImageSize = false;
         UpdateImageSizeControls();
         imageApply!.Content = edited == null ? "Insert" : "Apply";
-        imageApply!.IsEnabled = imageDestination.Text.Trim().Length > 0;
+        imageApply!.IsEnabled = imageDestination!.Text.Trim().Length > 0;
         imageError!.Text = ""; imageError.Visibility = Visibility.Collapsed;
         imageActions!.Visibility = Visibility.Collapsed; imageEditor!.Visibility = Visibility.Visible;
         imagePopup!.Visibility = Visibility.Visible;

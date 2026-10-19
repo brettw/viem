@@ -140,7 +140,7 @@ internal static class StyleDefaultsLoadingTests
         string vimColors = Path.Combine(directory, "vim", "colors"); Directory.CreateDirectory(vimColors);
         byte[] night = Encoding.UTF8.GetBytes("set background=dark\nhi clear\nhi Normal guifg=#c0c0c0 guibg=#101010\nhi Comment guifg=#ff0000\n");
         foreach (string file in new[] { "night.vim", "notes.vimrc", ".hidden.vim" }) File.WriteAllBytes(Path.Combine(vimColors, file), night);
-        Check(VimColorSchemes.Available([vimColors, Path.Combine(directory, "missing")]).Select(scheme => scheme.Name).SequenceEqual(new[] { "night" }),
+        Check(VimColorSchemes.Available(new[] { vimColors, Path.Combine(directory, "missing") }).Select(scheme => scheme.Name).SequenceEqual(new[] { "night" }),
             "Vim color scheme discovery lists visible .vim files by their stems");
         Check(VimColorSchemes.Directories(@"C:\Users\someone").SequenceEqual(new[] { @"C:\Users\someone\vimfiles\colors", @"C:\Users\someone\.vim\colors" }),
             "Vim for Windows reads vimfiles before a shared .vim directory");

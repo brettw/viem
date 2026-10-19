@@ -62,7 +62,7 @@ internal sealed partial class Preferences
             {
                 string[] fields = entry.Split(':');
                 if (fields[0].Length == 0) throw new InvalidDataException("Invalid guifont.");
-                families.Add(fields[0].Replace('_', ' '));
+                families.Add((JsonNode?)JsonValue.Create(fields[0].Replace('_', ' ')));
                 foreach (string field in fields.Skip(1))
                     if (field == "b") bold = true;
                     else if (field == "i") italic = true;
