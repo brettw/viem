@@ -31,7 +31,7 @@ internal sealed partial class SettingsWindow : Window
         body.Children.Add(pages); body.Children.Add(error); Grid.SetRow(error, 1); error.Margin = new(24, 0, 24, 16);
         Grid.SetColumn(body, 1); root.Children.Add(body);
         BuildView(Page("View", "\uE7F4", "Arrange your writing space."));
-        BuildTheme(Page("Theme", "\uE790", "Make a comfortable space for writing. Changes apply to every window."));
+        BuildTheme(Page("Theme", "\uE790"));
         BuildEditing(Page("Editing", "\uE70F", "Configure typing, indentation, and whitespace."));
         categories.SelectionChanged += (_, _) => {
             if (categories.SelectedIndex == 1 && root.IsLoaded) OpenThemeSection();
@@ -47,7 +47,7 @@ internal sealed partial class SettingsWindow : Window
     private void OpenThemeSection() => Commit(() => { preferences.RestoreMissingBundledThemes(); RefreshThemeControls(); });
     internal void SelectThemeCategory() => categories.SelectedIndex = 1;
 
-    private StackPanel Page(string title, string glyph, string description)
+    private StackPanel Page(string title, string glyph, string? description = null)
     {
         var label = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         label.Children.Add(new FontIcon { Glyph = glyph, FontSize = 16 }); label.Children.Add(new TextBlock { Text = title });
@@ -55,7 +55,8 @@ internal sealed partial class SettingsWindow : Window
         var panel = new StackPanel { Spacing = 16, Padding = new(24, 20, 24, 24) };
         var heading = new StackPanel { Spacing = 6 };
         heading.Children.Add(new TextBlock { Text = title, FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
-        heading.Children.Add(new TextBlock { Text = description, TextWrapping = TextWrapping.Wrap, Opacity = .7 }); panel.Children.Add(heading);
+        if (description != null) heading.Children.Add(new TextBlock { Text = description, TextWrapping = TextWrapping.Wrap, Opacity = .7 });
+        panel.Children.Add(heading);
         var scroll = new ScrollViewer { Content = panel, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Visibility = Visibility.Collapsed };
         sections.Add(scroll); pages.Children.Add(scroll); return panel;
     }
