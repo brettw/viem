@@ -1,0 +1,640 @@
+{
+  "schema_version": 1,
+  "retrieved_on": "2026-10-18",
+  "path_base": "docs/licenses/native",
+  "sources": [
+    "src/win/packages.lock.json",
+    "src/win/Viem.Windows.csproj",
+    "src/win/Blocking/BlockingViem.csproj",
+    "Package.swift"
+  ],
+  "packages": [
+    {
+      "name": "Microsoft.DotNet.ILCompiler",
+      "version": "10.0.12",
+      "scope": "locked dependency",
+      "license": "MIT",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.dotnet.ilcompiler/10.0.12/microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+      "license_declaration": "MIT",
+      "license_url": "https://licenses.nuget.org/MIT",
+      "files": [
+        {
+          "path": "Microsoft.DotNet.ILCompiler-10.0.12/LICENSE.TXT",
+          "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/95017c711e6afc1085133d440e42b4bd78155701/LICENSE.TXT",
+          "archive_path": null,
+          "note": "Original source license at nuspec-pinned repository commit"
+        },
+        {
+          "path": "Microsoft.DotNet.ILCompiler-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.dotnet.ilcompiler/10.0.12/microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+          "archive_path": "THIRD-PARTY-NOTICES.TXT",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "AawF393Q+VkdrnrnI1gu612zh5iqpa1AGSvnKCQ3IkMgSKJXIQbO1sXYRgEzOU4f0cPZ6MaCCF29xZSGWlmbuQ==",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+      }
+    },
+    {
+      "name": "Microsoft.Graphics.Win2D",
+      "version": "1.3.2",
+      "scope": "locked dependency",
+      "license": "Microsoft Win2D binary terms; MIT source",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.graphics.win2d/1.3.2/microsoft.graphics.win2d.1.3.2.nupkg",
+      "license_declaration": null,
+      "license_url": "http://www.microsoft.com/web/webpi/eula/eula_win2d_10012014.htm",
+      "files": [
+        {
+          "path": "Microsoft.Graphics.Win2D-1.3.2/LICENSE-binary.html",
+          "sha256": "7b10b2c7d15a3062037d3820bfd5528235f8a287ded3d131e22c2f5286e61633",
+          "source_url": "https://web.archive.org/web/20250113180923id_/https://www.microsoft.com/web/webpi/eula/eula_win2d_10012014.htm",
+          "archive_path": null,
+          "note": "Archived original Microsoft binary terms"
+        },
+        {
+          "path": "Microsoft.Graphics.Win2D-1.3.2/LICENSE-binary.txt",
+          "sha256": "58861d69269603d43d4af4dc9dac1fd22f7f0e21c7e4cc829e96d36b73b9c641",
+          "source_url": "https://web.archive.org/web/20250113180923id_/https://www.microsoft.com/web/webpi/eula/eula_win2d_10012014.htm",
+          "archive_path": null,
+          "note": "Readable text extracted from adjacent original HTML"
+        },
+        {
+          "path": "Microsoft.Graphics.Win2D-1.3.2/LICENSE.txt",
+          "sha256": "c3ba493105fa52657c4c60d9b1680da7c01b188a8665d7a823c2a187fd259808",
+          "source_url": "https://raw.githubusercontent.com/microsoft/Win2D/65e90b29055de64b02e7f2a3d3f042b7fa36326c/LICENSE.txt",
+          "archive_path": null,
+          "note": "Public 1.3.2 changelog commit source license; package-recorded commit unavailable publicly"
+        }
+      ],
+      "lock_content_hash": "xAv4+Xj8wePW1innIUSXebX6UHMGDzOxwKPwYNUNY7mBrsRL/hPFEtuPLpBSxc3iBnuaCogPDCDeN7T4b1xV0Q==",
+      "package_source_commit": "feefabe2d8ef80025030c1dd7c9d3d71e2462cd3"
+    },
+    {
+      "name": "Microsoft.NET.ILLink.Tasks",
+      "version": "10.0.12",
+      "scope": "locked dependency",
+      "license": "MIT",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.net.illink.tasks/10.0.12/microsoft.net.illink.tasks.10.0.12.nupkg",
+      "license_declaration": "MIT",
+      "license_url": "https://licenses.nuget.org/MIT",
+      "files": [
+        {
+          "path": "Microsoft.NET.ILLink.Tasks-10.0.12/LICENSE.TXT",
+          "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/95017c711e6afc1085133d440e42b4bd78155701/LICENSE.TXT",
+          "archive_path": null,
+          "note": "Original source license at nuspec-pinned repository commit"
+        },
+        {
+          "path": "Microsoft.NET.ILLink.Tasks-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.net.illink.tasks/10.0.12/microsoft.net.illink.tasks.10.0.12.nupkg",
+          "archive_path": "THIRD-PARTY-NOTICES.TXT",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "xi+BDjFpW+Sb+MHFHaH6Y/gV9I8BluFwRXc1QyCdoZbIK26eNiBeFuMTe/FMwc33G1wdHCyDg7CVTmb8OdQrMQ==",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+      }
+    },
+    {
+      "name": "Microsoft.NETCore.App.Host.win-x64",
+      "version": "10.0.12",
+      "scope": "SDK-provided runtime/host pack (10.0.12 reference)",
+      "license": "MIT",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.12/microsoft.netcore.app.host.win-x64.10.0.12.nupkg",
+      "license_declaration": "MIT",
+      "license_url": "https://licenses.nuget.org/MIT",
+      "files": [
+        {
+          "path": "Microsoft.NETCore.App.Host.win-x64-10.0.12/LICENSE.TXT",
+          "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.12/microsoft.netcore.app.host.win-x64.10.0.12.nupkg",
+          "archive_path": "LICENSE.TXT",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.NETCore.App.Host.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.12/microsoft.netcore.app.host.win-x64.10.0.12.nupkg",
+          "archive_path": "THIRD-PARTY-NOTICES.TXT",
+          "note": "Original archive member"
+        }
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+      }
+    },
+    {
+      "name": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64",
+      "version": "10.0.12",
+      "scope": "SDK-provided runtime/host pack (10.0.12 reference)",
+      "license": "MIT",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.12/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.12.nupkg",
+      "license_declaration": "MIT",
+      "license_url": "https://licenses.nuget.org/MIT",
+      "files": [
+        {
+          "path": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.12/LICENSE.TXT",
+          "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.12/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.12.nupkg",
+          "archive_path": "LICENSE.TXT",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.12/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.12.nupkg",
+          "archive_path": "THIRD-PARTY-NOTICES.TXT",
+          "note": "Original archive member"
+        }
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+      }
+    },
+    {
+      "name": "Microsoft.NETCore.App.Runtime.win-x64",
+      "version": "10.0.12",
+      "scope": "SDK-provided runtime/host pack (10.0.12 reference)",
+      "license": "MIT plus Windows .NET distribution terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.12/microsoft.netcore.app.runtime.win-x64.10.0.12.nupkg",
+      "license_declaration": "MIT",
+      "license_url": "https://licenses.nuget.org/MIT",
+      "files": [
+        {
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE-Windows.html",
+          "sha256": "0f69be2c8ac44c3980047664c3347ff22cba5842dc9d8b0a88a4f0914645a780",
+          "source_url": "https://dotnet.microsoft.com/en-us/dotnet_library_license.htm",
+          "archive_path": null,
+          "note": "Original Windows product distribution terms"
+        },
+        {
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE-Windows.txt",
+          "sha256": "0e9802efe623790f95a85528faeb68f261c7ff62a030a72e864ec06d3c25ae7c",
+          "source_url": "https://dotnet.microsoft.com/en-us/dotnet_library_license.htm",
+          "archive_path": null,
+          "note": "Readable text extracted from adjacent original HTML"
+        },
+        {
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE.TXT",
+          "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.12/microsoft.netcore.app.runtime.win-x64.10.0.12.nupkg",
+          "archive_path": "LICENSE.TXT",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.12/microsoft.netcore.app.runtime.win-x64.10.0.12.nupkg",
+          "archive_path": "THIRD-PARTY-NOTICES.TXT",
+          "note": "Original archive member"
+        }
+      ],
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+      }
+    },
+    {
+      "name": "Microsoft.Web.WebView2",
+      "version": "1.0.3719.77",
+      "scope": "locked dependency",
+      "license": "BSD-3-Clause (SDK/loader)",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3719.77/microsoft.web.webview2.1.0.3719.77.nupkg",
+      "license_declaration": "LICENSE.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.Web.WebView2-1.0.3719.77/LICENSE.txt",
+          "sha256": "0af8f1b807512aae39c2ac1aa4d0cae65cabecb6fd554b8439a5162a0d6eca55",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3719.77/microsoft.web.webview2.1.0.3719.77.nupkg",
+          "archive_path": "LICENSE.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.Web.WebView2-1.0.3719.77/NOTICE.txt",
+          "sha256": "106423785c5b7eba0a8e61d1837f2132e9c828e20ad530f565d981c1df60dd90",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.3719.77/microsoft.web.webview2.1.0.3719.77.nupkg",
+          "archive_path": "NOTICE.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "t+ucyKw5NTwMjsUrDF6R9Lk40lpcKQD1/HgyGFxl49tdA4h9dKlsj6FYGEmDRpFNfnTpENuTypMcdbrlkqBdDA=="
+    },
+    {
+      "name": "Microsoft.Windows.AI.MachineLearning",
+      "version": "2.1.1",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.ai.machinelearning/2.1.1/microsoft.windows.ai.machinelearning.2.1.1.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.Windows.AI.MachineLearning-2.1.1/ThirdPartyNotices.txt",
+          "sha256": "fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.ai.machinelearning/2.1.1/microsoft.windows.ai.machinelearning.2.1.1.nupkg",
+          "archive_path": "ThirdPartyNotices.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.Windows.AI.MachineLearning-2.1.1/license.txt",
+          "sha256": "66395f8cb219087fae2bd025010bd9076b736c14f03b48f20295471c0c376814",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.ai.machinelearning/2.1.1/microsoft.windows.ai.machinelearning.2.1.1.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "A5BbYPLVrcaRJvpwx0nv7aMDOMqR20qaw9EaLcUe9pkSArzKoSk6cilRsSioU+eRa9+HahidBZTegawdswKqIQ=="
+    },
+    {
+      "name": "Microsoft.Windows.SDK.BuildTools",
+      "version": "10.0.26100.4654",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.buildtools/10.0.26100.4654/microsoft.windows.sdk.buildtools.10.0.26100.4654.nupkg",
+      "license_declaration": null,
+      "license_url": "https://aka.ms/WinSDKLicenseURL",
+      "files": [
+        {
+          "path": "Microsoft.Windows.SDK.BuildTools-10.0.26100.4654/LICENSE.rtf",
+          "sha256": "dd07eb178e00c6bba4148457fc00ff77cd4887eb521d504186fe59c9ec8bbe62",
+          "source_url": "https://download.microsoft.com/download/0/F/F/0FF2B061-47DD-4F55-89B6-FD1D8C44F14D/sdk_license.rtf",
+          "archive_path": null,
+          "note": "Original RTF from package-declared license URL"
+        },
+        {
+          "path": "Microsoft.Windows.SDK.BuildTools-10.0.26100.4654/LICENSE.txt",
+          "sha256": "b51ec2350d938f5b6c8d6207ee5a3e10effbf8a134e432aa393577d41d3dae06",
+          "source_url": "https://download.microsoft.com/download/0/F/F/0FF2B061-47DD-4F55-89B6-FD1D8C44F14D/sdk_license.rtf",
+          "archive_path": null,
+          "note": "Readable text extracted from adjacent original RTF"
+        }
+      ],
+      "lock_content_hash": "2mgcOlj/t2RfSyyw+pVESfO+Tk1RkfQzto9Vrq42M1lUQIfQEwbi8QLha9GXWIOj+TFzeHIEJckIoF25mgiM8A=="
+    },
+    {
+      "name": "Microsoft.Windows.SDK.BuildTools.MSIX",
+      "version": "1.7.251221100",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.buildtools.msix/1.7.251221100/microsoft.windows.sdk.buildtools.msix.1.7.251221100.nupkg",
+      "license_declaration": "sdk_license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.Windows.SDK.BuildTools.MSIX-1.7.251221100/NOTICE.txt",
+          "sha256": "f09ebf5de6a5c8e7ebc900bb2e52af2f75e13610a1cf91e1514530e448d956c3",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.buildtools.msix/1.7.251221100/microsoft.windows.sdk.buildtools.msix.1.7.251221100.nupkg",
+          "archive_path": "NOTICE.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.Windows.SDK.BuildTools.MSIX-1.7.251221100/sdk_license.txt",
+          "sha256": "a7a5c7e7ff998558983d6aca2702117c328aeb0c6404d298cb275f5623c6fd13",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.buildtools.msix/1.7.251221100/microsoft.windows.sdk.buildtools.msix.1.7.251221100.nupkg",
+          "archive_path": "sdk_license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "f4aIZJ0NUth2403oxrpR+9rxVzZVI6dabqB21u8ncnk8eJAKCs9m77E4iYAnvP1YwrRe4axz3f8+yUcttNSfEA==",
+      "repository": {
+        "type": "git",
+        "commit": "3d99c4ab878d466b1742f96929ec6ccc46e6530b"
+      }
+    },
+    {
+      "name": "Microsoft.Windows.SDK.NET.Ref",
+      "version": "10.0.26100.87",
+      "scope": "SDK reference package",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windows.sdk.net.ref/10.0.26100.87/microsoft.windows.sdk.net.ref.10.0.26100.87.nupkg",
+      "license_declaration": null,
+      "license_url": "https://aka.ms/WinSDKLicenseURL",
+      "files": [
+        {
+          "path": "Microsoft.Windows.SDK.NET.Ref-10.0.26100.87/LICENSE.rtf",
+          "sha256": "dd07eb178e00c6bba4148457fc00ff77cd4887eb521d504186fe59c9ec8bbe62",
+          "source_url": "https://download.microsoft.com/download/0/F/F/0FF2B061-47DD-4F55-89B6-FD1D8C44F14D/sdk_license.rtf",
+          "archive_path": null,
+          "note": "Original RTF from package-declared license URL"
+        },
+        {
+          "path": "Microsoft.Windows.SDK.NET.Ref-10.0.26100.87/LICENSE.txt",
+          "sha256": "b51ec2350d938f5b6c8d6207ee5a3e10effbf8a134e432aa393577d41d3dae06",
+          "source_url": "https://download.microsoft.com/download/0/F/F/0FF2B061-47DD-4F55-89B6-FD1D8C44F14D/sdk_license.rtf",
+          "archive_path": null,
+          "note": "Readable text extracted from adjacent original RTF"
+        }
+      ]
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK",
+      "version": "2.1.3",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk/2.1.3/microsoft.windowsappsdk.2.1.3.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK-2.1.3/NOTICE.txt",
+          "sha256": "572b43d41dea717dae7dc5de69acb20a74df025e8f5a3c0aa6f7bca02615e23c",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk/2.1.3/microsoft.windowsappsdk.2.1.3.nupkg",
+          "archive_path": "NOTICE.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.WindowsAppSDK-2.1.3/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk/2.1.3/microsoft.windowsappsdk.2.1.3.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "46KCntcmWPS0nbV3a8iEMslpYy0W9wTsmkANrXFxDWuiAnm8jXytFNvwNVN5HfoA3d+Cxb3pO+JE2UNnB5wn7w=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.AI",
+      "version": "2.1.10",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.ai/2.1.10/microsoft.windowsappsdk.ai.2.1.10.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.AI-2.1.10/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.ai/2.1.10/microsoft.windowsappsdk.ai.2.1.10.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "4rOxfQbOZkdGK/wzajqyXZeCl9WW1qdtb63hTBFEA7pZ14iyF3iV64VNg6KOXuRRUL64/wyHHsiBwLlvFSFgcw=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.Base",
+      "version": "2.0.4",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.base/2.0.4/microsoft.windowsappsdk.base.2.0.4.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.Base-2.0.4/NOTICE.txt",
+          "sha256": "572b43d41dea717dae7dc5de69acb20a74df025e8f5a3c0aa6f7bca02615e23c",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.base/2.0.4/microsoft.windowsappsdk.base.2.0.4.nupkg",
+          "archive_path": "NOTICE.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.WindowsAppSDK.Base-2.0.4/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.base/2.0.4/microsoft.windowsappsdk.base.2.0.4.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "QXSy2llX2/Bx9dYWGUEsb10F40q94ZiDnPMzqa2/qRmTG4y9EXxGp6uHITb7c0b4FCa+6KFBlgh6D53M0QEMEg=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.DWrite",
+      "version": "2.1.0",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.dwrite/2.1.0/microsoft.windowsappsdk.dwrite.2.1.0.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.DWrite-2.1.0/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.dwrite/2.1.0/microsoft.windowsappsdk.dwrite.2.1.0.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "dgix7NSeo7Z8SZPyrsOqYm/6OUvBveHCiVyorYecmtDYoZW26dJ6/i9yveIxgWvmFpgfKXPeIuQBCvhbetHiYg=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.Foundation",
+      "version": "2.0.21",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.foundation/2.0.21/microsoft.windowsappsdk.foundation.2.0.21.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.Foundation-2.0.21/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.foundation/2.0.21/microsoft.windowsappsdk.foundation.2.0.21.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "Wzr4c9dSXXcNQw67wVmy+32FXW6+TLyrQHD5eZXAjNydMsLRMZjUXzD1qQgBg1bdgzjlkYnOyYqoXbOL6lfqkw=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.InteractiveExperiences",
+      "version": "2.0.13",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.interactiveexperiences/2.0.13/microsoft.windowsappsdk.interactiveexperiences.2.0.13.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.InteractiveExperiences-2.0.13/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.interactiveexperiences/2.0.13/microsoft.windowsappsdk.interactiveexperiences.2.0.13.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "jxzb2F0thCzUhxX3EMthKyxMaWINGSAf1/uMfS3pyCODCzHoR39LUQE22DZDAmMJEM4pebCnIj2PYRQjSuy65Q=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.ML",
+      "version": "2.1.1",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.ml/2.1.1/microsoft.windowsappsdk.ml.2.1.1.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.ML-2.1.1/ThirdPartyNotices.txt",
+          "sha256": "fb0af774b4d7cffc5b9d046f2aaeade2f37df2f80abf8033c95dfffcc77a8866",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.ml/2.1.1/microsoft.windowsappsdk.ml.2.1.1.nupkg",
+          "archive_path": "ThirdPartyNotices.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.WindowsAppSDK.ML-2.1.1/license.txt",
+          "sha256": "656aab74c15aa9f9964bcdcc993eb2755cbdb4822d5e0e3bc61d2e281897f758",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.ml/2.1.1/microsoft.windowsappsdk.ml.2.1.1.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "q+luYBGlPdzMwhOsZCUmWbIZMvmc0pn5+nBvrKyQzvd/mC2+YBEaqfN2/zkfkFKsmJUuPvnG73RouAP/1oKPaA=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.Runtime",
+      "version": "2.1.3",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.runtime/2.1.3/microsoft.windowsappsdk.runtime.2.1.3.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.Runtime-2.1.3/NOTICE.txt",
+          "sha256": "572b43d41dea717dae7dc5de69acb20a74df025e8f5a3c0aa6f7bca02615e23c",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.runtime/2.1.3/microsoft.windowsappsdk.runtime.2.1.3.nupkg",
+          "archive_path": "NOTICE.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.WindowsAppSDK.Runtime-2.1.3/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.runtime/2.1.3/microsoft.windowsappsdk.runtime.2.1.3.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "dbddzTTnePoiFEw2h9QeGxJ8jyFtx7OEMIt053vjd/FQU4hzdnK9/LGPF5cwCkCD8gLvrXqyfR8AhCjz5Ni9sQ=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.Widgets",
+      "version": "2.0.5",
+      "scope": "locked dependency",
+      "license": "Microsoft Software License Terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.widgets/2.0.5/microsoft.windowsappsdk.widgets.2.0.5.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.Widgets-2.0.5/license.txt",
+          "sha256": "5b11e6347756e40fe0274bc08c97f89201b94f0d50181a09a00f1f4740840501",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.widgets/2.0.5/microsoft.windowsappsdk.widgets.2.0.5.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "lRz+8+QU65gV8hRzLVE+GRsPKZ42lnzqkmsw96HzQd/DuFYfr4JYpUU7ZZ5YrkV2EfQe4BCmoRKAeZ3WwalMcg=="
+    },
+    {
+      "name": "Microsoft.WindowsAppSDK.WinUI",
+      "version": "2.1.0",
+      "scope": "locked dependency",
+      "license": "Microsoft Windows App SDK Engineering Preview terms",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.winui/2.1.0/microsoft.windowsappsdk.winui.2.1.0.nupkg",
+      "license_declaration": "license.txt",
+      "license_url": "https://aka.ms/deprecateLicenseUrl",
+      "files": [
+        {
+          "path": "Microsoft.WindowsAppSDK.WinUI-2.1.0/NOTICE.txt",
+          "sha256": "e25393c0d340a1821827b093fa4dbbfcccd8feb7bf769e7fa773e3955cd5314b",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.winui/2.1.0/microsoft.windowsappsdk.winui.2.1.0.nupkg",
+          "archive_path": "NOTICE.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.WindowsAppSDK.WinUI-2.1.0/license.txt",
+          "sha256": "c2f1d9efba5864366335c007d51cab1d5b07005e9f1a67d7ca90b7b2a01fd615",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.winui/2.1.0/microsoft.windowsappsdk.winui.2.1.0.nupkg",
+          "archive_path": "license.txt",
+          "note": "Original archive member"
+        },
+        {
+          "path": "Microsoft.WindowsAppSDK.WinUI-2.1.0/tools/NOTICE.txt",
+          "sha256": "4a9321fd173ebf4e8bbc79130794d4c3fe233acccbf7db8765e0addb8fbfb8ca",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.windowsappsdk.winui/2.1.0/microsoft.windowsappsdk.winui.2.1.0.nupkg",
+          "archive_path": "tools/NOTICE.txt",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "HXFdlOESmUM7RPPWO5z4lpJX7zIPhDDPngfEP1itAUG/1SWFWKxYdEpt6nciMGITj92OpSK70R8/h06j5tfhIg=="
+    },
+    {
+      "name": "runtime.win-x64.Microsoft.DotNet.ILCompiler",
+      "version": "10.0.12",
+      "scope": "locked dependency",
+      "license": "MIT",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/runtime.win-x64.microsoft.dotnet.ilcompiler/10.0.12/runtime.win-x64.microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+      "license_declaration": "MIT",
+      "license_url": "https://licenses.nuget.org/MIT",
+      "files": [
+        {
+          "path": "runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.12/LICENSE.TXT",
+          "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
+          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/95017c711e6afc1085133d440e42b4bd78155701/LICENSE.TXT",
+          "archive_path": null,
+          "note": "Original source license at nuspec-pinned repository commit"
+        },
+        {
+          "path": "runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/runtime.win-x64.microsoft.dotnet.ilcompiler/10.0.12/runtime.win-x64.microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+          "archive_path": "THIRD-PARTY-NOTICES.TXT",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "clsgU9GnioCJ+PBzQTCoJHxLXRU+7O/BzYrwRT8CUP7jgyYjNgJmNsQ/kbzAA7MG5kDvFoFvIBGHGzYdINh/EQ==",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/dotnet",
+        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+      }
+    },
+    {
+      "name": "System.Numerics.Tensors",
+      "version": "9.0.0",
+      "scope": "locked dependency",
+      "license": "MIT",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/system.numerics.tensors/9.0.0/system.numerics.tensors.9.0.0.nupkg",
+      "license_declaration": "MIT",
+      "license_url": "https://licenses.nuget.org/MIT",
+      "files": [
+        {
+          "path": "System.Numerics.Tensors-9.0.0/LICENSE.TXT",
+          "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/system.numerics.tensors/9.0.0/system.numerics.tensors.9.0.0.nupkg",
+          "archive_path": "LICENSE.TXT",
+          "note": "Original archive member"
+        },
+        {
+          "path": "System.Numerics.Tensors-9.0.0/THIRD-PARTY-NOTICES.TXT",
+          "sha256": "40686c6447a7d5b5d3693068e4571b5f483d7ed335aeee773ef662440de4c5d5",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/system.numerics.tensors/9.0.0/system.numerics.tensors.9.0.0.nupkg",
+          "archive_path": "THIRD-PARTY-NOTICES.TXT",
+          "note": "Original archive member"
+        }
+      ],
+      "lock_content_hash": "hyJB4UlpAi19Xr9AXzu2NuagKC4lPfHObNMEAA0HmqFz2rX7wKgzeYzO/jM/eBHDhnUGFFEjk5cOoJaxqg5J4A==",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/dotnet/runtime",
+        "commit": "9d5a6a9aa463d6d10b0b0ba6d5982cc82f363dc3"
+      }
+    }
+  ]
+}

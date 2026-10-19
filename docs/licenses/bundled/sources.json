@@ -1,0 +1,4950 @@
+{
+  "retrieved_on": "2026-10-18",
+  "description": "Local copies retain original bytes. Upstream URLs pin license document revisions, which need not be the version of the bundled source code. Extracted source notices retain original comment prefixes and text.",
+  "files": [
+    {
+      "path": "flightline/AUTHORS.txt",
+      "url": "https://raw.githubusercontent.com/brettw/flightline/efb94277da72f1402eb057a07e9f295077813027/AUTHORS.txt",
+      "sha256": "4c5220c36c306a4a1dd9b172616cfbf9c5367e4cd49bf7bf23bec51d8f1c2b6f"
+    },
+    {
+      "path": "flightline/CONTRIBUTORS.txt",
+      "url": "https://raw.githubusercontent.com/brettw/flightline/efb94277da72f1402eb057a07e9f295077813027/CONTRIBUTORS.txt",
+      "sha256": "8f26973f6b6a740d0906fd901c6665dadde8b97b700f72524b79691a6a6efe9b"
+    },
+    {
+      "path": "flightline/Cascadia-Code-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/microsoft/cascadia-code/56bcca3f2c1e4cb19458954f0e2bb4635960df91/LICENSE",
+      "sha256": "51882cd3cdba4e16f220f44ddb08a635c38c44ea6e0975db2574f4be6f958238"
+    },
+    {
+      "path": "flightline/EDL-1.0.html",
+      "url": "https://raw.githubusercontent.com/brettw/flightline/efb94277da72f1402eb057a07e9f295077813027/edl-v10.html",
+      "sha256": "b57c3bf06f15163d11b11aa8be59a1a6ad47dc4a206f32ace21c71afd014b406"
+    },
+    {
+      "path": "flightline/EPL-2.0.html",
+      "url": "https://raw.githubusercontent.com/brettw/flightline/efb94277da72f1402eb057a07e9f295077813027/EPL-2.0.html",
+      "sha256": "43c774b6f87b1d44a1af9e570efb3e36952289931ecd14bd72763ebc37130aa1"
+    },
+    {
+      "path": "flightline/FONT-NOTICES.txt",
+      "extraction": "Exact decoded strings from bundled fonts name tables; duplicate localized records omitted. Bundled binary bytes match the pinned upstream URLs.",
+      "font_sources": [
+        {
+          "source": "assets/fonts/flightline/FlightlineCode-Italic-VF.ttf",
+          "url": "https://raw.githubusercontent.com/brettw/flightline/efb94277da72f1402eb057a07e9f295077813027/ttf/variable/FlightlineCode-Italic-VF.ttf",
+          "sha256": "128988c4b8148295761f2a0052e9dfe406270665e542a04d22b7a4e22b274cbd"
+        },
+        {
+          "source": "assets/fonts/flightline/FlightlineCode-Regular-VF.ttf",
+          "url": "https://raw.githubusercontent.com/brettw/flightline/efb94277da72f1402eb057a07e9f295077813027/ttf/variable/FlightlineCode-Regular-VF.ttf",
+          "sha256": "c86663eace2ecc9460e82fd869cb237c1568ee98ac650b776f3ed45e3bbf92c7"
+        }
+      ],
+      "sha256": "403c34c535c30fcdf53b7781f26dc1f754e1a5ae76ac72ca7b67470d2c02afc7"
+    },
+    {
+      "path": "flightline/OFL.txt",
+      "source": "assets/fonts/flightline/OFL.txt",
+      "sha256": "a815f65bc72d90494b01842d3171f7cb0f9f935e023d9cc260904d221ef1064a"
+    },
+    {
+      "path": "flightline/TRADEMARKS.md",
+      "source": "assets/fonts/flightline/TRADEMARKS.md",
+      "sha256": "0e729ff44a1207f88c322d8e3e2392217ea9e57fb4f8757633139a3a32630ca6"
+    },
+    {
+      "path": "flightline/UPSTREAM-README.md",
+      "source": "assets/fonts/flightline/README.md",
+      "sha256": "dfbb4a2e51f8cb0ea5fcae1e0a07227fcf4356025487b99f5ad17b15ec3efc31"
+    },
+    {
+      "path": "nvim-treesitter/helix.LICENSE",
+      "source": "src/core/document/syntax/treesitter/helix.LICENSE",
+      "sha256": "1f256ecad192880510e84ad60474eab7589218784b9a50bc7ceee34c2b91f1d5"
+    },
+    {
+      "path": "nvim-treesitter/markdown.LICENSE",
+      "source": "src/core/document/syntax/treesitter/markdown.LICENSE",
+      "sha256": "52ec8a1bf8256511e2a92613e0bb41ffefba3897f16fa958d7bb28c466dd4804"
+    },
+    {
+      "path": "nvim-treesitter/nvim.LICENSE",
+      "source": "src/core/document/syntax/treesitter/nvim.LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "nvim-treesitter/nvim.NOTICES.md",
+      "source": "src/core/document/syntax/treesitter/nvim.NOTICES.md",
+      "sha256": "154fac3b3a2aac21edfc1eb34f8e0f746ccb4a2f65bb044bd578ab833260445d"
+    },
+    {
+      "path": "nvim-treesitter/python.LICENSE",
+      "source": "src/core/document/syntax/treesitter/python.LICENSE",
+      "sha256": "d724405ce238a22c0d35769c5a36b386ad5958192efe8bbb304fb2896254575f"
+    },
+    {
+      "path": "nvim-treesitter/rust.LICENSE",
+      "source": "src/core/document/syntax/treesitter/rust.LICENSE",
+      "sha256": "31d5b6f4243d5c7c6e1c4ebbbb9f6407bd1457a08bcc4f706521710341acba36"
+    },
+    {
+      "path": "recursive/LICENSE.txt",
+      "source": "assets/fonts/recursive/LICENSE.txt",
+      "sha256": "f9f539cf7549bd417159dbdb9c400943a5b60a7366c2c6fbde9f095173d82479"
+    },
+    {
+      "path": "unicode/LICENSE.txt",
+      "source": "data/unicode/15.0.0/LICENSE.txt",
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96"
+    },
+    {
+      "path": "vim-fixtures/LICENSE.txt",
+      "source": "src/core/document/syntax/vim/fixtures/VIM-LICENSE.txt",
+      "sha256": "94486cb483307a859703dd856bcab1eaac777aff648da12a6268806b251707d5"
+    },
+    {
+      "path": "vim-runtime/AsciiDoc-COPYRIGHT.txt",
+      "url": "https://raw.githubusercontent.com/asciidoc-py/asciidoc-py/c44cb22b0cb110b69e4909c93c1cc6e2be5470cc/COPYRIGHT",
+      "sha256": "2436d8275706d76af39f37ea3af55897c9de142850a24603cfa57818358e2a5b"
+    },
+    {
+      "path": "vim-runtime/AsciiDoc-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/asciidoc-py/asciidoc-py/c44cb22b0cb110b69e4909c93c1cc6e2be5470cc/LICENSE",
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "path": "vim-runtime/BSD-2-Clause.txt",
+      "source": "docs/licenses/bundled/vim-runtime/Debian-Vim-copyright.txt",
+      "extraction": "Complete License: BSD-2-clause paragraph",
+      "sha256": "b5ff14112c314e7f2e64f210e653cd04512da3edbd82771ba614854e0be61806"
+    },
+    {
+      "path": "vim-runtime/BSD-3-Clause.txt",
+      "source": "docs/licenses/bundled/vim-runtime/Debian-Vim-copyright.txt",
+      "extraction": "Complete License: BSD-3-clause paragraph",
+      "sha256": "4b927562d3c61d03396821f865b74c47c17aef416ee4028c1c314da2ac634e44"
+    },
+    {
+      "path": "vim-runtime/CMake-Copyright.txt",
+      "url": "https://raw.githubusercontent.com/Kitware/CMake/784596bd0898a26d3acdc0e5999b5386b8736d11/Copyright.txt",
+      "sha256": "4a01ccf2dc580ba570d02bc015bbe0ec92f1f318717aae9540ba841ba7946756"
+    },
+    {
+      "path": "vim-runtime/ColdFusion-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/ernstvanderlinden/vim-coldfusion/ddc82bbf0b1647e70191da4cd397bed9281ba9b9/LICENSE",
+      "sha256": "4072913555b3892a897a4c0c2007c5fafbc06d0be2113e110c127cf848993a6f"
+    },
+    {
+      "path": "vim-runtime/Debian-Vim-copyright.txt",
+      "url": "https://metadata.ftp-master.debian.org/changelogs/main/v/vim/unstable_copyright",
+      "sha256": "08c930e80abf39f06eb862c6e4440175843c025bb584642740438d915b07f943"
+    },
+    {
+      "path": "vim-runtime/Dockerfile-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/honza/dockerfile.vim/b8c574928e503c0e94ad06647cff28b7c566af29/LICENSE",
+      "sha256": "0e69fdebbbec61b7f1d1cb189ee3bbdf87c03e62b356f74968dd520f54053971"
+    },
+    {
+      "path": "vim-runtime/Elm-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/elmcast/elm-vim/4b71facd77297cb33bbb3b14894676cff0a9bd1d/LICENSE",
+      "sha256": "48c095ae97b84f9ce69071a27f6ebad33044f7456d57a0fb03b05079e76d9845"
+    },
+    {
+      "path": "vim-runtime/FILE-NOTICES.txt",
+      "extracted_source_ranges": [
+        {
+          "source": "assets/vim/runtime/autoload/ada.vim",
+          "start_line": 1,
+          "end_line": 30,
+          "sha256": "6d09c90e876b935ad215509ea14ef56a30564c4ff725bb45d40fd8add90fd13b"
+        },
+        {
+          "source": "assets/vim/runtime/autoload/ada.vim",
+          "start_line": 630,
+          "end_line": 637,
+          "sha256": "fa0751e4cd27a1ecdab52e42db9a34421f613cdf568e2ab500de081039231a90"
+        },
+        {
+          "source": "assets/vim/runtime/autoload/freebasic.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "32453a0e41016cdfa8ff602a3ee689ffad3e36a987545701953386cb825e930b"
+        },
+        {
+          "source": "assets/vim/runtime/autoload/modula2.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "2c7ad1255f26e4d3f571bbcb38e409ff159601a3cb66954a536bbfc0caa90993"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/2html.vim",
+          "start_line": 1,
+          "end_line": 20,
+          "sha256": "b1a8e2cac6b704de78926947d3a006f797a7be12a56c5ecce63f3ce59c1d85cc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/8th.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "31ed4c1b3cc1d25a627d1e5e94841d026be93873f77ba3ba3737aaa33c168db5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/a2ps.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "643c1e7724d6d1e055052b02a117d43d3ed9a8ab2520a85524bc2898e3139b51"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/a65.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "5aa78ee96f08b4c23f391078e6ac52cc90a9c12bc15c214ed747ab104d3199e8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/aap.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "50d238d99557f7b66969e9752dbee119b0b35c28424900455d56cfd2ee1701d8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/abap.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "08e6b310b026be2a0afa1f2eeb4229e6c73ae6655d0a382311b627ffb3b5e6bc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/abaqus.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "3472426492c97c6201a57db1eb186e8e46d154e9b7e4cb81390d5e3591b04ca6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/abc.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "dcad56b2ce412c2d22d433bbcffb009269a67c83e8caa66e3b09e101d70b66a5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/abel.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "b8c608d85d3ae1a75ca4217c5ee8eb3b65e0d09ea08700bda8a90637502f876d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/abnf.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "da132b71da7d4617a127e259aaca7fcaa547637d4f2d4da62eed6efed0b28e65"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/acedb.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "83a51f935c821d386628497b30e165f1db97f9a5d97353f99b54b67bc7e037eb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ada.vim",
+          "start_line": 1,
+          "end_line": 31,
+          "sha256": "b19b8bb5158e02e915c07d2ab44101ed34abbafcde150ad7f8e3dce060cb0b2a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ada.vim",
+          "start_line": 361,
+          "end_line": 368,
+          "sha256": "e624a56a32ade72eab2402a41dd742ad8593659d732165678fcee9f18c059d29"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/aflex.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "b3d10e3ed3e9cc73ba255720f76159232718638998acccc5dded2db713d0b02e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ahdl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "94ca76fb53a9d373989c4f5685379cf5700d802a9d08c853a2ca153dd219b5a2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/aidl.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "ad4df695e08e2781352b9147e20c3b573eafbbf68a395c0c94b91733375598e6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/alsaconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "979c8b63c54a0d710795efa581de6ba03b88bb110836dcbbead0147046bec16c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/amiga.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "c33d0d10b9f44b074c49905fd4119df0f1f57a87b87ebbcf089e5628eb432464"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/aml.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "8d91638045eb5b3094a5901e5ce738e5f5ea8f9cd47ac53d2efb14df4612ef6b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ampl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "a280367e238a36bac6d18bc8a6d111cb86164843079228df1ef1b166d508ce35"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ant.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "0ff0f27388a9ce77e87b716b76efcc5a60d18f40f09c63f206e5881f4539aac4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/antlr.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c51cfa65253e298c8fb958311b86afa981e26168555963e99bacf0c4693827c3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/antlr4.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "7478a96c30deadd0ef8093dad96eab80ce6d97e74d71035e7be2692dfc0032a5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/apache.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "a1f04903d658c3ba6ea6cab6680882cfb9c16617cecc9e60b6bbeb053865608b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/apachestyle.vim",
+          "start_line": 1,
+          "end_line": 25,
+          "sha256": "bc682aea4227c308d91e8c32eebecd9bf00ca6e6404421bb91490cf9c3961c9e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/apkbuild.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "1178e7b99ea1c28c0e621725d61b245c409864c77769f0f257330a6a183d0a3a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/aptconf.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "6ad2dc6ed0b3559bb33f69c85492bb6aff22a4c58b5404de86b62b0a79740504"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/arch.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "29cabc1c41d25e665eb2fdad2ce9050356d59d1b15bff8c3ac08e0d8ab341a53"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/arduino.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "2ccff5b20cc45035b8ac9a8f2862a0787bc27d69f4a80263fbc3ab31ed7847be"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/art.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "cc30881daa5b0e008e13a7d651e79f637ee3f3c54f62da326fba8a2166a61dc8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asciidoc.vim",
+          "start_line": 1,
+          "end_line": 23,
+          "sha256": "87bf90fa0891da85ce393bfe3bf5fa23902afe1ac586435cd6f3d872d803e474"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asm.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "cc194f3579cbf07d72b2d05ed5f731484c5a1e003aa13891da6d88cce062298c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asm68k.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "1b640463cc6d9adae2788ac86eff297281da3ea66135b58ae7f6d562c9f6d917"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asmh8300.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "cbf4a574183d7b9fb0b9bdca4c732ef94a2cf7736c6da4a6e59315e7e49179cd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asn.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c93c262dfd863b2a1969d161126053715ccdada661a8c821d9f4c9e9ef0cffd5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/aspperl.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "f76f0df7605241243f372cde860c919d71e94c217a4ff0dec431b8b147a59d3d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/aspvbs.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "567b7c0380d5bf3f77355accf23faf2565513572961a83cc2beda4fc1847d7eb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asterisk.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "b121f20a23d7b7df82c9b1bd0b8d92f328617ffc8116587116fdc324180c28c6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asteriskvm.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "938b5310bb908f691f7809fe530ad678f4a17035edfd6656ed63059237750cc2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/astro.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "7a71be6907242a046fb5b0f9e5a8a10986d45d64e0d867359655653fc24f9868"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/asy.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "5b16d0aaca2188c04eb3ac5df56d8690acfefcc6e567e7c9fc53fcfe887b2b73"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/atlas.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "023d6b6271eb3fd5f138db0e867369778acb80788f5f1e03283d39066413a283"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/autodoc.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "a0ec58483b3ea7d8ddf428a8375e066c67c2338f5d3fd438431e9b6b4b3df5ae"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/autohotkey.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "ddeff397bc58e5b9f7a77304889f18a5c7460abd88b7f58d9ce881f1ea953586"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/autoit.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "c5d556194d535f3e73e999588581bc3402cc2174ecd0f09463cadf9b5cc550a9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/automake.vim",
+          "start_line": 1,
+          "end_line": 20,
+          "sha256": "a4bc7b21bada134f04e964badcd84cd384758d46f90f8fa915ef36765ba1cf76"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/autopkgtest.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "752e85e164ea7a1fbcc726867690f6dee79f0507c69559613241043bcfd59aa3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ave.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "287648df2b09622fe25007a41529cc13f0421bf6295316f93935195fe512e622"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/avra.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1ec76be29e412b4321bd81f4ec48d5cdd225d8600613958157a53a7c2446eea9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/awk.vim",
+          "start_line": 1,
+          "end_line": 23,
+          "sha256": "2ec6dc40b920494ff4d7653d07c51620debff76fc8b800641b3463b43ec9ecc1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ayacc.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "6db62586f920398f4df2ef9884ce87c37d21deed018ae1b927b521bde6a1229f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/b.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "dceb4291fb33e62566986c1c74823ec3f5a122d363579d0ead36086fb412be1a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/baan.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "0373c755042d4ec2c12a8a20b48fe47f5f37e06e6ad8cfce9c4f2734b9500925"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bash.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "45368b2bb3463b3b89751611bcfa79ddbb7a5876324300e809b443b7c25b5d7f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/basic.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "f1c388462e9c6a31983d3561e5cde41ca86ad9408327909016704d86f279f67b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bc.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "a558a50d1cea1daf5106d064918b19c1b3edd757e5a2d99928d24e39190ed3b4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bdf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "8aa2425b2c2ab7fe1e8bd02615299eb40025b77d67fdb0a2aaced6b42005b355"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bib.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "56af20890cfcac8d24f9f0d0c9351f9e455e352d5565dfdbd04995250b6e77b4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bindzone.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "efbd3849166d0f3538b65837183e3e5adedb0d09eed388049054716d4d7dbba7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bitbake.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "d30f088b8a9b8c6d7959779df14cb1c05e7bc03de62c952ee2c6f95f2e0901c4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/blank.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "93428d7274da97192c986e3b88e59628b806c3cbb1f0e8564a8e979867221b20"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bsdl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "1a9c232ab437a62c52b04efa94841c5b9dd684885bbb8871212fc0eee33374a6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bst.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "bd8e57236f9f600405ca532884477d7531941317106d8e4d2e0356dce4cf42a4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/btm.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "2c9bdfb22c7787640c3470498905cb9a80426365e23f04d346a91887db4c2ddf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bzl.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "131045b620f584a020cf9e9205bd503d6b831f8d004d5cc29a8a58fe65edfea0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/bzr.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "587b5ad13539f71761028fd7854c3e1de1347600fe2b59310338f7e869823643"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/c.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "16b32ee3e67f3b34cadefbeb78495d0a93f03cc3ef8402be41aa371389b45242"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cabal.vim",
+          "start_line": 1,
+          "end_line": 37,
+          "sha256": "d8a44f1ecf3c7395ee0e082db23e361f97c2159bc7e2335a022be79cece8d377"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cabal.vim",
+          "start_line": 219,
+          "end_line": 220,
+          "sha256": "98cc23c582726e93797a92978ae411eda59ca6a278d51c964f33659daa77a9df"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cabal.vim",
+          "start_line": 227,
+          "end_line": 228,
+          "sha256": "0cc7a2d9f3b6f809e0ab583ffec3e595c5173450f77ff45b97441079d51e55ac"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cabalconfig.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "86361751dc25e729434f058645de6983ecec764bea0ee57b8ff663009ef57641"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cabalproject.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "52fae1c3883d478553e5f527190a6bbdbbf184d4bcd75039d43ad902bfcece38"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/calendar.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "eab9e1010c18e099d6436fd2bd841760c7d757f6a6f4ae7ec9e384d6f7e0bdfe"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cangjie.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "f8603938a9d20f40f732f935975c662a4bfd23d95069b2ca9942522765ed12cc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/catalog.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "e21ba92ae948e48544f40829621590377adb2316a47df0fe8a74408fe863c4fb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cdl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "bafc2c156bcd53e71d21ffd3b62188d0739cafd4750dcd03d3de19a8ccbda73d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cdrdaoconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "2e3e4a611225203bf5223aa5d02773abce6ca97edcfefb2a7c616e0f6a93cf71"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cdrtoc.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "334d4688dadf8d5d0215ed7614f37e8f81f47161a2d107e8eec66d76c81fdbe8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cf.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "3b74193b2a1063dd5611cc061f8ac157ddb9bc1af1b000abd107ff6e80bc486d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cfg.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "dd024a01a727b5149eb027c3530189d18b5cb973f6951c03471ee9f211e18adf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cgdbrc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "79fdfbd4b1caf8b2d87028f9a1d7b9f0b040dbfdc32339943259685d41bf0d7d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ch.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "e88d7bb455d814374e4c484d329a62bbf8d387b6ce02ed3b83d912e85855c07f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/chaiscript.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "29808974c74ecff916db2430cc0fdca7ddf7a9f7446925f3befb3e94033f2683"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/change.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "527968a7f86e29663575591b089069ee578ec6450cf6a231a33bb72628c0e601"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/changelog.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "ba88b862f8beef82ecfed3636928a7cdd4b42d8b7215696fd41bda1d98857596"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/chaskell.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "d282d0dcc9d2b07c1f70947b17ef43066ceb2eb274c91ecd507798b333656046"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/chatito.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "c323a693bd1028ad72a5cbc7f92ff353b5ac234dba9f9b3f0e5327d8158f7b77"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cheetah.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "d29fdc69c3298ff77cb2743bc465b4999c9f93d560a7a91a0cf3c5b9b86f9e71"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/chicken.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "de182abcabcce28bc018e66d12653003b4e94d58e03e572212960c383d902460"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/chill.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "8de767b3b7a467260da39bc826e1a9ec736c870441ee4d2914e4725f081b0586"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/chordpro.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "aee6b3a8c2016f90f8780223144ddb7ffcc527ba2fdc7388b0ad310af310b913"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/chuck.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "ce3e36cbb83189b6308b5e77f4938df2213db8ff9a28d9a9d39083f62b94b3de"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cl.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "21254e207695a71c10cf3e55f6f009e580f456d49e34ec1ac0da5d25c700d91b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/clean.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c5b5cca5049ea35343ea00d6fe1eea2a0ab0828e9a0c79677f55135f95e0da8d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/clipper.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "93e4b06fe6f6c45db847cc68f2c106ecd78d6375085e4531380839cf75123467"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/clojure.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "b9945ecd70db9450a19d94fc1baad5d2234f320451539e54412c4cf7a0b1e7e7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cmacro.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "c5dc84b2a01bdccd767f399a327230f63cf7d40b90c203d92204686f6ccec7c1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cmake.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "795ec1da34d7251fb7f0065dbd0bf46c5be3720e49e301c0519b63a883b29b39"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cmakecache.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "b44dc9c8782f13a5c67f411227c737973c5c681d950ba33ec6e923b0f6b534c5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cmod.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "283d9d7c511bfe4b2f79c6d31e0e557d1c7fbb90e8610ce524f2615b5f7c4777"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cmusrc.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "870e5332432a719ebf18c74ed61e89254092d15c03c0d6e6d59585d9e903bf8d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cobol.vim",
+          "start_line": 1,
+          "end_line": 22,
+          "sha256": "6d4d541ed5e184a122c3348a83d971bfd7c4a53b54295279854e43e60ce712ac"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/coco.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "4ab9ae4bd2abd9b65d89bcf8d983c12c4a72953fa7bffa6cbbf6ad37b06a64e0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/codeowners.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "14d06df6208d0a20edcf2cc31c3595cf15f9e2a98695d1db02c78b24367d941f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/colortest.vim",
+          "start_line": 1,
+          "end_line": 57,
+          "sha256": "b1184d9d32e4b12e92450043cb23025908440722e3ccdda7d7bf88184045b783"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/conaryrecipe.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "23d19ebf639eda0d084b8bd89c478e04c183c9c31d01880d71cf409403972f5e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/conf.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "29a089342d485b536c0810a917becc8df4017cfbf2a80765919abef4f901adc0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/config.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "7c01d7c55a826ce84643f8700c0ee548245787bd18a3411e1348261e95cf1387"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/confini.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "8c4442a2259c4e6487de56dc3ab92e51542cb089818b77bf6b1947adda2b5880"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cpp.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "2a442086921fe77656158820e3ddb921c3a13ee93a8a8e917ab39813579531aa"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/crm.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "c33b86f188f5485a7a2e2ca1cbac12a86f68201f06e250852fcff22852b96f84"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/crontab.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "9f5e338e62917fa7bf282938066668452b07ffbc625b6460e83d7711f6535144"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cs.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "8039d20aff2e7162e32074bcd247c27eff65a209f15a47d05504e025d94308ac"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/csc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "59a63619f79e0d457bc528a59461f9bab360d5e95affcd0382411db93ffb7301"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/csdl.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "3046dadfc88ca1737d678726f802234cd1d75b247e40b23646cbc101bf43e7ea"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/csh.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "fcd66a5a1c4a90c356209198a00611d017ffd79ce39cab6dd5c5cc321bf0dcba"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/csp.vim",
+          "start_line": 1,
+          "end_line": 18,
+          "sha256": "5f662afbcb3d608e3987ca5947b30a3db51ed2010170bad3cb782c82284f3eef"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/css.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "058cc7d73ced9a76e2607c2e3824a052ef64dd049ab5d08a9a1b855c0a427ddc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cterm.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "411231c2e341256764d1b81d21f1351ae6c0b81ab1e13e127e3b2895ba0669bc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ctrlh.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "3ba110a3ec1624582c39cff646e707664d210489a319381454d9beb991fe4ca4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cucumber.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "71b7fa36a708db8bc2ad35ea036467646fa9809747ea86f8c35f330c1feefae8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cuda.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "d7e821c821408ad8d08434dfacbceccd450a6a474b2cf70300ef483ba367d9e1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cupl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "082a5f562061ab9c85194913e4df803e5073ff02a4510c7ba2486fc9e04e9e84"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cuplsim.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "96633317fa8c975ca22d5e9ddb26055bac1d384dcd2ea481bfe9f144938e94a4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cvs.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "0fcddfb9f5c4c8f7d61a9f2dc9a7e497cf97b158e784dc35c9e97fe92df8f760"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cvsrc.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "09ff8ce6fbedf6faa247a606ec6c453e3f0121263c5a29fc1061a05959f6356f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cweb.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "5275e0bafc75a09cec3d1f92bd6e72632efdb1bcb3001f697ac0a936b224777c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cynlib.vim",
+          "start_line": 1,
+          "end_line": 18,
+          "sha256": "090caf8db60c1045837f7310d5c8da0a7439907437d20fb8baa5c522705e550d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/cynpp.vim",
+          "start_line": 1,
+          "end_line": 22,
+          "sha256": "22abbf0aca2a9343ddee7889ce26f66d9570b1fe0d815778fb98428316606d82"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/d.vim",
+          "start_line": 1,
+          "end_line": 31,
+          "sha256": "9af4ce435b62e7b1628f71220e25b36e48ccf78e026c8e6d4bb3ff699ccd6724"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dart.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "610114e48843544277ce154f1ef49d5158043cbc921748e84aeb40783e1506a2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/datascript.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "77173a4d44ebcf388f9eebcd0ca6b09970856939ce9d084e184408ef731f952d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dax.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "6208c220001efd068c9828421e981ee31060e5d1b392fc0e06cac743f4380a0d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dcd.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "f2227ca9499660270c485083af8a82c835b60382c6203c39c8ba653af3e5d7d0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dcl.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "dbbddc00909ab385e0a79abea03017ce00eb2511e923bb455538d2f1031f6b92"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/deb822sources.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "e5df1bf677ea21d475e464d4852c9a946c1c45cf8e1c531ab13fc9d5d29840bc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/debchangelog.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "c871c6b98dc144a287aa7ee64bec14d64a431da8b45b1d48d942dcd301c0e782"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/debcontrol.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "aaad62d1381ca5024baeaf50dad2c31c443a3f4f72e60aac6f6f5bb8bf36500b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/debcopyright.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "af5d355094144dbfda61d6cb5494c999c424a7deee2d3cf8458cc0e1d58b8c59"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/debsources.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "d955d1a8236f49e3099ee195311c23a09658055bd54aceabae61a4fdd03447c3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/def.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "d890fd1696664bceed0ab54f9afbace2d063e38df7df3fc02c54ccc758d9f1c5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/denyhosts.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "6b9f880c607948383eae58d2653a910651c645bbda781c98e4a0c35bd84ff630"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dep3patch.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "af9ed3ebf62653fed47cabaf39ab6e52074496a14dd14200d027a3171167a2f6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/desc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "1f07ce6af6bdc8c2bb6e58f9e0f1b54d43a6185589397b76e78781cc3d62dbea"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/desktop.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "25a672cd0e3db7a4088db2cdd3deed99364bc74cff0e0941c5dcfdcc158377ab"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dictconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "c941d8feaaf3ffd0d3e60c76ede837d6e43ae6d72e2825a356ca8e0ebd7517fd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dictdconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "839b48b508749ec7c377203fc09076a2f4a343b079bd693d443cb37ed63e6a3c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/diff.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "f80a0ccdd621cc9ee4dcb3001bb102cf9884fa2eb785f7f232159a63fef785a1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dircolors.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "c5c5a713f0a62a1c1964161c206fae38a16e1277545ac08f253cb250e2de4789"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dirpager.vim",
+          "start_line": 1,
+          "end_line": 32,
+          "sha256": "867009c3a13e67c4891fea89758d6bcd6dfc32aeafa8b725fff80053802f24b1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/diva.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "9a269ec264140d3a69856f41eddf577eea43a968d865eb4f5c26619da8c4b36d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/django.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "b2cb9e7d640ae6c382abde8fcbd5532ec064cf680974517c93d1721ce0e8fc96"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dns.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "4b269edca687ae4f5ea9d3819536e7d29e2b0b99acee411badea7f9d5473ce1d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dnsmasq.vim",
+          "start_line": 1,
+          "end_line": 23,
+          "sha256": "48c487b44b4411d7d30b4ee5f5f68e5f16b66ff0e4d4d7a34af93a304efaaa5a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/docbk.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "65e71f1ac342a657d34ac2604b4112ba16bd7408dc6a868ce02fc07d12118c3d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/docbksgml.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "a181c86ec75b7bb99c680c1fdee36be0505d8a37d15cbe98e51039fe1391baa5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/docbkxml.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "57deadeabf45176b4a4d59d83d26839c66a0a80b7453ee1626dbf0266b535097"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dockerfile.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "96d1f616482f4f0f07e746aafe0341d80227174e7e6f4d7d32b760728858c16a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dosbatch.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "90888b9a0aa07819a26f4fdeb2f422a8485ea54dbbc73f6e33b274f0e3f31a3b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dosini.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "fb846b6a59123ab5669a8791cc55c98615a614f483d6b2b22e5a600fc7e87051"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dot.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "1925d04e4058f24e5c954444ae153790c78083335fcbca7a78669de04445a3b1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/doxygen.vim",
+          "start_line": 1,
+          "end_line": 43,
+          "sha256": "009e0572ef0e99127d3dd7d3130665bb50ceca57737c185a30977313e0a4d0bc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dracula.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "bbe2c02275694c398c8a678ef3be31ae8a659fe30087d6ee09692110e66a9f56"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dsl.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "683f4b5789ba91f8327bcf5671e0d58e2cfbd2745cc90181be2a1e72f9e5610f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dtd.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "3d784de4e198ff8c23fa2891cee95021ed237ad8884fcde932d3d1bb3ab325a5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dtml.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "853ff235d17a038bb84f3a60e1846bd7cd0879a8d83c053ca4969ebc1d943db5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dtrace.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "84543c7cd87bff700f3f0aaad654c202dc3c26919e734b5a2c88fa823683558d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dts.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "1f45ff39fa8c0e99e650ae8e35c68fd85db896031c606781a261de99957cb507"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dune.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "80f83a1b406889e2d1a13f3f961d7cfb0b6462460188d7dcdc041af658399f15"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dylan.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "a1bbf6d21b3447654474f6d902a52036643a930aba7a65d4cc6a36d80ba81065"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dylanintr.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "cebaf30d5f11f232e65f4670532c47000a61831900b448621c8451b6834f922b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/dylanlid.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "b8f97875bd402bdb7cb99513010b7242802cbc8c93f5d29f6d32048c52c8926f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ecd.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "fcb603f1337e3ac3028895dcf8ca4993f28e756df37ec99251030a4635eab9b1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/edif.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "edf7c3a9383e6cde84b123a56080f141843c158c28f9093f4e4d6315c79cb45b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/editorconfig.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "7fcdbbb06c17f5c0298491ce14ca8e21605c2e60024f7e76264c16a43fd213b1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/eiffel.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "e356870407204824161fb0f474b0ff8a35b4c3f2ec693a8d815aef112bbb1548"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/elf.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "5d423e687c50cdd6ea5c29424060e8693c32433536872eee120e5ec5721fe139"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/elinks.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "21e81e6e866c301e007c4f5016042741ee8ad7648a846123549cd97125c3df7c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/elm.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "42e7fb4c3cd0e8e2bb04030734870079ce75469ec3b10d6a7b06df3802ec79ad"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/elmfilt.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "46eeb82b7bc0e4efb0d1973eae5c5f305cfcec3dc0b6406f4b5c649a767a693a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/erlang.vim",
+          "start_line": 1,
+          "end_line": 28,
+          "sha256": "2f90069abc5beba6fb76bca42ab46f81f76e765f9cc6aa4d4bab62bb24dfd5cb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/eruby.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "97d9557ade951d8560d7503a0e7a283b0899051f72ae88850d99adba13a2118d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/esmtprc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "6d5cc3bac661eefb4aae51e616a25ca3b88aa3ec740e26d34976966ae5fc4f8e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/esqlc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "26b1d0a9621e95e7a7a7e1199d311a0f951c709253cc659f73b8eb4ba9a77452"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/esterel.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "cc7601d5ad5dc6bfd6b774110e65cc0faf10b55327f0c276cf476ab8e5d98635"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/eterm.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "788a7830d5bbc038da2f5e32029c8049dce1c53839dc67fba8890f33d008cdd5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/euphoria3.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "067685c6ef5c060c19c25e32f601f81ac1e58bafdc5d0ad9d5c3c40290d05180"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/euphoria4.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "4588e0335fa0cd45b3c7b835e89622734661118b4d9a2a7b3f9a93e97ab6ae1a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/eviews.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c105855dee68409803b8842b2e27b8cceb2c03de4ecb435e0ebf8d758d92281a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/exim.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "2f97d6da369b52d482ec3cd8d78820226e6e50fdfca708d1f9d5378d322aac13"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/expect.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "032b83c45484968fc17a116aa6081a5a31566dcb68d7f156cad33a273ae13439"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/exports.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "b23af544964759aa791a45326a4844653e5b6fced0048d18d2bb76c9d75196c9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/falcon.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "ad820686fd63c25e856a910700fb38e70d245a388362731acfc64b311be74b5f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fan.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "3f2f321bb51493067f2d42147cdf3d7d38bf713c60aa189a01aff8c0c8adfe4d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fasm.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "0799dc4f2cce1a93eb75839e6ac80708f926c7abdc4e698620cf95726677f9ff"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fdcc.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1377363acd9332f1718d3889ffbd0324b726e2135368b3f77712e850cdf7365e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fetchmail.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "a8c518a8c5f30e8c287ee0eeede905d35a4c6022b44948244c5c6c1338013774"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fgl.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "6a898e60f2e76fa43c7ec7a6c86848e2ae6af917ff1e2f88543d3fad7cf40690"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fish.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "acad28b7e7fd7a6e24a6b4043b594ba7dedc8b6712071978af30822378eddc8b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/flexwiki.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "682d3586a98202524631ed089075d2722597b1559f7d1a8637b57d9ffd789f07"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/focexec.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "941cd977a8fdddf3f217a6b57f166f44baf48b2cc82e05d689d9f8f8c24461f1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/form.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "1f2ff7acc7ec743ca2203e56483ab5643caa5afe96c45611dad29a558a3aefc2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/forth.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "5c4086bdfcccd8436c6856095c801fcb1a42992b106bf307b2fe019f9e1675f7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fortran.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "b63232e512198e948239710bf5b60fad5446403b537e3970e7ec1d7c95a9a415"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/foxpro.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "f16c3067961ddd0869215610b421a971282be0ab24a275ca5cf8802afed2aedd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fpcmake.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "ba210045be3f040fda2ee058a6160fd1355bee7f59d4951334b9567baf9255f6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/framescript.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "81cf42dbac47eef2e329bc48bc68e3808d2a2f30320e2fe130b823be0e43bee6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/freebasic.vim",
+          "start_line": 1,
+          "end_line": 23,
+          "sha256": "501fd0d940d91b6ab1ecc3d1fd84c2014d494a95a96f07d3ee81eeb175783eac"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fstab.vim",
+          "start_line": 1,
+          "end_line": 25,
+          "sha256": "5dabb8c92c4cb6677b47808602441337970e8e420a5cf4e2423468b4ec3e0871"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fvwm.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "47d5c474dc44594e571cb5a3b59300033b2ee815f2687f262a98851edba5d5cd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/fvwm2m4.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "428eda9b3bca519862c7c56b4279dff70f3f818fb035560e0200603df569826c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gdb.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "0506c2d472b8ceb25ca56f45077c0586eafa1cceb061d83cca8f63ea7676acf5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gdmo.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "c89f8fbd86fc94d81e9438e34dd94145d1691dfeca28feecbe7a8caac59c388e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gdresource.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "3b9bd6fdb7415078e350b3f4b481ddf45fc1167f1530c35d29fced53e3390878"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gdscript.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "dc2d94126eed0f6942470311c353cc9dfe5e79d7cbec4f7874d8c0b636e2e7f0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gdshader.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "31c1db295684f1cd7daa813a1a30b1049752fe6cfe48e55f1361ddd16da8cf41"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gedcom.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "267fa16a92e237b028ad18119066ae3b627fc742153dcbce6a95707e64f4f7a4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gel.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "09141b13e338d7e2d9232f91fdd2a7b8efff39824d35d4fdd412104032bb536b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gemtext.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "4c0355744de43a80e51e436ca79b5dceb2f5cef5e2bab201b406580effcd6f57"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gift.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "15b8f3d14d6cd3a49701999b7b21e07e71e8cfbd6ededf68330046d17dc5178e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/git.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "ff5969b6941c38ade0e875cb98824cf6a2c29a095d00e9c2eff683b46d98f3c6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gitattributes.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "3de3d6d2bf4fe7ce334a1d39b1c78a9fc4a86d11c01ebd8561c1057bbd8ffb04"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gitcommit.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "38022d9c955f3c7fa460dc3d7c374c02132a046c95a5062bfe55abb68c911b7c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gitconfig.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "fe2724aa9737c1ce71f1b0e30f5e9bb889f12005c24a81c74ecdc72310ca8e23"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gitignore.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "c6d269853bd77850fb0b910341c6bd285d62850611e288089e35b291bc53e150"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gitolite.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "9e941793e45967e87bc32e672992a5f2379e4c088c4308fd789a80f6499c9526"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gitrebase.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "c396e5149e5f2a441b3c9fb1b90189442ff0343f292a7e419bf946999254f571"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gitsendemail.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "628157ecd2eb3021196a82f32458ea103f49022ccb3d67a3eab92abf548e05e8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gkrellmrc.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "c2f5c16cb7946bf80412523a3a2f3924f0b9462dd1d3e202c6449738bc1c3b60"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gleam.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "f46c3644e95176d19a344c38fa9879e01f1dea187b5ddfd7009ba45ef3f9b2d5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/glsl.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "8b91470a253960523cf597cd7930b5a1c836b2c5b473438e3b83d940ec3b449e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gnash.vim",
+          "start_line": 1,
+          "end_line": 18,
+          "sha256": "f09661af768f282bea8aa0710cfc628eff50cec83a48c9db898875acb6ac14cf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gnuplot.vim",
+          "start_line": 1,
+          "end_line": 24,
+          "sha256": "3ea932ef2833c8f2f94374598bf8ff81f2be76ea37be84a1a7c56dcbec995f3f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/go.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "be4008f1f3a68ad79531ea18f2a3d6f560100b6b38c9e35ba7f0a4a38df8a517"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/goaccess.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "befea212e8f152ee8a147ddc44a9232379c9dc7ffd802b2cd12b3e3885efcdd8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/godoc.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "44f519af34e5eb13b5e74050b74c1d08342a238805f381003632712ee5a6ef45"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gp.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "e298201537ca6fb56711245caf2879171f7b5820266f24efd8e81b9e9b095572"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gpg.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "262bb38e542aaeaf084ea213ccbd373f191b940394d49173c7ce629d08c8e585"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gprof.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "5078e55dbdfe0df5a3687d6faf46e037463ee2a57444a22a28ce1106d2b7ec5c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/grads.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "6e3cc21db7806a3f5d9ebfb881a332a3519cc2fe295b307ef89a8d3979e9a71c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/graphql.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "fbe521ed75b454997ba7847bf744757727aa9352c5c030f72440c06bd166e949"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gretl.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "0ecd73714bd3103bfcad73ba9a48e5918cb23e01bf2653d6c5927a918e6a940e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/groff.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "ae8c121e2905b9048e9eb363ca6bb6d0d194d30b05ecf46e0524f6a58dbb4e72"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/groovy.vim",
+          "start_line": 1,
+          "end_line": 48,
+          "sha256": "78dce26284c872981c7fb02a8cbf3824d6dc5064643020cb27e0f50e34371e6c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/group.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "12f85152d1174c26fc6a39c97bd6e82bf7e75e5090cab3552df58fd1307e4488"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/grub.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "4d7c2c2f5c869934a66b1e03b7c43e011038991073fac78be63d031a906d14c9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gsp.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "4cd950f26ae4f48dddde090520b5da2e1a8f61dd0207e5c4cef27a1960cc4fd9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gtkrc.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "48f3b25db78befc81e000e812c98710624757dfb3fc3b35950fc55b6abbabf84"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gvpr.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "c59dfa61c1b03a6dcaeb0c7dfc8591df42a209237a4de02cb0763fc1f0ca7271"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/gyp.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "70bea5f1fdbb5ed781b175e4976886126ff4a1fa81b25290c491d2c158c2a41c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/haml.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "5c644b5644508645f7d69481550379aa64874ea3518305fac580b8d92d3c14ff"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hamster.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "e48a1630e8b4cf53721fb3e2125fd300081bc58b40ead3b36bccf48defbf9302"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/haskell.vim",
+          "start_line": 1,
+          "end_line": 35,
+          "sha256": "832bb7d1f21f29a37daf3735607c7201d0db788cbc4b175007b459a2ed3cc7bc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/haste.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "7f6d98a13852e5965743139ccaaee88baa8fb7fa231b53cec4a0c7de7280987d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hastepreproc.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "7a3ed0a6513a69c4da17551d5b3ff92f063599026c6df973839b9a9d80bdd63c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hb.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "32aefc4b8da054c9fe9fbadc120d6a3fe644c02c3f5027218ac1c903b6d8500d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hcl.vim",
+          "start_line": 1,
+          "end_line": 21,
+          "sha256": "f5befe65fbfe9a9b3796d8d2d5e8a7059175d9fb31d6594748fb655753d63571"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/help.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "ec7349e67ec76361bb5d2e929d7d08b38dac26da1c20122a59f19000573c0ea8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/help_it.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "7f3ef2675c97b1b8483a92a18ea9495c2d2babfd9c23d84b584ba7c477f5f96f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/help_ru.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "33d3fb216bdfed36270e8ed755faa1adc4f7882e0d8f8166b011e8401965c801"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hercules.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "91acfae8d2480b4ad3108788ff33f0869596e39180642e8cd856cf334ab66ae4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hex.vim",
+          "start_line": 1,
+          "end_line": 28,
+          "sha256": "859ad6323fd06eee5fb4eaeacc352b0973ae8b99d131aa603335b7ed53019e65"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hgcommit.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "3739dee574fb1603b744098725770600ccbd8ad96f785583fae10063b2cca702"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hitest.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "b8307ee7557de0f1bb4e8413cd576da313bb9fd8772ccf825be00e1212c6e048"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hlsplaylist.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "639ea353742951a6a501332766793364ae3a551d8479c8e71be27339241a1333"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hog.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "56419335ad2c51b46cddf982a34681183ab04e7d4034e83a34211a3268c9767f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hollywood.vim",
+          "start_line": 1,
+          "end_line": 24,
+          "sha256": "f58dba20a9fd1a3c8583116208bd38a0edf2667db7a02a5f19ed14f09c6b94cd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hostconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "5c0424aeffd7d8fb99c7d1195f007b2b5ffc6a14f5f69f9c2c309371fac2ccab"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hostsaccess.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "73c420789ae45fcd151cad6929afecdac2ef2f65175746ff36bc21932e1d4f87"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/html.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "fc105bf32b773df756b62638c2ca8cb7765ac73f28b1ec9081a8b7c575afed7a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/htmlangular.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "98c8b009cbc3720d42d1fdc748caa73abf850b6014dc9b851db5244847c78646"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/htmlcheetah.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "d12918b97bae0d51fbf64ec3cf9827e9db67ae196acbe4bd9fa63a4f5124bf28"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/htmldjango.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "a01d2834fd60926c1967f3202164fc18503b0f92881532c4408ad672917186fe"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/htmlm4.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "44a6a3f7260f8302767a02967185a2c057091a3143a14332e778b017f6569567"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/htmlos.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "cf809d39dd79b47a3d9ad32478e80009d306368c3af4e571ec861bdf7dfdc328"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/hyprlang.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "25bbcab9cddd50f0fe8a9a45bafc23aebc341376f6a561c7444f6d58c6ffafa6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/i3config.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "b3a8a3d97d5664e1fa6afd2cae7cc38a9897a20ef4df28a31be26d8398267ae5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ia64.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "207bbfdf42a6faf87001f7726483d8aa8cbd725f695c87b5639a43d5edf5d1d3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ibasic.vim",
+          "start_line": 1,
+          "end_line": 22,
+          "sha256": "6759b9bf1a981e6d3136ae1805030a66e124e197e5484193b0bdf367bc4a72f8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/icemenu.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "a468cf2d716daf8fa1574e6913cd6ed744fcbda50a47e50e33d32c9b1bfa29f5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/icon.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "85948351e8effa33aff500113f332961f04f5dd7310d83d23969b9da61c079d6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/idl.vim",
+          "start_line": 1,
+          "end_line": 21,
+          "sha256": "c5839aba82b9dc395c24b24220e0f7fa906098c9b18c793a6386183a2c8c2ef1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/idlang.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "31562497fd116b5345427c033fd787ea8ed799cd7ab7144ca369bef30cd160c7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/idris2.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "023856e31e3f41a7bcee41a674dbade5e44ac34dd5b419902eb8fd4e1b130949"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/indent.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "dbb8db20a9ff05a4f528ceecfedeb931fd00160fb25aa38d9bfbd76853229806"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/inform.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c5d2e33ae37f8ab060239385cbd191c642c756a741fc45dfcab71be321f976d2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/initex.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "9203cf6f4937078cba32ebb2dc9cbb852cf03377e46e06f20ab0b13acf24d0bf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/initng.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "14575768392d5eab86834287c3575d92f33adefa6b90b1f1b31ea555a42db384"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/inittab.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "ece60f55ef313ea11fabc3bc416a262339518fc63c386d76a6a271cf56860805"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ipfilter.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "b6a4c0b8c7206ead366b9f06aa682318d1fce1f7ea86e720365060c89c05fa35"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ipkg.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "ebe19272334a8c3fae93cf8ba112d8fe13f27300acaaf90e0eaf6e4997b91d19"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ishd.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "fcba8e80f36cd5433a236b9039670af4f4960de01f8b9ddbe32d25f94d739a49"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/iss.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "c1abeded4f300588e0257e64a86ad4e3fc670b15cfeba4f8c231a22e172bb219"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ist.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "abcb088fe609364a1c8ee37877134d3949114779810e87a22f82b925458620f7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/j.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "57b8d2c293c63baafcec12609d8601165967a2450af7ddad1aef95b5f35b1f40"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jal.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "900f13a1e41ab4330413391b2229ea3df44fdcd7acfe8e609a5ad2ba0fbbf525"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jam.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "fc8f3a2db167380668a0c0b629bb795642d117687f0dc5fa0bdf18803b9dc412"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jargon.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "482222976890cdef9758d92ffeafbc9ecb2277665c76371efd7aee644dc4d8a5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/java.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "181ed0da80cb1a5bf407fe0074ce90f4f69992fa27570873a3f9f81befbc7ee2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/java.vim",
+          "start_line": 325,
+          "end_line": 331,
+          "sha256": "8623b38fa26ca400c31d43d241e432cd36d4cbb8ceee53a0e34bd8bcf408233d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/javacc.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "9645b76d848b76dfdcb446ab0bfa152a6e1b4788386674491e582d91cbf55f1c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/javascript.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "4c90e07fc7b239f12142064ec0a1b862c411f9698450c8616cb6600dec184d95"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/javascriptreact.vim",
+          "start_line": 1,
+          "end_line": 2,
+          "sha256": "d7119d29c633b9de61925b6346f065b714580fcb1b7272cebd5bc85f8d6c5581"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jess.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1bc53abe013f58fb37f24c5f4d09e9b1bc5074b602dd8d2b2ad6d19a64519a45"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jgraph.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "65c255fe029027ca1bcc3ecd38da9f67c17c3007440eb23ba6ff23ef5b7afc1f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jinja.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "73da4c8650162a6b626c674ec418c9cf6f7fb7591daa64cb3556858b14618485"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jjdescription.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "2082a30f02be70add43ccc766ad3a8026d571b8645b0270cb5abf3c5ece03e15"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jovial.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "ceb1afe962fa22f093da074d3959f5704238d31d2d8ca5806f1037b2e3cdd149"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jproperties.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "c49506966f29c612d0208e709a5620efbc514abb34b2c80e753c8b7161a3e6bb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jq.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "85ff2cf29dc3acf3b7e6f5c4448755de9aad45e090fbc36fd92726dec9870747"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/json.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "7178bce35996217087ba9490a17f57c9139f8353e2335790c73fc0bbe48a38b2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/json.vim",
+          "start_line": 127,
+          "end_line": 136,
+          "sha256": "66f4cbd04389b4c61b0eb66c875a7e657a499c723b4e7d0ad7e32f8f89f193a5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/json5.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "9421ae63cba533f6dc2b52dc4f65799c3f1ab8290e671700a80f72ae687c8b26"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jsonc.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "6038137f9e22a7644576e86dca821924af5ec7d9f1490292ea72e104c0e80e1a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/jsp.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "405b6ea8720cc66045b246ef12a181f1388cbe2aad41626c5ee4353e7e609a94"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/julia.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "6298382eaf8f3c0ce6d6b22b990a21e091131218b0fa9062e5b67105613931be"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/just.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "e6955fbd83dc14281b73bc1998178caf4038459f5a0fee1815c93b77e1e1b654"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/karel.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "96e19864fd598fffccb56c33737ab0db4d8ee9c8da64720cedd4b67847e94e71"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kconfig.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "a9d76c2c913902a761fd276e164a388d4b1130c3a1f82b6fd487d935306d573a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kdl.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "8da253470e54ef28a797820cf9efd9c1b79b532ddc8ee5867e516031b4e68d3f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kitty.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "a18ee4e2b503d211307332ad13bf6caea708c04d9f99a26704fe22ea2a9fbecb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kivy.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "17db2743961ce8f37e63f76d2b0cda942c88ac3dfd91ca1bb1795a014618d76d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kix.vim",
+          "start_line": 1,
+          "end_line": 22,
+          "sha256": "260196bcd0b9280ffd43c1d73c4145dafbefa7f381108eec67e07a02f4723693"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kotlin.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "0ba676c5d9d482c5c3c8616f89b3772f1682f22025f9f70d67defaea1caded55"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/krl.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "8bb3580ff206c3413d0c2c8e945ab6f0ef5b1aa704714b6af11fe8f0a9f393b3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kscript.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "16bcccefba1e43e5515c65f901e18f72fbfc143243ecdc89e85d0cb6ee10f918"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/kwt.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "2199be89a19873027d77dd9a7111609fef72aa2e560bc0b5b70ce35e986df10a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lace.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "ca7c06b17c6cfcc4ceb14e35d015b008e85b0028988e2b5c5ae883f75bfe30cc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/latte.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "2dcf43830aab9324396371985c75c5d93d3adbf3bc152464b48dfe6c2a499865"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "4e4152fd07a3635444071a0ee9ad45288f9ff2ab9d9d84260a9fcce4b519c294"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ld.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "39c2c1adf6bb063617225914b4f008fe8e5b8771d8d1980a084b31e0c053e921"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ldapconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "2f61c7e2f8f6c63177efb4f60735853e71cb0ac245f1a9d658f7cd09fc36f6fc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ldif.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "de5af7d38300cc365ed8a5693f9420198d9cff3262e75d9136ee06e3bddd1290"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/less.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "fb7f9d712a3c6092db0d66b3974700fc5f0b82b157d9cdebffec4aa98f34b0d2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lex.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "d1d765fbd2bfb5e66551ac0c1a05f2154f54e15008ad48c38a086d8035d01403"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lf.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "c528515a63ae99b84e9d444c4fc7a46a61f30531efd44c9f8af232c536e87f02"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lftp.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "cf1d2fd15017bb0433920a4d1e1d5ad3bcb79938ed1bd2147f42184728a1fb20"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lhaskell.vim",
+          "start_line": 1,
+          "end_line": 39,
+          "sha256": "52267521d7edcb8793d4a3d8d5971c1b8cb40885dc17a26efa57f6e1e53fbaca"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/libao.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "fb8aa07f1ebacc4ff88f2ff6caa3b03efa1f8301378ca14b7707d6e3bf079393"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lidris2.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "bafac1e7224be902e16da10f8a73095614bd94da7f459eed70ebeb91a242ccba"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lifelines.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "d9df96a4eb89ccb469200dc24bf3bbde4029b718ca117ad377c73e464f579cc7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lilo.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "2c822615759754355191c5e0b05d53db432d0c7e8d7dc37cee3820e661d591aa"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/limits.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "261c2d7d928820501f150e0d3360cdf01de84e391a40b5c97361055bf1a3ad5f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/liquid.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "41329de9b69c0589c662da067a7df68751afbe410ccba10488f5a9b22bfab79f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lisp.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "55cfc6e883fbb9e161c20374ceb0330b62ceb9ff69c0cadba2f1daff465e0db6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lite.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "7878206bd578c0d600f637fa1cc3620325eaf2dd5b21e6b4610acab84a86467e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/litestep.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "ba0e9b10b95efd42f7be22a61dc37fd173551aadc29820505a10a2425f726db9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/livebook.vim",
+          "start_line": 1,
+          "end_line": 3,
+          "sha256": "af269215990725c191a306cdde4d1f013425da87f99192f117625df5864d1448"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lnk.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1cea962dfd0d6bcc5e8e7b129df229a4a8261dd653ad7f16ed77c8ed8e36a362"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lnkmap.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "86a984886c8f1adaf54977e26b6c5fda4a87f6295c2fd10d749dab64042f25b4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/log.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "a4b11e4a6e84129b3226f273382922c94aa8942d5bc54acf4bad3603eb651285"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/loginaccess.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "fadc71eb991274d74c22a662dbd00bc094d488be58366e8822065ee969d67199"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/logindefs.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "a7b8834d6964e9fee21ea6a6bc062211cd02ac156a2dc9e24ab798452ef4e11f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/logtalk.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "dcaa25ba20a127ae60ddcaed83b2c22e0dd37ea7a02030dfe5721f829f7ac039"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lotos.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "3cd4707fe7ba82681f1cd705e8fb0c8e18f7cdaaba0a9390f2370e8503f6d24d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lout.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "0faf7d85d388f46eaaeefec9470eb8b9b3c5bfc9f3c337803c0fadb4900cfe7a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lpc.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "26295d826af9125895298f3f33efce606d78e48689a60b53ece478041f089089"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lprolog.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "43d0f8dfcaa917f2dc99d6a73630406bd61f22d5567645224061b96ed054db40"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lscript.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "d68813bc791b6ad3088b6aaae9ffd2c3d8a90ca816b782df8f00e53eb251660c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lsl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "25dbf4d6d5aa29d646d936c158005f9e85736b6acf09ba47b4c4b77ef43ee623"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lss.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "b604292530d61bbd5a5b27d58f9c89d30736ea07d49ed31ae804fd36cbfd2cf4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lua.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "182b6404f5f22ef54f6202a98c5c7a7e3f9b49bbce01dcc84eef3e1cfb63b040"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/luau.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "2c8fc44ed3e8517661f67d36c4919eeba26b49dbeebe52b5e85bcab2de5e53ab"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lynx.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "52dd95d0bb15696a9538d60e0f19ab8b4dbda9fe94056020fef291dc4fb93e67"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/lyrics.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "c33244193209e7ccfccec50eb367768edc44b2b34285faf323fc29768141f38b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/m17ndb.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "e26bda71c2117bf2d9353020143491ed1a2aa9ffc278d29e7b471fbbe5b09b52"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/m3build.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "41aff5c1a40fced89cec446b86f26598335efa29d86d89ddfb976062b337dbf4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/m3quake.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "5a469cc4f015210f1cae44fc7b904c5ee2974805fce8210e744e37502d64a557"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/m4.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "e7ff705eafb68008918fa14f50b48ed15b715a5e0fd2da97c8a44e1bba607999"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mail.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "afaa01414e643d9f0a4efae9684bc81b2d214420968506a665ba3f396b346463"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mailaliases.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "ae49df133c47805a620d5b55842f666a3872c9af65df44ea75f8852b1cbfb562"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mailcap.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "58388c83fa5d951e47b5a1b19c54676f28ca19eb771ae6a9a000fad8f1a9f1b7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/make.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "273d9ef129045dcc7b28f172795a9f4aa93c5eb162b9f8c132edef1304535001"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mallard.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "ab4171739805f05e3dbc325e9ea5a63f65272a31c5cb4fded7e7bd4a523577c6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/man.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "50ddfbaa63a073deae9a071eb4d591435d2ec9e79a1a04722b881a3123b12407"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/manconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "d5f1fb049644108ed6e7ea258eb9b57577849735b906c9aa2a8ca77d6faf5216"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/manual.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "49477d11de8d51411ae007b31c78cd80539bf7c68ebac649813e300cec073b31"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/maple.vim",
+          "start_line": 1,
+          "end_line": 26,
+          "sha256": "61e632a5f9fbf761551b542f9588866f73de367053bb7b3f60723730093f04e3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/markdown.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "c6756c0b1248a8a4349530a4ba9e7e0ba624c76cc2f040d71d21c630ed958ba0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/masm.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "09c8e25a9f97e943708303eec9e3fee7272d98da77f47870589d30a3b9536863"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mason.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "8ec9a80315574e39e0eb75340fc3171d48f15f773eca8c4a1edfe4a2d7c162cf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/master.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "896e3f3d5f859f24ba8a60d0b9cb577d15733313a9e686b142ce2cbef297271a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/matlab.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "6b3fe7668fe7ae060d8cbcc6b831d0c2c6b2068b58dfffd1325f3a127a6b7df5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/maxima.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "5c379db5a7bb1e92dab391a26a275fadce03802979179d599a484240aafa7c8f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mbsync.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "3f56e223696806dd0f705b9d5fcd496def6ff34edab266ef6333797108f49058"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mediawiki.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "bbc2b75d1f43c5fe4e63bd57f9ceb46cb43a4a09edb8044a829a080ce90b5362"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mel.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "17605466cf373082e6a13d362a11ccc9807f690018ff5942804de891de89e268"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mermaid.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "0270544195cbffaf457d88da51a72dede073e8e45b56a077e8129cb35bb53231"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/meson.vim",
+          "start_line": 1,
+          "end_line": 20,
+          "sha256": "198a990a67799d4262fe4e54e1e1c65adff96fe4e058e1b29d28f67df72f8889"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/messages.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "6516e45a15e22beff7c22c019add09134aa683f04348be667dbf311fd6f1a816"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mgl.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "3d145d11bcbdff2d3049a90208510f87f69b514adc144a33083a0a09a2a3ef4a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mgp.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "7fe39cb18c9a559d9c5e92c36340153cb51f329238ce1e48e5db4acfb53c5208"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mib.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "b5abe01e5ea84b55bcad9a7fa1a9f0afad005cc0099bc4648b1cba911f435d18"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mix.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "29caa93214914d0fac615c9f97403473fd76af7272f0d07074fcb4926f448b51"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mma.vim",
+          "start_line": 1,
+          "end_line": 39,
+          "sha256": "e13992980a018afd5a1e1d576224f7bff5f784b2e23e62798ae4df22b1fae977"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mmix.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "33f99a7494714a6a6203ed3f090b13874f6d4d45a795f42cb17ea3e9c151de39"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mmp.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "da8d2fda9b35a52360a00ebd3b7686a7e036b596ed7a0e8ba204d636a1b6f864"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/modconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "feadbe5a1f25eadcd15b77e5c8a9c8d35bcabb2fcb4e6a20346bb58f45c3b0e9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/model.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "adda0d420bee24e39f4b2359f771313e9393d77b5d40a395cd4b8e718b1f858a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/modsim3.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "c5a046b437a74e1b9c91d266d022efc714ea3384bd1cd219f6548612911c4185"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/modula2/opt/iso.vim",
+          "start_line": 1,
+          "end_line": 56,
+          "sha256": "51859a8020ff39d758c9e65a51236f317fc95ee53f3c2171dd2272b5d878b55d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/modula2/opt/pim.vim",
+          "start_line": 1,
+          "end_line": 57,
+          "sha256": "939bc949facdd9c967a4b33047309672e4e372de624ad3e0a7c55f276e47ddb4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/modula2/opt/r10.vim",
+          "start_line": 1,
+          "end_line": 46,
+          "sha256": "1c6737f93b8e8931492a78072999c55b7cdfcda64b6749fcf03fe81675038052"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/modula2.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "9f04592460e94b928f32782ac556092014be6c48a575c62cb3202f106ad55629"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/modula3.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "41018804b9d41c0491127f42b7fad7364dd7b48d7955bfc69cb1bd406af9b793"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mojo.vim",
+          "start_line": 1,
+          "end_line": 48,
+          "sha256": "8e544c244d8b89f289aaa30502d2a60e5ef5e630c08b0f96ffd4848f5ab981a2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/monk.vim",
+          "start_line": 1,
+          "end_line": 24,
+          "sha256": "dcaf270533a882ddb28ae21b70fe608fc835caac4307dafb98b9e956d2215e29"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/moo.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "11ff1a6ea579b693120d842912c1a378bbee4dc29afb85ed015c569c590eac33"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mplayerconf.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "0e58c38eedb8d6c1fe362b4a99c35de5388c3e41b982828d828c3727e0adef16"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mrxvtrc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "7342d9e3971b8ffa24affbb95791d1417529b16c45e99df115d892263a5bc2e8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/msidl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "875381e26486bd10de7a20aba9476684f4e03ab306d13f915c4ac19e813c7a6d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/msmessages.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "0382b0d73b077e40e1d906dccab0c62cf77c55c12583c4c9598b81f7b5d49d3e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/msql.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "c59cc32f99053343e587631313a97ec5ec1cbc72ddbe1a87a5a19b31c1376788"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mss.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "cc3b8bc1ae3f98713f5b007c8d3f3960843fe0de090c62bab4d403515e5973ae"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mupad.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "3962acc77cb63bf94b7ee4d12628d404a24524c10eeaa0b6cc993c0b4412da74"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/murphi.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "5a0072f5caea7a05e25e6029ea7bf89e645cf4696e8094a1175c6165a8528375"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mush.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "607f44bd3eee8f9fcfda13d3298508307157504bd362746ba8cc5752450d91a0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/muttrc.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "ac04f0d114257de16172eb7b400c683f5154679a04451f16f42cebead5c46888"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/mysql.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "a974cfcd015d3ae8bcb84c826db3d8bbff1dc85fc1bf3c7ecb050c164d74e3cb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/n1ql.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "b2a9ffded4c668b9fc69d12584cbace91d76b7bf046b153435c0a1faf0f95139"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/named.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "f9c30af31dd5904062b196467ec1bdfaf4b24aae83b45e9553e7fd53a15dd30a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nanorc.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "b06d16b652f324877d0c1c0d1f17f28fd4569b3ff4b83f85fed61077ed94b216"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nasm.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "e1aea14cb22f502c2ddded219d7dcf770707ae74c0322134321db78ed6b42091"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nastran.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "a3d606c889e991b5b9c8939003d598e9482092a4926a2ed12bbe0e1cbf53733d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/natural.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "c51037d617a52df62403f7b52ded51e482b6cfed922bc26a65c6774c309f024e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ncf.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "462a69bf25867e1a4f4ed6b5f0b628b8eb64c4ea38cdf75b1782457a29a8391c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/neomuttlog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "4a2958d4aed0b1f766c23f299931729ef456e26314ea3fbda4530919b806af8d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/neomuttrc.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "9a6657a0b84539c1e49650b8e0692bf3b00df17c695a41b40a0b20f671bdebd9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/netrc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "b542d7bf5c59c289df87e1ea9b89d44f62b8314f73da6bc7fd67fa7818de6ff8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nginx.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "993e09f328c8936fbcbe5b0c089454bea82b0a26607a116ba653da551b511445"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ninja.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "6ffd7dc0519dc46fba52404f8182839a3fb213dda32d78f2f9c05429e25278d4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nix.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "7167e0896a8a2a0c58b319c20053f5e07a552e51c71586ea037fcc55368a0b63"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nosyntax.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "da981276dc88ad72acedb26f530bb9179d0f82721dd69218d79b90b2fa98d1dc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nqc.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "cbcc609fb27c5594aed15f7c930dc6966e5e5c528b9798b091745f5f6699f658"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nroff.vim",
+          "start_line": 1,
+          "end_line": 20,
+          "sha256": "5f8e75637fbc43d30f9b736dbd66b33a906dca66c453b1c723b6f2ad208af681"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nsis.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "21c8bb7eae0b65fc381aafa5d18392fdfe0c93b416de9fe482c26e88767b3ace"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/nu.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "6ca07313c1eaffe2184404f4467ad1938a235962d4d2dcb434ca93ebf29fea97"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/obj.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1dda07b0e5ac04bc0d3ded86464b920dacc8597ed8364ff2e2f2782966f3f620"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/objc.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "fc9a1a590fd12e0ba58f98e2305a732d2275743f68599090f9d48a9760d84727"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/objcpp.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "e68d66b18a6a59b4f0d0d7f2bfabf375db1b1118f2eb1adcff8875b580d653b3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/obse.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "db9dcac79730d0493ddd83822c14d5d4661e14bd8bfeb72f6831d70f78b8c2aa"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ocaml.vim",
+          "start_line": 1,
+          "end_line": 22,
+          "sha256": "e2dcd86b61b37a44c215b82820e88d90eb1f1fb474bfb4e3a80294b638ae5c05"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/occam.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "3fe806fa79100bcbb33b2647b53add310a435ec81ffd4bd9d3a49970aa249c2c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/omnimark.vim",
+          "start_line": 2,
+          "end_line": 15,
+          "sha256": "d7bea5bb4b8e055a98454c6bb65d69021492a2f6f8328dc60ded61737ad8e064"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ondir.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "55c77794857d918204ceb5c461589ca44c68a39f104a9ef605f47657f94430c6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/opam.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c4c3d86fd5afe4d23680f411282bf6634ca614cc5bcca4a5641da42b20df1fa6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/opencl.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "07162dbb35b10c0140b1f0da22ec0d76d01747379be2fe1a9aff7890df01b13b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/openroad.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "60fa46368256ebe1153e3d89d0244e6703949cf79e90de3166bd0d037ba159e2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/openscad.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "02f3c89abce63567f01b6270d8132acbcf1d82a30abff84b322394a3173eb220"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/openvpn.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "452ac84f41ecf82bcec204d8929531f26a1d43774363fb3119d40c400758ab69"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/opl.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "920780ef1f7b68a11065a13a73af0749cb52b04b3f7f92877a7f9882ff5db707"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ora.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "35c4e379cb93a4aa530ae26c25b7af5703f92e89d671476667b5f821842b8247"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/org.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "c8a1a9eb42010e1bb8f82a2d08a39f54fea2612b79db006eea9a6ae5e5ed4697"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pacmanlog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "002fb0ebe9c6f282cee4817112e41adf16e43cfe96e2e777c9d57ad142d49b7f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pamconf.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "b0f7d9060627ef44bca25bd280432f413f883b15c14ec7945b6fb254c8c5dee0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pamenv.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "bfc8a9580a08fc85ce472680889a22e1f24c13da1939bcf3b3939012b0eeeeaf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/papp.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "a1bde8e82492098d6f75a6ea51032fb929bc4537ff8b48a311df010415380ef8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pascal.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "61c06a9f1aadaf62df16151bcaff204382e02d261f7d203661845ce935efcb36"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/passwd.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "08e51a603470c3aa4a43f06f828fa25cb1675910685ff54cec612db836c4d30a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pbtxt.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "4f1046203c5d63cecf02abce50af5b42b8bd2afb577ba113c7c14f1e3941644d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pcap.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "0117de0c8cbef3ba9d1b69de99cb1ba2e2fb5a7597a73b421309cbe84d8be52e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pccts.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "b6fe0abe60a0a7fe8ca87858afa47ab38e2b2ea50d0eaf994b38edf777707bdc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pdf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "599b27c04166c74022f04622980b088ec4175da6ffdce1bd7df6f46fdea912b9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/perl.vim",
+          "start_line": 1,
+          "end_line": 36,
+          "sha256": "257e6c07054e818fb67e6cf3f1bdfd58fafce22a3f1a496a7c8a8ebe880e0f88"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pf.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "01671e2112a57e26dc8e9c00027e026590144e4107345737f3c1bb43a36a53a0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pfmain.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "43c8eb18f6f2f6757b32798796f34cdbee681cca63c970b368f21d4cf35e0061"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/php.vim",
+          "start_line": 1,
+          "end_line": 78,
+          "sha256": "704d0bf9ee0e6ae8efb3bd0cb4144906b3c3b7572b1690850c0039c3b2020b47"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/phtml.vim",
+          "start_line": 1,
+          "end_line": 3,
+          "sha256": "6caecd8a3491e949aad884fafc7a98e61364c8555d89124396fca1e801b79ce0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pic.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "28b72c9b0bff72eedbdec3bda2e369af896a7b6a336b73d4ee05c73e396b6928"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pike.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "bfee9c63389f402f925c7b22b84635d9915adde8d5c59be33ef31e91a7ff9b8e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pilrc.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "4840422111d8a551f131b268b6cebda9a668ef164dc07ae87db879ef9d1cc3ca"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pine.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "d017455219f84dc571aa87902081506da4d201f6c056b1a6e4d3fb424b72c177"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pinfo.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "ac718d697e75a1da12265256256571f4e378b7dafc6fe613725adff7cd7aadd6"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pkl.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "3fea08c2bec6c37bbdd11bc236474afd055585f66e2fc8aedd5a9cdd6d236398"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/plaintex.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "f05dd3ad77c312cd4c19d307cd3eefff315a0ff567c534e92719432280abf6d2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pli.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "b9aa46fbba9193eb66f0c0ff4761c72278437d9a42e00290e16ac7eeb3bddbdd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/plm.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "7b26c2eeae0da132658f7b6e5523d01579fb0175d7b6af29fb86ece259d128f4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/plp.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "2c223e475ca673b55a004118c25520aa5531a7de8ec34c000e7c739af4a8ee50"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/plsql.vim",
+          "start_line": 1,
+          "end_line": 43,
+          "sha256": "4bba1c370769d5a551d4f9b5f938e1e8c1e0458f8760cbef1c2f874931c604df"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/po.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "f188c9b5a0ad16b362360a779844a6f28e84fe4b5ac2b23f6b85f94e0fa844d4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/po.vim",
+          "start_line": 40,
+          "end_line": 41,
+          "sha256": "27448b76cb7445979f9cfd3a1864e3ac1f555976feab646a9cfdb43f5d128666"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pod.vim",
+          "start_line": 1,
+          "end_line": 23,
+          "sha256": "9ca14902443a45b1cfad2d2f004f960b949a6d4b1192dfaf55bc0bf8c6164661"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/poefilter.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "f285baff48d0e4c2e1c10f1392073c0ff233c65d1f09a7569dcef98ff76052f8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/poke.vim",
+          "start_line": 1,
+          "end_line": 21,
+          "sha256": "766b9424b59704ae790208ada5805f0308f664cac40aaa23b9d836f23626272e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/postscr.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "1d8c9a15949d950f2b83c834b2e6cd7579d85a52d23ec3183cc228df36746389"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pov.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "5c7eae6934328d49be6d2fcf1a19d11e7e0edbb1ea20bbd8b8f4d82ab9d171b5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/povini.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "db01c34fb57639e045a6e3ffa87403a4648a1483c4f5937e2af2454ceb51c5a5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ppd.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "8df155d8503d762f15b320de8b7bf3ec8d2d7139c024758de24655c431c9ef23"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ppwiz.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "ba70730e3b30112e052742c197c192e2177ffbd2cb17804477acb252610f9609"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pq.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "6729620a0a7fba3829c9d868a7bcc404732e3981a447d9bdc0abd3235b2fc254"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/prescribe.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "d42a8a9b74eb2503ebfc220204959bc9d60641064dbb1f691c13a610dfead4e8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/privoxy.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "7bfa5f5a6f74d446ab111cc19a3227d948f4d097494d0b9b8d054e2bf47fc669"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/procmail.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "ce7ac52334a14e2c941e4ed5e24801d31548823eeb5bd72e89cf38c98c630508"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/progress.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "10ba1883221f2baea098bbbe4fb14fe7ec7dcc992eec0e60c6fb4282828d2a3a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/prolog.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "77c5ea7e53b3d5fe032707f3cae89298e3a2370ff81a75c96f41ea17372553a7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/promela.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "19b288fcc0ce1737091a49a1b4fe1adb5187130251ba031ebcd302b8b5f03c7b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/proto.vim",
+          "start_line": 1,
+          "end_line": 35,
+          "sha256": "12811935db27f5c528578af73c06a9db30473655db86865001766d8793847643"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/protocols.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "1626dd59d28f3ad88a5a577f7b18f1589f1c22c1e82516ad70d8413617ac1b06"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/prql.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "2e7b21b1c010d1cb60a88a0058f09c17a6ad555844bde60b8166fe8435d3471f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ps1.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "28088c6003d507fe6bed224ff4e6c42828e1a4772e0e5aa47623b4c2e36c84eb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ps1xml.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "78e0da5c44ee202ca9a3d2c90879b563871e680ecc48280a472346d9882df0f2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/psf.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "955c3d5164b2292eba449793c6fc5c0f9e8c87fd2f5e48d78fced6e42e6871b0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/psf.vim",
+          "start_line": 35,
+          "end_line": 42,
+          "sha256": "4d36c7beba951975a05b861cab5d2170134a9a03d3ecb5d890747c845c7b3d0e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/psf.vim",
+          "start_line": 84,
+          "end_line": 88,
+          "sha256": "047e96184b281c04b76343c1b09f2db7b142703b8e9f37993d4db75c53a37f3d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/psl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "db44f16a008919f7b1b129e996e71e163c6d14868a56f9236ea84c723e9eca28"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ptcap.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "ac4381dbb86b4a0116353686d3592d6bab0038ce1b729e72d739060a99442d6b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ptx.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "23ce388103fd552db86ff6605b8aaa2ad47af6bc94dc18d452a38ccc3d1b1917"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/purifylog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "999f24387c59a2a847da7e58eb346d1b020fa437fd326d1cb7e4d7e7da460ee3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pymanifest.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "e32b9f357f643f080294071668fc92ee9fa4d5b687547accc13aacd70ca26ad1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/pyrex.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c65aa0d41e070e2d8252319832f0dd8b5a22cba4b40c724cbb938a6ba33a3170"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/python.vim",
+          "start_line": 1,
+          "end_line": 50,
+          "sha256": "cfcdfb4addeadeb6c17e8d8c28a565583eb826c24e5fed1538916de535e951a3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/python2.vim",
+          "start_line": 1,
+          "end_line": 48,
+          "sha256": "8ca6a02626c8f22e1e50b4969355c187becb5ec2d4303855fc568298d7d48634"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/qb64.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "90c2e43759f86f59ed968fb8c840fd4e13c15b6bee7c2586c6dd2c92db5c299b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/qf.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c6773b117fbe0fa02f39180e0d5f7752cf0d6dec50f1ce3f9090719db0bddbde"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/qml.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "ec7876729d90d8eefae90b74a38eb643aed0e1cc73faeabe52f6e4240c5985c5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/quake.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "ef449ff688f7e37269943a8e86eee914ba58feae4a30b776be8d01e1c16e86ce"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/quarto.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "07c7369f5a0b0297f8c23dd67ebac1d3909b2f478c1a36421d45ccb60fc482c8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/r.vim",
+          "start_line": 1,
+          "end_line": 26,
+          "sha256": "66220ea829a6016ceab66a634cf51d67d53a3299719358eec2ccc3ee9dc81e30"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/racc.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "cd5c817ea4ff3938c45492a07e748e3594e712100598ce4238c484d9749862f2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/racket.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "63b49e087679dbfbaef84cc6a2791c86da6c4ef3d07de59a8cc0b1f811e4ebcf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/radiance.vim",
+          "start_line": 1,
+          "end_line": 21,
+          "sha256": "8ddddb961d445ce99eb9a05e8329697d0f04787540d057e14e570e9f0dcf0c54"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/raku.vim",
+          "start_line": 1,
+          "end_line": 34,
+          "sha256": "df9437edb51997c3bfde1c8a9f09d0b3ce4c5f9af5441e964482363f95d6cc6d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/raml.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "e0ccd9e5c0fb988ad94a3fc0cfc5593f1dd5239d8eeb6f5fe7023ca0afb0ed0d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rapid.vim",
+          "start_line": 1,
+          "end_line": 28,
+          "sha256": "8653dc6837a927b1b6b35dfdf43a4a250a9e140980ff41095dc4fdd28935e4ab"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rasi.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "ff0ed7c46584ee09ea771a18ed9215a2aed1df792d36a790e3b9f5848108239a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ratpoison.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "7a263883e455c056c400547c97b0bed37e658090627c3d274909bfb2ad73fab5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rc.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "ba353d890c328e29c44e8cb412380286af5eb548891dfbaf1f64cc5f79422114"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rcs.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "34a52f1e0f097e5e34f3ec4e5d4d32024a8d485ca6948b8fcd21a1f9d797c0da"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rcslog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "cd4d97fab2a8cc74feafd481a025bcaba1eb67535fb81b2d5c30b315c8355e28"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/readline.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "db4ec3686b97a0d22fa81507af3ebc1850b72adfd164208801a4c54941b05930"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rebol.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "a5385f0a2c360bed0d16836f5bf816502d9a7bc4a9e2972923a721d36c3ad4cf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/redif.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "dd1a5604247eb6c455c1b8e0b408d5d697265f8c6100d70a7ffabcdbf5e954cd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/registry.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "d3bb1bd867890a2d65b791658b687678cbe70ce81261710b1665f8eef6f40bf1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rego.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "9f102936b081db5f835cf2774d1c8bf44a5a20f84f1853b9e2bf94fc3932904d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/remind.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "0db680c369e3a95abd97499b2c766c0a7090c1b50a5b4151b0e20ff8d4d0629f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/requirements.vim",
+          "start_line": 1,
+          "end_line": 27,
+          "sha256": "942c8f19242bb3759cb2eccada465495af7708e8ab8ae6f93277a71b0bb0b157"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/resolv.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "1667bc60d36b264a0b2b2e7ad445ad6d67808b7a058094370909ebdbe3be0aee"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/reva.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "70a129fe4a71690c743fd67e241a7a2d59b315a768ed445c7d3accc4fd3cfa26"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rexx.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "da20eb27ec4dea2a18036920472595c54494404d494ff8e53ec4f1fc25c6c452"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rhelp.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "b47909ab543784e023c40626ed333e0e10de8fb55d272835897f6dda3bc2b034"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rib.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "97c81d93e089ac5ae48ad3a4390bc80daf3b68c314f300fed07061b65a8b1289"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rmd.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "6c7afe52f33fc8575ff26123cf61012a78fbb2b6780cafaaad7843b11635e996"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rnc.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "94d170b39bf962a60655b3ecba10dc95808f054e329e2d48dffbc7ed25fdb4d9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rng.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "5bb4c024260b95041ecf6e2b2f366f631c13a8e4031b09658936ce35310c05d2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rnoweb.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "097fe1a4d0064dcfc58b5f10935edb6ebfaf7aea5fb55915b7f26695034b93cb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/robots.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "6b7ba3c534efac785594f5349993466af6d1852d845e02a8f37859ec7f1b5e17"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/routeros.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "468d3baf0155553a6220f0340741b4fe2c4dc99e530add0e2813c5f96e1f0cd3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rpcgen.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "b442a73563ed15f97862ac86ed94c3c1a8b4fcfbb928b6272d0ffb630bccb0e0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rpl.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "152c7dff47e00461bd3ecddb9727c3f53cdcaeadc8d3f50413f33282710c2362"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rrst.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "e304a4dddce1d4bbe89dee8daf011f74d74a8da758226ef35b5a8b0ebb83e99c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rst.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "faf6c854b9f3d1948b2f4cbe18b0519800156ebc35a8912976211bffe5386877"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rtf.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "8bb523947083e6560c4f9ca110e9e1d992e3d83001d1559ad7bb4c545c2d31ff"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ruby.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "b040e17814ac564a25e97d6bd7e898305d749133538d49ae3eb03f894f74e238"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/rust.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "b76ced13745030d63f2762bd1072b2c6069e5d5677367eb282ba67720b16cd4f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/salt.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "bcd7c5992b88d56904cd48cab696fbdca1de4357955b47b301f40b0f026f97ff"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/samba.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "896b09a0e8776710022d4593123c53264a7c538257dfffc13ca8618dba4d3212"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sas.vim",
+          "start_line": 1,
+          "end_line": 53,
+          "sha256": "8539614893c3b2ed3301454b997ec3b7875eb917f2590fa3373ecb3c72546750"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sass.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "32e5895fe7a50fcdfb8eca9ba4058b6d9f3fed6aa08f8c82a155646a4bd7c502"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sather.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "ae32a9f9b27457d28724b871d7b2ca4c475d9259f6dd497b0129ca94c8e65258"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sbt.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "a06e9146aba1e10c3f87a88ddc413f1bdb6d81279821ec9bca99da4139df09d5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/scala.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "494ddba7150f37456d16d043053f9e247d532473d4cd14fba0f86075aa469ee9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/scdoc.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "b2e82bfd3b2467da4f54ca3f413fe4b949b23997727ef541aac33e7245e96983"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/scheme.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "b0ea02b433f8fa4d7499e1b46f0cda6038380c22038549ac10d6da394abfe566"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/scilab.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "59a4ae5fa0ebc27407c3e4d3872ad59e7a1cab7e48bfb0e8aa36f4fb00e9b884"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/screen.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "e462a0badf2d336f6357574561290c060af478c446c3bed2eb47789a1da8ae9f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/scss.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "c77bd2ea1ae0ffe276785695c858a1e92309754bb449d45a1c0da0d25136134d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sd.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "cc0f48505469432fdbc7f55a8bfad8accddd32f43bf16dcdde0cde8cfea94aed"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sdc.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "7bac41f1b7f78bc07d49896efdf92d2915f12b57930b3a7a04c981acdde7f507"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sdl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "388e9028a6a76a08d3b8e05c1d9bdd79785908899491b088491dfc1091fb71cb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sed.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "46325eb420035104654e042cb046b2081d7dc945f04915904a51ad833bce96f5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sendpr.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "a7f3c5a0e004a542192301c9c09d693541db8809483d155404a11473b2fc7c59"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sensors.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "943764489e280ebd49b14d46babed1a14fdceb9d10b5e62025682f89ad87468d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/services.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "892b94e9bc999d8a66fb9f0bf9bc788f5544972238a3897ad7745a8075bb1467"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/setserial.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "9f6c98e76550fbcef43ff7cdc3faa508ef66020a32e5ecf0de6805f9acdfc985"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sexplib.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "02dda4fceb0df684c82635722180af744e744deaff3ef5468f1d2a9cd8d54e38"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sgml.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "c8e94e99c41fbb8ae6171c89a2cbae0b6fda0654613120c26606de6cf23d3115"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sgmldecl.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "ff76d02a1eb98fbf564aea968eee4ec67ff900a5c17f20c936239060a72709d5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sgmllnx.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "f87d859fa9b450f4c71d4db7a7f1c21a1c43e7a3999abe564f59d02a13480520"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sh.vim",
+          "start_line": 1,
+          "end_line": 28,
+          "sha256": "797a4d808219feef917e7c5f2a49991629534d3cf4b6c982055438ee61c57f6e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/shaderslang.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "2825b861cd3136fb8324d6de971ed407725e4c371022034c112a2ebb8082024a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/shared/debarchitectures.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "d9b79c0f87d434a3329396f7f166f56433c81152ac7e801dbfa1f51657556b7b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/shared/debversions.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "49fbe0bd2f8dfa20cc96d21a224fecf4e3c20d163bba6529357e39cd824eab63"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/shared/hgcommitDiff.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "f44032efd51b3390e48ab78f466764ed858df43b03fad84a87637050d76bed88"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/shared/typescriptcommon.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "76ad8b46a5b4e837e3e2aacf04bfdbd123e66f117c798d13196e1e1c1ca1c086"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sicad.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "3c200597584a512e52a5fe00254dfa257f17b1ca2614d16cf54b65abd55d2226"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sieve.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "1fd7d1ce08b9501cd5fbf51aca9dd10e71775958e2631f90b7bd62984a32469f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sil.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "1aeb8bd93a751e48b725ae1205be978032f78c7a4160923845b7ebbac410077f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/simula.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "164d63f75131ef49403cc5bf2f89d680b31568b86c4156e89bac1dd7cdfdc178"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sinda.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "c0ab769cbb53e361cc147141e95d9180d4fd615d1472dc15cd050eace638f8d4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sindacmp.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "bb6679c21d2aaae76553ea665b455f77a6c606556cbe66be9c0011e8cf4b137e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sindaout.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "4154a27b101fc90aa4736bbbc666d5c41444b798e236240efed41ddac4080e11"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sisu.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "977cf9e6ec2df349c29ec5c5ff172da06242dfa5fcefd4603840f78f248273e9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/skill.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "76982d682430b835624218fbe83a0173dab29edda220065d8da5b213dced5bc3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sl.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "2afe699a18506d985c6678f8f727cc0bee234bc3442a8aaf51af8bac42babdb9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/slang.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "d898cdafccc090a6df390aabefc8a9e8df8d4e76f3bae48a42c64661eabbc1fe"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/slice.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "838ff3bb4374b044f6900937402ed4b87da22ff373884a3afe8a35347dcba0d9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/slpconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "3827408ce92e231d54938d1ee5aa0e7e3ac51d95111a30f00086ef00ac0643c8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/slpreg.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "21d3c184825986787719628d3a41ca2e63214828d7c16079db76ba9a8427140e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/slpspi.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "a3bb2d56263beae1fac5737a7c4e18b57213413c051645cc50c3cd42d98e3214"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/slrnrc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "d31a51c64cf0a0f8513a811092772f8b95887e5b4adef08bf4a4177c67e68b4d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/slrnsc.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "14d4f12f4c613b3ed8a56802cf3a2f06f2590c85ca3b15f38bd9c8f8598424fa"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sm.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "289d1e036d6456b4fc64c23d6560478245b0e36233bfa4c7fbdb94f88b902143"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/smarty.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "3e9ed64f38f9143acda3b28523e0341dfb77148d62a04f70796412ddcdb1b121"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/smcl.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "85f7c5d04d399657a163156b031ab9e19bf70ebaec87cb50624f13696e36e2ff"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/smil.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "737f5141dc5a74666513523acdf1561c4bf7348f5bfceb0c0654b93e77c82cdf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/smith.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "2bf3a21581ec5caca27863293c5707813cced463151c4a56ad8d83677101b401"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sml.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "a49f34e16f18e3dbfb3c98f6af464b15caf0468e71a88c4be50effdfa654e834"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/snnsnet.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "68e398cc8b7e3440626527e01128b43803949bb8c7c1a23d1ccbeb95c8b5b2e5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/snnspat.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "b00af7bdb654aa6fbeb13b67257a5f3e931e0c0f1e349ec5568bd71814c36d67"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/snnsres.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "ec6e6ae586737a476cb1cb137221b4d54d68f9abfdf09fcc4b3c0294abd56884"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/snobol4.vim",
+          "start_line": 1,
+          "end_line": 14,
+          "sha256": "bfb312b46bfe48455166363960fcaa772f00be3225c008090ccee27152f01bcd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/solidity.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "ee15d504a3e7bd7cb1daa8cb298d76221a74def5f0340fda545ca185001096c4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/spajson.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "3e0e3e6980f2960006555024392c3d410ccf92dc594266fc05c9a9918dfdd648"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/spec.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "54dfb993cb46931410cec68dfe1799d5c75908cf2e1fa70e19bbb1f31147bcf3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/spec.vim",
+          "start_line": 38,
+          "end_line": 39,
+          "sha256": "9aec6e19296ea2aff08a020072a04069360eac4509faee6c6f9a9fbbe2c825cc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/spec.vim",
+          "start_line": 102,
+          "end_line": 105,
+          "sha256": "796b7f2a968ed9ebaf32ef7bf6531f0d6ef53dca07d63d4d39e727ae6262c215"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/specman.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "c864ea1838f670790feb167ee7dfe3a15ce88a363c533159e540c459d039d8cf"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/spice.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "256d30c6e9ab545ba31dda5aa112e0b5be6d76987f5dae6ac41d5cfba282f89b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/splint.vim",
+          "start_line": 1,
+          "end_line": 18,
+          "sha256": "aaabbf35b93f03c3320b1eaac8ee3768fa561450cd3613a649002f30c22f0378"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/spup.vim",
+          "start_line": 1,
+          "end_line": 20,
+          "sha256": "1b9e2fbaf1427b760613bec3588670d0a0e3af91757e91703f956c735e3bea6c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/spyce.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "9dc01b6b9f66aacedb830a60a8d3815fb8e6934843275e62c5cb1408ba08b981"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sql.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "863775eee7c0d6b5224d17c7564550556d14eac733eb535d80a2fb0ab037d0fa"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sqlanywhere.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "d86900a300226861d9f60b1f3488958821d6a536a79cea8488e09259367143d7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sqlforms.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "d5d42454ec1d1a690aa8693ae5aab3b3b72af4a2dde4280c4d7c4b38eadec85c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sqlhana.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "4fe63859574c5d6f80dd1fa2e51b7ffb23f60d4ca0defbc432a6e8e13ed1a324"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sqlinformix.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "18c1285099470734ea897ece6b362ac2b7b010b9dd50e5abdcf126cabce4b827"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sqlj.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "246cdab57387c16bbe4b5e77a6d2a9562e9516f89645303d5b5a22dcf2eca20a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sqloracle.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "dcdb283f83f4e6f47e20b3617789e3667fe0d695ef4a7dab6882b4a6eadefa60"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sqr.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "1ad23aa437d7635a260cac675fa71315d797a16530882867dd10663ad3cf9473"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/squid.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "c04e10922608989642adb7888c02ea1a8f54c45d365dfea80b5050ca4df1381d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/squirrel.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "ba352dff4dcb7e19ffdc4dcf638b25044685bf39216b66558147e146288fd899"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/srec.vim",
+          "start_line": 1,
+          "end_line": 27,
+          "sha256": "7343f473d8639c63e3f1ee028c07b69d03bda508a30f62a78e70dd82cf2a41e8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/srt.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "709783c653bc5140fc231c318eaae4bbd9aaf50347a94f5d594286288da10753"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/ssa.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "68d30fe22b3f8858b7f0169117794d1a4813aad3e7bebe87e28225ab81239d26"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sshconfig.vim",
+          "start_line": 1,
+          "end_line": 17,
+          "sha256": "377418bcd5e4bb18e48eb8e8a9f1635b824a99f0cc9c713fb801519d615b905d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sshdconfig.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "b7a84b5da0fbabbab74625dd69bd8ef749c29a72a1775360e04a89ede1ba3206"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/st.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "b13acdb138f5e99507e5bfa82581b481d81af41ca91f465aedbe0e3bb9eaf6db"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/stata.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "d9626ac2392cfa2244fb567b30f30483b4824e6c289baac4ce326d351e6bf9da"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/stp.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1896db114a68bdbb530a9b7cee13e27721a20764b767960d2e4ae1379b418cfc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/strace.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c450d5ac9f9f28b78d67a3ac43c5b38fc6eb3e5df44e8a0e4fd2c290bd249349"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/structurizr.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c73b3e0286c0811355bc3e5755aa8293d245e0c1144eae6b9ca2f0611e87964b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/stylus.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "b7a07f1aee1156ed4729f065a2335701e74d5a98b5bb774200759c0ec07588fb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sudoers.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "3921f34d8c44d1be112a9fe9904993841411a4b87b2c69de4c9424d539bfc840"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/svg.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "f1a61ffd668d61ac7e6cd9a32aa1a2af50a71e92d0d3758795515f5557f8e803"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/svn.vim",
+          "start_line": 1,
+          "end_line": 18,
+          "sha256": "bb57dfad248b436e5ed7712faf49622258cb1c186bdd700ab5682ad259c6633d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/swayconfig.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "41c5f44935aa64357575946a77a994ae9b04c1481a5c0f3e3bb21019d4e5c4ba"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/swift.vim",
+          "start_line": 1,
+          "end_line": 15,
+          "sha256": "9ba4c0b2f6738a10cf2fa837fa04bec2fe643e8ecc0020e29170848dfa01a9d0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/swiftgyb.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "2f04537dc4402082a177e3e688d9def1d2f72a7ba36dbb7484ef5cad43ff7f06"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/swig.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "f39152610f70587b2b29c38bca18a53ff9867661223d9b390cd52c33a7017ffd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/syncolor.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "382a38d149f24e8fcd354902cc749951239dcc7e42152549380710f44cfa664b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/synload.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "79d124da0ebba6c92da88bd8ddde8285b0eae47b09ce97bc88adaf0c91555c5f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/syntax.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "7ce28b1e8207a0fece11717e45d2ae642ac24e0b7dc902e729b767da4d48a9c9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/sysctl.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "ff505bd904d07bed645139e3ff8a9f3f9c42fc57e52994ee5e0d48e3142bebd3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/systemd.vim",
+          "start_line": 1,
+          "end_line": 3,
+          "sha256": "4b579164a9f851ab7ea7aab0c67966d0962e857be82bfa1c9b89ab4ea3ea1ca9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/systemverilog.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c3cf65ac840c7ada7f2fc1962236cbc87a8c00557bca99c4782f9c020fd5ad1c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tads.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "142c676744195367598bd48d3d6ad2ab5e5e96bf95e81ac23b6327709e83a163"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tags.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "5e048fb7bf20da3c6ca3de1b2007787e0c6c2dc11c75f527846b36f6692a3509"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tak.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "730054c198d5df318b1f5cb763e27925fd3c84553cf1fd62dd40991392ff5f17"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/takcmp.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "29449ce658fa89a5520f0705d4279b533e74d7f25a33ade0dfcd23b7ba45609e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/takout.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "7061b73757c4fcd9c1d2cd9f355d8e79ea670f9d481c959a3070f7d653b4a9dc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tap.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "511636ac02994af51e4b78a2055ffc826676246284801b2ab86236785c4f21b3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tar.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "c56a16519aeb8ec53ca0e531fa56a9e123f301371397d97d346aea132a2ba167"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/taskdata.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1582341022bb693c368e2678246dd06bef0f8c77be2d7756307660503ec4c8fd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/taskedit.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "cbc9b0ef821fdeb4dc3f18a83b1945a4e653604706d678397c166746e8916683"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tasm.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "80f59eda2d0555a3dc3836ca381f3f5d32b282b1eeca39bea9edbcf36c846bec"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tcl.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "5f23d4366ef317f19906bc06c132e27e27ee89bea11ad75d3b30ad0944923408"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tcsh.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "5ab478b1c6138ea5adc6f32e2e85d6ccc91ffb3af3f16b85702a9dfbb2364feb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/template.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c572e47999d4cb983f69ee4d2ed444dc5aaec997556d66626bcdd6f5b54c5cd7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tera.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "7e26fac67bc69a679bd768d33b46674806969cc413661314a0afc1db97d3c167"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/teraterm.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "a245bbf6c92c314e8513daf5def17ad0b7c871f1c3db3a93344a85704f7d5c5a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/terminfo.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "f887dc2f2d4fd8984845c14766bd432557ca5db147b8e5c288b4ee19c20a8bcd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/terraform.vim",
+          "start_line": 1,
+          "end_line": 21,
+          "sha256": "a13b02034e6edd2fc7c860eead953f4d3158630e496ca5fccf109f6dc0a933c1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tex.vim",
+          "start_line": 1,
+          "end_line": 50,
+          "sha256": "d8fb848a4555b7f68fa417fcdedd170a23920760ded6f7713bea57cfd5d1321c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/texinfo.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "88cebfbc4da2bf80e7ae07fafd6b508d287007be131b355d2da6483a8f8a8800"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/texmf.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "0dd333daf6e7e9d0abdaa8a4e515d8766cff6ccdf882471fa22f3d03458b2461"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tf.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "7b4f47e59835e17a7717272ddf0435e3adc5778b258a8bd4fce996520b4c850e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/thrift.vim",
+          "start_line": 1,
+          "end_line": 25,
+          "sha256": "e709a6905c352eee4cfe878d9119fea161d131b799d41cb3fc40693ecef5e042"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tiasm.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "dab127fa39744bb0575af20cf1cfa057e61c61242632bfc5062f8499b655bcbc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tidy.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "e4ad5d2bc8e290c21396b6fe492c08569b8a377707737ca3fab786ac9d3e9b8f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tilde.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "df3cc8be2bade3291c10930dd515c943501930f88e63454ac5ce9bf95c83a5d5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tli.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "8ae455a710d25505434cb82ce9eb23ef1a7e621dcd0ed9beacf3a7d8e7b5749e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tmux.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "5214e561cb4917bc134ebeac65f3d93c4832346ee08de2a9f944a89a04a5ade7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/toml.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "1af511845db81ee4ffaf6671251957590ef16b9b1ce4f50ab4b17b0053ac9885"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tpp.vim",
+          "start_line": 1,
+          "end_line": 20,
+          "sha256": "c61f6d73e82e3beef456b14dd6890c923297bd9f27d3e88301f891d1ac4a3eac"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/trasys.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "615a5660b64d66a812eb152ff5408f03a4964c38cf666f76d3fd56e10e3cd161"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/treetop.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "deb2369b498dcc8e6cdb1f3f8493e395280cc4ca085109404acf39532fee66e7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/trustees.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "aac01ac513a121a7d950a879b35e601cff86ee644e41a40718ac11df1e8028c9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tsalt.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "6cc296fac8e5ea6f6e9d79f35748414ff1c4634d5d04e3077687b3f60a9b0f15"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tsscl.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "b35657e7b8fcc4da3fd4f02e24f11ff7b3ff0d4982d9fbb7f547d54dcd33b669"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tssgm.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "b171ddd439deef3d8e158f166ded044389810c7dc0b2923756ed0070b5063f21"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tssop.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "8d574bde05d126cd85628c801a7ecfab1c58860e7644f87165c34aee66079fc5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tsv.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "361d451e255d24162b9a009faf4630255f891ebbcca3086a8577d35b27a51632"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tt2.vim",
+          "start_line": 1,
+          "end_line": 47,
+          "sha256": "88ad5e731561fde6e2197ab6b2f83f89866add2d55a1c4d8031f0e0794d3f244"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tt2html.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "00d912142da67b2e2b066104dedf201c38e6e49bc47fba324a5ba76d058540a9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tt2js.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "1806e4c4b16f2e3002595e281ba5a584053c300ed146fadcd9e66cf3378bd4d3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/tutor.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "77a87cb7cd86b1319dc354bd07c517438a8f33675e4a012c37eb5d440758086c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/typescript.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "4d5c2308115b37a813a0f3ac74ef81c06167af67e71879736511c4d7c21b69ad"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/typescriptreact.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "096eb702fdcd507761f62a8d8559760efdf50e7aeea75840bc50bd2e37fbacc4"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/typst.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "3ca16cfdf6af262f3658b5fb894c18e94d370fd0414ee70282ce79ecd1feed5f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/uc.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "8f044ec78a12c6eb1defff432875cf91687402c952f3b357df6509d26b1854e0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/uci.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "20afcc91f6426369e0e62793fe22bd6569bdea1ebbf4eb9c004f612d078e4702"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/udevconf.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "8de092ba7c029aa63f34339f280f20af3b73c91240966aa5f6d9aa9c9430dd1f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/udevperm.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "42aa3270d6b8828a1f10e582fae6d88c6320369de9f07e9517f76652429debd0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/udevrules.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "b81f87a51db7e9ea7ace3e92c647e145f2fe4c2bc22db325b4bb442c2f3f4aae"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/uil.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "713ca71a0a65a21a012a7db130da8855578694bdd9f39745990b72974101c417"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/unison.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "6ebe3400c476930d26a6e34a6d3e8940cc7b2d4fa326f34ddd70e0082314bf39"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/updatedb.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "60b95ae82ae18b823a444f7d5aa6bbe204dda5025ada5c110566df0b713253fe"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/upstart.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "cc246569310715f1dcef8b79a09da4ca34b8ac997aa29fddd8fd6be2f7d01892"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/upstreamdat.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "bd4f2bdcf07ef6e708f7bc7aa4063d4ebeebf2f1fbefb04fbe1c3e340ecdd1a3"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/upstreaminstalllog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "a526bf7af6b97f98c80bc2ce0c4823999ac5a65a0f1c77d437bdc9b669dad290"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/upstreamlog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "85167435d6a2a59c7a01a9183e4b93f950d26f6bf63c47845e45cef04aaf3042"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/upstreamrpt.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "7d3b5a2dd33c282569246a6264defc3087da2b2d119ac9e4c45d780831a9c4a2"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/urlshortcut.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "3af97d645008e01a60f94fd702df96a8bab5e8fe9459c7b518546e096de22779"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/usserverlog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "00fcae292761d89c5ed901f850d51163d20f17bc64b8846726187f3083319543"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/usw2kagtlog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "fbd020d2a9d8fb56cbaf97a7a91d367059fd15bd6ca7b4f565fb890f2d4a2667"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/valgrind.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "0c6d3eda8d1aaae69a4a6aafa36542ad9eea206420ce5eaefd0cee0df6f4ad52"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vb.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "c614a9f80cec0a216ec558c01eb07f659d5661e7e97872295dd39c853108c21d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vdf.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "74c4a2d103b59ac64e9d30fb9d699430ecc5ee125b195656d716f33cc58cba55"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vera.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "28c733159a29d7d39bd8110b168851e7e6e81ec2ba5c04866b33f63f2a8c677e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/verilog.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "758dcb4a03eb0f582f2157c6826a2330d66d505f1319ccd35cfcd7ea9ec486d1"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/verilogams.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "ef6c1e11798232f0709368854bb5f0c45a3068548a4d79e52209e92662977896"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vgrindefs.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "3a0a25fe511752dc56bf9bfe119e294eff0156477f9cf5245b06d85e2e1aa5c8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vhdl.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "7587796e8da0e68f8dfbec91b523b8c8c81a27ddca3f2c8e2cdfda8f6f261578"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vim.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "109d6dc0eb16e3bf4037a88b82180ed10838d327630213c82f475a7e2d494e96"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/viminfo.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "11c15a3b8a0c1c83615dd3325d56f63cade864966e393263b8dd92f0c21c6a2d"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/virata.vim",
+          "start_line": 1,
+          "end_line": 16,
+          "sha256": "2a7d414e6d837641ea73962ae9e33b6afcb7735f41292cfb29edd3d7d4d5a52b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vmasm.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "62878553f5f1c779c6f58701d4921475e556d262c68b7a6899156fa71f5d24bc"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/voscm.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "07cf9e81393f70780511c8ef3fad377b519c44b7667db7a9aa9f77cec204366f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vrml.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "3a7d49725e1d9d43abe527f12916603d9b8f10b1d2c6d813a780c41aaff94db9"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vroom.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "4ca8ddb477c4bd2cd1ed0e2e232b3aeeb292408da3854f418259eac4b0a7cc72"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vsejcl.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "a55bfbf50e35d74e1b62dfc8655fce6c0338ec306eef5bf6b33ce3edf7699012"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/vue.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "9b2f11a2b704fd53e3f4639cca8f9663ef4bed2e6498b8a0505f07807a1a60fd"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wat.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "5226b827cc3d7e46aa71d7740759c6f9666cab108b56d2482f0367d6375500cb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wdiff.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "0047e7723bbb2b9375a959cba3a672e4bcb5c05a169a31bbdaf5999dab909fc7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wdl.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "11ae3eed53ab12bdf817e11796cfb5c849e6b23553452d71a6afb5b8b424088f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/web.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "04fb2f4affcceb83e63528f6669701f5c4c5407c7a9d5b7b92ac700a8e5aec05"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/webmacro.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "aacafe374b37912e27d188d2d5974a898a451068271542711f7ee0be0c76113f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wget.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "a306cf4fdb95c5e515c2b2878eb49026d7ea92b736b1ecdf2837bf2e7d98e87b"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wget2.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "3f19e69eeb440ea73e93f75f7e33f2b619962ab566a55d7955a7bb25117de867"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/whitespace.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "b9a2844632666891e439ea2a18d49f431af520c05a5918a60e6f17d0b648e4bb"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/winbatch.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "d638e7ec28ce980e3eba9aeb360e609c1031a6f2dcbdfd1b510208998c04b171"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wml.vim",
+          "start_line": 1,
+          "end_line": 19,
+          "sha256": "87c13b435da573909337003f7b073c1867af14bfc46fc01cbbe13521a09592ba"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wsh.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "354e4ff05386b744211a82755b3c0f0b7d96ef4c4fe0e1ec0c5a1a9e01750640"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wsml.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "74ed684bd4de585fc179aec823655de7a625e2a23db5904ebfe900de49d4f099"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/wvdial.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "dfaf54a66b04d18810521d29b8bc74cc637c52fdb6915e9738b347bea3e6d43c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xbl.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "13de84fcc6cec5e3ad703c3c50de0ae31af7e91105f7541756ec1bacbb5a7d3f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xcompose.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "741246ff35509690f50598102b5823d3ab12b0209505fd33e73dd4b924839069"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xdefaults.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "b9768740cf1a5f6a8c83d379339f7d202127ce3ff424f2f25d313645d7d98de7"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xf86conf.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "c9d381bc63d64f6c751e295b1d6fae880965399a78f29f94f03be82e4a5c2205"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xhtml.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "77cd1f883b8762f52f5322f3f182f6afa089c6ca314495cc08d7fc39c66f72ce"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xinetd.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "433c206d1a7193d3e574b4eb34f41b91d1535a50680fb0e89c7565d2dd8f530e"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xkb.vim",
+          "start_line": 1,
+          "end_line": 9,
+          "sha256": "3209deda2d7d31480163f640c157f7ce0f81e24422364fd6fa9ab43c88d0d06c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xmath.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "b928e74b7db0aaafa5983067a05a51951873f4ae051ce6732f994d3e847b5d9c"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xml.vim",
+          "start_line": 1,
+          "end_line": 47,
+          "sha256": "b309c479d1437415795387c6540bb1b0ff1448ea38de2199c8020a7ab55283b8"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xmodmap.vim",
+          "start_line": 1,
+          "end_line": 5,
+          "sha256": "9ed5ce0c3c2f0004a20613ac6b63e7b694f717701bcb6bbe55c71c38b39110ae"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xpm.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "b9a0f26c5ef367f3f1e1bf4fbabcd2e42992a8ad844d506fd6c5dc7bafb7e7d5"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xpm2.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "e29d2eae7d26ab4e053d88eb9f5e459cef67beb8291639ea4a0261c841ea31c0"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xquery.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "70bd160fec7cba40035b58b374a65ff5367cf52856c4164716ed267a0a0a5472"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xs.vim",
+          "start_line": 1,
+          "end_line": 10,
+          "sha256": "c3811bea6270864c4e6a634219c6437a40f49b0f81daca5c9855886e9b4f9681"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xsd.vim",
+          "start_line": 1,
+          "end_line": 12,
+          "sha256": "35f54cfce46c80ad04d80e10f791e8935781fb6c0843930692047acaf6bde6fe"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xslt.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "602e7f6657a1e9919da3edc5fcedc4e884a2174be2d48d27193cc74035005a53"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/xxd.vim",
+          "start_line": 1,
+          "end_line": 11,
+          "sha256": "747f0b855af9eeb9e99ed0d9ed3ad815a3cb9572dceeb5dae704591f8ff9323f"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/yacc.vim",
+          "start_line": 1,
+          "end_line": 13,
+          "sha256": "cc553cccd8899d02e28c07c3c9068cde716a30f8e05741de283f9db1106e3dad"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/yaml.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "4aaf3a75c52ba9e2569adf246ffaf7961cf4f6b2dfc914086fbe8f9cc01a5c43"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/z8a.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "9d615749ba6fde92a38b4e64d9f2438e2d3f929c10cc64d6cf176a510885a53a"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/zathurarc.vim",
+          "start_line": 1,
+          "end_line": 7,
+          "sha256": "c960bf8621d521a6aee7e674b78a24c97c0a8ebbb4526c3c3be3303e474e7dba"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/zig.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "1bfa0ea45a42601f14ed25d9ab170ddc6e56c9c617b9ef4e2e4cbc461cce1d67"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/zimbu.vim",
+          "start_line": 1,
+          "end_line": 6,
+          "sha256": "53cdba3e82903aba70bd9254a385dc48b80a048088ad7c58278f1750912f8803"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/zir.vim",
+          "start_line": 1,
+          "end_line": 4,
+          "sha256": "52b4e9e5949d6fde40cbf04a30561940007641e7773cddb04ed1d7934482beed"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/zserio.vim",
+          "start_line": 1,
+          "end_line": 18,
+          "sha256": "6c64b294335c84c26d4592e26bebf3e25a8c51b3af3cd8d3e1b35b7c8b30a313"
+        },
+        {
+          "source": "assets/vim/runtime/syntax/zsh.vim",
+          "start_line": 1,
+          "end_line": 8,
+          "sha256": "eaf530bb7dcf4e6d2ea47ad5a253001d8c27f429e7e40261be0bcbb527527b49"
+        }
+      ],
+      "sha256": "6763aa2ee602cd067e57af166cf607f7b67053f6cd7da4dfa9e8f537bd02b2c7"
+    },
+    {
+      "path": "vim-runtime/GPL-2.0.txt",
+      "url": "https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt",
+      "sha256": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6"
+    },
+    {
+      "path": "vim-runtime/GPL-3.0.txt",
+      "url": "https://www.gnu.org/licenses/gpl-3.0.txt",
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "vim-runtime/Go-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/fatih/vim-go/47694979496d4bf2e90ce75d95f1dec3f41cbefb/LICENSE",
+      "sha256": "304e661348b8d4c68e43cc13b2cd13ad5ea408fe87c2a26a39cf98ea2c186329"
+    },
+    {
+      "path": "vim-runtime/GraphQL-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/jparise/vim-graphql/ebea1e6bc93e85aa71848112b8a42f95468ac566/LICENSE",
+      "sha256": "fc25425f820f9b1ddd8fd40bb29ed9c2710f7dbbbb991b42f54bd90a5475da54"
+    },
+    {
+      "path": "vim-runtime/JSONC-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/kevinoid/vim-jsonc/0b7ca17da85b5faa813be8ead3ad497e348b2763/LICENSE.txt",
+      "sha256": "6ee631481aa8b355b1d27452fc7a239a06345ea1c0606828448fb56830c85c8d"
+    },
+    {
+      "path": "vim-runtime/Kotlin-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/udalov/kotlin-vim/53fe045906df8eeb07cb77b078fc93acda6c90b8/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "vim-runtime/LICENSE.txt",
+      "source": "assets/vim/runtime/LICENSE",
+      "sha256": "0b3f1f330cb1b179bb17c7c687d4cec601e0aa3462bc7f890ad4c3888d37d720"
+    },
+    {
+      "path": "vim-runtime/MIT.txt",
+      "source": "docs/licenses/bundled/vim-runtime/Debian-Vim-copyright.txt",
+      "extraction": "Complete License: Expat paragraph",
+      "sha256": "45d4398cd496742764f9f5d8dc1d424082e54b3990e5f99f7280f4423eb0b0d6"
+    },
+    {
+      "path": "vim-runtime/Nix-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/LnL7/vim-nix/7235c7ce2cea530cb6b59bc3e46d4bfe917d15c8/LICENSE",
+      "sha256": "24fdfed723e5efb493124548597372164602414fa582ba653041614598721589"
+    },
+    {
+      "path": "vim-runtime/Nushell-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/elkasztano/nushell-syntax-vim/f737f3c52753abe18472c2883bc354bbf6bb88cf/LICENSE",
+      "sha256": "e0be9956939c85e99e4df36830a75860d7ede905194f9e035186df78981afba9"
+    },
+    {
+      "path": "vim-runtime/PowerShell-README.markdown",
+      "url": "https://raw.githubusercontent.com/PProvost/vim-ps1/8577ab0ba6bcbcda9d11ae40b2a09ddcb09aea42/README.markdown",
+      "sha256": "62ea06a8fd555aff02c541639e0593ab6f455295e2d8a5e3de942c7c0dca6700"
+    },
+    {
+      "path": "vim-runtime/Rust-LICENSE-APACHE.txt",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust.vim/889b9a7515db477f4cb6808bef1769e53493c578/LICENSE-APACHE",
+      "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2"
+    },
+    {
+      "path": "vim-runtime/Rust-LICENSE-MIT.txt",
+      "url": "https://raw.githubusercontent.com/rust-lang/rust.vim/889b9a7515db477f4cb6808bef1769e53493c578/LICENSE-MIT",
+      "sha256": "7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0"
+    },
+    {
+      "path": "vim-runtime/Swift-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/swiftlang/swift/f79ab15f11ffea6cad859da22b17da6cd9252167/LICENSE.txt",
+      "sha256": "770af8291f708538d8ff885a0bbc4e045cd700531741c4f99528d435c14d7f55"
+    },
+    {
+      "path": "vim-runtime/Thrift-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/apache/thrift/af9ac170f4de895266de4b6f9f3e68a58f113760/LICENSE",
+      "sha256": "d315e6cdedc07c478de6992027bfb66f220886c6216fd7e9885ced30c3703646"
+    },
+    {
+      "path": "vim-runtime/Thrift-NOTICE.txt",
+      "url": "https://raw.githubusercontent.com/apache/thrift/af9ac170f4de895266de4b6f9f3e68a58f113760/NOTICE",
+      "sha256": "c2534e065069887565f871f0648b013a7e5f4a422809faf4ae3c590b7c0bf561"
+    },
+    {
+      "path": "vim-runtime/Tmux-README.md",
+      "url": "https://raw.githubusercontent.com/ericpruitt/tmux.vim/f4f2c5843a65daa5e601503220aada4c36da9f37/README.md",
+      "sha256": "3f58da99dd8e092156e7abb6cebedf3ff10fce0d6fd6f785de1d51eeab60b86f"
+    },
+    {
+      "path": "vim-runtime/Unlicense.txt",
+      "source": "docs/licenses/bundled/vim-runtime/Debian-Vim-copyright.txt",
+      "extraction": "Complete License: Unlicense paragraph",
+      "sha256": "87969127b714c6d1fc912321d7834abe8062b9fe205a8b9ac8e8a1713592dc22"
+    },
+    {
+      "path": "vim-runtime/WebAssembly-LICENSE.txt",
+      "url": "https://raw.githubusercontent.com/rhysd/vim-wasm/8ee107a8c2034ef2b195fc82214ed2b4530a99b6/LICENSE",
+      "sha256": "209854ec79677e118190e10ad7aeb9fe71a9e71fb6876ef6d2a368562b166c02"
+    },
+    {
+      "path": "vim-runtime/doxygen-NOTICE.txt",
+      "source": "assets/vim/runtime/syntax/doxygen.vim",
+      "start_line": 1,
+      "end_line": 10,
+      "sha256": "e61fd2a9769ebfd56035104834ba707c1abc9b13ddaf1ef932551898ba7ab7cc"
+    },
+    {
+      "path": "vim-runtime/hcl-NOTICE.txt",
+      "source": "assets/vim/runtime/syntax/hcl.vim",
+      "start_line": 6,
+      "end_line": 20,
+      "sha256": "d9314f799d74d7c902446084cbaca78beea04b220448d63d5116009cbde1ddd1"
+    },
+    {
+      "path": "vim-runtime/json-NOTICE.txt",
+      "source": "assets/vim/runtime/syntax/json.vim",
+      "start_line": 131,
+      "end_line": 135,
+      "sha256": "1dd19d4981e6bb67a0c8e6a8666bff11d10d7fb2016f88f949861dbdd290f05c"
+    },
+    {
+      "path": "vim-runtime/proto-NOTICE.txt",
+      "source": "assets/vim/runtime/syntax/proto.vim",
+      "start_line": 1,
+      "end_line": 29,
+      "sha256": "06249ae99b8b5142b79aeeac382da7899dbd0f85666a559ca68e987bcfad6f7b"
+    },
+    {
+      "path": "vim-runtime/requirements-NOTICE.txt",
+      "source": "assets/vim/runtime/syntax/requirements.vim",
+      "start_line": 5,
+      "end_line": 26,
+      "sha256": "ea253cb09666251e826e33fbf0ce90bf73c90c59baf4f125f3dda326ac4c5300"
+    },
+    {
+      "path": "vim-runtime/terraform-NOTICE.txt",
+      "source": "assets/vim/runtime/syntax/terraform.vim",
+      "start_line": 6,
+      "end_line": 20,
+      "sha256": "d9314f799d74d7c902446084cbaca78beea04b220448d63d5116009cbde1ddd1"
+    }
+  ]
+}

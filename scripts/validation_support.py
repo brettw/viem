@@ -97,8 +97,8 @@ def input_files(stage, root=ROOT):
     if stage != 'native': prefixes += ['tests/', 'examples/']
     exact = {'Cargo.toml', 'Cargo.lock', 'build.rs'}
     if stage == 'native':
-        prefixes += ['src/mac/', 'include/']
-        exact.update({'examples/check_c_abi.rs', 'Package.resolved'})
+        prefixes += ['src/mac/', 'include/', 'docs/licenses/']
+        exact.update({'examples/check_c_abi.rs', 'Package.resolved', 'LICENSE.md'})
         exact.add('Package.swift')
     selected = {name for name in names if name and (name in exact or any(name.startswith(p) for p in prefixes))}
     # Repository Markdown and other files are also executable fixtures when

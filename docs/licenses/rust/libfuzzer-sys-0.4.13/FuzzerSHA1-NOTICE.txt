@@ -1,0 +1,24 @@
+//===- FuzzerSHA1.h - Private copy of the SHA1 implementation ---*- C++ -* ===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+// This code is taken from public domain
+// (http://oauth.googlecode.com/svn/code/c/liboauth/src/sha1.c)
+// and modified by adding anonymous namespace, adding an interface
+// function fuzzer::ComputeSHA1() and removing unnecessary code.
+//
+// lib/Fuzzer can not use SHA1 implementation from openssl because
+// openssl may not be available and because we may be fuzzing openssl itself.
+// For the same reason we do not want to depend on SHA1 from LLVM tree.
+//===----------------------------------------------------------------------===//
+
+#include "FuzzerSHA1.h"
+#include "FuzzerDefs.h"
+#include "FuzzerPlatform.h"
+
+/* This code is public-domain - it is based on libcrypt
+ * placed in the public domain by Wei Dai and other contributors.
+ */

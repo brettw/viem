@@ -1,2 +1,4 @@
 # Preserve the vendored runtime's original encodings and line endings.
 assets/vim/runtime/** -text
+# License inventories verify the original upstream bytes on every platform.
+docs/licenses/** -text

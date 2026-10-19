@@ -1,0 +1,60 @@
+assets/fonts/flightline/FlightlineCode-Italic-VF.ttf
+Name table record 0:
+Copyright © 2012, AIRBUS (airbus-group.com)
+Copyright © 2026 Brett Wilson
+Copyright © 2019–2026, Microsoft Corporation
+
+Name table record 1:
+Flightline Code
+
+Name table record 5:
+Version 0.002
+
+Name table record 7:
+PolarSys, PolarSys B612 and B612 are trademarks of The Eclipse Foundation
+
+Name table record 8:
+AIRBUS
+
+Name table record 9:
+Nicolas Chauveau, Thomas Paillot, Jonathan Favre-Lamarine, Jean-Luc Vinot, Brett Wilson
+
+Name table record 12:
+http://intactile.com
+
+Name table record 13:
+This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: http://scripts.sil.org/OFL
+
+Name table record 14:
+http://scripts.sil.org/OFL
+
+assets/fonts/flightline/FlightlineCode-Regular-VF.ttf
+Name table record 0:
+Copyright © 2012, AIRBUS (airbus-group.com)
+Copyright © 2026 Brett Wilson
+Copyright © 2019–2026, Microsoft Corporation
+
+Name table record 1:
+Flightline Code
+
+Name table record 5:
+Version 0.002
+
+Name table record 7:
+PolarSys, PolarSys B612 and B612 are trademarks of The Eclipse Foundation
+
+Name table record 8:
+AIRBUS
+
+Name table record 9:
+Nicolas Chauveau, Thomas Paillot, Jonathan Favre-Lamarine, Jean-Luc Vinot, Brett Wilson
+
+Name table record 12:
+http://intactile.com
+
+Name table record 13:
+This Font Software is licensed under the SIL Open Font License, Version 1.1. This license is available with a FAQ at: http://scripts.sil.org/OFL
+
+Name table record 14:
+http://scripts.sil.org/OFL
+

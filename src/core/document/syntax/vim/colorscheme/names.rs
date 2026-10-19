@@ -1,6 +1,6 @@
 //! GUI color names: Vim's compiled-in table (`highlight.c`) merged over the
 //! X11 names listed by Vim 9.1's `colors/lists/default.vim` (Vim license; see
-//! `LICENSE_vim.txt`). Keys are lowercase and sorted for binary search.
+//! `docs/licenses/LICENSE_vim.txt`). Keys are lowercase and sorted for binary search.
 pub(super) const NAMES: &[(&str, u32)] = &[
     ("alice blue", 0xf0f8ff), ("aliceblue", 0xf0f8ff), ("antique white", 0xfaebd7),
     ("antiquewhite", 0xfaebd7), ("antiquewhite1", 0xffefdb), ("antiquewhite2", 0xeedfcc),
