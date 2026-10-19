@@ -16,7 +16,7 @@ internal static class MarkdownViewPreferenceTests
         string directory = Path.Combine(profile, "markdown-view-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var preferences = new Preferences(directory);
-        Check(!preferences.MarkdownFormattedView, "Markdown without a remembered view defaults to Preview off");
+        Check(preferences.MarkdownFormattedView, "Markdown without a remembered view defaults to Preview on");
         byte[] source = "# Heading\n\nSome **text**.\n"u8.ToArray();
         string firstPath = Path.Combine(directory, "first.md"), secondPath = Path.Combine(directory, "second.markdown");
         await File.WriteAllBytesAsync(firstPath, source); await File.WriteAllBytesAsync(secondPath, source);
@@ -27,8 +27,10 @@ internal static class MarkdownViewPreferenceTests
             await window.ActivePane!.Ready;
             await window.OpenNative(firstPath);
             var first = window.ActivePane!; var firstView = await first.Ready;
-            Check(first.Document.State.format == VIEM_FORMAT_CODE,
-                "native Markdown open uses Code with Preview off when no choice has been saved");
+            Check(first.Document.State.format == VIEM_FORMAT_MARKDOWN,
+                "native Markdown open uses Preview when no choice has been saved");
+            firstView.SetMarkdownPreview(false);
+            Check(!new Preferences(directory).MarkdownFormattedView, "an explicit Preview-off choice is persisted");
             int settingsChanges = 0;
             preferences.Changed += () => settingsChanges++;
             firstView.SetMarkdownPreview(true);

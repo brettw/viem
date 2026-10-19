@@ -7,7 +7,7 @@ namespace Viem.Windows.Shell;
 internal sealed partial class Preferences
 {
     private readonly HashSet<CoreDocument> markdownViewDocuments = [];
-    public bool MarkdownFormattedView => Get("editing", "markdownFormattedView", false);
+    public bool MarkdownFormattedView => Get("editing", "markdownFormattedView", true);
 
     internal void ObserveMarkdownView(CoreDocument document, Action<Exception> report)
     {

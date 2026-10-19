@@ -73,10 +73,10 @@ final class EVConfigurationStoreTests: XCTestCase {
     let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
     XCTAssertEqual(reopened.theme, .midnight); XCTAssertTrue(reopened.smartQuotes)
   }
-  func testMarkdownFormattedViewDefaultsOffAndPersistsWithoutLosingOtherPreferences() throws {
+  func testMarkdownFormattedViewDefaultsOnAndPersistsWithoutLosingOtherPreferences() throws {
     let (directory, legacy) = try fixture()
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-    XCTAssertFalse(store.markdownFormattedView)
+    XCTAssertTrue(store.markdownFormattedView)
     try store.setSmartQuotes(true)
     try store.setMarkdownFormattedView(true)
     let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
@@ -96,7 +96,7 @@ final class EVConfigurationStoreTests: XCTestCase {
       let before = Data(#"{"version":1,"editing":{"markdownFormattedView":\#(value)}}"#.utf8)
       try before.write(to: file)
       let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-      XCTAssertFalse(store.markdownFormattedView)
+      XCTAssertTrue(store.markdownFormattedView)
       XCTAssertNotNil(store.lastError)
       XCTAssertThrowsError(try store.setMarkdownFormattedView(true))
       XCTAssertEqual(try Data(contentsOf: file), before)

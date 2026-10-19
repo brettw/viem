@@ -829,7 +829,7 @@ public final class EVDocument: NSDocument {
     /// last chosen Preview choice: Preview off opens Code, which detects the
     /// Markdown language. Explicit backend reads and recovery keep theirs.
     static func defaultOpeningType(for url: URL, nativeType typeName: String,
-                                   markdownFormattedView: Bool = false) -> String {
+                                   markdownFormattedView: Bool = true) -> String {
         let markdownOpeningType = markdownFormattedView ? markdownType : codeType
         return switch url.pathExtension.lowercased() {
         case "md", "markdown", "mdown", "mkd":

@@ -713,7 +713,8 @@ detected language in the label, independent of any forced language. Choosing
 Code language > Auto keeps detected Markdown in literal Code with Markdown
 highlighting. Without a detected
 language it uses Plain text and reads Auto (Plain Text). Opening still uses the
-existing format detection; opening Markdown uses the remembered Preview choice.
+existing format detection; opening Markdown uses the remembered Preview choice, defaulting to Preview on
+when no choice has been saved.
 Detection uses physical source, including when the current view hides markup.
 
 Use the pinned bundled Vim runtime, with confined includes and no installed-Vim,
@@ -1807,7 +1808,7 @@ Its Markdown Preview toggle uses source-preserving switching, stays reachable
 in narrow windows, and follows shared changes/history. Remember the last
 successful Preview choice across launches, including undo/redo of a switch.
 Newly opened Markdown documents use that choice; without a saved choice,
-Preview is off. Text and non-Markdown Code documents and passive refreshes do
+Preview is on. Text and non-Markdown Code documents and passive refreshes do
 not change the choice, and existing or recovered documents retain their own view.
 The status line
 has no format popup/label; its caret widget remains right-aligned beside prompts/
