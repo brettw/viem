@@ -18,7 +18,9 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   public let renderRunOwner: UInt64
   public let renderRegistry: CoreTextRenderRegistry
   private let imageResources: CoreTextImageResources
-  private let ownsImageResources: Bool
+  private let documentImages: CoreTextDocumentImages
+  let imageConsumerID = UUID()
+  private let observesImages: Bool
   public var imagesDidChange: (@Sendable (UInt64, [String]) -> Void)?
   /// Bitmaps or placeholder states changed without changing layout geometry.
   /// Drawing reads them from the shared resources; only a repaint is needed.
@@ -32,16 +34,12 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   var imageDimensionProbeCountForTesting: Int { imageResources.dimensionProbeCount }
   var imageScaledRenderCountForTesting: Int { imageResources.scaledRenderCount }
 
-  public func setImageDocumentURL(_ url: URL?) {
-    if imageResources.setDocumentURL(url) { invalidateMetrics() }
-  }
-
   /// The frontend refreshes metrics after installing its current immutable frame
   /// when new visible locations need admission to the bounded preview queue.
   @discardableResult
   public func updateVisibleImages(_ renderRuns: [(identifier: UInt64, metricsGeneration: UInt64)],
     viewportID: UInt64) -> Bool {
-    imageResources.setVisibleLocations(renderRegistry.inlineImageLocations(in: renderRuns), viewportID: viewportID)
+    imageResources.setVisibleLocations(renderRegistry.inlineImageLocations(in: renderRuns), viewportID: viewportID, consumer: imageConsumerID)
   }
 
   public func canReloadImage(_ destination: String) -> Bool { imageResources.canReload(destination) }
@@ -51,7 +49,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
 
   public func requestImageDimensions(_ destination: String,
     completion: @escaping @MainActor @Sendable (CGSize?) -> Void) -> Operation {
-    imageResources.requestDimensions(destination, completion: completion)
+    imageResources.requestDimensions(destination, consumer: imageConsumerID, completion: completion)
   }
 
   /// Bitmap and admission changes preserve measured document heights. The
@@ -80,12 +78,14 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
 
   public convenience init(
     measurementEnvironmentID: UInt64 = UInt64.random(in: 1...UInt64.max),
-    initialMetricsGeneration: UInt64 = 1
+    initialMetricsGeneration: UInt64 = 1,
+    documentImages: CoreTextDocumentImages = CoreTextDocumentImages()
   ) {
     self.init(
       measurementEnvironmentID: measurementEnvironmentID,
       initialMetricsGeneration: initialMetricsGeneration,
-      shapingDidBegin: nil
+      shapingDidBegin: nil,
+      documentImages: documentImages
     )
   }
 
@@ -94,7 +94,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     initialMetricsGeneration: UInt64,
     shapingDidBegin: (@Sendable () throws -> Void)?,
     sharedRegistry: CoreTextRenderRegistry? = nil,
-    sharedImageResources: CoreTextImageResources? = nil,
+    documentImages: CoreTextDocumentImages = CoreTextDocumentImages(),
     observeFontChanges: Bool = true,
     probesImageDimensions: Bool = false
   ) {
@@ -105,15 +105,13 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     generation = max(initialMetricsGeneration, 1)
     renderRegistry = sharedRegistry ?? CoreTextRenderRegistry(generation: max(initialMetricsGeneration, 1))
     self.shapingDidBegin = shapingDidBegin
-    imageResources = sharedImageResources ?? CoreTextImageResources()
-    ownsImageResources = sharedImageResources == nil
-    if ownsImageResources {
-      imageResources.setResourceChangeHandler { [weak self] destinations in
+    self.documentImages = documentImages
+    imageResources = documentImages.resources
+    observesImages = sharedRegistry == nil
+    if observesImages {
+      imageResources.observe(imageConsumerID, resources: { [weak self] destinations in
         self?.invalidateImageResources(destinations)
-      }
-      imageResources.setRasterChangeHandler { [weak self] in
-        self?.imageRastersDidChange?()
-      }
+      }, rasters: { [weak self] in self?.imageRastersDidChange?() })
       let resources = imageResources
       renderRegistry.inlineImagePresentation = { [weak resources] captured in
         resources?.presentation(matching: captured)
@@ -143,6 +141,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   }
 
   deinit {
+    if observesImages { imageResources.removeConsumer(imageConsumerID) }
     if let localFontObserver {
       NotificationCenter.default.removeObserver(localFontObserver)
     }
@@ -160,7 +159,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
       initialMetricsGeneration: metricsGeneration,
       shapingDidBegin: nil,
       sharedRegistry: renderRegistry,
-      sharedImageResources: imageResources,
+      documentImages: documentImages,
       observeFontChanges: false,
       probesImageDimensions: probesImageDimensions)
   }
@@ -197,7 +196,8 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
   /// removed from core. The provider object itself must still outlive the C
   /// provider table installed for that view.
   public func retireResources() {
-    if ownsImageResources { imageResources.stop() }
+    imagesDidChange = nil; imageRastersDidChange = nil
+    if observesImages { imageResources.removeConsumer(imageConsumerID) }
     var retiredArenas: [ResponseArena] = []
     stateLock.lock()
     generation = generation &+ 1

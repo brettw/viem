@@ -34,7 +34,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     internal Point WindowFocusPoint { get { try { if (View != null) { var caret = View.CaretGeometry(); var viewport = View.Viewport; return new(caret.rect.x - viewport.left + GutterWidth, caret.rect.y - viewport.top); } } catch { } return new(ActualWidth / 2, ActualHeight / 2); } }
     private readonly EditorWindow window;
     private readonly Preferences preferences;
-    internal CanvasControl Canvas { get; } = new();
+    internal CanvasControl Canvas { get; } = new() { UseSharedDevice = true };
     private readonly TextBox input = new() { Width = 2, Height = 24, MinWidth = 0, MinHeight = 0, Opacity = 0.01, AcceptsReturn = true, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false, Padding = new(0), BorderThickness = new(0) };
     private readonly Canvas inputLayer = new() { IsHitTestVisible = false };
     private readonly ScrollBar vertical = new() { Orientation = Orientation.Vertical, Width = 14, SmallChange = 30 };
@@ -239,7 +239,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     {
         using var startup = Diagnostics.StartupPerformance.Measure("editor.attach");
         InvalidateDrawingCache();
-        if (View != null) { ResetImagePreviews(forgetDimensions: false); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
+        if (View != null) { ResetImagePreviews(); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
         var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
         View.Changed += Refresh; View.Effects += ApplyEffects;
@@ -822,7 +822,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (disposed) return; disposed = true; blink.Stop(); mapping.Stop(); outputTimer.Stop();
         DismissCodeBlockLanguageMenu();
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
-        ResetImagePreviews(); imageCancellation.Dispose();
+        ResetImagePreviews();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; ClipboardFormats.ContentChanged -= ClipboardChanged;
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362)) scrollbarSettings.AutoHideScrollBarsChanged -= ScrollBarPreferenceChanged;
         InvalidateDrawingCache();

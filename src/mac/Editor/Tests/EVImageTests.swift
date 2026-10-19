@@ -5,9 +5,79 @@ import ImageIO
 import ViemAppShell
 import XCTest
 @testable import ViemEditor
+@testable import ViemCoreTextProvider
 
 @MainActor
 final class EVImageTests: XCTestCase {
+
+    func testAdditionalWindowsAndSplitsKeepAllDocumentImagesReady() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-shared-view-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let imageURL = directory.appendingPathComponent("image.png")
+        let context = try XCTUnwrap(CGContext(data: nil, width: 80, height: 40, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 80, height: 40))
+        let writer = try XCTUnwrap(CGImageDestinationCreateWithURL(imageURL as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(writer, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(writer))
+        try FileManager.default.copyItem(at: imageURL, to: directory.appendingPathComponent("second.png"))
+        let backend = EVCoreDocumentBackend()
+        let documentURL = directory.appendingPathComponent("document.md")
+        try backend.read(source: Data("![](image.png)\n\n![](second.png)".utf8), typeName: EVDocument.markdownType,
+                         filename: documentURL.path, allowAutomaticCode: false)
+        let document = EVDocument(editorBackend: backend)
+        document.fileURL = documentURL
+        document.makeWindowControllers()
+        defer { document.close() }
+        let first = try XCTUnwrap(document.windowControllers.first as? EVDocumentWindowController)
+        first.showWindow(nil)
+        let cache = backend.documentImages.resources
+        let deadline = Date(timeIntervalSinceNow: 5)
+        let locations = ["image.png", "second.png"]
+        while locations.contains(where: { cache.image(for: $0).image == nil }) && Date() < deadline {
+            RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
+        }
+        let rasters = try locations.map { try XCTUnwrap(cache.image(for: $0).image) }
+        func assertReady(file: StaticString = #filePath, line: UInt = #line) {
+            for (location, raster) in zip(locations, rasters) {
+                XCTAssertTrue(cache.image(for: location).image === raster,
+                              "Opening a view must not clear any document image", file: file, line: line)
+            }
+            XCTAssertEqual(cache.localLoadCount, 2, file: file, line: line)
+            XCTAssertEqual(cache.pendingLoadCount, 0, file: file, line: line)
+        }
+        document.showAdditionalWindow()
+        let second = try XCTUnwrap(document.windowControllers.last as? EVDocumentWindowController)
+        let surface = try XCTUnwrap(second.editorSurface as? EVEditorSurfaceController)
+        let cluster = try XCTUnwrap(surface.layoutSnapshot?.clusters.first(where: surface.editorView.isImageCluster))
+        // No event-loop yield after creating the view: its very first render
+        // resource must already resolve to the loaded raster, not a placeholder.
+        let pixels = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        XCTAssertTrue(try XCTUnwrap(surface.session).provider.renderRegistry.drawInlineImage(
+            identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation,
+            in: CGRect(x: 0, y: 0, width: 8, height: 8), color: CGColor(gray: 0, alpha: 1), context: pixels))
+        let painted = NSBitmapImageRep(cgImage: try XCTUnwrap(pixels.makeImage()))
+        let color = try XCTUnwrap(painted.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(color.redComponent, 0.95)
+        XCTAssertLessThan(color.greenComponent, 0.05)
+        assertReady()
+        // Splits prepare a surface before it belongs to the host's pane list.
+        // Exercise that path twice, with another window left untouched.
+        for _ in 0..<2 {
+            let state = backend.persistenceState
+            var result: Result<String?, Error>?
+            second.perform(documentHostRequests: [EVDocumentHostRequest(
+                kind: .split, documentID: state.documentID, documentRevision: state.documentRevision)
+            ]) { result = $0 }
+            _ = try XCTUnwrap(result).get()
+            assertReady()
+        }
+        first.close()
+        assertReady()
+    }
 
     private func editor(_ source: String, type: String, configuration: EVConfigurationStore? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, NSWindow) {
         let backend = configuration.map { EVCoreDocumentBackend(configuration: $0) } ?? EVCoreDocumentBackend()

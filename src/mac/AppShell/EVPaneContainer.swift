@@ -18,7 +18,7 @@ final class EVPaneContainer: NSViewController {
     return placementGutters[ObjectIdentifier(first)] ?? first.editorSurface.lineNumberGutterWidth
   }
   private weak var lastAccessedPane: EVDocumentContentViewController?
-  var splitForStatusDrag: ((EVDocumentContentViewController) throws -> EVDocumentContentViewController)?
+  var splitForStatusDrag: ((EVDocumentContentViewController, CGFloat) throws -> EVDocumentContentViewController)?
   private weak var statusDragTarget: EVDocumentContentViewController?
   private var statusDragNeedsSplit = false
 
@@ -135,9 +135,8 @@ final class EVPaneContainer: NSViewController {
         // its new upper neighbour becomes the moving boundary.
         self.statusDragNeedsSplit = false
         do {
-          guard let added = try self.splitForStatusDrag?(pane) else { return }
+          guard let added = try self.splitForStatusDrag?(pane, y) else { return }
           self.statusDragTarget = added
-          self.dragStatusBar(of: added, by: y - added.view.frame.maxY)
         } catch { pane.editorSurface.showDocumentMessage(error.localizedDescription) }
       } else { self.dragStatusBar(of: target, by: delta) }
     }
@@ -174,12 +173,22 @@ final class EVPaneContainer: NSViewController {
         window.frameRect(forContentRect: NSRect(origin: .zero, size: window.contentMinSize)).width))
     if next != window.frame { window.setFrame(next, display: true); layoutStack() }
   }
-  func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false, before: Bool = false, focusNewPane: Bool = true) throws {
+  func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false, before: Bool = false, focusNewPane: Bool = true, initialStatusBarBottom: CGFloat? = nil) throws {
     let source = source ?? activePane
     try requireSplitRoom(in: source, vertical: vertical)
+    pane.loadViewIfNeeded()
     let newID = try geometry.split(id(source), vertical: vertical, height: pane.statusBarHeight, before: before)
+    // A drag-created split starts at the pointer, not the default half split.
+    // Resolve this in portable geometry before either editor sees a new size.
+    if let bottom = initialStatusBarBottom,
+       let frame = geometry.snapshot().frames.first(where: { $0.kind == 0 && $0.id == newID }) {
+      geometry.drag(newID, delta: bottom - (frame.y + frame.height))
+    }
     ids[ObjectIdentifier(pane)] = newID; panes.append(pane)
-    addChild(pane); stack.addSubview(pane.view); pane.view.autoresizingMask = []; bind(pane); layoutStack()
+    addChild(pane); pane.view.autoresizingMask = []; bind(pane); layoutStack()
+    // Attaching invokes AppKit presentation callbacks. Prepare the detached
+    // editor at its final size first so it cannot flash empty or half-sized.
+    stack.addSubview(pane.view)
     if focusNewPane { focus(pane) }
   }
   func remove(_ pane: EVDocumentContentViewController) {

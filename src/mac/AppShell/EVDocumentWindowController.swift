@@ -102,11 +102,12 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     window.titleVisibility = .visible
 
     super.init(window: window)
-    paneContainer.splitForStatusDrag = { [weak self] source in
+    paneContainer.splitForStatusDrag = { [weak self] source, bottom in
       guard let self, let document = source.document else { throw EVDocumentHostError.staleRequest }
       try self.paneContainer.requireSplitRoom(in: source)
       let pane = self.makePane(document: document, from: source)
-      try self.paneContainer.insert(pane, splitting: source, before: true, focusNewPane: false)
+      try self.paneContainer.insert(pane, splitting: source, before: true, focusNewPane: false,
+                                    initialStatusBarBottom: bottom)
       self.updateActiveDocumentChrome()
       return pane
     }

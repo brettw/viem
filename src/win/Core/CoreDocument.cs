@@ -9,7 +9,13 @@ namespace Viem.Windows.Core;
 internal sealed unsafe partial class CoreDocument : IDisposable
 {
     public ulong Handle { get; private set; }
-    public string? FilePath { get; set; }
+    private string? filePath;
+    public string? FilePath
+    {
+        get => filePath;
+        set { filePath = value; ImagePreviews.SetDocumentPath(value); }
+    }
+    internal Rendering.DocumentImagePreviews ImagePreviews { get; } = new();
     public string Name => FilePath == null ? "Untitled" : Path.GetFileName(FilePath);
     public event Action? Changed;
     public event Action? SyntaxChanged;
@@ -207,6 +213,7 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         if (Handle == 0) return;
         Check(viem_core_destroy(Handle), "Close document");
         Handle = 0;
+        ImagePreviews.Dispose();
         Disposed?.Invoke();
     }
 }

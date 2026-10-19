@@ -328,7 +328,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         EVStartupPerformance.mark("surface.refresh.begin")
         defer { isRefreshingPresentation = false; EVStartupPerformance.mark("surface.refresh.end") }
         do {
-            session.provider.setImageDocumentURL(documentHostEffectHandler?.documentURL(for: self))
             session.provider.imageRastersDidChange = { [weak self] in
                 MainActor.assumeIsolated { self?.imageRastersDidChange() }
             }

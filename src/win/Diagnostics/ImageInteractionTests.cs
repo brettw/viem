@@ -367,10 +367,18 @@ internal static class ImageInteractionTests
         var window = new EditorWindow(preferences, document);
         App.Instance.Windows.Add(window); window.Activate();
         var pane = window.ActivePane!; var view = await pane.Ready;
+        EditorPane? copy = null;
         try
         {
             for (int i = 0; i < 100 && pane.LocalImagePreviewCount == 0; i++) await Task.Delay(50);
             Check(pane.LocalImagePreviewCount == 1 && pane.PendingImageLoads == 0, "a relative local raster image decodes within the bounded preview cache");
+            var bitmap = pane.SharedImageBitmapForTest("wide.bmp");
+            int attempts = pane.ImagePreviewLoadAttempts;
+            copy = window.SplitPane(pane, document); var copyView = await copy.Ready;
+            Check(bitmap != null && ReferenceEquals(bitmap, copy.SharedImageBitmapForTest("wide.bmp"))
+                && copy.ImagePreviewLoadAttempts == attempts && copy.PendingImageLoads == 0
+                && copyView.Provider.ImageDimensions("wide.bmp") == (1600u, 800u),
+                "a split immediately reuses the document bitmap and intrinsic dimensions without decoding again");
             var image = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
             Check(Math.Abs(image.typographic_bounds.height / image.typographic_bounds.width - .5) < .001
                 && image.typographic_bounds.width <= view.Layout().Info.viewport_width,
@@ -394,6 +402,12 @@ internal static class ImageInteractionTests
             Check(Math.Abs(reloaded.typographic_bounds.width - 80 * view.Viewport.scale) < .01
                 && Math.Abs(reloaded.typographic_bounds.height - 120 * view.Viewport.scale) < .01,
                 "Reload decodes changed file bytes and relayouts the image at its new intrinsic size");
+            Check(copyView.Provider.ImageDimensions("wide.bmp") == (80u, 120u)
+                && ReferenceEquals(copy.SharedImageBitmapForTest("wide.bmp"), pane.SharedImageBitmapForTest("wide.bmp")),
+                "reloading an image publishes the new dimensions and one shared bitmap to both views");
+            await window.ClosePane(copy, force: true); copy = null;
+            Check(pane.LocalImagePreviewCount == 1 && pane.PendingImageLoads == 0,
+                "closing one view preserves the surviving view's decoded images");
             float stableHeight = view.Layout().Info.total_height, stableTop = view.Viewport.top;
             ulong stableGeneration = view.Provider.Generation;
             pane.EvictImageBitmapsForTest();
@@ -417,10 +431,11 @@ internal static class ImageInteractionTests
         }
         finally
         {
+            if (copy != null) await window.ClosePane(copy, force: true);
             await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
             Directory.Delete(directory, recursive: true);
         }
-        Check(pane.LocalImagePreviewCount == 0 && pane.PendingImageLoads == 0, "closing a view releases decoded images and cancels its preview work");
+        Check(pane.LocalImagePreviewCount == 0 && pane.PendingImageLoads == 0, "closing the document releases decoded images and cancels its preview work");
     }
 
     // Mirrors the macOS image resource tests: speculative workers measure
