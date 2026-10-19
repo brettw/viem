@@ -9,22 +9,10 @@ namespace Viem.Windows.Editor;
 
 internal sealed partial class EditorPane
 {
-    private sealed class ImagePreviewEntry
-    {
-        internal LocalImagePreview? Preview;
-        internal bool Complete, Loading, ReloadRequested;
-        internal CancellationTokenSource? Cancellation;
-        internal long LastUse;
-    }
-    private readonly Dictionary<string, ImagePreviewEntry> imagePreviews = new(StringComparer.Ordinal);
-    private CancellationTokenSource imageCancellation = new();
+    private DocumentImagePreviews SharedImages => Document.ImagePreviews;
     private string? imageDocumentPath;
-    private long imagePreviewClock;
-    private int imageLoads;
-    private long imagePreviewGeneration;
-    private const int MaximumImageEntries = 48;
-    private const long MaximumImageBytes = 64 * 1024 * 1024;
-    private long imagePreviewByteBudget = MaximumImageBytes;
+    private long imagePreviewGeneration, imagePreviewClock;
+    private const int MaximumImageEntries = DocumentImagePreviews.MaximumEntries;
     // Bitmaps resampled to the device size they are drawn at, so scrolling
     // draws them nearly 1:1 instead of resampling a large raster every frame.
     private sealed record ScaledImage(CanvasBitmap Source, uint Width, uint Height, CanvasRenderTarget Image, long LastUse);
@@ -34,10 +22,11 @@ internal sealed partial class EditorPane
     private const int MaximumScaledImages = 16;
     private const long MaximumScaledImageBytes = 48 * 1024 * 1024;
 #if DEBUG
-    internal int ImagePreviewLoadAttempts { get; private set; }
-    internal int ImagePreviewEntries => imagePreviews.Count;
-    internal int CompletedImagePreviewEntries => imagePreviews.Values.Count(e => e.Complete);
-    internal long ImagePreviewBytes => imagePreviews.Values.Sum(e => e.Preview?.DecodedBytes ?? 0);
+    internal CanvasBitmap? SharedImageBitmapForTest(string destination) => SharedImages.Get(destination)?.Bitmap;
+    internal int ImagePreviewLoadAttempts => SharedImages.LoadAttempts;
+    internal int ImagePreviewEntries => SharedImages.Count;
+    internal int CompletedImagePreviewEntries => SharedImages.CompleteCount;
+    internal long ImagePreviewBytes => SharedImages.RasterBytes;
     internal int ScaledImageRenders { get; private set; }
     internal int ScaledImageCount => scaledImages.Count;
     internal long ScaledImageBytes => scaledImageBytes;
@@ -51,32 +40,26 @@ internal sealed partial class EditorPane
         var cluster = snapshot.Clusters.FirstOrDefault(c => View.Provider.ImageDestination(c.render_run) == destination);
         if (cluster.render_run.owner == 0 && cluster.text_end == 0) return $"no cluster (clusters={snapshot.Clusters.Length})";
         var bounds = OffsetRect(cluster.typographic_bounds, viewport);
-        imagePreviews.TryGetValue(destination, out var image);
+        var image = SharedImages.Get(destination);
         return $"bounds={bounds} canvas={Canvas.ActualWidth}x{Canvas.ActualHeight} dpi={Canvas.Dpi} layout={View.Provider.ImageLayoutSize(cluster.render_run)} "
-            + $"preview={(image?.Preview is { } p ? $"{p.Width}x{p.Height}/{p.Bitmap.SizeInPixels.Width}x{p.Bitmap.SizeInPixels.Height}" : "none")} "
+            + $"preview={(image is { } p ? $"{p.Width}x{p.Height}/{p.Bitmap.SizeInPixels.Width}x{p.Bitmap.SizeInPixels.Height}" : "none")} "
             + $"state={View.Provider.ImageState(destination)} scaling={scalingImages.Count} scaled={scaledImages.Count}";
     }
-    internal void SetImagePreviewByteBudgetForTest(long bytes) => imagePreviewByteBudget = Math.Clamp(bytes, 0, MaximumImageBytes);
-    internal void EvictImageBitmapsForTest() { ResetImagePreviews(forgetDimensions: false); Canvas.Invalidate(); }
+    internal void SetImagePreviewByteBudgetForTest(long bytes) => SharedImages.ByteBudget = Math.Clamp(bytes, 0, DocumentImagePreviews.MaximumBytes);
+    internal void EvictImageBitmapsForTest() { SharedImages.Reset(); ClearScaledImages(); Canvas.Invalidate(); }
     internal bool ImagePreviewIsBroken(string destination) => View?.Provider.ImageState(destination) == InlineImageState.Broken;
     internal bool ImagePreviewIsLimited(string destination) => View?.Provider.ImageState(destination) == InlineImageState.Limited;
 #endif
-    internal int LocalImagePreviewCount => imagePreviews.Values.Count(e => e.Preview != null);
-    internal int PendingImageLoads => imageLoads;
+    internal int LocalImagePreviewCount => SharedImages.RasterCount;
+    internal int PendingImageLoads => SharedImages.PendingLoads;
 
-    private void ResetImagePreviews(bool forgetDimensions = true)
+    private void ResetImagePreviews()
     {
-        bool pathChanged = !StringComparer.OrdinalIgnoreCase.Equals(imageDocumentPath, Document.FilePath);
+        SharedImages.Remove(this);
         imagePreviewGeneration++;
-        imageCancellation.Cancel(); imageCancellation.Dispose(); imageCancellation = new();
-        foreach (var entry in imagePreviews.Values) { entry.Preview?.Dispose(); entry.Cancellation?.Dispose(); }
-        imagePreviews.Clear(); imageLoads = 0;
         ClearScaledImages();
         imageDocumentPath = Document.FilePath;
-        // A new base path forgets the provider's knowledge (a no-op when the
-        // view was created with it). Otherwise forget only when requested.
-        if (pathChanged) View?.Provider.SetImageDocumentPath(Document.FilePath);
-        else if (forgetDimensions) View?.Provider.ClearImageDimensions();
+        View?.Provider.SetImageDocumentPath(Document.FilePath);
     }
 
     private void ClearScaledImages()
@@ -87,7 +70,8 @@ internal sealed partial class EditorPane
 
     private void RefreshImagePreviews()
     {
-        if (View == null || snapshot == null) return;
+        if (disposed || View == null || snapshot == null) return;
+        SharedImages.EnsureIdentity(Canvas.Device, Document.FilePath);
         // Admission covers the visible screen and one screen beyond each edge,
         // so nearby bitmaps are ready before scrolling reveals them.
         double height = Canvas.ActualHeight, width = Math.Max(Canvas.ActualWidth, PaintViewportWidth);
@@ -107,122 +91,18 @@ internal sealed partial class EditorPane
             .Select(c => View.Provider.ImageDestination(c.render_run)).OfType<string>()
             .Prepend(selected ?? "").Where(d => d.Length != 0).Distinct(StringComparer.Ordinal)
             .Take(MaximumImageEntries).ToList();
-        var admitted = wanted.ToHashSet(StringComparer.Ordinal);
-        foreach (var pending in imagePreviews.Where(e => e.Value.Loading && !admitted.Contains(e.Key)).ToArray())
-        {
-            pending.Value.ReloadRequested = false;
-            pending.Value.Cancellation?.Cancel();
-        }
-        foreach (string destination in wanted)
-        {
-            if (!imagePreviews.TryGetValue(destination, out var entry))
-            {
-                while (imagePreviews.Count >= MaximumImageEntries)
-                {
-                    var oldest = imagePreviews.Where(e => e.Value.Complete && !admitted.Contains(e.Key)).MinBy(e => e.Value.LastUse);
-                    if (oldest.Key == null) break;
-                    oldest.Value.Preview?.Dispose(); oldest.Value.Cancellation?.Dispose(); imagePreviews.Remove(oldest.Key);
-                }
-                if (imagePreviews.Count >= MaximumImageEntries) continue;
-                entry = new ImagePreviewEntry(); imagePreviews[destination] = entry;
-            }
-            entry.LastUse = ++imagePreviewClock;
-            if (entry.Complete || entry.Loading) continue;
-            if (ImageLocation.LocalPreviewPath(destination, Document.FilePath) == null)
-            {
-                entry.Complete = true;
-                if (!ImageLocation.IsWeb(destination)) View.Provider.RecordImage(destination, 300, 64, InlineImageState.Broken);
-                continue; // No remote destination is ever submitted to a loader.
-            }
-            if (!View.Provider.AdmitImage(destination)
-                || View.Provider.ImageState(destination) is InlineImageState.Broken or InlineImageState.Limited && !entry.ReloadRequested)
-            { entry.Complete = true; continue; }
-            if (imageLoads >= 2) continue;
-            entry.Loading = true; entry.ReloadRequested = false;
-            entry.Cancellation = CancellationTokenSource.CreateLinkedTokenSource(imageCancellation.Token);
-            imageLoads++;
-#if DEBUG
-            ImagePreviewLoadAttempts++;
-#endif
-            _ = LoadImagePreview(destination, entry, imagePreviewGeneration, View, Document.FilePath, entry.Cancellation.Token);
-        }
+        var owner = View;
+        SharedImages.Update(this, owner.Provider, wanted.ToArray(),
+            (previous, destinations) => { if (!disposed && View == owner) Run(() => owner.ImageResourcesChanged(previous, destinations)); },
+            reset => { if (!disposed && View == owner) { if (reset) { ClearScaledImages(); Refresh(); } Canvas.Invalidate(); } });
     }
 
     internal void ReloadShownImage()
     {
         if (View is not { } view || Document.State.format != VIEM_FORMAT_MARKDOWN || shownImage is not { Image: { } image } context) return;
         view.ValidateImageContext(context);
-        if (ImageLocation.LocalPreviewPath(image.Destination, Document.FilePath) == null) return;
         if (!view.Provider.AdmitImage(image.Destination)) { SetMessage("The image preview budget is full."); return; }
-        if (imagePreviews.TryGetValue(image.Destination, out var entry))
-        {
-            entry.Complete = false; entry.ReloadRequested = true;
-            if (entry.Loading) entry.Cancellation?.Cancel();
-        }
-        else
-        {
-            if (imagePreviews.Count >= MaximumImageEntries)
-            {
-                var oldest = imagePreviews.Where(e => e.Value.Complete).MinBy(e => e.Value.LastUse);
-                if (oldest.Key == null) return;
-                oldest.Value.Preview?.Dispose(); oldest.Value.Cancellation?.Dispose(); imagePreviews.Remove(oldest.Key);
-            }
-            imagePreviews[image.Destination] = new() { ReloadRequested = true };
-        }
-        RefreshImagePreviews(); Canvas.Invalidate();
-    }
-
-    private async Task LoadImagePreview(string destination, ImagePreviewEntry entry, long generation, CoreView owner,
-        string? documentPath, CancellationToken cancellation)
-    {
-        var result = await LocalImagePreview.Load(Canvas.Device, destination, documentPath, cancellation);
-        LocalImagePreview? decoded = result.Preview;
-        if (disposed || generation != imagePreviewGeneration || View != owner
-            || !StringComparer.OrdinalIgnoreCase.Equals(Document.FilePath, documentPath)
-            || !imagePreviews.TryGetValue(destination, out var current) || !ReferenceEquals(entry, current))
-        { decoded?.Dispose(); return; }
-        imageLoads--; entry.Loading = false; entry.Cancellation?.Dispose(); entry.Cancellation = null;
-        if (cancellation.IsCancellationRequested)
-        {
-            decoded?.Dispose();
-            if (entry.ReloadRequested) entry.Complete = false;
-            else { entry.Preview?.Dispose(); imagePreviews.Remove(destination); }
-            RefreshImagePreviews(); return;
-        }
-        entry.Complete = true;
-        // Record dimensions even if this image left the admitted region while
-        // loading. Only geometry layout already used requires reshaping.
-        ulong previousGeneration = owner.Provider.Generation;
-        bool geometryChanged = owner.Provider.RecordImage(destination, decoded?.Width ?? 300, decoded?.Height ?? 64, result.Status switch {
-            LocalImagePreviewStatus.Ready => InlineImageState.Ready,
-            LocalImagePreviewStatus.Limited => InlineImageState.Limited,
-            _ => InlineImageState.Broken });
-        bool stillPresent = snapshot?.Clusters.Any(c => owner.Provider.ImageDestination(c.render_run) == destination) == true;
-        entry.Preview?.Dispose(); entry.Preview = null;
-        if (decoded != null && stillPresent)
-        {
-            long used = imagePreviews.Values.Sum(e => e.Preview?.DecodedBytes ?? 0);
-            foreach (var stale in imagePreviews.Where(e => e.Value.Complete && e.Key != destination).OrderBy(e => e.Value.LastUse).ToArray())
-            {
-                if (used + decoded.DecodedBytes <= imagePreviewByteBudget) break;
-                if (snapshot!.Clusters.Any(c => owner.Provider.ImageDestination(c.render_run) == stale.Key)) continue;
-                used -= stale.Value.Preview?.DecodedBytes ?? 0;
-                stale.Value.Preview?.Dispose(); stale.Value.Cancellation?.Dispose(); imagePreviews.Remove(stale.Key);
-            }
-            if (used + decoded.DecodedBytes <= imagePreviewByteBudget) entry.Preview = decoded;
-            else decoded.Dispose(); // A completed placeholder cannot trigger a budget eviction loop.
-        }
-        else
-        {
-            decoded?.Dispose();
-            if (!stillPresent) imagePreviews.Remove(destination);
-        }
-        if (geometryChanged)
-        {
-            owner.Provider.InvalidateMetrics();
-            Run(() => owner.ImageResourcesChanged(previousGeneration, [destination]));
-        }
-        RefreshImagePreviews(); Canvas.Invalidate();
+        SharedImages.Reload(image.Destination);
     }
 
     /// The bitmap to draw for `preview` at `bounds`: a copy resampled to its
@@ -243,8 +123,10 @@ internal sealed partial class EditorPane
         }
         if (scalingImages.TryGetValue(destination, out var pending) && ReferenceEquals(pending.Source, source)
             && pending.Width == width && pending.Height == height) return source;
+        if (scalingImages.Count >= MaximumScaledImages) return source;
         scalingImages[destination] = (source, width, height);
         var device = Canvas.Device; long generation = imagePreviewGeneration;
+        var lease = preview.Retain();
         _ = Task.Run(() => {
             try
             {
@@ -258,8 +140,12 @@ internal sealed partial class EditorPane
                 return target;
             }
             catch (Exception error) when (error is ObjectDisposedException or System.Runtime.InteropServices.COMException) { return null; }
-        }).ContinueWith(task => DispatcherQueue.TryEnqueue(() => FinishResample(destination, source, width, height, task.Result, generation)),
-            TaskScheduler.Default);
+            finally { lease.Dispose(); }
+        }).ContinueWith(task => {
+            if (!task.IsCompletedSuccessfully) return;
+            var image = task.Result;
+            if (!DispatcherQueue.TryEnqueue(() => FinishResample(destination, source, width, height, image, generation))) image?.Dispose();
+        }, TaskScheduler.Default);
         return source;
     }
 
@@ -269,7 +155,7 @@ internal sealed partial class EditorPane
             && pending.Width == width && pending.Height == height) scalingImages.Remove(destination);
         if (image == null) return;
         if (disposed || generation != imagePreviewGeneration
-            || !imagePreviews.TryGetValue(destination, out var entry) || !ReferenceEquals(entry.Preview?.Bitmap, source))
+            || !ReferenceEquals(SharedImages.Get(destination)?.Bitmap, source))
         { image.Dispose(); return; }
         long cost = (long)width * height * 4;
         if (scaledImages.Remove(destination, out var previous)) { scaledImageBytes -= (long)previous.Width * previous.Height * 4; previous.Image.Dispose(); }
@@ -298,7 +184,7 @@ internal sealed partial class EditorPane
             if (bounds.Bottom < 0 || bounds.Top > Canvas.ActualHeight || bounds.Right < 0 || bounds.Left > PaintViewportWidth) continue;
             // Draw a bitmap only while it has the dimensions layout used; a
             // changed image keeps its placeholder until layout catches up.
-            if (imagePreviews.TryGetValue(destination, out var image) && image.Preview is { } preview
+            if (SharedImages.Get(destination) is { } preview
                 && View.Provider.ImageLayoutSize(cluster.render_run) == (preview.Width, preview.Height))
             {
                 var display = DisplayBitmap(destination, preview, bounds);

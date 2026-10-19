@@ -538,7 +538,7 @@ final class EVWindowCommandTests: XCTestCase {
     container.dragStatusBar(of: added, by: 10_000)
     var attempts = 0
     let split = container.splitForStatusDrag
-    container.splitForStatusDrag = { source in attempts += 1; return try XCTUnwrap(split)(source) }
+    container.splitForStatusDrag = { source, bottom in attempts += 1; return try XCTUnwrap(split)(source, bottom) }
     original.statusBar.dragDidBegin?()
     move(to: top - 20)
     move(to: top - 30)
@@ -553,10 +553,11 @@ final class EVWindowCommandTests: XCTestCase {
     let original = container.panes[0]
     let left = EVDocumentContentViewController(editorSurface: Surface())
     try container.insert(left, splitting: original, vertical: true, before: true)
-    container.splitForStatusDrag = { [weak container] source in
+    container.splitForStatusDrag = { [weak container] source, bottom in
       let container = try XCTUnwrap(container)
       let pane = EVDocumentContentViewController(editorSurface: Surface())
-      try container.insert(pane, splitting: source, before: true, focusNewPane: false)
+      try container.insert(pane, splitting: source, before: true, focusNewPane: false,
+                           initialStatusBarBottom: bottom)
       return pane
     }
     let window = PointerTestWindow(contentRect: container.view.bounds, styleMask: [.titled, .resizable], backing: .buffered, defer: false)

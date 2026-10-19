@@ -3,6 +3,14 @@ import Darwin
 import Foundation
 import ImageIO
 
+/// One bounded image store for a document, shared by its views and workers.
+public final class CoreTextDocumentImages: @unchecked Sendable {
+  let resources = CoreTextImageResources()
+  public init() {}
+  public func setDocumentURL(_ url: URL?) { resources.setDocumentURL(url) }
+  deinit { resources.stop() }
+}
+
 /// Immutable passive raster data. Decoders only receive local bytes.
 struct CoreTextInlineImage: @unchecked Sendable {
   enum State {
@@ -85,6 +93,12 @@ final class CoreTextImageResources: @unchecked Sendable {
   private var changed: (@Sendable () -> Void)?
   private var resourcesChanged: (@Sendable ([String]) -> Void)?
   private var rastersChanged: (@Sendable () -> Void)?
+  private struct Observer {
+    let resources: @Sendable ([String]) -> Void
+    let rasters: @Sendable () -> Void
+  }
+  private var observers: [UUID: Observer] = [:]
+  private var viewports: [UUID?: (id: UInt64, locations: [String])] = [:]
   private var stopped = false
   private var needsRetry = false
   private var visible: Set<String>?
@@ -100,18 +114,19 @@ final class CoreTextImageResources: @unchecked Sendable {
     let cancellation: Operation
     let completion: @MainActor @Sendable (CGSize?) -> Void
   }
-  private var dimensionRequest: DimensionRequest?
+  private var dimensionRequests: [UUID?: DimensionRequest] = [:]
   private var dimensionRequestRunning = false
   /// Bitmaps resampled to the device size they are drawn at, so scrolling
   /// draws them nearly 1:1 instead of resampling a large raster every frame.
-  private struct Scaled { let source: CGImage; let pixels: CGSize; let image: CGImage }
-  private var scaled: [String: Scaled] = [:]
-  private var scaledOrder: [String] = []
+  private struct RasterSize: Hashable { let location: String; let width: Int; let height: Int }
+  private struct Scaled { let source: CGImage; let image: CGImage }
+  private var scaled: [RasterSize: Scaled] = [:]
+  private var scaledOrder: [RasterSize] = []
   private var scaledBytes = 0
   private static let maximumScaledEntries = 16
   private static let maximumScaledBytes = 48 * 1024 * 1024
   private var scaledRenders = 0
-  private var scaling: [String: (source: CGImage, pixels: CGSize)] = [:]
+  private var scaling: [RasterSize: CGImage] = [:]
 
   init(metadataByteBudget: Int = 32 * 1024 * 1024,
     decoder: @escaping @Sendable (URL, String) -> CoreTextInlineImage? = {
@@ -139,6 +154,27 @@ final class CoreTextImageResources: @unchecked Sendable {
   /// without changing any geometry layout has used: repaint only.
   func setRasterChangeHandler(_ handler: (@Sendable () -> Void)?) { lock.lock(); rastersChanged = handler; lock.unlock() }
 
+  func observe(_ consumer: UUID, resources: @escaping @Sendable ([String]) -> Void,
+               rasters: @escaping @Sendable () -> Void) {
+    lock.lock(); observers[consumer] = Observer(resources: resources, rasters: rasters); lock.unlock()
+  }
+  func removeConsumer(_ consumer: UUID) {
+    lock.lock()
+    observers.removeValue(forKey: consumer)
+    viewports.removeValue(forKey: consumer)
+    let cancelled = dimensionRequests.removeValue(forKey: consumer)?.cancellation
+    visible = Set(viewports.values.flatMap(\.locations))
+    lock.unlock()
+    cancelled?.cancel()
+  }
+  // Capture callbacks while locked; invoke only after releasing the cache lock.
+  private func resourceHandlers() -> [@Sendable ([String]) -> Void] {
+    Array(observers.values.map(\.resources)) + [resourcesChanged].compactMap { $0 }
+  }
+  private func rasterHandlers() -> [@Sendable () -> Void] {
+    Array(observers.values.map(\.rasters)) + [rastersChanged].compactMap { $0 }
+  }
+
   private func pendingCurrent(_ location: String) -> Bool {
     pending.values.contains { $0.epoch == epoch && $0.location == location && $0.version == known[location]?.version }
   }
@@ -152,7 +188,7 @@ final class CoreTextImageResources: @unchecked Sendable {
 
   /// New viewports restart texture admission, never the dimension metadata.
   @discardableResult
-  func setVisibleLocations(_ locations: [String], viewportID nextID: UInt64 = 0) -> Bool {
+  func setVisibleLocations(_ locations: [String], viewportID nextID: UInt64 = 0, consumer: UUID? = nil) -> Bool {
     lock.lock()
     var ordered: [String] = []; var next = Set<String>()
     for location in locations.prefix(256) where next.count < Self.maximumEntries {
@@ -161,7 +197,15 @@ final class CoreTextImageResources: @unchecked Sendable {
       ordered.append(location)
     }
     guard !stopped else { lock.unlock(); return false }
-    if viewportID != nextID {
+    let viewportChanged = viewports[consumer]?.id != nextID
+    viewports[consumer] = (nextID, ordered)
+    // A view's scroll cannot evict images still visible in another view.
+    for (owner, viewport) in viewports where owner != consumer {
+      for location in viewport.locations where next.count < Self.maximumEntries && next.insert(location).inserted {
+        ordered.append(location)
+      }
+    }
+    if viewportChanged {
       viewportID = nextID; admitted = next; attempted.removeAll(); needsRetry = false
     } else {
       for location in ordered where admitted.count < Self.maximumEntries { admitted.insert(location) }
@@ -185,22 +229,28 @@ final class CoreTextImageResources: @unchecked Sendable {
 
   @discardableResult
   func setDocumentURL(_ url: URL?) -> Bool {
-    lock.lock(); defer { lock.unlock() }
-    guard baseURL != url else { return false }
+    lock.lock()
+    guard baseURL != url else { lock.unlock(); return false }
+    let destinations = Array(known.keys)
+    let handlers = resourceHandlers()
     baseURL = url; epoch = UUID()
     entries.removeAll(); order.removeAll(); bytes = 0
     scaled.removeAll(); scaledOrder.removeAll(); scaledBytes = 0; scaling.removeAll()
     known.removeAll(); metadataBytes = 0; reloadRequested.removeAll()
-    dimensionRequest = nil
+    dimensionRequests.removeAll()
     visible = nil; viewportID = nil; admitted.removeAll(); attempted.removeAll(); needsRetry = false
+    viewports.removeAll()
     // Keep old jobs counted until they drain; never cancel a new epoch's job.
+    lock.unlock()
+    for handler in handlers { handler(destinations) }
     return true
   }
 
   func stop() {
     lock.lock()
     stopped = true; epoch = UUID(); changed = nil; resourcesChanged = nil; rastersChanged = nil
-    dimensionRequest = nil
+    observers.removeAll(); viewports.removeAll()
+    dimensionRequests.removeAll()
     entries.removeAll(); known.removeAll(); metadataBytes = 0
     scaled.removeAll(); scaledOrder.removeAll(); scaledBytes = 0; scaling.removeAll()
     pending.removeAll(); order.removeAll(); bytes = 0; reloadRequested.removeAll()
@@ -215,18 +265,20 @@ final class CoreTextImageResources: @unchecked Sendable {
 
   /// A cancelled popup probe cannot install into a later document or draft.
   /// It shares the bounded local decoder and reads headers without pixels.
-  func requestDimensions(_ location: String, completion: @escaping @MainActor @Sendable (CGSize?) -> Void) -> Operation {
+  func requestDimensions(_ location: String, consumer: UUID? = nil, completion: @escaping @MainActor @Sendable (CGSize?) -> Void) -> Operation {
     let operation = BlockOperation()
     lock.lock()
-    guard !stopped else { lock.unlock(); operation.cancel(); return operation }
-    let superseded = dimensionRequest?.cancellation
-    dimensionRequest = DimensionRequest(location: location, epoch: epoch, cancellation: operation, completion: completion)
+    guard !stopped, dimensionRequests[consumer] != nil || dimensionRequests.count < Self.maximumPending else {
+      lock.unlock(); operation.cancel(); return operation
+    }
+    let superseded = dimensionRequests[consumer]?.cancellation
+    dimensionRequests[consumer] = DimensionRequest(location: location, epoch: epoch, cancellation: operation, completion: completion)
     let start = !dimensionRequestRunning
     dimensionRequestRunning = true
     lock.unlock()
     superseded?.cancel()
-    // One header read and one coalesced request, even if the filesystem stalls
-    // while the user types or opens successive popups.
+    // One header read and one coalesced request per view, with a document-wide
+    // queue bound. One window's popup must not cancel another window's draft.
     if start { queue.addOperation { [weak self] in self?.runDimensionRequests() } }
     return operation
   }
@@ -234,10 +286,10 @@ final class CoreTextImageResources: @unchecked Sendable {
   private func runDimensionRequests() {
     while true {
       lock.lock()
-      guard !stopped, let request = dimensionRequest else {
+      guard !stopped, let (consumer, request) = dimensionRequests.first else {
         dimensionRequestRunning = false; lock.unlock(); return
       }
-      dimensionRequest = nil
+      dimensionRequests.removeValue(forKey: consumer)
       lock.unlock()
       guard !request.cancellation.isCancelled else { continue }
       let value = image(for: request.location, probe: true, servesLayout: false, expectedEpoch: request.epoch)
@@ -356,15 +408,15 @@ final class CoreTextImageResources: @unchecked Sendable {
     let differs = abs(width - raster.width) * 5 > raster.width || abs(height - raster.height) * 5 > raster.height
     guard width > 0, height > 0, differs, width * height * 4 <= Self.maximumScaledBytes / 4 else { return raster }
     let size = CGSize(width: width, height: height)
-    let location = image.location
+    let key = RasterSize(location: image.location, width: width, height: height)
     lock.lock()
-    if let entry = scaled[location], entry.source === raster, entry.pixels == size {
+    if let entry = scaled[key], entry.source === raster {
       lock.unlock(); return entry.image
     }
-    guard !stopped, scaling[location].map({ !($0.source === raster && $0.pixels == size) }) ?? true else {
+    guard !stopped, scaling[key] == nil, scaling.count < Self.maximumScaledEntries else {
       lock.unlock(); return raster
     }
-    scaling[location] = (raster, size)
+    scaling[key] = raster
     let capturedEpoch = epoch
     lock.unlock()
     Self.resampling.async { [weak self] in
@@ -375,7 +427,7 @@ final class CoreTextImageResources: @unchecked Sendable {
       context?.draw(raster, in: CGRect(origin: .zero, size: size))
       let resampled = context?.makeImage()
       DispatchQueue.main.async { [weak self] in
-        self?.finishResample(location: location, source: raster, pixels: size, image: resampled, epoch: capturedEpoch)
+        self?.finishResample(key: key, source: raster, image: resampled, epoch: capturedEpoch)
       }
     }
     return raster
@@ -383,28 +435,26 @@ final class CoreTextImageResources: @unchecked Sendable {
 
   private static let resampling = DispatchQueue(label: "Viem image resampling", qos: .utility)
 
-  private func finishResample(location: String, source: CGImage, pixels: CGSize, image: CGImage?, epoch capturedEpoch: UUID) {
+  private func finishResample(key: RasterSize, source: CGImage, image: CGImage?, epoch capturedEpoch: UUID) {
     lock.lock()
-    if let pending = scaling[location], pending.source === source, pending.pixels == pixels {
-      scaling.removeValue(forKey: location)
-    }
+    if scaling[key] === source { scaling.removeValue(forKey: key) }
     guard let image, !stopped, epoch == capturedEpoch,
-          entries[location]?.image === source || known[location] != nil else { lock.unlock(); return }
+          entries[key.location]?.image === source else { lock.unlock(); return }
     let cost = image.bytesPerRow * image.height
-    if let previous = scaled.removeValue(forKey: location) {
+    if let previous = scaled.removeValue(forKey: key) {
       scaledBytes -= previous.image.bytesPerRow * previous.image.height
-      scaledOrder.removeAll { $0 == location }
+      scaledOrder.removeAll { $0 == key }
     }
     while (scaledOrder.count >= Self.maximumScaledEntries || scaledBytes + cost > Self.maximumScaledBytes),
           let oldest = scaledOrder.first {
       scaledOrder.removeFirst()
       if let evicted = scaled.removeValue(forKey: oldest) { scaledBytes -= evicted.image.bytesPerRow * evicted.image.height }
     }
-    scaled[location] = Scaled(source: source, pixels: pixels, image: image)
-    scaledOrder.append(location); scaledBytes += cost; scaledRenders += 1
-    let repaint = rastersChanged
+    scaled[key] = Scaled(source: source, image: image)
+    scaledOrder.append(key); scaledBytes += cost; scaledRenders += 1
+    let repaint = rasterHandlers()
     lock.unlock()
-    repaint?()
+    for handler in repaint { handler() }
   }
 
   /// Record new knowledge under the lock. A geometry change is reported only
@@ -419,8 +469,15 @@ final class CoreTextImageResources: @unchecked Sendable {
       // Render resources compare identities; same geometry keeps its identity.
       known[location]!.identity = value.identity; known[location]!.served = false
     }
-    if notifyFromWorker, geometryChanged, let handler = resourcesChanged {
-      DispatchQueue.main.async { handler([location]) }
+    if notifyFromWorker, geometryChanged {
+      let capturedEpoch = epoch
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.lock.lock()
+        let handlers = !self.stopped && self.epoch == capturedEpoch ? self.resourceHandlers() : []
+        self.lock.unlock()
+        for handler in handlers { handler([location]) }
+      }
     }
     return geometryChanged
   }
@@ -452,12 +509,14 @@ final class CoreTextImageResources: @unchecked Sendable {
     }
     let retry = needsRetry; needsRetry = false
     let handler = published || retry ? changed : nil
-    let resourceHandler = geometryChanged ? resourcesChanged : nil
-    let rasterHandler = published && !geometryChanged ? rastersChanged : nil
+    let resourceHandlers = geometryChanged ? resourceHandlers() : []
+    let rasterHandlers = published && !geometryChanged ? rasterHandlers() : []
     let reloads = reloadRequested
     let admittedRetry = retry ? (visible ?? []).filter { admitted.contains($0) && !attempted.contains($0) } : []
     lock.unlock()
-    handler?(); resourceHandler?([location]); rasterHandler?()
+    handler?()
+    for callback in resourceHandlers { callback([location]) }
+    for callback in rasterHandlers { callback() }
     // Explicit reloads must progress even when their old request occupied the
     // last queue slot; they do not depend on another caret or wheel event.
     for location in reloads { _ = image(for: location, servesLayout: false) }

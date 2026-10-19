@@ -5,6 +5,42 @@ import XCTest
 
 final class CoreTextImageResourcesTests: XCTestCase {
   @MainActor
+  func testDocumentViewsReuseOneRasterAndReloadTogetherAfterAViewCloses() throws {
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-shared-image-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: file) }
+    try writePNG(file, width: 80, height: 40)
+    let images = CoreTextDocumentImages()
+    let first = CoreTextMeasurementProvider(documentImages: images)
+    let cache = images.resources
+    _ = cache.setVisibleLocations([file.path], viewportID: 1, consumer: first.imageConsumerID)
+    drainUntil { cache.pendingLoadCount == 0 }
+    let raster = try XCTUnwrap(cache.image(for: file.path).image)
+    let retainedBytes = cache.retainedRasterBytes
+    let second = CoreTextMeasurementProvider(documentImages: images)
+    _ = cache.setVisibleLocations([file.path], viewportID: 1, consumer: second.imageConsumerID)
+    XCTAssertTrue(try XCTUnwrap(cache.image(for: file.path).image) === raster)
+    XCTAssertEqual(second.localImageLoadCountForTesting, 1)
+    XCTAssertEqual(cache.retainedRasterBytes, retainedBytes, "Another view retains no duplicate decoded pixels")
+    XCTAssertEqual(cache.pendingLoadCount, 0)
+    // Scrolling the first view away must leave the second view's admission.
+    _ = cache.setVisibleLocations([], viewportID: 2, consumer: first.imageConsumerID)
+    first.retireResources()
+    XCTAssertTrue(try XCTUnwrap(cache.image(for: file.path).image) === raster)
+    let third = CoreTextMeasurementProvider(documentImages: images)
+    let secondChanged = expectation(description: "second view reload")
+    let thirdChanged = expectation(description: "third view reload")
+    first.imagesDidChange = { _, _ in XCTFail("closed provider notified") }
+    second.imagesDidChange = { _, locations in XCTAssertEqual(locations, [file.path]); secondChanged.fulfill() }
+    third.imagesDidChange = { _, locations in XCTAssertEqual(locations, [file.path]); thirdChanged.fulfill() }
+    try writePNG(file, width: 120, height: 60)
+    XCTAssertTrue(second.reloadImage(file.path))
+    wait(for: [secondChanged, thirdChanged], timeout: 5)
+    XCTAssertEqual(cache.localLoadCount, 2)
+    XCTAssertEqual(cache.image(for: file.path).size, CGSize(width: 120, height: 60))
+    XCTAssertNotNil(cache.image(for: file.path).image)
+  }
+
+  @MainActor
   func testNewlyInsertedImageInvalidatesPlaceholderGeometryAfterAdmission() throws {
     let file = FileManager.default.temporaryDirectory.appendingPathComponent("viem-insert-image-\(UUID().uuidString).png")
     defer { try? FileManager.default.removeItem(at: file) }
@@ -492,6 +528,9 @@ final class CoreTextImageResourcesTests: XCTestCase {
     XCTAssertTrue(cache.displayRaster(for: image, pixels: CGSize(width: 200, height: 100)) === small)
     XCTAssertEqual(cache.scaledRenderCount, 1)
     XCTAssertEqual(try resampled(CGSize(width: 2000, height: 1000)).width, 2000, "Upscaled drawing is resampled too")
+    XCTAssertEqual(cache.scaledRenderCount, 2)
+    XCTAssertTrue(cache.displayRaster(for: image, pixels: CGSize(width: 200, height: 100)) === small,
+                  "Views at different zoom levels retain their own scaled variant")
     XCTAssertEqual(cache.scaledRenderCount, 2)
     XCTAssertTrue(cache.displayRaster(for: image, pixels: CGSize(width: 1050, height: 520)) === image.image,
                   "Near-native sizes draw the original bitmap")

@@ -81,6 +81,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private var source = Data()
     private var typeName = "public.plain-text"
     private var openingFilename = ""
+    // The document owns resource identity. A pane being prepared is not yet
+    // registered with its window, so its host URL lookup may temporarily be nil.
+    private(set) var documentImages = CoreTextDocumentImages()
     private var allowAutomaticCode = false
     private var recoveryInterpretation: EVRecoverySnapshot?
     private var isStylePreview = false
@@ -213,6 +216,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         self.source = source
         self.typeName = typeName
         self.openingFilename = filename
+        documentImages.setDocumentURL(filename.isEmpty ? nil : URL(fileURLWithPath: filename))
         self.allowAutomaticCode = allowAutomaticCode
         self.recoveryInterpretation = recoveryInterpretation
         try createCore(publishDiagnostics: false)
@@ -242,6 +246,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     public func updateFilename(_ filename: String) {
         guard openingFilename != filename else { return }
         openingFilename = filename
+        documentImages.setDocumentURL(filename.isEmpty ? nil : URL(fileURLWithPath: filename))
         guard core != 0 else { return }
         let bytes = Array(filename.utf8)
         let status = bytes.withUnsafeBufferPointer {
@@ -277,6 +282,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
         core = replacement.core
         replacement.core = 0
+        documentImages = replacement.documentImages
         openingFilename = replacement.openingFilename
         self.allowAutomaticCode = replacement.allowAutomaticCode
         self.typeName = replacement.typeName
@@ -966,7 +972,7 @@ final class EVCoreViewSession {
          margins: EVViewMargins = EVViewMargins(top: 0, left: 0, bottom: 0, right: 0)) throws {
         self.document = document
         coreHandle = document.core
-        provider = CoreTextMeasurementProvider()
+        provider = CoreTextMeasurementProvider(documentImages: document.documentImages)
         EVStartupPerformance.mark("surface.provider.created")
         try attach(width: width, height: height, margins: margins)
         EVStartupPerformance.mark("surface.view.attached")

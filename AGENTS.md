@@ -409,7 +409,10 @@ Deliberate presentation exceptions:
   Speculative layout workers may read a local image's header for its
   dimensions before it is visible; bitmaps decode only for visible or nearby
   images, and a decoded bitmap whose dimensions layout already used repaints
-  without reshaping. Limit rejections remain stable until Reload or a document
+  without reshaping. Decoded images belong to the shared document: additional
+  views reuse ready bitmaps immediately, visibility in any view keeps them
+  eligible, and explicit image reload updates every view. View closure must not
+  discard images still used by another view. Limit rejections remain stable until Reload or a document
   resource-identity change; scrolling must not repeatedly read or decode them.
 - Comments remain visible with `Comment` styling. Surplus separator lines retain
   editable empty paragraphs rather than collapsing to GitHub's presentation.

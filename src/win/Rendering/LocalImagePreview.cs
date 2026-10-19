@@ -21,7 +21,9 @@ internal sealed class LocalImagePreview(CanvasBitmap bitmap, uint width, uint he
     internal uint Width { get; } = width;
     internal uint Height { get; } = height;
     internal long DecodedBytes => checked((long)Bitmap.SizeInPixels.Width * Bitmap.SizeInPixels.Height * 4);
-    public void Dispose() => Bitmap.Dispose();
+    private int references = 1;
+    internal LocalImagePreview Retain() { Interlocked.Increment(ref references); return this; }
+    public void Dispose() { if (Interlocked.Decrement(ref references) == 0) Bitmap.Dispose(); }
 
     internal static async Task<LocalImagePreviewResult> Load(CanvasDevice device, string destination, string? documentPath, CancellationToken cancellation)
     {
