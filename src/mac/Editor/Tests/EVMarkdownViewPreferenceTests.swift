@@ -25,8 +25,9 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
 
     func testNativeMarkdownOpensUseRememberedChoiceAcrossConfigurationReloads() throws {
         let configuration = configuration()
-        for enabled in [false, true, false] {
-            if enabled || configuration.markdownFormattedView { try configuration.setMarkdownFormattedView(enabled) }
+        for remembered in [nil, false, true, false] as [Bool?] {
+            if let remembered { try configuration.setMarkdownFormattedView(remembered) }
+            let enabled = remembered ?? true
             let reopened = EVConfigurationStore(directory: configuration.directory)
             for (name, nativeType) in [("notes.md", "public.data"), ("typed-markdown", EVDocument.markdownType)] {
                 let url = configuration.directory.appendingPathComponent(name)
@@ -46,6 +47,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
 
     func testToggleAndHistoryRememberActualTransitionsWithoutBackgroundViewsOverwritingThem() throws {
         let configuration = configuration()
+        try configuration.setMarkdownFormattedView(false)
         let first = try surface(configuration: configuration)
         let background = try surface(configuration: configuration)
         XCTAssertFalse(configuration.markdownFormattedView)
@@ -96,6 +98,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
 
     func testRejectedSwitchDoesNotRememberRequestedView() throws {
         let configuration = configuration()
+        try configuration.setMarkdownFormattedView(false)
         let surface = try surface(configuration: configuration)
         let session = try XCTUnwrap(surface.session)
         let stale = try surface.backend.documentState()
@@ -108,6 +111,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
 
     func testPersistenceFailureReportsWarningWithoutUndoingSuccessfulViewChange() throws {
         let configuration = configuration()
+        try configuration.setMarkdownFormattedView(false)
         let surface = try surface(configuration: configuration)
         let file = configuration.directory.appendingPathComponent("config.json")
         let invalid = Data(#"{"version":2}"#.utf8)

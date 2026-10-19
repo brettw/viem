@@ -109,7 +109,7 @@ public final class EVConfigurationStore {
   public var caretHoverEffect: Bool { (root["editing"] as? [String: Any])?["caretHoverEffect"] as? Bool ?? true }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
   public var markdownFormattedView: Bool {
-    (root["editing"] as? [String: Any])?["markdownFormattedView"] as? Bool ?? false
+    (root["editing"] as? [String: Any])?["markdownFormattedView"] as? Bool ?? true
   }
   /// Application default for hard-line reflow (`gq`/`gw`); buffers inherit it
   /// unless `:set textwidth` overrides them locally. Missing values use 80.

@@ -70,7 +70,7 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertNil(document.recoveryFailure)
     }
 
-    func testMarkdownOpensAsCodeWithPreviewOffAndHTMLOpensAsCode() throws {
+    func testMarkdownDefaultsToPreviewAndHTMLOpensAsCode() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-source-default-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -80,7 +80,7 @@ final class EVCodeOpeningTests: XCTestCase {
             EVDocument.defaultOpeningType(
                 for: directory.appendingPathComponent("typed-markdown"),
                 nativeType: EVDocument.markdownType),
-            EVDocument.codeType)
+            EVDocument.markdownType)
         XCTAssertEqual(
             EVDocument.defaultOpeningType(
                 for: directory.appendingPathComponent("typed-html"),
@@ -88,7 +88,7 @@ final class EVCodeOpeningTests: XCTestCase {
             EVDocument.codeType)
 
         for (filename, nativeType, expected, source) in [
-            ("notes.md", EVDocument.markdownType, EVSourceFormat.code,
+            ("notes.md", EVDocument.markdownType, EVSourceFormat.markdown,
              Data("# Heading\n\n**body**\n".utf8)),
             ("page.html", EVDocument.htmlType, EVSourceFormat.code,
              Data("<h1>Heading</h1>\n<p>body</p>\n".utf8)),

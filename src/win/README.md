@@ -155,7 +155,7 @@ fullscreen bounds do not replace the saved normal frame.
   The last choice
   is saved as `editing.markdownFormattedView` in `config.json` and used for
   subsequent Markdown opens, including Ex commands. With no saved choice, Markdown
-  opens with Preview off.
+  opens with Preview on.
   Existing documents and recovered sessions retain their view.
   The status bar shows mode, the current file path, and messages on
   the left and cursor position on the right. Paths are relative to the working

@@ -458,7 +458,7 @@ public protocol EVDocumentBackend: AnyObject {
 }
 
 extension EVDocumentBackend {
-  public var prefersMarkdownFormattedView: Bool { false }
+  public var prefersMarkdownFormattedView: Bool { true }
   public func updateFilename(_ filename: String) {}
   public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
     try read(source: source, typeName: typeName)

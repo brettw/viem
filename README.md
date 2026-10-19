@@ -30,7 +30,7 @@ In code mode, leading spaces are always treated as 1en wide. This allows the use
 
 ### Markdown Preview
 
-Markdown Preview switches between the formatted document and literal Code with Markdown syntax highlighting. With Preview off, the title-bar Markdown Preview button turns it on; in Preview, the formatting toolbar’s toggle turns it off. New Markdown documents remember your last choice across launches. With no previous choice, Preview is off.
+Markdown Preview switches between the formatted document and literal Code with Markdown syntax highlighting. With Preview off, the title-bar Markdown Preview button turns it on; in Preview, the formatting toolbar’s toggle turns it off. New Markdown documents remember your last choice across launches. With no previous choice, Preview is on.
 
 HTML files open as literal Code, with syntax highlighting and ordinary code editing.
 

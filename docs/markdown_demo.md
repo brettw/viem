@@ -1,6 +1,6 @@
 # Viem Markdown demo
 
-Open this file, then turn on Markdown Preview with the title-bar button. With Preview off, the same source is edited literally as Code with Markdown syntax highlighting. The original source is preserved when switching views and when saving without edits.
+Open this file in Markdown Preview; if your saved choice is Preview off, turn it on with the title-bar button. With Preview off, the same source is edited literally as Code with Markdown syntax highlighting. The original source is preserved when switching views and when saving without edits.
 
 <img src="Word%20style.png" alt="" width="700" height="736">
 
