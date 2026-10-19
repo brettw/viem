@@ -39,7 +39,8 @@ Prerequisites:
 - Windows x64; development was verified on Windows 10 build 19045.
 - Visual Studio 2026 with WinUI development, MSVC x64 tools, and Windows SDK
   10.0.26100.0.
-- .NET SDK 10 and a current `x86_64-pc-windows-msvc` Rust toolchain.
+- .NET SDK 10.0.402 (NativeAOT/linker 10.0.13) and a current
+  `x86_64-pc-windows-msvc` Rust toolchain.
 - Python 3.9+ for packaging/verifying the bundled Vim runtime and for the C ABI
   declarations and icon tools.
 
@@ -108,6 +109,12 @@ The first build restores the locked Cargo/NuGet dependencies. After restoration,
 Rust dependencies cannot find MSVC, run from a VS 2026 Developer PowerShell.
 Open `Viem.Windows.csproj` in Visual Studio to debug the C# frontend, after
 building the Rust library. All intermediate output stays under `target/windows`.
+
+The NuGet lock file includes the SDK-selected NativeAOT compiler and linker.
+When upgrading the .NET SDK's servicing version, refresh it with
+`dotnet restore src/win/Viem.Windows.csproj --force-evaluate`, review the dependency
+changes, and refresh the affected [license and notice copies](../../docs/licenses/native/README.md#updating).
+Then verify the ordinary locked build; keep locked restore enabled in build scripts.
 
 Examples:
 

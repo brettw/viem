@@ -104,7 +104,7 @@ internal sealed partial class EditorWindow
             double scale = Content.XamlRoot?.RasterizationScale ?? 1;
             int width = name == "columns" ? (int)Math.Ceiling((cells * (pane.View?.DefaultColumnWidth ?? 8) + pane.GutterWidth) * scale) : size.Width;
             int height = name == "lines" ? (int)Math.Ceiling((cells * (pane.View?.DefaultLineHeight ?? 20) + 100) * scale) : size.Height;
-            AppWindow.Resize(new Windows.Graphics.SizeInt32(Math.Clamp(width, 480, 32767), Math.Clamp(height, 280, 32767)));
+            AppWindow.Resize(new global::Windows.Graphics.SizeInt32(Math.Clamp(width, 480, 32767), Math.Clamp(height, 280, 32767)));
             return;
         }
         preferences.ApplyScriptOption(name, value);

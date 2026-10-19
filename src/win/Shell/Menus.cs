@@ -1,6 +1,8 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.UI.Windowing;
 using Viem.Windows.Core;
 using Viem.Windows.Input;
@@ -118,28 +120,35 @@ internal sealed partial class EditorWindow
         Top("Window", "W", ActionItem("Split Vertically", "V", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document, vertical: true); }), ActionItem("Split View", "S", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document); }), ActionItem("New Empty Pane", "E", () => { RequireSplitRoom(); SplitPane(ActivePane!, NewDocument()); }),
             Item("Close Other Panes", "C", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_CLOSE_OTHERS, 1)), Item("Equalize Panes", "Q", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_EQUALIZE_HEIGHTS, 1)),
             Separator(), ActionItem("New Window for Document", "N", () => NewWindow(ActivePane?.Document)), ActionItem("Minimize", "M", () => (AppWindow.Presenter as OverlappedPresenter)?.Minimize()));
-        Top("Help", "H", Item("Viem Help", "H", () => Dialog("Viem", "A modal editor for writing.\n\nUse i to insert, Escape to return to Normal, : to enter commands, / to search, and u to undo.\n\nCtrl+C/X/V copy, cut and paste. Ctrl+Q starts Visual Block. Other vi control keys retain their meaning. Use the formatting toolbar for bold, italic and strikethrough.\n\nCtrl+W s splits the view. Ctrl+W w switches panes. :w saves; :q closes the pane.")),
-            Item("About Viem", "A", ShowAbout));
+        Top("Help", "H", Item("About Viem", "A", ShowAbout));
     }
     private async Task ShowAbout()
     {
-        var content = new StackPanel { Spacing = 12 };
+        var content = new StackPanel { Spacing = 12, HorizontalAlignment = HorizontalAlignment.Center };
+        var logo = new Image {
+            Source = new BitmapImage(new Uri("ms-appx:///Assets/Viem.png")),
+            Width = 128, Height = 128, Stretch = Stretch.Uniform
+        };
+        AutomationProperties.SetName(logo, "Viem logo");
+        content.Children.Add(logo);
         content.Children.Add(new TextBlock {
-            Text = "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1",
-            TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true
+            Text = "Viem", FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Center
         });
+        content.Children.Add(new TextBlock { Text = "Version 0.1", HorizontalAlignment = HorizontalAlignment.Center, IsTextSelectionEnabled = true });
         content.Children.Add(new TextBlock { Text = "© 2026 Brett Wilson", IsTextSelectionEnabled = true });
         content.Children.Add(new HyperlinkButton {
             Content = "Licenses",
             NavigateUri = new Uri("https://github.com/brettw/viem/blob/main/LICENSE.md"),
-            HorizontalAlignment = HorizontalAlignment.Left,
+            HorizontalAlignment = HorizontalAlignment.Center,
             Padding = new Thickness(0)
         });
         var dialog = new ContentDialog {
             XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme,
-            Title = "Viem", Content = content, CloseButtonText = "OK",
+            Content = content, CloseButtonText = "OK",
             DefaultButton = ContentDialogButton.Close
         };
+        AutomationProperties.SetName(dialog, "About Viem");
         await DeferExternalFileReviews(async () => { await dialog.ShowAsync(); });
     }
     private void Select(string command) => View?.SelectFromCommand(command);
