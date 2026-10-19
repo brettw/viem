@@ -1,0 +1,10 @@
+" DoxyGen syntax highlighting extension for c/c++/idl/java
+" Language:     doxygen on top of c, cpp, idl, java, php
+" Maintainer:   Michael Geddes <vimmer@frog.wheelycreek.net>
+" Author:       Michael Geddes
+" Last Change: December 2020
+" Version:      1.30
+"
+" Copyright 2004-2020 Michael Geddes
+" Please feel free to use, modify & distribute all or part of this script,
+" providing this copyright message remains.

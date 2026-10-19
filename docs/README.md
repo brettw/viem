@@ -18,6 +18,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
   and comparisons with zsh.
 - [Split views](window-panes.md): window commands, resize units, and mouse dragging.
 - [Windows development](../src/win/README.md): native build, packaging and tests.
+- [Third-party licenses](licenses/README.md): dependency and bundled-asset license
+  texts, provenance, and update procedures; indexed in the [root license](../LICENSE.md).
 - [C ABI validation](abi-validation.md): matching the Rust core and native headers.
 - [Error recovery](error-recovery.md): safe presentation defaults, optional
   resources, diagnostic handling, and failures that must remain strict.

@@ -119,6 +119,12 @@ package_app() {
     mkdir -p "$query_license_dir"
     cp "$query_source_dir/"*.LICENSE "$query_source_dir/nvim.NOTICES.md" "$query_license_dir/"
 
+    # Keep the root index and its relative license links usable in the app.
+    cp "$project_dir/LICENSE.md" "$resources_dir/LICENSE.md"
+    mkdir -p "$resources_dir/docs"
+    rm -rf "$resources_dir/docs/licenses"
+    cp -R "$project_dir/docs/licenses" "$resources_dir/docs/licenses"
+
     codesign --force --sign - "$macos_dir/viem-cli"
     codesign --force --sign - "$macos_dir/blocking-viem"
     codesign --force --sign - "$app_bundle"

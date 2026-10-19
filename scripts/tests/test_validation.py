@@ -94,6 +94,24 @@ class ValidationTests(unittest.TestCase):
             demo.write_text('# changed fixture')
             self.assertNotEqual(first, support.digest_files(names, root))
 
+    def test_license_changes_invalidate_native_packages_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', directory], check=True)
+            (root / 'docs/licenses').mkdir(parents=True)
+            (root / 'LICENSE.md').write_text('Viem license index')
+            notice = root / 'docs/licenses/dependency.txt'
+            notice.write_text('upstream notice')
+            (root / 'docs/workflow.md').write_text('unrelated prose')
+            names = support.input_files('native', root)
+            self.assertIn('LICENSE.md', names)
+            self.assertIn('docs/licenses/dependency.txt', names)
+            self.assertNotIn('docs/workflow.md', names)
+            first = support.digest_files(names, root)
+            notice.write_text('updated upstream notice')
+            self.assertNotEqual(first, support.digest_files(support.input_files('native', root), root))
+            self.assertEqual(support.input_files('focused', root), [])
+
     @unittest.skipUnless(os.name == 'posix', 'descriptor inheritance is POSIX-specific')
     def test_build_lock_is_exclusive_reentrant_and_released_on_failure(self):
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(support, 'ROOT', Path(directory)):
