@@ -44,6 +44,8 @@
     <ThirdPartyLicenseResource Include="../../docs/licenses/**/*" />
     <Content Include="../../LICENSE.md" Link="Resources/LICENSE.md" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Update="Assets\Viem.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="../../assets/icon/Viem.iconset/icon_128x128@2x.png" Link="Assets/Viem.png"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="../../src/core/document/syntax/treesitter/*.LICENSE;../../src/core/document/syntax/treesitter/nvim.NOTICES.md"
              Link="Resources/Licenses/nvim-treesitter/%(Filename)%(Extension)"
              CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />

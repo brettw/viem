@@ -11,33 +11,33 @@
   "packages": [
     {
       "name": "Microsoft.DotNet.ILCompiler",
-      "version": "10.0.12",
+      "version": "10.0.13",
       "scope": "locked dependency",
       "license": "MIT",
-      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.dotnet.ilcompiler/10.0.12/microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.dotnet.ilcompiler/10.0.13/microsoft.dotnet.ilcompiler.10.0.13.nupkg",
       "license_declaration": "MIT",
       "license_url": "https://licenses.nuget.org/MIT",
       "files": [
         {
-          "path": "Microsoft.DotNet.ILCompiler-10.0.12/LICENSE.TXT",
+          "path": "Microsoft.DotNet.ILCompiler-10.0.13/LICENSE.TXT",
           "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
-          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/95017c711e6afc1085133d440e42b4bd78155701/LICENSE.TXT",
+          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/LICENSE.TXT",
           "archive_path": null,
           "note": "Original source license at nuspec-pinned repository commit"
         },
         {
-          "path": "Microsoft.DotNet.ILCompiler-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "path": "Microsoft.DotNet.ILCompiler-10.0.13/THIRD-PARTY-NOTICES.TXT",
           "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.dotnet.ilcompiler/10.0.12/microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.dotnet.ilcompiler/10.0.13/microsoft.dotnet.ilcompiler.10.0.13.nupkg",
           "archive_path": "THIRD-PARTY-NOTICES.TXT",
           "note": "Original archive member"
         }
       ],
-      "lock_content_hash": "AawF393Q+VkdrnrnI1gu612zh5iqpa1AGSvnKCQ3IkMgSKJXIQbO1sXYRgEzOU4f0cPZ6MaCCF29xZSGWlmbuQ==",
+      "lock_content_hash": "MnT222WlxhelguLZTQx9soBHKW7TeY6A9YUwVaprjUd+ARlhLAkfsXGFNX9w6kRq89/yxUcAQ/lzvmgndSFfOw==",
       "repository": {
         "type": "git",
         "url": "https://github.com/dotnet/dotnet",
-        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+        "commit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699"
       }
     },
     {
@@ -76,55 +76,55 @@
     },
     {
       "name": "Microsoft.NET.ILLink.Tasks",
-      "version": "10.0.12",
+      "version": "10.0.13",
       "scope": "locked dependency",
       "license": "MIT",
-      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.net.illink.tasks/10.0.12/microsoft.net.illink.tasks.10.0.12.nupkg",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.net.illink.tasks/10.0.13/microsoft.net.illink.tasks.10.0.13.nupkg",
       "license_declaration": "MIT",
       "license_url": "https://licenses.nuget.org/MIT",
       "files": [
         {
-          "path": "Microsoft.NET.ILLink.Tasks-10.0.12/LICENSE.TXT",
+          "path": "Microsoft.NET.ILLink.Tasks-10.0.13/LICENSE.TXT",
           "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
-          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/95017c711e6afc1085133d440e42b4bd78155701/LICENSE.TXT",
+          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/LICENSE.TXT",
           "archive_path": null,
           "note": "Original source license at nuspec-pinned repository commit"
         },
         {
-          "path": "Microsoft.NET.ILLink.Tasks-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "path": "Microsoft.NET.ILLink.Tasks-10.0.13/THIRD-PARTY-NOTICES.TXT",
           "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.net.illink.tasks/10.0.12/microsoft.net.illink.tasks.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.net.illink.tasks/10.0.13/microsoft.net.illink.tasks.10.0.13.nupkg",
           "archive_path": "THIRD-PARTY-NOTICES.TXT",
           "note": "Original archive member"
         }
       ],
-      "lock_content_hash": "xi+BDjFpW+Sb+MHFHaH6Y/gV9I8BluFwRXc1QyCdoZbIK26eNiBeFuMTe/FMwc33G1wdHCyDg7CVTmb8OdQrMQ==",
+      "lock_content_hash": "40yrBMsLEcjixBR4G+FiUaBPvxXIPSKJ2OgSrbOZcmSDBda4Sb0k7BWrfDpIvn3IvvDzwOL/tEPa6gDQfh6aRw==",
       "repository": {
         "type": "git",
         "url": "https://github.com/dotnet/dotnet",
-        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+        "commit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699"
       }
     },
     {
       "name": "Microsoft.NETCore.App.Host.win-x64",
-      "version": "10.0.12",
-      "scope": "SDK-provided runtime/host pack (10.0.12 reference)",
+      "version": "10.0.13",
+      "scope": "SDK-provided runtime/host pack (10.0.13 reference)",
       "license": "MIT",
-      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.12/microsoft.netcore.app.host.win-x64.10.0.12.nupkg",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.13/microsoft.netcore.app.host.win-x64.10.0.13.nupkg",
       "license_declaration": "MIT",
       "license_url": "https://licenses.nuget.org/MIT",
       "files": [
         {
-          "path": "Microsoft.NETCore.App.Host.win-x64-10.0.12/LICENSE.TXT",
+          "path": "Microsoft.NETCore.App.Host.win-x64-10.0.13/LICENSE.TXT",
           "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.12/microsoft.netcore.app.host.win-x64.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.13/microsoft.netcore.app.host.win-x64.10.0.13.nupkg",
           "archive_path": "LICENSE.TXT",
           "note": "Original archive member"
         },
         {
-          "path": "Microsoft.NETCore.App.Host.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "path": "Microsoft.NETCore.App.Host.win-x64-10.0.13/THIRD-PARTY-NOTICES.TXT",
           "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.12/microsoft.netcore.app.host.win-x64.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.host.win-x64/10.0.13/microsoft.netcore.app.host.win-x64.10.0.13.nupkg",
           "archive_path": "THIRD-PARTY-NOTICES.TXT",
           "note": "Original archive member"
         }
@@ -132,29 +132,29 @@
       "repository": {
         "type": "git",
         "url": "https://github.com/dotnet/dotnet",
-        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+        "commit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699"
       }
     },
     {
       "name": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64",
-      "version": "10.0.12",
-      "scope": "SDK-provided runtime/host pack (10.0.12 reference)",
+      "version": "10.0.13",
+      "scope": "SDK-provided runtime/host pack (10.0.13 reference)",
       "license": "MIT",
-      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.12/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.12.nupkg",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.13/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.13.nupkg",
       "license_declaration": "MIT",
       "license_url": "https://licenses.nuget.org/MIT",
       "files": [
         {
-          "path": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.12/LICENSE.TXT",
+          "path": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.13/LICENSE.TXT",
           "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.12/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.13/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.13.nupkg",
           "archive_path": "LICENSE.TXT",
           "note": "Original archive member"
         },
         {
-          "path": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "path": "Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.13/THIRD-PARTY-NOTICES.TXT",
           "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.12/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.nativeaot.win-x64/10.0.13/microsoft.netcore.app.runtime.nativeaot.win-x64.10.0.13.nupkg",
           "archive_path": "THIRD-PARTY-NOTICES.TXT",
           "note": "Original archive member"
         }
@@ -162,43 +162,43 @@
       "repository": {
         "type": "git",
         "url": "https://github.com/dotnet/dotnet",
-        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+        "commit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699"
       }
     },
     {
       "name": "Microsoft.NETCore.App.Runtime.win-x64",
-      "version": "10.0.12",
-      "scope": "SDK-provided runtime/host pack (10.0.12 reference)",
+      "version": "10.0.13",
+      "scope": "SDK-provided runtime/host pack (10.0.13 reference)",
       "license": "MIT plus Windows .NET distribution terms",
-      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.12/microsoft.netcore.app.runtime.win-x64.10.0.12.nupkg",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.13/microsoft.netcore.app.runtime.win-x64.10.0.13.nupkg",
       "license_declaration": "MIT",
       "license_url": "https://licenses.nuget.org/MIT",
       "files": [
         {
-          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE-Windows.html",
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.13/LICENSE-Windows.html",
           "sha256": "0f69be2c8ac44c3980047664c3347ff22cba5842dc9d8b0a88a4f0914645a780",
           "source_url": "https://dotnet.microsoft.com/en-us/dotnet_library_license.htm",
           "archive_path": null,
           "note": "Original Windows product distribution terms"
         },
         {
-          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE-Windows.txt",
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.13/LICENSE-Windows.txt",
           "sha256": "0e9802efe623790f95a85528faeb68f261c7ff62a030a72e864ec06d3c25ae7c",
           "source_url": "https://dotnet.microsoft.com/en-us/dotnet_library_license.htm",
           "archive_path": null,
           "note": "Readable text extracted from adjacent original HTML"
         },
         {
-          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE.TXT",
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.13/LICENSE.TXT",
           "sha256": "d7a68596ab69b06f51ca278a6545148e4269a9381c26d597c13df5d88e08cf5b",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.12/microsoft.netcore.app.runtime.win-x64.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.13/microsoft.netcore.app.runtime.win-x64.10.0.13.nupkg",
           "archive_path": "LICENSE.TXT",
           "note": "Original archive member"
         },
         {
-          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "path": "Microsoft.NETCore.App.Runtime.win-x64-10.0.13/THIRD-PARTY-NOTICES.TXT",
           "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.12/microsoft.netcore.app.runtime.win-x64.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/microsoft.netcore.app.runtime.win-x64/10.0.13/microsoft.netcore.app.runtime.win-x64.10.0.13.nupkg",
           "archive_path": "THIRD-PARTY-NOTICES.TXT",
           "note": "Original archive member"
         }
@@ -206,7 +206,7 @@
       "repository": {
         "type": "git",
         "url": "https://github.com/dotnet/dotnet",
-        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+        "commit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699"
       }
     },
     {
@@ -576,33 +576,33 @@
     },
     {
       "name": "runtime.win-x64.Microsoft.DotNet.ILCompiler",
-      "version": "10.0.12",
+      "version": "10.0.13",
       "scope": "locked dependency",
       "license": "MIT",
-      "package_url": "https://api.nuget.org/v3-flatcontainer/runtime.win-x64.microsoft.dotnet.ilcompiler/10.0.12/runtime.win-x64.microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+      "package_url": "https://api.nuget.org/v3-flatcontainer/runtime.win-x64.microsoft.dotnet.ilcompiler/10.0.13/runtime.win-x64.microsoft.dotnet.ilcompiler.10.0.13.nupkg",
       "license_declaration": "MIT",
       "license_url": "https://licenses.nuget.org/MIT",
       "files": [
         {
-          "path": "runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.12/LICENSE.TXT",
+          "path": "runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.13/LICENSE.TXT",
           "sha256": "ae48df11a335dc1a615f4f938b69cba73bcf4485c4f97af49b38efb0f216353b",
-          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/95017c711e6afc1085133d440e42b4bd78155701/LICENSE.TXT",
+          "source_url": "https://raw.githubusercontent.com/dotnet/dotnet/4099f83977f4d29604a9aeb971fb0a7bc1d5f699/LICENSE.TXT",
           "archive_path": null,
           "note": "Original source license at nuspec-pinned repository commit"
         },
         {
-          "path": "runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.12/THIRD-PARTY-NOTICES.TXT",
+          "path": "runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.13/THIRD-PARTY-NOTICES.TXT",
           "sha256": "6d15e10a101c6bfff2ab4429ed061bf76c456fc4b23ad6b03e0d0f8377148a21",
-          "source_url": "https://api.nuget.org/v3-flatcontainer/runtime.win-x64.microsoft.dotnet.ilcompiler/10.0.12/runtime.win-x64.microsoft.dotnet.ilcompiler.10.0.12.nupkg",
+          "source_url": "https://api.nuget.org/v3-flatcontainer/runtime.win-x64.microsoft.dotnet.ilcompiler/10.0.13/runtime.win-x64.microsoft.dotnet.ilcompiler.10.0.13.nupkg",
           "archive_path": "THIRD-PARTY-NOTICES.TXT",
           "note": "Original archive member"
         }
       ],
-      "lock_content_hash": "clsgU9GnioCJ+PBzQTCoJHxLXRU+7O/BzYrwRT8CUP7jgyYjNgJmNsQ/kbzAA7MG5kDvFoFvIBGHGzYdINh/EQ==",
+      "lock_content_hash": "L85cXCLA3BMnFyf6xtFczYVstkmMqlJk4pP8cpsvz86V6Gqn885K9rg+aJdoYGCEF7I01ptCYcwujtMmqkezsA==",
       "repository": {
         "type": "git",
         "url": "https://github.com/dotnet/dotnet",
-        "commit": "95017c711e6afc1085133d440e42b4bd78155701"
+        "commit": "4099f83977f4d29604a9aeb971fb0a7bc1d5f699"
       }
     },
     {

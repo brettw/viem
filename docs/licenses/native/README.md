@@ -2,7 +2,7 @@
 
 This inventory covers all 19 distinct packages in `src/win/packages.lock.json`,
 the Windows SDK .NET reference package selected by `WindowsSdkPackageVersion`,
-and .NET 10.0.12 runtime/host packs corresponding to the locked NativeAOT toolchain.
+and .NET 10.0.13 runtime/host packs corresponding to the locked NativeAOT toolchain.
 [Machine-readable provenance and SHA-256 hashes](inventory.json) record each file's
 origin. Paths in that inventory are relative to this directory. Package license
 and notice files retain their original bytes; explicitly labeled text extractions
@@ -20,12 +20,12 @@ repository's license to every binary.
 
 | Package | Version | License and notices | Scope |
 | --- | --- | --- | --- |
-| [Microsoft.DotNet.ILCompiler](https://www.nuget.org/packages/Microsoft.DotNet.ILCompiler/10.0.12) | 10.0.12 | MIT: [LICENSE.TXT](Microsoft.DotNet.ILCompiler-10.0.12/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.DotNet.ILCompiler-10.0.12/THIRD-PARTY-NOTICES.TXT) | locked dependency |
+| [Microsoft.DotNet.ILCompiler](https://www.nuget.org/packages/Microsoft.DotNet.ILCompiler/10.0.13) | 10.0.13 | MIT: [LICENSE.TXT](Microsoft.DotNet.ILCompiler-10.0.13/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.DotNet.ILCompiler-10.0.13/THIRD-PARTY-NOTICES.TXT) | locked dependency |
 | [Microsoft.Graphics.Win2D](https://www.nuget.org/packages/Microsoft.Graphics.Win2D/1.3.2) | 1.3.2 | Microsoft Win2D binary terms; MIT source: [LICENSE-binary.html](Microsoft.Graphics.Win2D-1.3.2/LICENSE-binary.html); [LICENSE-binary.txt](Microsoft.Graphics.Win2D-1.3.2/LICENSE-binary.txt); [LICENSE.txt](Microsoft.Graphics.Win2D-1.3.2/LICENSE.txt) | locked dependency |
-| [Microsoft.NET.ILLink.Tasks](https://www.nuget.org/packages/Microsoft.NET.ILLink.Tasks/10.0.12) | 10.0.12 | MIT: [LICENSE.TXT](Microsoft.NET.ILLink.Tasks-10.0.12/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NET.ILLink.Tasks-10.0.12/THIRD-PARTY-NOTICES.TXT) | locked dependency |
-| [Microsoft.NETCore.App.Host.win-x64](https://www.nuget.org/packages/Microsoft.NETCore.App.Host.win-x64/10.0.12) | 10.0.12 | MIT: [LICENSE.TXT](Microsoft.NETCore.App.Host.win-x64-10.0.12/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NETCore.App.Host.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT) | SDK-provided runtime/host pack (10.0.12 reference) |
-| [Microsoft.NETCore.App.Runtime.NativeAOT.win-x64](https://www.nuget.org/packages/Microsoft.NETCore.App.Runtime.NativeAOT.win-x64/10.0.12) | 10.0.12 | MIT: [LICENSE.TXT](Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.12/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT) | SDK-provided runtime/host pack (10.0.12 reference) |
-| [Microsoft.NETCore.App.Runtime.win-x64](https://www.nuget.org/packages/Microsoft.NETCore.App.Runtime.win-x64/10.0.12) | 10.0.12 | MIT plus Windows .NET distribution terms: [LICENSE-Windows.html](Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE-Windows.html); [LICENSE-Windows.txt](Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE-Windows.txt); [LICENSE.TXT](Microsoft.NETCore.App.Runtime.win-x64-10.0.12/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NETCore.App.Runtime.win-x64-10.0.12/THIRD-PARTY-NOTICES.TXT) | SDK-provided runtime/host pack (10.0.12 reference) |
+| [Microsoft.NET.ILLink.Tasks](https://www.nuget.org/packages/Microsoft.NET.ILLink.Tasks/10.0.13) | 10.0.13 | MIT: [LICENSE.TXT](Microsoft.NET.ILLink.Tasks-10.0.13/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NET.ILLink.Tasks-10.0.13/THIRD-PARTY-NOTICES.TXT) | locked dependency |
+| [Microsoft.NETCore.App.Host.win-x64](https://www.nuget.org/packages/Microsoft.NETCore.App.Host.win-x64/10.0.13) | 10.0.13 | MIT: [LICENSE.TXT](Microsoft.NETCore.App.Host.win-x64-10.0.13/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NETCore.App.Host.win-x64-10.0.13/THIRD-PARTY-NOTICES.TXT) | SDK-provided runtime/host pack (10.0.13 reference) |
+| [Microsoft.NETCore.App.Runtime.NativeAOT.win-x64](https://www.nuget.org/packages/Microsoft.NETCore.App.Runtime.NativeAOT.win-x64/10.0.13) | 10.0.13 | MIT: [LICENSE.TXT](Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.13/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NETCore.App.Runtime.NativeAOT.win-x64-10.0.13/THIRD-PARTY-NOTICES.TXT) | SDK-provided runtime/host pack (10.0.13 reference) |
+| [Microsoft.NETCore.App.Runtime.win-x64](https://www.nuget.org/packages/Microsoft.NETCore.App.Runtime.win-x64/10.0.13) | 10.0.13 | MIT plus Windows .NET distribution terms: [LICENSE-Windows.html](Microsoft.NETCore.App.Runtime.win-x64-10.0.13/LICENSE-Windows.html); [LICENSE-Windows.txt](Microsoft.NETCore.App.Runtime.win-x64-10.0.13/LICENSE-Windows.txt); [LICENSE.TXT](Microsoft.NETCore.App.Runtime.win-x64-10.0.13/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](Microsoft.NETCore.App.Runtime.win-x64-10.0.13/THIRD-PARTY-NOTICES.TXT) | SDK-provided runtime/host pack (10.0.13 reference) |
 | [Microsoft.Web.WebView2](https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.3719.77) | 1.0.3719.77 | BSD-3-Clause (SDK/loader): [LICENSE.txt](Microsoft.Web.WebView2-1.0.3719.77/LICENSE.txt); [NOTICE.txt](Microsoft.Web.WebView2-1.0.3719.77/NOTICE.txt) | locked dependency |
 | [Microsoft.Windows.AI.MachineLearning](https://www.nuget.org/packages/Microsoft.Windows.AI.MachineLearning/2.1.1) | 2.1.1 | Microsoft Software License Terms: [ThirdPartyNotices.txt](Microsoft.Windows.AI.MachineLearning-2.1.1/ThirdPartyNotices.txt); [license.txt](Microsoft.Windows.AI.MachineLearning-2.1.1/license.txt) | locked dependency |
 | [Microsoft.Windows.SDK.BuildTools](https://www.nuget.org/packages/Microsoft.Windows.SDK.BuildTools/10.0.26100.4654) | 10.0.26100.4654 | Microsoft Software License Terms: [LICENSE.rtf](Microsoft.Windows.SDK.BuildTools-10.0.26100.4654/LICENSE.rtf); [LICENSE.txt](Microsoft.Windows.SDK.BuildTools-10.0.26100.4654/LICENSE.txt) | locked dependency |
@@ -41,7 +41,7 @@ repository's license to every binary.
 | [Microsoft.WindowsAppSDK.Runtime](https://www.nuget.org/packages/Microsoft.WindowsAppSDK.Runtime/2.1.3) | 2.1.3 | Microsoft Software License Terms: [NOTICE.txt](Microsoft.WindowsAppSDK.Runtime-2.1.3/NOTICE.txt); [license.txt](Microsoft.WindowsAppSDK.Runtime-2.1.3/license.txt) | locked dependency |
 | [Microsoft.WindowsAppSDK.Widgets](https://www.nuget.org/packages/Microsoft.WindowsAppSDK.Widgets/2.0.5) | 2.0.5 | Microsoft Software License Terms: [license.txt](Microsoft.WindowsAppSDK.Widgets-2.0.5/license.txt) | locked dependency |
 | [Microsoft.WindowsAppSDK.WinUI](https://www.nuget.org/packages/Microsoft.WindowsAppSDK.WinUI/2.1.0) | 2.1.0 | Microsoft Windows App SDK Engineering Preview terms: [NOTICE.txt](Microsoft.WindowsAppSDK.WinUI-2.1.0/NOTICE.txt); [license.txt](Microsoft.WindowsAppSDK.WinUI-2.1.0/license.txt); [tools/NOTICE.txt](Microsoft.WindowsAppSDK.WinUI-2.1.0/tools/NOTICE.txt) | locked dependency |
-| [runtime.win-x64.Microsoft.DotNet.ILCompiler](https://www.nuget.org/packages/runtime.win-x64.Microsoft.DotNet.ILCompiler/10.0.12) | 10.0.12 | MIT: [LICENSE.TXT](runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.12/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.12/THIRD-PARTY-NOTICES.TXT) | locked dependency |
+| [runtime.win-x64.Microsoft.DotNet.ILCompiler](https://www.nuget.org/packages/runtime.win-x64.Microsoft.DotNet.ILCompiler/10.0.13) | 10.0.13 | MIT: [LICENSE.TXT](runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.13/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](runtime.win-x64.Microsoft.DotNet.ILCompiler-10.0.13/THIRD-PARTY-NOTICES.TXT) | locked dependency |
 | [System.Numerics.Tensors](https://www.nuget.org/packages/System.Numerics.Tensors/9.0.0) | 9.0.0 | MIT: [LICENSE.TXT](System.Numerics.Tensors-9.0.0/LICENSE.TXT); [THIRD-PARTY-NOTICES.TXT](System.Numerics.Tensors-9.0.0/THIRD-PARTY-NOTICES.TXT) | locked dependency |
 
 ## Source and distribution distinctions
@@ -72,7 +72,7 @@ repository's license to every binary.
   compiler/linker packages omit their MIT text, so it is copied from the exact
   `dotnet/dotnet` commit recorded in their NuGet metadata. NativeAOT links runtime
   code into both the editor and blocking helper; these notices cover that input
-  as well as the compiler. The runtime and host packs listed here use 10.0.12 to
+  as well as the compiler. The runtime and host packs listed here use 10.0.13 to
   match the locked NativeAOT version. SDK-selected framework packs and the helper
   are not independently locked in this repository, so a build using a different
   .NET servicing version must refresh their license and notice copies from its
