@@ -99,6 +99,8 @@
 	<string>26.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Brett Wilson</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

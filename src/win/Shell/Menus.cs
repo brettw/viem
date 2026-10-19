@@ -119,7 +119,28 @@ internal sealed partial class EditorWindow
             Item("Close Other Panes", "C", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_CLOSE_OTHERS, 1)), Item("Equalize Panes", "Q", () => ActivePane == null ? Task.CompletedTask : WindowCommand(ActivePane, VIEM_WINDOW_EQUALIZE_HEIGHTS, 1)),
             Separator(), ActionItem("New Window for Document", "N", () => NewWindow(ActivePane?.Document)), ActionItem("Minimize", "M", () => (AppWindow.Presenter as OverlappedPresenter)?.Minimize()));
         Top("Help", "H", Item("Viem Help", "H", () => Dialog("Viem", "A modal editor for writing.\n\nUse i to insert, Escape to return to Normal, : to enter commands, / to search, and u to undo.\n\nCtrl+C/X/V copy, cut and paste. Ctrl+Q starts Visual Block. Other vi control keys retain their meaning. Use the formatting toolbar for bold, italic and strikethrough.\n\nCtrl+W s splits the view. Ctrl+W w switches panes. :w saves; :q closes the pane.")),
-            Item("About Viem", "A", () => Dialog("Viem", "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1")));
+            Item("About Viem", "A", ShowAbout));
+    }
+    private async Task ShowAbout()
+    {
+        var content = new StackPanel { Spacing = 12 };
+        content.Children.Add(new TextBlock {
+            Text = "Viem for Windows\nC# / WinUI 3 · DirectWrite · Rust core\n\nWindows frontend 0.1",
+            TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true
+        });
+        content.Children.Add(new TextBlock { Text = "© 2026 Brett Wilson", IsTextSelectionEnabled = true });
+        content.Children.Add(new HyperlinkButton {
+            Content = "Licenses",
+            NavigateUri = new Uri("https://github.com/brettw/viem/blob/main/LICENSE.md"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(0)
+        });
+        var dialog = new ContentDialog {
+            XamlRoot = root.XamlRoot, RequestedTheme = root.RequestedTheme,
+            Title = "Viem", Content = content, CloseButtonText = "OK",
+            DefaultButton = ContentDialogButton.Close
+        };
+        await DeferExternalFileReviews(async () => { await dialog.ShowAsync(); });
     }
     private void Select(string command) => View?.SelectFromCommand(command);
     private bool HasFindSelection()
