@@ -1,467 +1,263 @@
-# Viem coverage and port audit
+# Viem coverage and interface gaps
 
-Audited against `main` at `3650197`. Command coverage was read from the dispatch
-tables in `src/core/command/`; interface findings were traced through
-`include/viem_core.h`, `src/core/ffi.rs`, and `src/mac/`. Line counts are
-physical lines including comments. The baseline metrics below are retained;
-subsequently completed regex, startup/mapping, search-presentation, and Ex-command
-findings have been removed.
+Reaudited on 2026-10-19 against the current checkout at `1a83642`. Findings
+below were checked against command dispatch, native callers, the ABI and tests.
+This is an unresolved backlog; historical line counts and port estimates are
+omitted. Windows already has a WinUI/DirectWrite frontend.
 
-This document reads the shipped code, not `AGENTS.md`. Where the two disagree,
-the finding describes the code.
+This audit covers the existing command and interface backlog and adjacent
+defects; it is not a complete Vim conformance inventory. Normal `U` and the
+Viem Regex v2 dialect are documented product differences. Shell commands/filters,
+`:source!`, terminal jobs and automatic plugin/runtime loading remain outside
+the script host profile. See [AGENTS.md](AGENTS.md),
+[Vim script support](docs/vimscript.md) and [split views](docs/window-panes.md)
+for the current commitments.
 
-| Measure | Value |
-| --- | ---: |
-| Rust core (`src/core`) | 191,018 lines |
-| Swift, non-test (`src/mac`) | 25,347 lines |
-| C ABI | 128 functions, 101 structs, 491 constants, version 5 |
-| Test files | 280 (162 Rust, 118 Swift) |
+## 1. Normal mode
 
-## Contents
+The following commands still fall through to unsupported dispatch. Evidence:
+[`Pending`, Normal dispatch and `g`/`z` handlers](src/core/command/mod.rs),
+plus the [text-object dispatch](src/core/command/text_object.rs).
 
-- [Summary](#summary)
-- [1. Deliberate non-goals](#1-deliberate-non-goals)
-- [2. Normal mode](#2-normal-mode)
-- [3. Visual modes and text objects](#3-visual-modes-and-text-objects)
-- [4. Search](#4-search)
-- [5. Ex commands](#5-ex-commands)
-- [6. `:set` options](#6-set-options)
-- [7. Registers and marks](#7-registers-and-marks)
-- [8. The frontend interface](#8-the-frontend-interface)
-- [9. Port budget](#9-port-budget)
-- [10. Recommended order](#10-recommended-order)
+- **Bracket-prefix motions:** `[[`, `]]`, `[{`, `]}`, `[(`, `])`, `[m` and
+  `]m`. There is no bracket-prefix pending state. Existing `%` and paired text
+  objects do not provide these motions.
+- **`ga`:** no command reports the character/codepoint under the cursor.
+- **`ZQ`:** the `Z` handler recognizes `ZZ`, but rejects `ZQ`.
+- **Insert-position commands:** `gi` and `gI`.
+- **Match selections:** `gn` and `gN`.
+- **Change-list navigation:** `g;` and `g,`. There is no change list;
+  `getchangelist()` returns an empty list in
+  [the script host](src/core/command/scripting.rs).
+- **Normal substitution repeats:** `&` and `g&`. Ex `:&` is available.
+- **Additional `z` motions:** `z.`, `z-`, `z<CR>`, `zh`, `zl`, `zH`, `zL`,
+  `ze` and `zs`.
+- **Other missing commands:** `gm`, `gM`, `go`, `g?`, `g8`, `K`, `Ctrl-^`,
+  `Ctrl-G` and `Ctrl-L`.
 
-## Summary
+## 2. Visual modes and text objects
 
-Two things frame everything below.
+- **Visual uppercase yank:** `Y` is unsupported in characterwise, linewise
+  and blockwise Visual modes. The existing uppercase delete/change commands
+  are implemented; their semantics are covered by
+  [the command audit tests](tests/all/command_audit.rs).
+- **Tag-block text objects:** `it` and `at` are absent from
+  [`TextObjectKind::from_vim_key`](src/core/command/text_object.rs). Literal
+  HTML Code buffers need source-oriented tag matching; the passive Markdown
+  HTML parser does not provide it.
+- **Visual numeric changes (new):** `Ctrl-A`/`Ctrl-X` and progressive
+  `g Ctrl-A`/`g Ctrl-X` are unsupported. Normal numeric changes exist, but
+  the Visual dispatchers never call `change_number`. For `1\n1\n1`,
+  `Vj<Ctrl-A>` leaves the source unchanged and reports unsupported instead
+  of producing `2\n2\n1`; `Vjg<Ctrl-A>` likewise fails instead of producing
+  `2\n3\n1`. Windows' native Ctrl-X Cut binding is a separate, deliberate
+  platform rule.
 
-**The architecture is sound and the boundary is real.**
-`tests/architecture_boundaries.rs` mechanically asserts that `src/core` imports
-no AppKit, Core Text, or Metal, that the document model never reaches into the
-command controller, and that the controller never touches private document
-storage. Every mutating ABI call carries an exact document/revision/layout
-identity and fails closed on a stale one. Key aliasing (`Ctrl-H` to Backspace in
-Insert, to Left in Normal; physical Tab to `Ctrl-I`) lives in the core, in
-`src/core/command/input_keys.rs:52`, which is exactly right. Undo is a real
-branching tree with node selection by change number.
+## 3. Search and prompts
 
-**What leaked into the frontend is prose and policy, not state.** The frontend
-keeps no second document, selection, or undo model; that discipline held. It
-does compose every user-visible string, decide menu availability, synthesize Vim
-keystrokes, and own caret shape, decoration geometry, the theme, and the config
-schema. That is the part a C# frontend would build twice, and the part where
-macOS and Windows would silently drift apart.
+- **History navigation ignores the typed prefix.** Up/Down and Ctrl-P/Ctrl-N
+  both call `navigate_command_line_history`, and `navigate_history` walks the
+  entire history. Up/Down do not filter by the already typed prefix. This
+  affects both Ex and search prompts. See
+  [the prompt handlers](src/core/command/mod.rs).
+- **No search-count report.**
+  [`SearchPresentation`](src/core/command/search_presentation.rs) and
+  [`ViemViewPresentationV1`](include/viem_core.h) have no current/total match
+  count for a Vim-style `[3/17]` report.
+- **Ex prompt word insertion ignores `iskeyword` (new).** With
+  `:set iskeyword+=-` and the cursor on `one-two`, `:<Ctrl-R><Ctrl-W>` inserts
+  `one`, although editing word motions and text objects recognize `one-two`.
+  [`command_line_register_value`](src/core/command/command_line_register.rs)
+  hardcodes alphanumeric characters and `_`. This finding concerns Ex prompt
+  insertion; search keyword extraction and regex boundaries retain their
+  [documented independent behavior](docs/vimscript.md#options-and-native-settings).
 
-There is a matching gap in the test suite: the boundary test polices the core's
-purity in one direction only. Nothing asserts that the frontend contains no
-portable policy, which is precisely the rule the findings in section 8 break.
+Windows prompt keyboard selection is covered separately in B5 below.
 
-## 1. Deliberate non-goals
+## 4. Ex commands
 
-Listed so the gaps that follow read as gaps rather than as settled decisions.
-[AGENTS.md](AGENTS.md) places these outside the command commitment:
+- **Interactive confirmation inside `:global` is unsupported.**
+  [`ex_global::allowed`](src/core/command/ex_global.rs) rejects confirmed
+  substitutions, file/lifecycle commands and undo/history navigation. Ordinary editing,
+  `:normal`, printing and nested current-line global predicates are available.
+  [Global tests](tests/all/ex_global_addresses.rs) also cover rejection when
+  substitute confirmation is inherited through repeat flags.
+- **Confirmation prompt scrolling is missing.**
+  [`handle_substitute_confirmation`](src/core/command/substitute_confirmation.rs)
+  handles `y`/`n`/`a`/`q`/`l`, Escape and Ctrl-C, but ignores Ctrl-E/Ctrl-Y
+  instead of scrolling. Existing
+  [confirmation tests](tests/all/substitute_confirmation.rs) cover the choices
+  and staged commit behavior.
 
-Vim9 script, automatic plugin/runtime loading, terminal jobs, shell filters and
-`:!`, tags, quickfix, diff mode, folding, spellchecking, tab pages,
-sessions/viminfo, remote server commands, and full option/regex parity.
-Legacy Vim script, abbreviations and side-by-side splits are supported within
-their documented profiles; see [Vim script support](docs/vimscript.md) and
-[split views](docs/window-panes.md).
-
-Normal-mode `U` is deliberately unsupported; see [AGENTS.md](AGENTS.md).
-
-Viem Regex v2 is a specified dialect, not a shortfall. Two absences will still
-be felt weekly by a Vim user: `\zs`/`\ze` match trimming and `\c`/`\C` inline
-case switches. Scoped `(?i)`/`(?-i)` flags cover case switching. Capture groups
-cover some replacement uses of match trimming, but do not change the overall
-match extent, search destination, or highlighting as `\zs`/`\ze` do.
-
-## 2. Normal mode
-
-Coverage is broad and the grammar is complete: counts, registers,
-operator-pending forms, doubled operators (`dd`, `gqq`, `gqgq`), `g`-prefixed
-operators, and dot-repeat all work.
-
-**Implemented.** `d c y > < = i I a A o O R x X s S D C Y p P J r ~ . u C-r`,
-`h j k l w W e E b B 0 ^ $ | + - G % ( ) { } f F t T ; , H M L C-o C-i`,
-`C-f C-b C-d C-u C-e C-y C-v C-q C-a C-x`, `` " m ' ` q @ v V / ? : n N * # ``,
-`gg ge gE g_ gj gk g0 g^ g$ gv gJ gp gP g* g# gq gw gu gU g~`, `zt zz zb`,
-`ZZ`, and the full `C-w` window family.
-
-**Missing, in rough order of value:**
-
-### The `[` and `]` families
-
-There is no bracket-prefix pending state at all, so `[[`, `]]`, `[{`, `]}`,
-`[(`, `])`, and `[m`/`]m` are all absent. The editor already has bracket-pair
-resolution for `%` and for the `i(`/`i{` text objects
-(`src/core/command/text_object.rs:541`), so most of the machinery exists; only
-the prefix and the motion wiring are missing.
-
-### `ga`
-
-Show the codepoint under the cursor. Worth more here than in Vim: this is an
-editor that models graphemes, bidi, shaping clusters, four encodings, and BOM
-state, and gives the user no way to ask "what character is this?" A natural
-companion to the visible-whitespace work already shipped.
-
-### `ZQ`
-
-The `Z` prefix exists and is handled at `src/core/command/mod.rs:4255`, but only
-`ZZ` is recognised; `ZQ` falls through to `unsupported`. A two-line fix for a
-command people type by reflex.
-
-### Lower priority
-
-- `gi` (resume insert at the last insert position) and `gI`.
-- `gn`/`gN` (operate on next match).
-- `g;`/`g,` need a change list, which does not exist. The jump list does, so the
-  shape is known.
-- `&` and `g&` in Normal mode. Ex `:&` exists; the Normal-mode keys do not.
-- `z` family beyond `zt zz zb`: `z.`, `z-`, `z<CR>`, `zh`, `zl`, `zH`, `zL`,
-  `ze`, `zs`.
-- `gm`, `gM`, `go`, `g?`, `g8`, `K`, `C-^`, `C-g`, `C-l`. Low value here.
-
-## 3. Visual modes and text objects
-
-### Visual Block is the strong one
-
-Blockwise gets `I A c s r y d x X D C S R ~ u U p P J > < =`, endpoint swap, and genuine
-ragged-right `$` via `resolve_block_selection_to_line_end`
-(`src/core/command/visual_block.rs:261`). More careful than most Vim emulations
-manage.
-
-### Visual uppercase yank
-
-Characterwise and linewise Visual support `D C S X R` with linewise semantics.
-Visual `Y` remains unsupported. Blockwise `X` deletes the rectangle, `D`/`C`
-extend through row ends, and `S`/`R` change complete selected lines.
-
-### Text objects: one notable hole
-
-Implemented: `` w W s p ( ) b [ ] < > { } B " ' ` ``, with real care taken over
-escaping, decimal points inside sentences, East Asian terminators, and never
-splitting a grapheme.
-
-Missing: **`it` and `at`**, the tag-block objects. HTML files now use literal
-Code mode, so these would require a source-oriented tag-object implementation.
-The passive HTML parser used by Markdown and clipboard import is not an editing
-model for Code files.
-
-## 4. Search
-
-- **History is unfiltered.** `navigate_history`
-  (`src/core/command/mod.rs:15441`) steps through the whole list. Vim filters
-  Up/Down by the prefix already typed and leaves `C-p`/`C-n` unfiltered. Today
-  both behave like the latter.
-- **`"/` and `":` are half-registers.** Both are readable from the prompt via
-  `C-r` (`src/core/command/command_line_register.rs:65`) but neither is an
-  addressable register, so `"/p` in Normal mode fails.
-- **No search-count report.** Vim's `[3/17]` indicator has no equivalent, and
-  the status line has no field for it.
-
-## 5. Ex commands
-
-The remaining gaps are narrower than the original command-family omissions:
-
-- **Interactive confirmation inside `:global` is unsupported.** Global
-  execution also rejects host/file commands and history navigation. Ordinary
-  editing, `:normal`, printing, and nested current-line global predicates are
-  supported. The legacy script engine handles command bars for submitted Ex
-  lines; each command retains its own bar/comment grammar.
-- **Confirmation prompt scrolling is missing.** `:s///c` accepts
-  `y`/`n`/`a`/`q`/`l`, Escape, and Ctrl-C, but not Vim's Ctrl-E/Ctrl-Y scrolling.
-- **Shell and key-script file commands remain unsupported.** `:read !command`
-  and `:source!` are not implemented. `:source` evaluates the documented legacy
-  Vim script profile, waits for native effects, and cancels its remainder if a
-  native operation fails, is cancelled, or changes its owning core/view.
-
-## 6. `:set` options
-
-Options use Vim `set` grammar (`no`, `!`, `?`, `&`, `<`, `+=`, `^=`, `-=`)
-and the existing per-option global/local policies. A multi-option script command
-applies left to right, stopping at its first error and retaining earlier changes.
-The compatibility table recognizes Vim options and distinguishes implemented,
-application-mapped, fixed-value, ignored and unsupported settings. Unknown names
-report E518; `exists('&name')` detects recognition and `exists('+name')` detects
-working support.
-
-`readonly`, `fileencoding` and `bomb` now use model operations, and the scoped
-core options include `clipboard`, `gdefault`, `shiftround`, `joinspaces`,
-`whichwrap`, `startofline`, `history`, `iskeyword`, `filetype` and `syntax`.
-`number` and the existing editing/search/whitespace settings remain supported.
-Native mappings cover theme selection, mapping timeouts, Code fonts/spacing,
-continuation margins, scroll margins, status/menu visibility and window size.
-See [the option profile](docs/vimscript.md#options-and-native-settings) for exact
-limits and deliberate approximations.
+## 5. `:set` options
 
 `guicursor`, `cursorline`, `colorcolumn`, `relativenumber`, `statusline`,
-folding/spelling settings, `wrapmargin`, `modifiable` and many other settings
-remain recognized without an implementation. Backup/swap/undo-file options are
-ignored by design; they do not alter Viem's recovery or undo policies. This is
-not full Vim option parity.
+`wrapmargin`, `modifiable`, and folding/spelling settings remain recognized
+without their corresponding
+editing or presentation behavior. Recognition and readable shadow values do
+not imply implementation. The treatment tables in
+[`options.rs`](src/core/command/options.rs) and
+[the option profile](docs/vimscript.md#options-and-native-settings) distinguish
+implemented, application-mapped, fixed, ignored and unsupported options.
 
-## 7. Registers and marks
+## 6. Registers and marks
 
-### Registers
+- **`/` and `:` are not generally addressable registers.** Prompt Ctrl-R and
+  script register reads can access the last search/Ex command, but
+  [`is_valid_register`](src/core/command/registers.rs) excludes both names.
+  Normal `"/p` and `":p` therefore fail.
+- **Other missing registers:** `#` (alternate file), `~` (drop) and `=`
+  (expression). The expression register is explicitly rejected by the prompt
+  handler and is not accepted by Normal register selection. A script expression
+  evaluator now exists, but is not wired to expression-register input.
+- **Script reads lose the current filename (new).**
+  [`script_register`](src/core/command/scripting.rs) returns an empty string
+  unconditionally for `%`. In a document bound to `/tmp/gaps-audit.txt`,
+  `:echo '[' . @% . ']' '[' . getreg('%') . ']'` prints `[] []`, while prompt
+  `<Ctrl-R>%` inserts `/tmp/gaps-audit.txt`. Script reads should use the current
+  artifact context as the other filename-register paths do.
+- **Special marks are missing:** `'[`/`']` (last change or yank), `'.`
+  (last change), `'^` (last insert), `''` and doubled backtick (previous
+  position), and `A`-`Z` cross-file marks. The mark handlers in
+  [`command/mod.rs`](src/core/command/mod.rs) accept local `a`-`z` and remembered
+  Visual `<`/`>` marks only.
 
-Named `a`-`z` with `A`-`Z` append, numbered `0`-`9` with correct Vim rotation
-and the within-line delete exception, small-delete `-`, black hole `_`, unnamed
-`"`, system `+`/`*`, last-insert `.`, filename `%`
-(`src/core/command/registers.rs:757`). Blockwise registers round-trip. This is
-thorough.
+## 7. Shared frontend and ABI issues
 
-Missing: `/` and `:` as addressable registers (see section 4), `#` alternate
-file, `~` drop register. `=` is explicitly refused, correctly; it needs an
-expression evaluator.
+These include observed platform differences and remaining interface maintenance
+concerns. Native dialogs, event decoding and native caret blinking belong in the
+frontends; their presence alone is not a policy defect.
 
-### Remaining special marks
+### B1. Command diagnostics and Ex output still differ across the boundary
 
-Local `a`-`z` and remembered Visual `'<`/`'>` marks are implemented, including
-Ex addresses, jumps, and deletion. Still missing: `'[`/`']` (last change or
-yank), `'.` (last change), `'^` (last insert), `''` and the doubled backtick
-(previous position), and `A`-`Z` cross-file marks.
+Non-Ex error details are lost in
+[`command_status_to_ffi`](src/core/ffi.rs): count, register, general command and
+Visual Block failures become a generic error status without their message.
+`Unsupported` likewise exports only a status. Ex errors already use a message
+effect through `OwnedEffectBatch::from_command`; the remaining error families
+need equivalent detail.
 
-Marks use persistent text anchors, remap through source provenance across
-edits, and participate in undo restoration.
+Ex output is independently composed in
+[Swift `displayMessage`/`formatOption`](src/mac/Editor/Sources/EVEditorSurfaceController.swift)
+and [C# `HostEffects.Read`/`OptionName`](src/win/Core/HostEffects.cs), with
+observable differences:
 
-## 8. The frontend interface
+- Windows renders boolean options as `wrap=1`; macOS renders `wrap`/`nowrap`.
+- Windows renders `fileformat` numerically and lacks a `fileformats` name-table
+  entry; macOS renders the named formats.
+- Windows prints signed `softtabstop` values through the unsigned scalar field;
+  macOS decodes them as signed.
+- Windows inserts raw register controls into output; macOS escapes them visibly.
 
-Findings are ordered by what they will cost once a C# frontend exists: by how
-much product behaviour has to be re-derived from reading Swift, and how likely
-the two platforms are to drift apart afterwards.
+[Windows command-status tests](src/win/Diagnostics/CommandStatusTests.cs)
+currently expect `wrap=1`, while
+[macOS host-effect tests](src/mac/Editor/Tests/EVHostEffectsIntegrationTests.swift)
+expect named file formats and escaped register newlines. Shared formatting would
+prevent these differences from being maintained as separate expectations.
 
-### B1. Every user-visible string is composed in the frontend — high
+### B2. Native actions still synthesize Vim grammar
 
-`displayMessage(for:)` at
-`src/mac/Editor/Sources/EVEditorSurfaceController.swift:1574` renders `:marks`,
-`:registers`, `:jumps`, `:set`, and `:s` print output in Swift: the column
-headers (`"mark  line  col  text"`), the `^I`/`^J` escaping, the `no` prefix for
-off booleans, the `name=value` form. Option names are re-spelled there too, two
-of them by bare integer (`case 5: "ignorecase"`) because no constant was
-exported for them. The status line composes its own mode labels and
-`"Ln %@, Col %@"` at `:1288`.
+[macOS menu dispatch](src/mac/Editor/Sources/EVEditorSurfaceController.swift)
+and [Windows menus](src/win/Shell/Menus.cs) implement selection and find actions
+with sequences such as `viw`, `g0vg$`, `/`, `n` and `N`. Enablement is also
+re-derived by each frontend. The
+[Windows wrappers](src/win/Core/CoreView.cs) add their own selection/return-mode
+handling. Core command intentions and availability queries would let both
+frontends invoke the same action without duplicating pending-command and mode
+policy.
 
-The errors are worse. The core produces specific, well-typed failures
-(`CommandStatus::Error(String)`, `CountError`, `RegisterReadError`,
-`RegisterWriteError`, `ExError`, `VisualBlockError`) and the ABI discards all of
-it: `src/core/ffi.rs:4281` collapses six variants into
-`VIEM_COMMAND_STATUS_ERROR`, and `ViemCoreOutcomeV1` has no message field at
-all. So the user sees `"... was rejected (Viem command status 7)"`, and the one
-real Vim message in the product, `E45: readonly option is set (use ! to
-override)`, is a string literal in Swift at
-`src/mac/Editor/Sources/EVCoreDocument.swift:35`.
+### B3. Effect copying still requires ten parallel buffers
 
-That is also why Vim's E-numbers are otherwise absent: there is nowhere for them
-to live.
+[`viem_effect_batch_copy`](include/viem_core.h) takes 22 parameters: ten
+array/capacity pairs, a handle and out-info. This produces ten nested buffer
+scopes in [Swift](src/mac/Editor/Sources/EVCoreHostEffects.swift) and ten nested
+`fixed` scopes in [C#](src/win/Core/HostEffects.cs). Adding another payload array
+requires coordinated ABI and caller changes. This remains an interface
+maintenance concern, rather than a demonstrated correctness failure; a single
+payload or descriptor could reduce that coupling.
 
-**Suggested shape.** Add a message channel to the outcome
-(`viem_core_view_copy_last_message`, or a slice in a V2 outcome struct) and move
-formatting into the core so it emits finished strings. Every E-number then lands
-in one place, the Windows build gets identical text for free, and this stops
-being a source of divergence before it becomes one.
+### B4. Text decoration positions differ between frontends
 
-### B2. Menu commands are implemented by synthesizing Vim keystrokes — high
+[macOS drawing](src/mac/Editor/Sources/EVEditorView.swift) positions underlines
+at `floor(baseline + max(1, descent * 0.35))` and strikethrough at
+`floor(baseline - ascent * 0.32)`.
+[Windows drawing](src/win/Editor/DrawingCache.cs) uses `baseline + 2` and
+`baseline - ascent * 0.3`. The same shared style therefore has independently
+chosen decoration geometry. There is no shared position contract or returned
+geometry for these text decorations.
 
-`EVMenuCommand` declares 127 cases. `perform(menuCommand:)` executes two dozen
-of them by replaying key sequences into the core:
-`sendNormalSequence(["v","i","w"])` for Select Word, `["g","0","v","g","$"]` for
-Select Visual Row, `["/"]` for Find, `["n"]` and `["N"]` for Find Next and
-Previous. Alongside it, `presentation(for:)` re-derives enablement across
-roughly forty cases from mode and format state (`isEnabled: isVisualMode`,
-source-format lists, and so on).
+### B5. Windows prompt Shift navigation does not extend selection (new)
 
-This is Vim grammar and command-availability policy living in the view layer.
-Both have to be rebuilt in C#, and the second implementation is where menu
-behaviour quietly diverges.
+[Windows key policy](src/win/Input/KeyPolicy.cs) preserves Shift on
+Left/Right/Home/End, and
+[`EditorPane`](src/win/Editor/EditorPane.cs) sends the modified navigation key
+to core. However,
+[`normalized_input_key`](src/core/command/input_keys.rs) strips navigation
+modifiers in CommandLine mode, and ordinary prompt movement clears the
+selection anchor in [`command/mod.rs`](src/core/command/mod.rs).
 
-**Suggested shape.** One core-owned command-id enum, with
-`viem_core_view_perform_command(id, ...)` and
-`viem_core_view_command_presentation(id) -> {enabled, checked, title}`. The core
-already holds every input to both answers. The frontend's remaining job is
-hanging ids on native menu items, which is genuinely platform work.
+For `:abc`, Shift-Left leaves both anchor and active at byte 2 instead of
+selecting `c`. macOS explicitly preserves the anchor in
+[`moveCommandLineSelection`](src/mac/Editor/Sources/EVEditorView.swift), with
+[Shift-navigation tests](src/mac/Editor/Tests/EVCommandPromptEditingTests.swift).
+Windows ordinary arrows already use grapheme-aware core movement; the gap is
+selection extension.
 
-### B3. `viem_effect_batch_copy` takes 22 parameters — high
+### B6. Keypad keys cannot have distinct bindings
 
-Ten `(array, capacity)` pairs plus handle and out-info (`viem_core.h:2156`),
-all-or-nothing, with required counts returned on `BUFFER_TOO_SMALL`. On the
-Swift side that is a ten-deep `withUnsafeMutableBufferPointer` pyramid at
-`src/mac/Editor/Sources/EVCoreHostEffects.swift:283`. In C# it becomes ten
-nested `fixed` blocks or ten pinned handles. Adding an eleventh effect kind
-changes the signature, the ABI version, and both frontends.
+The core input enum and C ABI have no dedicated keypad identities.
+[`notation_key`](src/core/command/mappings.rs) aliases keypad Enter, navigation,
+arithmetic and digit notation to ordinary keys. A mapping cannot distinguish
+keypad Enter from Return, for example.
 
-**Suggested shape.** One serialized payload: either
-`viem_effect_batch_copy_json` or a single byte buffer with a typed header and
-per-section offsets. The precedent is already in this ABI:
-`viem_core_copy_clipboard_json`, `viem_effect_batch_copy_clipboard_json`,
-`viem_code_export_style_json`, and `viem_core_copy_syntax_style_names` all work
-this way. New effect kinds then become data, not signature changes. Keep the
-typed structs for layout and paint, where the per-frame cost is real; effects
-fire once per command turn.
+### B7. Style candidate rules and application config remain duplicated
 
-### B4. Caret and decoration appearance are decided in the view — medium
+Style-parent candidate filtering is implemented in both
+[Swift `legalParents`](src/mac/Editor/Sources/EVCoreStyles.swift) and
+[C# `LoadParents`](src/win/Shell/StyleWindow.cs), using namespace, role and
+Base Paragraph rules. These are core model constraints being re-derived to
+populate native pickers. A core candidate query would keep the offered choices
+consistent with mutation validation.
 
-`ViemViewPresentationV1` publishes only `VIEM_CARET_SHAPE_CELL` and
-`_BOUNDARY`. Everything else is Swift: `drawCustomCaret` and
-`inactiveCaretRect` (`src/mac/Editor/Sources/EVEditorView.swift:3020`) decide
-that Replace draws a 2px underline, Insert a 2px bar, Normal and Visual a filled
-cell, and inactive an outline, plus a colour-glyph special case and a
-glyph-redraw pass. Blink timing is a separate 273-line controller.
+The application `config.json` schema, defaults and validation still have
+separate implementations in
+[`EVConfigurationStore`](src/mac/AppShell/EVConfigurationStore.swift) and
+[`Preferences`](src/win/Shell/Preferences.cs). They already disagree:
+macOS rejects more than ten recent-document paths; Windows accepts longer
+arrays and truncates the read list to ten.
 
-Underline and strikethrough geometry are magic numbers in the same file
-(`:2869` and `:2879`): `baseline + max(1, descent * 0.35)` and
-`baseline - ascent * 0.32`, one pixel thick. The core owns fonts, metrics, and
-shaping, and hands the frontend a flag; the frontend invents the position.
+### B8. Recording and pending-command status are not published
 
-**Suggested shape.** Add `VIEM_CARET_SHAPE_UNDERLINE` and let the core pick
-shape from mode; publish blink phase and interval as core state; return
-decoration rectangles from the paint snapshot the same way cluster bounds
-already come back. Then "does Windows underline in the same place" stops being a
-question anyone has to answer by eye.
+[`CommandInterpreter::is_recording_macro`](src/core/command/mod.rs) exists,
+but [`ViemViewPresentationV1`](include/viem_core.h) exposes no recording
+register, pending command text or active count. Native status bars cannot show
+`recording @q` or the accumulating `"a2d` command from a shared core value.
 
-### B5. The command line re-implements text motion, with string semantics that will not survive the port — medium
+### B9. Rust/header layout checks are not exhaustive
 
-`moveCommandLineSelection` (`src/mac/Editor/Sources/EVEditorView.swift:1585`)
-computes prompt cursor movement with Swift's `String.index(before:)` and
-`index(after:)`, and `performCommandLineMenu` does cut, copy, paste, and
-select-all against Swift String indices. Meanwhile the core already owns the
-prompt: it validates every offset as a grapheme boundary in
-`src/core/command/command_line_edit.rs:48`. The frontend is computing the target
-that the core is about to check.
+C# bindings are generated from the headers by
+[`generate_bindings.py`](src/win/tools/generate_bindings.py), and Windows
+validation checks their freshness. The remaining gap is agreement between Rust
+and those headers: the explicit
+[`check_c_abi`](examples/check_c_abi.rs) probe uses a hand-curated inventory and
+selected offsets.
 
-The portability failure here is concrete rather than theoretical. Swift's
-`String.Index` steps by grapheme cluster; C#'s `string` steps by UTF-16 code
-unit. Port this method as written and the arrow keys walk into the middle of an
-emoji on Windows, then hand the core an offset it rejects — a bug that will not
-reproduce on the machine it was written on.
+For example, `ViemCommandLineSelectionV1`, `ViemLayoutDecorationV1` and
+`ViemViewRestorationV1` are absent from that probe. Header-to-C# generation
+cannot detect disagreement with the Rust declarations. Native tests exercise
+some of these APIs, but do not establish exhaustive size, alignment and field
+offset agreement. Generate the comparison inventory, or derive all declarations
+from one source. See [ABI validation](docs/abi-validation.md).
 
-**Suggested shape.** `viem_core_view_command_line_motion(kind, extend)`. The
-frontend sends intents; it never computes an offset of its own.
+## Audit validation
 
-### B6. Key routing policy lives in `keyDown` — medium
+Command and ABI assertions above were traced to current implementations and
+existing tests. All 61 focused Rust tests passed through
+`scripts/validate.py`, including temporary audit probes for unsupported Visual
+arithmetic, prompt word insertion, filename-register reads and Shift-navigation
+behavior.
+The probes were removed after the audit. C# binding freshness was checked with
+`python3 src/win/tools/generate_bindings.py --check`.
 
-`EVEditorView.keyDown` (`:1280`) encodes a precedence ladder: literal input
-first, then editor shortcuts, then Command-modified keys, then active
-composition, then control characters, then special keys, then
-`interpretKeyEvents`. It also folds control codepoints itself at `:1373`:
-`native < 0x20 ? native + 0x40 : native == 0x7F ? 0x3F : scalar`. That ladder
-and that fold are the difference between `C-@`, `C-2`, and `C-?` working or not,
-and both are portable policy sitting in an `NSView` subclass.
-
-Dedicated keypad input kinds are still absent.
-
-**Suggested shape.** Move the control-codepoint fold and the literal-input
-precedence rule into the core as a documented routing contract.
-
-### B7. Model rules re-derived in Swift — medium
-
-- **Style inheritance legality.** `legalParents`, `rolesCanInherit`, and
-  `isDescendant`, including cycle detection, at
-  `src/mac/Editor/Sources/EVCoreStyles.swift:287`. These are model invariants
-  the core enforces on write; the frontend re-derives them to populate a picker.
-  Divergence means one platform offers a parent the other rejects.
-- **The theme.** `src/mac/AppShell/EVTheme.swift` owns the colour model, both
-  built-in presets, and the validation ranges. Selection colour, status colours,
-  and status font all come from there, not the core, so they are invented twice.
-- **Config schema and defaults.** `src/mac/AppShell/EVConfigurationStore.swift`
-  owns the `config.json` shape, every default, and incidental policy like the
-  ten-entry recents cap. A second frontend means a second implementation of one
-  filename.
-
-**Suggested shape.** For styles,
-`viem_core_style_relation_candidates(...)`. For theme and config, move the
-schema, defaults, and validation into the core — which already parses JSON for
-indentation, whitespace presentation, and filename associations — leaving the
-frontend file I/O and the native colour picker.
-
-### B8. Status-line state the core has but does not publish — low, cheap
-
-`is_recording_macro()` exists at `src/core/command/mod.rs:2592` and is not
-exposed through the ABI, so the status line cannot show `recording @q`. Nor is
-the pending command text (Vim's `showcmd`, watching `"a2d` accumulate) or the
-active count. `ViemViewPresentationV1` is `struct_size`-versioned, so all three
-are additive.
-
-### B9. Bindings are hand-maintained, and a third copy has no safety net — do this first
-
-`include/viem_core.h` is written by hand: 128 exported functions, 101 structs,
-491 constants, no cbindgen. There is a check —
-`tests/ffi_core_surface.rs:4664` compiles a C file full of `_Static_assert`s
-against the Rust layouts — but it is a hand-curated list, so a new struct is
-unverified until somebody remembers to add it.
-
-A C# binding would be a third hand-maintained copy of the same layouts with no
-check at all. In Swift, a mismatched struct is usually caught by the C importer
-reading the same header. In P/Invoke, a wrong `[StructLayout]` offset is not a
-compile error; it is silent memory corruption, and it will surface as an
-unreproducible crash far from the cause.
-
-**Suggested shape.** Generate the header from Rust, or generate the assert list
-exhaustively so every struct is covered by construction, then generate the C#
-`[StructLayout]` definitions from that same source. This is the single
-highest-leverage thing to do before any C# is written, because it is the only
-finding here whose failure mode is silent.
-
-### B10. The measurement provider is where the schedule risk is
-
-Not a defect, a warning. `ViemTextMeasurementProviderV1` is a callback table the
-core calls *into*: `shape_batch` may run on a worker thread under
-`VIEM_PROVIDER_THREADING_ANY_WORKER`, responses return pointers the provider
-must keep pinned until the next call, and `release_render_runs` may run on any
-thread and after view detach. The macOS implementation is about 1,860 lines of
-Core Text.
-
-For C#: reverse P/Invoke from a native worker thread needs
-`UnmanagedCallersOnly` or permanently rooted delegates, and the pinned-response
-contract means response buffers must be native memory rather than managed
-arrays. `VIEM_PROVIDER_THREADING_FRONTEND_MAIN` is available as an escape hatch
-but serializes shaping onto the UI thread. The sane order is to write the
-DirectWrite provider first, against the existing Rust provider tests, before any
-Windows UI exists.
-
-## 9. Port budget
-
-25,347 lines of non-test Swift, split by whether a second frontend has to
-re-derive the behaviour or merely re-express it in another UI toolkit.
-
-| Category | Approx. lines | What it is |
-| --- | ---: | --- |
-| Genuinely platform work | ~21,500 | AppKit views and drawing, `NSTextInputClient` and IME, accessibility, window and pane lifecycle, `NSDocument`, the style and settings panels, and ~1,860 lines of Core Text shaping. All of this has a WPF/WinUI plus DirectWrite equivalent that must be written regardless. No finding here. |
-| Portable policy currently in Swift | ~3,800 | Findings B1-B8: Ex and status-line string composition, the error message table, menu command synthesis and enablement, caret and decoration geometry, command-line motion, key routing precedence, style-inheritance legality, and the theme and config schemas. |
-
-That ratio is the whole argument. Fifteen percent of the frontend is the
-difference between the port being "build a Windows UI against a documented core"
-and "build a Windows UI and reconstruct the product's behaviour by reading
-Swift." Moving it into the core before starting also means the macOS app gets
-tested against the new interfaces first, while there is still only one frontend
-to fix.
-
-One structural suggestion to lock it in: add a boundary test in the mirror image
-of `tests/architecture_boundaries.rs` — an assertion over the frontend sources
-that no user-visible string, no Vim key sequence, and no option name appears
-outside the core. It is a blunt instrument, but the existing test proves the
-pattern works on this codebase, and it is the rule the eight findings above were
-quietly violating.
-
-## 10. Recommended order
-
-Ordered by cost of delay. Everything in the first four gets materially more
-expensive once a second frontend exists.
-
-1. **Generate the bindings (B9).** Header from Rust, or exhaustive layout
-   asserts, plus generated C# structs from the same source. The only finding
-   whose failure mode is silent memory corruption. Do it before writing any C#.
-2. **Move display strings and errors into the core (B1).** Biggest divergence
-   risk, and it simultaneously gives the product the Vim error messages it
-   currently has nowhere to put.
-3. **Core-owned command ids for menus (B2).** Deletes 127 cases of Vim-grammar
-   knowledge and roughly 40 enablement rules from the frontend.
-4. **Replace the 22-argument effect copy (B3).** One serialized payload,
-   following the JSON precedent already in the ABI. New effect kinds stop being
-   ABI changes.
-5. **Command-line motion and remaining key-routing policy into the core
-   (B5, B6).** Small, and B5 removes a bug that would only ever appear on
-   Windows.
-6. **The cheap command fills (sections 2, 3, 6).** `C-a`/`C-x`, Visual
-   `D C S Y X R`, `ZQ`, `it`/`at`, `ga`, and wiring `linebreak`,
-   `fileencoding`, and `readonly` to `:set`. Each is hours, not days.
+Native frontend findings are based on source and existing test expectations;
+macOS and Windows native suites were not run for this Markdown-only update.
