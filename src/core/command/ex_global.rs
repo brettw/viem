@@ -20,11 +20,6 @@ pub(super) fn ex_error(error: ExExecuteError) -> CommandOutput {
 }
 
 pub(super) fn allowed(action: &ExAction) -> bool {
-    if matches!(action, ExAction::Substitute(value) if value.flags.confirm)
-        || matches!(action, ExAction::RepeatSubstitute { flags, .. } if flags.confirm)
-    {
-        return false;
-    }
     matches!(
         action,
         ExAction::Global { .. }
@@ -54,46 +49,9 @@ pub(super) fn allowed(action: &ExAction) -> bool {
 }
 
 impl CommandInterpreter {
-    pub(super) fn execute_ex_global(
-        &mut self,
-        document: &mut Document,
-        command: &ExCommand,
-        addresses: &ResolvedExAddresses,
-    ) -> CommandOutput {
-        let ExAction::Global {
-            pattern,
-            command: body,
-            invert,
-        } = &command.action
-        else {
-            unreachable!()
-        };
-        let body_command = match parse_ex(body) {
-            Ok(command) => command,
-            Err(error) => {
-                return CommandOutput {
-                    status: CommandStatus::ExError(ExCommandError::Parse(error)),
-                    ..CommandOutput::complete()
-                }
-            }
-        };
-        if !allowed(&body_command.action)
-            || (self.global_replay_depth > 0 && command.range.is_some())
-        {
-            return ex_error(ExExecuteError::UnsupportedGlobalCommand);
-        }
-        if self.compound_replay_depth >= COMPOUND_REPLAY_LIMIT {
-            return CommandOutput::unsupported(":global recursion limit reached");
-        }
-        let pattern = if pattern.is_empty() {
-            match &self.last_search {
-                Some((_, pattern)) => pattern.clone(),
-                None => return ex_error(ExExecuteError::NoPreviousSearch),
-            }
-        } else {
-            pattern.clone()
-        };
-        let selected = (|| -> Result<_, ExExecuteError> {
+    pub(super) fn select_global_targets(&self, document: &Document, addresses: &ResolvedExAddresses,
+        pattern: &str, inverse: bool,
+    ) -> Result<(Vec<Option<ExNormalTarget>>, Vec<ex_addresses::ResolvedExLine>), ExExecuteError> {
             let range = addresses.range.as_ref().ok_or(ExExecuteError::UnresolvedAddress)?;
             let units = self.resolved_ex_range_units(document, range).map_err(|error| match error {
                 ExAddressResolutionError::Execute(error) => error,
@@ -144,7 +102,6 @@ impl CommandInterpreter {
                 next = snapshot.next_grapheme_boundary(bounds.start)
                     .unwrap_or_else(|| snapshot.text_length().saturating_add(1));
             }
-            let inverse = *invert ^ command.bang;
             let mut targets = Vec::new();
             let mut selected_lines = Vec::new();
             for (index, unit) in units.into_iter().enumerate() {
@@ -172,7 +129,48 @@ impl CommandInterpreter {
                 targets.extend(bound);
             }
             Ok((targets, selected_lines))
-        })();
+    }
+
+    pub(super) fn execute_ex_global(
+        &mut self,
+        document: &mut Document,
+        command: &ExCommand,
+        addresses: &ResolvedExAddresses,
+    ) -> CommandOutput {
+        let ExAction::Global {
+            pattern,
+            command: body,
+            invert,
+        } = &command.action
+        else {
+            unreachable!()
+        };
+        let body_command = match parse_ex(body) {
+            Ok(command) => command,
+            Err(error) => {
+                return CommandOutput {
+                    status: CommandStatus::ExError(ExCommandError::Parse(error)),
+                    ..CommandOutput::complete()
+                }
+            }
+        };
+        if !allowed(&body_command.action)
+            || (self.global_replay_depth > 0 && command.range.is_some())
+        {
+            return ex_error(ExExecuteError::UnsupportedGlobalCommand);
+        }
+        if self.compound_replay_depth >= COMPOUND_REPLAY_LIMIT {
+            return CommandOutput::unsupported(":global recursion limit reached");
+        }
+        let pattern = if pattern.is_empty() {
+            match &self.last_search {
+                Some((_, pattern)) => pattern.clone(),
+                None => return ex_error(ExExecuteError::NoPreviousSearch),
+            }
+        } else {
+            pattern.clone()
+        };
+        let selected = self.select_global_targets(document, addresses, &pattern, *invert ^ command.bang);
         let (targets, selected_lines) = match selected {
             Ok(targets) => targets,
             Err(error) => return ex_error(error),
@@ -199,6 +197,14 @@ impl CommandInterpreter {
             } else {
                 ex_error(ExExecuteError::PatternNotFound(pattern))
             };
+        }
+        if self.global_confirmation_body(&body_command, 0) {
+            let origin = self.cursor;
+            let output = self.prepare_global_confirmation(document, &body_command, &selected_lines);
+            if self.substitute_confirmation.is_some() {
+                self.record_jump(document, origin, self.cursor);
+            }
+            return output;
         }
         if self.global_replay_depth == 0 {
             if let Some(first) = targets.first().copied().flatten() {

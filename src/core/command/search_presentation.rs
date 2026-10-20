@@ -16,12 +16,22 @@ pub struct IncrementalSearchPreview {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SearchMatchCount {
+    /// One-based ordinal at or before the caret; zero before the first match.
+    pub current: usize,
+    pub total: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SearchPresentation {
     pub pattern: Option<String>,
     pub options: SearchOptions,
     pub highlight_all: bool,
     pub incremental_active: bool,
     pub incremental_match: Option<IncrementalSearchPreview>,
+    /// Exact counts, populated by the coordinator's bounded presentation scan.
+    /// None while pending, unavailable, or over the regex work budget.
+    pub match_count: Option<SearchMatchCount>,
     /// Substitution previews are limited to the explicitly addressed hard lines.
     pub search_range: Option<Range<usize>>,
     pub(crate) addressed_range: Option<ex_execute::ResolvedExRange>,
@@ -120,6 +130,7 @@ impl CommandInterpreter {
             highlight_all: self.search_options.hlsearch && !self.search_highlight_suppressed,
             incremental_active: false,
             incremental_match: None,
+            match_count: None,
             search_range: None,
             addressed_range: None,
             diagnostic: None,

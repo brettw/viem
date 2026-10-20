@@ -185,14 +185,13 @@ fn global_nested_filters_empty_patterns_print_and_per_line_errors() {
 }
 
 #[test]
-fn invalid_global_regex_and_host_or_confirm_commands_do_not_edit() {
+fn invalid_global_regex_and_host_commands_do_not_edit() {
     let mut d = Document::new("x\nx\ny");
     let mut c = CommandInterpreter::new();
     for command in [
         ":g/[/d",
         ":g/x/write somewhere",
         ":g/x/undo",
-        ":g/x/s/x/y/c",
         ":g/x/1g/y/d",
     ] {
         let before = d.source_bytes();
@@ -295,7 +294,7 @@ fn pattern_addresses_use_pending_search_and_preserve_literal_backward_delimiter(
 }
 
 #[test]
-fn global_restores_one_jump_origin_and_rejects_inherited_confirmation() {
+fn global_restores_one_jump_origin_and_accepts_inherited_confirmation() {
     let mut core = Core::new(Document::new("origin\nx1\nx2\nx3"));
     let view = core.add_view(MockTextMeasurementProvider::new(), 250., 200.);
     success(core_ex(&mut core, view, ":g/x/s/x/y/"));
@@ -310,8 +309,12 @@ fn global_restores_one_jump_origin_and_rejects_inherited_confirmation() {
     );
     c.handle(&mut d, InputEvent::Key(Key::Char('q'))).unwrap();
     let output = ex(&mut c, &mut d, ":g/x/&&");
-    assert_ne!(output.status, CommandStatus::Complete);
-    assert!(c.substitute_confirmation_prompt().is_none());
+    assert_eq!(output.status, CommandStatus::Pending);
+    assert!(c.substitute_confirmation_prompt().is_some());
+    assert_eq!(d.text(), "x\nx\nx");
+    for _ in 0..3 { c.handle(&mut d, InputEvent::Key(Key::Char('a'))).unwrap(); }
+    assert_eq!(d.text(), "y\ny\ny");
+    assert!(d.undo());
     assert_eq!(d.text(), "x\nx\nx");
     assert!(!d.undo());
 }

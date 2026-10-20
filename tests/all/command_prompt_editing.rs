@@ -322,3 +322,87 @@ fn recorded_macros_replay_backtab_native_directory_acceptance_and_caret_movement
     assert_eq!(core.document().text(), "untouched");
     assert!(!core.document().is_dirty());
 }
+
+
+#[test]
+fn prompt_arrows_filter_original_prefix_while_control_keys_visit_all_history() {
+    for prompt in [':', '/', '?'] {
+        let mut core = Core::new(Document::new("alpha beta alpha2"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300., 150.);
+        let entries = if prompt == ':' { ["set wrap", "set nowrap", "set number"] } else { ["alpha", "beta", "alpha2"] };
+        for entry in entries {
+            key(&mut core, view, Key::Char(prompt));
+            core.handle(view, CoreEvent::Input(InputEvent::text(entry))).unwrap();
+            key(&mut core, view, Key::Enter);
+        }
+        key(&mut core, view, Key::Char(prompt));
+        let prefix = if prompt == ':' { "set n" } else { "al" };
+        core.handle(view, CoreEvent::Input(InputEvent::text(prefix))).unwrap();
+        let text = |core: &Core<MockTextMeasurementProvider>| core.command_state(view).unwrap().command_line_snapshot().unwrap().text;
+        key(&mut core, view, Key::Up);
+        assert_eq!(text(&core), entries[2]);
+        key(&mut core, view, Key::Up);
+        assert_eq!(text(&core), if prompt == ':' { entries[1] } else { entries[0] });
+        key(&mut core, view, Key::Up);
+        assert_eq!(text(&core), if prompt == ':' { entries[1] } else { entries[0] });
+        key(&mut core, view, Key::Down);
+        assert_eq!(text(&core), entries[2]);
+        key(&mut core, view, Key::Down);
+        assert_eq!(text(&core), prefix);
+        key(&mut core, view, Key::Ctrl('p'));
+        key(&mut core, view, Key::Ctrl('p'));
+        assert_eq!(text(&core), entries[1]);
+        key(&mut core, view, Key::Ctrl('n'));
+        assert_eq!(text(&core), entries[2]);
+        key(&mut core, view, Key::Down);
+        assert_eq!(text(&core), prefix);
+        core.handle(view, CoreEvent::Input(InputEvent::text("unmatched"))).unwrap();
+        key(&mut core, view, Key::Up);
+        assert_eq!(text(&core), format!("{prefix}unmatched"));
+        assert_eq!(core.document().text(), "alpha beta alpha2");
+        assert!(!core.document().is_dirty());
+    }
+}
+
+#[test]
+fn history_prefix_stops_at_caret_and_editing_starts_a_new_prefix() {
+    let mut core = Core::new(Document::new("éclair élève other"));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 300., 150.);
+    for entry in ["éclair", "élève", "other"] {
+        key(&mut core, view, Key::Char('/'));
+        core.handle(view, CoreEvent::Input(InputEvent::text(entry))).unwrap();
+        key(&mut core, view, Key::Enter);
+    }
+    key(&mut core, view, Key::Char('/'));
+    core.handle(view, CoreEvent::Input(InputEvent::text("é draft"))).unwrap();
+    edit(&mut core, view, CommandLineEditAction::Select { anchor: 2, active: 2 });
+    key(&mut core, view, Key::Up);
+    assert_eq!(core.command_state(view).unwrap().command_line_snapshot().unwrap().text, "élève");
+    key(&mut core, view, Key::Down);
+    assert_eq!(core.command_state(view).unwrap().command_line_snapshot().unwrap().text, "é draft");
+    key(&mut core, view, Key::Ctrl('u'));
+    core.handle(view, CoreEvent::Input(InputEvent::text("oth"))).unwrap();
+    key(&mut core, view, Key::Up);
+    assert_eq!(core.command_state(view).unwrap().command_line_snapshot().unwrap().text, "other");
+}
+
+#[test]
+fn prompt_word_register_uses_iskeyword_and_preserves_graphemes() {
+    for (setting, word, expected) in [
+        ("iskeyword+=-", "one-two", "one-two"),
+        ("iskeyword+=-", "e\u{301}lan-deux", "e\u{301}lan-deux"),
+        ("iskeyword-=_", "one_two", "one"),
+    ] {
+        let mut core = Core::new(Document::new(word));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 300., 150.);
+        key(&mut core, view, Key::Char(':'));
+        core.handle(view, CoreEvent::Input(InputEvent::text(format!("set {setting}")))).unwrap();
+        key(&mut core, view, Key::Enter);
+        key(&mut core, view, Key::Char(':'));
+        key(&mut core, view, Key::Ctrl('r'));
+        key(&mut core, view, Key::Ctrl('w'));
+        assert_eq!(core.command_state(view).unwrap().command_line_snapshot().unwrap().text, expected);
+        assert_eq!(core.document().text(), word);
+        assert!(!core.document().is_dirty());
+    }
+}

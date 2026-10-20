@@ -73,23 +73,21 @@ impl CommandInterpreter {
                 if matches!(key, Key::Ctrl('l' | 'L')) { return Ok(literal(text)); }
                 let offset = self.cursor - range.start;
                 let keyword = matches!(key, Key::Ctrl('w' | 'W'));
-                let selected = text.grapheme_indices(true).find(|(at, grapheme)| *at >= offset && if keyword {
-                    grapheme.chars().next().is_some_and(|character| character.is_alphanumeric() || character == '_')
-                } else { !grapheme.chars().all(char::is_whitespace) });
+                let is_word = |grapheme: &str| if keyword {
+                    grapheme.chars().next().is_some_and(|character| self.vim_options.keywords().contains(character))
+                } else { !grapheme.chars().all(char::is_whitespace) };
+                let selected = text.grapheme_indices(true)
+                    .find(|(at, grapheme)| *at >= offset && is_word(grapheme));
                 let Some((at, grapheme)) = selected else { return Err(failure("no word under cursor")); };
-                if keyword {
-                    let range = keyword_range(&text, at).expect("selected keyword grapheme");
-                    return Ok(literal(text[range].into()));
-                }
                 let current = at..at + grapheme.len();
                 let mut start = current.start;
                 let mut end = current.end;
                 for (at, grapheme) in text[..start].grapheme_indices(true).rev() {
-                    if grapheme.chars().all(char::is_whitespace) { break; }
+                    if !is_word(grapheme) { break; }
                     start = at;
                 }
                 for (at, grapheme) in text[end..].grapheme_indices(true) {
-                    if grapheme.chars().all(char::is_whitespace) { break; }
+                    if !is_word(grapheme) { break; }
                     end = current.end + at + grapheme.len();
                 }
                 Ok(literal(text[start..end].into()))

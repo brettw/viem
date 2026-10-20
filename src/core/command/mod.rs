@@ -21,6 +21,7 @@ mod ex_history;
 pub mod ex_files;
 pub mod ex_execute;
 mod substitute_confirmation;
+mod global_confirmation;
 pub mod insert_motion;
 mod number_change;
 mod normal_info;
@@ -849,6 +850,7 @@ struct CommandLineBuffer {
     selection_anchor: Option<usize>,
     cursor: usize,
     history_index: Option<usize>,
+    history_prefix: Option<String>,
     draft: String,
     completion: Option<command_line_completion::FilenameCompletion>,
 }
@@ -883,6 +885,7 @@ impl CommandLineBuffer {
 
     fn detach_from_history(&mut self) {
         self.history_index = None;
+        self.history_prefix = None;
         self.draft = self.input.clone();
     }
 }
@@ -2481,7 +2484,10 @@ impl CommandInterpreter {
                 || self.mode == Mode::VisualLine && self.line_mode == LineMode::Visual
                 || self.register_is_blockwise_with_context(document, Some('+'), clipboard);
         }
-        if self.substitute_confirmation.is_some() || self.mapping_applies(event) { return false; }
+        if self.substitute_confirmation.is_some() {
+            return substitute_confirmation::scroll_motion(event).is_some();
+        }
+        if self.mapping_applies(event) { return false; }
         if self.is_text_selection() && self.mode == Mode::VisualBlock { return true; }
         if matches!(self.pending, Pending::G { .. }) && matches!(event, InputEvent::Key(Key::Ctrl('h' | 'H'))) { return true; }
         let normalized = match event {
@@ -4569,6 +4575,9 @@ impl CommandInterpreter {
         let paragraph_navigation = Self::is_paragraph_navigation_input(&event);
         self.record_event(&event);
         if self.substitute_confirmation.is_some() {
+            if let Some(motion) = substitute_confirmation::scroll_motion(&event) {
+                return Ok(self.scroll_substitute_confirmation(document, context, motion));
+            }
             return Ok(self.handle_substitute_confirmation(document, event));
         }
         if let Some(output) = self.handle_table_input(document, &event)? {
@@ -4897,11 +4906,11 @@ impl CommandInterpreter {
                 CommandOutput::pending()
             }
             Key::Up | Key::Ctrl('p' | 'P') => {
-                self.navigate_command_line_history(true);
+                self.navigate_command_line_history(true, key == Key::Up);
                 CommandOutput::pending()
             }
             Key::Down | Key::Ctrl('n' | 'N') => {
-                self.navigate_command_line_history(false);
+                self.navigate_command_line_history(false, key == Key::Down);
                 CommandOutput::pending()
             }
             Key::Ctrl('u' | 'U') => {
@@ -14346,7 +14355,7 @@ impl CommandInterpreter {
         }
     }
 
-    fn navigate_command_line_history(&mut self, older: bool) {
+    fn navigate_command_line_history(&mut self, older: bool, filtered: bool) {
         let Some(state) = self.command_line_state.as_mut() else {
             return;
         };
@@ -14356,7 +14365,7 @@ impl CommandInterpreter {
                 &self.search_history
             }
         };
-        navigate_history(&mut state.buffer, history, older);
+        navigate_history(&mut state.buffer, history, older, filtered);
     }
 
     fn execute_ex_command(&mut self, document: &mut Document, input: &str) -> CommandOutput {
@@ -17575,28 +17584,29 @@ fn push_history(history: &mut Vec<String>, entry: String, limit: usize) {
     history.drain(..remove);
 }
 
-fn navigate_history(buffer: &mut CommandLineBuffer, history: &[String], older: bool) {
+fn navigate_history(buffer: &mut CommandLineBuffer, history: &[String], older: bool, filtered: bool) {
     if history.is_empty() {
         return;
     }
+    if buffer.history_prefix.is_none() {
+        buffer.draft = buffer.input.clone();
+        buffer.history_prefix = Some(buffer.input[..buffer.cursor].to_owned());
+    }
+    let matches = |index: &usize| !filtered || history[*index].starts_with(
+        buffer.history_prefix.as_deref().unwrap_or_default());
     let next = if older {
-        match buffer.history_index {
-            Some(index) => index.saturating_sub(1),
-            None => {
-                buffer.draft = buffer.input.clone();
-                history.len() - 1
-            }
-        }
+        (0..buffer.history_index.unwrap_or(history.len())).rev().find(matches)
+    } else if let Some(index) = buffer.history_index {
+        ((index + 1)..history.len()).find(matches)
     } else {
-        let Some(index) = buffer.history_index else {
-            return;
-        };
-        if index + 1 >= history.len() {
+        return;
+    };
+    let Some(next) = next else {
+        if !older {
             buffer.history_index = None;
             buffer.set(buffer.draft.clone());
-            return;
         }
-        index + 1
+        return;
     };
     buffer.history_index = Some(next);
     buffer.set(history[next].clone());
