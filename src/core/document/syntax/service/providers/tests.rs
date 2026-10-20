@@ -504,9 +504,12 @@ fn nvim_cpp_queries_highlight_preprocessor_comments_and_injections() {
     assert_eq!(name("<<").as_deref(), Some("Operator"));
     assert_eq!(name("m_count").as_deref(), Some("Variable.member"));
     assert_eq!(name("nullptr").as_deref(), Some("Constant.builtin"));
-    // The comment, doxygen and printf injections have no available provider,
-    // so the host colors remain.
-    assert_eq!(name("/// Brief doc comment.").as_deref(), Some("Comment"));
+    // The doxygen injection falls back to Vim's doxygen syntax, which links
+    // the `///` leader to SpecialComment and the brief sentence to Statement.
+    assert_eq!(name("///").as_deref(), Some("SpecialComment"));
+    assert_eq!(name("Brief doc comment.").as_deref(), Some("Statement"));
+    // The comment and printf injections have no available provider, so the
+    // host colors remain.
     assert_eq!(name("// Plain comment.").as_deref(), Some("Comment"));
     assert_eq!(name("\"%d").as_deref(), Some("String"));
     // A raw-string delimiter selects Vim sql; its gaps keep the host color.

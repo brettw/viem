@@ -329,7 +329,10 @@ internal sealed partial class Preferences
                 // ancestry so propagation cannot manufacture a foreign cycle.
                 var declarations = Declarations(entry.Definition);
                 declarations["id"] = entry.Id;
-                var previousDefinition = index >= 0 ? definitions[index] : Definition(DefaultTheme()["styles"]![other], entry.Id);
+                // Presets omit chrome that keeps its generated definition. The
+                // generated preset always supplies every chrome style's metadata.
+                var previousDefinition = index >= 0 ? definitions[index] : Definition(DefaultTheme()["styles"]![other], entry.Id)
+                    ?? Definition(JsonNode.Parse(CoreThemes.Defaults(VIEM_THEME_PRESET_PAPER))!["styles"]![other], entry.Id);
                 var next = KeepStyleExtensions(previousDefinition, declarations, 1);
                 if (index >= 0) definitions[index] = next; else definitions.Add(next);
             }

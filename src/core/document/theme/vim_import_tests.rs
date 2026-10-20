@@ -53,7 +53,9 @@ fn dark_scheme_uses_midnight_and_maps_editor_and_chrome_colors() {
         assert_eq!(hex(&search["properties"]["foreground"]), "#000000");
     }
     // Midnight's typography is retained.
-    assert_eq!(block(&theme, "code", "Paragraph")["character"]["font_families"], json!(["Recursive"]));
+    let midnight: Value = serde_json::from_slice(&crate::document::theme::default_json(0).unwrap()).unwrap();
+    assert_eq!(block(&theme, "code", "Paragraph")["character"]["font_families"],
+        block(&midnight, "code", "Paragraph")["character"]["font_families"]);
 }
 
 #[test]

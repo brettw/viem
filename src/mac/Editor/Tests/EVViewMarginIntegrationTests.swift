@@ -72,10 +72,16 @@ final class EVViewMarginIntegrationTests: XCTestCase {
             surface.view.frame = NSRect(x: 0, y: 0, width: 920, height: 655)
             surface.viewDidLayout()
             let snapshot = try XCTUnwrap(surface.layoutSnapshot)
-            XCTAssertEqual(snapshot.info.content_insets.top, Float(margins.top))
-            XCTAssertEqual(snapshot.info.content_insets.left, Float(margins.left))
-            XCTAssertEqual(snapshot.info.content_insets.bottom, Float(margins.bottom))
-            XCTAssertEqual(snapshot.info.content_insets.right, Float(margins.right))
+            // Content insets add the theme's Base Paragraph padding to the view margins.
+            let canvas = try backend.styleSheetSnapshot().definition(for: .baseParagraph)?.properties
+            func padding(_ property: EVStyleProperty) -> Float {
+                if case .float(let value)? = canvas?[property]?.effective { return value }
+                return 0
+            }
+            XCTAssertEqual(snapshot.info.content_insets.top, Float(margins.top) + padding(.blockPaddingTop))
+            XCTAssertEqual(snapshot.info.content_insets.left, Float(margins.left) + padding(.blockPaddingLeft))
+            XCTAssertEqual(snapshot.info.content_insets.bottom, Float(margins.bottom) + padding(.blockPaddingBottom))
+            XCTAssertEqual(snapshot.info.content_insets.right, Float(margins.right) + padding(.blockPaddingRight))
             XCTAssertEqual(snapshot.rows.count, 1)
             XCTAssertFalse(backend.persistenceState.isDirty)
             _ = try session.sendTestKeys("iFirst words")
