@@ -109,7 +109,7 @@ fn vim_import_ffi_uses_two_pass_output_and_reports_diagnostics_once() {
         let bytes = unsafe { std::slice::from_raw_parts(message, length as usize) };
         messages.push(String::from_utf8_lossy(bytes).into_owned());
     }
-    let source = b"hi Normal guifg=#eeeeee guibg=#111111\naugroup Skipped\n";
+    let source = b"hi Normal guifg=#eeeeee guibg=#111111\nhi Comment guifg=notacolor\n";
     let mut messages = Vec::<String>::new();
     let context = (&mut messages as *mut Vec<String>).cast::<c_void>();
     unsafe {

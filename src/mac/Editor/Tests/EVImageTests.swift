@@ -2,7 +2,7 @@ import AppKit
 import CViemCore
 import CoreText
 import ImageIO
-import ViemAppShell
+@testable import ViemAppShell
 import XCTest
 @testable import ViemEditor
 @testable import ViemCoreTextProvider
@@ -15,9 +15,12 @@ final class EVImageTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         let imageURL = directory.appendingPathComponent("image.png")
+        // Define every color in sRGB so the sampled bytes do not depend on
+        // color conversion.
+        let sRGB = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
         let context = try XCTUnwrap(CGContext(data: nil, width: 80, height: 40, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
-        context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+            space: sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 80, height: 40))
         let writer = try XCTUnwrap(CGImageDestinationCreateWithURL(imageURL as CFURL, "public.png" as CFString, 1, nil))
         CGImageDestinationAddImage(writer, try XCTUnwrap(context.makeImage()), nil)
@@ -55,14 +58,16 @@ final class EVImageTests: XCTestCase {
         // No event-loop yield after creating the view: its very first render
         // resource must already resolve to the loaded raster, not a placeholder.
         let pixels = try XCTUnwrap(CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            space: sRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         XCTAssertTrue(try XCTUnwrap(surface.session).provider.renderRegistry.drawInlineImage(
             identifier: cluster.render_run.identifier, metricsGeneration: cluster.render_run.metrics_generation,
             in: CGRect(x: 0, y: 0, width: 8, height: 8), color: CGColor(gray: 0, alpha: 1), context: pixels))
-        let painted = NSBitmapImageRep(cgImage: try XCTUnwrap(pixels.makeImage()))
-        let color = try XCTUnwrap(painted.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB))
-        XCTAssertGreaterThan(color.redComponent, 0.95)
-        XCTAssertLessThan(color.greenComponent, 0.05)
+        // Read the sRGB bytes directly. NSBitmapImageRep labels them calibrated
+        // RGB, and converting that to sRGB would shift pure red toward orange.
+        let painted = try XCTUnwrap(pixels.data).assumingMemoryBound(to: UInt8.self)
+        let center = 4 * pixels.bytesPerRow + 4 * 4
+        XCTAssertGreaterThan(painted[center], 242)
+        XCTAssertLessThan(painted[center + 1], 13)
         assertReady()
         // Splits prepare a surface before it belongs to the host's pane list.
         // Exercise that path twice, with another window left untouched.

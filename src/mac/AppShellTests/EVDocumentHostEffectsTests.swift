@@ -554,10 +554,11 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             XCTAssertEqual(controller.paneCount, kind == .split ? 3 : 2)
             if kind == .split {
                 XCTAssertEqual(controller.editorSurface.viewController.view.bounds.height, 80, accuracy: 2)
+                // Like Vim's default, the new view opens above the requesting one.
                 controller.perform(windowRequests: [.focusTop], from: controller.editorSurface)
-                XCTAssertTrue(controller.editorSurface === origin)
-                controller.perform(windowRequests: [.focusDown(count: 1)], from: controller.editorSurface)
                 XCTAssertTrue(controller.activeDocument === selected)
+                controller.perform(windowRequests: [.focusDown(count: 1)], from: controller.editorSurface)
+                XCTAssertTrue(controller.editorSurface === origin)
             } else {
                 controller.perform(windowRequests: [.focusTop], from: controller.editorSurface)
                 XCTAssertTrue(controller.activeDocument === selected)
@@ -587,7 +588,8 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         _ = try XCTUnwrap(result).get()
         XCTAssertEqual(controller.paneCount, 2)
         XCTAssertTrue(controller.activeDocument === selected)
-        controller.perform(windowRequests: [.focusLeft(count: 1)], from: controller.editorSurface)
+        // Like Vim's default, the new view opens to the left of the requesting one.
+        controller.perform(windowRequests: [.focusRight(count: 1)], from: controller.editorSurface)
         XCTAssertTrue(controller.editorSurface === origin)
         XCTAssertTrue(controller.activeDocument === original)
     }

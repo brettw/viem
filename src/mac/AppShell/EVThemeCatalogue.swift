@@ -401,6 +401,12 @@ extension EVConfigurationStore {
       }
       if !changed.isEmpty {
         let builtins = try EVThemeFile.builtin()["styles"] as? [String: Any] ?? [:]
+        // Presets omit chrome that keeps its generated definition. The
+        // generated preset always supplies every chrome style's metadata.
+        let generated = try EVThemeFile.builtin(paper: true)["styles"] as? [String: Any] ?? [:]
+        func builtinDefinition(_ styles: [String: Any], family: String, id: String?) -> [String: Any]? {
+          ((styles[family] as? [String: Any])?["block_styles"] as? [[String: Any]])?.first { $0["id"] as? String == id }
+        }
         for family in Self.styleNames where family != name {
           var target = styles[family] as? [String: Any] ?? builtins[family] as? [String: Any] ?? [:]
           var definitions = target["block_styles"] as? [[String: Any]] ?? []
@@ -416,8 +422,8 @@ extension EVConfigurationStore {
               definitions[index] = (merged["block_styles"] as? [[String: Any]])?.first ?? entry
             }
             else {
-              let baseline = (builtins[family] as? [String: Any])?["block_styles"] as? [[String: Any]] ?? []
-              var definition = baseline.first { $0["id"] as? String == id } ?? ["id": id ?? ""]
+              var definition = builtinDefinition(builtins, family: family, id: id)
+                ?? builtinDefinition(generated, family: family, id: id) ?? ["id": id ?? ""]
               definition.merge(shared) { _, new in new }
               definitions.append(definition)
             }

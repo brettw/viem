@@ -5,6 +5,10 @@ import XCTest
 
 @MainActor
 final class EVDocumentWindowControllerTests: XCTestCase {
+  /// A window's last status bar clips its bottom border at the window edge.
+  private static var windowEdgeStatusBarHeight: CGFloat {
+    EVStatusBarView.preferredHeight - EVThemeStore.shared.chromeStyles.statusBar.bottomBorder.width
+  }
   private final class EditorTestView: NSView {
     override var acceptsFirstResponder: Bool { true }
   }
@@ -130,10 +134,10 @@ final class EVDocumentWindowControllerTests: XCTestCase {
       XCTAssertEqual(geometry.content.height, 680, accuracy: 0.5)
       XCTAssertEqual(geometry.editor.width, geometry.content.width, accuracy: 0.5)
       XCTAssertEqual(geometry.statusBar.width, geometry.content.width, accuracy: 0.5)
-      XCTAssertEqual(geometry.statusBar.height, EVStatusBarView.preferredHeight, accuracy: 0.5)
+      XCTAssertEqual(geometry.statusBar.height, Self.windowEdgeStatusBarHeight, accuracy: 0.5)
       XCTAssertEqual(
         geometry.editor.height,
-        geometry.content.height - EVStatusBarView.preferredHeight,
+        geometry.content.height - Self.windowEdgeStatusBarHeight,
         accuracy: 0.5
       )
       XCTAssertEqual(geometry.statusBar.minY, geometry.content.minY, accuracy: 0.5)
@@ -168,7 +172,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     let window = try XCTUnwrap(controller.window)
     window.setContentSize(NSSize(width: 700, height: 500))
     XCTAssertEqual(controller.editorSurface.viewController.view.frame.width, 700, accuracy: 0.5)
-    XCTAssertEqual(controller.editorSurface.viewController.view.frame.height, 500 - EVStatusBarView.preferredHeight, accuracy: 0.5)
+    XCTAssertEqual(controller.editorSurface.viewController.view.frame.height, 500 - Self.windowEdgeStatusBarHeight, accuracy: 0.5)
     window.orderOut(nil)
     controller.showWindow(nil)
 
@@ -176,7 +180,7 @@ final class EVDocumentWindowControllerTests: XCTestCase {
     XCTAssertEqual(window.contentLayoutRect.height, 500, accuracy: 0.5)
     let geometry = try XCTUnwrap(controller.currentGeometry)
     XCTAssertEqual(geometry.editor.width, 700, accuracy: 0.5)
-    XCTAssertEqual(geometry.editor.height, 500 - EVStatusBarView.preferredHeight, accuracy: 0.5)
+    XCTAssertEqual(geometry.editor.height, 500 - Self.windowEdgeStatusBarHeight, accuracy: 0.5)
   }
 
   func testInitialShowRestoresStoredFrameAndRecordsLaterResize() throws {
@@ -226,10 +230,10 @@ final class EVDocumentWindowControllerTests: XCTestCase {
       contentController.toggleStatusBar(item)
       geometry = try XCTUnwrap(controller.currentGeometry)
       XCTAssertTrue(geometry.statusBarIsVisible)
-      XCTAssertEqual(geometry.statusBar.height, EVStatusBarView.preferredHeight, accuracy: 0.5)
+      XCTAssertEqual(geometry.statusBar.height, Self.windowEdgeStatusBarHeight, accuracy: 0.5)
       XCTAssertEqual(
         geometry.editor.height,
-        geometry.content.height - EVStatusBarView.preferredHeight,
+        geometry.content.height - Self.windowEdgeStatusBarHeight,
         accuracy: 0.5
       )
     }
@@ -469,7 +473,8 @@ final class EVDocumentWindowControllerTests: XCTestCase {
       var split: Result<String?, Error>?
       controller.perform(documentHostRequests: [.init(kind: .split, documentID: 10, documentRevision: 0, path: url.path)]) { split = $0 }
       _ = try XCTUnwrap(split).get()
-      controller.perform(windowRequests: [.focusTop], from: controller.editorSurface)
+      // Like Vim's default, the target's split opened above the source.
+      controller.perform(windowRequests: [.focusBottom], from: controller.editorSurface)
       XCTAssertTrue(controller.activeDocument === source)
       let other = EVDocument(editorBackend: Backend())
       defer { other.close() }

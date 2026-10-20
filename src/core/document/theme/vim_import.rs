@@ -6,7 +6,7 @@ use super::{validate_json, validate_name, MAX_THEME_BYTES};
 use crate::document::code_style;
 use crate::document::syntax::vim::colorscheme::{flags, VimBackground, VimColor, VimHighlights, VimResolvedHighlight};
 use crate::document::syntax::vim::{evaluate_colorscheme, VimDiagnostic};
-use crate::document::{Color, StyleId};
+use crate::document::{Color, DocumentStyleAssignment, StyleId, StyleSheet};
 use serde_json::{json, Map, Value};
 
 const PAPER: &[u8] = include_bytes!("../../../../assets/themes/Paper.json");
@@ -230,8 +230,29 @@ struct Chrome<'a> {
     current_line_number: Option<Look>,
 }
 
+/// Editor chrome styles that keep the core's colors unless a theme declares them.
+const CHROME: &[&str] = &["Status bar", "Status bar command", "Builtin line number", "Builtin current line number"];
+
+/// Presets declare only the chrome they change; the core supplies the rest.
+/// Add its built-in definitions so the scheme can color every chrome style.
+fn add_missing_chrome(sheet: &mut Value) -> Result<(), String> {
+    let builtin = StyleSheet::plain_text()
+        .default_configuration_json(&DocumentStyleAssignment::new("Paragraph".into()))
+        .map_err(|error| error.to_string())?;
+    let builtin: Value = serde_json::from_slice(&builtin).map_err(|error| error.to_string())?;
+    let blocks = sheet["block_styles"].as_array_mut().ok_or("Invalid built-in stylesheet")?;
+    for template in builtin["block_styles"].as_array().ok_or("Invalid built-in stylesheet")? {
+        let declared = blocks.iter().any(|block| block["id"] == template["id"]);
+        if !declared && template["id"].as_str().is_some_and(|id| CHROME.contains(&id)) {
+            blocks.push(template.clone());
+        }
+    }
+    Ok(())
+}
+
 impl Chrome<'_> {
     fn apply(&self, sheet: &mut Value, code: bool) -> Result<(), String> {
+        add_missing_chrome(sheet)?;
         let blocks = sheet["block_styles"].as_array_mut().ok_or("Invalid built-in stylesheet")?;
         for block in blocks.iter_mut() {
             match block["id"].as_str() {
@@ -313,7 +334,6 @@ fn gutter(block: &mut Value, look: &Look, parent: &Look) {
 /// colors and inherit Normal's; only typography remains. Editor chrome keeps
 /// the scheme's colors from `Chrome`.
 fn inherit_document_colors(sheet: &mut Value) -> Result<(), String> {
-    const CHROME: &[&str] = &["Status bar", "Status bar command", "Builtin line number", "Builtin current line number"];
     let blocks = sheet["block_styles"].as_array_mut().ok_or("Invalid built-in stylesheet")?;
     for block in blocks.iter_mut().filter(|block| !block["id"].as_str().is_some_and(|id| CHROME.contains(&id))) {
         for key in ["foreground", "background"] {

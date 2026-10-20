@@ -223,20 +223,30 @@ mod tests {
     use super::*;
     #[test]
     fn builtins_and_packaged_presets_are_valid_and_midnight_matches_default() {
+        // Presets may omit editor chrome that keeps the core's built-in
+        // definition; loading the family always supplies it.
         fn assert_plain_text_styles(bytes: &[u8]) {
+            const CHROME: [(&str, &str); 4] = [("Builtin line number", "Line number"),
+                ("Builtin current line number", "Current line number"),
+                ("Status bar", "Status bar"), ("Status bar command", "Status bar command")];
             let value: Value = serde_json::from_slice(bytes).unwrap();
             let text = &value["styles"]["text"];
             let blocks = text["block_styles"].as_array().unwrap();
             let characters = text["character_styles"].as_array().unwrap();
-            let mut ids = blocks.iter().map(|block| block["id"].as_str().unwrap()).collect::<Vec<_>>();
-            ids.sort_unstable();
-            assert_eq!(ids, ["Builtin current line number", "Builtin line number", "Paragraph", "Status bar", "Status bar command"]);
-            for (id, name) in [("Builtin line number", "Line number"),
-                ("Builtin current line number", "Current line number")] {
-                assert_eq!(blocks.iter().find(|block| block["id"] == id).unwrap()["name"], name);
+            assert!(blocks.iter().any(|block| block["id"] == "Paragraph"));
+            for block in blocks.iter().filter(|block| block["id"] != "Paragraph") {
+                let (_, name) = CHROME.iter().find(|(id, _)| block["id"] == *id)
+                    .unwrap_or_else(|| panic!("unexpected plain-text style {}", block["id"]));
+                assert_eq!(block["name"], *name);
             }
             assert_eq!(characters.len(), 1);
             assert_eq!(characters[0]["id"], "* Incremental match");
+            let (sheet, diagnostics) = StyleSheet::for_format(crate::document::Format::PlainText)
+                .with_default_json(&serde_json::to_vec(text).unwrap()).unwrap();
+            assert!(diagnostics.is_empty(), "{diagnostics:?}");
+            for (id, name) in CHROME {
+                assert_eq!(sheet.block_style_metadata(&id.into()).unwrap().display_name, name);
+            }
         }
         for (preset, name) in [(0, "Midnight"), (1, "Paper")] {
             let bytes = default_json(preset).unwrap();
