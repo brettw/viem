@@ -346,6 +346,41 @@ pub(super) fn search_match_with_navigation(
     )
 }
 
+/// Vim's `current_search()` for `gn` and `gN`: the [count]th match whose last
+/// grapheme is at or after `origin` (forward), or which starts at or before
+/// it (backward). A match under the origin is found in both directions.
+pub(super) fn current_search_match(
+    lines: &HardLineSnapshot,
+    origin: usize,
+    forward: bool,
+    pattern: &str,
+    count: usize,
+    options: SearchOptions,
+) -> Result<Option<Range<usize>>, String> {
+    let after = lines.next_grapheme_boundary(origin).unwrap_or(origin);
+    let backward_options = if forward { SearchOptions { wrapscan: false, ..options } } else { options };
+    // The last match that starts at or before the origin.
+    let at_or_before = search_match_with_navigation(lines, after, SearchDirection::Backward, pattern, 1, backward_options, &[])?
+        .filter(|found| found.start <= origin);
+    let first = if forward {
+        match at_or_before {
+            Some(found) if found.end > origin || found.start == origin => Some(found),
+            _ => search_match_with_navigation(lines, origin, SearchDirection::Forward, pattern, 1, options, &[])?,
+        }
+    } else {
+        match at_or_before {
+            Some(found) => Some(found),
+            None => search_match_with_navigation(lines, origin, SearchDirection::Backward, pattern, 1, options, &[])?,
+        }
+    };
+    let Some(first) = first else { return Ok(None) };
+    if count <= 1 {
+        return Ok(Some(first));
+    }
+    let direction = if forward { SearchDirection::Forward } else { SearchDirection::Backward };
+    search_match_with_navigation(lines, first.start, direction, pattern, count - 1, options, &[])
+}
+
 #[allow(clippy::too_many_arguments)]
 fn search_match_sequence(
     lines: &HardLineSnapshot,

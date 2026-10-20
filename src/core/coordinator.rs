@@ -6143,14 +6143,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 &mut target_view.commands,
                                 plan,
                             )?;
-                            (Ok((step, old_viewport_top, false)), map, Some(presentation))
+                            (Ok((step, old_viewport_top, false, None)), map, Some(presentation))
                         }
                         CommandResolution::Legacy(_) => {
                             let (result, map) = self.document.capture_position_maps(
                                 |document| -> Result<_, CoreError> {
                                     let Some(input) = input else {
                                         let step = target_view.commands.insert_list_paragraph_for_core(document)?;
-                                        return Ok((step, old_viewport_top, false));
+                                        return Ok((step, old_viewport_top, false, None));
                                     };
                                     if requires_layout {
                                         let snapshot = target_view
@@ -6165,7 +6165,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                                             snapshot,
                                             target_view.layout.wrap(),
                                             viewport,
-                                        );
+                                        ).with_viewport_left(target_view.layout.viewport_left());
                                         let step =
                                             target_view.commands.handle_with_layout_for_core(
                                                 document,
@@ -6173,14 +6173,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                                                 &mut context,
                                                 clipboard_context.as_ref(),
                                             )?;
-                                        Ok((step, context.viewport().top, context.viewport_command()))
+                                        Ok((step, context.viewport().top, context.viewport_command(), context.requested_viewport_left()))
                                     } else {
                                         let step = target_view.commands.handle_for_core(
                                             document,
                                             input,
                                             clipboard_context.as_ref(),
                                         )?;
-                                        Ok((step, old_viewport_top, false))
+                                        Ok((step, old_viewport_top, false, None))
                                     }
                                 },
                             );
@@ -6192,7 +6192,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 // a compound command which deliberately retains earlier
                 // commits still leaves a complete exact map available to the
                 // coordinator once its error policy is published.
-                let (step, viewport_top, viewport_command) = command_result?;
+                let (step, viewport_top, viewport_command, requested_left) = command_result?;
                 let CommandStep {
                     output: command,
                     replay,
@@ -6298,6 +6298,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     composition_changes: Vec::new(),
                 };
                 let mut rebased = Vec::with_capacity(inactive_positions.len());
+                let mut change_offset = None;
                 if changed {
                     // The source publication is the invalidation point for
                     // every attached view, not only the invoking one.
@@ -6314,6 +6315,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                     let map = committed_position_map;
                     outcome.position_map = Some(map.clone());
+                    if !history_navigation && map.domain() == crate::document::PositionDomain::FormattedText {
+                        change_offset = map.replacements().last().map(|(_, new)| new.start);
+                    }
                     if let Some((checkpoint, anchors)) = active_position_state {
                         let commands = &mut self
                             .views
@@ -6509,6 +6513,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                         .expect("prepared view remains attached during serial dispatch")
                         .commands = commands;
                 }
+                if let Some(offset) = change_offset {
+                    // Every view of the buffer shares the change list (`g;`).
+                    // Typing that continues an open edit group stays one unit.
+                    let generation = self.document.edit_group_generation();
+                    let new_unit = !(edit_group_depth_before > 0 && generation == edit_group_generation_before);
+                    for (id, view) in &mut self.views {
+                        view.commands.note_change(&self.document, offset, *id == view_id, generation, new_unit);
+                    }
+                }
                 if changed {
                     for (id, view) in &mut self.views {
                         if *id == view_id {
@@ -6528,6 +6541,16 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                 }
                 self.publish_buffer_commands(view_id);
+                if let Some(left) = requested_left {
+                    // Horizontal `z` commands own the new origin; materialize
+                    // sparse long-line geometry for it like explicit scrolling.
+                    let top = self.views[&view_id].layout.viewport_top();
+                    let previous = self.views[&view_id].layout.viewport_left();
+                    match self.materialize_requested_viewport(view_id, left, top) {
+                        Ok(()) => outcome.layout_changed |= self.views[&view_id].layout.viewport_left() != previous,
+                        Err(error) => self.record_presentation_error(view_id, error),
+                    }
+                }
                 if buffer_whitespace_changed && !changed {
                     for id in self.views.keys().copied().filter(|id| *id != view_id).collect::<Vec<_>>() {
                         let result = self.materialize_immediate_viewport(id, ImmediateLayoutIntent::PreserveViewport)

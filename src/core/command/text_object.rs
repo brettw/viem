@@ -22,6 +22,8 @@ pub enum TextObjectKind {
     Paragraph,
     Quote(QuoteKind),
     Pair(PairKind),
+    /// `it`/`at`: an HTML or XML tag block in literal text.
+    Tag,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +71,7 @@ impl TextObjectKind {
             '[' | ']' => Some(Self::Pair(PairKind::Brackets)),
             '{' | '}' | 'B' => Some(Self::Pair(PairKind::Braces)),
             '<' | '>' => Some(Self::Pair(PairKind::Angles)),
+            't' => Some(Self::Tag),
             _ => None,
         }
     }
@@ -137,6 +140,7 @@ fn resolve_text_object_with_keywords(
             resolve_quote(text, lines, cursor, object.scope, count, kind)
         }
         TextObjectKind::Pair(kind) => resolve_pair(text, cursor, object.scope, count, kind),
+        TextObjectKind::Tag => resolve_tag_block(text, cursor, object.scope, count),
     }
     .ok_or(TextObjectError::NotFound)?;
     validate_result(text, range)
@@ -602,6 +606,144 @@ fn quote_around_range(text: &str, line: Range<usize>, quoted: Range<usize>) -> R
 struct DelimiterPair {
     open: Range<usize>,
     close: Range<usize>,
+}
+
+/// One start or end tag, from its `<` through its `>`.
+#[derive(Debug)]
+struct Tag {
+    range: Range<usize>,
+    /// ASCII-lowercased; Vim matches tag names case-insensitively.
+    name: String,
+    end: bool,
+}
+
+/// Start tags (not comments, declarations or self-closing tags) and end tags.
+fn scan_tags(text: &str) -> Vec<Tag> {
+    let bytes = text.as_bytes();
+    let mut tags = Vec::new();
+    let mut at = 0;
+    while let Some(relative) = text[at..].find('<') {
+        let open = at + relative;
+        at = open + 1;
+        let Some(close) = text[at..].find('>').map(|relative| at + relative) else { break };
+        if bytes.get(at) == Some(&b'/') {
+            let name = &text[at + 1..close];
+            if !name.is_empty() && !name.contains('<') {
+                tags.push(Tag { range: open..close + 1, name: name.to_ascii_lowercase(), end: true });
+            }
+            continue;
+        }
+        let name_end = text[at..close]
+            .find(|character: char| character.is_whitespace() || matches!(character, '/' | '!' | '<'))
+            .map_or(close, |relative| at + relative);
+        let name = &text[at..name_end];
+        let self_closing = text[..close].ends_with('/');
+        let separated = name_end == close || text[name_end..].starts_with(char::is_whitespace);
+        if !name.is_empty() && separated && !self_closing && !text[name_end..close].contains('<') {
+            tags.push(Tag { range: open..close + 1, name: name.to_ascii_lowercase(), end: false });
+        }
+    }
+    tags
+}
+
+/// The nearest start tag before `at` that no later end tag closes; like
+/// Vim's backward `searchpair()`, any end tag closes any start tag here.
+fn unclosed_start_before(tags: &[Tag], at: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, tag) in tags.iter().enumerate().rev().filter(|(_, tag)| tag.range.start < at) {
+        if tag.end {
+            depth += 1;
+        } else if depth == 0 {
+            return Some(index);
+        } else {
+            depth -= 1;
+        }
+    }
+    None
+}
+
+/// The end tag with the same name that closes `tags[start]`.
+fn matching_end_tag(tags: &[Tag], start: usize) -> Option<usize> {
+    let name = &tags[start].name;
+    let mut depth = 0usize;
+    for (index, tag) in tags.iter().enumerate().skip(start + 1).filter(|(_, tag)| &tag.name == name) {
+        if !tag.end {
+            depth += 1;
+        } else if depth == 0 {
+            return Some(index);
+        } else {
+            depth -= 1;
+        }
+    }
+    None
+}
+
+/// Vim's `current_tagblock()` without a Visual selection: the [count]th
+/// enclosing tag block. A start tag without a matching end tag, such as
+/// `<br>`, is skipped in favor of the next enclosing one.
+fn resolve_tag_block(text: &str, cursor: usize, scope: TextObjectScope, count: usize) -> Option<Range<usize>> {
+    let tags = scan_tags(text);
+    let mut cursor = cursor;
+    // Leading indentation selects the block that starts after it.
+    let line_start = text[..cursor].rfind('\n').map_or(0, |at| at + 1);
+    if text[line_start..cursor].chars().all(|character| matches!(character, ' ' | '\t')) {
+        cursor += text[cursor..].len() - text[cursor..].trim_start_matches([' ', '\t']).len();
+    }
+    // The end of the previous block must not fall before the cursor's
+    // preceding character, Vim's inclusive `old_end`.
+    let mut old_end = text[..cursor].char_indices().next_back().map_or(0, |(at, _)| at);
+    if let Some(tag) = tags.iter().find(|tag| tag.range.start <= cursor && cursor < tag.range.end) {
+        if tag.end {
+            // On an end tag, select the block it closes.
+            cursor = tag.range.start.saturating_sub(1);
+            old_end = cursor;
+        } else {
+            cursor = tag.range.end - 1;
+        }
+    }
+    tag_block(&tags, cursor + usize::from(cursor < text.len()), old_end, scope, count)
+}
+
+/// Visual `it`/`at` over the selection `low..=high`, Vim's Visual branch of
+/// `current_tagblock()`: the block must enclose the selection, and an inner
+/// block that is already selected grows to include its tags.
+pub(super) fn resolve_visual_tag_block(
+    text: &str, low: usize, high: usize, scope: TextObjectScope, count: usize,
+) -> Result<Range<usize>, TextObjectError> {
+    let tags = scan_tags(text);
+    let mut range = tag_block(&tags, low, high, scope, count).ok_or(TextObjectError::NotFound)?;
+    let last = text[..range.end].char_indices().next_back().map_or(range.start, |(at, _)| at);
+    if scope == TextObjectScope::Inner && range.start == low && last == high {
+        range = tag_block(&tags, low, high, TextObjectScope::Around, count).ok_or(TextObjectError::NotFound)?;
+    }
+    validate_result(text, range)
+}
+
+/// Search outward from `from` for the [count]th unclosed start tag whose
+/// matching end tag starts at or after `old_end`.
+fn tag_block(tags: &[Tag], from: usize, old_end: usize, scope: TextObjectScope, count: usize) -> Option<Range<usize>> {
+    let mut count = count.max(1);
+    let mut from = from;
+    loop {
+        let mut start = None;
+        for _ in 0..count {
+            let found = unclosed_start_before(&tags, start.map_or(from, |index: usize| tags[index].range.start))?;
+            start = Some(found);
+        }
+        let start = start?;
+        match matching_end_tag(&tags, start) {
+            Some(end) if tags[end].range.start >= old_end => {
+                return Some(match scope {
+                    TextObjectScope::Around => tags[start].range.start..tags[end].range.end,
+                    TextObjectScope::Inner => tags[start].range.end..tags[end].range.start,
+                });
+            }
+            _ => {
+                count = 1;
+                from = tags[start].range.start;
+            }
+        }
+    }
 }
 
 fn resolve_pair(

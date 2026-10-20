@@ -358,6 +358,8 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_APPLICATION_OPTION 31u
 /* Single-use acknowledgement token in window_count; always last in its batch. */
 #define VIEM_EX_FRONTEND_SCRIPT_CONTINUATION 32u
+/* Edit the pane's alternate file (CTRL-^); the host tracks it per pane. */
+#define VIEM_EX_FRONTEND_EDIT_ALTERNATE 33u
 /* Apply startup application configuration only for the first document. */
 #define VIEM_EX_FRONTEND_STARTUP_APPLICATION (1u << 15)
 #define VIEM_ARGUMENT_NEXT 1u

@@ -7,9 +7,20 @@ pub enum PhysicalSourceTransform {
     Lowercase,
     Uppercase,
     ToggleCase,
+    /// `g?`: Rot13 of ASCII letters, one scalar for one scalar.
+    Rot13,
     Indent { columns: usize, options: IndentationOptions },
     Outdent { columns: usize, options: IndentationOptions },
     Reindent { options: IndentationOptions },
+}
+
+/// Vim's `g?` rotates ASCII letters only.
+pub fn rot13(character: char) -> char {
+    match character {
+        'a'..='z' => (b'a' + (character as u8 - b'a' + 13) % 26) as char,
+        'A'..='Z' => (b'A' + (character as u8 - b'A' + 13) % 26) as char,
+        _ => character,
+    }
 }
 
 impl Document {
@@ -114,6 +125,18 @@ impl Document {
                         } else { patches.push(SourcePatch::primary(span.source, encoded)); }
                     }
                     if output.next().is_some() { return Err(DocumentError::VerificationFailed.into()); }
+                }
+                PhysicalSourceTransform::Rot13 => {
+                    for span in decoded.scalar_spans() {
+                        let original = &decoded.text[span.decoded.clone()];
+                        let replacement: String = original.chars().map(rot13).collect();
+                        if replacement == original { continue; }
+                        let encoded = self.encoding().encode_fragment(&replacement)?;
+                        if let Some(previous) = patches.last_mut().filter(|patch| patch.range.end == span.source.start) {
+                            previous.range.end = span.source.end;
+                            previous.replacement.extend(encoded);
+                        } else { patches.push(SourcePatch::primary(span.source, encoded)); }
+                    }
                 }
             }
         }

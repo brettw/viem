@@ -663,6 +663,8 @@ impl CommandInterpreter {
                     | Pending::ReplaceVisualBlock
                     | Pending::Find { .. }
                     | Pending::OperatorFind { .. }
+                    | Pending::Bracket { .. }
+                    | Pending::OperatorBracket { .. }
                     | Pending::SetMark
                     | Pending::JumpMark { .. }
                     | Pending::OperatorMark { .. }

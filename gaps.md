@@ -15,43 +15,11 @@ for the current commitments.
 
 ## 1. Normal mode
 
-The following commands still fall through to unsupported dispatch. Evidence:
-[`Pending`, Normal dispatch and `g`/`z` handlers](src/core/command/mod.rs),
-plus the [text-object dispatch](src/core/command/text_object.rs).
-
-- **Bracket-prefix motions:** `[[`, `]]`, `[{`, `]}`, `[(`, `])`, `[m` and
-  `]m`. There is no bracket-prefix pending state. Existing `%` and paired text
-  objects do not provide these motions.
-- **`ga`:** no command reports the character/codepoint under the cursor.
-- **`ZQ`:** the `Z` handler recognizes `ZZ`, but rejects `ZQ`.
-- **Insert-position commands:** `gi` and `gI`.
-- **Match selections:** `gn` and `gN`.
-- **Change-list navigation:** `g;` and `g,`. There is no change list;
-  `getchangelist()` returns an empty list in
-  [the script host](src/core/command/scripting.rs).
-- **Normal substitution repeats:** `&` and `g&`. Ex `:&` is available.
-- **Additional `z` motions:** `z.`, `z-`, `z<CR>`, `zh`, `zl`, `zH`, `zL`,
-  `ze` and `zs`.
-- **Other missing commands:** `gm`, `gM`, `go`, `g?`, `g8`, `K`, `Ctrl-^`,
-  `Ctrl-G` and `Ctrl-L`.
+No known gaps remain in the audited Normal command list.
 
 ## 2. Visual modes and text objects
 
-- **Visual uppercase yank:** `Y` is unsupported in characterwise, linewise
-  and blockwise Visual modes. The existing uppercase delete/change commands
-  are implemented; their semantics are covered by
-  [the command audit tests](tests/all/command_audit.rs).
-- **Tag-block text objects:** `it` and `at` are absent from
-  [`TextObjectKind::from_vim_key`](src/core/command/text_object.rs). Literal
-  HTML Code buffers need source-oriented tag matching; the passive Markdown
-  HTML parser does not provide it.
-- **Visual numeric changes (new):** `Ctrl-A`/`Ctrl-X` and progressive
-  `g Ctrl-A`/`g Ctrl-X` are unsupported. Normal numeric changes exist, but
-  the Visual dispatchers never call `change_number`. For `1\n1\n1`,
-  `Vj<Ctrl-A>` leaves the source unchanged and reports unsupported instead
-  of producing `2\n2\n1`; `Vjg<Ctrl-A>` likewise fails instead of producing
-  `2\n3\n1`. Windows' native Ctrl-X Cut binding is a separate, deliberate
-  platform rule.
+No known gaps remain in the audited Visual command and text-object list.
 
 ## 3. Search and prompts
 

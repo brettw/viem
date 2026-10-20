@@ -595,7 +595,7 @@ const MAPPED: &[&str] = &[
 /// Implemented by Viem's own command code; see docs/vimscript.md#options-and-native-settings.
 const FEATURES: &[&str] = &[
     "clipboard", "gdefault", "shiftround", "joinspaces", "whichwrap", "startofline", "history", "iskeyword",
-    "filetype", "syntax",
+    "filetype", "syntax", "sections", "keywordprg",
 ];
 
 /// Comma-separated list options, whose `+=`, `^=` and `-=` work on items.

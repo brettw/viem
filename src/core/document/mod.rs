@@ -156,7 +156,7 @@ pub use transaction::{
     ClipboardFragment, TableClipboardCell, CommittedModelTransaction, FragmentEdit, HistoryNavigationRequest, ModelChangeKind,
     ModelChangeSummary, ModelRequest, ModelTransactionError, PersistedStyleIntent,
     PreparedModelTransaction, ProjectionWorkScope, ProjectionWorkStatistics, ReplacementFragment,
-    SourcePatch, PhysicalSourceTransform, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
+    SourcePatch, PhysicalSourceTransform, rot13, StyleChangeSummary, StyleModelIntent, StyleModelRequest,
     StylePropertyTarget, StyleTransactionError,
 };
 pub use transfer::HardLineTransfer;

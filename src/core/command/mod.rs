@@ -23,6 +23,9 @@ pub mod ex_execute;
 mod substitute_confirmation;
 pub mod insert_motion;
 mod number_change;
+mod normal_info;
+mod bracket_motion;
+use bracket_motion::{bracket_target, BracketMotion};
 pub mod layout_motion;
 mod reflow;
 mod indentation;
@@ -91,7 +94,7 @@ use ex_execute::{
 use insert_motion::{ctrl_u_delete_range_since_snapshot, ctrl_w_delete_range_with_keywords, ctrl_w_delete_range_snapshot};
 use layout_motion::{
     align_viewport, g0, g_caret, g_dollar_for_document, gj, gk, screen_motion, viewport_line,
-    LayoutMotionError, ScreenMotion, Viewport, ViewportAlignment, ViewportLine, VisualPosition,
+    HorizontalScroll, LayoutMotionError, ScreenMotion, Viewport, ViewportAlignment, ViewportLine, VisualPosition,
 };
 use registers::{
     is_valid_register, DeletionClass, RegisterReadContext, RegisterWriteEffect, Registers,
@@ -502,6 +505,9 @@ pub struct LayoutCommandContext<'a> {
     wrap: bool,
     viewport: Viewport,
     viewport_command: bool,
+    /// Horizontal viewport origin of an unwrapped view.
+    viewport_left: f32,
+    requested_viewport_left: Option<f32>,
 }
 
 impl<'a> LayoutCommandContext<'a> {
@@ -511,7 +517,20 @@ impl<'a> LayoutCommandContext<'a> {
             wrap,
             viewport,
             viewport_command: false,
+            viewport_left: 0.0,
+            requested_viewport_left: None,
         }
+    }
+
+    /// The view's current horizontal origin, used by horizontal scrolling.
+    pub fn with_viewport_left(mut self, left: f32) -> Self {
+        self.viewport_left = if left.is_finite() { left.max(0.0) } else { 0.0 };
+        self
+    }
+
+    /// A horizontal origin chosen by `zh`, `zl`, `zs` and related commands.
+    pub fn requested_viewport_left(&self) -> Option<f32> {
+        self.requested_viewport_left
     }
 
     pub fn snapshot(&self) -> &'a LayoutSnapshot {
@@ -617,6 +636,8 @@ enum Operator {
     ToggleCase,
     Lowercase,
     Uppercase,
+    /// `g?`: Rot13 encoding of ASCII letters.
+    Rot13,
     /// `gq`: hard-line reflow leaving the cursor on the last formatted line.
     Format,
     /// `gw`: hard-line reflow restoring the original text location.
@@ -635,6 +656,7 @@ impl Operator {
             Self::ToggleCase => '~',
             Self::Lowercase => 'u',
             Self::Uppercase => 'U',
+            Self::Rot13 => '?',
             Self::Format => 'q',
             Self::FormatKeepCursor => 'w',
         }
@@ -648,6 +670,7 @@ impl Operator {
             Self::ToggleCase
                 | Self::Lowercase
                 | Self::Uppercase
+                | Self::Rot13
                 | Self::Format
                 | Self::FormatKeepCursor
         )
@@ -702,6 +725,15 @@ enum Pending {
         operator: PendingOperator,
         forward: bool,
         till: bool,
+    },
+    /// `[` or `]`, awaiting the key that names the bracket motion.
+    Bracket {
+        forward: bool,
+        count: usize,
+    },
+    OperatorBracket {
+        operator: PendingOperator,
+        forward: bool,
     },
     OperatorMark {
         operator: PendingOperator,
@@ -873,6 +905,8 @@ enum InsertPlacement {
     Before,
     After,
     LineStart,
+    /// `gI`: the first column of the line in the view's line meaning.
+    LineColumnOne,
     LineEnd,
     OpenBelow,
     OpenAbove,
@@ -1139,6 +1173,11 @@ enum VisualBlockRepeatAction {
     Join {
         insert_space: bool,
     },
+    NumberChange {
+        count: usize,
+        subtract: bool,
+        progressive: bool,
+    },
     Insert {
         kind: VisualBlockInsertKind,
         payload: String,
@@ -1292,6 +1331,13 @@ enum RepeatAction {
     VisualJoin {
         shape: VisualRepeatShape,
         insert_space: bool,
+    },
+    /// Visual `CTRL-A`/`CTRL-X`, progressive with `g`.
+    VisualNumberChange {
+        shape: VisualRepeatShape,
+        count: usize,
+        subtract: bool,
+        progressive: bool,
     },
     VisualBlock(VisualBlockRepeat),
     Paste {
@@ -1448,6 +1494,13 @@ pub struct CommandInterpreter {
     jumps: Vec<usize>,
     jumps_revision: Option<Revision>,
     jump_index: usize,
+    /// Positions of the buffer's changes, oldest first (`g;`, `g,`). Every
+    /// view records each change; the index is this view's place in the list.
+    changes: Vec<usize>,
+    change_index: usize,
+    /// Undo-unit identity of the latest recorded change, and whether that
+    /// change opened a new entry (Vim's `b_new_change`).
+    last_change_unit: Option<(u64, bool)>,
     last_visual: Option<VisualMemory>,
     recording: Option<(char, Vec<InputEvent>)>,
     last_macro: Option<char>,
@@ -1513,6 +1566,7 @@ pub(crate) struct CommandPositionAnchors {
     active_visual_was_single_hard_line: bool,
     marks: BTreeMap<char, TextAnchor>,
     jumps: Vec<TextAnchor>,
+    changes: Vec<TextAnchor>,
     last_visual: Option<(TextAnchor, TextAnchor)>,
     /// Logical endpoints of the active revision-bound Visual Block. If an
     /// invoking edit remembers that block while leaving Visual mode, these
@@ -1637,6 +1691,9 @@ impl CommandInterpreter {
             marks: BTreeMap::new(),
             jumps: Vec::new(),
             jumps_revision: None,
+            changes: Vec::new(),
+            change_index: 0,
+            last_change_unit: None,
             jump_index: 0,
             last_visual: None,
             recording: None,
@@ -1676,7 +1733,7 @@ impl CommandInterpreter {
             marks: self
                 .marks
                 .iter()
-                .filter(|(name, _)| name.is_ascii_lowercase() || matches!(**name, '<' | '>'))
+                .filter(|(name, _)| name.is_ascii_lowercase() || matches!(**name, '<' | '>' | '^'))
                 .map(|(name, offset)| (*name, *offset))
                 .collect(),
             search_history: self.search_history.clone(),
@@ -1817,6 +1874,11 @@ impl CommandInterpreter {
                 )
             })
             .collect::<Result<_, _>>()?;
+        let changes = self
+            .changes
+            .iter()
+            .map(|offset| make(*offset, Association::AfterInsertion, BoundaryAffinity::Downstream))
+            .collect::<Result<_, _>>()?;
         let last_visual = self
             .last_visual
             .map(|memory| {
@@ -1897,6 +1959,7 @@ impl CommandInterpreter {
             }).transpose()?,
             marks,
             jumps,
+            changes,
             last_visual,
             visual_block_memory,
             active_visual_block,
@@ -1997,6 +2060,14 @@ impl CommandInterpreter {
         }
         next.jumps = jumps;
         next.jumps_revision = Some(map.target_revision());
+        let mut changes = Vec::with_capacity(anchors.changes.len());
+        for anchor in &anchors.changes {
+            let Some(offset) = mapped_anchor(map, *anchor)? else {
+                return Ok(false);
+            };
+            changes.push(offset);
+        }
+        next.changes = changes;
         next.last_visual = match anchors.last_visual {
             Some((anchor, active)) => {
                 let (Some(anchor), Some(active)) =
@@ -2201,6 +2272,16 @@ impl CommandInterpreter {
             next.jumps[index] = mapped;
         }
         next.jumps_revision = Some(map.target_revision());
+        // Commands never edit the change list; the coordinator records the
+        // committed change after every view has been rebased.
+        if self.changes == before.changes {
+            for (index, anchor) in anchors.changes.iter().enumerate() {
+                let Some(mapped) = mapped_anchor(map, *anchor)? else {
+                    return Ok(false);
+                };
+                next.changes[index] = mapped;
+            }
+        }
 
         if self.last_visual == before.last_visual {
             next.last_visual = match anchors.last_visual {
@@ -2437,7 +2518,7 @@ impl CommandInterpreter {
         }
         if self.line_mode == LineMode::Visual
             && (self.mode == Mode::VisualLine
-                || self.mode == Mode::VisualCharacter && matches!(event, InputEvent::Key(Key::Char('X' | 'D' | 'C' | 'S' | 'R')))
+                || self.mode == Mode::VisualCharacter && matches!(event, InputEvent::Key(Key::Char('X' | 'D' | 'C' | 'S' | 'R' | 'Y')))
                 || matches!(event,InputEvent::Key(key) if self.mode_line_key(*key)))
         {
             return true;
@@ -2479,7 +2560,7 @@ impl CommandInterpreter {
             Mode::Normal | Mode::VisualCharacter | Mode::VisualLine
         ) {
             if let Pending::Operator(pending) = self.pending {
-                if pending.g_prefix && matches!(*key, Key::Char('j' | 'k' | '0' | '^' | '$')) {
+                if pending.g_prefix && matches!(*key, Key::Char('j' | 'k' | '0' | '^' | '$' | 'm')) {
                     return true;
                 }
                 if !pending.g_prefix && matches!(*key, Key::Char('H' | 'M' | 'L')) {
@@ -2493,7 +2574,7 @@ impl CommandInterpreter {
                 {
                     return true;
                 }
-                if matches!(*key, Key::Char('j' | 'k' | '0' | '^' | '$')) {
+                if matches!(*key, Key::Char('j' | 'k' | '0' | '^' | '$' | 'm')) {
                     return true;
                 }
                 if *key == Key::Char('v')
@@ -2504,9 +2585,7 @@ impl CommandInterpreter {
                     return true;
                 }
             }
-            if matches!(self.pending, Pending::Z { .. })
-                && matches!(*key, Key::Char('t' | 'z' | 'b'))
-            {
+            if matches!(self.pending, Pending::Z { .. }) && is_layout_z_key(*key) {
                 return true;
             }
         }
@@ -2562,7 +2641,7 @@ impl CommandInterpreter {
         matches!(self.mode, Mode::Normal | Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock)
             && matches!(self.pending, Pending::Z { count_explicit: true, .. })
             && matches!(event, InputEvent::Key(key)
-                if matches!(self.normalized_input_key(*key), Key::Char('t' | 'z' | 'b')))
+                if matches!(self.normalized_input_key(*key), Key::Char('t' | 'z' | 'b' | '.' | '-') | Key::Enter))
     }
 
     pub(crate) fn restore_pending_layout_checkpoint(&mut self, checkpoint: &Self) {
@@ -2597,7 +2676,7 @@ impl CommandInterpreter {
                 match self.pending {
                     Pending::None => match *key {
                         Key::Char('0') => self.count.is_some(),
-                        Key::Char('1'..='9' | '"' | 'g' | 'z' | 'r' | 'f' | 'F' | 't' | 'T')
+                        Key::Char('1'..='9' | '"' | 'g' | 'z' | 'r' | 'f' | 'F' | 't' | 'T' | '[' | ']')
                         | Key::Char('i' | 'a' | 'm' | '`' | '\'' | 'q' | '@' | '/' | '?' | ':') => true,
                         Key::Char('H' | 'M' | 'L')
                         | Key::PageDown
@@ -2618,12 +2697,13 @@ impl CommandInterpreter {
                     Pending::G { .. } => {
                         !matches!(
                             *key,
-                            Key::Char('g' | 'e' | 'E' | '_' | '*' | '#' | 'v' | '~' | 'u' | 'U' | 'J')
+                            Key::Char('g' | 'e' | 'E' | '_' | '*' | '#' | 'v' | '~' | 'u' | 'U' | '?' | 'J' | 'I' | 'i' | 'o' | 'M')
+                                | Key::Char('n' | 'N' | ';' | ',')
                                 | Key::Char('q' | 'w')
-                                | Key::Char('j' | 'k' | '0' | '^' | '$')
+                                | Key::Char('j' | 'k' | '0' | '^' | '$' | 'm')
                         ) && !(self.mode == Mode::Normal && matches!(*key, Key::Char('p' | 'P')))
                     }
-                    Pending::Z { .. } => !matches!(*key, Key::Char('t' | 'z' | 'b')),
+                    Pending::Z { .. } => !is_layout_z_key(*key),
                     Pending::Find { .. } => !matches!(*key, Key::Char(_)),
                     Pending::VisualTextObject { .. } => {
                         !matches!(*key, Key::Char(key) if TextObjectKind::from_vim_key(key).is_some())
@@ -4899,7 +4979,13 @@ impl CommandInterpreter {
                     Key::Char('*') => self.search_word_at_cursor(document, true, false, count),
                     Key::Char('#') => self.search_word_at_cursor(document, false, false, count),
                     Key::Char('v') => self.restore_visual(document),
-                    Key::Char('~' | 'u' | 'U' | 'q' | 'w') => {
+                    Key::Char('a') => info_message(normal_info::character_report(self.grapheme_at_cursor(document))),
+                    Key::Char('8') => info_message(normal_info::utf8_report(self.grapheme_at_cursor(document))),
+                    Key::Char('o') => self.goto_byte(document, count),
+                    Key::Char('M') => self.move_to_line_percent(document, count_explicit.then_some(count)),
+                    Key::Char(command @ ('n' | 'N')) => self.select_search_match(document, command == 'n', count),
+                    Key::Char(command @ (';' | ',')) => self.move_in_change_list(document, command == ',', count),
+                    Key::Char('~' | 'u' | 'U' | '?' | 'q' | 'w') => {
                         let Key::Char(command) = key else {
                             unreachable!()
                         };
@@ -4909,6 +4995,7 @@ impl CommandInterpreter {
                                 '~' => Operator::ToggleCase,
                                 'u' => Operator::Lowercase,
                                 'U' => Operator::Uppercase,
+                                '?' => Operator::Rot13,
                                 'q' => Operator::Format,
                                 'w' => Operator::FormatKeepCursor,
                                 _ => unreachable!(),
@@ -4920,7 +5007,7 @@ impl CommandInterpreter {
                     }
                     _ => return None,
                 };
-                if !matches!(key, Key::Char('~' | 'u' | 'U' | 'q' | 'w')) {
+                if !matches!(key, Key::Char('~' | 'u' | 'U' | '?' | 'q' | 'w')) {
                     self.pending = Pending::None;
                 }
                 return Some(output);
@@ -4940,11 +5027,19 @@ impl CommandInterpreter {
                         ));
                         CommandOutput { ex_outcome: Some(outcome), ..CommandOutput::complete() }
                     }
+                    Key::Char('Q') if self.native_requests_blocked => scripting::native_request_error(),
+                    Key::Char('Q') => {
+                        let mut outcome = ExOutcome::default();
+                        outcome.frontend_requests.push(ExFrontendRequest::File(
+                            ex_execute::ExFileRequest::Quit { force: true },
+                        ));
+                        CommandOutput { ex_outcome: Some(outcome), ..CommandOutput::complete() }
+                    }
                     _ => CommandOutput::unsupported(format!("Z{key:?}")),
                 });
             }
             Pending::Z { .. } => {
-                if matches!(key, Key::Char('t' | 'z' | 'b')) {
+                if is_layout_z_key(key) {
                     return None;
                 }
                 self.pending = Pending::None;
@@ -4989,7 +5084,11 @@ impl CommandInterpreter {
                         };
                         return Some(CommandOutput::pending());
                     }
-                    if let Key::Char(command @ ('/' | '?')) = key {
+                    if let Key::Char(command @ ('[' | ']')) = key {
+                        self.pending = Pending::OperatorBracket { operator: pending, forward: command == ']' };
+                        return Some(CommandOutput::pending());
+                    }
+                    if let Some(command) = operator_search_command(key, pending.operator) {
                         self.enter_operator_search(
                             if command == '/' {
                                 SearchDirection::Forward
@@ -5027,6 +5126,10 @@ impl CommandInterpreter {
                 });
             }
             Pending::Window { .. } => unreachable!("window prefix handled before mode dispatch"),
+            Pending::Bracket { forward, count } => {
+                self.pending = Pending::None;
+                return Some(self.move_bracket(document, forward, key, count));
+            }
             Pending::SetMark => {
                 self.pending = Pending::None;
                 return Some(match key {
@@ -5065,6 +5168,7 @@ impl CommandInterpreter {
             | Pending::ReplaceVisual
             | Pending::ReplaceVisualBlock
             | Pending::OperatorFind { .. }
+            | Pending::OperatorBracket { .. }
             | Pending::OperatorMark { .. }
             | Pending::TextObject { .. }
             | Pending::VisualTextObject { .. }
@@ -5191,6 +5295,10 @@ impl CommandInterpreter {
                 self.pending = Pending::SetMark;
                 CommandOutput::pending()
             }
+            Key::Char(command @ ('[' | ']')) => {
+                self.pending = Pending::Bracket { forward: command == ']', count };
+                CommandOutput::pending()
+            }
             Key::Char('`') => {
                 self.pending = Pending::JumpMark { linewise: false };
                 CommandOutput::pending()
@@ -5214,6 +5322,26 @@ impl CommandInterpreter {
             }
             Key::Ctrl('o' | 'O') => self.navigate_jump(document, false, count),
             Key::Ctrl('i' | 'I') => self.navigate_jump(document, true, count),
+            Key::Ctrl('g' | 'G') => info_message(self.file_report(document)),
+            // CTRL-^ (CTRL-6 on most keyboards). Viem has no buffer numbers
+            // for a count to name.
+            Key::Ctrl('^' | '6') => match explicit_count {
+                Some(count) => CommandOutput {
+                    status: CommandStatus::Error(format!("E86: Buffer {count} does not exist")),
+                    ..CommandOutput::complete()
+                },
+                None if self.native_requests_blocked => scripting::native_request_error(),
+                None => {
+                    let mut outcome = ExOutcome::default();
+                    outcome.frontend_requests.push(ExFrontendRequest::File(
+                        ex_execute::ExFileRequest::EditAlternate { force: false },
+                    ));
+                    CommandOutput { ex_outcome: Some(outcome), ..CommandOutput::complete() }
+                }
+            },
+            // Native frontends draw every published state; there is no
+            // stale screen for CTRL-L to repaint.
+            Key::Ctrl('l' | 'L') => CommandOutput::complete(),
             Key::Left => self.move_cursor(document, Motion::ArrowHorizontal(-1), count),
             Key::Right => self.move_cursor(document, Motion::ArrowHorizontal(1), count),
             Key::Char('h') | Key::Backspace => {
@@ -5337,6 +5465,9 @@ impl CommandInterpreter {
                     Key::Char('*') => self.search_word_at_cursor(document, true, false, count),
                     Key::Char('#') => self.search_word_at_cursor(document, false, false, count),
                     Key::Char('v') => self.exchange_visual(document),
+                    Key::Char('o') => self.goto_byte(document, count),
+                    Key::Char('M') => self.move_to_line_percent(document, count_explicit.then_some(count)),
+                    Key::Char(command @ ('n' | 'N')) => self.select_search_match(document, command == 'n', count),
                     _ => return None,
                 };
                 self.pending = Pending::None;
@@ -5349,6 +5480,10 @@ impl CommandInterpreter {
                     Key::Char(key) => self.select_visual_text_object(document, scope, key, count),
                     _ => CommandOutput::unsupported("text object expects a key"),
                 });
+            }
+            Pending::Bracket { forward, count } => {
+                self.pending = Pending::None;
+                return Some(self.move_bracket(document, forward, key, count));
             }
             Pending::JumpMark { linewise } => {
                 self.pending = Pending::None;
@@ -5466,6 +5601,10 @@ impl CommandInterpreter {
                 self.pending = Pending::JumpMark { linewise: true };
                 CommandOutput::pending()
             }
+            Key::Char(command @ ('[' | ']')) => {
+                self.pending = Pending::Bracket { forward: command == ']', count };
+                CommandOutput::pending()
+            }
             Key::Char('o' | 'O') => {
                 if let Some(anchor) = self.visual_anchor.as_mut() {
                     std::mem::swap(anchor, &mut self.cursor);
@@ -5539,12 +5678,274 @@ impl CommandInterpreter {
             },
             Key::Ctrl('o' | 'O') => self.navigate_jump(document, false, count),
             Key::Ctrl('i' | 'I') => self.navigate_jump(document, true, count),
+            Key::Ctrl('l' | 'L') => CommandOutput::complete(),
             _ => {
                 self.count = explicit_count;
                 return None;
             }
         };
         Some(output)
+    }
+
+    /// `K`: look up a keyword with 'keywordprg'. A value beginning with `:`
+    /// runs as an Ex command with [count] and the escaped keyword appended;
+    /// Viem never starts the external programs Vim would run otherwise.
+    fn keyword_lookup(&mut self, document: &mut Document, keyword: &str, count: Option<usize>) -> CommandOutput {
+        let program = self.vim_options.text("keywordprg");
+        let program = if program.is_empty() { ":help".to_owned() } else { program };
+        let Some(command) = program.strip_prefix(':') else {
+            return CommandOutput {
+                status: CommandStatus::Error(format!(
+                    "'keywordprg' {program:?} is an external program; Viem runs only Ex commands, written with a leading :")),
+                ..CommandOutput::complete()
+            };
+        };
+        let mut line = command.to_owned();
+        if let Some(count) = count {
+            line.push_str(&format!(" {count}"));
+        }
+        line.push(' ');
+        line.push_str(&fname_escape(keyword));
+        self.execute_composed_command_line(document, &line)
+    }
+
+    /// Visual `K`: the selected text of one line is the keyword.
+    fn visual_keyword_lookup(&mut self, document: &mut Document) -> Result<CommandOutput, DocumentError> {
+        let range = self.visual_extent(document).range;
+        let lines = document.hard_line_snapshot();
+        let text = lines.slice_utf8(range.clone()).map_err(DocumentError::FormattedTextStorage)?;
+        let keyword = text.trim_end_matches(['\n', '\r']);
+        if keyword.contains(['\n', '\r']) || keyword.is_empty() {
+            return Ok(CommandOutput { status: CommandStatus::Error("Visual K needs text from one line".into()),
+                ..CommandOutput::complete() });
+        }
+        let keyword = keyword.to_owned();
+        self.leave_visual();
+        let mut output = self.keyword_lookup(document, &keyword, None);
+        output.mode_changed = true;
+        Ok(output)
+    }
+
+    /// Normal and Visual `[x`/`]x`. Sections land on the first nonblank, as
+    /// Vim's `beginline()` does without an operator.
+    fn move_bracket(&mut self, document: &Document, forward: bool, key: Key, count: usize) -> CommandOutput {
+        let Some(motion) = (match key { Key::Char(key) => BracketMotion::from_keys(forward, key), _ => None }) else {
+            return CommandOutput::unsupported(format!("bracket motion {key:?}"));
+        };
+        let Some(target) = self.bracket_destination(document, motion, count, false) else {
+            return CommandOutput { status: CommandStatus::SearchNotFound, ..CommandOutput::complete() };
+        };
+        let lines = document.hard_line_snapshot();
+        let destination = if matches!(motion, BracketMotion::Section { .. }) {
+            first_nonblank_document(document, &lines, target.offset)
+        } else { target.offset };
+        self.jump_to_offset(document, destination)
+    }
+
+    fn bracket_destination(&self, document: &Document, motion: BracketMotion, count: usize, with_operator: bool)
+        -> Option<bracket_motion::BracketTarget> {
+        let lines = document.hard_line_snapshot();
+        bracket_target(&lines, self.cursor.min(lines.text_length()), motion, count,
+            document.addressable_hard_line_count().saturating_sub(1), with_operator, &self.vim_options.text("sections"))
+    }
+
+    /// `go`: a jump to the [count] byte of the source artifact.
+    fn goto_byte(&mut self, document: &Document, count: usize) -> CommandOutput {
+        self.jump_to_offset(document, byte_offset_target(document, count))
+    }
+
+    /// `gM`: the column at [count] percent of the line's width, or half of it.
+    fn move_to_line_percent(&mut self, document: &Document, percent: Option<usize>) -> CommandOutput {
+        let old = self.cursor;
+        let lines = document.hard_line_snapshot();
+        self.cursor = normalize_normal_cursor_document(document, &lines, self.line_percent_target(document, old, percent));
+        self.preferred_column = None;
+        self.visual_to_line_end = false;
+        CommandOutput { cursor_moved: old != self.cursor, ..CommandOutput::complete() }
+    }
+
+    /// Vim's `coladvance()` to [percent] of the line's display width, counted
+    /// in portable Unicode columns with tabs expanded.
+    fn line_percent_target(&self, document: &Document, origin: usize, percent: Option<usize>) -> usize {
+        let lines = document.hard_line_snapshot();
+        let Ok(line) = lines.line_at_offset(origin.min(lines.text_length())) else { return origin };
+        let content = line.content_range();
+        let Ok(text) = lines.slice_utf8(content.clone()) else { return origin };
+        let tabstop = self.indentation_options().tabstop.max(1) as usize;
+        let width = crate::document::indentation_end_column(0, &text, tabstop);
+        let column = match percent {
+            Some(percent @ 1..=100) => width * percent / 100,
+            _ => width / 2,
+        };
+        let mut start = 0;
+        let mut last = None;
+        for (offset, grapheme) in text.grapheme_indices(true) {
+            let end = crate::document::indentation_end_column(start, grapheme, tabstop);
+            if end > column {
+                return content.start + offset;
+            }
+            last = Some(offset);
+            start = end;
+        }
+        content.start + last.unwrap_or(0)
+    }
+
+    fn jump_to_offset(&mut self, document: &Document, destination: usize) -> CommandOutput {
+        let old = self.cursor;
+        let lines = document.hard_line_snapshot();
+        self.cursor = normalize_normal_cursor_document(document, &lines, destination);
+        self.preferred_column = None;
+        self.visual_to_line_end = false;
+        let output = CommandOutput { cursor_moved: old != self.cursor, ..CommandOutput::complete() };
+        self.record_successful_jump(document, old, output)
+    }
+
+    /// Apply a pending operator to a motion that names its own failure.
+    fn execute_operator_motion(&mut self, document: &mut Document, pending: PendingOperator, motion: OperatorMotion)
+        -> Result<CommandOutput, DocumentError> {
+        let count = match effective_operator_count(pending) {
+            Ok(count) => count,
+            Err(error) => return Ok(CommandOutput::count_error(error)),
+        };
+        let Some(extent) = self.resolve_operator_extent(document, pending.operator, motion, count) else {
+            return Ok(CommandOutput { status: CommandStatus::SearchNotFound, ..CommandOutput::complete() });
+        };
+        self.apply_operator_motion_with_jump(document, pending.operator, extent, pending.register, motion, count)
+    }
+
+    /// The coordinator's record of one committed change at `offset`, after
+    /// every view has been rebased to the new revision. `new_unit` is false
+    /// while the change continues the previous change's undo unit.
+    pub(crate) fn note_change(&mut self, document: &Document, offset: usize, invoking: bool, unit: u64, new_unit: bool) {
+        const CHANGE_LIST_CAPACITY: usize = 100;
+        let continued = !new_unit && self.last_change_unit.is_some_and(|(previous, _)| previous == unit);
+        if continued && self.last_change_unit.is_some_and(|(_, added)| added) && !self.changes.is_empty() {
+            // The first change of the unit opened this entry; later ones in
+            // the same unit leave it alone.
+            if invoking { self.change_index = self.changes.len(); }
+            return;
+        }
+        let lines = document.hard_line_snapshot();
+        let place = |offset: usize| lines.line_at_offset(offset.min(lines.text_length()))
+            .map(|line| (line.index(), offset - line.content_range().start.min(offset))).ok();
+        let width = match self.text_width.effective() { 0 => 79, width => width as usize };
+        let add = match (self.changes.last().and_then(|last| place(*last)), place(offset)) {
+            (Some((line, column)), Some((new_line, new_column))) => line != new_line || column.abs_diff(new_column) > width,
+            _ => true,
+        };
+        if add {
+            let at_end = self.change_index >= self.changes.len();
+            if self.changes.len() == CHANGE_LIST_CAPACITY {
+                self.changes.remove(0);
+                self.change_index = self.change_index.saturating_sub(1);
+            }
+            self.changes.push(offset);
+            if at_end { self.change_index = self.changes.len(); }
+        } else if let Some(last) = self.changes.last_mut() {
+            *last = offset;
+        }
+        self.last_change_unit = Some((unit, add));
+        // The invoking view is always after the newest change, so `g;`
+        // returns to it first.
+        if invoking { self.change_index = self.changes.len(); }
+    }
+
+    /// `g;` (older) and `g,` (newer): move through the change list.
+    fn move_in_change_list(&mut self, document: &Document, newer: bool, count: usize) -> CommandOutput {
+        let error = |text: &str| CommandOutput { status: CommandStatus::Error(text.into()), ..CommandOutput::complete() };
+        if self.changes.is_empty() {
+            return error("E664: Changelist is empty");
+        }
+        let last = self.changes.len() - 1;
+        let index = if newer {
+            match self.change_index.checked_add(count) {
+                Some(index) if index <= last => index,
+                _ if self.change_index == last => return error("E663: At end of changelist"),
+                _ => last,
+            }
+        } else {
+            match self.change_index.checked_sub(count) {
+                Some(index) => index.min(last),
+                None if self.change_index == 0 => return error("E662: At start of changelist"),
+                None => 0,
+            }
+        };
+        self.change_index = index;
+        let old = self.cursor;
+        let lines = document.hard_line_snapshot();
+        self.cursor = normalize_normal_cursor_document(document, &lines, self.changes[index].min(lines.text_length()));
+        self.preferred_column = None;
+        CommandOutput { cursor_moved: old != self.cursor, ..CommandOutput::complete() }
+    }
+
+    pub(crate) fn change_list(&self) -> (&[usize], usize) {
+        (&self.changes, self.change_index)
+    }
+
+    fn current_search_range(&self, document: &Document, origin: usize, forward: bool, count: usize)
+        -> Result<Option<Range<usize>>, String> {
+        let Some((_, pattern)) = self.last_search.as_ref() else { return Err("no previous search".into()) };
+        search_presentation::current_search_match(&document.hard_line_snapshot(), origin, forward, pattern, count,
+            self.search_options)
+    }
+
+    /// `gn`/`gN`: select a match of the last search pattern in Visual mode,
+    /// or extend an existing Visual selection to it.
+    fn select_search_match(&mut self, document: &Document, forward: bool, count: usize) -> CommandOutput {
+        let lines = document.hard_line_snapshot();
+        let visual = self.visual_anchor.filter(|_| matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine));
+        // Visual mode searches from just beyond the active end.
+        let origin = match (visual, forward) {
+            (None, _) => self.cursor,
+            (Some(_), true) => lines.next_grapheme_boundary(self.cursor).unwrap_or(self.cursor),
+            (Some(_), false) => lines.previous_grapheme_boundary(self.cursor).unwrap_or(self.cursor),
+        };
+        let range = match self.current_search_range(document, origin, forward, count) {
+            Ok(Some(range)) => range,
+            Ok(None) => return CommandOutput { status: CommandStatus::SearchNotFound, ..CommandOutput::complete() },
+            Err(error) => return CommandOutput { status: CommandStatus::Error(error), ..CommandOutput::complete() },
+        };
+        self.search_highlight_suppressed = false;
+        let last = lines.previous_grapheme_boundary(range.end).filter(|last| *last >= range.start).unwrap_or(range.start);
+        let old = (self.mode, self.cursor);
+        let mut output = match visual {
+            Some(anchor) => {
+                self.mode = Mode::VisualCharacter;
+                self.visual_to_line_end = false;
+                self.cursor = if forward && self.cursor >= anchor { last } else { range.start };
+                CommandOutput::complete()
+            }
+            None => {
+                let output = self.enter_visual(document, Mode::VisualCharacter, 1, false);
+                let (anchor, active) = if forward { (range.start, last) } else { (last, range.start) };
+                self.visual_anchor = Some(anchor);
+                self.cursor = active;
+                output
+            }
+        };
+        self.preferred_column = None;
+        output.mode_changed |= old.0 != self.mode;
+        output.cursor_moved |= old.1 != self.cursor;
+        output
+    }
+
+    /// The grapheme under a Normal cursor, or the line break at an empty line.
+    fn grapheme_at_cursor<'a>(&self, document: &'a Document) -> &'a str {
+        let end = document.hard_line_snapshot().next_grapheme_boundary(self.cursor).unwrap_or(self.cursor);
+        document.text().get(self.cursor..end).unwrap_or("")
+    }
+
+    fn file_report(&self, document: &Document) -> String {
+        let path = document.artifact_binding().map(|binding| String::from_utf8_lossy(binding.path().as_bytes()).into_owned());
+        let line = document.hard_line_snapshot().line_at_offset(self.cursor).map_or(0, |line| line.index()) + 1;
+        normal_info::file_report(&normal_info::FileReport {
+            name: path.as_deref(),
+            modified: document.is_dirty(),
+            read_only: document.is_read_only(),
+            line,
+            line_count: document.addressable_hard_line_count(),
+            empty: document.text().is_empty(),
+        })
     }
 
     fn is_paragraph_navigation_input(event: &InputEvent) -> bool {
@@ -5676,7 +6077,7 @@ impl CommandInterpreter {
             Mode::Normal | Mode::VisualCharacter | Mode::VisualLine
         ) {
             if let Pending::Operator(pending) = self.pending {
-                if pending.g_prefix && matches!(key, Key::Char('j' | 'k' | '0' | '^' | '$')) {
+                if pending.g_prefix && matches!(key, Key::Char('j' | 'k' | '0' | '^' | '$' | 'm')) {
                     self.pending = Pending::None;
                     let count = match effective_operator_count(pending) {
                         Ok(count) => count,
@@ -5789,6 +6190,7 @@ impl CommandInterpreter {
                         self.move_to_visual_row_edge(document, context, RowEdge::FirstNonBlank)
                     }
                     Key::Char('$') => self.move_to_counted_visual_row_end(document, context, count),
+                    Key::Char('m') => self.move_to_screen_middle(document, context),
                     _ => return Ok(None),
                 };
                 self.pending = Pending::None;
@@ -5800,20 +6202,56 @@ impl CommandInterpreter {
                 count_explicit,
             } = self.pending
             {
-                let alignment = match key {
-                    Key::Char('t') => ViewportAlignment::Top,
-                    Key::Char('z') => ViewportAlignment::Middle,
-                    Key::Char('b') => ViewportAlignment::Bottom,
+                let horizontal = match key {
+                    Key::Char('l') => Some(HorizontalScroll::Columns(count.min(isize::MAX as usize) as isize)),
+                    Key::Char('h') => Some(HorizontalScroll::Columns(-(count.min(isize::MAX as usize) as isize))),
+                    Key::Char('L') => Some(HorizontalScroll::HalfScreens(1)),
+                    Key::Char('H') => Some(HorizontalScroll::HalfScreens(-1)),
+                    Key::Char('s') => Some(HorizontalScroll::CursorAtStart),
+                    Key::Char('e') => Some(HorizontalScroll::CursorAtEnd),
+                    _ => None,
+                };
+                if let Some(scroll) = horizontal {
+                    self.pending = Pending::None;
+                    return Ok(Some(self.scroll_horizontally(document, context, scroll)));
+                }
+                // `z<CR>`, `z.` and `z-` also move to the first nonblank.
+                let (alignment, first_nonblank) = match key {
+                    Key::Char('t') => (ViewportAlignment::Top, false),
+                    Key::Char('z') => (ViewportAlignment::Middle, false),
+                    Key::Char('b') => (ViewportAlignment::Bottom, false),
+                    Key::Enter => (ViewportAlignment::Top, true),
+                    Key::Char('.') => (ViewportAlignment::Middle, true),
+                    Key::Char('-') => (ViewportAlignment::Bottom, true),
                     _ => return Ok(None),
                 };
                 self.pending = Pending::None;
-                return Ok(Some(self.align_counted_row(
-                    document,
-                    context,
-                    alignment,
-                    count,
-                    count_explicit,
-                )));
+                let checkpoint = self.clone();
+                let viewport = context.viewport;
+                let mut output = self.align_counted_row(document, context, alignment, count, count_explicit);
+                if first_nonblank && output.status == CommandStatus::Complete {
+                    let lines = document.hard_line_snapshot();
+                    let target = self.mode_line_insertion(document, false, true)
+                        .unwrap_or_else(|| first_nonblank_document(document, &lines, self.cursor));
+                    let target = normalize_normal_cursor_document(document, &lines, target);
+                    if target != self.cursor {
+                        let old = self.cursor;
+                        self.cursor = target;
+                        self.boundary_affinity = BoundaryAffinity::Downstream;
+                        self.visual_position = None;
+                        self.desired_x = None;
+                        self.preferred_column = None;
+                        // Align the row that now holds the cursor.
+                        let aligned = self.align_current_row(context, alignment);
+                        if aligned.status != CommandStatus::Complete {
+                            *self = checkpoint;
+                            context.viewport = viewport;
+                            return Ok(Some(aligned));
+                        }
+                        output.cursor_moved |= old != self.cursor;
+                    }
+                }
+                return Ok(Some(output));
             }
         }
 
@@ -6025,6 +6463,8 @@ impl CommandInterpreter {
                 )
             }
             Key::Char('0') => g0(context.snapshot, current)?.text_offset,
+            Key::Char('m') => layout_motion::screen_middle(context.snapshot, current,
+                if context.wrap { 0.0 } else { context.viewport_left })?.text_offset,
             Key::Char('^') => g_caret(context.snapshot, document.text(), current)?.text_offset,
             Key::Char('$') => {
                 let row = if count > 1 {
@@ -6381,6 +6821,9 @@ impl CommandInterpreter {
                 Key::Char('U') => {
                     return self.apply_visual_block_operator(document, context, Operator::Uppercase)
                 }
+                Key::Char('?') => {
+                    return self.apply_visual_block_operator(document, context, Operator::Rot13)
+                }
                 Key::Char('q') => {
                     return self.apply_visual_block_operator(document, context, Operator::Format)
                 }
@@ -6392,6 +6835,10 @@ impl CommandInterpreter {
                     )
                 }
                 Key::Char('J') => return self.visual_block_join(document, context, false),
+                Key::Ctrl('a' | 'A' | 'x' | 'X') => {
+                    let subtract = matches!(key, Key::Ctrl('x' | 'X'));
+                    return self.apply_visual_block_number_change(document, context, count, subtract, true);
+                }
                 Key::Char('v') => self.exchange_visual_with_layout(document, context),
                 _ => CommandOutput::unsupported(format!("visual block g{key:?}")),
             };
@@ -6724,10 +7171,14 @@ impl CommandInterpreter {
                 Ok(CommandOutput::pending())
             }
             Key::Char('y') => self.apply_visual_block_operator(document, context, Operator::Yank),
+            Key::Ctrl('a' | 'A' | 'x' | 'X') => {
+                let subtract = matches!(key, Key::Ctrl('x' | 'X'));
+                self.apply_visual_block_number_change(document, context, count, subtract, false)
+            }
             Key::Char('d' | 'x') | Key::Backspace | Key::Delete => {
                 self.apply_visual_block_operator(document, context, Operator::Delete)
             }
-            Key::Char('X' | 'D' | 'C' | 'S' | 'R') => self.apply_visual_uppercase_operator(document, key, count, Some(context)),
+            Key::Char('X' | 'D' | 'C' | 'S' | 'R' | 'Y') => self.apply_visual_uppercase_operator(document, key, count, Some(context)),
             Key::Char('~') => {
                 self.apply_visual_block_operator(document, context, Operator::ToggleCase)
             }
@@ -7636,6 +8087,9 @@ impl CommandInterpreter {
                 VisualBlockRepeatAction::Join { insert_space } => {
                     self.visual_block_join(document, context, insert_space)
                 }
+                VisualBlockRepeatAction::NumberChange { count, subtract, progressive } => {
+                    self.apply_visual_block_number_change(document, context, count, subtract, progressive)
+                }
                 VisualBlockRepeatAction::Insert {
                     kind,
                     payload,
@@ -8018,7 +8472,7 @@ impl CommandInterpreter {
         let selected = block_register_value(document, &resolved, register);
         let edits = match operator {
             Operator::Delete => delete_text_edits(&resolved),
-            Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase => {
+            Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase | Operator::Rot13 => {
                 let lines = document.hard_line_snapshot();
                 let mut edits = Vec::new();
                 for segment in &resolved.range_set.segments {
@@ -8071,6 +8525,70 @@ impl CommandInterpreter {
             mode_changed: true,
             ..CommandOutput::complete()
         })
+    }
+
+    /// Visual Block `CTRL-A`/`CTRL-X`: each row's first number inside the block.
+    fn apply_visual_block_number_change(
+        &mut self,
+        document: &mut Document,
+        context: &LayoutCommandContext<'_>,
+        count: usize,
+        subtract: bool,
+        progressive: bool,
+    ) -> Result<CommandOutput, DocumentError> {
+        let resolved = match self.resolved_visual_block(document, context) {
+            Ok(resolved) => resolved,
+            Err(error) => return Ok(visual_block_error(error)),
+        };
+        let repeat_shape = match self.visual_block_repeat_shape(&resolved) {
+            Ok(shape) => shape,
+            Err(error) => return Ok(visual_block_error(error)),
+        };
+        let regions: Vec<Range<usize>> = resolved.range_set.segments.iter().map(|segment| segment.range.clone()).collect();
+        let start = regions.first().map_or(self.cursor, |region| region.start);
+        self.requested_register = None;
+        let changed = self.change_region_numbers(document, &regions, start, count, subtract, progressive)?;
+        if changed && !self.replaying {
+            self.last_repeat = Some(RepeatAction::VisualBlock(VisualBlockRepeat {
+                shape: repeat_shape,
+                action: VisualBlockRepeatAction::NumberChange { count, subtract, progressive },
+            }));
+        }
+        self.leave_visual_block();
+        Ok(CommandOutput { cursor_moved: true, document_changed: changed, mode_changed: true, ..CommandOutput::complete() })
+    }
+
+    /// Visual `CTRL-A`/`CTRL-X` and `g CTRL-A`/`g CTRL-X` over each selected line.
+    fn visual_number_change(&mut self, document: &mut Document, count: usize, subtract: bool, progressive: bool)
+        -> Result<CommandOutput, DocumentError> {
+        self.requested_register = None;
+        let shape = self.visual_repeat_shape(document);
+        let range = match self.mode_visual_extent(document, self.line_layout.as_ref()) {
+            Some((extent, _)) => extent.text,
+            None => self.visual_extent(document).range,
+        };
+        let remembered = self.visual_anchor.map(|anchor| VisualMemory {
+            exclusive: self.selection_exclusive,
+            mode: self.mode,
+            anchor,
+            active: self.cursor,
+            to_line_end: self.visual_to_line_end,
+            block: None,
+        });
+        let regions = number_change::line_regions(&document.hard_line_snapshot(), range.clone());
+        let changed = self.change_region_numbers(document, &regions, range.start, count, subtract, progressive)?;
+        if changed && !self.replaying {
+            self.last_repeat = Some(RepeatAction::VisualNumberChange { shape, count, subtract, progressive });
+        }
+        self.last_visual = remembered;
+        self.update_visual_marks();
+        self.visual_anchor = None;
+        self.pointer_word_origin = None;
+        self.pointer_rows = false;
+        self.pointer_character_origin = None;
+        self.visual_to_line_end = false;
+        self.mode = Mode::Normal;
+        Ok(CommandOutput { document_changed: changed, cursor_moved: true, mode_changed: true, ..CommandOutput::complete() })
     }
 
     fn apply_visual_block_replace(
@@ -8452,6 +8970,54 @@ impl CommandInterpreter {
                 self.install_visual_position(document, context.snapshot, position)
             }
             Err(error) => layout_error(error),
+        }
+    }
+
+    /// `gm`: the middle of the text area on the cursor's row.
+    fn move_to_screen_middle(&mut self, document: &Document, context: &LayoutCommandContext<'_>) -> CommandOutput {
+        let current = match self.current_visual_position(context.snapshot) {
+            Ok(position) => position,
+            Err(error) => return layout_error(error),
+        };
+        let left = if context.wrap { 0.0 } else { context.viewport_left };
+        match layout_motion::screen_middle(context.snapshot, current, left) {
+            Ok(position) => {
+                self.visual_to_line_end = false;
+                self.desired_x = None;
+                self.preferred_column = None;
+                self.install_visual_position(document, context.snapshot, position)
+            }
+            Err(error) => layout_error(error),
+        }
+    }
+
+    /// Horizontal `z` commands. Like Vim, they only scroll unwrapped views.
+    fn scroll_horizontally(
+        &mut self,
+        document: &Document,
+        context: &mut LayoutCommandContext<'_>,
+        scroll: HorizontalScroll,
+    ) -> CommandOutput {
+        if context.wrap {
+            return CommandOutput::complete();
+        }
+        let current = match self.current_visual_position(context.snapshot) {
+            Ok(position) => position,
+            Err(error) => return layout_error(error),
+        };
+        let result = match layout_motion::scroll_horizontally(context.snapshot, current, context.viewport_left, scroll) {
+            Ok(result) => result,
+            Err(error) => return layout_error(error),
+        };
+        context.requested_viewport_left = Some(result.left);
+        context.viewport_command = true;
+        match result.cursor {
+            Some(position) => {
+                self.desired_x = None;
+                self.preferred_column = None;
+                self.install_visual_position(document, context.snapshot, position)
+            }
+            None => CommandOutput::complete(),
         }
     }
 
@@ -9111,7 +9677,7 @@ impl CommandInterpreter {
             Pending::Z { .. } => {
                 self.pending = Pending::None;
                 return Ok(match key {
-                    Key::Char('t' | 'z' | 'b') => layout_required("viewport alignment"),
+                    key if is_layout_z_key(key) => layout_required("viewport scrolling"),
                     _ => CommandOutput::unsupported(format!("z{key:?}")),
                 });
             }
@@ -9148,6 +9714,13 @@ impl CommandInterpreter {
                     _ => Ok(CommandOutput::unsupported("mark motion expects a-z, < or >")),
                 };
             }
+            Pending::OperatorBracket { operator, forward } => {
+                self.pending = Pending::None;
+                let Some(motion) = (match key { Key::Char(key) => BracketMotion::from_keys(forward, key), _ => None }) else {
+                    return Ok(CommandOutput::unsupported(format!("bracket motion {key:?}")));
+                };
+                return self.execute_operator_motion(document, operator, OperatorMotion::Bracket(motion));
+            }
             Pending::TextObject { operator, scope } => {
                 self.pending = Pending::None;
                 return match key {
@@ -9170,6 +9743,7 @@ impl CommandInterpreter {
                 };
             }
             Pending::Find { .. }
+            | Pending::Bracket { .. }
             | Pending::SetMark
             | Pending::JumpMark { .. }
             | Pending::Window { .. }
@@ -9241,6 +9815,21 @@ impl CommandInterpreter {
             Key::Char('P') => self.paste(document, true, count),
             Key::Char('J') => self.join_lines(document, count, true),
             Key::Char('~') => self.toggle_at_cursor(document, count),
+            Key::Char('K') => {
+                self.requested_register = None;
+                Ok(match search_keyword(document, self.cursor) {
+                    Ok(Some(keyword)) => self.keyword_lookup(document, &keyword, explicit_count),
+                    Ok(None) => CommandOutput { status: CommandStatus::Error("E349: No identifier under cursor".into()),
+                        ..CommandOutput::complete() },
+                    Err(error) => CommandOutput { status: CommandStatus::Error(error.to_string()), ..CommandOutput::complete() },
+                })
+            }
+            // `&` is `:s` on [count] lines; Vim does not repeat it with `.`.
+            Key::Char('&') => {
+                self.requested_register = None;
+                let command = match explicit_count { Some(count) if count > 1 => format!(".,.+{}s", count - 1), _ => "s".into() };
+                Ok(self.execute_ex_command(document, &command))
+            }
             Key::Char('H' | 'M' | 'L')
             | Key::Ctrl('f' | 'F' | 'b' | 'B' | 'd' | 'D' | 'u' | 'U' | 'e' | 'E' | 'y' | 'Y')
             | Key::PageUp
@@ -9273,8 +9862,27 @@ impl CommandInterpreter {
                 self.selection_behavior = SelectionBehavior::Select;
                 Ok(output)
             }
-            Key::Char('j' | 'k' | '0' | '^' | '$') => Ok(layout_required("visual-row motion")),
+            Key::Char('j' | 'k' | '0' | '^' | '$' | 'm') => Ok(layout_required("visual-row motion")),
             Key::Char('J') => self.join_lines(document, count, false),
+            Key::Char('I') => Ok(self.enter_insert(document, InsertPlacement::LineColumnOne, count)),
+            // `:%s//~/&`: the last substitution with the last search pattern
+            // and the same flags, on every line.
+            Key::Char('&') => {
+                self.requested_register = None;
+                Ok(self.execute_ex_command(document, "%~&"))
+            }
+            Key::Char('i') => {
+                // `gi` resumes at `'^`, even past the end of its line, where
+                // a Normal cursor cannot rest.
+                if let Some(&mark) = self.marks.get(&'^') {
+                    let lines = document.hard_line_snapshot();
+                    let mark = mark.min(lines.text_length());
+                    self.cursor = if lines.is_grapheme_boundary(mark) { mark } else {
+                        lines.previous_grapheme_boundary(mark).unwrap_or(0)
+                    };
+                }
+                Ok(self.enter_insert(document, InsertPlacement::Before, count))
+            }
             Key::Char('p') => {
                 self.requested_register = register;
                 self.paste_after_and_follow(document, false, count)
@@ -9393,7 +10001,12 @@ impl CommandInterpreter {
                 };
                 return Ok(CommandOutput::pending());
             }
-            if let Key::Char(command @ ('/' | '?')) = key {
+            if let Key::Char(command @ ('[' | ']')) = key {
+                self.pending = Pending::OperatorBracket { operator: pending, forward: command == ']' };
+                return Ok(CommandOutput::pending());
+            }
+            // `g??` is the doubled Rot13 operator, not a backward search.
+            if let Some(command) = operator_search_command(key, pending.operator) {
                 self.enter_operator_search(
                     if command == '/' {
                         SearchDirection::Forward
@@ -9421,6 +10034,9 @@ impl CommandInterpreter {
         }
 
         self.pending = Pending::None;
+        if pending.g_prefix && matches!(key, Key::Char('n' | 'N')) {
+            return self.execute_operator_motion(document, pending, OperatorMotion::SearchMatch(key == Key::Char('n')));
+        }
         let has_explicit_count = pending.operator_count_explicit || pending.motion_count.is_some();
         let count = match effective_operator_count(pending) {
             Ok(count) => count,
@@ -9457,7 +10073,7 @@ impl CommandInterpreter {
             );
         }
 
-        if pending.g_prefix && matches!(key, Key::Char('j' | 'k' | '0' | '^' | '$')) {
+        if pending.g_prefix && matches!(key, Key::Char('j' | 'k' | '0' | '^' | '$' | 'm')) {
             return Ok(layout_required("visual-row operator motion"));
         }
 
@@ -9467,6 +10083,8 @@ impl CommandInterpreter {
                 Key::Char('e') => Some(OperatorMotion::WordEndBackward(false)),
                 Key::Char('E') => Some(OperatorMotion::WordEndBackward(true)),
                 Key::Char('_') => Some(OperatorMotion::LastNonBlank),
+                Key::Char('o') => Some(OperatorMotion::Byte),
+                Key::Char('M') => Some(OperatorMotion::LinePercent(has_explicit_count)),
                 _ => None,
             }
         } else if key == Key::Char('G') && has_explicit_count {
@@ -9553,6 +10171,32 @@ impl CommandInterpreter {
         };
         if let Some(destination) = local_destination {
             return Some(MotionExtent { range: origin.min(destination)..origin.max(destination), kind: MotionKind::Characterwise });
+        }
+        match motion {
+            OperatorMotion::Byte => {
+                let destination = byte_offset_target(document, count);
+                return Some(MotionExtent { range: origin.min(destination)..origin.max(destination), kind: MotionKind::Characterwise });
+            }
+            OperatorMotion::LinePercent(explicit) => {
+                let destination = self.line_percent_target(document, origin, explicit.then_some(count));
+                return Some(MotionExtent { range: origin.min(destination)..origin.max(destination), kind: MotionKind::Characterwise });
+            }
+            OperatorMotion::SearchMatch(forward) => {
+                let range = self.current_search_range(document, self.cursor, forward, count).ok()??;
+                let end = if range.is_empty() { lines.next_grapheme_boundary(range.start).unwrap_or(range.end) } else { range.end };
+                return Some(MotionExtent { range: range.start..end, kind: MotionKind::Characterwise });
+            }
+            OperatorMotion::Bracket(motion) => {
+                let target = self.bracket_destination(document, motion, count, true)?;
+                return Some(if target.inclusive {
+                    let end = origin.max(target.offset);
+                    MotionExtent { range: origin.min(target.offset)..lines.next_grapheme_boundary(end).unwrap_or(end),
+                        kind: MotionKind::Characterwise }
+                } else {
+                    exclusive_motion_extent_snapshot(document, &lines, origin, target.offset)
+                });
+            }
+            _ => {}
         }
         if matches!(motion, OperatorMotion::Sentence(_) | OperatorMotion::MatchPair) {
             let destination = match motion {
@@ -9661,7 +10305,8 @@ impl CommandInterpreter {
                 }
                 Some(characterwise(last_non_blank(text, &lines, target), true))
             }
-            OperatorMotion::Sentence(_) | OperatorMotion::MatchPair =>
+            OperatorMotion::Sentence(_) | OperatorMotion::MatchPair | OperatorMotion::Byte
+            | OperatorMotion::LinePercent(_) | OperatorMotion::Bracket(_) | OperatorMotion::SearchMatch(_) =>
                 unreachable!("snapshot motions returned before materializing text"),
             OperatorMotion::Paragraph(forward) => Some(exclusive_motion_extent(
                 text,
@@ -9897,7 +10542,7 @@ impl CommandInterpreter {
             Operator::Format | Operator::FormatKeepCursor => {
                 unreachable!("reflow returned before register and extent policy")
             }
-            Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase => {
+            Operator::ToggleCase | Operator::Lowercase | Operator::Uppercase | Operator::Rot13 => {
                 let old = lines.slice_utf8(extent.range.clone())
                     .map_err(DocumentError::FormattedTextStorage)?;
                 let replacement = change_case(&old, operator);
@@ -10086,6 +10731,8 @@ impl CommandInterpreter {
             }
             OperatorMotion::LastLine => Some(nth_line_start(&lines, line_count(&lines))),
             OperatorMotion::FirstLine => Some(nth_line_start(&lines, count)),
+            OperatorMotion::Byte => Some(byte_offset_target(document, count)),
+            OperatorMotion::Bracket(motion) => self.bracket_destination(document, motion, count, true).map(|target| target.offset),
             _ => None,
         }
     }
@@ -10101,7 +10748,7 @@ impl CommandInterpreter {
             Pending::G { count, .. } => {
                 self.pending = Pending::None;
                 return Ok(match key {
-                    Key::Char('j' | 'k' | '0' | '^' | '$') => layout_required("visual-row motion"),
+                    Key::Char('j' | 'k' | '0' | '^' | '$' | 'm') => layout_required("visual-row motion"),
                     Key::Char('~') => {
                         return self.apply_visual_operator(document, Operator::ToggleCase, count)
                     }
@@ -10110,6 +10757,9 @@ impl CommandInterpreter {
                     }
                     Key::Char('U') => {
                         return self.apply_visual_operator(document, Operator::Uppercase, count)
+                    }
+                    Key::Char('?') => {
+                        return self.apply_visual_operator(document, Operator::Rot13, count)
                     }
                     Key::Char('q') => {
                         return self.apply_visual_operator(document, Operator::Format, count)
@@ -10122,6 +10772,8 @@ impl CommandInterpreter {
                         )
                     }
                     Key::Char('J') => return self.visual_join(document, false),
+                    Key::Ctrl('a' | 'A') => return self.visual_number_change(document, count, false, true),
+                    Key::Ctrl('x' | 'X') => return self.visual_number_change(document, count, true, true),
                     _ => CommandOutput::unsupported(format!("visual g{key:?}")),
                 });
             }
@@ -10175,7 +10827,7 @@ impl CommandInterpreter {
                 self.apply_visual_operator(document, Operator::Delete, count)
             }
             Key::Char('c' | 's') => self.apply_visual_operator(document, Operator::Change, count),
-            Key::Char('X' | 'D' | 'C' | 'S' | 'R') => self.apply_visual_uppercase_operator(document, key, count, None),
+            Key::Char('X' | 'D' | 'C' | 'S' | 'R' | 'Y') => self.apply_visual_uppercase_operator(document, key, count, None),
             Key::Char('>') => self.apply_visual_operator(document, Operator::Indent, count),
             Key::Char('<') => self.apply_visual_operator(document, Operator::Outdent, count),
             Key::Char('=') => self.apply_visual_operator(document, Operator::Reindent, count),
@@ -10185,6 +10837,9 @@ impl CommandInterpreter {
             Key::Char('p') => self.visual_paste(document, false, count),
             Key::Char('P') => self.visual_paste(document, true, count),
             Key::Char('J') => self.visual_join(document, true),
+            Key::Char('K') => self.visual_keyword_lookup(document),
+            Key::Ctrl('a' | 'A') => self.visual_number_change(document, count, false, false),
+            Key::Ctrl('x' | 'X') => self.visual_number_change(document, count, true, false),
             Key::Char('H' | 'M' | 'L')
             | Key::Ctrl('f' | 'F' | 'b' | 'B' | 'd' | 'D' | 'u' | 'U' | 'e' | 'E' | 'y' | 'Y')
             | Key::PageUp
@@ -10200,6 +10855,9 @@ impl CommandInterpreter {
         let result = if let Some(context) = context {
             match key {
                 Key::Char('X') => self.apply_visual_block_operator(document, context, Operator::Delete),
+                // Vim's `v_visop()` extends only D and C to the line end;
+                // Visual Block Y yanks the block itself.
+                Key::Char('Y') => self.apply_visual_block_operator(document, context, Operator::Yank),
                 Key::Char('D') => {
                     self.visual_to_line_end = true;
                     self.apply_visual_block_operator(document, context, Operator::Delete)
@@ -10217,12 +10875,15 @@ impl CommandInterpreter {
             }
         } else {
             self.mode = Mode::VisualLine;
-            self.apply_visual_operator(document,
-                if matches!(key, Key::Char('X' | 'D')) { Operator::Delete } else { Operator::Change }, count)
+            self.apply_visual_operator(document, match key {
+                Key::Char('X' | 'D') => Operator::Delete,
+                Key::Char('Y') => Operator::Yank,
+                _ => Operator::Change,
+            }, count)
         };
         if result.as_ref().is_ok_and(|output| output.status != CommandStatus::Complete) {
             self.restore_failed_command(checkpoint);
-        } else if result.as_ref().is_ok_and(|output| output.status == CommandStatus::Complete) {
+        } else if key != Key::Char('Y') && result.as_ref().is_ok_and(|output| output.status == CommandStatus::Complete) {
             let command = if self.mode == Mode::Insert {
                 self.insert_session.as_mut().and_then(|session| session.repeat_operator.as_mut())
             } else if let Some(RepeatAction::Operator { command, .. }) = self.last_repeat.as_mut() {
@@ -10439,13 +11100,14 @@ impl CommandInterpreter {
         let Some(kind) = TextObjectKind::from_vim_key(key) else {
             return CommandOutput::unsupported(format!("unknown text object {key}"));
         };
-        let range = match resolve_document_text_object(
-            document,
-            self.cursor,
-            TextObject { scope, kind },
-            count,
-            self.vim_options.keywords(),
-        ) {
+        let selection = self.visual_anchor.filter(|anchor| *anchor != self.cursor && kind == TextObjectKind::Tag);
+        let resolved = match selection {
+            Some(anchor) => text_object::resolve_visual_tag_block(document.text(), anchor.min(self.cursor),
+                anchor.max(self.cursor), scope, count),
+            None => resolve_document_text_object(document, self.cursor, TextObject { scope, kind }, count,
+                self.vim_options.keywords()),
+        };
+        let range = match resolved {
             Ok(range) if !range.is_empty() || matches!(kind, TextObjectKind::Word | TextObjectKind::BigWord) => range,
             Ok(_) => {
                 return CommandOutput {
@@ -11077,6 +11739,7 @@ impl CommandInterpreter {
                 }
                 let return_mode = self.mode;
                 self.mode = Mode::Normal;
+                self.marks.insert('^', self.cursor);
                 self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
                     self.cursor,
                 );
@@ -12039,7 +12702,8 @@ impl CommandInterpreter {
         if entry_count > isize::MAX as usize {
             return repetition_too_large(entry_count);
         }
-        let source_destination = if matches!(placement, InsertPlacement::Before | InsertPlacement::After | InsertPlacement::LineStart | InsertPlacement::LineEnd | InsertPlacement::Replace) {
+        let source_destination = if matches!(placement, InsertPlacement::Before | InsertPlacement::After | InsertPlacement::LineStart
+            | InsertPlacement::LineColumnOne | InsertPlacement::LineEnd | InsertPlacement::Replace) {
             self.retained_physical_cursor_source(document)
                 .filter(|at| document.source_insertion_requires_materialization(*at).unwrap_or(false))
         } else { None };
@@ -12064,6 +12728,9 @@ impl CommandInterpreter {
                         line.start + crate::document::leading_whitespace_len(&text)
                     } else { first_nonblank_document(document, &lines, self.cursor) }
                 }),
+            InsertPlacement::LineColumnOne => self
+                .mode_line_insertion(document, false, false)
+                .unwrap_or_else(|| line_start(&lines, self.cursor)),
             InsertPlacement::LineEnd => self
                 .mode_line_insertion(document, true, false)
                 .unwrap_or_else(|| line_end(&lines, self.cursor)),
@@ -12334,6 +13001,8 @@ impl CommandInterpreter {
             document.end_edit_group();
         }
         self.mode = Mode::Normal;
+        // `'^` remembers where typing stopped, before Normal mode steps back.
+        self.marks.insert('^', self.cursor);
         let lines = document.hard_line_snapshot();
         let current_line_start = line_start(&lines, self.cursor);
         if self.cursor > current_line_start {
@@ -13025,6 +13694,13 @@ impl CommandInterpreter {
                     hard_line_count_for_range(&document.hard_line_snapshot(), &extent.range);
                 self.cursor = extent.range.start;
                 self.join_lines(document, count, insert_space)
+            }
+            RepeatAction::VisualNumberChange { shape, count, subtract, progressive } => {
+                // Like Vim's Visual operators, dot reuses the recorded count.
+                let extent = self.resolve_visual_repeat_extent(document, shape);
+                let regions = number_change::line_regions(&document.hard_line_snapshot(), extent.range.clone());
+                let changed = self.change_region_numbers(document, &regions, extent.range.start, count, subtract, progressive)?;
+                Ok(CommandOutput { document_changed: changed, cursor_moved: true, ..CommandOutput::complete() })
             }
             RepeatAction::VisualBlock(_) => Ok(layout_required("Visual Block repeat")),
             RepeatAction::Paste {
@@ -15226,6 +15902,52 @@ enum Motion {
     Paragraph(bool),
 }
 
+/// The text position of the [count] source byte (`go`, `:goto`). Positions
+/// past the end land on the last addressable line, as Vim's `goto_byte()` does.
+fn byte_offset_target(document: &Document, count: usize) -> usize {
+    let source_length = document.source_byte_len();
+    let source = count.saturating_sub(1).min(source_length);
+    let lines = document.hard_line_snapshot();
+    let mapped = document.source_point(source).ok()
+        .and_then(|point| document.map_source_point(point, BoundaryAffinity::Downstream).ok())
+        .map(|mapped| mapped.text().offset());
+    match mapped {
+        Some(offset) if offset < lines.text_length() => offset,
+        _ => {
+            let last = nth_line_start(&lines, document.addressable_hard_line_count());
+            last_grapheme_on_line(document.text(), &lines, last)
+        }
+    }
+}
+
+/// Vim's `fnameescape()`: backslashes before characters special in file
+/// arguments, and before a leading `+`, `>` or lone `-`.
+fn fname_escape(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if " \t\n*?[{`$\\%#'\"|!<".contains(character) {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    if escaped.starts_with(['+', '>']) || escaped == "-" {
+        escaped.insert(0, '\\');
+    }
+    escaped
+}
+
+/// The `z` commands that need layout: row alignment and horizontal scrolling.
+fn is_layout_z_key(key: Key) -> bool {
+    matches!(key, Key::Char('t' | 'z' | 'b' | '.' | '-' | 'h' | 'l' | 'H' | 'L' | 's' | 'e') | Key::Enter)
+}
+
+/// A completed command whose only effect is a message for the native output surface.
+fn info_message(text: String) -> CommandOutput {
+    let mut outcome = ExOutcome::default();
+    outcome.frontend_requests.push(ExFrontendRequest::Info(ex_execute::ExInfoRequest::Message(text)));
+    CommandOutput { ex_outcome: Some(outcome), ..CommandOutput::complete() }
+}
+
 fn layout_required(command: &str) -> CommandOutput {
     CommandOutput::unsupported(format!("{command} requires layout context"))
 }
@@ -15824,6 +16546,13 @@ enum OperatorMotion {
     Percentage,
     LastLine,
     FirstLine,
+    /// `go`: the [count] byte of the source artifact.
+    Byte,
+    /// `gM`: a percentage of the line's text width, half without a count.
+    LinePercent(bool),
+    Bracket(BracketMotion),
+    /// `gn`/`gN`: the next or previous match of the last search pattern.
+    SearchMatch(bool),
 }
 
 fn operator_motion_for_key(key: Key) -> Option<OperatorMotion> {
@@ -15850,6 +16579,14 @@ fn operator_motion_for_key(key: Key) -> Option<OperatorMotion> {
         Key::Char('}') => Some(OperatorMotion::Paragraph(true)),
         Key::Char('%') => Some(OperatorMotion::MatchPair),
         Key::Char('G') => Some(OperatorMotion::LastLine),
+        _ => None,
+    }
+}
+
+/// `/` or `?` starting an operator search; `g??` is instead the doubled Rot13 operator.
+fn operator_search_command(key: Key, operator: Operator) -> Option<char> {
+    match key {
+        Key::Char(command @ ('/' | '?')) if command != operator.doubled_key() => Some(command),
         _ => None,
     }
 }
@@ -16544,6 +17281,7 @@ fn change_case(text: &str, operator: Operator) -> String {
     match operator {
         Operator::Lowercase => text.to_lowercase(),
         Operator::Uppercase => text.to_uppercase(),
+        Operator::Rot13 => text.chars().map(crate::document::rot13).collect(),
         Operator::ToggleCase => text
             .chars()
             .flat_map(|character| {

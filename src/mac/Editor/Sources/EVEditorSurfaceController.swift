@@ -1932,6 +1932,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_EX_FRONTEND_NEW_PANE): kind = .newPane
         case UInt32(VIEM_EX_FRONTEND_ARGUMENT): kind = .navigateArgument
         case UInt32(VIEM_EX_FRONTEND_EDIT): kind = .edit
+        case UInt32(VIEM_EX_FRONTEND_EDIT_ALTERNATE): kind = .editAlternate
         case UInt32(VIEM_EX_FRONTEND_EDIT_NEW_WINDOW): kind = .editNewWindow
         case UInt32(VIEM_EX_FRONTEND_PWD): kind = .printWorkingDirectory
         case UInt32(VIEM_EX_FRONTEND_CHECKTIME): kind = .checkTime

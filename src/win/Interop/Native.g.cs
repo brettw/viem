@@ -1551,6 +1551,7 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_FRONTEND_THEME = 30u;
     public const uint VIEM_EX_FRONTEND_APPLICATION_OPTION = 31u;
     public const uint VIEM_EX_FRONTEND_SCRIPT_CONTINUATION = 32u;
+    public const uint VIEM_EX_FRONTEND_EDIT_ALTERNATE = 33u;
     public const uint VIEM_EX_FRONTEND_STARTUP_APPLICATION = (1u << 15);
     public const uint VIEM_ARGUMENT_NEXT = 1u;
     public const uint VIEM_ARGUMENT_PREVIOUS = 2u;

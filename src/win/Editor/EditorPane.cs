@@ -28,6 +28,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public CoreDocument Document { get; private set; }
     public CoreView? View { get; private set; }
     internal ulong RememberedArgument { get; set; } = ulong.MaxValue;
+    /// <summary>The file this pane showed before its current document (Ctrl-^).</summary>
+    internal string? AlternatePath { get; set; }
     internal ulong? InitialHeightLines { get; set; }
     internal bool InitialVerticalSplit { get; set; }
     internal bool? InitialNumber { get; set; }

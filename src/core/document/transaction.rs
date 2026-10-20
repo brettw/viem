@@ -81,7 +81,7 @@ mod source_typing;
 mod addressed_lines;
 #[path = "source_transforms.rs"]
 mod source_transforms;
-pub use source_transforms::PhysicalSourceTransform;
+pub use source_transforms::{rot13, PhysicalSourceTransform};
 #[path = "candidate.rs"]
 mod candidate;
 pub use candidate::{

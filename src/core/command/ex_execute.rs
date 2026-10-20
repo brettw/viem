@@ -388,6 +388,11 @@ pub enum ExFileRequest {
         path: Option<String>,
         force: bool,
     },
+    /// `CTRL-^`: edit the file the pane showed before its current one.
+    /// The host owns that per-pane history.
+    EditAlternate {
+        force: bool,
+    },
     New {
         force: bool,
     },

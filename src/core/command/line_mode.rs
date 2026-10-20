@@ -371,8 +371,8 @@ pub(super) enum LineShape {
     Down,
     Up,
 }
-struct LineExtent {
-    text: Range<usize>,
+pub(super) struct LineExtent {
+    pub(super) text: Range<usize>,
     source: Option<Range<usize>>,
     whole: bool,
 }
@@ -437,6 +437,7 @@ impl CommandInterpreter {
                         } | RepeatAction::Join { .. }
                             | RepeatAction::Insert {
                                 placement: InsertPlacement::LineStart
+                                    | InsertPlacement::LineColumnOne
                                     | InsertPlacement::LineEnd
                                     | InsertPlacement::OpenAbove
                                     | InsertPlacement::OpenBelow,
@@ -446,7 +447,7 @@ impl CommandInterpreter {
                 ),
                 _ => false,
             },
-            Pending::G { .. } => key == Key::Char('J'),
+            Pending::G { .. } => key == Key::Char('J') || self.mode == Mode::Normal && key == Key::Char('I'),
             _ => false,
         }
     }
@@ -1001,6 +1002,7 @@ impl CommandInterpreter {
                 Operator::Lowercase => Some(crate::document::PhysicalSourceTransform::Lowercase),
                 Operator::Uppercase => Some(crate::document::PhysicalSourceTransform::Uppercase),
                 Operator::ToggleCase => Some(crate::document::PhysicalSourceTransform::ToggleCase),
+                Operator::Rot13 => Some(crate::document::PhysicalSourceTransform::Rot13),
                 Operator::Indent => Some(crate::document::PhysicalSourceTransform::Indent { columns: self.indentation_options().shift_width().saturating_mul(applications), options: self.indentation_options() }),
                 Operator::Outdent => Some(crate::document::PhysicalSourceTransform::Outdent { columns: self.indentation_options().shift_width().saturating_mul(applications), options: self.indentation_options() }),
                 Operator::Reindent => Some(crate::document::PhysicalSourceTransform::Reindent { options: self.indentation_options() }),
@@ -1019,7 +1021,7 @@ impl CommandInterpreter {
                         retained_indent.clone()
                     }
                 }
-                Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => String::new(),
+                Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase | Operator::Rot13 => String::new(),
                 Operator::Format | Operator::FormatKeepCursor => {
                     unreachable!("reflow bypasses view-line extents")
                 }
@@ -1132,7 +1134,7 @@ impl CommandInterpreter {
             }
             let replacement = match operator {
                 Operator::Delete | Operator::Change => String::new(),
-                Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
+                Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase | Operator::Rot13 => {
                     change_case(&document.text()[range.clone()], operator)
                 }
                 _ => String::new(),
@@ -1151,7 +1153,7 @@ impl CommandInterpreter {
                 document.delete_visual_text(range.clone())?;
             } else if operator == Operator::Change {
                 changed_cursor = Some(delete_with_cursor(document, range.clone())?);
-            } else if matches!(operator, Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase) {
+            } else if matches!(operator, Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase | Operator::Rot13) {
                 document.apply_edits(case_edits(&document.text()[range.clone()], range.start, operator))?;
             } else {
                 document.replace(range.clone(), &replacement)?;
@@ -1512,7 +1514,7 @@ impl CommandInterpreter {
         .ok()?;
         Some(point.text_offset)
     }
-    fn mode_visual_extent(
+    pub(super) fn mode_visual_extent(
         &self,
         document: &Document,
         snapshot: Option<&LayoutSnapshot>,

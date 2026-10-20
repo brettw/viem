@@ -484,7 +484,21 @@ impl CommandInterpreter {
             | "reg_recording" | "reg_executing" | "getchangelist" | "haslocaldir" => Ok(match name {
                 "reg_recording" => Value::String(self.recording.as_ref().map(|(name, _)| name.to_string()).unwrap_or_default().into()),
                 "reg_executing" | "getcmdwintype" => Value::str(""),
-                "getchangelist" => Value::list(vec![Value::list(Vec::new()), 0.into()]),
+                "getchangelist" => {
+                    let lines = document.hard_line_snapshot();
+                    let (changes, index) = self.change_list();
+                    let items = changes.iter().map(|offset| {
+                        let offset = (*offset).min(lines.text_length());
+                        let line = document.physical_line_at_text(offset).map_or(0, |line| line.index as i64 + 1);
+                        let column = lines.line_at_offset(offset).map_or(0, |line| offset - line.content_range().start.min(offset));
+                        Value::Dict(vimscript::Dict::from_pairs([
+                            ("lnum".into(), line.into()),
+                            ("col".into(), (column as i64).into()),
+                            ("coladd".into(), 0.into()),
+                        ]))
+                    }).collect();
+                    Value::list(vec![Value::list(items), (index as i64).into()])
+                }
                 _ => Value::Number(0),
             }),
             "foldclosed" | "foldclosedend" => Ok(Value::Number(-1)),
@@ -917,6 +931,29 @@ impl CommandInterpreter {
                 yank: None,
             }));
             return CommandOutput { mode_changed: true, ..CommandOutput::complete() };
+        }
+        self.run_script_headless(document, command)
+    }
+
+    /// Run a command line that a Normal command composed (`K` with an Ex
+    /// 'keywordprg'). Script and user commands are available, and like
+    /// Vim's `do_cmdline_cmd()` it adds no prompt history.
+    pub(super) fn execute_composed_command_line(&mut self, document: &mut Document, command: &str) -> CommandOutput {
+        if let Some(host) = vimscript::commands::single_host_command(&self.script, command) {
+            if let Some(output) = super::options::execute_script_only_command(self, document, host.name, &host.argument) {
+                return output;
+            }
+            return self.execute_ex_command_with_visual_range(document, &host.text, None);
+        }
+        if self.plan_compound_replay {
+            self.pending_replay = Some(ReplayPlan::Script(ScriptPlan {
+                text: command.to_owned(),
+                visual_range: None,
+                history: None,
+                events: Vec::new(),
+                yank: None,
+            }));
+            return CommandOutput::complete();
         }
         self.run_script_headless(document, command)
     }

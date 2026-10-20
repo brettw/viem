@@ -1007,6 +1007,17 @@ extension EVDocumentWindowController {
       }
       edit(document, in: openingPane, path: request.path, force: request.force, completion: completion)
 
+    case .editAlternate:
+      guard let alternate = openingPane.alternateURL else {
+        completion(.failure(EVDocumentHostError.noAlternateFile))
+        return
+      }
+      guard request.force || !persistence.isDirty || hasOtherView(of: document, excluding: openingPane) else {
+        completion(.failure(EVDocumentHostError.documentModified))
+        return
+      }
+      edit(document, in: openingPane, path: alternate.path, force: request.force, completion: completion)
+
     case .new:
       guard
         request.force || !persistence.isDirty
@@ -1403,6 +1414,8 @@ extension EVDocumentWindowController {
     pane.document = document
     let previous = source ?? documentContentController
     surface.inheritLineNumberOption(from: previous.editorSurface)
+    // A split keeps its source pane's alternate file, as Vim's windows do.
+    pane.alternateURL = previous.alternateURL
     pane.argumentList = previous.argumentList
     pane.argumentIndex = previous.argumentList?.index(of: previous.document?.fileURL,
       preferring: previous.argumentIndex) ?? previous.argumentIndex
@@ -1430,6 +1443,8 @@ extension EVDocumentWindowController {
     EVStartupPerformance.mark("window.replacePane.begin")
     defer { EVStartupPerformance.mark("window.replacePane.end") }
     let next = makePane(document: document)
+    // The file this pane showed becomes its alternate file (`CTRL-^`).
+    next.alternateURL = old.document?.fileURL ?? old.alternateURL
     next.argumentList = old.argumentList
     let previousIndex = old.argumentList?.index(of: old.document?.fileURL, preferring: old.argumentIndex)
       ?? old.argumentIndex
@@ -1659,6 +1674,8 @@ final class EVDocumentContentViewController: NSViewController,
   }
   var argumentList: EVArgumentList?
   var argumentIndex: Int?
+  /// The file this pane showed before its current document (`CTRL-^`).
+  var alternateURL: URL?
 
   let editorSurface: any EVEditorSurface
   private let configuration: EVConfigurationStore

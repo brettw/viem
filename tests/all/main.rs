@@ -169,6 +169,8 @@ mod viewport_horizontal_range;
 mod vim_command_matrix;
 mod vim_deep_semantics;
 mod vim_exact_conformance;
+mod vim_normal_additions;
+mod vim_visual_additions;
 mod whitespace_settings_ffi;
 mod window_commands;
 mod wysiwyg_edit_error_audit;
