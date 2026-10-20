@@ -226,4 +226,37 @@ import XCTest
         XCTAssertEqual(try session.commandLineExport().text, "abc")
         withExtendedLifetime(window) {}
     }
+
+    func testNomodifiableBlocksTypingPasteAndUndoWithAnActionableDiagnostic() throws {
+        let (backend, surface, session, window) = try makeSurface()
+        let pasteboard = Pasteboard()
+        pasteboard.text = "pasted"
+        surface.pasteboard = pasteboard
+        func command(_ text: String) {
+            surface.performInput {
+                _ = try session.sendText(":" + text)
+                _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+            }
+        }
+        command("set noma")
+        for text in ["i", "x", "u"] {
+            surface.performInput { _ = try session.sendText(text) }
+            XCTAssertEqual(try backend.formattedText(), "document")
+            XCTAssertTrue(surface.commandOutput?.contains("E21") == true, "\(text): \(surface.commandOutput ?? "missing diagnostic")")
+        }
+        surface.editorView.pasteIntoDocument(nil)
+        XCTAssertEqual(try backend.formattedText(), "document")
+        XCTAssertTrue(surface.commandOutput?.contains("E21") == true)
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        command("set ma")
+        surface.performInput {
+            _ = try session.sendTestKeys("iX")
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+        }
+        XCTAssertEqual(try backend.formattedText(), "Xdocument")
+        surface.performInput { _ = try session.sendText("u") }
+        XCTAssertEqual(try backend.formattedText(), "document")
+        XCTAssertFalse(backend.persistenceState.isDirty)
+        withExtendedLifetime(window) {}
+    }
 }

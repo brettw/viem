@@ -2749,7 +2749,7 @@ fn document_status(error: DocumentError) -> ViemStatus {
         | DocumentError::HardLineTransferProjectionMismatch => ViemStatus::VerificationFailed,
         DocumentError::LineEndingConversionWouldReinterpretContent
         | DocumentError::UnrepresentableFormattedCharacter { .. } => ViemStatus::PolicyRequired,
-        DocumentError::UnsupportedFormatting | DocumentError::UnsupportedTableEdit(_) | DocumentError::OpaqueDecodingConflict { .. } => {
+        DocumentError::NotModifiable | DocumentError::UnsupportedFormatting | DocumentError::UnsupportedTableEdit(_) | DocumentError::OpaqueDecodingConflict { .. } => {
             ViemStatus::UnsupportedOperation
         }
         DocumentError::DocumentIdentityExhausted | DocumentError::BlockIdentityExhausted => {

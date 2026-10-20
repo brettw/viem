@@ -1429,7 +1429,7 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     pub fn can_insert_list_paragraph(&self, view_id: ViewId) -> Result<bool, CoreError> {
         let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
-        Ok(!self.document.is_read_only() && view.composition.is_none() && view.commands.can_insert_list_paragraph(&self.document)
+        Ok(self.document.is_modifiable() && !self.document.is_read_only() && view.composition.is_none() && view.commands.can_insert_list_paragraph(&self.document)
             && self.list_selection_identity(view_id).is_ok_and(|selection|
                 selection.kind() == LogicalSelectionKind::None && selection.range().is_empty()))
     }
@@ -4924,6 +4924,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         navigation: HistoryNavigationRequest,
     ) -> Result<CoreOutcome, CoreError> {
+        self.document.require_modifiable()?;
         let mut composition_changes = Vec::new();
         if self
             .views
@@ -5221,7 +5222,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         } else { None };
         let autocmd_generation = self.autocmd_input_generation;
         let mode_before = self.views.get(&view_id).filter(|view| !view.commands.has_staged_script_action()).map(|view| view.commands.mode());
-        let mut outcome = self.handle_without_search_presentation(view_id, event)?;
+        let mut outcome = match self.handle_without_search_presentation(view_id, event) {
+            Err(CoreError::Document(DocumentError::NotModifiable)
+                | CoreError::ModelTransaction(ModelTransactionError::Document(DocumentError::NotModifiable))) => CoreOutcome {
+                command: Some(CommandOutput::not_modifiable()),
+                document_changed: false, position_map: None, layout_changed: false,
+                composition_changes: Vec::new(),
+            },
+            result => result?,
+        };
         if let Some(cancelled) = cancelled {
             let mut accumulator = CoreOutcomeAccumulator::new(cancelled);
             accumulator.merge(outcome)?;

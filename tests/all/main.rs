@@ -226,3 +226,5 @@ mod vimscript_events;
 mod vimscript_options;
 
 mod vimscript_continuation;
+
+mod modifiable;

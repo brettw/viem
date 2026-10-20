@@ -647,7 +647,7 @@ impl Document {
         range: Range<usize>,
         title: &str,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if self.format() != Format::Markdown || self.is_read_only() || title.len() > MAX_LINK_QUERY_BYTES / 2 {
+        if self.format() != Format::Markdown || !self.is_modifiable() || self.is_read_only() || title.len() > MAX_LINK_QUERY_BYTES / 2 {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         let link = self.link_snapshot_at(self.text_point(range.start)?)?
@@ -803,7 +803,7 @@ impl Document {
     }
 
     pub(crate) fn can_exit_link_typing(&self, at: usize, affinity: BoundaryAffinity) -> bool {
-        if self.is_read_only() || !self.format().is_markdown() {
+        if !self.is_modifiable() || self.is_read_only() || !self.format().is_markdown() {
             return false;
         }
         let Ok(Some(link)) = self.link_at_boundary(at, affinity) else {
@@ -816,7 +816,7 @@ impl Document {
         if range.is_empty() || range.len() > MAX_LINK_QUERY_BYTES / 2 {
             return false;
         }
-        if self.is_read_only() || !self.format().is_markdown() {
+        if !self.is_modifiable() || self.is_read_only() || !self.format().is_markdown() {
             return false;
         }
         let Ok(Some(link)) = self.link_snapshot_at(match self.text_point(range.start) {
@@ -1121,7 +1121,7 @@ impl Document {
         &self,
         range: Range<usize>,
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
-        if self.is_read_only()
+        if !self.is_modifiable() || self.is_read_only()
             || !self.format().is_markdown()
             || range.is_empty()
             || range.len() > MAX_LINK_QUERY_BYTES / 2
@@ -1236,7 +1236,7 @@ impl Document {
 
     pub fn can_insert_link(&self, range: Range<usize>) -> bool {
         if !self.format().is_markdown()
-            || self.is_read_only()
+            || !self.is_modifiable() || self.is_read_only()
             || range.start > range.end
             || range.len() > MAX_LINK_QUERY_BYTES / 2
             || self.text_point(range.start).is_err()
@@ -1290,6 +1290,7 @@ impl Document {
         revision: Revision,
         intent: LinkEditIntent,
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        self.require_modifiable()?;
         if document != self.id() {
             return Err(DocumentError::WrongDocument.into());
         }
@@ -1300,7 +1301,7 @@ impl Document {
             }
             .into());
         }
-        if self.is_read_only() || !self.format().is_markdown() {
+        if !self.is_modifiable() || self.is_read_only() || !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         if let LinkEditIntent::RemoveSelection { range } = intent {

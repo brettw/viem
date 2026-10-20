@@ -270,11 +270,46 @@ a full Vim process-global/default-window model.
 | Category | Behavior |
 | --- | --- |
 | Implemented editing options | Existing wrapping, line numbers, search, indentation, whitespace and formatting options, plus `clipboard`, `gdefault`, `shiftround`, `joinspaces`, `whichwrap`, `startofline`, `history`, `iskeyword`, `sections` (for `[[` and `]]`), `keywordprg` (for `K`) and language overrides. |
-| Source/model options | `readonly` changes read-only state. `fileencoding` and `bomb` use verified encoding transactions and ordinary undo; startup forbids source conversion. |
+| Source/model options | `modifiable` controls buffer editing; `readonly` separately controls saving. `fileencoding` and `bomb` use verified encoding transactions and ordinary undo; startup forbids source conversion. |
 | Fixed-value compatibility | Options with a fixed Viem behavior are accepted silently at the matching value; contradicting changes produce a notice. Examples include `nocompatible`, UTF-8 internal `encoding`, `linebreak`, `hidden` and fixed numeric-format behavior. |
 | Inert compatibility | Terminal, plugin and display-tuning options such as `termguicolors`, `ttimeout`, `runtimepath`, `loadplugins` and `synmaxcol` are accepted silently without enabling those mechanisms or changing Viem's resource limits. |
 | Ignored | Backup, swap and undo-file options are accepted silently and do not replace Viem's existing recovery/history policies. |
-| Recognized unsupported | Shadow values can be read, but a nondefault change produces a notice. Examples include `guicursor`, cursor/relative-number overlays, statusline customization, folds and spelling. Unknown names report E518. |
+| Recognized unsupported | Shadow values can be read, but a nondefault change produces a notice. The deliberate exclusions below remain unsupported even when their shadow values are enabled. Unknown names report E518. |
+
+`modifiable` (`ma`) defaults on and is shared by all views of a buffer.
+`:set nomodifiable` (`noma`) rejects content changes with E21, including Normal,
+Insert/Replace, Visual and block edits, Ex/script edits, paste, IME commits,
+document formatting, undo/redo and `fileformat`, `fileencoding` or BOM changes.
+Prepared edits are checked again when they commit. Changing the option creates
+no undo entry, changes no source or dirty state, and is not restored by undo.
+Navigation, selection, copy/yank, searches, prompt editing, saving (subject to
+`readonly`), display settings and switching Preview remain available.
+`:set modifiable`, `:set ma!`, `:set ma&` and script option assignment use the
+same buffer policy. As with other compatibility options, `:setglobal` operates
+on the current buffer rather than establishing defaults for future buffers.
+
+### Deliberately unsupported options
+
+The following features are explicitly outside Viem's supported behavior, not
+pending implementation work:
+
+| Options | Unsupported behavior |
+| --- | --- |
+| `guicursor` | Vim cursor-shape and blink configuration. Viem uses its own mode-aware caret presentation. |
+| `cursorline`, `cursorlineopt` | Current-line highlighting and its Vim configuration. |
+| `colorcolumn` | Configurable column guides. |
+| `relativenumber` | Relative line-number display. Absolute line numbers remain supported. |
+| `statusline` | Vim statusline expressions and custom layouts. Viem owns its status bar. |
+| `wrapmargin` | Margin-relative automatic text wrapping. Existing view wrapping and explicit `textwidth` reflow retain their separate behavior. |
+| All `fold*` options | Vim folding, fold creation/navigation commands and fold persistence. Text is not hidden or rearranged by these options. |
+| All `spell*` options and `mkspellmem` | Vim spelling checks, dictionaries, suggestions, spelling commands and dictionary generation. |
+
+These names and their aliases are recognized for script compatibility. Reads
+return stored shadow values; nondefault changes produce an unsupported-option
+notice. `exists('&name')` is true and `exists('+name')` is false. Recognition
+never enables the feature or runs expressions such as `foldexpr` or `foldtext`.
+
+### Option behavior and native mapping
 
 `exists('&name')` tests whether an option is recognized; `exists('+name')` tests
 whether Viem reports working support. Neither implies complete Vim semantics for

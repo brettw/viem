@@ -34,19 +34,36 @@ keyboard selection is covered separately in B5 below.
   bound to the original revision and commit in one undo unit. A body such as
   `:g/x/%s/x/xx/gc` revisits matches affected by earlier decisions, requiring
   sequential previews against tentative results; it is rejected before asking
-  questions. See [global confirmation](src/core/command/global_confirmation.rs)
-  and [confirmation tests](tests/all/substitute_confirmation.rs).
+  questions. For example, with two original lines containing `x`, accepting the
+  first whole-buffer substitution changes both to `xx`; the second selected
+  line's invocation must then offer the newly created matches. Merging previews
+  computed from the original text cannot reproduce that behavior.
+
+  Deferred design questions (no implementation is planned in this change):
+  - How should each invocation preview the previous invocation's accepted edits
+    in an isolated candidate while keeping the original `:global` target lines
+    anchored through inserted, deleted or split lines?
+  - How should the confirmation highlight, cursor and Ctrl-E/Ctrl-Y scrolling
+    use layout for that candidate without publishing tentative source to other
+    views? Original-revision layout cannot locate newly created matches.
+  - How should `a`, `q`, `l`, Escape, Ctrl-C and per-target failures retain the
+    appropriate completed decisions across invocations? The existing rules for
+    per-substitution responses, global partial progress and final atomic
+    publication need explicit tests; an external edit must cancel stale work.
+  - How can candidate source, projections, layout and repeated match growth be
+    bounded and cancellable while preserving exact bytes and one-step undo/redo?
+
+  Any implementation must reconcile sequential candidate revisions with the
+  current original-revision confirmation contract before lifting the rejection.
+  Cover overlapping explicit/count ranges, nested predicates, zero-width and
+  newly created matches, Markdown, mixed encodings/endings and multiple views.
+  See [global confirmation](src/core/command/global_confirmation.rs) and
+  [confirmation tests](tests/all/substitute_confirmation.rs).
 
 ## 5. `:set` options
 
-`guicursor`, `cursorline`, `colorcolumn`, `relativenumber`, `statusline`,
-`wrapmargin`, `modifiable`, and folding/spelling settings remain recognized
-without their corresponding
-editing or presentation behavior. Recognition and readable shadow values do
-not imply implementation. The treatment tables in
-[`options.rs`](src/core/command/options.rs) and
-[the option profile](docs/vimscript.md#options-and-native-settings) distinguish
-implemented, application-mapped, fixed, ignored and unsupported options.
+No known gaps remain in the audited option list. Deliberately unsupported
+options are recorded in [the option profile](docs/vimscript.md#deliberately-unsupported-options).
 
 ## 6. Registers and marks
 
