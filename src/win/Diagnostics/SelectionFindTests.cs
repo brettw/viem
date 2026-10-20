@@ -79,6 +79,13 @@ internal static class SelectionFindTests
             view.Key(VIEM_KEY_ESCAPE); view.Command("0n");
             Check(view.Presentation.cursor_utf8_offset == 8,
                 "native selected search treats punctuation literally and preserves the accepted pattern after rejection");
+            await InputRoutingTests.Settle();
+            for (int i = 0; i < 100 && (view.Presentation.flags & VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT) == 0; i++)
+                await Task.Delay(10);
+            pane.Refresh();
+            Check(view.Presentation.search_match_current == 2 && view.Presentation.search_match_total == 2
+                && pane.LocationControl.Text.EndsWith("[2/2]"),
+                "shared search counts cross the ABI and appear in the native location status");
 
             view.Command("ggv2l"); view.Scroll(0, 600);
             Check(view.Viewport.top > 100, "the selected text can be scrolled outside the viewport");

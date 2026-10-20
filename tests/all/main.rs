@@ -144,6 +144,7 @@ mod rich_caret_boundaries;
 mod rich_edit_boundaries;
 mod rich_lists;
 mod search_regex;
+mod search_count;
 mod select_all;
 mod select_mode;
 mod native_navigation;

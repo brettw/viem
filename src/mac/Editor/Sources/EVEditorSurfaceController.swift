@@ -1630,10 +1630,12 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         let point = try? session?.lineLocation()
         let line = String(point?.line ?? 1)
         let column = point?.column ?? 1
+        let searchCount = (viewPresentation.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT)) != 0
+            ? " [\(viewPresentation.search_match_current)/\(viewPresentation.search_match_total)]" : ""
         statusBarState = EVStatusBarState(
             mode: modeLabel(viewPresentation.mode),
             message: substituteConfirmationPrompt ?? lastErrorMessage,
-            location: "Ln \(line), Col \(column)",
+            location: "Ln \(line), Col \(column)" + searchCount,
             lineMode: (try? session?.lineMode()) ?? .visual,
             commandLine: editorView.commandLineRenderState().map {
                 EVStatusCommandLine(

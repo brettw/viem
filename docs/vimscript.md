@@ -279,7 +279,7 @@ a full Vim process-global/default-window model.
 `exists('&name')` tests whether an option is recognized; `exists('+name')` tests
 whether Viem reports working support. Neither implies complete Vim semantics for
 an application mapping. `iskeyword` affects editing motions, text objects,
-abbreviations and word deletion. Search keyword extraction and Unicode regex
+abbreviations, word deletion and prompt Ctrl-R Ctrl-W insertion. Search keyword extraction and Unicode regex
 boundaries retain their independent documented behavior. `K` runs a
 `keywordprg` that begins with `:` as an Ex command, with [count] and the
 `fnameescape()`d keyword appended; any other value names an external program,

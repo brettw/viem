@@ -181,3 +181,196 @@ fn coordinator_undo_restores_invocation_cursor_instead_of_final_preview() {
         .unwrap();
     assert_eq!(core.command_state(view).unwrap().cursor(), 11);
 }
+
+
+#[test]
+fn confirmation_scrolls_without_changing_the_match_or_approvals() {
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let original = "x\n".repeat(60);
+    let mut core = Core::new(Document::new(&original));
+    let view = core.add_view(MockTextMeasurementProvider::default(), 400., 100.);
+    for ch in ":%s/x/z/gc".chars() {
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char(ch)))).unwrap();
+    }
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+    let prompt = core.command_state(view).unwrap().substitute_confirmation_prompt();
+    let cursor = core.command_state(view).unwrap().cursor();
+    let before = core.layout(view).unwrap().viewport_top();
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('e')))).unwrap();
+    assert!(core.layout(view).unwrap().viewport_top() > before);
+    assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+    assert_eq!(core.command_state(view).unwrap().substitute_confirmation_prompt(), prompt);
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('y')))).unwrap();
+    assert_eq!(core.layout(view).unwrap().viewport_top(), before);
+    assert_eq!(core.document().text(), original);
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('l')))).unwrap();
+    assert!(core.document().text().starts_with("z\nx\n"));
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('u')))).unwrap();
+    assert_eq!(core.document().text(), original);
+}
+
+#[test]
+fn global_choices_are_per_invocation_and_publish_together() {
+    for (choices, expected) in [
+        ("yal", "long long\nkeep\nlong x"),
+        ("qa", "x x\nkeep\nlong long"),
+        ("la", "long x\nkeep\nlong long"),
+        ("nnya", "x x\nkeep\nlong long"),
+    ] {
+        let original = "x x\nkeep\nx x";
+        let mut d = Document::new(original);
+        let mut c = CommandInterpreter::new();
+        begin(&mut c, &mut d, ":g/x/s/x/long/gc");
+        for (index, choice) in choices.chars().enumerate() {
+            assert_eq!(d.text(), original, "{choices} before choice {index}");
+            key(&mut c, &mut d, Key::Char(choice));
+        }
+        assert!(c.substitute_confirmation_prompt().is_none(), "{choices}");
+        assert_eq!(d.text(), expected, "{choices}");
+        assert!(d.undo());
+        assert_eq!(d.text(), original);
+        assert!(!d.undo());
+        assert!(d.redo());
+        assert_eq!(d.text(), expected);
+    }
+}
+
+#[test]
+fn global_confirmation_handles_nested_inverse_errors_and_interrupts() {
+    for command in [":g/x/v/keep/s/x/z/gc", ":v/keep/s/x/z/gc", ":g!/keep/s/x/z/gc"] {
+        let mut d = Document::new("xkeep\nx x\nx x");
+        let mut c = CommandInterpreter::new();
+        begin(&mut c, &mut d, command);
+        key(&mut c, &mut d, Key::Char('a'));
+        assert_eq!(d.text(), "xkeep\nx x\nx x");
+        key(&mut c, &mut d, Key::Ctrl('c'));
+        assert!(c.substitute_confirmation_prompt().is_none());
+        assert_eq!(d.text(), "xkeep\nz z\nx x");
+        assert!(d.undo());
+        assert!(!d.undo());
+    }
+    let mut d = Document::new("xkeep\nxdelete\nxagain");
+    let mut c = CommandInterpreter::new();
+    begin(&mut c, &mut d, ":g/x/s/delete/gone/c");
+    let status = key(&mut c, &mut d, Key::Char('y'));
+    assert!(format!("{status:?}").contains("PatternNotFound"));
+    assert_eq!(d.text(), "xkeep\nxgone\nxagain");
+    assert!(d.undo());
+    assert!(!d.undo());
+}
+
+#[test]
+fn global_confirmation_preserves_encoded_source_captures_and_line_endings() {
+    for (source, encoding, format, command, expected) in [
+        (b"**one** *two*\r\n\r\n**one** *two*\r\n".to_vec(), Encoding::Utf8, Format::Markdown,
+            r":g/one/s/(one) (two)/\2 \1/c", "two one\ntwo one"),
+        (b"x \xe9\r\nkeep\nx \xe9".to_vec(), Encoding::Latin1, Format::PlainText,
+            ":g/x/s/x/z/c", "z é\r\nkeep\nz é"),
+    ] {
+        let mut d = Document::from_bytes(source.clone(), encoding, format).unwrap();
+        let mut c = CommandInterpreter::new();
+        begin(&mut c, &mut d, command);
+        key(&mut c, &mut d, Key::Char('a'));
+        assert_eq!(d.source_bytes(), source);
+        assert_eq!(key(&mut c, &mut d, Key::Char('a')), CommandStatus::Complete);
+        assert_eq!(d.text(), expected);
+        let saved = d.source_bytes();
+        let reopened = Document::from_bytes(saved.clone(), encoding, format).unwrap();
+        assert_eq!(reopened.text(), expected);
+        assert!(d.undo());
+        assert_eq!(d.source_bytes(), source);
+        assert!(!d.undo());
+        assert!(d.redo());
+        assert_eq!(d.source_bytes(), saved);
+    }
+}
+
+#[test]
+fn global_confirmation_cancels_all_staged_choices_after_an_external_edit() {
+    let mut d = Document::new("x\nx\nx");
+    let mut c = CommandInterpreter::new();
+    begin(&mut c, &mut d, ":g/x/s/x/z/c");
+    key(&mut c, &mut d, Key::Char('y'));
+    d.apply_edits(vec![TextEdit::new(0..0, "other ")]).unwrap();
+    let status = key(&mut c, &mut d, Key::Char('a'));
+    assert!(format!("{status:?}").contains("document changed"));
+    assert_eq!(d.text(), "other x\nx\nx");
+    assert!(d.undo());
+    assert!(!d.undo());
+}
+
+#[test]
+fn global_confirmation_keeps_selected_source_lines_within_folded_markdown() {
+    let source = "x first\nx second\n\nkeep";
+    let mut d = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut c = CommandInterpreter::new();
+    c.set_line_mode(&d, viem_core::command::LineMode::PhysicalSource).unwrap();
+    begin(&mut c, &mut d, ":g/x/s/x/z/gc");
+    key(&mut c, &mut d, Key::Char('a'));
+    assert!(c.substitute_confirmation_prompt().is_some());
+    assert_eq!(key(&mut c, &mut d, Key::Char('a')), CommandStatus::Complete);
+    assert_eq!(d.source_bytes(), b"z first\nz second\n\nkeep");
+    assert!(d.undo());
+    assert_eq!(d.source_bytes(), source.as_bytes());
+    assert!(!d.undo());
+}
+
+#[test]
+fn global_confirmation_honors_disjoint_counts_and_rejects_overlapping_questions() {
+    let mut d = Document::new("x start\nx\nkeep\nx start\nx");
+    let mut c = CommandInterpreter::new();
+    begin(&mut c, &mut d, ":g/start/s/x/z/gc 2");
+    key(&mut c, &mut d, Key::Char('a'));
+    assert_eq!(key(&mut c, &mut d, Key::Char('a')), CommandStatus::Complete);
+    assert_eq!(d.text(), "z start\nz\nkeep\nz start\nz");
+    assert!(d.undo());
+    let original = d.source_bytes();
+    let status = ex(&mut c, &mut d, ":g/x/%s/x/xx/gc");
+    assert!(format!("{status:?}").contains("disjoint match ranges"));
+    assert!(c.substitute_confirmation_prompt().is_none());
+    assert_eq!(d.source_bytes(), original);
+    assert!(!d.undo());
+}
+
+#[test]
+fn global_confirmation_retains_valid_targets_when_another_cannot_encode_the_replacement() {
+    let source = b"x\n\n```\nx\n```";
+    let mut d = Document::from_bytes(source.to_vec(), Encoding::Latin1, Format::Markdown).unwrap();
+    let mut c = CommandInterpreter::new();
+    c.set_line_mode(&d, viem_core::command::LineMode::PhysicalSource).unwrap();
+    begin(&mut c, &mut d, ":g/x/s/x/好/c");
+    key(&mut c, &mut d, Key::Char('a'));
+    let status = key(&mut c, &mut d, Key::Char('a'));
+    assert_ne!(status, CommandStatus::Complete);
+    assert_eq!(d.text(), "好\nx");
+    assert!(d.undo());
+    assert_eq!(d.source_bytes(), source);
+    assert!(!d.undo());
+}
+
+#[test]
+fn global_confirmation_coordinator_restores_views_cursor_and_jump_origin() {
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let mut core = Core::new(Document::new("origin\nx\nx\ntail"));
+    let view = core.add_view(MockTextMeasurementProvider::default(), 400., 100.);
+    let other = core.add_view(MockTextMeasurementProvider::default(), 400., 100.);
+    core.handle(other, CoreEvent::Input(InputEvent::Key(Key::Char('G')))).unwrap();
+    for ch in ":g/x/s/x/long/c".chars() {
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char(ch)))).unwrap();
+    }
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap();
+    for ch in "aa".chars() {
+        core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char(ch)))).unwrap();
+    }
+    assert_eq!(core.document().text(), "origin\nlong\nlong\ntail");
+    assert_eq!(core.command_state(other).unwrap().cursor(), 17);
+    assert_eq!(core.command_state(view).unwrap().cursor(), 12);
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Ctrl('o')))).unwrap();
+    assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Char('u')))).unwrap();
+    assert_eq!(core.document().text(), "origin\nx\nx\ntail");
+    assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+    assert_eq!(core.command_state(other).unwrap().cursor(), 11);
+}

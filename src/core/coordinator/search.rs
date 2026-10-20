@@ -3,6 +3,7 @@
 use super::*;
 use crate::command::search_regex::{scanner::RegexScanner, CompiledRegex, RegexLimits};
 use crate::command::{RevealedSearchMatch, SearchPresentation, SearchPresentationKey};
+use crate::command::search_presentation::SearchMatchCount;
 use std::ops::Range;
 
 const SEARCH_BATCH_BYTES: usize = 8_192;
@@ -49,6 +50,10 @@ pub(super) struct SearchViewState {
     metrics_overlay: bool,
     viewport: Option<PreviewViewport>,
     diagnostic: Option<String>,
+    count_key: Option<(ScanKey, usize)>,
+    count_scanner: Option<RegexScanner>,
+    count_current: usize,
+    count_total: usize,
 }
 
 impl<P: TextMeasurementProvider> View<P> {
@@ -66,6 +71,14 @@ impl<P: TextMeasurementProvider> View<P> {
 }
 
 impl<P: TextMeasurementProvider> Core<P> {
+    /// Never scans or returns a count from a stale document, query or caret.
+    pub fn search_match_count(&self, view_id: ViewId) -> Option<&SearchMatchCount> {
+        let view = self.views.get(&view_id)?;
+        if view.search.key.as_ref() != Some(&view.commands.search_presentation_key_with_layout(
+            &self.document, view.layout.snapshot())) { return None; }
+        view.search.presentation.as_ref()?.match_count.as_ref()
+    }
+
     /// True also for stale query state, so inactive panes discover shared
     /// pattern/option changes before exporting another presentation snapshot.
     pub fn search_work_pending(&self, view_id: ViewId) -> Result<bool, CoreError> {
@@ -76,6 +89,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let state = &view.search;
         let key = view.commands.search_presentation_key_with_layout(&self.document, view.layout.snapshot());
         Ok(state.key.as_ref() != Some(&key)
+            || state.count_scanner.as_ref().is_some_and(|scanner| !scanner.is_complete())
             || state.style_revision != Some(self.document.projection().style_sheet().revision)
             || state
                 .scanner
@@ -110,7 +124,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut restore = None;
         if query_changed {
             let view = &self.views[&view_id];
-            let presentation = view.commands.search_presentation_with_layout(&self.document, view.layout.snapshot());
+            let mut presentation = view.commands.search_presentation_with_layout(&self.document, view.layout.snapshot());
+            presentation.match_count = view.search.presentation.as_ref().and_then(|previous| previous.match_count.clone());
             let view = self.views.get_mut(&view_id).unwrap();
             if presentation.incremental_active && view.search.viewport.is_none() {
                 update_viewport_anchor(&self.document, view);
@@ -186,6 +201,33 @@ impl<P: TextMeasurementProvider> Core<P> {
             .presentation
             .clone()
             .expect("query initialized");
+        // Counts use a separate cooperative scanner: viewport highlighting has
+        // priority, and no whole-document match vector is retained.
+        let count_key = presentation.pattern.as_ref()
+            .filter(|_| self.views[&view_id].commands.substitute_confirmation_prompt().is_none())
+            .and_then(|pattern| presentation.options.case_insensitive(pattern).ok().map(|insensitive| (
+                ScanKey { document: self.document.id(), revision: self.document.revision(),
+                    pattern: pattern.clone(), insensitive,
+                    scope: presentation.search_range.clone().unwrap_or(0..self.document.projection().text_tree().byte_len()),
+                    addressed: presentation.addressed_range.clone() },
+                presentation.incremental_match.as_ref().map_or(self.views[&view_id].commands.cursor(), |matched| matched.destination),
+            )));
+        {
+            let state = &mut self.views.get_mut(&view_id).unwrap().search;
+            if state.count_key != count_key {
+                state.count_key = count_key.clone();
+                state.count_scanner = None;
+                state.count_current = 0;
+                state.count_total = 0;
+                changed |= state.presentation.as_mut().unwrap().match_count.take().is_some();
+                if let Some((key, _)) = &count_key {
+                    let limits = RegexLimits::default();
+                    state.count_scanner = CompiledRegex::compile(&key.pattern, key.insensitive, limits)
+                        .and_then(|regex| RegexScanner::new(self.document.hard_line_snapshot(), regex, key.scope.end, limits)
+                            .within(key.scope.clone())).ok();
+                }
+            }
+        }
         let scan_key = presentation
             .pattern
             .as_ref()
@@ -375,6 +417,29 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.materialize_immediate_viewport(view_id, intent)?;
             self.rematerialize_active_composition(view_id, false)?;
             changed = true;
+        }
+        let state = &mut self.views.get_mut(&view_id).unwrap().search;
+        if let Some(scanner) = state.count_scanner.as_mut().filter(|scanner| !scanner.is_complete()) {
+            match scanner.advance(SEARCH_BATCH_BYTES) {
+                Ok(matches) => {
+                    let (key, cursor) = state.count_key.as_ref().expect("count scanner has query");
+                    for matched in matches {
+                        let range = matched.range();
+                        if key.addressed.as_ref().is_some_and(|addressed|
+                            !crate::command::ex_execute::addressed_match_eligible(&self.document, addressed, range.clone()).unwrap_or(false)) { continue; }
+                        state.count_total += 1;
+                        if range.start <= *cursor { state.count_current = state.count_total; }
+                    }
+                    if scanner.is_complete() {
+                        state.presentation.as_mut().unwrap().match_count = Some(SearchMatchCount {
+                            current: state.count_current, total: state.count_total,
+                        });
+                        state.count_scanner = None;
+                        changed = true;
+                    }
+                }
+                Err(_) => { state.count_scanner = None; }
+            }
         }
         Ok(changed)
     }

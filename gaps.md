@@ -23,39 +23,19 @@ No known gaps remain in the audited Visual command and text-object list.
 
 ## 3. Search and prompts
 
-- **History navigation ignores the typed prefix.** Up/Down and Ctrl-P/Ctrl-N
-  both call `navigate_command_line_history`, and `navigate_history` walks the
-  entire history. Up/Down do not filter by the already typed prefix. This
-  affects both Ex and search prompts. See
-  [the prompt handlers](src/core/command/mod.rs).
-- **No search-count report.**
-  [`SearchPresentation`](src/core/command/search_presentation.rs) and
-  [`ViemViewPresentationV1`](include/viem_core.h) have no current/total match
-  count for a Vim-style `[3/17]` report.
-- **Ex prompt word insertion ignores `iskeyword` (new).** With
-  `:set iskeyword+=-` and the cursor on `one-two`, `:<Ctrl-R><Ctrl-W>` inserts
-  `one`, although editing word motions and text objects recognize `one-two`.
-  [`command_line_register_value`](src/core/command/command_line_register.rs)
-  hardcodes alphanumeric characters and `_`. This finding concerns Ex prompt
-  insertion; search keyword extraction and regex boundaries retain their
-  [documented independent behavior](docs/vimscript.md#options-and-native-settings).
-
-Windows prompt keyboard selection is covered separately in B5 below.
+No known gaps remain in the audited search and prompt list. Windows prompt
+keyboard selection is covered separately in B5 below.
 
 ## 4. Ex commands
 
-- **Interactive confirmation inside `:global` is unsupported.**
-  [`ex_global::allowed`](src/core/command/ex_global.rs) rejects confirmed
-  substitutions, file/lifecycle commands and undo/history navigation. Ordinary editing,
-  `:normal`, printing and nested current-line global predicates are available.
-  [Global tests](tests/all/ex_global_addresses.rs) also cover rejection when
-  substitute confirmation is inherited through repeat flags.
-- **Confirmation prompt scrolling is missing.**
-  [`handle_substitute_confirmation`](src/core/command/substitute_confirmation.rs)
-  handles `y`/`n`/`a`/`q`/`l`, Escape and Ctrl-C, but ignores Ctrl-E/Ctrl-Y
-  instead of scrolling. Existing
-  [confirmation tests](tests/all/substitute_confirmation.rs) cover the choices
-  and staged commit behavior.
+- **Overlapping confirmed substitutions inside `:global` remain unsupported.**
+  Confirmation now supports disjoint per-target substitutions, inherited flags,
+  nested current-line predicates and Ctrl-E/Ctrl-Y scrolling. All choices stay
+  bound to the original revision and commit in one undo unit. A body such as
+  `:g/x/%s/x/xx/gc` revisits matches affected by earlier decisions, requiring
+  sequential previews against tentative results; it is rejected before asking
+  questions. See [global confirmation](src/core/command/global_confirmation.rs)
+  and [confirmation tests](tests/all/substitute_confirmation.rs).
 
 ## 5. `:set` options
 

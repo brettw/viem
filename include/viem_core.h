@@ -1595,6 +1595,8 @@ ViemStatus viem_core_view_pointer_caret(ViemCoreHandle handle, ViemViewId view,
 #define VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING (1u << 6)
 /* Pending Vim grammar owns input before native formatting accelerators. */
 #define VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING (1u << 7)
+/* Counts are exact for this document, query and caret; absent while pending. */
+#define VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT (1u << 8)
 
 /*
  * Linear Visual anchors have no retained visual affinity, so the anchor
@@ -1625,6 +1627,9 @@ typedef struct ViemViewPresentationV1 {
      hard-line content; a boundary is empty, with both ends at the caret. */
   uint64_t caret_utf8_start;
   uint64_t caret_utf8_end;
+  /* Valid only with VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT. */
+  uint64_t search_match_current;
+  uint64_t search_match_total;
 } ViemViewPresentationV1;
 
 #define VIEM_VIEW_PRESENTATION_V1_SIZE \

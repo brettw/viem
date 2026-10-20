@@ -1955,6 +1955,8 @@ pub const VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING: u32 = 1 << 5;
 pub const VIEM_VIEW_PRESENTATION_COMMAND_LINE_REGISTER_PENDING: u32 = 1 << 6;
 /// Pending Vim grammar owns input before native formatting accelerators.
 pub const VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING: u32 = 1 << 7;
+/// Search count is complete for this document, query and caret.
+pub const VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT: u32 = 1 << 8;
 
 /// Current controller presentation state. Linear Visual anchors do not retain
 /// a visual affinity, so their affinity field is zero unless the exact flag is
@@ -1986,6 +1988,9 @@ pub struct ViemViewPresentationV1 {
     /// hard-line content; a boundary is empty, with both ends at the caret.
     pub caret_utf8_start: u64,
     pub caret_utf8_end: u64,
+    /// Valid only with VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT.
+    pub search_match_current: u64,
+    pub search_match_total: u64,
 }
 
 pub const VIEM_VIEW_PRESENTATION_V1_SIZE: u32 = size_of::<ViemViewPresentationV1>() as u32;
@@ -6783,6 +6788,8 @@ fn summarize_view_presentation(
         } else {
             (0, 0)
         };
+    let count = core.search_match_count(view_id);
+    if count.is_some() { flags |= VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT; }
     Ok(ViemViewPresentationV1 {
         struct_size: VIEM_VIEW_PRESENTATION_V1_SIZE,
         flags,
@@ -6806,6 +6813,8 @@ fn summarize_view_presentation(
         },
         caret_utf8_start: checked_export_count(caret.range().start)?,
         caret_utf8_end: checked_export_count(caret.range().end)?,
+        search_match_current: checked_export_count(count.map_or(0, |count| count.current))?,
+        search_match_total: checked_export_count(count.map_or(0, |count| count.total))?,
     })
 }
 

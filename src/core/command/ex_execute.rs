@@ -750,14 +750,14 @@ impl SubstitutePreview {
 
     /// Commit only approved matches against the original exact snapshot. Keeping
     /// decisions separate from mutation makes the entire interaction one undo unit.
-    pub(super) fn approved_plan(self, approved: &[usize]) -> ExPlan {
+    pub(super) fn approved_plan(&self, approved: &[usize]) -> ExPlan {
         let mut outcome = ExOutcome { substitutions: approved.len(), ..ExOutcome::default() };
         if let Some(index) = approved.last() {
             outcome.navigation = Some(ExNavigation::TextOffset(self.edits[*index].range.start));
         }
         if self.stored.flags.print || self.stored.flags.number || self.stored.flags.list {
             outcome.frontend_requests.push(ExFrontendRequest::Info(ExInfoRequest::PrintLines {
-                range: self.lines, number: self.stored.flags.number, list: self.stored.flags.list,
+                range: self.lines.clone(), number: self.stored.flags.number, list: self.stored.flags.list,
             }));
         }
         let mutation = if approved.is_empty() { ExMutation::None } else {
@@ -767,8 +767,51 @@ impl SubstitutePreview {
             })
         };
         ExPlan { document_id: self.document_id, expected_revision: self.revision, navigation_is_candidate: false,
-            mutation, outcome, next_substitute: Some(self.stored) }
+            mutation, outcome, next_substitute: Some(self.stored.clone()) }
     }
+}
+
+/// Whether an ordinary or repeated substitution requests confirmation, including
+/// flags inherited by :&& and :s///&.
+pub(super) fn substitution_confirms(state: &ExExecutionState, action: &ExAction) -> bool {
+    let flags = match action {
+        ExAction::Substitute(value) => &value.flags,
+        ExAction::RepeatSubstitute { flags, .. } => flags,
+        _ => return false,
+    };
+    effective_flags(flags, state.last_substitute.as_ref(), false).confirm
+}
+
+pub(super) fn approved_substitution_batch(
+    document: &Document, previews: Vec<(std::sync::Arc<SubstitutePreview>, Vec<usize>)>,
+) -> Result<(ExPlan, Option<ExExecuteError>), ExExecuteError> {
+    let mut combined = ExPlan::empty(document);
+    let mut edits = Vec::new();
+    let multiple = previews.len() > 1;
+    let mut failure = None;
+    for (preview, approved) in previews {
+        if !preview.is_current(document) { return Err(ExExecuteError::Document(DocumentError::VerificationFailed)); }
+        let plan = preview.approved_plan(&approved);
+        // A failed target must not discard approvals from other global lines.
+        // Validate each target before composing the single final publication.
+        if multiple {
+            if let ExMutation::Model(request) = &plan.mutation {
+                if let Err(error) = document.prepare_model_request(request.clone()) {
+                    failure.get_or_insert_with(|| ex_model_error(error, None));
+                    continue;
+                }
+            }
+        }
+        combined.outcome.try_merge(plan.outcome).map_err(|_| ExExecuteError::AddressOverflow)?;
+        combined.next_substitute = plan.next_substitute;
+        if let ExMutation::Model(ModelRequest::ApplyFragmentEdits { edits: next, .. }) = plan.mutation { edits.extend(next); }
+    }
+    if !edits.is_empty() {
+        combined.mutation = ExMutation::Model(ModelRequest::ApplyFragmentEdits {
+            document: document.id(), revision: document.revision(), edits,
+        });
+    }
+    Ok((combined, failure))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

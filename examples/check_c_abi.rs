@@ -414,6 +414,9 @@ _Static_assert(sizeof(ViemLayoutCaretGeometryV1) == {caret_geometry},
     "caret geometry");
 _Static_assert(sizeof(ViemViewPresentationV1) == {presentation},
     "view presentation");
+_Static_assert(offsetof(ViemViewPresentationV1, search_match_current) == {search_count_current}, "search current offset");
+_Static_assert(offsetof(ViemViewPresentationV1, search_match_total) == {search_count_total}, "search total offset");
+_Static_assert(VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT == {search_count_flag}, "search count flag");
 _Static_assert(sizeof(ViemCommandLineIdentityV1) == {command_line_identity},
     "command-line identity");
 _Static_assert(VIEM_COMMAND_LINE_IDENTITY_V1_SIZE == sizeof(ViemCommandLineIdentityV1),
@@ -797,6 +800,9 @@ static void typecheck(void) {{
         caret_point = std::mem::size_of::<ViemLayoutCaretPointV1>(),
         caret_geometry = std::mem::size_of::<ViemLayoutCaretGeometryV1>(),
         presentation = std::mem::size_of::<ViemViewPresentationV1>(),
+        search_count_current = std::mem::offset_of!(ViemViewPresentationV1, search_match_current),
+        search_count_total = std::mem::offset_of!(ViemViewPresentationV1, search_match_total),
+        search_count_flag = VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT,
         command_line_identity = std::mem::size_of::<ViemCommandLineIdentityV1>(),
         command_line_info = std::mem::size_of::<ViemCommandLineInfoV1>(),
         completion_info = std::mem::size_of::<ViemCompletionInfoV1>(),
