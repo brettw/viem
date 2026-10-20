@@ -505,6 +505,8 @@ pub const VIEM_EX_FRONTEND_THEME: u32 = 30;
 pub const VIEM_EX_FRONTEND_APPLICATION_OPTION: u32 = 31;
 /// Single-use script acknowledgement token in `window_count`.
 pub const VIEM_EX_FRONTEND_SCRIPT_CONTINUATION: u32 = 32;
+/// Edit the pane's alternate file (`CTRL-^`), which the host tracks.
+pub const VIEM_EX_FRONTEND_EDIT_ALTERNATE: u32 = 33;
 pub const VIEM_EX_FRONTEND_STARTUP_APPLICATION: u32 = 1 << 15;
 
 pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
@@ -3873,6 +3875,10 @@ fn export_ex_frontend_request(
                 output.kind = VIEM_EX_FRONTEND_EDIT;
                 output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
                 set_ex_path(&mut output, strings, path.as_deref())?;
+            }
+            ExFileRequest::EditAlternate { force } => {
+                output.kind = VIEM_EX_FRONTEND_EDIT_ALTERNATE;
+                output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
             }
             ExFileRequest::New { force } => {
                 output.kind = VIEM_EX_FRONTEND_NEW;

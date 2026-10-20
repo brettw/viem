@@ -155,6 +155,8 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     case split
     case newPane
     case edit
+    /// `CTRL-^`: edit the pane's alternate file.
+    case editAlternate
     case editNewWindow
     case navigateArgument
     case printWorkingDirectory
@@ -305,6 +307,7 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
   case preparedWriteUnavailable
   case unsupportedRequest
   case noRoomToSplit
+  case noAlternateFile
 
   public var errorDescription: String? {
     switch self {
@@ -328,6 +331,8 @@ public enum EVDocumentHostError: LocalizedError, Equatable {
       "This formatted line range cannot be written as exact source bytes. Use a full-document write."
     case .noRoomToSplit:
       "No room to split the current view."
+    case .noAlternateFile:
+      "E23: No alternate file"
     case .unsupportedRequest:
       "That document request is not supported by the native frontend."
     }

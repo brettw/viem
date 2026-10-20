@@ -213,10 +213,13 @@ internal sealed partial class EditorWindow : Window
         preferences.AttachThemeDocument(doc, initialize: false);
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
+        // A split keeps its source pane's alternate file, as Vim's windows do.
+        pane.AlternatePath = ActivePane?.AlternatePath;
         if (replacing != null)
         {
             int index = Panes.IndexOf(replacing); Panes[index] = pane;
             pane.RememberedArgument = replacing.RememberedArgument;
+            pane.AlternatePath = replacing.Document.FilePath ?? replacing.AlternatePath;
             paneGrid.ReplacePane(replacing, pane); replacing.Focused -= SetActive; replacing.Dispose();
             if (lastPane == replacing) lastPane = null;
             if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); App.Instance.BlockingEdits.Released(replacing.Document); replacing.Document.Dispose(); }
@@ -652,6 +655,10 @@ internal sealed partial class EditorWindow : Window
                             if (!force && !await ConfirmDiscard(pane)) throw new OperationCanceledException();
                             AddPane(NewDocument(), replacing: pane); break;
                         case VIEM_EX_FRONTEND_EDIT: if (request.Text.Length > 0 && !string.Equals(ResolvePath(request.Text), pane.Document.FilePath, StringComparison.OrdinalIgnoreCase)) await OpenPath(request.Text, false, force, targetPane: pane); else if (pane.Document.FilePath != null) await Reload(pane, force); break;
+                        case VIEM_EX_FRONTEND_EDIT_ALTERNATE:
+                            if (pane.AlternatePath is not string alternate) throw new InvalidOperationException("E23: No alternate file");
+                            await OpenPath(alternate, false, force, targetPane: pane);
+                            break;
                         case VIEM_EX_FRONTEND_EDIT_NEW_WINDOW:
                             if (request.Text.Length > 0) await OpenPath(request.Text, targetPane: pane, newWindow: true);
                             else NewWindow(null);

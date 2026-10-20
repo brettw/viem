@@ -206,6 +206,7 @@ _Static_assert(VIEM_EX_FRONTEND_NORMAL == 15u, "Ex normal request");
 _Static_assert(VIEM_EX_FRONTEND_THEME == 30u, "Ex theme request");
 _Static_assert(VIEM_EX_FRONTEND_APPLICATION_OPTION == 31u, "Ex application option request");
 _Static_assert(VIEM_EX_FRONTEND_SCRIPT_CONTINUATION == 32u, "Script continuation request");
+_Static_assert(VIEM_EX_FRONTEND_EDIT_ALTERNATE == 33u, "Ex alternate-file request");
 _Static_assert(VIEM_EX_FRONTEND_STARTUP_APPLICATION == (1u << 15), "Startup application flag");
 _Static_assert(VIEM_EX_FRONTEND_HAS_PATH == (1u << 1), "Ex path flag");
 _Static_assert(VIEM_EX_FRONTEND_HAS_RANGE == (1u << 2), "Ex range flag");

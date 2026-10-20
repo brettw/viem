@@ -11,6 +11,12 @@ are equivalent to their vertical forms. A count sets the new view's height
 or width. Startup `-o[N]` and `-O[N]` request horizontal or vertical views;
 the last orientation option wins.
 
+Each view remembers its alternate file: the file it showed before its current
+buffer was replaced, for example by `:edit` or argument navigation. Control-^
+(Control-6) edits it, with the same modified-buffer check as `:edit`. A split
+starts with its source view's alternate file. The native frontends own this
+per-view history; the core only requests it.
+
 | Command | Action |
 | --- | --- |
 | Control-W h/j/k/l, Left/Down/Up/Right | Focus a neighbouring view; a count repeats the movement |

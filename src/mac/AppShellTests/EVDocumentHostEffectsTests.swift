@@ -712,6 +712,39 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertEqual(controller.paneCount, 1)
     }
 
+    func testEditAlternateReturnsToTheFileThePaneShowedBefore() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstURL = directory.appendingPathComponent("first.txt")
+        try Data("first".utf8).write(to: firstURL)
+        let selected = try registeredDocument(at: directory.appendingPathComponent("second.txt"))
+        defer { selected.close() }
+        let backend = Backend(data: Data("first".utf8), dirty: false)
+        let (original, controller) = makeController(backend: backend, fileURL: firstURL)
+        NSDocumentController.shared.addDocument(original)
+        defer { controller.close(); original.close() }
+        assertFailure(.noAlternateFile, from: controller, request: request(.editAlternate, backend: backend))
+
+        var result: Result<String?, Error>?
+        controller.perform(documentHostRequests: [EVDocumentHostRequest(
+            kind: .edit, documentID: backend.persistenceState.documentID,
+            documentRevision: backend.persistenceState.documentRevision,
+            path: selected.fileURL?.path)]) { result = $0 }
+        _ = try XCTUnwrap(result).get()
+        XCTAssertTrue(controller.activeDocument === selected)
+
+        // The replaced document lost its last view and closed. The xctest host
+        // cannot read documents, so stand in for the reopened file.
+        let reopened = try registeredDocument(at: firstURL)
+        defer { reopened.close() }
+        let selectedBackend = try XCTUnwrap(selected.editorBackend as? Backend)
+        result = nil
+        controller.perform(documentHostRequests: [request(.editAlternate, backend: selectedBackend)]) { result = $0 }
+        _ = try XCTUnwrap(result).get()
+        XCTAssertTrue(controller.activeDocument === reopened, "CTRL-^ returns to the pane's previous file")
+        XCTAssertEqual(controller.paneCount, 1)
+    }
+
     private func registeredDocument(at url: URL) throws -> EVDocument {
         try Data("selected file".utf8).write(to: url)
         let backend = Backend(data: Data("selected file".utf8), dirty: false, documentID: 99)

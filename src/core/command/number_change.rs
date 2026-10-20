@@ -1,4 +1,4 @@
-//! Normal-mode number changes using Vim's default `bin,hex` number formats.
+//! Normal and Visual number changes using Vim's default `bin,hex` number formats.
 
 use super::*;
 
@@ -106,29 +106,111 @@ fn replacement(snapshot: &HardLineSnapshot, token: &NumberToken, count: usize, s
         else if negative { format!("-{number}") } else { number })
 }
 
+fn first_digit(snapshot: &HardLineSnapshot, region: &Range<usize>) -> Option<usize> {
+    let mut at = region.start;
+    while at < region.end {
+        let chunk = snapshot.byte_chunk_at(at);
+        let available = chunk.len().min(region.end - at);
+        if available == 0 { return None; }
+        if let Some(relative) = chunk[..available].iter().position(u8::is_ascii_digit) {
+            return Some(at + relative);
+        }
+        at += available;
+    }
+    None
+}
+
+/// The number's edit, widened to whole graphemes so that a digit is never
+/// split from an authored accent.
+fn number_edit(snapshot: &HardLineSnapshot, token: &NumberToken, count: usize, subtract: bool) -> Result<TextEdit, DocumentError> {
+    let mut range = token.range.clone();
+    if !snapshot.is_grapheme_boundary(range.start) {
+        range.start = snapshot.previous_grapheme_boundary(range.start).ok_or(DocumentError::AmbiguousProjection)?;
+    }
+    if !snapshot.is_grapheme_boundary(range.end) {
+        range.end = snapshot.next_grapheme_boundary(range.end).ok_or(DocumentError::AmbiguousProjection)?;
+    }
+    let prefix = snapshot.slice_utf8(range.start..token.range.start).map_err(DocumentError::FormattedTextStorage)?;
+    let suffix = snapshot.slice_utf8(token.range.end..range.end).map_err(DocumentError::FormattedTextStorage)?;
+    let replacement = format!("{prefix}{}{suffix}", replacement(snapshot, token, count, subtract)?);
+    Ok(TextEdit::new(range, replacement))
+}
+
+/// Vim's Visual `op_addsub()`: in each region, the first number that starts
+/// inside it, read no further than the region's end. A `-` counts only when
+/// it is selected too. The progressive `g` form adds [count] more for every
+/// changed region.
+fn visual_number_edits(
+    snapshot: &HardLineSnapshot,
+    regions: &[Range<usize>],
+    count: usize,
+    subtract: bool,
+    progressive: bool,
+) -> Result<Vec<TextEdit>, DocumentError> {
+    let mut amount = count;
+    let mut edits = Vec::new();
+    for region in regions {
+        let Some(token) = first_digit(snapshot, region).and_then(|digit| token_at(snapshot, region, digit)) else { continue };
+        edits.push(number_edit(snapshot, &token, amount, subtract)?);
+        if progressive {
+            amount = amount.saturating_add(count);
+        }
+    }
+    Ok(edits)
+}
+
+/// The parts of `range` on each hard line, as Vim's per-line Visual regions.
+pub(super) fn line_regions(snapshot: &HardLineSnapshot, range: Range<usize>) -> Vec<Range<usize>> {
+    let mut regions = Vec::new();
+    let Ok(first) = snapshot.line_at_offset(range.start.min(snapshot.text_length())) else { return regions };
+    let mut index = first.index();
+    while let Some(line) = snapshot.line(index) {
+        let content = line.content_range();
+        if index > first.index() && content.start >= range.end { break; }
+        let start = content.start.max(range.start);
+        let end = content.end.min(range.end);
+        if start < end { regions.push(start..end); }
+        index += 1;
+    }
+    regions
+}
+
 impl CommandInterpreter {
+    /// Apply Visual number changes to `regions` as one transaction and put
+    /// the cursor at `start`, where the selection began.
+    pub(super) fn change_region_numbers(
+        &mut self,
+        document: &mut Document,
+        regions: &[Range<usize>],
+        start: usize,
+        count: usize,
+        subtract: bool,
+        progressive: bool,
+    ) -> Result<bool, DocumentError> {
+        let snapshot = document.hard_line_snapshot();
+        let edits = visual_number_edits(&snapshot, regions, count, subtract, progressive)?;
+        let before = document.revision();
+        let cursor = if edits.is_empty() { start } else {
+            commit_model_with_cursor(document, ModelRequest::ApplyTextEdits {
+                document: document.id(), revision: document.revision(), edits,
+            }, start, Association::BeforeInsertion)?
+        };
+        self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), cursor);
+        Ok(before != document.revision())
+    }
+
     pub(super) fn change_number(&mut self, document: &mut Document, count: usize, subtract: bool) -> Result<CommandOutput, DocumentError> {
         self.requested_register = None;
         let snapshot = document.hard_line_snapshot();
         let line = snapshot.line_at_offset(self.cursor).map_err(|_| DocumentError::AmbiguousProjection)?.content_range();
         let Some(token) = find_number(&snapshot, line, self.cursor) else { return Ok(CommandOutput::complete()); };
-        // Preserve nonnumeric scalars sharing the number's boundary graphemes.
-        // The semantic edit must never split a digit from its authored accent.
-        let mut range = token.range.clone();
-        if !snapshot.is_grapheme_boundary(range.start) {
-            range.start = snapshot.previous_grapheme_boundary(range.start).ok_or(DocumentError::AmbiguousProjection)?;
-        }
-        if !snapshot.is_grapheme_boundary(range.end) {
-            range.end = snapshot.next_grapheme_boundary(range.end).ok_or(DocumentError::AmbiguousProjection)?;
-        }
-        let prefix = snapshot.slice_utf8(range.start..token.range.start).map_err(DocumentError::FormattedTextStorage)?;
-        let suffix = snapshot.slice_utf8(token.range.end..range.end).map_err(DocumentError::FormattedTextStorage)?;
-        let replacement = format!("{prefix}{}{suffix}", replacement(&snapshot, &token, count, subtract)?);
+        let edit = number_edit(&snapshot, &token, count, subtract)?;
+        let start = edit.range.start;
         let before = document.revision();
         let end = commit_model_with_cursor(document, ModelRequest::ApplyTextEdits {
             document: document.id(), revision: document.revision(),
-            edits: vec![TextEdit::new(range.clone(), replacement)],
-        }, range.start, Association::AfterInsertion)?;
+            edits: vec![edit],
+        }, start, Association::AfterInsertion)?;
         let cursor = document.hard_line_snapshot().previous_grapheme_boundary(end).unwrap_or(end);
         let moved = self.cursor != cursor;
         self.cursor = cursor;

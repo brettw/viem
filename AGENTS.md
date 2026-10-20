@@ -486,6 +486,13 @@ Unsupported commands fail without side effects.
   smart quotes.
 - Ex filename completion cycles like zsh's menu completion
   ([details](docs/filename-completion.md)).
+- `K` runs only a `:`-prefixed `keywordprg`; external programs never start.
+  `CTRL-^` edits the pane's alternate file but rejects a count, since there
+  are no buffer numbers. `CTRL-G` omits the argument-list position, and `ga`
+  reports no digraphs.
+- `[(`, `])`, `[{`, `]}` and the method motions match delimiters like `%`,
+  without Vim's quote and escape heuristics. `it`/`at` read the formatted
+  text, so hidden Markdown HTML has no tag blocks.
 - `!` never bypasses the external-change check when writing.
 - Native Paste follows gVim's clipboard `gP` behavior (see
   [Input, selection and clipboard](#input-selection-and-clipboard)).

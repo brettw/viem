@@ -319,6 +319,120 @@ pub(crate) fn g_dollar_for_document(
     Ok(row_end(row))
 }
 
+/// `zh`, `zl`, `zH`, `zL`, `zs` and `ze` in an unwrapped view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HorizontalScroll {
+    /// Whitespace units; positive scrolls the text left (`zl`).
+    Columns(isize),
+    /// Half text widths; positive scrolls the text left (`zL`).
+    HalfScreens(isize),
+    /// `zs`: the cursor's grapheme at the left edge of the text area.
+    CursorAtStart,
+    /// `ze`: the cursor's grapheme at the right edge of the text area.
+    CursorAtEnd,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HorizontalScrollResult {
+    /// The new horizontal viewport origin in document layout coordinates.
+    pub left: f32,
+    /// A new Normal cursor when the old one would leave the text area.
+    pub cursor: Option<VisualPosition>,
+}
+
+/// One grapheme of a row: its starting caret and horizontal extent.
+struct RowCell {
+    start: usize,
+    left: f32,
+    right: f32,
+}
+
+fn row_cells(row: &VisualRow) -> Vec<RowCell> {
+    let mut stops: Vec<(usize, f32)> = Vec::with_capacity(row.carets.len());
+    for caret in &row.carets {
+        match stops.iter_mut().find(|(offset, _)| *offset == caret.point.text_offset) {
+            Some(stop) if caret.point.affinity == BoundaryAffinity::Downstream => stop.1 = caret.x,
+            Some(_) => {}
+            None => stops.push((caret.point.text_offset, caret.x)),
+        }
+    }
+    stops.sort_by_key(|(offset, _)| *offset);
+    stops.windows(2).map(|pair| RowCell {
+        start: pair[0].0,
+        left: pair[0].1.min(pair[1].1),
+        right: pair[0].1.max(pair[1].1),
+    }).collect()
+}
+
+fn cell_position(cell: &RowCell) -> VisualPosition {
+    VisualPosition { text_offset: cell.start, affinity: BoundaryAffinity::Downstream }
+}
+
+/// Scroll an unwrapped view horizontally and keep the cursor's grapheme in
+/// the text area, as Vim's `set_leftcol()` does: a cursor that would leave
+/// it moves to the nearest visible grapheme, and a row too short to reach
+/// the requested origin limits the scroll to its last grapheme.
+pub fn scroll_horizontally(
+    snapshot: &LayoutSnapshot,
+    current: VisualPosition,
+    left: f32,
+    scroll: HorizontalScroll,
+) -> Result<HorizontalScrollResult, LayoutMotionError> {
+    let (row_index, caret) = locate(snapshot, current)?;
+    let cells = row_cells(&snapshot.rows[row_index]);
+    let insets = snapshot.content_insets;
+    let width = snapshot.viewport_width;
+    let text_width = (width - insets.left - insets.right).max(1.0);
+    let cursor = cells.iter().find(|cell| cell.start == current.text_offset);
+    let (cursor_left, cursor_right) = cursor.map_or((caret.x, caret.x), |cell| (cell.left, cell.right));
+    let requested = match scroll {
+        HorizontalScroll::Columns(count) => left + count as f32 * snapshot.whitespace_unit.max(1.0),
+        HorizontalScroll::HalfScreens(count) => left + count as f32 * text_width / 2.0,
+        HorizontalScroll::CursorAtStart => cursor_left - insets.left,
+        HorizontalScroll::CursorAtEnd => cursor_right - (width - insets.right),
+    };
+    let mut left = if requested.is_finite() { requested.max(0.0) } else { left };
+    let Some(last) = cells.last() else {
+        // An empty row cannot scroll its caret out of view.
+        return Ok(HorizontalScrollResult { left: left.min((caret.x - insets.left).max(0.0)), cursor: None });
+    };
+    let visible = left + insets.left..left + width - insets.right;
+    const SLOP: f32 = 0.01;
+    let cursor = if cursor_left < visible.start - SLOP {
+        match cells.iter().find(|cell| cell.left >= visible.start - SLOP) {
+            Some(cell) => Some(cell_position(cell)),
+            None => {
+                left = (last.left - insets.left).max(0.0);
+                Some(cell_position(last))
+            }
+        }
+    } else if cursor_right > visible.end + SLOP {
+        cells.iter().rev().find(|cell| cell.right <= visible.end + SLOP)
+            .or(cells.first())
+            .map(cell_position)
+    } else {
+        None
+    };
+    Ok(HorizontalScrollResult { left, cursor: cursor.filter(|position| position.text_offset != current.text_offset) })
+}
+
+/// `gm`: the grapheme at the middle of the text area on the cursor's row, or
+/// the row's last grapheme when the text ends sooner.
+pub fn screen_middle(
+    snapshot: &LayoutSnapshot,
+    current: VisualPosition,
+    left: f32,
+) -> Result<VisualPosition, LayoutMotionError> {
+    let (row_index, _) = locate(snapshot, current)?;
+    let row = &snapshot.rows[row_index];
+    let cells = row_cells(row);
+    let insets = snapshot.content_insets;
+    let middle = left + insets.left + (snapshot.viewport_width - insets.left - insets.right).max(0.0) / 2.0;
+    Ok(cells.iter().find(|cell| cell.right > middle)
+        .or(cells.last())
+        .map_or_else(|| row_start(row), cell_position))
+}
+
 /// Shared desired-x implementation for visual vertical movement.
 pub fn move_visual_rows(
     snapshot: &LayoutSnapshot,

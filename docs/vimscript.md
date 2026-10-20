@@ -269,7 +269,7 @@ a full Vim process-global/default-window model.
 
 | Category | Behavior |
 | --- | --- |
-| Implemented editing options | Existing wrapping, line numbers, search, indentation, whitespace and formatting options, plus `clipboard`, `gdefault`, `shiftround`, `joinspaces`, `whichwrap`, `startofline`, `history`, `iskeyword` and language overrides. |
+| Implemented editing options | Existing wrapping, line numbers, search, indentation, whitespace and formatting options, plus `clipboard`, `gdefault`, `shiftround`, `joinspaces`, `whichwrap`, `startofline`, `history`, `iskeyword`, `sections` (for `[[` and `]]`), `keywordprg` (for `K`) and language overrides. |
 | Source/model options | `readonly` changes read-only state. `fileencoding` and `bomb` use verified encoding transactions and ordinary undo; startup forbids source conversion. |
 | Fixed-value compatibility | Options with a fixed Viem behavior are accepted silently at the matching value; contradicting changes produce a notice. Examples include `nocompatible`, UTF-8 internal `encoding`, `linebreak`, `hidden` and fixed numeric-format behavior. |
 | Inert compatibility | Terminal, plugin and display-tuning options such as `termguicolors`, `ttimeout`, `runtimepath`, `loadplugins` and `synmaxcol` are accepted silently without enabling those mechanisms or changing Viem's resource limits. |
@@ -280,7 +280,11 @@ a full Vim process-global/default-window model.
 whether Viem reports working support. Neither implies complete Vim semantics for
 an application mapping. `iskeyword` affects editing motions, text objects,
 abbreviations and word deletion. Search keyword extraction and Unicode regex
-boundaries retain their independent documented behavior.
+boundaries retain their independent documented behavior. `K` runs a
+`keywordprg` that begins with `:` as an Ex command, with [count] and the
+`fnameescape()`d keyword appended; any other value names an external program,
+which Viem never starts, so `K` fails without side effects until the option
+is set to an Ex command.
 
 The canonical names, abbreviations, types, scopes, defaults and treatment lists
 are in [`command/options.rs`](../src/core/command/options.rs), based on Vim 9.1's
