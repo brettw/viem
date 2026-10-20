@@ -1139,6 +1139,7 @@ impl Document {
             next_save_sequence: 1,
             last_successful_save_sequence: 0,
             read_only: false,
+            modifiable: true,
             recovered_dirty: false,
             code_presentation: None,
             configuration: self.configuration.clone(),
@@ -1219,6 +1220,9 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         super::work_statistics::record(|stats| stats.model_requests += 1);
         self.validate_request_target(&request)?;
+        if !matches!(request, ModelRequest::SetViewFormat { .. }) {
+            self.require_modifiable()?;
+        }
         let numbering = self
             .format()
             .is_markdown()
@@ -1340,6 +1344,9 @@ impl Document {
         &self,
         request: StyleModelRequest,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        if matches!(request.intent, StyleModelIntent::Persisted(_)) {
+            self.require_modifiable()?;
+        }
         if self.format().is_code() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
@@ -1452,6 +1459,18 @@ impl Document {
             || prepared.expected_edit_group_generation != self.edit_group_generation
         {
             return Err(ModelTransactionError::StaleDocumentState);
+        }
+
+        if !self.is_modifiable() {
+            match &prepared.publication {
+                PreparedPublication::History { .. } => self.require_modifiable()?,
+                PreparedPublication::State(state)
+                    if state.source.identity() != self.state().source.identity()
+                        || state.encoding != self.encoding()
+                        || state.file_format != self.file_format()
+                        || state.has_bom != self.has_bom() => self.require_modifiable()?,
+                _ => {}
+            }
         }
 
         // Validate every remaining fallible condition before publishing.
@@ -1608,6 +1627,7 @@ impl Document {
         &self,
         request: FormattedPayloadEditRequest,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.require_modifiable()?;
         if request.document != self.id {
             return Err(ModelTransactionError::WrongDocument {
                 expected: self.id,
@@ -1850,6 +1870,7 @@ impl Document {
         &self,
         intent: PersistedStyleIntent,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.require_modifiable()?;
         if matches!(&intent, PersistedStyleIntent::AssignCharacterStyle { style, .. } if style.is_internal_in(crate::document::StyleNamespace::Character))
             || matches!(&intent, PersistedStyleIntent::AssignBlockStyle { style, .. } if style.is_internal_in(crate::document::StyleNamespace::Block))
         {
@@ -4748,6 +4769,7 @@ impl Document {
         &self,
         request: HistoryNavigationRequest,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.require_modifiable()?;
         let current = self.history.status().current;
         let target = match request {
             HistoryNavigationRequest::Undo => self

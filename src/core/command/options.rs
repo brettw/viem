@@ -595,7 +595,7 @@ const MAPPED: &[&str] = &[
 /// Implemented by Viem's own command code; see docs/vimscript.md#options-and-native-settings.
 const FEATURES: &[&str] = &[
     "clipboard", "gdefault", "shiftround", "joinspaces", "whichwrap", "startofline", "history", "iskeyword",
-    "filetype", "syntax", "sections", "keywordprg",
+    "filetype", "syntax", "sections", "keywordprg", "modifiable",
 ];
 
 /// Comma-separated list options, whose `+=`, `^=` and `-=` work on items.
@@ -774,6 +774,7 @@ impl VimOptions {
     }
 
     pub(crate) fn sync_document_policy(&mut self, document: &Document) {
+        self.values.insert("modifiable".into(), VimOptionValue::Bool(document.is_modifiable()));
         self.values.insert("readonly".into(), VimOptionValue::Bool(document.is_read_only()));
         self.values.insert("bomb".into(), VimOptionValue::Bool(document.has_bom()));
         self.values.insert("fileencoding".into(), VimOptionValue::Text(match document.encoding() {
@@ -1051,6 +1052,7 @@ pub(crate) fn read_option(commands: &CommandInterpreter, document: &Document, na
             .map(|display| ex_value(&display.value));
     }
     let value = match resolved.name {
+        "modifiable" => Value::Number(document.is_modifiable() as i64),
         "readonly" => Value::Number(document.is_read_only() as i64),
         "modified" => Value::Number(document.is_dirty() as i64),
         "fileencoding" => Value::str(match document.encoding() {

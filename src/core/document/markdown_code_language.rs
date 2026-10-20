@@ -12,6 +12,7 @@ impl Document {
         at: usize,
         language: Option<&str>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.require_modifiable()?;
         if document != self.id() {
             return Err(DocumentError::WrongDocument.into());
         }
@@ -21,7 +22,7 @@ impl Document {
                 actual: self.revision(),
             });
         }
-        if self.format() != Format::Markdown || self.is_read_only() {
+        if self.format() != Format::Markdown || !self.is_modifiable() || self.is_read_only() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         self.text_point(at)?;

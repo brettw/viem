@@ -12,6 +12,7 @@ impl Document {
         named: Option<&StyleId>,
         values: &[(StyleProperty, StylePropertyValue)],
     ) -> Result<(PreparedModelTransaction, TextPoint, SourcePoint), ModelTransactionError> {
+        self.require_modifiable()?;
         if at.document() != self.id() {
             return Err(ModelTransactionError::WrongDocument {
                 expected: self.id(), actual: at.document(),

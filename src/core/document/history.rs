@@ -310,6 +310,7 @@ pub enum HistoryBoundary {
 /// Structured failures from public history navigation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoryError {
+    NotModifiable,
     Boundary(HistoryBoundary),
     RedoBranchNotFound { requested: usize, available: usize },
     NodeNotFound(HistoryNodeId),
@@ -319,6 +320,7 @@ pub enum HistoryError {
 impl fmt::Display for HistoryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotModifiable => super::DocumentError::NotModifiable.fmt(formatter),
             Self::Boundary(HistoryBoundary::Oldest) => {
                 formatter.write_str("already at the oldest document state")
             }

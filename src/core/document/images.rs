@@ -72,7 +72,7 @@ impl Document {
                 title: image.title,
                 width: image.width,
                 height: image.height,
-                editable: image.source.len() <= MAX_IMAGE_BYTES && !self.is_read_only(),
+                editable: image.source.len() <= MAX_IMAGE_BYTES && (!self.is_read_only() && self.is_modifiable()),
                 source: image.source,
                 inline: image.inline,
                 html: image.html,
@@ -95,6 +95,7 @@ impl Document {
         revision: Revision,
         intent: ImageEditIntent,
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        self.require_modifiable()?;
         if document != self.id() {
             return Err(DocumentError::WrongDocument.into());
         }
@@ -105,7 +106,7 @@ impl Document {
             }
             .into());
         }
-        if self.is_read_only() || !self.format().is_markdown() {
+        if !self.is_modifiable() || self.is_read_only() || !self.format().is_markdown() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         let (range, text, destination, width, height, remove, existing) = match intent {

@@ -53,6 +53,7 @@ impl Document {
         revision: Revision,
         intent: TableEditIntent,
     ) -> Result<(PreparedModelTransaction, usize), ModelTransactionError> {
+        self.require_modifiable()?;
         if document != self.id() {
             return Err(ModelTransactionError::WrongDocument {
                 expected: document,

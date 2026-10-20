@@ -23,6 +23,7 @@ pub(crate) struct DocumentCommandCheckpoint {
     next_save_sequence: u64,
     last_successful_save_sequence: u64,
     read_only: bool,
+    modifiable: bool,
     recovered_dirty: bool,
 }
 
@@ -53,6 +54,7 @@ impl Document {
             next_save_sequence: self.next_save_sequence,
             last_successful_save_sequence: self.last_successful_save_sequence,
             read_only: self.read_only,
+            modifiable: self.modifiable,
             recovered_dirty: self.recovered_dirty,
         }
     }
@@ -94,6 +96,7 @@ impl Document {
         self.next_save_sequence = checkpoint.next_save_sequence;
         self.last_successful_save_sequence = checkpoint.last_successful_save_sequence;
         self.read_only = checkpoint.read_only;
+        self.modifiable = checkpoint.modifiable;
         self.recovered_dirty = checkpoint.recovered_dirty;
     }
 

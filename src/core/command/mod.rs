@@ -554,6 +554,14 @@ impl<'a> LayoutCommandContext<'a> {
 }
 
 impl CommandOutput {
+    /// Policy refusals are ordinary command diagnostics, including through the
+    /// native effect batch, rather than an opaque transport failure.
+    pub(crate) fn not_modifiable() -> Self {
+        let mut output = Self { status: CommandStatus::Error(DocumentError::NotModifiable.to_string()), ..Self::complete() };
+        scripting::surface_error_text(&mut output);
+        output
+    }
+
     fn complete() -> Self {
         Self {
             status: CommandStatus::Complete,
@@ -7678,6 +7686,7 @@ impl CommandInterpreter {
         kind: VisualBlockInsertKind,
         count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        document.require_modifiable()?;
         let resolved = match self.resolved_visual_block(document, context) {
             Ok(resolved) => resolved,
             Err(error) => return Ok(visual_block_error(error)),
@@ -10380,6 +10389,7 @@ impl CommandInterpreter {
         deletion_class: DeletionClass,
         application_count: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        if operator != Operator::Yank { document.require_modifiable()?; }
         if matches!(
             operator,
             Operator::Yank | Operator::Delete | Operator::Change
@@ -12708,6 +12718,7 @@ impl CommandInterpreter {
         placement: InsertPlacement,
         entry_count: usize,
     ) -> CommandOutput {
+        if !document.is_modifiable() { return CommandOutput::not_modifiable(); }
         if entry_count > isize::MAX as usize {
             return repetition_too_large(entry_count);
         }
@@ -13932,6 +13943,7 @@ impl CommandInterpreter {
     }
 
     fn history(&mut self, document: &mut Document, redo: bool, count: usize) -> CommandOutput {
+        if !document.is_modifiable() { return CommandOutput::not_modifiable(); }
         if self.global_replay_depth > 0 {
             return ex_global::ex_error(ExExecuteError::UnsupportedGlobalCommand);
         }

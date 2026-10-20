@@ -396,6 +396,7 @@ impl FormattedPayloadEditRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DocumentError {
+    NotModifiable,
     InvalidEncoding {
         encoding: Encoding,
         offset: usize,
@@ -461,6 +462,7 @@ pub enum DocumentError {
 impl fmt::Display for DocumentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotModifiable => formatter.write_str("E21: Cannot make changes, 'modifiable' is off"),
             Self::InvalidEncoding { encoding, offset } => {
                 write!(
                     formatter,
@@ -729,6 +731,7 @@ pub struct Document {
     next_save_sequence: u64,
     last_successful_save_sequence: u64,
     read_only: bool,
+    modifiable: bool,
     recovered_dirty: bool,
     /// Disposable presentation cache; never retained by document history.
     code_presentation: Option<code_presentation::CodePresentation>,
@@ -873,6 +876,7 @@ impl Document {
             next_save_sequence: 1,
             last_successful_save_sequence: 0,
             read_only: false,
+            modifiable: true,
             recovered_dirty: false,
             code_presentation: None,
             configuration: None,
@@ -1025,6 +1029,7 @@ impl Document {
             next_save_sequence: 1,
             last_successful_save_sequence: 0,
             read_only: false,
+            modifiable: true,
             recovered_dirty: false,
             code_presentation: None,
             configuration: None,
@@ -1843,6 +1848,7 @@ impl Document {
     /// before the open edit unit or preferred redo path is changed, so an
     /// over-count is a non-destructive boundary error.
     pub fn try_undo_count(&mut self, count: usize) -> Result<HistoryNavigation, HistoryError> {
+        self.require_modifiable().map_err(|_| HistoryError::NotModifiable)?;
         if count == 0 {
             let current = self.history.status().current;
             return Ok(HistoryNavigation {
@@ -1876,6 +1882,7 @@ impl Document {
     /// unavailable, the document, history cursor, and branch preferences are
     /// left untouched.
     pub fn try_redo_count(&mut self, count: usize) -> Result<HistoryNavigation, HistoryError> {
+        self.require_modifiable().map_err(|_| HistoryError::NotModifiable)?;
         if count == 0 {
             let current = self.history.status().current;
             return Ok(HistoryNavigation {
@@ -2007,6 +2014,7 @@ impl Document {
         &mut self,
         node: HistoryNodeId,
     ) -> Result<HistoryNavigation, HistoryError> {
+        self.require_modifiable().map_err(|_| HistoryError::NotModifiable)?;
         if self.history.location_for_node(node).is_none() {
             return Err(HistoryError::NodeNotFound(node));
         }
@@ -2029,6 +2037,7 @@ impl Document {
         &mut self,
         change: HistoryChangeNumber,
     ) -> Result<HistoryNavigation, HistoryError> {
+        self.require_modifiable().map_err(|_| HistoryError::NotModifiable)?;
         let target = self
             .history
             .location_for_change(change)
@@ -2061,8 +2070,16 @@ impl Document {
         self.recovered_dirty || self.history.status().is_dirty
     }
 
-    /// Buffer policy: editing and undo remain available; external writes
-    /// require a separate explicit force authorization.
+    /// Buffer editing policy, independent of save protection and undo history.
+    pub fn is_modifiable(&self) -> bool { self.modifiable }
+
+    pub fn set_modifiable(&mut self, value: bool) { self.modifiable = value; }
+
+    pub(crate) fn require_modifiable(&self) -> Result<(), DocumentError> {
+        if self.modifiable { Ok(()) } else { Err(DocumentError::NotModifiable) }
+    }
+
+    /// Save protection; editing remains subject to the separate modifiable policy.
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }

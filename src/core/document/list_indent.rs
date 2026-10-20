@@ -229,6 +229,7 @@ impl Document {
         range: Range<usize>,
         unindent: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.require_modifiable()?;
         let parentless = unindent && self.format().is_markdown()
             && targets(self.projection().blocks(), &range, unindent).is_ok_and(|target| target.parent.is_none());
         let prepared = self.prepare_list_indent_in_place(range, unindent);

@@ -372,7 +372,7 @@ impl Document {
         affinity: BoundaryAffinity,
         style: &StyleId,
     ) -> Result<(), DocumentError> {
-        if self.is_read_only() {
+        if !self.is_modifiable() || self.is_read_only() {
             return Err(DocumentError::UnsupportedFormatting);
         }
         self.validate_typing_named_style(style)?;
@@ -477,7 +477,7 @@ impl Document {
     ) -> Result<(), DocumentError> {
         self.text_point(at)?;
         self.validate_typing_properties(values)?;
-        if self.is_read_only() {
+        if !self.is_modifiable() || self.is_read_only() {
             return Err(DocumentError::UnsupportedFormatting);
         }
         let sample = if affinity == BoundaryAffinity::Upstream && at > 0 {
@@ -880,6 +880,7 @@ impl Document {
         values: &[(StyleProperty, StylePropertyValue)],
         inherited: Option<&super::super::ReplacementTypingContext>,
     ) -> Result<(PreparedModelTransaction, usize, usize), ModelTransactionError> {
+        self.require_modifiable()?;
         // The captured first character supplies inheritance, while deliberate
         // pending menu choices still win. Only differing properties are later
         // written, so paragraph defaults remain sparse whenever they survive.

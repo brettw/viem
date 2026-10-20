@@ -468,6 +468,13 @@ Unsupported commands fail without side effects.
   candidate and then performs its own action, including Escape, Enter, Tab and
   arrows.
 - Normal `U` is unsupported; Visual `U` and `gU` work.
+- `modifiable` is buffer-local, defaults on and gates content changes through
+  every input path, including undo/redo and encoding/line-ending conversion.
+  Changing it is not an edit or an undo entry; `readonly` separately gates saves.
+- Vim folding and spelling, `guicursor`, `cursorline`, `colorcolumn`,
+  `relativenumber`, `statusline` and `wrapmargin` are deliberately unsupported,
+  not a feature backlog. Their recognized compatibility options are documented
+  in [the option profile](docs/vimscript.md#deliberately-unsupported-options).
 - Text and Code default to `autoindent tabstop=2 shiftwidth=2 softtabstop=2
   expandtab smarttab`, `formatoptions=qj` and `textwidth=80`.
 - `=` copies the preceding nonblank line's indentation; it never runs a

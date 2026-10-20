@@ -1321,6 +1321,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
             plan.outcome.navigation = Some(ExNavigation::HistoryRestoration);
         }
         ExAction::HistoryTime { later, amount } => {
+            document.require_modifiable()?;
             let target = document.history_time_target(*later, *amount);
             if target != document.history_status().current {
                 plan.stage_history_navigation(document, HistoryNavigationRequest::SelectNode(target.node));
@@ -1517,6 +1518,7 @@ pub fn commit_ex(
         }
     }
     for effect in &plan.outcome.vim_option_effects {
+        if effect.name == "modifiable" { document.set_modifiable(effect.new_value.number() != 0); }
         if effect.name == "readonly" { document.set_read_only(effect.new_value.number() != 0); }
     }
     if let Some(next) = plan.next_substitute.take() {
@@ -2145,6 +2147,7 @@ fn plan_substitution(
     stored: StoredSubstitute,
     plan: &mut ExPlan,
 ) -> Result<(), ExExecuteError> {
+    document.require_modifiable()?;
     let lines = context.resolved_addresses.as_ref().and_then(|addresses| addresses.range.clone())
         .ok_or(ExExecuteError::AddressOverflow)?;
     let limits = RegexLimits::default();
