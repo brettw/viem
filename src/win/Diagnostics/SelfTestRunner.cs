@@ -3,7 +3,8 @@ namespace Viem.Windows.Diagnostics;
 
 internal static class SelfTestRunner
 {
-    internal sealed record Stage(string Name, Func<Task> Run, bool Setup = false);
+    internal sealed record Stage(string Name, Func<Task> Run, bool Setup = false,
+        IReadOnlyList<Stage>? Cases = null, Func<Task>? Cleanup = null);
 
     /// Waits for asynchronous UI work by polling its observable result, up to
     /// a bound, instead of sleeping for a guessed duration. Returns whether
@@ -29,30 +30,62 @@ internal static class SelfTestRunner
             ? filter.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase)
             : null;
         var timings = new List<NativeTestStage>();
-        if (selected?.Except(stages.Select(s => s.Name), StringComparer.OrdinalIgnoreCase).ToArray() is { Length: > 0 } unknown)
+        bool Matches(string filter, string name) => name.Equals(filter, StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith(filter + ".", StringComparison.OrdinalIgnoreCase);
+        IEnumerable<Stage> AllStages() => stages.SelectMany(stage =>
+            stage.Cases == null ? new[] { stage } : new[] { stage }.Concat(stage.Cases));
+        bool IsSelected(Stage stage) => selected == null || selected.Any(filter => Matches(filter, stage.Name))
+            || stage.Cases?.Any(IsSelected) == true;
+        if (selected?.Where(filter => !AllStages().Any(stage => Matches(filter, stage.Name))).ToArray() is { Length: > 0 } unknown)
         {
-            FrontendSmokeTests.WriteFailure($"Unknown VIEM_TEST_SUITES entries: {string.Join(", ", unknown)}. Stages: {string.Join(", ", stages.Select(s => s.Name))}.", timings);
+            FrontendSmokeTests.WriteFailure($"Unknown VIEM_TEST_SUITES entries: {string.Join(", ", unknown)}. Stages: {string.Join(", ", AllStages().Select(s => s.Name))}.", timings);
             return false;
         }
         var failures = new List<string>();
-        foreach (var stage in stages)
+
+        async Task<bool> Execute(Stage stage, bool closeWindows)
         {
-            if (!stage.Setup && selected != null && !selected.Contains(stage.Name)) continue;
             FrontendSmokeTests.WriteProgress(stage.Name);
             int before = FrontendSmokeTests.UiChecks.Count;
             FrontendSmokeTests.UiChecks.Mark();
             var timer = System.Diagnostics.Stopwatch.StartNew();
             bool failed = false;
-            try { await stage.Run(); }
+            try {
+                await stage.Run();
+            }
             catch (Exception error)
             {
                 failed = true;
                 string last = FrontendSmokeTests.UiChecks.Count > before ? FrontendSmokeTests.UiChecks[^1] : "(none in this stage)";
                 failures.Add($"{stage.Name} failed after its check \"{last}\":\n{error}");
             }
-            int stray = closeStrayWindows();
+            int stray = closeWindows ? closeStrayWindows() : 0;
             timings.Add(new(stage.Name, Math.Round(timer.Elapsed.TotalSeconds, 2), FrontendSmokeTests.UiChecks.Count - before, failed, stray));
-            if (failed && stage.Setup) break;
+            return !failed;
+        }
+
+        foreach (var stage in stages)
+        {
+            if (!stage.Setup && !IsSelected(stage)) continue;
+            if (stage.Cases == null)
+            {
+                if (!await Execute(stage, closeWindows: true) && stage.Setup) break;
+                continue;
+            }
+
+            // Case groups own one native fixture. Document/view state is reset
+            // between cases, and one failed case does not hide later failures.
+            bool ready = await Execute(stage with { Name = stage.Name + ".Setup" }, closeWindows: false);
+            try
+            {
+                if (ready)
+                    foreach (var test in stage.Cases.Where(IsSelected))
+                        await Execute(test, closeWindows: false);
+            }
+            finally
+            {
+                await Execute(new(stage.Name + ".Cleanup", stage.Cleanup ?? (() => Task.CompletedTask)), closeWindows: true);
+            }
         }
         if (failures.Count > 0) FrontendSmokeTests.WriteFailure(string.Join("\n\n", failures), timings);
         else FrontendSmokeTests.WriteSuccess(FrontendSmokeTests.UiChecks, timings);

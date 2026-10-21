@@ -17,15 +17,20 @@ internal static class CodeBlockLanguageTests
     internal static async Task RunMenu(Preferences preferences)
     {
         void Check(bool value, string name)
-        { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+        {
+            if (!value) throw new InvalidOperationException(name);
+            FrontendSmokeTests.UiChecks.Add(name);
+        }
         const string source = "before\n\n```rust\nfn main() {}\n```\n\nafter";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
+        App.Instance.Windows.Add(window);
+        window.Activate();
         MenuFlyout? menu = null;
         try
         {
-            var pane = window.ActivePane!; var view = await pane.Ready;
+            var pane = window.ActivePane!;
+            var view = await pane.Ready;
             await InputRoutingTests.Settle();
             var snapshot = view.Layout();
             var decoration = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
@@ -36,10 +41,15 @@ internal static class CodeBlockLanguageTests
                 decoration.typographic_bounds.y - viewport.top, decoration.typographic_bounds.width, decoration.typographic_bounds.height);
             var center = new global::Windows.Foundation.Point(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2);
             using var image = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
-            byte[] Draw() { using (var drawing = image.CreateDrawingSession()) pane.Draw(drawing); return image.GetPixelBytes(); }
+            byte[] Draw() {
+                using (var drawing = image.CreateDrawingSession()) pane.Draw(drawing);
+                return image.GetPixelBytes();
+            }
             pane.MoveCodeBlockLanguageHover(null);
             Check(pane.CodeBlockLanguageOpacity(decoration) == .25f, "the code language overlay starts at 25% opacity");
-            byte[] idle = Draw(); int builds = pane.DrawingCacheBuilds; long shaped = view.Provider.ShapedCharacters;
+            byte[] idle = Draw();
+            int builds = pane.DrawingCacheBuilds;
+            long shaped = view.Provider.ShapedCharacters;
             pane.MoveCodeBlockLanguageHover(center);
             Check(pane.CodeBlockLanguageOpacity(decoration) == 1, "hovering the code language overlay raises opacity to 100%");
             byte[] hovered = Draw();
@@ -78,7 +88,8 @@ internal static class CodeBlockLanguageTests
             await MenuTestHelpers.Transition(true, () => InputRoutingTests.Key(global::Windows.System.VirtualKey.Right), obscureChoice);
             Check(obscureChoice.Focus(FocusState.Programmatic), "obscure code block language takes native keyboard focus");
             await MenuTestHelpers.Transition(false, async () => {
-                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); menu.Hide();
+                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+                menu.Hide();
             }, none, obscure, obscureChoice);
             pane.MoveCodeBlockLanguageHover(null);
             Check(pane.CodeBlockLanguageOpacity(decoration) == .25f, "closing the menu without hover restores idle selector opacity");
@@ -93,33 +104,49 @@ internal static class CodeBlockLanguageTests
             var expected = document.State;
             menu = EditorPane.CodeBlockLanguageMenu(obscureLanguage.Name + " ▾", true, language =>
             {
-                try { view.SetCodeBlockLanguage(expected.document_id, expected.document_revision, row.text_start, language); }
-                catch (CoreException error) when (error.Status == VIEM_STATUS_STALE_REVISION) { staleRejected = true; }
+                try {
+                    view.SetCodeBlockLanguage(expected.document_id, expected.document_revision, row.text_start, language);
+                }
+                catch (CoreException error) when (error.Status == VIEM_STATUS_STALE_REVISION) {
+                    staleRejected = true;
+                }
             });
             obscure = (MenuFlyoutSubItem)menu.Items[1];
             Check(((FontIcon)obscure.Icon).Glyph == "\uE73E", "an obscure code block language checks its containing flyout");
-            await MenuTestHelpers.Transition(true, () => { menu.ShowAt(pane.Canvas); return Task.CompletedTask; }, menu.Items[0], obscure);
+            await MenuTestHelpers.Transition(true, () => {
+                menu.ShowAt(pane.Canvas);
+                return Task.CompletedTask;
+            }, menu.Items[0], obscure);
             Check(obscure.Items.Cast<ToggleMenuFlyoutItem>().Single(item => item.Text == obscureLanguage.Name).IsChecked,
                 "an obscure code block language retains its native child check");
             view.SetCodeBlockLanguage(expected.document_id, expected.document_revision, row.text_start, "rust");
             var python = menu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Python");
             Check(python.Focus(FocusState.Programmatic), "primary code block language takes native keyboard focus");
             await MenuTestHelpers.Transition(false, async () => {
-                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); menu.Hide();
+                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+                menu.Hide();
             }, menu.Items[0], obscure, python);
             Check(staleRejected && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "a native language choice cannot refresh away its captured stale source revision");
 
             menu = EditorPane.CodeBlockLanguageMenu("Rust ▾", false, _ => throw new InvalidOperationException("read-only choice invoked"));
             obscure = (MenuFlyoutSubItem)menu.Items[1];
-            await MenuTestHelpers.Transition(true, () => { menu.ShowAt(pane.Canvas); return Task.CompletedTask; }, menu.Items[0], obscure);
+            await MenuTestHelpers.Transition(true, () => {
+                menu.ShowAt(pane.Canvas);
+                return Task.CompletedTask;
+            }, menu.Items[0], obscure);
             Check(!obscure.IsEnabled && menu.Items.OfType<ToggleMenuFlyoutItem>().All(item => !item.IsEnabled)
                 && obscure.Items.Cast<ToggleMenuFlyoutItem>().All(item => !item.IsEnabled),
                 "read-only code block menus disable primary and obscure language actions");
             Check(pane.LastError == null, "code block language menu tests leave no presentation errors");
-            await MenuTestHelpers.Transition(false, () => { menu.Hide(); return Task.CompletedTask; }, menu.Items[0], obscure);
-            var survivor = window.SplitPane(pane, document); await survivor.Ready;
-            window.FocusPane(pane); await Task.Delay(80);
+            await MenuTestHelpers.Transition(false, () => {
+                menu.Hide();
+                return Task.CompletedTask;
+            }, menu.Items[0], obscure);
+            var survivor = window.SplitPane(pane, document);
+            await survivor.Ready;
+            window.FocusPane(pane);
+            await InputRoutingTests.Settle();
             var closingLabel = view.Layout().Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
             viewport = view.Viewport;
             center = new(closingLabel.typographic_bounds.x - viewport.left + closingLabel.typographic_bounds.width / 2,
@@ -132,21 +159,30 @@ internal static class CodeBlockLanguageTests
             Check(pane.CodeBlockLanguageFlyout == null && pane.CodeBlockLanguageOpacity(closingLabel) == .25f,
                 "closing a pane with its native language menu open retires selector ownership without querying detached geometry");
         }
-        finally { menu?.Hide(); await window.ClosePane(window.ActivePane!, force: true); App.Instance.Windows.Remove(window); }
+        finally {
+            menu?.Hide();
+            await window.ClosePane(window.ActivePane!, force: true);
+            App.Instance.Windows.Remove(window);
+        }
         await CheckFrontMatterMenu(preferences);
     }
 
     private static async Task CheckFrontMatterMenu(Preferences preferences)
     {
         void Check(bool value, string name)
-        { if (!value) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+        {
+            if (!value) throw new InvalidOperationException(name);
+            FrontendSmokeTests.UiChecks.Add(name);
+        }
         const string source = "---\nname: viem\n---\n\nbody";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
+        App.Instance.Windows.Add(window);
+        window.Activate();
         try
         {
-            var pane = window.ActivePane!; var view = await pane.Ready;
+            var pane = window.ActivePane!;
+            var view = await pane.Ready;
             await InputRoutingTests.Settle();
             var snapshot = view.Layout();
             var label = snapshot.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0);
@@ -166,7 +202,10 @@ internal static class CodeBlockLanguageTests
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "front matter label interaction preserves original YAML and delimiters");
         }
-        finally { await window.ClosePane(window.ActivePane!, force: true); App.Instance.Windows.Remove(window); }
+        finally {
+            await window.ClosePane(window.ActivePane!, force: true);
+            App.Instance.Windows.Remove(window);
+        }
     }
 
     internal static void Run(CanvasDevice device, DispatcherQueue dispatcher, Action<bool, string> check)
@@ -197,16 +236,24 @@ internal static class CodeBlockLanguageTests
         check(view.Presentation.cursor_utf8_offset == before.cursor_utf8_offset && view.Presentation.mode == before.mode,
             "code language selection preserves the invoking caret and mode");
         bool staleRejected = false;
-        try { view.SetCodeBlockLanguage(state.document_id, state.document_revision, blockRow.text_start, "python"); }
-        catch (CoreException error) when (error.Status == VIEM_STATUS_STALE_REVISION) { staleRejected = true; }
+        try {
+            view.SetCodeBlockLanguage(state.document_id, state.document_revision, blockRow.text_start, "python");
+        }
+        catch (CoreException error) when (error.Status == VIEM_STATUS_STALE_REVISION) {
+            staleRejected = true;
+        }
         check(staleRejected, "a stale Windows code language menu cannot mutate the later snapshot");
         view.Undo();
         check(Source() == source && Label() == "Rust ▾", "one Windows undo restores exact code language bytes and furniture");
         document.SetReadOnly(true);
         var readOnly = document.State;
         bool readOnlyRejected = false;
-        try { view.SetCodeBlockLanguage(readOnly.document_id, readOnly.document_revision, blockRow.text_start, "python"); }
-        catch (CoreException error) when (error.Status == VIEM_STATUS_UNSUPPORTED_OPERATION) { readOnlyRejected = true; }
+        try {
+            view.SetCodeBlockLanguage(readOnly.document_id, readOnly.document_revision, blockRow.text_start, "python");
+        }
+        catch (CoreException error) when (error.Status == VIEM_STATUS_UNSUPPORTED_OPERATION) {
+            readOnlyRejected = true;
+        }
         check(readOnlyRejected && Source() == source, "Windows read-only policy rejects code language authoring without changing source");
         document.SetReadOnly(false);
         view.SetMarkdownPreview(false);

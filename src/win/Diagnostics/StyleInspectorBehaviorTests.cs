@@ -43,16 +43,26 @@ internal static class StyleInspectorBehaviorTests
         var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void Complete(object? sender, object args) => opened.TrySetResult();
         flyout.Opened += Complete;
-        try { flyout.ShowAt(target); await opened.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
-        finally { flyout.Opened -= Complete; }
+        try {
+            flyout.ShowAt(target);
+            await opened.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally {
+            flyout.Opened -= Complete;
+        }
     }
     private static async Task Close(Flyout flyout, Action? dismiss = null)
     {
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         void Complete(object? sender, object args) => closed.TrySetResult();
         flyout.Closed += Complete;
-        try { if (dismiss != null) dismiss(); else flyout.Hide(); await closed.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
-        finally { flyout.Closed -= Complete; }
+        try {
+            if (dismiss != null) dismiss(); else flyout.Hide();
+            await closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally {
+            flyout.Closed -= Complete;
+        }
     }
 
     internal static void LinkedBlockControls(EditorPane pane, Preferences preferences)
@@ -74,7 +84,8 @@ internal static class StyleInspectorBehaviorTests
             inspector.ThemeView.EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, foreground);
             inspector.RefreshForTesting();
             var tab = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl).Single(b => Equals(b.Content, "Block"));
-            tab.IsChecked = true; inspector.RootControl.UpdateLayout();
+            tab.IsChecked = true;
+            inspector.RootControl.UpdateLayout();
             var toggle = Children<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Link block sides");
             var matchSides = Children<TextBlock>(inspector.RootControl).Single(label => label.Text == "Match sides");
             var backgroundCaption = Children<TextBlock>(inspector.RootControl).First(label => label.Text == "Background color");
@@ -100,7 +111,10 @@ internal static class StyleInspectorBehaviorTests
                 "An unlocked native field changes only its side");
             Check(!document.IsDirty, "Linked block controls leave source clean");
         }
-        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
+        finally {
+            inspector.Close();
+            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original);
+        }
     }
 
     internal static unsafe void BlockPreview(EditorPane pane, Preferences preferences)
@@ -111,10 +125,12 @@ internal static class StyleInspectorBehaviorTests
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var quote = view.Styles().Styles.Single(s => s.Id == "Block quote" && s.Namespace == 1);
         view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(17));
-        var background = New<ViemStyleEditValueV1>(); background.kind = VIEM_STYLE_VALUE_COLOR;
+        var background = New<ViemStyleEditValueV1>();
+        background.kind = VIEM_STYLE_VALUE_COLOR;
         background.color = new() { red = .6f, green = .2f, blue = .7f, alpha = .5f };
         view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND, background);
-        var sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        var sheet = view.Styles();
+        quote = sheet.Styles.Single(s => s.Key == quote.Key);
         using var preview = new BlockStylePreview(VIEM_STYLE_ROLE_QUOTE, pane.Canvas.Device, pane.DispatcherQueue);
         preview.Update(sheet, quote, preferences.Theme.Foreground);
         var layout = preview.Layout(560, 300);
@@ -126,7 +142,8 @@ internal static class StyleInspectorBehaviorTests
         int edits = preview.PropertyEdits;
         for (int i = 0; i < 2; i++) {
             view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT, CoreView.Number(20 + i));
-            sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+            sheet = view.Styles();
+            quote = sheet.Styles.Single(s => s.Key == quote.Key);
             using var fresh = new BlockStylePreview(VIEM_STYLE_ROLE_QUOTE, pane.Canvas.Device, pane.DispatcherQueue);
             fresh.Update(sheet, quote, preferences.Theme.Foreground);
             preview.Update(sheet, quote, preferences.Theme.Foreground);
@@ -141,11 +158,13 @@ internal static class StyleInspectorBehaviorTests
         // submit unchanged effective values to this specimen.
         var heading = sheet.Styles.Single(s => s.Id == "Heading1" && s.Namespace == 1);
         view.EditStyle(heading, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(31));
-        sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        sheet = view.Styles();
+        quote = sheet.Styles.Single(s => s.Key == quote.Key);
         preview.Update(sheet, quote, preferences.Theme.Foreground);
         Check(preview.PropertyEdits == edits, "An unrelated stylesheet revision does not resubmit unchanged preview values");
         view.EditStyleFont(quote, ["Consolas"], null);
-        sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        sheet = view.Styles();
+        quote = sheet.Styles.Single(s => s.Key == quote.Key);
         var foreground = Color.FromArgb(255, 36, 72, 108);
         preview.Update(sheet, quote, foreground);
         using var freshPixels = new BlockStylePreview(VIEM_STYLE_ROLE_QUOTE, pane.Canvas.Device, pane.DispatcherQueue);
@@ -172,7 +191,8 @@ internal static class StyleInspectorBehaviorTests
         var baseStyle = view.Styles().Styles.Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
         view.EditStyle(baseStyle, VIEM_STYLE_EDIT_CLEAR_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND, default);
         view.EditStyle(quote, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH, CoreView.Number(2));
-        sheet = view.Styles(); quote = sheet.Styles.Single(s => s.Key == quote.Key);
+        sheet = view.Styles();
+        quote = sheet.Styles.Single(s => s.Key == quote.Key);
         foreach (var current in new[] { foreground, Color.FromArgb(255, 120, 60, 30) }) {
             foreground = current;
             preview.Update(sheet, quote, foreground);
@@ -196,7 +216,8 @@ internal static class StyleInspectorBehaviorTests
         preferences.AttachThemeDocument(document);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var inspector = new StyleWindow(view, preferences, followCaret: false);
-        inspector.Activate(); await InputRoutingTests.Settle();
+        inspector.Activate();
+        await InputRoutingTests.Settle();
         try {
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Namespace == 2 && s.Id == "Code");
             inspector.ThemeView.EditStyle(Selected(inspector), VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(20));
@@ -232,7 +253,10 @@ internal static class StyleInspectorBehaviorTests
             Check(!document.IsDirty && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "Character preview script edits preserve the open document source");
         }
-        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
+        finally {
+            inspector.Close();
+            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original);
+        }
     }
     internal static async Task Following(EditorPane pane, Preferences preferences)
     {
@@ -242,7 +266,9 @@ internal static class StyleInspectorBehaviorTests
         var inspector = new StyleWindow(view, preferences);
         var preparedSize = inspector.AppWindow.ClientSize;
         var shownSizes = new List<global::Windows.Graphics.SizeInt32>();
-        inspector.AppWindow.Changed += (_, change) => { if (change.DidSizeChange && inspector.AppWindow.IsVisible) shownSizes.Add(inspector.AppWindow.ClientSize); };
+        inspector.AppWindow.Changed += (_, change) => {
+            if (change.DidSizeChange && inspector.AppWindow.IsVisible) shownSizes.Add(inspector.AppWindow.ClientSize);
+        };
         Check(!inspector.AppWindow.IsVisible && inspector.RootControl.DesiredSize.Height > 500, "style inspector measures populated controls before its first visible frame");
         inspector.Activate();
         try
@@ -277,7 +303,10 @@ internal static class StyleInspectorBehaviorTests
                 "Following styles with the same font retains catalogue, family and variant menu resources");
             queries = inspector.CaretStyleQueries;
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading2");
-            view.Refresh(); view.Zoom(1.1f); document.NotifyChanged(); Move(view, 1);
+            view.Refresh();
+            view.Zoom(1.1f);
+            document.NotifyChanged();
+            Move(view, 1);
             Check(Selected(inspector).Id == "Heading2" && inspector.CaretStyleQueries == queries && !inspector.CaretFollowScheduled,
                 "unchanged caret, repaint, layout and document notifications retain a manual style without scheduling");
             inspector.Retarget(view);
@@ -285,9 +314,12 @@ internal static class StyleInspectorBehaviorTests
             Move(view, 7);
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == "Heading2");
             Check(Selected(inspector).Id == "Heading2" && !inspector.CaretFollowScheduled, "an explicit picker choice cancels a pending caret follow");
-            Move(view, 0); Move(view, 10, true); inspector.SettleCaretFollowForTesting();
+            Move(view, 0);
+            Move(view, 10, true);
+            inspector.SettleCaretFollowForTesting();
             Check(Selected(inspector).Id == "Heading1", "mixed character styles follow their uniform paragraph");
-            Move(view, 19, true); inspector.SettleCaretFollowForTesting();
+            Move(view, 19, true);
+            inspector.SettleCaretFollowForTesting();
             Check((Selected(inspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0, "mixed paragraphs and characters fall back to Base Paragraph");
             using var other = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
             Move(other, 7);
@@ -297,18 +329,27 @@ internal static class StyleInspectorBehaviorTests
                 "following styles preserves document bytes and clean state");
             // Once, let the real timer settle a caret move on its own.
             StyleWindow.ManualCaretFollowForTesting = false;
-            try { Move(view, 7); await inspector.WaitForCaretFollowForTesting(); }
-            finally { StyleWindow.ManualCaretFollowForTesting = true; }
+            try {
+                Move(view, 7);
+                await inspector.WaitForCaretFollowForTesting();
+            }
+            finally {
+                StyleWindow.ManualCaretFollowForTesting = true;
+            }
             Check(Selected(inspector).Id == "Code" && !inspector.CaretFollowScheduled, "the caret-follow timer settles on its own after the delay");
-            Move(view, 1); inspector.Close();
+            Move(view, 1);
+            inspector.Close();
             Check(!inspector.CaretFollowScheduled, "closing the style inspector cancels pending follow work");
         }
-        finally { inspector.Close(); }
+        finally {
+            inspector.Close();
+        }
         using var code = new CoreDocument("fn main() {}\n"u8.ToArray(), "tracking.rs");
         using var codeView = new CoreView(code, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         for (int i = 0; i < 300; i++)
         {
-            code.PollSyntax(); codeView.Resize(700, 400);
+            code.PollSyntax();
+            codeView.Resize(700, 400);
             if (codeView.CurrentStyleEditorKey(codeView.Styles()) is { Namespace: 2 }) break;
             await Task.Delay(10);
         }
@@ -316,10 +357,13 @@ internal static class StyleInspectorBehaviorTests
         try
         {
             Check(Selected(codeInspector).Namespace == 2 && codeInspector.Title == "Theme styles — Code — " + preferences.ThemeDisplayName, "Code Styles opens the retained syntax style under the caret");
-            Move(codeView, 2); codeInspector.SettleCaretFollowForTesting();
+            Move(codeView, 2);
+            codeInspector.SettleCaretFollowForTesting();
             Check((Selected(codeInspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0, "Code whitespace follows Base Paragraph within the global sheet");
         }
-        finally { codeInspector.Close(); }
+        finally {
+            codeInspector.Close();
+        }
         await MarkdownCharacterFollowing(pane, preferences);
         await MarkdownCodeFollowing(pane, preferences);
     }
@@ -345,7 +389,8 @@ internal static class StyleInspectorBehaviorTests
                     Check(Selected(inspector).Key == new StyleKey(2, style),
                         "reopening Markdown styles selects the current character treatment: " + style + " / " + format);
                 }
-                Move(view, 1); inspector.Retarget(view);
+                Move(view, 1);
+                inspector.Retarget(view);
                 Move(view, (ulong)document.FormattedText().IndexOf("link", StringComparison.Ordinal) + 1);
                 inspector.SettleCaretFollowForTesting();
                 Check(Selected(inspector).Key == new StyleKey(2, "Link"),
@@ -387,7 +432,8 @@ internal static class StyleInspectorBehaviorTests
                     "clearing pending Code updates the inspector at the same caret: " + format);
                 view.Key(VIEM_KEY_ESCAPE);
                 Move(view, (ulong)document.FormattedText().IndexOf("strike", StringComparison.Ordinal) + 1);
-                view.Command("i"); inspector.Retarget(view);
+                view.Command("i");
+                inspector.Retarget(view);
                 Check(Selected(inspector).Key == new StyleKey(2, "Strikethrough"), "the inspector opens the strike treatment before a pending clear");
                 caret = view.Presentation.cursor_utf8_offset;
                 view.ToggleStrikethrough();
@@ -402,7 +448,10 @@ internal static class StyleInspectorBehaviorTests
                 Check(source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty,
                     "following automatic Markdown character styles preserves source bytes and clean state");
             }
-            finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, originalStyles); }
+            finally {
+                inspector.Close();
+                preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, originalStyles);
+            }
         }
     }
     internal static async Task MarkdownCodeFollowing(EditorPane pane, Preferences preferences)
@@ -418,7 +467,9 @@ internal static class StyleInspectorBehaviorTests
             void DocumentChanged() => documentChanges++;
             void SyntaxChanged() => syntaxChanges++;
             void ViewChanged() => viewChanges++;
-            document.Changed += DocumentChanged; document.SyntaxChanged += SyntaxChanged; view.Changed += ViewChanged;
+            document.Changed += DocumentChanged;
+            document.SyntaxChanged += SyntaxChanged;
+            view.Changed += ViewChanged;
             try
             {
                 view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "markdown", DocumentModes.Read(document));
@@ -433,7 +484,8 @@ internal static class StyleInspectorBehaviorTests
                 }
                 for (int i = 0; i < 300; i++)
                 {
-                    document.PollSyntax(); view.Refresh();
+                    document.PollSyntax();
+                    view.Refresh();
                     if (view.CurrentStyleEditorKey(view.Styles()) is { Namespace: 2 }) break;
                     await Task.Delay(10);
                 }
@@ -449,13 +501,16 @@ internal static class StyleInspectorBehaviorTests
                     + $" switched=[{switched}], accepted=[{accepted}], final=[{inspector.FollowingStateForTesting}],"
                     + $" events document/syntax/view={documentChanges}/{syntaxChanges}/{viewChanges},"
                     + $" syntaxNames=[{string.Join(",", document.SyntaxStyleNames().Take(12))}], error={inspector.Error})");
-                Move(view, 4); await inspector.WaitForCaretFollowForTesting();
+                Move(view, 4);
+                await inspector.WaitForCaretFollowForTesting();
                 Check(Selected(inspector).Key == heading, "caret following continues after a Markdown-to-Code transition");
                 Check(source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty,
                     "mode-switch style following preserves source and clean state");
             }
             finally {
-                document.Changed -= DocumentChanged; document.SyntaxChanged -= SyntaxChanged; view.Changed -= ViewChanged;
+                document.Changed -= DocumentChanged;
+                document.SyntaxChanged -= SyntaxChanged;
+                view.Changed -= ViewChanged;
                 inspector.Close();
             }
         }
@@ -470,7 +525,10 @@ internal static class StyleInspectorBehaviorTests
         var colors = new List<System.Numerics.Vector4>();
         var layoutPositions = new List<global::Windows.Foundation.Rect>();
         var peer = Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.CreatePeerForElement(spectrum);
-        await InputRoutingTests.Drag(inspector, spectrum, sweep, i => { colors.Add(spectrum.HsvColor); layoutPositions.Add(peer.GetBoundingRectangle()); });
+        await InputRoutingTests.Drag(inspector, spectrum, sweep, i => {
+            colors.Add(spectrum.HsvColor);
+            layoutPositions.Add(peer.GetBoundingRectangle());
+        });
         Check(colors.Select((color, i) => Math.Abs(color.X - sweep[i].X * 359) < 12 && Math.Abs(color.Y - (1 - sweep[i].Y)) < .04).All(v => v),
             "native spectrum drag tracks pointer coordinates through fast diagonal moves, pauses and reversals");
         Check(colors.Skip(90).Take(40).All(c => c == colors[90]), "the color marker stays still while the pointer pauses during a drag");
@@ -489,12 +547,15 @@ internal static class StyleInspectorBehaviorTests
         using var document = new CoreDocument("Color sample."u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
         byte[] originalTheme = preferences.ThemeStyleDefaults(VIEM_FORMAT_PLAIN_TEXT);
         var editor = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(editor); editor.Activate();
+        App.Instance.Windows.Add(editor);
+        editor.Activate();
         var renderedPane = editor.ActivePane!;
         var view = await renderedPane.Ready;
         var mirrorPane = editor.AddPane(document);
         var mirror = await mirrorPane.Ready;
-        var inspector = new StyleWindow(view, preferences); inspector.Activate(); await Task.Delay(200);
+        var inspector = new StyleWindow(view, preferences);
+        inspector.Activate();
+        await InputRoutingTests.Settle();
         byte[] Pixels(EditorPane target)
         {
             using var surface = new CanvasRenderTarget(target.Canvas.Device, (float)target.Canvas.ActualWidth, (float)target.Canvas.ActualHeight, target.Canvas.Dpi);
@@ -510,19 +571,10 @@ internal static class StyleInspectorBehaviorTests
             var original = document.Source(document.State.document_revision);
             flyout.Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.Right;
             int initialLoads = inspector.StyleLoads;
-            Move(view, 1); document.NotifyChanged();
+            Move(view, 1);
+            document.NotifyChanged();
             await Open(flyout, button);
-            Check(picker.Orientation == Orientation.Horizontal && picker.ActualHeight <= 280 && picker.ActualWidth <= 600,
-                $"color picker uses a compact horizontal layout ({picker.ActualWidth} x {picker.ActualHeight})");
-            Check(!flyout.IsConstrainedToRootBounds, "color flyout uses native hosting outside the style window bounds");
-            DependencyObject? popupParent = picker;
-            while (popupParent != null && popupParent is not FlyoutPresenter) popupParent = VisualTreeHelper.GetParent(popupParent);
-            Check(popupParent is FlyoutPresenter presenter && presenter.ActualWidth >= picker.ActualWidth + 24,
-                "the flyout presenter fits the whole horizontal picker without clipping or horizontal scrolling");
-            Check(Children<TextBox>(picker).Where(t => t.ActualHeight > 0).All(t => t.ActualHeight <= 28)
-                && Children<ComboBox>(picker).Any(c => c.ActualHeight is > 0 and <= 28), "the color picker inherits compact text and combo control sizing");
-            Check(picker.Color == preferences.Theme.Foreground && SwatchColor(button) == preferences.Theme.Foreground,
-                "default text color well and popup use the theme foreground instead of emergency black");
+            ColorPickerChrome(picker, flyout, button, preferences);
             await Close(flyout);
             Check(inspector.StyleLoads == initialLoads + 1, "color picking preserves a deferred document refresh until popup closure");
             Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty, "opening and dismissing an unchanged picker adds no edit");
@@ -541,7 +593,8 @@ internal static class StyleInspectorBehaviorTests
             string beforeBurst = inspector.ColorStateForTesting(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND);
             ulong revision = document.State.document_revision;
             for (int i = 0; i < 100; i++) picker.Color = Color.FromArgb(255, (byte)i, 64, 128);
-            var custom = Color.FromArgb(255, 31, 64, 128); picker.Color = custom;
+            var custom = Color.FromArgb(255, 31, 64, 128);
+            picker.Color = custom;
             Check(inspector.ColorUpdateScheduled && document.State.document_revision == revision,
                 "rapid color input queues one coalesced edit "
                 + $"(revision={revision}->{document.State.document_revision}, beforeDrag=[{beforeDrag}], beforeBurst=[{beforeBurst}], afterBurst=[{inspector.ColorStateForTesting(VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND)}])");
@@ -556,15 +609,18 @@ internal static class StyleInspectorBehaviorTests
                 "both visible document views invalidate cached drawing and render the live color before popup dismissal");
             document.NotifyChanged();
             Check(picker.Color == custom && inspector.StyleLoads == loads, "a no-op document notification leaves the active picker stable");
-            picker.Color = Microsoft.UI.Colors.Blue; await SelfTestRunner.Until(() => inspector.PreviewForeground == Microsoft.UI.Colors.Blue);
+            picker.Color = Microsoft.UI.Colors.Blue;
+            await SelfTestRunner.Until(() => inspector.PreviewForeground == Microsoft.UI.Colors.Blue);
             Check(inspector.PreviewForeground == Microsoft.UI.Colors.Blue && document.State.document_revision == revision,
                 "a sustained popup gesture commits subsequent colors before dismissal");
-            picker.Color = custom; await SelfTestRunner.Until(() => inspector.PreviewForeground == custom);
+            picker.Color = custom;
+            await SelfTestRunner.Until(() => inspector.PreviewForeground == custom);
             await Close(flyout);
             Check(inspector.Error.Length == 0 && !document.IsDirty && picker.Color == custom,
                 $"closing the live color picker retains custom RGBA (style={Selected(inspector).Id}, enabled={button.IsEnabled}, dirty={document.IsDirty}, color={picker.Color}, error={inspector.Error})");
             byte[] colored = document.Source(document.State.document_revision);
-            await Open(flyout, button); await Close(flyout);
+            await Open(flyout, button);
+            await Close(flyout);
             Check(colored.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "reopening a custom color has no round-trip edit");
             Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)) && !document.IsDirty, "theme color changes do not create source undo records");
             inspector.UndoThemeForTesting();
@@ -573,38 +629,74 @@ internal static class StyleInspectorBehaviorTests
             inspector.RedoThemeForTesting();
             Check(inspector.PreviewForeground == custom && HasColor(mirror, custom),
                 "theme Redo restores the gesture and refreshes sibling views");
-            var backgroundButton = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Background Color");
-            var backgroundFlyout = (Flyout)backgroundButton.Flyout;
-            var backgroundPicker = (ColorPicker)backgroundFlyout.Content;
-            await Open(backgroundFlyout, backgroundButton);
-            Check(backgroundPicker.Color.A == 0, "an absent text background opens as transparent");
-            var background = Color.FromArgb(255, 192, 64, 32); backgroundPicker.Color = background;
-            await SelfTestRunner.Until(() => inspector.PreviewBackground == background);
-            Check(inspector.PreviewBackground == background && !document.IsDirty, "background color and alpha update the document and preview live");
-            await Close(backgroundFlyout);
-            Check(inspector.Error.Length == 0 && backgroundPicker.Color == background, "background picker commits and retains transparency");
-            Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "theme background changes preserve source bytes");
-            using var second = new CoreDocument("Second color target."u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
-            preferences.AttachThemeDocument(second);
-            using var other = new CoreView(second, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
-            inspector.Retarget(other);
-            Check(inspector.Title == "Theme styles — Plain Text — " + preferences.ThemeDisplayName, "retargeting identifies the Plain Text stylesheet");
-            inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
-            await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Red; await Close(flyout);
-            other.Resize(700, 400); // Standalone view has no EditorPane to materialize the changed theme.
-            Check(!second.IsDirty && !document.IsDirty && HasColor(other, Microsoft.UI.Colors.Red) && HasColor(view, Microsoft.UI.Colors.Red),
-                "a retargeted inspector edits the shared theme across documents without dirtying either source");
-            await Open(flyout, button); picker.Color = Microsoft.UI.Colors.Green;
-            await Close(flyout, () => inspector.Retarget(view));
-            other.Resize(700, 400);
-            Check(HasColor(other, Microsoft.UI.Colors.Green) && HasColor(view, Microsoft.UI.Colors.Green) && !inspector.ColorUpdateScheduled,
-                "retargeting flushes pending theme color once and cancels the timer");
-            await Open(flyout, button); picker.Color = custom;
-            await Close(flyout, inspector.Close);
-            Check(HasColor(view, custom) && !document.IsDirty && !inspector.ColorUpdateScheduled,
-                "closing the inspector flushes the final theme color without a source edit");
+            await BackgroundColorGesture(inspector, document, original);
+            await RetargetAndCloseColorGesture(pane, inspector, preferences, document, view, flyout, button, picker, custom);
+
         }
-        finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, originalTheme); editor.Close(); App.Instance.Windows.Remove(editor); }
+        finally {
+            inspector.Close();
+            preferences.SaveThemeStyles(VIEM_FORMAT_PLAIN_TEXT, originalTheme);
+            editor.Close();
+            App.Instance.Windows.Remove(editor);
+        }
+    }
+
+    private static void ColorPickerChrome(ColorPicker picker, Flyout flyout, Button button, Preferences preferences)
+    {
+        Check(picker.Orientation == Orientation.Horizontal && picker.ActualHeight <= 280 && picker.ActualWidth <= 600,
+            $"color picker uses a compact horizontal layout ({picker.ActualWidth} x {picker.ActualHeight})");
+        Check(!flyout.IsConstrainedToRootBounds, "color flyout uses native hosting outside the style window bounds");
+        DependencyObject? popupParent = picker;
+        while (popupParent != null && popupParent is not FlyoutPresenter) popupParent = VisualTreeHelper.GetParent(popupParent);
+        Check(popupParent is FlyoutPresenter presenter && presenter.ActualWidth >= picker.ActualWidth + 24,
+            "the flyout presenter fits the whole horizontal picker without clipping or horizontal scrolling");
+        Check(Children<TextBox>(picker).Where(t => t.ActualHeight > 0).All(t => t.ActualHeight <= 28)
+            && Children<ComboBox>(picker).Any(c => c.ActualHeight is > 0 and <= 28), "the color picker inherits compact text and combo control sizing");
+        Check(picker.Color == preferences.Theme.Foreground && SwatchColor(button) == preferences.Theme.Foreground,
+            "default text color well and popup use the theme foreground instead of emergency black");
+    }
+
+    private static async Task BackgroundColorGesture(StyleWindow inspector, CoreDocument document, byte[] original)
+    {
+        var backgroundButton = Children<Button>(inspector.RootControl).Single(b => AutomationProperties.GetName(b) == "Background Color");
+        var backgroundFlyout = (Flyout)backgroundButton.Flyout;
+        var backgroundPicker = (ColorPicker)backgroundFlyout.Content;
+        await Open(backgroundFlyout, backgroundButton);
+        Check(backgroundPicker.Color.A == 0, "an absent text background opens as transparent");
+        var background = Color.FromArgb(255, 192, 64, 32);
+        backgroundPicker.Color = background;
+        await SelfTestRunner.Until(() => inspector.PreviewBackground == background);
+        Check(inspector.PreviewBackground == background && !document.IsDirty, "background color and alpha update the document and preview live");
+        await Close(backgroundFlyout);
+        Check(inspector.Error.Length == 0 && backgroundPicker.Color == background, "background picker commits and retains transparency");
+        Check(original.AsSpan().SequenceEqual(document.Source(document.State.document_revision)), "theme background changes preserve source bytes");
+    }
+
+    private static async Task RetargetAndCloseColorGesture(EditorPane pane, StyleWindow inspector, Preferences preferences, CoreDocument document, CoreView view, Flyout flyout, Button button, ColorPicker picker, Color custom)
+    {
+        using var second = new CoreDocument("Second color target."u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT);
+        preferences.AttachThemeDocument(second);
+        using var other = new CoreView(second, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        inspector.Retarget(other);
+        Check(inspector.Title == "Theme styles — Plain Text — " + preferences.ThemeDisplayName, "retargeting identifies the Plain Text stylesheet");
+        inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0);
+        await Open(flyout, button);
+        picker.Color = Microsoft.UI.Colors.Red;
+        await Close(flyout);
+        other.Resize(700, 400); // Standalone view has no EditorPane to materialize the changed theme.
+        Check(!second.IsDirty && !document.IsDirty && HasColor(other, Microsoft.UI.Colors.Red) && HasColor(view, Microsoft.UI.Colors.Red),
+            "a retargeted inspector edits the shared theme across documents without dirtying either source");
+        await Open(flyout, button);
+        picker.Color = Microsoft.UI.Colors.Green;
+        await Close(flyout, () => inspector.Retarget(view));
+        other.Resize(700, 400);
+        Check(HasColor(other, Microsoft.UI.Colors.Green) && HasColor(view, Microsoft.UI.Colors.Green) && !inspector.ColorUpdateScheduled,
+            "retargeting flushes pending theme color once and cancels the timer");
+        await Open(flyout, button);
+        picker.Color = custom;
+        await Close(flyout, inspector.Close);
+        Check(HasColor(view, custom) && !document.IsDirty && !inspector.ColorUpdateScheduled,
+            "closing the inspector flushes the final theme color without a source edit");
     }
 }
 #endif

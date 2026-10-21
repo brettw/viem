@@ -14,7 +14,10 @@ using static Viem.Windows.Interop.Native;
 namespace Viem.Windows.Diagnostics;
 internal static class VariableFontTests
 {
-    private static void Check(bool ok, string name) { if (!ok) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+    private static void Check(bool ok, string name) {
+        if (!ok) throw new InvalidOperationException(name);
+        FrontendSmokeTests.UiChecks.Add(name);
+    }
     internal static async Task Run(EditorPane pane, Preferences preferences)
     {
         InstalledFontTests.Run(pane.Canvas.Device);
@@ -23,7 +26,8 @@ internal static class VariableFontTests
         using (var format = new Microsoft.Graphics.Canvas.Text.CanvasTextFormat { FontFamily = FontCatalog.RenderingFamily(packagedFace.Family, packagedFace.Weight, packagedFace.Slant, packagedFace.Stretch), FontSize = 14 })
         using (var layout = new Microsoft.Graphics.Canvas.Text.CanvasTextLayout(pane.Canvas.Device, "Packaged fonts", format, 1000, 200)) {
             FontVariations.Apply(layout, 0, 14, new() { ["wght"] = packagedFace.Weight }, packagedFace);
-            var capture = new GlyphCapture(f => new GlyphFontMetadata(f)); DirectWriteGlyphCapture.Draw(layout, capture);
+            var capture = new GlyphCapture(f => new GlyphFontMetadata(f));
+            DirectWriteGlyphCapture.Draw(layout, capture);
             var parts = capture.Extract(0, 14, 0, 0);
             Check(parts.Count > 0, "typographic font selection preserves the requested design's glyphs");
             Check(FontVariations.Name(FontVariations.Table(parts.First().Font, "name"), 6, "") == packagedFace.Name, "typographic selection retains the requested original font design");
@@ -41,7 +45,8 @@ internal static class VariableFontTests
         var info = FontVariations.For(face);
         Check(info.Axes.Any(a => a.Tag == "wght") && info.Axes.Any(a => a.Tag == "wdth"), "native fvar discovery returns Bahnschrift weight and width");
         Check(info.Instances.Length > 1, "native fvar discovery returns named instances");
-        var saved = info.Defaults; saved["wght"] = 450.25f;
+        var saved = info.Defaults;
+        saved["wght"] = 450.25f;
         var effective = FontVariations.Effective(info, saved, 750, true, 0);
         Check(effective["wght"] == 700 && saved["wght"] == 450.25f, "relative bold clamps at font maximum without changing saved coordinates");
         var slantInfo = new FontVariationInfo([new("slnt", "Slant", -20, 0, 0, false)], [], []);
@@ -51,7 +56,8 @@ internal static class VariableFontTests
         using var doc = new CoreDocument("Variable fonts MMMM"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(doc, pane.Canvas.Device, pane.Canvas.DispatcherQueue, 1000, 300);
         var style = view.Styles().Styles.Single(s => s.Id == "Paragraph");
-        saved = info.Defaults; saved["wdth"] = 100;
+        saved = info.Defaults;
+        saved["wdth"] = 100;
         view.EditStyleFont(style, [face.PortableFamily], face, saved);
         var wide = view.Layout();
         saved["wdth"] = 75;
@@ -114,7 +120,10 @@ internal static class VariableFontTests
             if (reference != null) UseReferenceCollection(layout, reference, face.PortableFamily, text.Length);
             FontVariations.Apply(layout, 0, text.Length, axes, reference == null ? face : null);
             var fonts = new List<CanvasFontFace>();
-            var capture = new GlyphCapture(font => { fonts.Add(font); return new GlyphFontMetadata(font); });
+            var capture = new GlyphCapture(font => {
+                fonts.Add(font);
+                return new GlyphFontMetadata(font);
+            });
             try {
                 DirectWriteGlyphCapture.Draw(layout, capture);
                 var parts = capture.Extract(0, text.Length, 0, 0);
@@ -128,7 +137,9 @@ internal static class VariableFontTests
                 return new(layout.LayoutBounds.Width, layout.LayoutBounds.Height, parts.Select(part => new FontShapeRun(
                     FontVariations.Name(FontVariations.Table(part.Font, "name"), 6, ""), FontVariations.NativeAxes(part.Font),
                     part.Glyphs, part.Size, part.BidiLevel, part.Offset)).ToArray(), surface.GetPixelBytes());
-            } finally { foreach (var font in fonts.Distinct()) font.Dispose(); }
+            } finally {
+                foreach (var font in fonts.Distinct()) font.Dispose();
+            }
         }
     }
 
@@ -156,7 +167,8 @@ internal static class VariableFontTests
             if (collection != 0) Marshal.Release(collection);
             if (set != 0) Marshal.Release(set);
             if (factory != 0) Marshal.Release(factory);
-            GC.KeepAlive(layout); GC.KeepAlive(fonts);
+            GC.KeepAlive(layout);
+            GC.KeepAlive(fonts);
         }
     }
 
@@ -196,7 +208,10 @@ internal static class VariableFontTests
             Check(Math.Abs(view.Provider.RenderedFontAxes(run).First()["wght"] - weight) < .001f, "Flightline emphasis uses clamped effective weight and restores its saved base weight");
             Check(view.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == (slant != 0)), "Flightline emphasis switches the actual variable font collection between upright and italic");
         }
-        Emphasis(true, 0, 700); Emphasis(true, 1, 700); Emphasis(false, 1, 437); Emphasis(false, 0, 437);
+        Emphasis(true, 0, 700);
+        Emphasis(true, 1, 700);
+        Emphasis(false, 1, 437);
+        Emphasis(false, 0, 437);
         Check(FontCatalog.Resolve("FlightlineCode-does-not-exist") == null, "unknown Flightline names remain unavailable");
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Flightline font changes preserve document source");
         Check(!System.Text.Encoding.UTF8.GetString(view.ExportStyleDefaults()).Contains("file:", StringComparison.OrdinalIgnoreCase), "Flightline styles retain portable font requests");
@@ -210,7 +225,8 @@ internal static class VariableFontTests
         var face = FontCatalog.Match("Recursive", "Sans Linear Light")!;
         view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [face.PortableFamily], face);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
-        var inspector = new StyleWindow(view, preferences); inspector.Activate();
+        var inspector = new StyleWindow(view, preferences);
+        inspector.Activate();
         try {
             await InputRoutingTests.Settle();
             var preset = ((IEnumerable<object>)inspector.FontVariantControl.ItemsSource).OfType<FontInstance>()
@@ -228,7 +244,10 @@ internal static class VariableFontTests
                 var axes = FontVariations.Decode(styles.String(paragraph.Value(VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES)));
                 Check(axes["CRSV"] == value && inspector.Error.Length == 0, "Cursive " + label + " persists its exact coordinate");
             }
-        } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
+        } finally {
+            inspector.Close();
+            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original);
+        }
     }
 
     private static async Task FlightlineInspectorChecks(EditorPane pane, Preferences preferences)
@@ -240,7 +259,8 @@ internal static class VariableFontTests
         var upright = FontCatalog.Faces("Flightline Code").Single(f => f.Slant == FontStyle.Normal);
         view.EditStyleFont(view.Styles().Styles.Single(s => s.Id == "Paragraph"), [upright.PortableFamily], upright);
         preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, view.ExportStyleDefaults());
-        var inspector = new StyleWindow(view, preferences); inspector.Activate();
+        var inspector = new StyleWindow(view, preferences);
+        inspector.Activate();
         try {
             await InputRoutingTests.Settle();
             foreach (bool italic in new[] { true }) {
@@ -271,7 +291,10 @@ internal static class VariableFontTests
                 Check(renderedView.Provider.RenderedFontNames(run).Any(n => n.StartsWith("FlightlineCode-Normal", StringComparison.Ordinal) && n.Contains("Italic", StringComparison.Ordinal) == italic), "Flightline inspector retains its separate italic design");
             }
             Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source), "Flightline inspector leaves Markdown source unchanged");
-        } finally { inspector.Close(); preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original); }
+        } finally {
+            inspector.Close();
+            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, original);
+        }
     }
 
     private static byte[] FlightlineStyles(string subfamily, float weight) => System.Text.Encoding.UTF8.GetBytes($$$"""
@@ -370,10 +393,12 @@ internal static class VariableFontTests
         byte[] source = "Variable fonts remain visible. **Bold** and *italic*.\n\nAnother paragraph with مرحبا and 👩‍💻."u8.ToArray();
         using var doc = new CoreDocument(source, format: format);
         var editor = new EditorWindow(preferences, doc);
-        App.Instance.Windows.Add(editor); editor.Activate();
+        App.Instance.Windows.Add(editor);
+        editor.Activate();
         var rendered = editor.ActivePane!;
         var view = await rendered.Ready;
-        var inspector = new StyleWindow(view, preferences); inspector.Activate();
+        var inspector = new StyleWindow(view, preferences);
+        inspector.Activate();
         try {
             await InputRoutingTests.Settle();
             view.Place(23, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, doc.State.document_revision);
@@ -382,40 +407,91 @@ internal static class VariableFontTests
             Check(inspector.Error.Length == 0 && rendered.LastError == null, $"selecting Segoe UI Variable Text keeps the live document healthy (inspector={inspector.Error}, editor={rendered.LastError})");
             _ = view.Layout();
             using var specimen = new BlockStylePreview(VIEM_STYLE_ROLE_PARAGRAPH, pane.Canvas.Device, pane.DispatcherQueue);
-            byte[] Pixels(CoreView target) {
-                using var surface = new CanvasRenderTarget(pane.Canvas.Device, 1000, 300, 96);
-                var snapshot = target.Layout();
-                using (var drawing = surface.CreateDrawingSession()) {
-                    drawing.Clear(Microsoft.UI.Colors.White);
-                    using var batch = target.Provider.BeginDrawing(drawing);
-                    foreach (var row in snapshot.Rows)
-                        foreach (var c in snapshot.Clusters.Where(c => c.row_index == row.row_index))
-                            batch.Draw(c.render_run, new Vector2(c.x, row.baseline - target.Viewport.top), Microsoft.UI.Colors.Black);
-                }
-                return surface.GetPixelBytes();
+            var checks = new VariableFontFixture(pane, preferences, doc, editor, inspector, specimen);
+            await checks.ExplicitOpticalSize();
+            checks.AutomaticOpticalSize();
+            await checks.EachAxisRendersLikeFresh();
+            checks.FractionalCoordinates();
+            await checks.NativeAxisDragging();
+            checks.UndoRedoRenders();
+            await checks.BackgroundGlyphs();
+            Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source) && !doc.IsDirty, "Segoe UI Variable Text theme edits preserve document bytes and clean state");
+        } finally {
+            inspector.Close();
+            preferences.SaveThemeStyles(format, original);
+            editor.Close();
+            App.Instance.Windows.Remove(editor);
+        }
+    }
+    private sealed class VariableFontFixture
+    {
+        private readonly EditorPane pane;
+        private readonly Preferences preferences;
+        private readonly CoreDocument doc;
+        private readonly EditorPane rendered;
+        private readonly CoreView view;
+        private readonly StyleWindow inspector;
+        private readonly BlockStylePreview specimen;
+        private readonly Slider[] sliders;
+        private readonly FontFace variableFace;
+        private readonly uint format;
+        private readonly byte[] source;
+
+        internal VariableFontFixture(EditorPane pane, Preferences preferences, CoreDocument doc,
+            EditorWindow editor, StyleWindow inspector, BlockStylePreview specimen)
+        {
+            this.pane = pane;
+            this.preferences = preferences;
+            this.doc = doc;
+            this.inspector = inspector;
+            this.specimen = specimen;
+            rendered = editor.ActivePane!;
+            view = rendered.View!;
+            sliders = Descendants<Slider>(inspector.RootControl).ToArray();
+            variableFace = FontCatalog.Faces("Segoe UI Variable Text").First();
+            format = doc.State.format;
+            source = doc.Source(doc.State.document_revision);
+        }
+
+        private byte[] Pixels(CoreView target) {
+            using var surface = new CanvasRenderTarget(pane.Canvas.Device, 1000, 300, 96);
+            var snapshot = target.Layout();
+            using (var drawing = surface.CreateDrawingSession()) {
+                drawing.Clear(Microsoft.UI.Colors.White);
+                using var batch = target.Provider.BeginDrawing(drawing);
+                foreach (var row in snapshot.Rows)
+                    foreach (var c in snapshot.Clusters.Where(c => c.row_index == row.row_index))
+                        batch.Draw(c.render_run, new Vector2(c.x, row.baseline - target.Viewport.top), Microsoft.UI.Colors.Black);
             }
-            void PanePixels() {
-                using var surface = new CanvasRenderTarget(pane.Canvas.Device, (float)rendered.Canvas.ActualWidth, (float)rendered.Canvas.ActualHeight, rendered.Canvas.Dpi);
-                using (var drawing = surface.CreateDrawingSession()) rendered.Draw(drawing);
-                byte[] bytes = surface.GetPixelBytes();
-                var bg = preferences.Theme.Background;
-                int ink = 0;
-                for (int i = 0; i < bytes.Length; i += 4)
-                    if (Math.Abs(bytes[i] - bg.B) + Math.Abs(bytes[i + 1] - bg.G) + Math.Abs(bytes[i + 2] - bg.R) > 80) ink++;
-                Check(ink > 150, "the live editor pane draws variable-font text after slider changes");
+            return surface.GetPixelBytes();
+        }
+        private void PanePixels() {
+            using var surface = new CanvasRenderTarget(pane.Canvas.Device, (float)rendered.Canvas.ActualWidth, (float)rendered.Canvas.ActualHeight, rendered.Canvas.Dpi);
+            using (var drawing = surface.CreateDrawingSession()) rendered.Draw(drawing);
+            byte[] bytes = surface.GetPixelBytes();
+            var bg = preferences.Theme.Background;
+            int ink = 0;
+            for (int i = 0; i < bytes.Length; i += 4)
+                if (Math.Abs(bytes[i] - bg.B) + Math.Abs(bytes[i + 1] - bg.G) + Math.Abs(bytes[i + 2] - bg.R) > 80) ink++;
+            Check(ink > 150, "the live editor pane draws variable-font text after slider changes");
+        }
+        private static void VisiblePixels(byte[] pixels, string name) => Check(pixels.Count(b => b < 245) > 150, name);
+        private Dictionary<string, float> FirstAxes() => view.Provider.RenderedFontAxes(view.Layout().Clusters.First().render_run.identifier).First(a => a.ContainsKey("opsz"));
+        private byte[] PreviewPixels() {
+            var sheet = inspector.ThemeView.Styles();
+            specimen.Update(sheet, sheet.Styles.Single(s => s.Id == "Paragraph"), Microsoft.UI.Colors.Black);
+            using var preview = new CanvasRenderTarget(pane.Canvas.Device, 560, 200, 96);
+            using (var drawing = preview.CreateDrawingSession()) {
+                drawing.Clear(Microsoft.UI.Colors.White);
+                specimen.Draw(drawing, 560, 200, Microsoft.UI.Colors.Black);
             }
-            void VisiblePixels(byte[] pixels, string name) => Check(pixels.Count(b => b < 245) > 150, name);
-            var sliders = Descendants<Slider>(inspector.RootControl).ToArray();
+            return preview.GetPixelBytes();
+        }
+
+        internal async Task ExplicitOpticalSize()
+        {
             Check(sliders.Length > 0, "Segoe UI Variable Text exposes variable axis controls");
             Check(sliders.All(s => s.StepFrequency == 1), "variable-axis sliders use integer steps");
-            Dictionary<string, float> FirstAxes() => view.Provider.RenderedFontAxes(view.Layout().Clusters.First().render_run.identifier).First(a => a.ContainsKey("opsz"));
-            byte[] PreviewPixels() {
-                var sheet = inspector.ThemeView.Styles();
-                specimen.Update(sheet, sheet.Styles.Single(s => s.Id == "Paragraph"), Microsoft.UI.Colors.Black);
-                using var preview = new CanvasRenderTarget(pane.Canvas.Device, 560, 200, 96);
-                using (var drawing = preview.CreateDrawingSession()) { drawing.Clear(Microsoft.UI.Colors.White); specimen.Draw(drawing, 560, 200, Microsoft.UI.Colors.Black); }
-                return preview.GetPixelBytes();
-            }
             var opticalName = FontVariations.For(FontCatalog.Faces("Segoe UI Variable Text").First()).Axes.Single(a => a.Tag == "opsz").Name;
             var opticalSlider = sliders.Single(s => Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(s) == opticalName);
             opticalSlider.Value = opticalSlider.Minimum;
@@ -427,7 +503,10 @@ internal static class VariableFontTests
             Check(FirstAxes()["opsz"] == opticalSlider.Maximum, "rendered font face retains the maximum explicit optical size");
             Check(!smallOptical.AsSpan().SequenceEqual(Pixels(view)), "explicit optical size changes Segoe UI Variable glyphs at a fixed rendering size");
             Check(!smallPreview.AsSpan().SequenceEqual(PreviewPixels()), "optical-size changes update the actual shaped style preview");
-            var variableFace = FontCatalog.Faces("Segoe UI Variable Text").First();
+        }
+
+        internal void AutomaticOpticalSize()
+        {
             foreach (float size in new[] { 14f, 28f }) {
                 using var autoFormat = new Microsoft.Graphics.Canvas.Text.CanvasTextFormat { FontFamily = variableFace.Family, FontSize = size };
                 const string text = "Automatic optical size";
@@ -438,6 +517,10 @@ internal static class VariableFontTests
                 var axes = FontVariations.NativeAxes(capture.Extract(0, text.Length, 0, 0).First().Font);
                 Check(Math.Abs(axes["opsz"] - size * .75f) < .001f, "unspecified optical size follows the font size in points");
             }
+        }
+
+        internal async Task EachAxisRendersLikeFresh()
+        {
             foreach (var slider in sliders) {
                 foreach (double value in new[] { slider.Minimum, slider.Minimum + (slider.Maximum - slider.Minimum) * .29137, (slider.Minimum + slider.Maximum) / 2, slider.Maximum }) {
                     slider.Value = value;
@@ -452,7 +535,10 @@ internal static class VariableFontTests
                     var sheet = inspector.ThemeView.Styles();
                     specimen.Update(sheet, sheet.Styles.Single(s => s.Id == "Paragraph"), Microsoft.UI.Colors.Black);
                     using var preview = new CanvasRenderTarget(pane.Canvas.Device, 560, 200, 96);
-                    using (var drawing = preview.CreateDrawingSession()) { drawing.Clear(Microsoft.UI.Colors.White); specimen.Draw(drawing, 560, 200, Microsoft.UI.Colors.Black); }
+                    using (var drawing = preview.CreateDrawingSession()) {
+                        drawing.Clear(Microsoft.UI.Colors.White);
+                        specimen.Draw(drawing, 560, 200, Microsoft.UI.Colors.Black);
+                    }
                     var specimenLayout = specimen.Layout(560, 200);
                     var selectedRow = specimenLayout.Rows.First(r => r.text_start > 0);
                     VisiblePixels(preview.GetPixelBytes(0, (int)Math.Floor(selectedRow.y), 560, (int)Math.Ceiling(selectedRow.ascent + selectedRow.descent)), "the selected variable-font preview paragraph remains visible after slider changes");
@@ -460,6 +546,10 @@ internal static class VariableFontTests
                     Check(layout.Clusters.Length > 0 && layout.Clusters.Any(c => c.advance > 0), "Segoe UI Variable Text edits retain visible document glyphs");
                 }
             }
+        }
+
+        internal void FractionalCoordinates()
+        {
             var weightSlider = sliders.First();
             weightSlider.Value = 350.26;
             PanePixels();
@@ -467,14 +557,20 @@ internal static class VariableFontTests
             VisiblePixels(Pixels(view), "Segoe UI Variable Text rounded weight remains visible without mouse input");
             using (var fractionalDoc = new CoreDocument(source, format: format))
             using (var fractionalView = new CoreView(fractionalDoc, pane.Canvas.Device, pane.DispatcherQueue, 1000, 300)) {
-                var values = FontVariations.For(variableFace).Defaults; values["wght"] = 350.26f;
+                var values = FontVariations.For(variableFace).Defaults;
+                values["wght"] = 350.26f;
                 fractionalView.EditStyleFont(fractionalView.Styles().Styles.Single(s => s.Id == "Paragraph"), [variableFace.PortableFamily], variableFace, values);
                 VisiblePixels(Pixels(fractionalView), "fractional coordinates from stylesheets remain renderable");
                 var axes = fractionalView.Provider.RenderedFontAxes(fractionalView.Layout().Clusters.First().render_run.identifier).First();
                 Check(Math.Abs(axes["wght"] - 350.26f) < .001f, "stylesheet coordinates retain precision independently of slider steps");
             }
+        }
+
+        internal async Task NativeAxisDragging()
+        {
             if (Environment.GetEnvironmentVariable("VIEM_TEST_POINTER_INPUT") == "1") {
-                inspector.AppWindow.Show(true); inspector.Activate();
+                inspector.AppWindow.Show(true);
+                inspector.Activate();
                 await Task.Delay(200);
                 int sliderIndex = 0;
                 foreach (var slider in sliders) {
@@ -501,14 +597,24 @@ internal static class VariableFontTests
                             PanePixels();
                             VisiblePixels(Pixels(view), $"native variable-axis dragging keeps glyphs visible at step {step}, value {slider.Value}");
                         });
-                    } catch (Exception exception) { throw new InvalidOperationException("Native axis drag failed: " + SliderState(), exception); }
+                    } catch (Exception exception) {
+                        throw new InvalidOperationException("Native axis drag failed: " + SliderState(), exception);
+                    }
                 }
             }
+        }
+
+        internal void UndoRedoRenders()
+        {
             inspector.UndoThemeForTesting();
             PanePixels();
             inspector.RedoThemeForTesting();
             PanePixels();
             Check(inspector.Error.Length == 0 && rendered.LastError == null, "undo and redo retain healthy variable-font document rendering");
+        }
+
+        internal async Task BackgroundGlyphs()
+        {
             if (format == VIEM_FORMAT_MARKDOWN) {
                 using var longDoc = new CoreDocument(System.Text.Encoding.UTF8.GetBytes(string.Concat(Enumerable.Repeat("Variable fonts **bold** and مرحبا 👩‍💻 remain visible.\n\n", 2000))), format: format);
                 longDoc.InitializeStyleDefaults(inspector.ThemeView.ExportStyleDefaults());
@@ -518,9 +624,10 @@ internal static class VariableFontTests
                 background.Key(VIEM_KEY_PAGE_DOWN);
                 VisiblePixels(Pixels(background), "worker-prepared variable-font glyphs remain visible after scrolling");
             }
-            Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source) && !doc.IsDirty, "Segoe UI Variable Text theme edits preserve document bytes and clean state");
-        } finally { inspector.Close(); preferences.SaveThemeStyles(format, original); editor.Close(); App.Instance.Windows.Remove(editor); }
+        }
+
     }
+
     private static IEnumerable<T> Descendants<T>(Microsoft.UI.Xaml.DependencyObject root) where T : Microsoft.UI.Xaml.DependencyObject
     {
         if (root is T typed) yield return typed;

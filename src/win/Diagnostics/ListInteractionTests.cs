@@ -46,43 +46,110 @@ internal static class ListInteractionTests
             .ToArray();
     }
 
-    internal static async Task Run(Preferences preferences)
-    {
-        const string original = "1. First\n2. Second";
-        var document = new CoreDocument(Encoding.UTF8.GetBytes(original), format: VIEM_FORMAT_MARKDOWN);
-        var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window);
-        window.Activate();
-        await Task.Delay(250);
-        var pane = window.ActivePane!;
-        var view = await pane.Ready;
-        var styles = window.Menu.Items.Single(item => item.Title == "Style");
-        var stylesPeer = new MenuBarItemAutomationPeer(styles);
-        var paragraph = styles.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Paragraph");
-        var indent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Indent");
-        var unindent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Unindent");
-        var insertParagraph = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Insert Paragraph in List Item");
-        ulong second = checked((ulong)document.FormattedText().IndexOf("Second", StringComparison.Ordinal));
+    private const string original = "1. First\n2. Second";
 
-        string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
-        void PlaceInSecond() => view.Place(second + 3, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-        void PlaceAtSecondStart() => view.Place(second, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-        async Task OpenParagraphMenu()
+    internal static SelfTestRunner.Stage Group(Preferences preferences)
+    {
+        return TestEditor.Group("ListInteraction", preferences, original, [
+            new("KeyRouting", _ => {
+                KeyRouting();
+                return Task.CompletedTask;
+            }, UsesEditor: false),
+            new("InsertParagraphMenu", editor => RunCase(editor, fixture => fixture.InsertParagraphMenu())),
+            new("InsertAndReplaceAltEnter", editor => RunCase(editor, fixture => fixture.InsertAndReplaceAltEnter())),
+            new("AcceptCompletionBeforeSplit", editor => RunCase(editor, fixture => fixture.AcceptCompletionBeforeSplit())),
+            new("DisabledParagraphActions", editor => RunCase(editor, fixture => fixture.DisabledParagraphActions())),
+            new("IndentAndUnindentMenu", editor => RunCase(editor, fixture => fixture.IndentAndUnindentMenu())),
+            new("TabAndShiftTab", editor => RunCase(editor, fixture => fixture.TabAndShiftTab())),
+            new("BackspaceUnindentsThenRemovesList", editor => RunCase(editor, fixture => fixture.BackspaceUnindentsThenRemovesList())),
+        ], resetCase: editor => editor.Source == original ? editor.RestoreCaret(original) : editor.Reset(original));
+
+        static async Task RunCase(TestEditor editor, Func<ListFixture, Task> test)
+        {
+            var fixture = new ListFixture(editor);
+            try
+            {
+                await test(fixture);
+                if (editor.Pane.LastError != null) throw editor.Pane.LastError;
+            }
+            finally
+            {
+                await fixture.CloseParagraphMenu();
+            }
+        }
+    }
+
+    private static void KeyRouting()
+    {
+        Check(KeyPolicy.Route(VirtualKey.Enter, false, false, true).Kind == VIEM_KEY_ALT_ENTER
+            && KeyPolicy.Route(VirtualKey.Enter, false, false, true, literal: true).Kind == VIEM_KEY_ALT_ENTER,
+            "Windows preserves Alt-Enter as a distinct core key, including literal-next input");
+        Check(KeyPolicy.Route(VirtualKey.Enter, false, false, false).Kind == VIEM_KEY_ENTER
+            && KeyPolicy.Route(VirtualKey.Enter, false, true, false).Kind == VIEM_KEY_SHIFT_ENTER
+            && KeyPolicy.Route(VirtualKey.Enter, true, false, true).Kind == VIEM_KEY_ENTER
+            && KeyPolicy.Route(VirtualKey.Enter, true, true, true).Kind == VIEM_KEY_SHIFT_ENTER,
+            "Alt-Enter routing preserves Enter, Shift-Enter and Ctrl-Alt/AltGr input");
+
+        Check(KeyPolicy.Route(VirtualKey.Tab, false, false, false).Kind == VIEM_KEY_TAB
+            && KeyPolicy.Route(VirtualKey.Tab, false, true, false).Kind == VIEM_KEY_BACK_TAB,
+            "Windows routes Tab and Shift-Tab to distinct core list keys");
+    }
+
+    private sealed class ListFixture
+    {
+        private readonly EditorWindow window;
+        private readonly Viem.Windows.Editor.EditorPane pane;
+        private readonly CoreDocument document;
+        private readonly CoreView view;
+        private readonly MenuBarItemAutomationPeer stylesPeer;
+        private readonly MenuFlyoutSubItem paragraph;
+        private readonly MenuFlyoutItem indent;
+        private readonly MenuFlyoutItem unindent;
+        private readonly MenuFlyoutItem insertParagraph;
+        private readonly ulong second;
+
+        internal ListFixture(TestEditor editor)
+        {
+            window = editor.Window;
+            pane = editor.Pane;
+            document = editor.Document;
+            view = editor.View;
+            var styles = window.Menu.Items.Single(item => item.Title == "Style");
+            stylesPeer = new MenuBarItemAutomationPeer(styles);
+            paragraph = styles.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Paragraph");
+            indent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Indent");
+            unindent = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Unindent");
+            insertParagraph = paragraph.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Insert Paragraph in List Item");
+            second = checked((ulong)document.FormattedText().IndexOf("Second", StringComparison.Ordinal));
+        }
+
+        private string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
+        private void PlaceInSecond() => view.Place(second + 3, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+        private void PlaceAtSecondStart() => view.Place(second, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+
+        internal async Task OpenParagraphMenu()
         {
             window.Activate();
-            await MenuTestHelpers.Transition(true, () => { stylesPeer.Expand(); return Task.CompletedTask; }, paragraph);
+            await MenuTestHelpers.Transition(true, () =>
+            {
+                stylesPeer.Expand();
+                return Task.CompletedTask;
+            }, paragraph);
             Check(paragraph.Focus(FocusState.Programmatic), "Style Paragraph submenu receives keyboard focus");
             await MenuTestHelpers.Transition(true, () => InputRoutingTests.Key(VirtualKey.Right), indent);
         }
-        Task CloseParagraphMenu(Action? action = null) => MenuTestHelpers.Transition(false, () => {
-            action?.Invoke(); stylesPeer.Collapse(); return Task.CompletedTask;
+        internal Task CloseParagraphMenu(Action? action = null) => MenuTestHelpers.Transition(false, () =>
+        {
+            action?.Invoke();
+            stylesPeer.Collapse();
+            return Task.CompletedTask;
         }, paragraph, indent);
-        async Task Invoke(MenuFlyoutItem item)
+        internal async Task Invoke(MenuFlyoutItem item)
         {
             await OpenParagraphMenu();
             await CloseParagraphMenu(() => new MenuFlyoutItemAutomationPeer(item).Invoke());
         }
-        void CheckNested(string name)
+        private void CheckNested(string name)
         {
             string source = Source();
             uint capabilities = view.ListCapabilities();
@@ -92,7 +159,7 @@ internal static class ListInteractionTests
                 $"{name} (source={source}, text={document.FormattedText()}, capabilities={capabilities})");
             FrontendSmokeTests.UiChecks.Add(name);
         }
-        void CheckTopLevel(string name)
+        private void CheckTopLevel(string name)
         {
             string source = Source();
             uint capabilities = view.ListCapabilities();
@@ -103,17 +170,9 @@ internal static class ListInteractionTests
             FrontendSmokeTests.UiChecks.Add(name);
         }
 
-        try
-        {
-            Check(KeyPolicy.Route(VirtualKey.Enter, false, false, true).Kind == VIEM_KEY_ALT_ENTER
-                && KeyPolicy.Route(VirtualKey.Enter, false, false, true, literal: true).Kind == VIEM_KEY_ALT_ENTER,
-                "Windows preserves Alt-Enter as a distinct core key, including literal-next input");
-            Check(KeyPolicy.Route(VirtualKey.Enter, false, false, false).Kind == VIEM_KEY_ENTER
-                && KeyPolicy.Route(VirtualKey.Enter, false, true, false).Kind == VIEM_KEY_SHIFT_ENTER
-                && KeyPolicy.Route(VirtualKey.Enter, true, false, true).Kind == VIEM_KEY_ENTER
-                && KeyPolicy.Route(VirtualKey.Enter, true, true, true).Kind == VIEM_KEY_SHIFT_ENTER,
-                "Alt-Enter routing preserves Enter, Shift-Enter and Ctrl-Alt/AltGr input");
 
+        internal async Task InsertParagraphMenu()
+        {
             PlaceInSecond();
             await OpenParagraphMenu();
             Check(insertParagraph.IsEnabled && insertParagraph.KeyboardAcceleratorTextOverride == "Alt+Enter",
@@ -126,13 +185,16 @@ internal static class ListInteractionTests
             view.Key(VIEM_KEY_ESCAPE);
             view.Undo();
             Check(Source() == original, "native list paragraph menu undoes to the exact original source");
+        }
 
+        internal async Task InsertAndReplaceAltEnter()
+        {
             foreach (var (mode, entry) in new[] { (VIEM_MODE_INSERT, 'i'), (VIEM_MODE_REPLACE, 'R') })
             {
                 PlaceInSecond();
                 view.Key(VIEM_KEY_CHARACTER, entry);
                 pane.FocusEditor();
-                await Task.Delay(80);
+                await InputRoutingTests.Settle();
                 await InputRoutingTests.Key(VirtualKey.Enter, alt: true);
                 Check(document.FormattedText() == "First\nSec\nond" && view.Presentation.mode == mode
                     && DecorationLabels(view).SequenceEqual(new[] { "1.", "2." }),
@@ -150,7 +212,10 @@ internal static class ListInteractionTests
                 view.Undo();
                 Check(Source() == original, $"native Alt-Enter in mode {mode} undoes to exact source bytes");
             }
+        }
 
+        internal async Task AcceptCompletionBeforeSplit()
+        {
             PlaceAtSecondStart();
             view.Key(VIEM_KEY_CHARACTER, 'i');
             view.Text("Fi");
@@ -175,7 +240,10 @@ internal static class ListInteractionTests
             view.Key(VIEM_KEY_ESCAPE);
             view.Undo();
             Check(Source() == original, "completion acceptance and native list paragraph insertion share the typing undo unit");
+        }
 
+        internal async Task DisabledParagraphActions()
+        {
             PlaceInSecond();
             view.Key(VIEM_KEY_CHARACTER, 'v');
             await OpenParagraphMenu();
@@ -193,7 +261,10 @@ internal static class ListInteractionTests
             Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled for a read-only document");
             await CloseParagraphMenu();
             document.SetReadOnly(false);
+        }
 
+        internal async Task IndentAndUnindentMenu()
+        {
             PlaceInSecond();
             await OpenParagraphMenu();
             Check((view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0 && indent.IsEnabled && !unindent.IsEnabled,
@@ -209,11 +280,14 @@ internal static class ListInteractionTests
             await CloseParagraphMenu();
             await Invoke(unindent);
             CheckTopLevel("Paragraph Unindent restores the item to the top-level list");
+        }
 
+        internal async Task TabAndShiftTab()
+        {
             PlaceInSecond();
             view.Key(VIEM_KEY_CHARACTER, 'i');
             pane.FocusEditor();
-            await Task.Delay(80);
+            await InputRoutingTests.Settle();
             await InputRoutingTests.Key(VirtualKey.Tab);
             CheckNested("native Tab indents from the middle of a list paragraph");
             Check(DecorationLabels(view).Contains("a."),
@@ -223,13 +297,16 @@ internal static class ListInteractionTests
             Check(view.Presentation.mode == VIEM_MODE_INSERT,
                 "native structural Tab keys preserve Insert mode");
             await InputRoutingTests.Key(VirtualKey.Escape);
+        }
 
+        internal async Task BackspaceUnindentsThenRemovesList()
+        {
             PlaceInSecond();
             await Invoke(indent);
             PlaceAtSecondStart();
             view.Key(VIEM_KEY_CHARACTER, 'i');
             pane.FocusEditor();
-            await Task.Delay(80);
+            await InputRoutingTests.Settle();
             await InputRoutingTests.Key(VirtualKey.Back);
             CheckTopLevel("native Backspace at a nested item start unindents exactly one level");
             await InputRoutingTests.Key(VirtualKey.Back);
@@ -239,18 +316,8 @@ internal static class ListInteractionTests
             await OpenParagraphMenu();
             Check(!insertParagraph.IsEnabled, "list paragraph menu is disabled outside a list item");
             await CloseParagraphMenu();
+        }
 
-            Check(KeyPolicy.Route(VirtualKey.Tab, false, false, false).Kind == VIEM_KEY_TAB
-                && KeyPolicy.Route(VirtualKey.Tab, false, true, false).Kind == VIEM_KEY_BACK_TAB,
-                "Windows routes Tab and Shift-Tab to distinct core list keys");
-            if (pane.LastError != null) throw pane.LastError;
-        }
-        finally
-        {
-            await CloseParagraphMenu();
-            App.Instance.Windows.Remove(window);
-            window.Close();
-        }
     }
 }
 #endif
