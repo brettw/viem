@@ -42,6 +42,21 @@ internal static class LinkInteractionTests
                 "Markdown has an accessible link toolbar action reflecting the Normal caret");
             Check(pane.LinkPopupVisible && !pane.LinkEditorVisible, "the caret reveals the compact link toolbar");
             Check(pane.LinkSummary == "alpha" && pane.LinkPopupWidth < 360, "the compact toolbar fits its link label within the previous maximum width");
+            foreach (string summary in new[] { "alpha", "https://example.test/a%20b", new string('W', 120), "alpha" })
+            {
+                bool edited = summary != "alpha";
+                if (edited) view.EditLink(view.LinkContext(), summary, "https://example.test/a%20b");
+                pane.Refresh(); pane.UpdateLayout();
+                var button = Children<Button>(pane).Single(button => AutomationProperties.GetName(button) == "Open https://example.test/a%20b");
+                var label = (TextBlock)button.Content;
+                bool capped = summary.Length == 120;
+                Check(pane.LinkPopupVisible && label.IsTextTrimmed == capped
+                    && (capped ? pane.LinkPopupWidth == 360 : pane.LinkPopupWidth < 360),
+                    "link summaries trim only at the popup maximum, including after a longer label",
+                    $"summary={summary}, popup={pane.LinkPopupWidth}, button={button.ActualWidth}, label={label.ActualWidth}, trimmed={label.IsTextTrimmed}");
+                if (edited) view.Undo();
+            }
+            Check(Source() == source, "link summary sizing leaves the original source intact after undo");
             window.Toolbar.InsertLink.Focus(FocusState.Programmatic); pane.Refresh();
             Check(!pane.LinkPopupVisible, "background refresh does not reopen link controls while another control has focus");
             pane.FocusEditor(); pane.Refresh();

@@ -305,12 +305,25 @@ internal sealed partial class EditorPane
         linkError!.Foreground = new SolidColorBrush(preferences.Theme.StatusForeground);
         linkPopup.Padding = editingLink ? new(10) : new(5);
         double maximumWidth = Math.Min(360, Math.Max(180, Canvas.ActualWidth - 12));
-        var label = (TextBlock)linkDestinationButton!.Content;
-        label.MaxWidth = double.PositiveInfinity;
-        label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        linkPopup.Width = editingLink ? maximumWidth : Math.Min(maximumWidth, label.DesiredSize.Width + 12 + 108);
-        linkDestinationButton.Width = Math.Max(12, linkPopup.Width - linkPopup.Padding.Left - linkPopup.Padding.Right - 98);
-        ((TextBlock)linkDestinationButton.Content).MaxWidth = linkDestinationButton.Width - 12;
+        if (editingLink) linkPopup.Width = maximumWidth;
+        else
+        {
+            // Measure the native button so its padding and template borders are
+            // included; text-only measurements made every short label trim.
+            var available = new Size(double.PositiveInfinity, double.PositiveInfinity);
+            linkDestinationButton!.Width = double.NaN;
+            linkDestinationButton.Measure(available);
+            double actionsWidth = linkActions!.Spacing * (linkActions.Children.Count - 1);
+            foreach (var action in linkActions.Children.Skip(1))
+            {
+                action.Measure(available);
+                actionsWidth += action.DesiredSize.Width;
+            }
+            double chromeWidth = linkPopup.Padding.Left + linkPopup.Padding.Right
+                + linkPopup.BorderThickness.Left + linkPopup.BorderThickness.Right;
+            linkPopup.Width = Math.Min(maximumWidth, Math.Ceiling(linkDestinationButton.DesiredSize.Width + actionsWidth + chromeWidth));
+            linkDestinationButton.Width = Math.Max(0, linkPopup.Width - chromeWidth - actionsWidth);
+        }
         linkPopup.Measure(new Size(linkPopup.Width, double.PositiveInfinity));
         double height = linkPopup.DesiredSize.Height;
         double y = linkAnchor.Bottom + 4;
