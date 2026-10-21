@@ -149,7 +149,7 @@ impl CommandInterpreter {
         let Some(state) = &self.command_line_state else {
             return result;
         };
-        let search_prompt = state.kind != CommandLineKind::Ex;
+        let search_prompt = matches!(state.kind, CommandLineKind::SearchForward | CommandLineKind::SearchBackward);
         let query = self.preview_query_with_layout(document, state, layout);
         result.incremental_active = search_prompt || query.is_some();
         let Some(query) = query else {
@@ -198,6 +198,7 @@ impl CommandInterpreter {
         let mut options = self.search_options;
         let mut addressed_range = None;
         let (pattern, direction, count, scope) = match state.kind {
+            CommandLineKind::Expression => return None,
             CommandLineKind::SearchForward | CommandLineKind::SearchBackward => (
                 state.buffer.input.clone(),
                 if state.kind == CommandLineKind::SearchForward {

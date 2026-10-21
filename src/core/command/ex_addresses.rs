@@ -535,7 +535,7 @@ impl<'a> AddressResolver<'a> {
                 }
             }
             AddressBase::Mark(name) => {
-                let offset = self.interpreter.marks.get(name).copied()
+                let offset = self.interpreter.mark_offset(*name)
                     .ok_or(ExExecuteError::MarkNotSet(*name))?;
                 self.contextual(VisualPosition { text_offset: offset,
                     affinity: if *name == '>' { BoundaryAffinity::Upstream } else { BoundaryAffinity::Downstream } })?

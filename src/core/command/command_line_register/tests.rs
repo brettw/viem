@@ -97,7 +97,7 @@ fn selectors_cancel_without_closing_prompt_and_literal_next_has_precedence() {
 
 #[test]
 fn empty_unsupported_and_unavailable_registers_preserve_prompt_and_source() {
-    for selector in [Key::Char('z'), Key::Char('='), Key::Char('#'), Key::Char('+')] {
+    for selector in [Key::Char('z'), Key::Char('?'), Key::Char('#'), Key::Char('+')] {
         let mut document = Document::new("source");
         let mut commands = CommandInterpreter::new();
         key(&mut commands, &mut document, Key::Char(':'));

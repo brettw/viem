@@ -41,6 +41,8 @@ use crate::layout::{
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod registers;
+pub(crate) use registers::FileMarkTarget;
 mod input_layout;
 mod prelayout;
 mod formatting;
@@ -2040,6 +2042,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     }
 
     fn install_buffer_commands(&mut self, view_id: ViewId) {
+        self.sync_register_filename();
         self.views
             .get_mut(&view_id)
             .expect("view existence checked by serial coordinator")
@@ -6308,6 +6311,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 };
                 let mut rebased = Vec::with_capacity(inactive_positions.len());
                 let mut change_offset = None;
+                let mut affected_range = None;
                 if changed {
                     // The source publication is the invalidation point for
                     // every attached view, not only the invoking one.
@@ -6324,6 +6328,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                     let map = committed_position_map;
                     outcome.position_map = Some(map.clone());
+                    if map.domain() == crate::document::PositionDomain::FormattedText {
+                        let mut ranges = map.replacements().map(|(_, new)| new);
+                        if let Some(first) = ranges.next() {
+                            affected_range = Some(ranges.fold(first, |all, next| all.start.min(next.start)..all.end.max(next.end)));
+                        }
+                    }
                     if !history_navigation && map.domain() == crate::document::PositionDomain::FormattedText {
                         change_offset = map.replacements().last().map(|(_, new)| new.start);
                     }
@@ -6521,6 +6531,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                         .get_mut(&id)
                         .expect("prepared view remains attached during serial dispatch")
                         .commands = commands;
+                }
+                if let Some(range) = affected_range {
+                    let continuing = edit_group_depth_before > 0
+                        && self.document.edit_group_generation() == edit_group_generation_before
+                        && matches!(self.views[&view_id].commands.mode(), Mode::Insert | Mode::Replace);
+                    for view in self.views.values_mut() {
+                        view.commands.note_affected_range(&self.document, range.clone(), continuing, !history_navigation);
+                    }
                 }
                 if let Some(offset) = change_offset {
                     // Every view of the buffer shares the change list (`g;`).

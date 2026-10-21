@@ -16,6 +16,7 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
 - [Blocking editor](blocking-editor.md): Git integration and document completion.
 - [Filename completion](filename-completion.md): Ex menu traversal, acceptance,
   and comparisons with zsh.
+- [Registers and marks](vim-registers-and-marks.md): special registers, expression prompts, file marks and their lifetime.
 - [Split views](window-panes.md): window commands, resize units, and mouse dragging.
 - [Windows development](../src/win/README.md): native build, packaging and tests.
 - [Third-party licenses](licenses/README.md): dependency and bundled-asset license

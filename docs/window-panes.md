@@ -15,7 +15,9 @@ Each view remembers its alternate file: the file it showed before its current
 buffer was replaced, for example by `:edit` or argument navigation. Control-^
 (Control-6) edits it, with the same modified-buffer check as `:edit`. A split
 starts with its source view's alternate file. The native frontends own this
-per-view history; the core only requests it.
+per-view history and supply it to the core for the `#` register.
+See [registers and marks](vim-registers-and-marks.md) for filename reads and
+application-wide uppercase marks.
 
 | Command | Action |
 | --- | --- |

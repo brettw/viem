@@ -104,6 +104,7 @@ struct EVCommandLineExport {
 
     var prompt: Character? {
         switch info.identity.kind {
+        case UInt32(VIEM_COMMAND_LINE_KIND_EXPRESSION): "="
         case UInt32(VIEM_COMMAND_LINE_KIND_EX): ":"
         case UInt32(VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD): "/"
         case UInt32(VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD): "?"

@@ -182,7 +182,7 @@ fn grammar_rejects_invalid_arguments_and_keeps_existing_abbreviations() {
         ":print!",
         ":retab ++bad",
         ":delmarks z-a",
-        ":delmarks A",
+        ":delmarks A-a",
         ":1only",
         ":left -2",
         ":read !echo hi",

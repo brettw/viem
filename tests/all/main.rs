@@ -228,3 +228,5 @@ mod vimscript_options;
 mod vimscript_continuation;
 
 mod modifiable;
+
+mod registers_marks;

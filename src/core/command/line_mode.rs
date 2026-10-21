@@ -976,6 +976,7 @@ impl CommandInterpreter {
                     .map_err(|_| DocumentError::UnsupportedFormatting)?
             };
             self.yank_register(register, value);
+            self.note_affected_range(document, extent.text.clone(), false, false);
             return Ok(CommandOutput::complete());
         }
         let before = document.revision();
@@ -996,6 +997,7 @@ impl CommandInterpreter {
                 .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
             if operator == Operator::Yank {
                 self.yank_register(register, value);
+            self.note_affected_range(document, extent.text.clone(), false, false);
                 return Ok(CommandOutput::complete());
             }
             let transform = match operator {
@@ -1111,6 +1113,7 @@ impl CommandInterpreter {
             };
             if operator == Operator::Yank {
                 self.yank_register(register, value);
+            self.note_affected_range(document, extent.text.clone(), false, false);
                 return Ok(CommandOutput::complete());
             }
             if extent.whole && whole_hard_lines && operator == Operator::Delete {

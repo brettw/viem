@@ -1288,6 +1288,16 @@ internal unsafe struct ViemCoreOutcomeV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemFileMarkTargetV1
+{
+    public uint @struct_size;
+    public uint @name;
+    public ulong @generation;
+    public ulong @document_id;
+    public ulong @path_length;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemViewLineLocationV1
 {
     public uint @struct_size;
@@ -1554,6 +1564,7 @@ internal static unsafe partial class Native
     public const uint VIEM_EX_FRONTEND_APPLICATION_OPTION = 31u;
     public const uint VIEM_EX_FRONTEND_SCRIPT_CONTINUATION = 32u;
     public const uint VIEM_EX_FRONTEND_EDIT_ALTERNATE = 33u;
+    public const uint VIEM_EX_FRONTEND_JUMP_FILE_MARK = 34u;
     public const uint VIEM_EX_FRONTEND_STARTUP_APPLICATION = (1u << 15);
     public const uint VIEM_ARGUMENT_NEXT = 1u;
     public const uint VIEM_ARGUMENT_PREVIOUS = 2u;
@@ -1855,6 +1866,7 @@ internal static unsafe partial class Native
     public const uint VIEM_COMMAND_LINE_KIND_EX = 1u;
     public const uint VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD = 2u;
     public const uint VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD = 3u;
+    public const uint VIEM_COMMAND_LINE_KIND_EXPRESSION = 4u;
     public static readonly uint VIEM_COMMAND_LINE_IDENTITY_V1_SIZE = ((uint)sizeof(ViemCommandLineIdentityV1));
     public static readonly uint VIEM_COMMAND_LINE_INFO_V1_SIZE = ((uint)sizeof(ViemCommandLineInfoV1));
     public const uint VIEM_COMPLETION_ACTIVE = (1u << 0);
@@ -1946,6 +1958,7 @@ internal static unsafe partial class Native
     public const uint VIEM_SELECTION_ORIGIN_MOUSE = 1u;
     public const uint VIEM_SELECTION_ORIGIN_KEY = 2u;
     public const uint VIEM_SELECTION_ORIGIN_COMMAND = 3u;
+    public static readonly uint VIEM_FILE_MARK_TARGET_V1_SIZE = ((uint)sizeof(ViemFileMarkTargetV1));
     public const uint VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT = 1u;
     public const uint VIEM_LINE_LOCATION_FRAGMENT_EXACT = 2u;
     public static readonly uint VIEM_VIEW_LINE_LOCATION_V1_SIZE = ((uint)sizeof(ViemViewLineLocationV1));
@@ -2142,6 +2155,14 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_set_selection_origin(ulong @core, ulong @view, uint @origin, uint @return_mode, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_go_to_line(ulong @core, ulong @view, ulong @document_id, ulong @document_revision, ulong @line, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_file_mark_target(uint @name, ulong @generation, ViemFileMarkTargetV1* @out_info, byte* @path, ulong @capacity);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_jump_file_mark(ulong @core, ulong @view, uint @name, ulong @generation, uint @linewise, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_host_register(ulong @core, ulong @view, uint @name, byte* @text, ulong @length);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_drop_text(ulong @core, ulong @view, byte* @text, ulong @length, ViemCommandTurnContextV2* @context, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effect_batch);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_undo(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

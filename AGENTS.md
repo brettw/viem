@@ -536,6 +536,8 @@ identity in history, repeat and caches.
 
 ### Registers, repeat and undo
 
+Special register input and mark lifetime follow [registers and marks](docs/vim-registers-and-marks.md).
+
 - Registers keep semantic hard breaks, literal LF and block row separators
   distinct through append and put. Macros record normalized core events with
   their key identity; never parse displayed `<Left>` notation. Putting a macro

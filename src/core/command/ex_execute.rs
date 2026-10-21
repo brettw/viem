@@ -262,6 +262,7 @@ pub enum ExRegisterEffectKind {
 pub struct ExRegisterEffect {
     pub kind: ExRegisterEffectKind,
     pub requested: Option<char>,
+    pub range: std::ops::Range<usize>,
     pub value: ExRegisterValue,
 }
 
@@ -393,6 +394,7 @@ pub enum ExFileRequest {
     EditAlternate {
         force: bool,
     },
+    JumpFileMark { name: char, linewise: bool },
     New {
         force: bool,
     },
@@ -1331,6 +1333,7 @@ pub fn prepare_ex<R: ExRegisterReader + ?Sized>(
         ExAction::UndoList => plan.outcome.frontend_requests.push(
             ExFrontendRequest::Info(ExInfoRequest::Message(super::ex_history::format_undo_list(document))),
         ),
+        ExAction::PutExpression(_) => return Err(ExExecuteError::UnsupportedCommand("expression put requires the command interpreter".into())),
         ExAction::Delete(_) | ExAction::Yank(_) | ExAction::Put { .. }
         | ExAction::Join { .. } | ExAction::Copy { .. } | ExAction::Move { .. }
         | ExAction::Sort(_) => unreachable!("addressed line actions were prepared above"),

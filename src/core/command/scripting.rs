@@ -232,7 +232,7 @@ impl CommandInterpreter {
         match name {
             ':' => return Ok(Value::String(self.last_command_line.clone().unwrap_or_default().into())),
             '/' => return Ok(Value::String(self.last_search.as_ref().map(|(_, pattern)| pattern.clone()).unwrap_or_default().into())),
-            '%' => return Ok(Value::str("")),
+            '%' if document.artifact_binding().is_none() && self.current_artifact.is_none() => return Ok(Value::str("")),
             _ => {}
         }
         match self.read_register_value_for_put(document, name) {
@@ -243,6 +243,15 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn set_script_register(&mut self, name: char, value: &Value, append: bool) -> Result<(), VimError> {
+        if name == '/' {
+            self.last_search = Some((SearchDirection::Forward, value.to_text()?));
+            self.search_highlight_suppressed = false;
+            return Ok(());
+        }
+        if name == '=' {
+            self.last_expression = Some(value.to_text()?);
+            return Ok(());
+        }
         let (text, kind) = match value {
             Value::List(list) => {
                 let lines: Vec<String> = list.snapshot().iter().map(|item| item.to_text()).collect::<Result<_, _>>()?;
@@ -306,13 +315,21 @@ impl CommandInterpreter {
             }),
             mark if mark.starts_with('\'') => {
                 let name = mark.chars().nth(1).unwrap_or(' ');
-                match self.marks.get(&name) {
-                    Some(offset) => document.physical_line_at_text((*offset).min(document.projection().text_tree().byte_len())).map_or(0, |line| line.index as i64 + 1),
+                match self.mark_offset(name) {
+                    Some(offset) => document.physical_line_at_text(offset).map_or(0, |line| line.index as i64 + 1),
                     None => 0,
                 }
             }
             other => other.parse().unwrap_or(0),
         })
+    }
+
+    fn script_mark_position(&self, document: &Document, text: &str) -> (i64, i64) {
+        let Some(offset) = text.chars().nth(1).and_then(|name| self.mark_offset(name)) else { return (0, 0) };
+        let Some(source) = document.projection().source_insertion_point(offset, true) else { return (0, 0) };
+        let Ok(line) = document.physical_line_index_at_source(source) else { return (0, 0) };
+        let Ok((_, content)) = document.physical_line_ranges(line) else { return (0, 0) };
+        (line as i64 + 1, (source - content.start) as i64 + 1)
     }
 
     fn script_mode(&self) -> &'static str {
@@ -338,6 +355,7 @@ impl CommandInterpreter {
                 Ok(Value::Number(match text.as_str() {
                     "." => self.script_cursor_column(document),
                     "$" => self.script_line_text(document, self.script_cursor_line(document)).map_or(1, |line| line.len() as i64 + 1),
+                    mark if mark.starts_with('\'') => self.script_mark_position(document, mark).1,
                     _ => 0,
                 }))
             })(),
@@ -365,7 +383,9 @@ impl CommandInterpreter {
                 let (line, column) = if name == "getcurpos" || args.first().is_some_and(|value| value.to_text().is_ok_and(|text| text == ".")) {
                     (self.script_cursor_line(document), self.script_cursor_column(document))
                 } else if let Some(position) = args.first() {
-                    (self.script_position_line(document, position)?, 1)
+                    let text = position.to_text()?;
+                    if text.starts_with('\'') { self.script_mark_position(document, &text) }
+                    else { (self.script_position_line(document, position)?, 1) }
                 } else {
                     (self.script_cursor_line(document), self.script_cursor_column(document))
                 };
@@ -450,6 +470,9 @@ impl CommandInterpreter {
             })(),
             "getreg" => (|| {
                 let register = args.first().map(|value| value.to_text()).transpose()?.and_then(|text| text.chars().next()).unwrap_or('"');
+                if register == '=' && args.get(1).is_some_and(|value| value.to_bool().unwrap_or(false)) {
+                    return Ok(Value::from(self.last_expression.clone().unwrap_or_default()));
+                }
                 let as_list = args.get(2).map(|value| value.to_bool()).transpose()?.unwrap_or(false);
                 let value = self.script_register(document, register)?;
                 if as_list {
@@ -632,12 +655,9 @@ impl CommandInterpreter {
                 '$' => (count, &part[1..]),
                 '\'' => {
                     let name = part.chars().nth(1).unwrap_or(' ');
-                    let line = if name == '<' || name == '>' {
-                        let offset = self.marks.get(&name).copied();
-                        offset.and_then(|offset| document.physical_line_at_text(offset.min(document.projection().text_tree().byte_len())).ok()).map(|line| line.index as i64 + 1)
-                    } else {
-                        self.marks.get(&name).and_then(|offset| document.physical_line_at_text((*offset).min(document.projection().text_tree().byte_len())).ok()).map(|line| line.index as i64 + 1)
-                    };
+                    let line = self.mark_offset(name)
+                        .and_then(|offset| document.physical_line_at_text(offset).ok())
+                        .map(|line| line.index as i64 + 1);
                     (line.ok_or_else(|| VimError::new(20, "Mark not set"))?, &part[name.len_utf8() + 1..])
                 }
                 c if c.is_ascii_digit() => {

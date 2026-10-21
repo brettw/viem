@@ -40,6 +40,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
 
     let backend: EVCoreDocumentBackend
     private(set) var session: EVCoreViewSession?
+    var alternateFilePath: String?
     var makeCoreViewSession: @MainActor (EVCoreDocumentBackend, CGSize, EVViewMargins) throws -> EVCoreViewSession = { document, size, margins in
         try EVCoreViewSession(document: document, width: size.width, height: size.height, margins: margins)
     }
@@ -264,6 +265,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         attachedSession.commandTurnHost = self
         session = attachedSession
+        do { try attachedSession.setHostRegister(35, text: alternateFilePath ?? "") } catch { report(error) }
         applyStartupHostEffects()
         appliedMargins = viewPreferences.margins
         do { try applyScriptViewOptions() } catch { report(error) }
@@ -1935,6 +1937,7 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
         case UInt32(VIEM_EX_FRONTEND_ARGUMENT): kind = .navigateArgument
         case UInt32(VIEM_EX_FRONTEND_EDIT): kind = .edit
         case UInt32(VIEM_EX_FRONTEND_EDIT_ALTERNATE): kind = .editAlternate
+        case UInt32(VIEM_EX_FRONTEND_JUMP_FILE_MARK): kind = .jumpFileMark(name: effect.windowCommand, linewise: effect.flags & UInt32(VIEM_EX_FRONTEND_FORCE) != 0)
         case UInt32(VIEM_EX_FRONTEND_EDIT_NEW_WINDOW): kind = .editNewWindow
         case UInt32(VIEM_EX_FRONTEND_PWD): kind = .printWorkingDirectory
         case UInt32(VIEM_EX_FRONTEND_CHECKTIME): kind = .checkTime

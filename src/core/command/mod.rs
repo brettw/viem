@@ -51,6 +51,8 @@ pub(crate) mod scripting;
 mod command_line_completion;
 mod command_line_edit;
 mod command_line_register;
+mod special_registers;
+mod marks;
 mod filename_candidates;
 mod input_assistance;
 #[cfg(test)]
@@ -185,6 +187,7 @@ pub enum CommandLineKind {
     Ex,
     SearchForward,
     SearchBackward,
+    Expression,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1393,10 +1396,15 @@ fn text_object_extent(document: &Document, object: TextObject, mut range: Range<
 pub(crate) struct BufferCommandState {
     mappings: mappings::KeyMappings,
     registers: Registers,
-    marks: BTreeMap<char, usize>,
+    drop_register: Option<RegisterValue>,
+    pub(crate) marks: BTreeMap<char, usize>,
+    pub(crate) file_mark_generations: BTreeMap<char, u64>,
     search_history: Vec<String>,
     ex_history: Vec<String>,
     last_command_line: Option<String>,
+    last_expression: Option<String>,
+    affected_insert_unit: Option<u64>,
+    expression_history: Vec<String>,
     ex_state: ExExecutionState,
     fileformats: Vec<FileFormat>,
     search_options: search_regex::SearchOptions,
@@ -1470,10 +1478,18 @@ pub struct CommandInterpreter {
     pending: Pending,
     registers: Registers,
     command_line_state: Option<CommandLineState>,
+    expression_prompt: Option<Box<special_registers::ExpressionPrompt>>,
+    expression_input: Option<RegisterValue>,
+    alternate_artifact: Option<crate::document::ArtifactPath>,
+    current_artifact: Option<crate::document::ArtifactPath>,
+    drop_register: Option<RegisterValue>,
     substitute_confirmation: Option<Box<substitute_confirmation::SubstituteConfirmation>>,
     search_history: Vec<String>,
     ex_history: Vec<String>,
     last_command_line: Option<String>,
+    last_expression: Option<String>,
+    affected_insert_unit: Option<u64>,
+    expression_history: Vec<String>,
     ex_state: ExExecutionState,
     wrap: bool,
     number: bool,
@@ -1501,9 +1517,12 @@ pub struct CommandInterpreter {
     visual_block_insert: Option<VisualBlockInsertSession>,
     replaying: bool,
     last_find: Option<FindState>,
-    marks: BTreeMap<char, usize>,
+    pub(crate) marks: BTreeMap<char, usize>,
+    pub(crate) file_mark_generations: BTreeMap<char, u64>,
+    file_mark_ownership: u32,
     jumps: Vec<usize>,
     jumps_revision: Option<Revision>,
+    previous_jump_anchor: Option<TextAnchor>,
     jump_index: usize,
     /// Positions of the buffer's changes, oldest first (`g;`, `g,`). Every
     /// view records each change; the index is this view's place in the list.
@@ -1525,6 +1544,7 @@ pub struct CommandInterpreter {
     /// Direct `CommandInterpreter` users retain the legacy headless executor
     /// while the coordinator remains the product execution boundary.
     plan_compound_replay: bool,
+    tracking_positions: bool,
     pending_replay: Option<ReplayPlan>,
     insert_normal_once: Option<Mode>,
     ctrl_o_just_started: bool,
@@ -1671,10 +1691,18 @@ impl CommandInterpreter {
             pending: Pending::None,
             registers: Registers::default(),
             command_line_state: None,
+            expression_prompt: None,
+            expression_input: None,
+            alternate_artifact: None,
+            current_artifact: None,
+            drop_register: None,
             substitute_confirmation: None,
             search_history: Vec::new(),
             ex_history: Vec::new(),
             last_command_line: None,
+            last_expression: None,
+            affected_insert_unit: None,
+            expression_history: Vec::new(),
             ex_state: ExExecutionState::default(),
             wrap: false,
             number: false,
@@ -1700,8 +1728,11 @@ impl CommandInterpreter {
             replaying: false,
             last_find: None,
             marks: BTreeMap::new(),
+            file_mark_generations: BTreeMap::new(),
+            file_mark_ownership: (1 << 26) - 1,
             jumps: Vec::new(),
             jumps_revision: None,
+            previous_jump_anchor: None,
             changes: Vec::new(),
             change_index: 0,
             last_change_unit: None,
@@ -1714,6 +1745,7 @@ impl CommandInterpreter {
             script_depth: 0,
             macro_recording_suppressed: false,
             plan_compound_replay: false,
+            tracking_positions: false,
             pending_replay: None,
             insert_normal_once: None,
             ctrl_o_just_started: false,
@@ -1741,15 +1773,20 @@ impl CommandInterpreter {
         BufferCommandState {
             mappings: self.mappings.clone(),
             registers: self.registers.clone(),
+            drop_register: self.drop_register.clone(),
+            file_mark_generations: self.file_mark_generations.clone(),
             marks: self
                 .marks
                 .iter()
-                .filter(|(name, _)| name.is_ascii_lowercase() || matches!(**name, '<' | '>' | '^'))
+                .filter(|(name, _)| **name != '\'')
                 .map(|(name, offset)| (*name, *offset))
                 .collect(),
             search_history: self.search_history.clone(),
             ex_history: self.ex_history.clone(),
             last_command_line: self.last_command_line.clone(),
+            last_expression: self.last_expression.clone(),
+            affected_insert_unit: self.affected_insert_unit,
+            expression_history: self.expression_history.clone(),
             ex_state: self.ex_state.clone(),
             fileformats: self.fileformats.clone(),
             search_options: self.search_options,
@@ -1770,10 +1807,17 @@ impl CommandInterpreter {
     pub(crate) fn install_buffer_state(&mut self, state: &BufferCommandState) {
         self.mappings.clone_from(&state.mappings);
         self.registers.clone_from(&state.registers);
+        self.drop_register.clone_from(&state.drop_register);
+        let previous = self.marks.get(&'\'').copied();
         self.marks.clone_from(&state.marks);
+        if let Some(previous) = previous { self.marks.insert('\'', previous); }
+        self.file_mark_generations.clone_from(&state.file_mark_generations);
         self.search_history.clone_from(&state.search_history);
         self.ex_history.clone_from(&state.ex_history);
         self.last_command_line.clone_from(&state.last_command_line);
+        self.last_expression.clone_from(&state.last_expression);
+        self.affected_insert_unit = state.affected_insert_unit;
+        self.expression_history.clone_from(&state.expression_history);
         self.ex_state.clone_from(&state.ex_state);
         self.fileformats.clone_from(&state.fileformats);
         self.search_options = state.search_options;
@@ -1862,18 +1906,7 @@ impl CommandInterpreter {
                 lines.line_at_offset(anchor).map(|line| line.index())
                     == lines.line_at_offset(self.cursor).map(|line| line.index())
             });
-        let marks = self
-            .marks
-            .iter()
-            .map(|(name, offset)| {
-                make(
-                    *offset,
-                    Association::AfterInsertion,
-                    BoundaryAffinity::Downstream,
-                )
-                .map(|a| (*name, a))
-            })
-            .collect::<Result<_, _>>()?;
+        let marks = self.capture_mark_anchors(document)?;
         let jumps = self
             .jumps
             .iter()
@@ -2062,6 +2095,7 @@ impl CommandInterpreter {
             marks.insert(*name, offset);
         }
         next.marks = marks;
+        next.previous_jump_anchor = None;
         let mut jumps = Vec::with_capacity(anchors.jumps.len());
         for anchor in &anchors.jumps {
             let Some(offset) = mapped_anchor(map, *anchor)? else {
@@ -2254,18 +2288,7 @@ impl CommandInterpreter {
             };
         }
 
-        for (name, anchor) in &anchors.marks {
-            let Some(old_offset) = before.marks.get(name) else {
-                continue;
-            };
-            if self.marks.get(name) != Some(old_offset) {
-                continue;
-            }
-            let Some(mapped) = mapped_anchor(map, *anchor)? else {
-                return Ok(false);
-            };
-            next.marks.insert(*name, mapped);
-        }
+        if !next.rebase_unchanged_marks(before, &anchors.marks, map)? { return Ok(false); }
 
         // Jump-list operations only truncate a suffix, append entries, or
         // move the current index. Thus the equal prefix is exactly the set of
@@ -2722,7 +2745,7 @@ impl CommandInterpreter {
                     Pending::VisualTextObject { .. } => {
                         !matches!(*key, Key::Char(key) if TextObjectKind::from_vim_key(key).is_some())
                     }
-                    Pending::JumpMark { .. } => !matches!(*key, Key::Char('a'..='z' | '<' | '>')),
+                    Pending::JumpMark { .. } => !matches!(*key, Key::Char(name) if marks::valid_mark(name)),
                     _ => false,
                 }
             }
@@ -3030,18 +3053,24 @@ impl CommandInterpreter {
     }
 
     /// Current stored register names in stable scalar order. Dynamic host
-    /// registers (`+`/`*`) and the current artifact name (`%`) are deliberately
-    /// absent; a boundary resolving them must add only the capabilities it
-    /// captured for that exact turn.
+    /// registers (`+`/`*`) are absent; a boundary resolving them must add only
+    /// the capabilities it captured for that exact turn.
     pub(crate) fn stored_register_names(&self) -> Vec<char> {
-        self.registers.names()
+        let mut names = self.registers.names();
+        if self.last_search.is_some() { names.push('/'); }
+        if self.last_command_line.is_some() { names.push(':'); }
+        if self.drop_register.is_some() { names.push('~'); }
+        if self.alternate_artifact.is_some() { names.push('#'); }
+        if self.current_artifact.is_some() { names.push('%'); }
+        names.sort_unstable();
+        names
     }
 
     /// Current local marks in stable name order. Offsets belong to
     /// `position_revision()` and are exposed only to the coordinator/FFI
     /// composition boundary for immutable command-result snapshots.
     pub(crate) fn mark_positions(&self) -> impl Iterator<Item = (char, usize)> + '_ {
-        self.marks.iter().map(|(name, offset)| (*name, *offset))
+        self.marks.iter().filter(|(name, _)| self.mark_offset(**name).is_some()).map(|(name, offset)| (*name, *offset))
     }
 
     /// Jump locations from oldest to newest plus the current list index.
@@ -3062,11 +3091,12 @@ impl CommandInterpreter {
         clipboard: &ClipboardCommandContext,
         name: char,
     ) -> Result<Option<RegisterValue>, RegisterReadError> {
+        if let Some(value) = self.read_special_register(document, name) { return value; }
         self.registers.read(
             self.clipboard_register(name),
             RegisterReadContext::new(
                 clipboard,
-                document.artifact_binding().map(|binding| binding.path()),
+                document.artifact_binding().map(|binding| binding.path()).or(self.current_artifact.as_ref()),
             ),
         )
     }
@@ -3291,7 +3321,11 @@ impl CommandInterpreter {
         }
     }
 
-    pub fn handle(
+    pub fn handle(&mut self, document: &mut Document, event: InputEvent) -> Result<CommandOutput, DocumentError> {
+        self.track_headless_marks(document, |commands, document| commands.handle_untracked(document, event))
+    }
+
+    fn handle_untracked(
         &mut self,
         document: &mut Document,
         event: InputEvent,
@@ -3395,6 +3429,15 @@ impl CommandInterpreter {
     /// intrinsically require rows or viewport geometry report `Unsupported`
     /// there instead of inventing geometry.
     pub fn handle_with_layout(
+        &mut self,
+        document: &mut Document,
+        event: InputEvent,
+        context: &mut LayoutCommandContext<'_>,
+    ) -> Result<CommandOutput, DocumentError> {
+        self.track_headless_marks(document, |commands, document| commands.handle_with_layout_untracked(document, event, context))
+    }
+
+    fn handle_with_layout_untracked(
         &mut self,
         document: &mut Document,
         event: InputEvent,
@@ -4393,6 +4436,7 @@ impl CommandInterpreter {
         name: char,
     ) -> Result<Option<RegisterValue>, RegisterReadError> {
         let name = self.clipboard_register(name);
+        if let Some(value) = self.read_special_register(document, name) { return value; }
         if self.mode != Mode::CommandLine {
             if let Some(target) = clipboard::ClipboardTarget::from_register(name) {
                 return self.clipboard_context.read(target)
@@ -4404,7 +4448,7 @@ impl CommandInterpreter {
             name,
             RegisterReadContext::new(
                 &self.clipboard_context,
-                document.artifact_binding().map(|binding| binding.path()),
+                document.artifact_binding().map(|binding| binding.path()).or(self.current_artifact.as_ref()),
             ),
         )
     }
@@ -4843,6 +4887,9 @@ impl CommandInterpreter {
         if key == Key::Enter {
             return None;
         }
+        if matches!(key, Key::Escape | Key::Ctrl('c' | 'C' | '[')) && self.expression_prompt.is_some() {
+            return Some(self.cancel_expression_register());
+        }
         if matches!(key, Key::Ctrl('g' | 'G' | 't' | 'T')) && self.search_options.incsearch {
             return Some(self.navigate_incremental_search(document, matches!(key, Key::Ctrl('g' | 'G'))));
         }
@@ -4966,6 +5013,7 @@ impl CommandInterpreter {
         if self.register_pending {
             self.register_pending = false;
             return Some(match key {
+                Key::Char('=') => self.begin_expression_register(None),
                 Key::Char(name) if is_valid_register(name) => {
                     self.requested_register = Some(name);
                     CommandOutput::pending()
@@ -5147,21 +5195,12 @@ impl CommandInterpreter {
                 self.pending = Pending::None;
                 return Some(self.move_bracket(document, forward, key, count));
             }
-            Pending::SetMark => {
-                self.pending = Pending::None;
-                return Some(match key {
-                    Key::Char(name @ 'a'..='z') => {
-                        self.marks.insert(name, self.cursor);
-                        CommandOutput::complete()
-                    }
-                    _ => CommandOutput::unsupported("mark expects a-z"),
-                });
-            }
+            Pending::SetMark => return Some(self.finish_set_mark(key)),
             Pending::JumpMark { linewise } => {
                 self.pending = Pending::None;
                 return Some(match key {
-                    Key::Char(name @ ('a'..='z' | '<' | '>')) => self.jump_to_mark(document, name, linewise),
-                    _ => CommandOutput::unsupported("jump expects a-z, < or >"),
+                    Key::Char(name) if marks::valid_mark(name) => self.jump_to_mark(document, name, linewise),
+                    _ => CommandOutput::unsupported("invalid mark name"),
                 });
             }
             Pending::MacroRecord => {
@@ -5436,6 +5475,7 @@ impl CommandInterpreter {
         if self.register_pending {
             self.register_pending = false;
             return Some(match key {
+                Key::Char('=') => self.begin_expression_register(None),
                 Key::Char(name) if is_valid_register(name) => {
                     self.requested_register = Some(name);
                     CommandOutput::pending()
@@ -5502,11 +5542,12 @@ impl CommandInterpreter {
                 self.pending = Pending::None;
                 return Some(self.move_bracket(document, forward, key, count));
             }
+            Pending::SetMark => return Some(self.finish_set_mark(key)),
             Pending::JumpMark { linewise } => {
                 self.pending = Pending::None;
                 return Some(match key {
-                    Key::Char(name @ ('a'..='z' | '<' | '>')) => self.jump_to_mark(document, name, linewise),
-                    _ => CommandOutput::unsupported("jump expects a-z, < or >"),
+                    Key::Char(name) if marks::valid_mark(name) => self.jump_to_mark(document, name, linewise),
+                    _ => CommandOutput::unsupported("invalid mark name"),
                 });
             }
             Pending::None => {}
@@ -5550,6 +5591,7 @@ impl CommandInterpreter {
                 };
                 CommandOutput::pending()
             }
+            Key::Char('m') => { self.pending = Pending::SetMark; CommandOutput::pending() }
             Key::Char(':') => self.enter_visual_ex(document),
             Key::Char('"') => {
                 self.count = explicit_count;
@@ -5985,6 +6027,7 @@ impl CommandInterpreter {
     fn finish_explicit_register_prefix(&mut self, output: &CommandOutput) {
         if output.status != CommandStatus::Pending && self.pending == Pending::None && !self.register_pending {
             self.clipboard_copy_as_seen = false;
+            self.expression_input = None;
         }
         if self.requested_register.is_some()
             && output.status != CommandStatus::Pending
@@ -6691,6 +6734,7 @@ impl CommandInterpreter {
         if self.register_pending {
             self.register_pending = false;
             return Ok(match key {
+                Key::Char('=') => self.begin_expression_register(None),
                 Key::Char(name) if is_valid_register(name) => {
                     self.requested_register = Some(name);
                     CommandOutput::pending()
@@ -6752,9 +6796,15 @@ impl CommandInterpreter {
                 }
             };
         }
+        if self.pending == Pending::SetMark { return Ok(self.finish_set_mark(key)); }
+        if self.pending == Pending::None && key == Key::Char('m') {
+            self.count = None;
+            self.pending = Pending::SetMark;
+            return Ok(CommandOutput::pending());
+        }
         if let Pending::JumpMark { linewise } = self.pending {
             return match key {
-                Key::Char(name @ ('a'..='z' | '<' | '>')) => Ok(self.apply_visual_block_logical_motion(
+                Key::Char(name) if marks::valid_mark(name) => Ok(self.apply_visual_block_logical_motion(
                     document,
                     context,
                     |commands, document| {
@@ -6764,7 +6814,7 @@ impl CommandInterpreter {
                 )),
                 _ => {
                     self.pending = Pending::None;
-                    Ok(CommandOutput::unsupported("jump expects a-z, < or >"))
+                    Ok(CommandOutput::unsupported("invalid mark name"))
                 }
             };
         }
@@ -8518,7 +8568,12 @@ impl CommandInterpreter {
                 selected,
                 visual_block_deletion_class(resolved.rows.len()),
             ),
-            Operator::Yank => self.yank_register(register, selected),
+            Operator::Yank => {
+                self.yank_register(register, selected);
+                if let (Some(first), Some(last)) = (resolved.range_set.segments.first(), resolved.range_set.segments.last()) {
+                    self.note_affected_range(document, first.range.start..last.range.end, false, false);
+                }
+            },
             _ => {}
         }
         if operator == Operator::Yank && self.select_visual_once {
@@ -9726,10 +9781,10 @@ impl CommandInterpreter {
             Pending::OperatorMark { operator, linewise } => {
                 self.pending = Pending::None;
                 return match key {
-                    Key::Char(name @ ('a'..='z' | '<' | '>')) => {
+                    Key::Char(name) if marks::valid_mark(name) => {
                         self.execute_operator_mark(document, operator, name, linewise)
                     }
-                    _ => Ok(CommandOutput::unsupported("mark motion expects a-z, < or >")),
+                    _ => Ok(CommandOutput::unsupported("invalid mark name")),
                 };
             }
             Pending::OperatorBracket { operator, forward } => {
@@ -10438,6 +10493,7 @@ impl CommandInterpreter {
                     value.clipboard_fragment = document.clipboard_fragment(extent.range.clone()).ok();
                 }
                 self.yank_register(register, value);
+                self.note_affected_range(document, extent.range.clone(), false, false);
                 self.cursor = if extent.kind != MotionKind::Linewise { extent.range.start }
                     else { yank_cursor_after_motion(document.text(), &lines, old_cursor, &extent) };
                 Ok(CommandOutput {
@@ -11588,6 +11644,7 @@ impl CommandInterpreter {
             let Key::Char(name) = key else {
                 return Ok(CommandOutput::unsupported("Ctrl-R expects a register"));
             };
+            if name == '=' && self.expression_input.is_none() { return Ok(self.begin_expression_register(None)); }
             if !is_valid_register(name) {
                 return Ok(CommandOutput::unsupported("invalid register"));
             }
@@ -11847,6 +11904,7 @@ impl CommandInterpreter {
             let Key::Char(name) = key else {
                 return Ok(CommandOutput::unsupported("Ctrl-R expects a register"));
             };
+            if name == '=' && self.expression_input.is_none() { return Ok(self.begin_expression_register(None)); }
             if !is_valid_register(name) {
                 return Ok(CommandOutput::unsupported("invalid register"));
             }
@@ -14272,11 +14330,12 @@ impl CommandInterpreter {
         };
         self.mode = state.return_mode;
         match state.kind {
+            CommandLineKind::Expression => self.submit_expression_register(document, state.buffer.input),
             CommandLineKind::SearchForward | CommandLineKind::SearchBackward => {
                 let direction = match state.kind {
                     CommandLineKind::SearchForward => SearchDirection::Forward,
                     CommandLineKind::SearchBackward => SearchDirection::Backward,
-                    CommandLineKind::Ex => unreachable!(),
+                    CommandLineKind::Ex | CommandLineKind::Expression => unreachable!(),
                 };
                 let navigation = self.incremental_navigation(&state).to_vec();
                 let entered = state.buffer.input;
@@ -14373,6 +14432,7 @@ impl CommandInterpreter {
         };
         let history = match state.kind {
             CommandLineKind::Ex => &self.ex_history,
+            CommandLineKind::Expression => &self.expression_history,
             CommandLineKind::SearchForward | CommandLineKind::SearchBackward => {
                 &self.search_history
             }
@@ -14393,7 +14453,7 @@ impl CommandInterpreter {
                 Err(message) => CommandOutput { status: CommandStatus::Error(message), ..CommandOutput::complete() },
             };
         }
-        let command = match parse_ex(input) {
+        let mut command = match parse_ex(input) {
             Ok(command) => command,
             Err(error) => {
                 return CommandOutput {
@@ -14403,12 +14463,21 @@ impl CommandInterpreter {
                 };
             }
         };
+        if let ExAction::PutExpression(expression) = &command.action {
+            if !expression.is_empty() { self.last_expression = Some(expression.clone()); }
+            command.action = ExAction::Put { register: Some('=') };
+        }
         if let ExAction::DeleteMarks { names } = &command.action {
             if (command.bang && !names.is_empty()) || (!command.bang && names.is_empty()) {
                 return CommandOutput { status: CommandStatus::ExError(ExCommandError::Execute(ExExecuteError::UnsupportedCommand("Use :delmarks {marks} or :delmarks!".into()))), ..CommandOutput::complete() };
             }
             if command.bang { self.marks.retain(|name, _| !name.is_ascii_lowercase()); }
-            else { for name in names { self.marks.remove(name); } }
+            else { for name in names {
+                // A deletion gets a new application-wide generation, including
+                // when the current owner is another buffer.
+                if name.is_ascii_uppercase() { self.set_named_mark(*name); }
+                self.marks.remove(&marks::canonical_mark(*name));
+            } }
             return CommandOutput::complete();
         }
         if self.global_replay_depth > 0 && !ex_global::allowed(&command.action) {
@@ -14434,7 +14503,7 @@ impl CommandInterpreter {
             ExAction::Put { register } => {
                 let name = register.unwrap_or('"');
                 match self.read_register_value_for_put(document, name) {
-                    Ok(Some(value)) if matches!(name, '+' | '*' | '%') || self.clipboard_register(name) != name => {
+                    Ok(Some(value)) if matches!(name, '+' | '*' | '%' | '/' | ':' | '#' | '~' | '=') || self.clipboard_register(name) != name => {
                         Some((*register, register_to_ex_value(&value)))
                     }
                     Ok(_) => None,
@@ -14617,7 +14686,7 @@ impl CommandInterpreter {
             return normal_output;
         }
 
-        self.apply_ex_register_effects(&outcome);
+        self.apply_ex_register_effects(document, &outcome);
         self.apply_ex_option_effects(&outcome.option_effects);
         self.apply_vim_option_effects(&outcome.vim_option_effects);
         let mapped_jump_origin = jump_origin.and_then(|origin| {
@@ -14901,7 +14970,7 @@ impl CommandInterpreter {
         }
     }
 
-    fn apply_ex_register_effects(&mut self, outcome: &ExOutcome) {
+    fn apply_ex_register_effects(&mut self, document: &Document, outcome: &ExOutcome) {
         for effect in &outcome.register_effects {
             let value = match effect.value.kind {
                 ExRegisterKind::Characterwise => RegisterValue::try_new(
@@ -14925,7 +14994,10 @@ impl CommandInterpreter {
                 }
             };
             match effect.kind {
-                ExRegisterEffectKind::Yank => self.yank_register(effect.requested, value),
+                ExRegisterEffectKind::Yank => {
+                    self.yank_register(effect.requested, value);
+                    self.note_affected_range(document, effect.range.clone(), false, false);
+                },
                 ExRegisterEffectKind::Delete => {
                     self.delete_register(effect.requested, value, DeletionClass::Large)
                 }
@@ -15165,7 +15237,8 @@ impl CommandInterpreter {
         name: char,
         linewise: bool,
     ) -> Result<CommandOutput, DocumentError> {
-        let Some(&marked) = self.marks.get(&name) else {
+        let name = marks::canonical_mark(name);
+        let Some(marked) = self.mark_offset(name) else {
             return Ok(CommandOutput {
                 status: CommandStatus::Error(format!("mark {name} is not set")),
                 ..CommandOutput::complete()
@@ -15406,7 +15479,11 @@ impl CommandInterpreter {
     }
 
     fn jump_to_mark(&mut self, document: &Document, name: char, linewise: bool) -> CommandOutput {
-        let Some(&marked) = self.marks.get(&name) else {
+        if name.is_ascii_uppercase() && self.plan_compound_replay {
+            return self.file_mark_request(name, linewise);
+        }
+        let name = marks::canonical_mark(name);
+        let Some(marked) = self.mark_offset(name) else {
             return CommandOutput {
                 status: CommandStatus::Error(format!("mark {name} is not set")),
                 ..CommandOutput::complete()
@@ -15443,6 +15520,10 @@ impl CommandInterpreter {
 
     fn record_jump(&mut self, document: &Document, from: usize, to: usize) {
         if self.global_replay_depth > 0 { return; }
+        self.marks.insert('\'', from);
+        self.previous_jump_anchor = document.text_point(from).ok().and_then(|point|
+            document.text_anchor(point, Association::AfterInsertion, BoundaryAffinity::Downstream,
+                DeletionRecovery::PreferFollowingThenPreceding).ok());
         self.jumps_revision = Some(document.revision());
         let lines = document.hard_line_snapshot();
         // `jumps[jump_index]` is the live location. A new jump after CTRL-O

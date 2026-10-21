@@ -410,6 +410,11 @@ impl CommandInterpreter {
                         .map_err(|_| DocumentError::UnsupportedFormatting)?;
                     if *operation == 'y' {
                         self.yank_register(requested, value);
+                        if let Some(table) = document.projection().tables().iter().find(|table| table.id == extent.table) {
+                            let start = table.rows[extent.rows().start].cells[extent.columns().start].range.start;
+                            let end = table.rows[extent.rows().end - 1].cells[extent.columns().end - 1].range.end;
+                            self.note_affected_range(document, start..end, false, false);
+                        }
                         self.requested_register = None;
                         return Ok(Some(CommandOutput::complete()));
                     }

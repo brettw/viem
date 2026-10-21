@@ -360,6 +360,8 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_EX_FRONTEND_SCRIPT_CONTINUATION 32u
 /* Edit the pane's alternate file (CTRL-^); the host tracks it per pane. */
 #define VIEM_EX_FRONTEND_EDIT_ALTERNATE 33u
+/* Jump to an application file mark: window_command is A-Z, FORCE means linewise. */
+#define VIEM_EX_FRONTEND_JUMP_FILE_MARK 34u
 /* Apply startup application configuration only for the first document. */
 #define VIEM_EX_FRONTEND_STARTUP_APPLICATION (1u << 15)
 #define VIEM_ARGUMENT_NEXT 1u
@@ -1646,6 +1648,7 @@ typedef struct ViemViewPresentationV1 {
 #define VIEM_COMMAND_LINE_KIND_EX 1u
 #define VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD 2u
 #define VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD 3u
+#define VIEM_COMMAND_LINE_KIND_EXPRESSION 4u
 
 /*
  * state_identity is an opaque exact-content token. It changes whenever the
@@ -2542,6 +2545,30 @@ ViemStatus viem_core_view_go_to_line(
     ViemCoreHandle core, ViemViewId view,
     uint64_t document_id, uint64_t document_revision, uint64_t line,
     ViemCoreOutcomeV1 *out_outcome);
+
+/* Session file marks are bounded to A-Z. Query generation zero, then use the
+ * returned generation for path copying and navigation. Outputs are disjoint. */
+typedef struct ViemFileMarkTargetV1 {
+    uint32_t struct_size;
+    uint32_t name;
+    uint64_t generation;
+    uint64_t document_id;
+    uint64_t path_length;
+} ViemFileMarkTargetV1;
+#define VIEM_FILE_MARK_TARGET_V1_SIZE ((uint32_t)sizeof(ViemFileMarkTargetV1))
+ViemStatus viem_file_mark_target(uint32_t name, uint64_t generation,
+    ViemFileMarkTargetV1 *out_info, uint8_t *path, uint64_t capacity);
+ViemStatus viem_core_view_jump_file_mark(ViemCoreHandle core, ViemViewId view,
+    uint32_t name, uint64_t generation, uint32_t linewise, ViemCoreOutcomeV1 *out_outcome);
+/* Exact UTF-8 input, copied before return; # is view-local, ~ is an accepted drop. */
+ViemStatus viem_core_view_set_host_register(ViemCoreHandle core, ViemViewId view,
+    uint32_t name, const uint8_t *text, uint64_t length);
+
+/* Explicit native drop; all regions disjoint, ownership of returned effects
+ * follows other host-context turns. Successful drops publish the ~ register. */
+ViemStatus viem_core_view_drop_text(ViemCoreHandle core, ViemViewId view,
+    const uint8_t *text, uint64_t length, const ViemCommandTurnContextV2 *context,
+    ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effect_batch);
 
 /* Native Edit-menu history navigation; behavior is independent of Vim mode. */
 ViemStatus viem_core_view_undo(ViemCoreHandle core, ViemViewId view,

@@ -106,6 +106,8 @@ pub enum RegisterReadError {
     ClipboardUnavailable(ClipboardTarget),
     NoCurrentArtifact,
     ArtifactPathIsNotUtf8,
+    Expression(String),
+    NoAlternateArtifact,
     /// A recorded macro has a normalized key event which cannot be
     /// losslessly materialized as formatted text. Its inspection notation is
     /// deliberately not treated as literal register contents.
@@ -124,6 +126,8 @@ impl fmt::Display for RegisterReadError {
                     target.register_name()
                 )
             }
+            Self::Expression(message) => formatter.write_str(message),
+            Self::NoAlternateArtifact => formatter.write_str("E23: No alternate file"),
             Self::NoCurrentArtifact => formatter.write_str("current filename register is empty"),
             Self::ArtifactPathIsNotUtf8 => formatter
                 .write_str("current filename cannot be represented as a Unicode text register"),
@@ -380,7 +384,7 @@ impl Registers {
                 .ok_or(RegisterReadError::NoCurrentArtifact)?;
             let path = std::str::from_utf8(path.as_bytes())
                 .map_err(|_| RegisterReadError::ArtifactPathIsNotUtf8)?;
-            return Ok(Some(RegisterValue::characterwise(path)));
+            return Ok(Some(RegisterValue::try_new(path, RegisterKind::Characterwise, Vec::new()).expect("literal filename")));
         }
         if name == '_' {
             return Ok(Some(RegisterValue::characterwise("")));
@@ -420,7 +424,7 @@ impl Registers {
         let Some(name) = requested else {
             return Ok(());
         };
-        if matches!(name, '.' | '%') {
+        if matches!(name, '.' | '%' | ':' | '/' | '#' | '~' | '=') {
             return Err(RegisterWriteError::ReadOnly(name));
         }
         if let Some(target) = ClipboardTarget::from_register(name) {
@@ -782,7 +786,7 @@ fn normalize_read_name(name: char) -> Option<char> {
 }
 
 pub(crate) fn is_valid_register(name: char) -> bool {
-    matches!(name, '"' | '-' | '_' | '+' | '*' | '.' | '%')
+    matches!(name, '"' | '-' | '_' | '+' | '*' | '.' | '%' | '/' | ':' | '#' | '~' | '=')
         || name.is_ascii_digit()
         || name.is_ascii_alphabetic()
 }

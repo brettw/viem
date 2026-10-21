@@ -91,7 +91,7 @@ internal sealed partial class CommandPrompt : Grid, IDisposable
         if (x - scroll < 0) scroll = x;
         canvas.Invalidate();
     }
-    private static string Prefix(PromptState value) => value.Info.identity.kind switch { 1 => ":", 2 => "/", 3 => "?", _ => "" };
+    private static string Prefix(PromptState value) => value.Info.identity.kind switch { 1 => ":", 2 => "/", 3 => "?", 4 => "=", _ => "" };
     internal void ClearPresentation()
     {
         state = null; layout?.Dispose(); layout = null; displayText = ""; scroll = 0;
