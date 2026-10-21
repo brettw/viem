@@ -24,6 +24,25 @@ internal static class StyleInspectorBehaviorTests
     }
     private static StyleDefinition Selected(StyleWindow inspector) => inspector.ThemeView.Styles().Styles.Single(style =>
         style.Key == ((StyleDefinition)inspector.StylePicker.SelectedItem).Key);
+    internal static async Task CheckContentFit(StyleWindow inspector)
+    {
+        var root = inspector.RootControl;
+        var scroll = (ScrollViewer)inspector.Content;
+        double client = root.XamlRoot.Size.Height;
+        Check(Math.Abs(scroll.ActualHeight - client) < 2 && client - root.ActualHeight < 24
+            && Math.Abs(scroll.ExtentHeight - root.ActualHeight) < 2,
+            $"inspector content fits its client or scrolls within the available screen (content={root.ActualHeight}, client={client}, extent={scroll.ExtentHeight})");
+        if (scroll.ScrollableHeight <= 0) return;
+        // A screen shorter than the inspector must still expose its final
+        // controls. Exercise the existing outer scroller, then restore the top.
+        scroll.ChangeView(null, scroll.ScrollableHeight, null, disableAnimation: true);
+        await SelfTestRunner.Until(() => Math.Abs(scroll.VerticalOffset - scroll.ScrollableHeight) < 1);
+        await InputRoutingTests.Settle();
+        Check(root.TransformToVisual(scroll).TransformPoint(new(0, root.ActualHeight)).Y <= scroll.ActualHeight + 1,
+            "scrolling a short inspector reveals the bottom of its content");
+        scroll.ChangeView(null, 0, null, disableAnimation: true);
+        await SelfTestRunner.Until(() => scroll.VerticalOffset < 1);
+    }
     private static Color SwatchColor(Button button)
     {
         var colorLayer = ((Grid)button.Content).Children.OfType<Border>()
@@ -275,8 +294,7 @@ internal static class StyleInspectorBehaviorTests
         {
             await InputRoutingTests.Settle();
             Check(inspector.AppWindow.ClientSize == preparedSize && shownSizes.All(size => size == preparedSize), "opening the inspector does not resize through intermediate visible layouts");
-            Check(Math.Abs(inspector.RootControl.XamlRoot.Size.Height - inspector.RootControl.ActualHeight) < 2,
-                $"initial caret-style inspector fits its rendered content (desired={inspector.RootControl.DesiredSize.Height}, actual={inspector.RootControl.ActualHeight}, client={inspector.RootControl.XamlRoot.Size.Height}, scale={inspector.RootControl.XamlRoot.RasterizationScale})");
+            await CheckContentFit(inspector);
             Check(Selected(inspector).Id == "Code" && inspector.Title == "Theme styles — Markdown — " + preferences.ThemeDisplayName, "Markdown Styles opens the current named character style immediately");
             Check(!inspector.CaretFollowScheduled, "opening Styles does not schedule an idle timer");
             byte[] source = document.Source(document.State.document_revision);

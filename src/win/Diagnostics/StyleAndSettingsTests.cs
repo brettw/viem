@@ -68,8 +68,7 @@ internal static class StyleAndSettingsTests
         Check(((IEnumerable<object>)styles.FontFamilyControl.ItemsSource).OfType<string>().Contains("SF Pro", StringComparer.OrdinalIgnoreCase) == sfProInstalled,
             "the default Windows font picker offers SF Pro only when installed");
         Check(!Children<TextBlock>(styles.RootControl).Any(t => t.Text == "Properties" || t.Text.StartsWith("Changes apply live")), "style inspector omits redundant headings and guidance");
-        Check(styles.RootControl.ActualHeight <= styles.RootControl.XamlRoot.Size.Height + 1 && styles.RootControl.XamlRoot.Size.Height - styles.RootControl.ActualHeight < 24,
-            "style inspector initially fits its content without spare bottom space");
+        await StyleInspectorBehaviorTests.CheckContentFit(styles);
         var characterSize = styles.AppWindow.ClientSize;
         styles.ParagraphTab.Focus(FocusState.Programmatic); await InputRoutingTests.Key(VirtualKey.Space); await InputRoutingTests.Settle();
         Check(styles.ParagraphPanel.Visibility == Visibility.Visible && styles.CharacterPanel.Visibility == Visibility.Collapsed, "native Paragraph tab displays paragraph controls");

@@ -127,9 +127,11 @@ internal static class PaneLayoutTests
         {
             window.PaneStack.DragBar(first, 100_000);
             var bottom = Bars();
-            Check(Math.Abs(bottom[0] + first.StatusBarHeight - bottom[1]) < .01
-                && Math.Abs(bottom[1] + second.StatusBarHeight - bottom[2]) < .01,
-                "drag collects touching bars at the bottom edge");
+            // Native layout rounds the rendered bars to device pixels. Compare
+            // their actual edges rather than unrounded style heights.
+            Check(Math.Abs(bottom[0] + first.StatusControl.ActualHeight - bottom[1]) < .01
+                && Math.Abs(bottom[1] + second.StatusControl.ActualHeight - bottom[2]) < .01,
+                $"drag collects touching bars at the bottom edge (bars={string.Join(", ", bottom)}, heights={first.StatusControl.ActualHeight}, {second.StatusControl.ActualHeight}, {third.StatusControl.ActualHeight})");
             window.PaneStack.DragBar(first, 100);
             window.PaneStack.DragBar(first, -12);
             var reverse = Bars();
@@ -137,7 +139,7 @@ internal static class PaneLayoutTests
                 "reversing after a blocked drag releases previously pushed bars");
             window.PaneStack.DragBar(second, -100_000);
             var top = Bars();
-            Check(Math.Abs(top[0]) < .01 && Math.Abs(top[0] + first.StatusBarHeight - top[1]) < .01,
+            Check(Math.Abs(top[0]) < .01 && Math.Abs(top[0] + first.StatusControl.ActualHeight - top[1]) < .01,
                 "drag collects bars at the top edge");
             window.PaneStack.DragBar(second, 12);
             Check(Bars()[0] == top[0] && Math.Abs(Bars()[1] - top[1] - 12) < .01,

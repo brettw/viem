@@ -23,7 +23,18 @@ internal static class ChromeStyleTests
         if (!condition) throw new InvalidOperationException(name);
         FrontendSmokeTests.UiChecks.Add(name);
     }
-    private static JsonNode Definition(JsonNode sheet, string id) => sheet["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == id)!;
+    private static JsonNode Definition(JsonNode sheet, string id)
+    {
+        var definitions = sheet["block_styles"]!.AsArray();
+        if (definitions.SingleOrDefault(entry => entry!["id"]!.GetValue<string>() == id) is { } existing) return existing;
+        // Theme files are sparse. Materialize only the built-in definition this
+        // fixture edits, using the core's complete fallback rather than assuming
+        // that the selected theme repeats every inherited declaration.
+        var defaults = JsonNode.Parse(CoreThemes.Defaults(VIEM_THEME_PRESET_PAPER))!["styles"]!["text"]!;
+        var definition = defaults["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == id)!.DeepClone();
+        definitions.Add(definition);
+        return definition;
+    }
     private static byte[] Bytes(JsonNode node) => Encoding.UTF8.GetBytes(node.ToJsonString());
     private static byte[] Rows(int count) => Encoding.UTF8.GetBytes(string.Join("\n", Enumerable.Repeat("A physical source line", count)));
 
@@ -151,6 +162,12 @@ internal static class ChromeStyleTests
             await InputRoutingTests.Settle();
             byte[] source = document.Source(document.State.document_revision);
             ulong revision = document.State.document_revision;
+            // The reversible gutter-growth check needs monitor headroom. A
+            // fresh profile's default frame can already fill a small display.
+            var area = DocumentWindowPlacement.WorkArea(DisplayArea.GetFromWindowId(window.AppWindow.Id, DisplayAreaFallback.Nearest));
+            var initial = WindowFrame.From(window.AppWindow);
+            window.AppWindow.MoveAndResize((initial with { X = area.X + 128, Width = area.Width - 256 }).Native);
+            await InputRoutingTests.Settle();
             var frame = WindowFrame.From(window.AppWindow);
             var viewMenu = window.Menu.Items.Single(menu => menu.Title == "View");
             var menuPeer = new MenuBarItemAutomationPeer(viewMenu);
@@ -194,7 +211,7 @@ internal static class ChromeStyleTests
             view.Ex("set nonumber");
             await InputRoutingTests.Settle();
             Check(pane.GutterWidth == 0 && Math.Abs(WindowFrame.From(window.AppWindow).Width - frame.Width) <= 1,
-                "hiding the gutter restores a single restored window's original width");
+                $"hiding the gutter restores a single restored window's original width (gutter={pane.GutterWidth}, width={frame.Width}->{WindowFrame.From(window.AppWindow).Width})");
             await SharedStatusStylesPreserveDocument(pane, view, document, preferences, source);
             await MultipleDocumentGutters(window, pane, preferences);
             await SplitAndMaximizedGutters(window, pane, view, document, numberItem, SetViewMenuOpen);
