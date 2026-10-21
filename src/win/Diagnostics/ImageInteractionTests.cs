@@ -468,6 +468,7 @@ internal static class ImageInteractionTests
                 && copy.ImagePreviewLoadAttempts == attempts && copy.PendingImageLoads == 0
                 && copyView.Provider.ImageDimensions("wide.bmp") == (1600u, 800u),
                 "a split immediately reuses the document bitmap and intrinsic dimensions without decoding again");
+            window.FocusPane(pane);
             var image = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
             Check(Math.Abs(image.typographic_bounds.height / image.typographic_bounds.width - .5) < .001
                 && image.typographic_bounds.width <= view.Layout().Info.viewport_width,
@@ -1046,7 +1047,7 @@ internal static class ImageInteractionTests
         pane.ImageHeightValue = "100";
         pane.SetImageSizeLocked(true);
         Check(pane.ImageWidthValue == "200" && pane.ImageHeightValue == "100",
-            "native dimension fields relock around the most recently changed height");
+            $"native dimension fields relock around the most recently changed height (natural={pane.ImageSizeNaturalKnown}, width={pane.ImageWidthValue}, height={pane.ImageHeightValue})");
         pane.SetImageSizeLocked(false);
         pane.ImageHeightValue = "200";
         pane.ImageWidthValue = "250";

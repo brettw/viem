@@ -110,7 +110,10 @@ internal sealed partial class EditorPane
         void EnqueueFocus()
         {
             TracePopupFocus("queued");
-            if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Normal, Complete)) CancelPopupFocus(popup);
+            // TranslateMessage can queue WM_CHAR after the button's KeyUp.
+            // Let pending native input drain before an editable field takes
+            // focus, including when Space invoked the button on release.
+            if (!DispatcherQueue.TryEnqueue(DispatcherQueuePriority.Low, Complete)) CancelPopupFocus(popup);
         }
         pending.FocusLost = (_, _) => {
             // Editable ComboBox setup can restore focus within this same form.

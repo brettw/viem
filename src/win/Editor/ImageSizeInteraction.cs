@@ -55,11 +55,14 @@ internal sealed partial class EditorPane
         imageSizeFields = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
         imageSizeFields.Children.Add(dimensions); imageSizeFields.Children.Add(imageUseNatural);
         editor.Children.Add(imageSizeFields);
-        imageWidth.TextChanged += (_, _) => {
+        // TextChanged is deferred: callbacks from our own control refresh can
+        // arrive after updatingImageSize is cleared and overwrite a later edit.
+        // TextChanging keeps field history in the same turn as the actual edit.
+        imageWidth.TextChanging += (_, _) => {
             if (updatingImageSize) return;
             imageSize.EditWidth(imageWidth.Text); UpdateImageSizeControls();
         };
-        imageHeight.TextChanged += (_, _) => {
+        imageHeight.TextChanging += (_, _) => {
             if (updatingImageSize) return;
             imageSize.EditHeight(imageHeight.Text); UpdateImageSizeControls();
         };
