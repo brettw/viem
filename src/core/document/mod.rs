@@ -701,6 +701,16 @@ pub(crate) struct LocalFormattedChange {
 
 const RETAINED_LAYOUT_CHANGES: usize = 16;
 
+/// An open undo group detached by [`Document::suspend_edit_group`], with the
+/// identities it may resume against.
+#[derive(Clone, Copy, Debug)]
+struct SuspendedEditGroup {
+    depth: usize,
+    generation: u64,
+    revision: Revision,
+    history: history::SuspendedGroup,
+}
+
 /// One editing buffer's document state and branching undo history.
 pub struct Document {
     id: DocumentId,
@@ -716,6 +726,8 @@ pub struct Document {
     /// coordinator retain the correct initiating restoration snapshot without
     /// inferring grouping from source revisions.
     edit_group_generation: u64,
+    /// An open undo group detached while another view's input runs.
+    suspended_edit_group: Option<SuspendedEditGroup>,
     /// Short-lived exact transition accumulator installed by the serial core
     /// coordinator around one input event. Model transactions compose into it
     /// before publication, so a command which performs several source commits
@@ -868,6 +880,7 @@ impl Document {
                 .expect("fixture block identity is representable"),
             edit_group_depth: 0,
             edit_group_generation: 0,
+            suspended_edit_group: None,
             position_map_capture: None,
             layout_changes: std::collections::VecDeque::new(),
             artifact_binding: None,
@@ -1021,6 +1034,7 @@ impl Document {
             next_projected_block_id,
             edit_group_depth: 0,
             edit_group_generation: 0,
+            suspended_edit_group: None,
             position_map_capture: None,
             layout_changes: std::collections::VecDeque::new(),
             artifact_binding: None,
@@ -1836,7 +1850,45 @@ impl Document {
     /// End any open edit unit before another view becomes the writer.
     pub(crate) fn close_edit_group(&mut self) {
         self.edit_group_depth = 0;
+        self.suspended_edit_group = None;
         self.history.end_group();
+    }
+
+    /// Detach the open edit unit while another view's input runs, without
+    /// finalizing it. Unless that input publishes, navigates history, closes
+    /// the unit (as a save does) or opens a unit of its own,
+    /// `resume_edit_group` reattaches it unchanged.
+    pub(crate) fn suspend_edit_group(&mut self) {
+        if self.edit_group_depth == 0 {
+            return;
+        }
+        self.suspended_edit_group = Some(SuspendedEditGroup {
+            depth: self.edit_group_depth,
+            generation: self.edit_group_generation,
+            revision: self.revision(),
+            history: self.history.suspend_group(),
+        });
+        self.edit_group_depth = 0;
+    }
+
+    /// Reattach the unit detached by `suspend_edit_group`, or finalize it when
+    /// the intervening input changed what it could amend.
+    pub(crate) fn resume_edit_group(&mut self) -> bool {
+        let Some(suspended) = self.suspended_edit_group.take() else {
+            return false;
+        };
+        if self.edit_group_depth != 0 {
+            return false;
+        }
+        if self.edit_group_generation == suspended.generation
+            && self.revision() == suspended.revision
+            && self.history.resume_group(suspended.history)
+        {
+            self.edit_group_depth = suspended.depth;
+            return true;
+        }
+        self.history.end_group();
+        false
     }
 
     /// Step to the parent undo state, returning the exact identities traversed.

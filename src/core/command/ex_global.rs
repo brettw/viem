@@ -201,11 +201,7 @@ impl CommandInterpreter {
         }
         if self.global_confirmation_body(&body_command, 0) {
             let origin = self.cursor;
-            let output = self.prepare_global_confirmation(document, &body_command, &selected_lines);
-            if self.substitute_confirmation.is_some() {
-                self.record_jump(document, origin, self.cursor);
-            }
-            return output;
+            return self.begin_global_confirmation(document, body_command, targets, origin);
         }
         if self.global_replay_depth == 0 {
             if let Some(first) = targets.first().copied().flatten() {
@@ -253,7 +249,7 @@ impl CommandInterpreter {
         document.begin_edit_group();
         let started = std::time::Instant::now();
         for index in 0..replay.targets.len() {
-            let target = match replay.bound_target(index) {
+            let target = match replay.bound_target(document, index) {
                 Ok(target) => target,
                 Err(error) => {
                     first_error.get_or_insert(CommandStatus::Error(error.to_string()));
@@ -515,6 +511,35 @@ impl CommandInterpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_targets_survive_deletions_before_them_but_not_joins() {
+        // Without match information, an edit that consumes a target's leading
+        // break merges it unless the new text starts a line of its own. A
+        // line replaced in place keeps its target; a deleted line loses it.
+        for (command, survivors) in [
+            (r":1,2s/x1\n/NEW /", [true, false, true]),
+            (r":1,2s/1\n/1 /", [true, false, true]),
+            (":2d", [true, false, true]),
+            (":1d", [false, true, true]),
+            (r":1s/$/\r>/", [true, true, true]),
+        ] {
+            let mut document = Document::new("x1\nx2\nx3\nend");
+            let mut commands = CommandInterpreter::new();
+            let global = parse_ex(":g/x/p").unwrap();
+            let addresses = commands.resolve_ex_addresses(&document, &global, RegexLimits::default()).unwrap();
+            let (mut targets, _) = commands.select_global_targets(&document, &addresses, "x", false).unwrap();
+            assert!(targets.iter().all(|target| target.is_some_and(|target| target.is_physical_line())));
+            let (output, map) = document.capture_position_maps(|document|
+                Ok::<_, std::convert::Infallible>(commands.execute_ex_command(document, command)));
+            assert_eq!(output.unwrap().status, CommandStatus::Complete, "{command}");
+            rebase_ex_normal_targets(&document, &mut targets, &map).unwrap();
+            let survived = targets.iter()
+                .map(|target| target.is_some_and(|target| ex_normal_target_position(&document, target).is_some()))
+                .collect::<Vec<_>>();
+            assert_eq!(survived, survivors, "{command}");
+        }
+    }
 
     #[test]
     fn global_and_pattern_addresses_keep_large_projection_unmaterialized_and_bound_targets() {

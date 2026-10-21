@@ -1718,6 +1718,43 @@ impl PositionMap {
             })
     }
 
+    /// Whether any original byte between two source points survives this
+    /// source transition. An empty range has nothing to lose and survives.
+    pub(crate) fn source_range_survives(
+        &self,
+        start: SourcePoint,
+        end: SourcePoint,
+    ) -> Result<bool, PositionError> {
+        let part = match self.domain {
+            PositionDomain::Source(part) => part,
+            actual => {
+                return Err(PositionError::WrongDomain {
+                    expected: PositionDomain::Source(start.part),
+                    actual,
+                });
+            }
+        };
+        for point in [start, end] {
+            validate_document(self.document, point.document)?;
+            validate_revision(self.source_revision, point.revision)?;
+            if point.part != part {
+                return Err(PositionError::WrongSourcePart { expected: part, actual: point.part });
+            }
+        }
+        if start.offset > end.offset || end.offset > self.source_len {
+            return Err(PositionError::InvalidBoundary {
+                domain: self.domain,
+                offset: end.offset,
+                length: self.source_len,
+            });
+        }
+        if start.offset == end.offset {
+            return Ok(true);
+        }
+        let (surviving, _) = self.forward.map_content_range(start.offset..end.offset)?;
+        Ok(!surviving.is_empty())
+    }
+
     /// Map the identity of all original content in a range.
     ///
     /// Inserted/replacement content is not silently pulled into the mapped

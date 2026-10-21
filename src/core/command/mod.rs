@@ -1236,6 +1236,9 @@ pub(crate) struct ExNormalTarget {
     pub(crate) hard_line_id: u64,
     pub(crate) domain: ex_addresses::ExLineDomain,
     pub(crate) source: Option<crate::document::SourcePoint>,
+    /// The end of a source line target's terminator, which bounds what an
+    /// edit must remove for the line to count as deleted.
+    pub(crate) source_end: Option<crate::document::SourcePoint>,
 }
 
 /// A compound command which the serial core coordinator must replay one input
@@ -1243,7 +1246,10 @@ pub(crate) struct ExNormalTarget {
 /// continuation from crossing the public controller boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum ReplayPlan {
-    LiteralTerminator(InputEvent),
+    /// The same physical key continues after its first edit is published, so
+    /// the rest of the command resolves against the new revision's layout.
+    /// It is neither recorded again nor a separate undo unit.
+    ContinueAfterPublication(InputEvent),
     Mapping(mappings::MappingReplayPlan),
     Macro(MacroReplayPlan),
     ExNormal(ExNormalReplayPlan),
@@ -1267,11 +1273,15 @@ pub(crate) struct ExNormalReplayPlan {
 }
 
 impl ExNormalReplayPlan {
-    pub(crate) fn bound_target(&self, index: usize) -> Result<Option<ExNormalTarget>, PositionError> {
+    pub(crate) fn bound_target(&self, document: &Document, index: usize) -> Result<Option<ExNormalTarget>, PositionError> {
         let Some(mut target) = self.targets[index] else { return Ok(None); };
         if let Some(map) = self.global_map.as_ref() {
             if let Some(source) = target.source {
                 target.source = match map.source_position_map() {
+                    Some(source_map) if target.is_physical_line() => match rebase_physical_line(document, &target, source_map)? {
+                        Some((start, end)) => { target.source_end = Some(end); Some(start) }
+                        None => return Ok(None),
+                    },
                     Some(source_map) => match source_map.map_source_point(source,
                         Association::AfterInsertion, DeletionRecovery::PreferFollowingThenPreceding)? {
                         MappingOutcome::Exact(point) | MappingOutcome::Moved(point)
@@ -2529,6 +2539,9 @@ impl CommandInterpreter {
                 || self.register_is_blockwise_with_context(document, Some('+'), clipboard);
         }
         if self.substitute_confirmation.is_some() {
+            // A confirmed :global prepares its next invocation's displayed
+            // rows against the revision its previous answer published.
+            if self.awaits_substitute_continuation() { return self.line_mode == LineMode::Visual; }
             return substitute_confirmation::scroll_motion(event).is_some();
         }
         if self.mapping_applies(event) { return false; }
@@ -2682,9 +2695,10 @@ impl CommandInterpreter {
     }
 
     pub(crate) fn is_ex_address_layout_input(&self, event: &InputEvent) -> bool {
-        self.mode == Mode::CommandLine && self.line_mode == LineMode::Visual
-            && matches!(event, InputEvent::Key(key) if self.normalized_input_key(*key) == Key::Enter)
-            && self.command_line_state.as_ref().is_some_and(|state| state.kind == CommandLineKind::Ex)
+        self.line_mode == LineMode::Visual && (self.awaits_substitute_continuation()
+            || self.mode == Mode::CommandLine
+                && matches!(event, InputEvent::Key(key) if self.normalized_input_key(*key) == Key::Enter)
+                && self.command_line_state.as_ref().is_some_and(|state| state.kind == CommandLineKind::Ex))
     }
 
     pub(crate) fn is_counted_viewport_alignment_input(&self, event: &InputEvent) -> bool {
@@ -14897,6 +14911,7 @@ impl CommandInterpreter {
                     hard_line_id,
                     domain: line.domain,
                     source: line.source.as_ref().and_then(|range| document.source_point(range.start).ok()),
+                    source_end: line.source.as_ref().and_then(|range| document.source_point(range.end).ok()),
                 }))
             })
             .collect()
@@ -17633,11 +17648,85 @@ pub(crate) fn ex_normal_target_position(
         if source.document() != document.id() || source.revision() != document.revision() {
             return None;
         }
-        return document.visible_point_for_source(source.offset(), true).ok();
+        let position = document.visible_point_for_source(source.offset(), true).ok()?;
+        // Rebasing already removed deleted or merged physical source lines.
+        // Otherwise the containing hard line's identity shows when an earlier
+        // edit deleted the target's line or merged it into its predecessor.
+        if target.is_physical_line() { return Some(position); }
+        let line = document.hard_line_at_offset(position)?;
+        return (document.projection().hard_line_id(line) == Some(target.hard_line_id)).then_some(position);
     }
     let line = document.hard_line_at_offset(target.anchor.offset())?;
     (document.projection().hard_line_id(line) == Some(target.hard_line_id))
         .then_some(target.anchor.offset())
+}
+
+impl ExNormalTarget {
+    fn is_physical_line(&self) -> bool {
+        self.domain == ex_addresses::ExLineDomain::PhysicalSource && self.source_end.is_some()
+    }
+}
+
+/// Rebase a physical source line as Vim rebases a marked line, judged from
+/// the source edit alone:
+/// - It is deleted when the edit removes all of its content and terminator and
+///   leaves nothing where it began, as `:d` does. New text there keeps it, as
+///   replacing the whole line in place does.
+/// - It is merged into its predecessor when original text now precedes it on
+///   its line, or when the edit consumed its leading break and the new text
+///   before it starts no line of its own.
+///
+/// A split Markdown paragraph, which starts the line with a new break and an
+/// escaped space, therefore leaves it intact, unlike that paragraph's
+/// formatted hard line identity. A substitution that joins it with an empty
+/// replacement looks like deleting its predecessor; only a confirmed :global,
+/// which knows its matches, tells the two apart.
+fn rebase_physical_line(document: &Document, target: &ExNormalTarget, source_map: &PositionMap,
+) -> Result<Option<(crate::document::SourcePoint, crate::document::SourcePoint)>, PositionError> {
+    let (Some(start), Some(end)) = (target.source, target.source_end) else { return Ok(None); };
+    let leading_break = start.offset().checked_sub(1).map(|offset| crate::document::SourcePoint::new(
+        start.document(), start.revision(), start.part(), offset, source_map.source_len())).transpose()?;
+    let break_survives = match leading_break {
+        Some(leading_break) => source_map.source_range_survives(leading_break, start)?,
+        None => true,
+    };
+    // An unterminated last line also owns its leading break, so emptying it
+    // leaves it in place.
+    let first = leading_break.filter(|_| end.offset() == source_map.source_len()).unwrap_or(start);
+    let inverse = source_map.inverted()?;
+    let inserted_at = |offset: usize| -> Result<bool, PositionError> {
+        match (document.source_point(offset), document.source_point(offset + 1)) {
+            (Ok(from), Ok(to)) => Ok(!inverse.source_range_survives(from, to)?),
+            _ => Ok(false),
+        }
+    };
+    let map = |association| -> Result<Option<crate::document::SourcePoint>, PositionError> {
+        Ok(match source_map.map_source_point(start, association, DeletionRecovery::PreferFollowingThenPreceding)? {
+            MappingOutcome::Exact(point) | MappingOutcome::Moved(point)
+            | MappingOutcome::RecoveredFromProvenance(point) => Some(point),
+            MappingOutcome::CollapsedByDeletion(_) | MappingOutcome::Ambiguous(_)
+            | MappingOutcome::Unresolvable(_) => None,
+        })
+    };
+    if !source_map.source_range_survives(first, end)? {
+        let replaced_in_place = break_survives
+            && map(Association::BeforeInsertion)?.map_or(Ok(false), |point| inserted_at(point.offset()))?;
+        if !replaced_in_place { return Ok(None); }
+    }
+    // Lines inserted at the target's start come before it.
+    let Some(start) = map(Association::AfterInsertion)? else { return Ok(None); };
+    let Ok(line) = document.physical_line_source_range(start.offset()) else { return Ok(None); };
+    let (Ok(line_start), Ok(line_end)) = (document.source_point(line.start), document.source_point(line.end))
+    else { return Ok(None); };
+    if line.start < start.offset() {
+        if inverse.source_range_survives(line_start, start)? { return Ok(None); }
+        let new_break = match line.start.checked_sub(1) {
+            Some(offset) => inserted_at(offset)?,
+            None => false,
+        };
+        if !break_survives && !new_break { return Ok(None); }
+    }
+    Ok(Some((line_start, line_end)))
 }
 
 pub(crate) fn rebase_ex_normal_targets(
@@ -17651,6 +17740,10 @@ pub(crate) fn rebase_ex_normal_targets(
         };
         if let Some(source) = target.source {
             target.source = match map.source_position_map() {
+                Some(source_map) if target.is_physical_line() => match rebase_physical_line(document, &target, source_map)? {
+                    Some((start, end)) => { target.source_end = Some(end); Some(start) }
+                    None => { *slot = None; continue; }
+                },
                 Some(source_map) => match source_map.map_source_point(source,
                     Association::AfterInsertion, DeletionRecovery::PreferFollowingThenPreceding)? {
                     MappingOutcome::Exact(point) | MappingOutcome::Moved(point)

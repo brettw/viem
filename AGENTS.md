@@ -486,8 +486,15 @@ Unsupported commands fail without side effects.
   variables are per view.
 - `:global` selects stable line identities before running. One invocation is
   one undo unit, and per-line failures are reported without stopping it.
-- `:s///c` stages its choices against the original revision and applies them
-  together at the end; an intervening edit cancels them.
+- `:s///c` stages its choices against the revision at which the invocation
+  starts and applies them together when it ends; an intervening edit cancels
+  them. Unlike Vim, the text shown while asking omits the invocation's accepted
+  replacements. Inside `:global`, each target's invocation publishes before the
+  next target is prepared, so later invocations see earlier replacements, and
+  match, replacement-size and work budgets span the whole command. The invoking
+  view owns the open undo group between answers, as for Insert typing: a save
+  or another writer closes it, and an intervening edit cancels only the current
+  invocation and the remaining targets.
 - Ctrl-V/Ctrl-Q literal input stores real characters: quoted Return is CR, and
   quoted LF or NUL is U+0000. It bypasses indentation, comment continuation and
   smart quotes.

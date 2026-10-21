@@ -87,6 +87,7 @@ impl Document {
         self.next_projected_block_id = checkpoint.next_projected_block_id;
         self.edit_group_depth = checkpoint.edit_group_depth;
         self.edit_group_generation = checkpoint.edit_group_generation;
+        self.suspended_edit_group = None;
         self.position_map_capture = checkpoint.position_map_capture;
         self.code_presentation = checkpoint.code_presentation;
         self.configuration_state = checkpoint.configuration_state;

@@ -1024,6 +1024,13 @@ struct OpenGroupRestoration {
     before: HistoryRestorationSnapshot,
 }
 
+/// Another view's open undo unit, detached while one input event runs.
+#[derive(Debug)]
+struct ParkedEditGroup {
+    owner: ViewId,
+    restoration: Option<OpenGroupRestoration>,
+}
+
 /// Only model/controller state participates in input publication. Layout
 /// snapshots remain disposable, and no document-sized layout cache is cloned.
 struct InputPublicationCheckpoint {
@@ -5716,11 +5723,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         let Some(plan) = emitted_replay else {
             return Ok(outcome);
         };
-        if let ReplayPlan::LiteralTerminator(input) = plan {
-            // Numeric literal input can finish with a visual motion. Publish
-            // the inserted scalar first so that motion resolves in the new
-            // layout. It is still the same physical key and must not be
-            // recorded twice or introduce a compound-replay undo boundary.
+        if let ReplayPlan::ContinueAfterPublication(input) = plan {
+            // Numeric literal input can finish with a visual motion, and a
+            // confirmed :global prepares its next invocation's displayed rows.
+            // Publish the first edit so the rest resolves in the new layout.
+            // It is still the same physical key and must not be recorded twice
+            // or introduce a compound-replay undo boundary.
             let mut accumulator = CoreOutcomeAccumulator::new(outcome);
             let recording_was_suppressed = self.views.get_mut(&view_id).expect("input view remains attached")
                 .commands.set_macro_recording_suppressed(true);
@@ -5748,10 +5756,26 @@ impl<P: TextMeasurementProvider> Core<P> {
         clipboard_context: &Option<ClipboardCommandContext>,
         emitted_replay: &mut Option<ReplayPlan>,
     ) -> Result<CoreOutcome, CoreError> {
-        if matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) {
+        let parked = if matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) {
             self.install_buffer_commands(view_id);
-            self.prepare_input_edit_group(view_id);
-        }
+            self.prepare_input_edit_group(view_id)
+        } else {
+            None
+        };
+        let result = self.dispatch_grouped_core_event(view_id, event, clipboard_context, emitted_replay);
+        // A failed event is rolled back to its checkpoint afterwards, which
+        // restores the parked unit's open state either way.
+        self.restore_parked_edit_group(parked);
+        result
+    }
+
+    fn dispatch_grouped_core_event(
+        &mut self,
+        view_id: ViewId,
+        event: CoreEvent,
+        clipboard_context: &Option<ClipboardCommandContext>,
+        emitted_replay: &mut Option<ReplayPlan>,
+    ) -> Result<CoreOutcome, CoreError> {
         let history_before =
             matches!(&event, CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }).then(|| self.document.history_status().current);
         let edit_group_depth_before = self.document.edit_group_depth();
@@ -6284,8 +6308,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                     ImmediateLayoutIntent::PreserveViewport
                 };
                 let viewport_changed = target_view.layout.viewport_top() != old_viewport_top;
+                // A confirmed :global keeps its undo group open between
+                // answers, owned by this view exactly like Insert typing.
                 let mut remains_in_edit =
-                    matches!(target_view.commands.mode(), Mode::Insert | Mode::Replace);
+                    matches!(target_view.commands.mode(), Mode::Insert | Mode::Replace)
+                        || target_view.commands.holds_substitute_confirmation_group(&self.document);
                 if let Some(floor) = self.replay_undo_floor {
                     debug_assert!(
                         history_navigation || self.document.edit_group_depth() >= floor,
@@ -6865,7 +6892,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 break ReplayAction::PopFrame;
                             }
                             if !*line_started {
-                                let Some(bound) = plan.bound_target(*target)? else {
+                                let Some(bound) = plan.bound_target(&self.document, *target)? else {
                                     *target += 1;
                                     continue;
                                 };
@@ -7995,7 +8022,7 @@ fn splice_paragraph_styles(
 fn replay_frame(plan: ReplayPlan, commands: &CommandInterpreter) -> ReplayFrame {
     match plan {
         ReplayPlan::Script(plan) => ReplayFrame::Script(Box::new(scripting::ScriptFrame::new(plan, commands.script_state().clone()))),
-        ReplayPlan::LiteralTerminator(_) => unreachable!("literal input continues before compound replay"),
+        ReplayPlan::ContinueAfterPublication(_) => unreachable!("continued input runs before compound replay"),
         ReplayPlan::Mapping(plan) => ReplayFrame::Mapping { plan, event: 0 },
         ReplayPlan::Macro(plan) => ReplayFrame::Macro {
             plan,
