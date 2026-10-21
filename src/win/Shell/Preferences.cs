@@ -9,7 +9,7 @@ namespace Viem.Windows.Shell;
 internal sealed partial class Preferences
 {
     public string DirectoryPath { get; }
-    private JsonObject root = new() { ["version"] = 1 };
+    private JsonObject root = Normalize(new JsonObject { ["version"] = 1 });
     private bool writable = true;
     public string? Error { get; private set; }
     public event Action? Changed;
@@ -44,9 +44,7 @@ internal sealed partial class Preferences
     private static JsonObject Read(string path)
     {
         var result = JsonNode.Parse(File.ReadAllText(path)) as JsonObject ?? throw new InvalidDataException("Configuration must be a JSON object.");
-        if (result["version"]?.GetValue<int>() != 1) throw new InvalidDataException("Unsupported config.json version. The file will not be overwritten.");
-        Validate(result);
-        return result;
+        return Normalize(result);
     }
     public T Get<T>(string section, string key, T fallback)
     { try { var node = section == "theme" ? activeTheme["theme"]?[key] : root[section]?[key]; return node == null ? fallback : node.GetValue<T>(); } catch { return fallback; } }
@@ -114,30 +112,16 @@ internal sealed partial class Preferences
         }
         return new(ColorValue("background", fallback.Background), ColorValue("foreground", fallback.Foreground), fallback.StatusBackground, fallback.StatusForeground, ColorValue("caret", fallback.Caret), ColorValue("selection", fallback.Selection));
     }
-    private static void Validate(JsonObject value)
+    internal static unsafe JsonObject Normalize(JsonObject value)
     {
-        if (value["selectedTheme"] is JsonNode selectedTheme) _ = selectedTheme.GetValue<string>();
-        if (value["selectedThemeFile"] is JsonNode selectedThemeFile) _ = selectedThemeFile.GetValue<string>();
-        foreach (string section in new[] { "view", "editing", "appearance", "code", "windows", "formattingToolbar" })
-            if (value.ContainsKey(section) && value[section] is not JsonObject) throw new InvalidDataException(section + " must be an object.");
-        void Number(JsonNode? node, double min, double max, string name, bool integral = false)
-        { if (node == null) return; double n = node.GetValue<double>(); if (!double.IsFinite(n) || n < min || n > max || (integral && n != Math.Truncate(n))) throw new InvalidDataException("Invalid " + name + "."); }
-        if (value["view"]?["margins"] is JsonNode margins) { if (margins is not JsonObject) throw new InvalidDataException("Invalid margins."); foreach (string edge in new[] { "top", "left", "bottom", "right" }) Number(margins[edge], 0, 1000, edge + " margin"); }
-        foreach (var (section, key) in new[] { ("editing", "caretHoverEffect"), ("editing", "markdownAutodetect"), ("editing", "smartQuotes"), ("appearance", "showStatusBar"), ("windows", "showMenu") }) if (value[section]?[key] is JsonNode boolean) _ = boolean.GetValue<bool>();
-        if (value["editing"] is JsonObject editing && editing.ContainsKey("markdownFormattedView"))
-            _ = editing["markdownFormattedView"]?.GetValue<bool>() ?? throw new InvalidDataException("markdownFormattedView must be a boolean.");
-        if (value["formattingToolbar"] is JsonObject toolbar)
-            foreach (string key in new[] { "plainText", "code", "markdown" })
-                if (toolbar[key] is JsonNode visible) _ = visible.GetValue<bool>();
-        if (value["windows"] is JsonObject windows && windows.ContainsKey("documentFrame") && WindowFrame.Read(windows["documentFrame"]) == null)
-            throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");
-        Number(value["editing"]?["textWidth"], 1, uint.MaxValue, "text width", true);
-        if (value["recentDocuments"] is JsonNode recent)
-        { if (recent is not JsonArray array) throw new InvalidDataException("Invalid recent documents."); foreach (var path in array) if (path == null || path.GetValue<string>().Length > 16384) throw new InvalidDataException("Invalid recent path."); }
-        // Portable validators own indentation, whitespace and language schemas.
-        using var doc = new CoreDocument([]);
-        doc.ConfigureDefaults(Json(value["editing"]?["indentation"], new JsonObject()), Json(value["editing"]?["whitespacePresentation"], new JsonObject()), 80,
-            Json(value["code"]?["filenameAssociations"], new JsonArray()));
+        var input = JsonSerializer.SerializeToUtf8Bytes(value, FrontendJsonContext.Default.JsonObject);
+        using var arena = new NativeArena();
+        var pointer = arena.Copy<byte>(input);
+        var bytes = Abi.Copy((output, capacity, required) =>
+            Native.viem_application_config(pointer, (ulong)input.Length, output, capacity, required));
+        var result = JsonNode.Parse(bytes)!.AsObject();
+        if (result["error"] is JsonNode error) throw new InvalidDataException(error.GetValue<string>());
+        return (JsonObject)result["configuration"]!.DeepClone();
     }
     public void Remember(string path)
     {
@@ -159,7 +143,7 @@ internal sealed partial class Preferences
         // profiles, and remove the key only as part of a successful write.
         (candidate["code"] as JsonObject)?.Remove("vimSyntaxDirectory");
         candidate = (JsonObject)JsonNode.Parse(candidate.ToJsonString())!;
-        Validate(candidate);
+        candidate = Normalize(candidate);
         AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(candidate, FrontendJsonContext.Indented.JsonObject));
         // Opening a file changes the recent menu, not theme, margins, or layout.
         // Still publish external settings edits merged from disk on this write.

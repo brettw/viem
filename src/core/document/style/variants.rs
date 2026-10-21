@@ -845,6 +845,7 @@ mod tests {
             ThemeVariant::Text,
             serde_json::json!({"text":text,"markdown":saved}),
         );
+        assert!(!sheet.local_parent_candidates(StyleNamespace::Character, &"B".into()).contains(&"A".into()));
         let before = sheet.clone();
         assert!(matches!(
             parent(

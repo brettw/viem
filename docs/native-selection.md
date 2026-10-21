@@ -16,6 +16,13 @@ These options apply across existing and future documents in the running profile.
 Changing them does not reclassify active selections or interrupt pending commands.
 Put `set` commands in `startup.viem` to retain them across launches.
 
+Menu word, sentence, paragraph, line and visual-row selection, and Find/Replace/
+Next/Previous Search use shared semantic actions and availability queries.
+They bypass user mappings, refuse pending command operands or active IME input,
+and preserve the insertion boundary when ending typing. A failed selection or
+search restores the prior controller and typing group. Line selection follows
+the view's line meaning; visual-row selection always uses displayed rows.
+
 ## Deliberate behavior differences
 
 - A plain mouse click repositions the caret without leaving Normal, Insert, or

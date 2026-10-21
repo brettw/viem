@@ -270,8 +270,7 @@ internal sealed partial class StyleWindow : Window
             ? styles.FirstOrDefault(style => style.Namespace == selected.Namespace && style.Id == selected.Parent)?.Name
                 ?? (selected.Namespace == 2 ? "Default Paragraph" : "Default parent")
             : selected.Namespace == 2 ? "Default Paragraph" : "None");
-        if (!isBase && localEditable) parents.AddRange(styles.Where(s => s.Namespace == selected.Namespace && (s.Native.role == selected.Native.role
-            || (selected.Native.role >= VIEM_STYLE_ROLE_QUOTE && (s.Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0)) && s.Key != selected.Key));
+        if (!isBase && localEditable) parents.AddRange(view.ParentCandidates(sheet, selected));
         if (!SameChoices(parent, parents)) parent.ItemsSource = parents;
         parent.SelectedItem = selected.ParentVariant is uint variant
             ? parent.Items.OfType<StyleVariantParent>().FirstOrDefault(item => item.Format == variant)

@@ -4,6 +4,15 @@ import XCTest
 
 @MainActor
 final class EVConfigurationStoreTests: XCTestCase {
+  func testCoreSchemaPreservesUnknownKeysAndRejectsLongRecentLists() throws {
+    let normalized = try EVConfigurationStore.normalized(["version": 1,
+      "formattingToolbar": ["future": "opaque"], "editing": ["indentation": ["softtabstop": -1]]])
+    XCTAssertEqual((normalized["editing"] as? [String: Any])?["textWidth"] as? Int, 80)
+    XCTAssertEqual((normalized["formattingToolbar"] as? [String: Any])?["future"] as? String, "opaque")
+    XCTAssertThrowsError(try EVConfigurationStore.normalized(["version": 1,
+      "recentDocuments": Array(repeating: "/tmp/a", count: 11)]))
+    XCTAssertThrowsError(try EVConfigurationStore.normalized(["version": 1, "windows": ["showMenu": 1]]))
+  }
   func testMarkdownAutodetectDefaultsOnPersistsAndUpdatesLivePreferences() throws {
     let (directory, legacy) = try fixture()
     let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)

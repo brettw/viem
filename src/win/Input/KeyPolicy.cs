@@ -22,8 +22,19 @@ internal static class KeyPolicy
 
     public static bool IsFormattingAction(NativeAction action) => FormattingShortcut(action).Length != 0;
 
-    public static KeyRoute Route(VirtualKey key, bool control, bool shift, bool alt, bool literal = false, bool formatting = false)
+    public static KeyRoute Route(VirtualKey key, bool control, bool shift, bool alt, bool literal = false, bool formatting = false, bool? extended = null)
     {
+        uint keypad = key switch {
+            >= VirtualKey.NumberPad0 and <= VirtualKey.NumberPad9 => (uint)(40 + (key - VirtualKey.NumberPad0)),
+            VirtualKey.Add => 26, VirtualKey.Subtract => 27, VirtualKey.Multiply => 28,
+            VirtualKey.Divide => 29, VirtualKey.Decimal => 31,
+            VirtualKey.Enter when extended == true => 30,
+            VirtualKey.Home when extended == false => 20, VirtualKey.End when extended == false => 21,
+            VirtualKey.PageUp when extended == false => 22, VirtualKey.PageDown when extended == false => 23,
+            VirtualKey.Insert when extended == false => 24, VirtualKey.Delete when extended == false => 25, _ => 0
+        };
+        if (keypad != 0) return new(VIEM_KEY_KEYPAD, keypad,
+            (shift ? VIEM_KEY_MODIFIER_SHIFT : 0) | (control ? VIEM_KEY_MODIFIER_CONTROL : 0) | (alt ? VIEM_KEY_MODIFIER_ALT : 0));
         if (!literal && key == VirtualKey.F8 && !control && !shift && !alt) return new(Action: NativeAction.Styles);
         if (!literal && !control && !alt && (key == VirtualKey.Application || key == VirtualKey.F10 && shift))
             return new(Action: NativeAction.ContextMenu);

@@ -1,5 +1,6 @@
 mod defaults;
 pub(super) mod variants;
+mod parent_candidates;
 pub use variants::ThemeVariant;
 #[cfg(test)]
 mod percentage_tests;
@@ -2672,13 +2673,7 @@ impl StyleSheet {
             .block_styles
             .get(parent_id)
             .ok_or_else(|| StyleError::MissingParent(parent_id.clone()))?;
-        let compatible = match (style.role, parent.role) {
-            (BlockRole::Document, BlockRole::Document) => true,
-            (BlockRole::Document, BlockRole::Paragraph) => parent.id == self.base_paragraph,
-            (BlockRole::Paragraph, BlockRole::Paragraph) => true,
-            (role, parent_role) if role.is_container() => role == parent_role || parent.id == self.base_paragraph,
-            _ => false,
-        };
+        let compatible = self.local_block_roles_compatible(style.role, parent);
         if compatible {
             Ok(())
         } else {

@@ -343,6 +343,7 @@ struct EVStyleDefinition: Equatable {
 }
 
 struct EVStyleSheetSnapshot: Equatable {
+    var core: ViemCoreHandle = 0
     let identity: EVStyleSheetIdentity
     let definitions: [EVStyleDefinition]
 
@@ -367,15 +368,25 @@ struct EVStyleSheetSnapshot: Equatable {
     }
 
     func legalParents(for selected: EVStyleDefinition) -> [EVStyleDefinition] {
-        guard selected.capabilities.contains(.parent) else { return [] }
-        return definitions.filter { candidate in
-            guard candidate.key.namespace == selected.key.namespace,
-                  candidate.key != selected.key,
-                  (rolesCanInherit(child: selected.kind, parent: candidate.kind)
-                    || (selected.kind.isContainer && candidate.flags.contains(.baseParagraph)))
-            else { return false }
-            return true
-        }
+        var expected = identity.abiValue
+        let bytes = Array(selected.key.id.rawValue.utf8)
+        do {
+            let data = try bytes.withUnsafeBufferPointer { buffer -> Data in
+                let child = ViemUtf8Slice(data: buffer.baseAddress, length: UInt64(buffer.count))
+                var required: UInt64 = 0
+                let status = viem_core_style_parent_candidates(core, &expected, selected.key.namespace.rawValue, child, nil, 0, &required)
+                guard status == VIEM_STATUS_BUFFER_TOO_SMALL || status == VIEM_STATUS_OK,
+                      required <= UInt64(Int.max) else { throw EVStyleBridgeError.core(status: status) }
+                var output = [UInt8](repeating: 0, count: Int(required))
+                let copied = output.withUnsafeMutableBufferPointer {
+                    viem_core_style_parent_candidates(core, &expected, selected.key.namespace.rawValue, child, $0.baseAddress, UInt64($0.count), &required)
+                }
+                guard copied == VIEM_STATUS_OK else { throw EVStyleBridgeError.core(status: copied) }
+                return Data(output.prefix(Int(required)))
+            }
+            let ids = Set(try JSONDecoder().decode([String].self, from: data))
+            return definitions.filter { $0.key.namespace == selected.key.namespace && ids.contains($0.key.id.rawValue) }
+        } catch { return [] } // A stale snapshot offers no choices; mutation revalidates identity.
     }
 
     func compatibleFollowingStyles(for selected: EVStyleDefinition) -> [EVStyleDefinition] {
@@ -383,9 +394,6 @@ struct EVStyleSheetSnapshot: Equatable {
         return definitions.filter { $0.kind == .paragraph && !$0.flags.contains(.internalSyntax) }
     }
 
-    private func rolesCanInherit(child: EVStyleKind, parent: EVStyleKind) -> Bool {
-        child == parent
-    }
 
 
 }
@@ -651,7 +659,7 @@ enum EVCoreStyleBridge {
             }
         }
         try check(status)
-        return try decode(
+        var snapshot = try decode(
             info: copiedInfo,
             definitions: definitions,
             properties: properties,
@@ -659,6 +667,8 @@ enum EVCoreStyleBridge {
             dependencies: dependencies,
             strings: strings
         )
+        snapshot.core = core ?? 0
+        return snapshot
     }
 
     static func apply(

@@ -339,7 +339,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         SuppressCaretHoverForInput();
         if (View == null) return;
         var key = e.Key; bool control = Down(VirtualKey.Control), shift = Down(VirtualKey.Shift), alt = Down(VirtualKey.Menu);
-        var route = EditorKeyRoute(key, control, shift, alt);
+        bool extended = e.KeyStatus.IsExtendedKey;
+        var route = EditorKeyRoute(key, control, shift, alt, extended);
         if (composing && route.Action == NativeAction.None) return; // Native IME owns composition navigation/commit.
         bool formattingCandidate = KeyPolicy.IsFormattingAction(KeyPolicy.Route(key, control, shift, alt, formatting: true).Action);
         if (route.Kind == 0 && route.Action == NativeAction.None && !formattingCandidate) return;
@@ -349,7 +350,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Enqueue(async () => {
             // Drain preceding text/keys before deciding whether the chord is
             // formatting or belongs to a pending Vim command/literal input.
-            route = EditorKeyRoute(key, control, shift, alt);
+            route = EditorKeyRoute(key, control, shift, alt, extended);
             switch (route.Action)
             {
                 case NativeAction.Copy: await Copy(false); break;
@@ -380,14 +381,14 @@ internal sealed partial class EditorPane : Grid, IDisposable
             if (key == VirtualKey.Escape) { DismissLinkPopup(); DismissImagePopup(); }
         });
     }
-    internal KeyRoute EditorKeyRoute(VirtualKey key, bool control, bool shift, bool alt)
+    internal KeyRoute EditorKeyRoute(VirtualKey key, bool control, bool shift, bool alt, bool? extended = null)
     {
-        if (View is not { } view) return KeyPolicy.Route(key, control, shift, alt);
+        if (View is not { } view) return KeyPolicy.Route(key, control, shift, alt, extended: extended);
         var state = view.Presentation;
         bool formatting = KeyPolicy.IsFormattingAction(KeyPolicy.Route(key, control, shift, alt, formatting: true).Action)
             && CanUseFormattingCommands;
         return KeyPolicy.Route(key, control, shift, alt,
-            literal: (state.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0, formatting: formatting);
+            literal: (state.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0, formatting: formatting, extended: extended);
     }
     internal bool CanUseFormattingCommands => IsActive && !composing && View is { } view && !view.Composing
         && CoreDocument.IsMarkdown(Document.State.format) && !Document.IsReadOnly && view.HasFormattingSelection
@@ -509,7 +510,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 // otherwise shift the selected line onto the previous grapheme.
                 if (View.Presentation.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE) View.Key(VIEM_KEY_ESCAPE);
                 View.Place((float)point.X, (float)point.Y);
-                View.SelectFromCommand("V", VIEM_SELECTION_ORIGIN_MOUSE, pointerClickReturnMode);
+                View.NativeAction(VIEM_NATIVE_SELECT_LINE, VIEM_SELECTION_ORIGIN_MOUSE, pointerClickReturnMode);
             }
             else if (Down(VirtualKey.Shift) || !SelectInlineImage(point)) View.Place((float)point.X, (float)point.Y, Down(VirtualKey.Shift));
             BeginTableDrag(point);
@@ -583,7 +584,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             if (!StringComparer.OrdinalIgnoreCase.Equals(imageDocumentPath, Document.FilePath)) ResetImagePreviews();
             presentation = View.Presentation; UpdatePointerCursor();
             viewport = View.Viewport;
-            try { message.Text = View.SubstitutePrompt(); }
+            try { message.Text = View.SubstitutePrompt(); if (message.Text.Length == 0) message.Text = CoreView.PendingCommand(presentation); }
             catch (CoreException error) { message.Text = ""; PresentationWarning("substitute prompt", error); }
             try { UpdateStatusPresentation(); }
             catch (CoreException error) { prompt.ClearPresentation(); PresentationWarning("command line", error); }
@@ -603,7 +604,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             try { RefreshTableInteraction(); }
             catch (CoreException error) { PresentationWarning("table controls", error); }
             if (CurrentPointerLocation() is { } pointer) UpdatePointerRegion(pointer);
-            mode.Text = presentation.mode switch {
+            mode.Text = presentation.recording_register != 0 ? $"Recording @{char.ConvertFromUtf32((int)presentation.recording_register)}" : presentation.mode switch {
                 VIEM_MODE_INSERT => "INSERT", VIEM_MODE_REPLACE => "REPLACE",
                 VIEM_MODE_VISUAL_CHARACTER => "VISUAL", VIEM_MODE_VISUAL_LINE => "V-LINE", VIEM_MODE_VISUAL_BLOCK => "V-BLOCK",
                 VIEM_MODE_SELECTION_CHARACTER or VIEM_MODE_SELECTION_LINE or VIEM_MODE_SELECTION_BLOCK => "SELECTION",

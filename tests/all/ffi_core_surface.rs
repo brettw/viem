@@ -746,48 +746,19 @@ fn copy_effect_batch(handle: ViemEffectBatchHandle) -> CopiedEffectBatch {
         unsafe { viem_effect_batch_info(handle, &mut info) },
         ViemStatus::Ok
     );
-    let mut clipboard_writes =
-        vec![ViemClipboardWriteV1::default(); info.clipboard_write_count as usize];
-    let mut ex_requests = vec![ViemExFrontendRequestV1::default(); info.ex_request_count as usize];
-    let mut ex_options = vec![ViemExOptionDisplayV1::default(); info.ex_option_count as usize];
-    let mut ex_marks = vec![ViemExMarkV1::default(); info.ex_mark_count as usize];
-    let mut ex_registers = vec![ViemExRegisterV1::default(); info.ex_register_count as usize];
-    let mut ex_jumps = vec![ViemExJumpV1::default(); info.ex_jump_count as usize];
-    let mut ex_text_lines = vec![ViemExTextLineV1::default(); info.ex_text_line_count as usize];
-    let mut file_formats = vec![0; info.file_format_count as usize];
-    let mut hard_breaks = vec![0; info.hard_break_count as usize];
-    let mut strings = vec![0; info.string_bytes as usize];
-    let mut copied_info = ViemEffectBatchInfoV1::default();
-    assert_eq!(
-        unsafe {
-            viem_effect_batch_copy(
-                handle,
-                clipboard_writes.as_mut_ptr(),
-                clipboard_writes.len() as u64,
-                ex_requests.as_mut_ptr(),
-                ex_requests.len() as u64,
-                ex_options.as_mut_ptr(),
-                ex_options.len() as u64,
-                ex_marks.as_mut_ptr(),
-                ex_marks.len() as u64,
-                ex_registers.as_mut_ptr(),
-                ex_registers.len() as u64,
-                ex_jumps.as_mut_ptr(),
-                ex_jumps.len() as u64,
-                ex_text_lines.as_mut_ptr(),
-                ex_text_lines.len() as u64,
-                file_formats.as_mut_ptr(),
-                file_formats.len() as u64,
-                hard_breaks.as_mut_ptr(),
-                hard_breaks.len() as u64,
-                strings.as_mut_ptr(),
-                strings.len() as u64,
-                &mut copied_info,
-            )
-        },
-        ViemStatus::Ok
-    );
-    assert_eq!(copied_info, info);
+    let mut borrowed = ViemEffectBatchViewV1::default();
+    assert_eq!(unsafe { viem_effect_batch_read(handle, &mut borrowed) }, ViemStatus::Ok);
+    assert_eq!(borrowed.info, info);
+    let clipboard_writes = unsafe { std::slice::from_raw_parts(borrowed.clipboard_writes, info.clipboard_write_count as usize) }.to_vec();
+    let ex_requests = unsafe { std::slice::from_raw_parts(borrowed.ex_requests, info.ex_request_count as usize) }.to_vec();
+    let ex_options = unsafe { std::slice::from_raw_parts(borrowed.ex_options, info.ex_option_count as usize) }.to_vec();
+    let ex_marks = unsafe { std::slice::from_raw_parts(borrowed.ex_marks, info.ex_mark_count as usize) }.to_vec();
+    let ex_registers = unsafe { std::slice::from_raw_parts(borrowed.ex_registers, info.ex_register_count as usize) }.to_vec();
+    let ex_jumps = unsafe { std::slice::from_raw_parts(borrowed.ex_jumps, info.ex_jump_count as usize) }.to_vec();
+    let ex_text_lines = unsafe { std::slice::from_raw_parts(borrowed.ex_text_lines, info.ex_text_line_count as usize) }.to_vec();
+    let file_formats = unsafe { std::slice::from_raw_parts(borrowed.file_formats, info.file_format_count as usize) }.to_vec();
+    let hard_breaks = unsafe { std::slice::from_raw_parts(borrowed.hard_breaks, info.hard_break_count as usize) }.to_vec();
+    let strings = unsafe { std::slice::from_raw_parts(borrowed.strings, info.string_bytes as usize) }.to_vec();
     CopiedEffectBatch {
         info,
         clipboard_writes,

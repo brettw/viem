@@ -26,163 +26,75 @@ for the current commitments.
   line's invocation must then offer the newly created matches. Merging previews
   computed from the original text cannot reproduce that behavior.
 
-  Deferred design questions (no implementation is planned in this change):
-  - How should each invocation preview the previous invocation's accepted edits
-    in an isolated candidate while keeping the original `:global` target lines
-    anchored through inserted, deleted or split lines?
-  - How should the confirmation highlight, cursor and Ctrl-E/Ctrl-Y scrolling
-    use layout for that candidate without publishing tentative source to other
-    views? Original-revision layout cannot locate newly created matches.
-  - How should `a`, `q`, `l`, Escape, Ctrl-C and per-target failures retain the
-    appropriate completed decisions across invocations? The existing rules for
-    per-substitution responses, global partial progress and final atomic
-    publication need explicit tests; an external edit must cancel stale work.
-  - How can candidate source, projections, layout and repeated match growth be
-    bounded and cancellable while preserving exact bytes and one-step undo/redo?
+  **Vim behavior (checked 2026-10-20).** `:global` first marks its original
+  target lines, then executes the body against the evolving buffer. Deleted
+  targets disappear; newly inserted lines do not become extra global targets.
+  Each substitute invocation starts a fresh match scan, so its range can include
+  replacements made by an earlier invocation. Within one invocation, replacement
+  text is not recursively substituted. See [Vim's global contract](https://vimhelp.org/repeat.txt.html#%3Aglobal).
 
-  Any implementation must reconcile sequential candidate revisions with the
-  current original-revision confirmation contract before lifting the rejection.
-  Cover overlapping explicit/count ranges, nested predicates, zero-width and
-  newly created matches, Markdown, mixed encodings/endings and multiple views.
-  See [global confirmation](src/core/command/global_confirmation.rs) and
-  [confirmation tests](tests/all/substitute_confirmation.rs).
+  Confirmation responses belong to the current substitute invocation: `a`
+  accepts its remaining matches; `q` and Escape end it while retaining accepted
+  replacements; `l` accepts one last match and ends it. The next global target
+  can still run and ask again. Ctrl-C interrupts the whole global execution and
+  retains completed replacements. Ctrl-E/Ctrl-Y only scroll. The implementation
+  restores substitute flags between invocations; a later body with explicit
+  `gc` asks again. References: [confirmation keys](https://vimhelp.org/change.txt.html#%3As_c)
+  and [Vim 9.2 substitute/global implementation](https://github.com/vim/vim/blob/v9.2.0000/src/ex_cmds.c#L4313-L4498).
 
-## 2. Shared frontend and ABI issues
+  An interactive-mode oracle run on local Vim 9.1.1752, with `-Nu NONE -i NONE
+  -n --not-a-term`, confirmed these examples for two lines `x`, `x` and
+  `:g/x/%s/x/xx/gc` (responses supplied with `feedkeys(..., 'xt')`):
 
-These include observed platform differences and remaining interface maintenance
-concerns. Native dialogs, event decoding and native caret blinking belong in the
-frontends; their presence alone is not a policy defect.
+  | Responses | Final lines | Meaning |
+  | --- | --- | --- |
+  | `aa` | `xxxx`, `xxxx` | Each invocation accepts all its own matches. |
+  | `qa` or Escape then `a` | `xx`, `xx` | First invocation quits; second still runs. |
+  | `la` or `yqa` | `xxxx`, `xx` | Second invocation sees the first accepted edit. |
+  | `y` then Ctrl-C | `xx`, `x` | Interrupt preserves progress and stops globally. |
 
-### B1. Command diagnostics and Ex output still differ across the boundary
+  Do not run this oracle in `-es`: Ex-mode confirmation consumes response lines,
+  so a string of response keys is not the same experiment. The source check is
+  against Vim 9.2; the executable observations above are explicitly Vim 9.1.
 
-Non-Ex error details are lost in
-[`command_status_to_ffi`](src/core/ffi.rs): count, register, general command and
-Visual Block failures become a generic error status without their message.
-`Unsupported` likewise exports only a status. Ex errors already use a message
-effect through `OwnedEffectBatch::from_command`; the remaining error families
-need equivalent detail.
+  **Recommended implementation path (deferred).**
 
-Ex output is independently composed in
-[Swift `displayMessage`/`formatOption`](src/mac/Editor/Sources/EVEditorSurfaceController.swift)
-and [C# `HostEffects.Read`/`OptionName`](src/win/Core/HostEffects.cs), with
-observable differences:
+  1. Replace eager collection of all previews in `global_confirmation.rs` with
+     a resumable global execution session: original document/view identities,
+     stable target-line identities, body command, next target, accumulated
+     diagnostics, and a private document candidate. Share unchanged source and
+     projection storage; retain only the current candidate and the original
+     publication checkpoint, not a full copy per response.
+  2. Resolve each target and its body range against that candidate. Prepare one
+     substitute invocation at a time. Track its original match progression
+     separately from display offsets so accepted text is visible without being
+     recursively matched. Rebase surviving global targets after each verified
+     edit; explicitly remove deleted targets instead of collapsing them onto a
+     surviving line. Resolve nested current-line predicates at execution time.
+  3. Give the invoking view a candidate-specific projection/layout identity for
+     highlight, caret and scrolling. Other views continue to display published
+     source. Never feed candidate coordinates into original-revision layout.
+     Fetch exact visible layout through the existing cancellable scheduler.
+  4. Model response scope explicitly: next match, finish this invocation, or
+     interrupt the global session. Keep accepted edits on `q`, Escape, `l` and
+     Ctrl-C according to the table. Preserve Viem's documented per-target error
+     policy: report an individual failure and continue from the last verified
+     candidate. A stale external edit cancels the entire unpublished session.
+  5. On completion or explicit interruption, atomically publish the verified
+     candidate and its metadata as one undo unit, guarded by the original
+     revision and relevant view/configuration identities. Update the current
+     original-revision confirmation contract in AGENTS.md to distinguish the
+     publication checkpoint from the evolving private preview. Enforce shared
+     limits on matches, replacement bytes, work and retained memory across all
+     invocations; exclude time waiting for user answers from compute budgets.
+     Resource/verification failure must discard unpublished work explicitly.
+  6. Before removing the rejection, test the response matrix, overlapping
+     explicit/count ranges, deleted/split targets, nested predicates, zero-width
+     and newly created matches, mixed encodings/endings, Markdown source
+     preservation, multiple views, stale cancellation and exact one-step
+     undo/redo. Add locality and memory bounds for repeated match growth.
 
-- Windows renders boolean options as `wrap=1`; macOS renders `wrap`/`nowrap`.
-- Windows renders `fileformat` numerically and lacks a `fileformats` name-table
-  entry; macOS renders the named formats.
-- Windows prints signed `softtabstop` values through the unsigned scalar field;
-  macOS decodes them as signed.
-- Windows inserts raw register controls into output; macOS escapes them visibly.
-
-[Windows command-status tests](src/win/Diagnostics/CommandStatusTests.cs)
-currently expect `wrap=1`, while
-[macOS host-effect tests](src/mac/Editor/Tests/EVHostEffectsIntegrationTests.swift)
-expect named file formats and escaped register newlines. Shared formatting would
-prevent these differences from being maintained as separate expectations.
-
-### B2. Native actions still synthesize Vim grammar
-
-[macOS menu dispatch](src/mac/Editor/Sources/EVEditorSurfaceController.swift)
-and [Windows menus](src/win/Shell/Menus.cs) implement selection and find actions
-with sequences such as `viw`, `g0vg$`, `/`, `n` and `N`. Enablement is also
-re-derived by each frontend. The
-[Windows wrappers](src/win/Core/CoreView.cs) add their own selection/return-mode
-handling. Core command intentions and availability queries would let both
-frontends invoke the same action without duplicating pending-command and mode
-policy.
-
-### B3. Effect copying still requires ten parallel buffers
-
-[`viem_effect_batch_copy`](include/viem_core.h) takes 22 parameters: ten
-array/capacity pairs, a handle and out-info. This produces ten nested buffer
-scopes in [Swift](src/mac/Editor/Sources/EVCoreHostEffects.swift) and ten nested
-`fixed` scopes in [C#](src/win/Core/HostEffects.cs). Adding another payload array
-requires coordinated ABI and caller changes. This remains an interface
-maintenance concern, rather than a demonstrated correctness failure; a single
-payload or descriptor could reduce that coupling.
-
-### B4. Text decoration positions differ between frontends
-
-[macOS drawing](src/mac/Editor/Sources/EVEditorView.swift) positions underlines
-at `floor(baseline + max(1, descent * 0.35))` and strikethrough at
-`floor(baseline - ascent * 0.32)`.
-[Windows drawing](src/win/Editor/DrawingCache.cs) uses `baseline + 2` and
-`baseline - ascent * 0.3`. The same shared style therefore has independently
-chosen decoration geometry. There is no shared position contract or returned
-geometry for these text decorations.
-
-### B5. Windows prompt Shift navigation does not extend selection (new)
-
-[Windows key policy](src/win/Input/KeyPolicy.cs) preserves Shift on
-Left/Right/Home/End, and
-[`EditorPane`](src/win/Editor/EditorPane.cs) sends the modified navigation key
-to core. However,
-[`normalized_input_key`](src/core/command/input_keys.rs) strips navigation
-modifiers in CommandLine mode, and ordinary prompt movement clears the
-selection anchor in [`command/mod.rs`](src/core/command/mod.rs).
-
-For `:abc`, Shift-Left leaves both anchor and active at byte 2 instead of
-selecting `c`. macOS explicitly preserves the anchor in
-[`moveCommandLineSelection`](src/mac/Editor/Sources/EVEditorView.swift), with
-[Shift-navigation tests](src/mac/Editor/Tests/EVCommandPromptEditingTests.swift).
-Windows ordinary arrows already use grapheme-aware core movement; the gap is
-selection extension.
-
-### B6. Keypad keys cannot have distinct bindings
-
-The core input enum and C ABI have no dedicated keypad identities.
-[`notation_key`](src/core/command/mappings.rs) aliases keypad Enter, navigation,
-arithmetic and digit notation to ordinary keys. A mapping cannot distinguish
-keypad Enter from Return, for example.
-
-### B7. Style candidate rules and application config remain duplicated
-
-Style-parent candidate filtering is implemented in both
-[Swift `legalParents`](src/mac/Editor/Sources/EVCoreStyles.swift) and
-[C# `LoadParents`](src/win/Shell/StyleWindow.cs), using namespace, role and
-Base Paragraph rules. These are core model constraints being re-derived to
-populate native pickers. A core candidate query would keep the offered choices
-consistent with mutation validation.
-
-The application `config.json` schema, defaults and validation still have
-separate implementations in
-[`EVConfigurationStore`](src/mac/AppShell/EVConfigurationStore.swift) and
-[`Preferences`](src/win/Shell/Preferences.cs). They already disagree:
-macOS rejects more than ten recent-document paths; Windows accepts longer
-arrays and truncates the read list to ten.
-
-### B8. Recording and pending-command status are not published
-
-[`CommandInterpreter::is_recording_macro`](src/core/command/mod.rs) exists,
-but [`ViemViewPresentationV1`](include/viem_core.h) exposes no recording
-register, pending command text or active count. Native status bars cannot show
-`recording @q` or the accumulating `"a2d` command from a shared core value.
-
-### B9. Rust/header layout checks are not exhaustive
-
-C# bindings are generated from the headers by
-[`generate_bindings.py`](src/win/tools/generate_bindings.py), and Windows
-validation checks their freshness. The remaining gap is agreement between Rust
-and those headers: the explicit
-[`check_c_abi`](examples/check_c_abi.rs) probe uses a hand-curated inventory and
-selected offsets.
-
-For example, `ViemCommandLineSelectionV1`, `ViemLayoutDecorationV1` and
-`ViemViewRestorationV1` are absent from that probe. Header-to-C# generation
-cannot detect disagreement with the Rust declarations. Native tests exercise
-some of these APIs, but do not establish exhaustive size, alignment and field
-offset agreement. Generate the comparison inventory, or derive all declarations
-from one source. See [ABI validation](docs/abi-validation.md).
-
-## Audit validation
-
-Command and ABI assertions above were traced to current implementations and
-existing tests. All 61 focused Rust tests passed through
-`scripts/validate.py`, including temporary audit probes for unsupported Visual
-arithmetic, prompt word insertion, filename-register reads and Shift-navigation
-behavior.
-The probes were removed after the audit. C# binding freshness was checked with
-`python3 src/win/tools/generate_bindings.py --check`.
-
-Native frontend findings are based on source and existing test expectations;
-macOS and Windows native suites were not run for this Markdown-only update.
+  This is a design recommendation, not implemented support. Keep the current
+  early rejection until both candidate execution and candidate presentation are
+  available. See [global confirmation](src/core/command/global_confirmation.rs)
+  and [confirmation tests](tests/all/substitute_confirmation.rs).

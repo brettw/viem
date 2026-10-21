@@ -92,6 +92,13 @@ impl CommandInterpreter {
             self.literal_input = Some(LiteralInput::default());
             return Ok(CommandOutput::pending());
         }
+        // Printable keypad keys and Return have ordinary literal values, while
+        // keypad navigation retains its named identity (Vim's <kHome>, etc.).
+        let key = match key {
+            Key::Keypad { code: 30, modifiers } => super::keypad::fallback(30, modifiers),
+            Key::Keypad { code: code @ (26..=29 | 31 | 40..=49), modifiers: 0 } => super::keypad::fallback(code, 0),
+            other => other,
+        };
         self.consume_literal_key(document, key)
     }
 
@@ -352,7 +359,8 @@ pub(super) fn literal_key_text(key: Key) -> Option<String> {
             name.push_str(&base[1..]);
             name
         }
-        Key::SelectAll | Key::CopySelection | Key::PasteClipboard | Key::PasteClipboardMatchingStyle => return None,
+        Key::Keypad { code, modifiers } => super::keypad::notation(code, modifiers),
+        Key::NativeAction(_) | Key::SelectAll | Key::CopySelection | Key::PasteClipboard | Key::PasteClipboardMatchingStyle => return None,
     })
 }
 

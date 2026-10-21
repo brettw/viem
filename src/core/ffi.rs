@@ -16,6 +16,13 @@
 
 mod registers;
 pub use registers::*;
+mod effect_display;
+mod application_config;
+pub use application_config::*;
+mod style_candidates;
+pub use style_candidates::*;
+mod native_actions;
+pub use native_actions::*;
 mod argument_list;
 pub use argument_list::*;
 mod view_restoration;
@@ -411,6 +418,7 @@ pub const VIEM_KEY_DOCUMENT_END: u32 = 18;
 pub const VIEM_KEY_SHIFT_ENTER: u32 = 19;
 pub const VIEM_KEY_WORD_LEFT: u32 = 20;
 pub const VIEM_KEY_WORD_RIGHT: u32 = 21;
+pub const VIEM_KEY_KEYPAD: u32 = 34;
 pub const VIEM_KEY_FUNCTION: u32 = 22;
 pub const VIEM_KEY_COPY_SELECTION: u32 = 23;
 pub const VIEM_KEY_PARAGRAPH_START: u32 = 24;
@@ -811,6 +819,7 @@ pub struct ViemExFrontendRequestV1 {
     pub argument_count: u64,
     /// With HAS_LINE, a one-based initial line; zero means the last line.
     pub argument_line: u64,
+    pub display_text: ViemEffectBytesRefV1,
 }
 
 pub const VIEM_EX_FRONTEND_REQUEST_V1_SIZE: u32 = size_of::<ViemExFrontendRequestV1>() as u32;
@@ -1994,6 +2003,12 @@ pub struct ViemViewPresentationV1 {
     /// Valid only with VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT.
     pub search_match_current: u64,
     pub search_match_total: u64,
+    /// Zero when not recording; otherwise the Unicode scalar register name.
+    pub recording_register: u32,
+    pub pending_command_length: u32,
+    /// Zero when no active count. Text is UTF-8, at most 32 bytes; long prefixes end in an ellipsis.
+    pub active_count: u64,
+    pub pending_command: [u8; 32],
 }
 
 pub const VIEM_VIEW_PRESENTATION_V1_SIZE: u32 = size_of::<ViemViewPresentationV1>() as u32;
@@ -3344,6 +3359,7 @@ fn checked_response_offset(value: u64) -> Result<usize, MeasurementError> {
 
 #[derive(Clone, Debug)]
 struct OwnedEffectBatch {
+    export: OnceLock<Result<EffectBatchExport, ViemStatus>>,
     document_id: DocumentId,
     document_revision: Revision,
     ex_outcome: Option<ExOutcome>,
@@ -3529,16 +3545,11 @@ impl OwnedEffectBatch {
         command: Option<CommandOutput>,
     ) -> Option<Self> {
         let mut command = command?;
-        if let CommandStatus::ExError(error) = &command.status {
-            let message = match error {
-                crate::command::ExCommandError::Parse(error) => error.to_string(),
-                crate::command::ExCommandError::Execute(error) => error.to_string(),
-            };
-            command
-                .ex_outcome
-                .get_or_insert_with(ExOutcome::default)
-                .frontend_requests
-                .push(ExFrontendRequest::Info(ExInfoRequest::Message(message)));
+        if let Some(message) = effect_display::command_diagnostic(&command.status) {
+            let requests = &mut command.ex_outcome.get_or_insert_with(ExOutcome::default).frontend_requests;
+            if !requests.iter().any(|request| matches!(request, ExFrontendRequest::Info(ExInfoRequest::Message(existing)) if existing == &message)) {
+                requests.push(ExFrontendRequest::Info(ExInfoRequest::Message(message)));
+            }
         }
         if command.ex_outcome.is_none() && command.clipboard_writes.is_empty() {
             return None;
@@ -3557,6 +3568,7 @@ impl OwnedEffectBatch {
             .map(|ex| capture_ex_info_payloads(document, commands, clipboard, ex))
             .unwrap_or_default();
         Some(Self {
+            export: OnceLock::new(),
             document_id: document.id(),
             document_revision: document.revision(),
             ex_outcome: command.ex_outcome,
@@ -4067,6 +4079,9 @@ fn export_ex_frontend_request(
             set_ex_range(&mut output, Some(&request.range))?;
         }
     }
+    if let Some(text) = effect_display::request_text(request, payload) {
+        output.display_text = push_effect_text(strings, &text)?;
+    }
     Ok(output)
 }
 
@@ -4473,7 +4488,7 @@ fn execution_context_permits(
 fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
     if input.struct_size < VIEM_KEY_INPUT_V1_SIZE
         || input.modifiers & !15 != 0
-        || (input.kind != VIEM_KEY_FUNCTION && input.modifiers != 0 && !matches!(input.kind, VIEM_KEY_LEFT | VIEM_KEY_RIGHT | VIEM_KEY_WORD_LEFT | VIEM_KEY_WORD_RIGHT | VIEM_KEY_PARAGRAPH_START | VIEM_KEY_PARAGRAPH_END | VIEM_KEY_NEXT_PARAGRAPH | VIEM_KEY_UP | VIEM_KEY_DOWN | VIEM_KEY_HOME | VIEM_KEY_END | VIEM_KEY_DOCUMENT_START | VIEM_KEY_DOCUMENT_END | VIEM_KEY_PAGE_UP | VIEM_KEY_PAGE_DOWN))
+        || (input.kind != VIEM_KEY_FUNCTION && input.kind != VIEM_KEY_KEYPAD && input.modifiers != 0 && !matches!(input.kind, VIEM_KEY_LEFT | VIEM_KEY_RIGHT | VIEM_KEY_WORD_LEFT | VIEM_KEY_WORD_RIGHT | VIEM_KEY_PARAGRAPH_START | VIEM_KEY_PARAGRAPH_END | VIEM_KEY_NEXT_PARAGRAPH | VIEM_KEY_UP | VIEM_KEY_DOWN | VIEM_KEY_HOME | VIEM_KEY_END | VIEM_KEY_DOCUMENT_START | VIEM_KEY_DOCUMENT_END | VIEM_KEY_PAGE_UP | VIEM_KEY_PAGE_DOWN))
     {
         return Err(ViemStatus::InvalidArgument);
     }
@@ -4488,6 +4503,8 @@ fn parse_key(input: ViemKeyInputV1) -> Result<Key, ViemStatus> {
         }
     };
     match input.kind {
+        VIEM_KEY_KEYPAD if input.codepoint <= u8::MAX as u32 && crate::command::valid_keypad_code(input.codepoint as u8) =>
+            Ok(Key::Keypad { code: input.codepoint as u8, modifiers: input.modifiers as u8 }),
         VIEM_KEY_CHARACTER => Ok(Key::Char(scalar()?)),
         VIEM_KEY_ESCAPE => special(Key::Escape),
         VIEM_KEY_COPY_SELECTION => special(Key::CopySelection),
@@ -6818,7 +6835,14 @@ fn summarize_view_presentation(
         };
     let count = core.search_match_count(view_id);
     if count.is_some() { flags |= VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT; }
+    let pending = state.pending_command_text();
+    let mut pending_command = [0; 32];
+    pending_command[..pending.len()].copy_from_slice(pending.as_bytes());
     Ok(ViemViewPresentationV1 {
+        recording_register: state.recording_register().map_or(0, u32::from),
+        pending_command_length: pending.len() as u32,
+        active_count: state.active_count().unwrap_or(0) as u64,
+        pending_command,
         struct_size: VIEM_VIEW_PRESENTATION_V1_SIZE,
         flags,
         mode: mode_to_ffi(state.mode(), state.is_select_mode(), state.is_native_selection()),
@@ -7539,6 +7563,10 @@ fn publish_input_turn(
     reservation: EffectBatchReservation,
 ) -> Result<(ViemCoreOutcomeV1, ViemEffectBatchHandle), ViemStatus> {
     let (outcome, effects) = with_core_mut(handle, |core| {
+        if matches!(&input, InputEvent::Key(Key::NativeAction(_)))
+            && core.composition_overlay(ViewId(view)).map_err(core_status)?.is_some() {
+            return Err(ViemStatus::InvalidArgument);
+        }
         dispatch_input_with_effects(core, view, input, clipboard)
     })?;
     let effect_handle = match effects {
@@ -9160,102 +9188,58 @@ pub unsafe extern "C" fn viem_effect_batch_info(
         typed_pointer_region(out_info, 1)?;
         unsafe { out_info.write(ViemEffectBatchInfoV1::default()) };
         let batch = owned_effect_batch(handle)?;
-        let export = export_effect_batch(handle, &batch)?;
+        let export = batch.export.get_or_init(|| export_effect_batch(handle, &batch))
+            .as_ref().map_err(|error| *error)?;
         unsafe { out_info.write(export.info) };
         Ok(())
     })
 }
 
-/// Copy every ordered host effect and subordinate value array from one owned
-/// immutable batch.
-///
-/// This is an all-or-none two-pass operation. A short capacity returns
-/// [`ViemStatus::BufferTooSmall`] with complete required counts in `out_info`
-/// and does not write any array or arena element. Byte references in copied
-/// records address `string_bytes`; all such bytes are valid UTF-8.
-///
-/// File requests are the exact raw Ex requests. They deliberately do not own
-/// a prepared artifact write, perform I/O, or establish a save point. A host
-/// must route the request and acknowledge a successful exact-revision native
-/// save separately. A future binding/prepare/complete lifecycle can be added
-/// without changing these raw records.
+/// Borrow the immutable arrays owned by a host-effect batch in one descriptor.
 ///
 /// # Safety
-///
-/// Each nonzero capacity requires an aligned writable region of that many
-/// elements. All output regions, including `out_info`, must be pairwise
-/// disjoint and remain valid for this call.
-#[allow(clippy::too_many_arguments)]
+/// `out_batch` must be aligned and writable. Returned pointers are read-only,
+/// valid until release; callers must not release the handle concurrently with
+/// reading them. Empty arrays have zero counts and must not be dereferenced.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ViemEffectBatchViewV1 {
+    pub info: ViemEffectBatchInfoV1,
+    pub clipboard_writes: *const ViemClipboardWriteV1,
+    pub ex_requests: *const ViemExFrontendRequestV1,
+    pub ex_options: *const ViemExOptionDisplayV1,
+    pub ex_marks: *const ViemExMarkV1,
+    pub ex_registers: *const ViemExRegisterV1,
+    pub ex_jumps: *const ViemExJumpV1,
+    pub ex_text_lines: *const ViemExTextLineV1,
+    pub file_formats: *const u32,
+    pub hard_breaks: *const u64,
+    pub strings: *const u8,
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn viem_effect_batch_copy(
-    handle: ViemEffectBatchHandle,
-    clipboard_writes: *mut ViemClipboardWriteV1,
-    clipboard_write_capacity: u64,
-    ex_requests: *mut ViemExFrontendRequestV1,
-    ex_request_capacity: u64,
-    ex_options: *mut ViemExOptionDisplayV1,
-    ex_option_capacity: u64,
-    ex_marks: *mut ViemExMarkV1,
-    ex_mark_capacity: u64,
-    ex_registers: *mut ViemExRegisterV1,
-    ex_register_capacity: u64,
-    ex_jumps: *mut ViemExJumpV1,
-    ex_jump_capacity: u64,
-    ex_text_lines: *mut ViemExTextLineV1,
-    ex_text_line_capacity: u64,
-    file_formats: *mut u32,
-    file_format_capacity: u64,
-    hard_breaks: *mut u64,
-    hard_break_capacity: u64,
-    string_bytes: *mut u8,
-    string_capacity: u64,
-    out_info: *mut ViemEffectBatchInfoV1,
+pub unsafe extern "C" fn viem_effect_batch_read(
+    handle: ViemEffectBatchHandle, out_batch: *mut ViemEffectBatchViewV1,
 ) -> ViemStatus {
     ffi_boundary(|| {
-        let regions = [
-            typed_pointer_region(clipboard_writes, clipboard_write_capacity)?,
-            typed_pointer_region(ex_requests, ex_request_capacity)?,
-            typed_pointer_region(ex_options, ex_option_capacity)?,
-            typed_pointer_region(ex_marks, ex_mark_capacity)?,
-            typed_pointer_region(ex_registers, ex_register_capacity)?,
-            typed_pointer_region(ex_jumps, ex_jump_capacity)?,
-            typed_pointer_region(ex_text_lines, ex_text_line_capacity)?,
-            typed_pointer_region(file_formats, file_format_capacity)?,
-            typed_pointer_region(hard_breaks, hard_break_capacity)?,
-            typed_pointer_region(string_bytes, string_capacity)?,
-            typed_pointer_region(out_info, 1)?,
-        ];
-        validate_disjoint_regions(&regions)?;
-        unsafe { out_info.write(ViemEffectBatchInfoV1::default()) };
+        typed_pointer_region(out_batch, 1)?;
+        unsafe { out_batch.write(ViemEffectBatchViewV1::default()) };
         let batch = owned_effect_batch(handle)?;
-        let export = export_effect_batch(handle, &batch)?;
-        unsafe { out_info.write(export.info) };
-        if clipboard_write_capacity < export.info.clipboard_write_count
-            || ex_request_capacity < export.info.ex_request_count
-            || ex_option_capacity < export.info.ex_option_count
-            || ex_mark_capacity < export.info.ex_mark_count
-            || ex_register_capacity < export.info.ex_register_count
-            || ex_jump_capacity < export.info.ex_jump_count
-            || ex_text_line_capacity < export.info.ex_text_line_count
-            || file_format_capacity < export.info.file_format_count
-            || hard_break_capacity < export.info.hard_break_count
-            || string_capacity < export.info.string_bytes
-        {
-            return Err(ViemStatus::BufferTooSmall);
-        }
-
-        unsafe {
-            copy_output(&export.clipboard_writes, clipboard_writes);
-            copy_output(&export.ex_requests, ex_requests);
-            copy_output(&export.ex_options, ex_options);
-            copy_output(&export.ex_marks, ex_marks);
-            copy_output(&export.ex_registers, ex_registers);
-            copy_output(&export.ex_jumps, ex_jumps);
-            copy_output(&export.ex_text_lines, ex_text_lines);
-            copy_output(&export.file_formats, file_formats);
-            copy_output(&export.hard_breaks, hard_breaks);
-            copy_output(&export.strings, string_bytes);
-        }
+        let export = batch.export.get_or_init(|| export_effect_batch(handle, &batch))
+            .as_ref().map_err(|error| *error)?;
+        unsafe { out_batch.write(ViemEffectBatchViewV1 {
+            info: export.info,
+            clipboard_writes: export.clipboard_writes.as_ptr(),
+            ex_requests: export.ex_requests.as_ptr(),
+            ex_options: export.ex_options.as_ptr(),
+            ex_marks: export.ex_marks.as_ptr(),
+            ex_registers: export.ex_registers.as_ptr(),
+            ex_jumps: export.ex_jumps.as_ptr(),
+            ex_text_lines: export.ex_text_lines.as_ptr(),
+            file_formats: export.file_formats.as_ptr(),
+            hard_breaks: export.hard_breaks.as_ptr(),
+            strings: export.strings.as_ptr(),
+        }) };
         Ok(())
     })
 }
@@ -10818,6 +10802,7 @@ mod tests {
         let portable =
             RegisterValue::try_new("α\nβ", RegisterKind::Linewise, vec!["α".len()]).unwrap();
         let batch = super::OwnedEffectBatch {
+            export: Default::default(),
             document_id: DocumentId(0xdecaf),
             document_revision: Revision(42),
             ex_outcome: Some(ex),
@@ -10921,132 +10906,23 @@ mod tests {
                 | super::VIEM_EFFECT_BATCH_EX_HAS_NAVIGATION
         );
 
-        let mut writes = vec![
-            super::ViemClipboardWriteV1 {
-                target: u32::MAX,
-                ..super::ViemClipboardWriteV1::default()
-            };
-            info.clipboard_write_count as usize
-        ];
-        let mut requests = vec![
-            super::ViemExFrontendRequestV1 {
-                kind: u32::MAX,
-                ..super::ViemExFrontendRequestV1::default()
-            };
-            info.ex_request_count as usize
-        ];
-        let mut options = vec![
-            super::ViemExOptionDisplayV1 {
-                name: u32::MAX,
-                ..super::ViemExOptionDisplayV1::default()
-            };
-            info.ex_option_count as usize
-        ];
-        let mut marks = vec![
-            super::ViemExMarkV1 {
-                name: u32::MAX,
-                ..super::ViemExMarkV1::default()
-            };
-            info.ex_mark_count as usize
-        ];
-        let mut registers = vec![
-            super::ViemExRegisterV1 {
-                name: u32::MAX,
-                ..super::ViemExRegisterV1::default()
-            };
-            info.ex_register_count as usize
-        ];
-        let mut jumps = vec![
-            super::ViemExJumpV1 {
-                flags: u32::MAX,
-                ..super::ViemExJumpV1::default()
-            };
-            info.ex_jump_count as usize
-        ];
-        let mut text_lines = vec![
-            super::ViemExTextLineV1 {
-                hard_line_index: u64::MAX,
-                ..super::ViemExTextLineV1::default()
-            };
-            info.ex_text_line_count as usize
-        ];
-        let mut file_formats = vec![u32::MAX; info.file_format_count as usize];
-        let mut hard_breaks = vec![u64::MAX; info.hard_break_count as usize];
-        let mut strings = vec![0xa5; info.string_bytes as usize];
-        let mut copied_info = super::ViemEffectBatchInfoV1::default();
-        assert_eq!(
-            unsafe {
-                super::viem_effect_batch_copy(
-                    handle,
-                    writes.as_mut_ptr(),
-                    writes.len() as u64,
-                    requests.as_mut_ptr(),
-                    requests.len() as u64 - 1,
-                    options.as_mut_ptr(),
-                    options.len() as u64,
-                    marks.as_mut_ptr(),
-                    marks.len() as u64,
-                    registers.as_mut_ptr(),
-                    registers.len() as u64,
-                    jumps.as_mut_ptr(),
-                    jumps.len() as u64,
-                    text_lines.as_mut_ptr(),
-                    text_lines.len() as u64,
-                    file_formats.as_mut_ptr(),
-                    file_formats.len() as u64,
-                    hard_breaks.as_mut_ptr(),
-                    hard_breaks.len() as u64,
-                    strings.as_mut_ptr(),
-                    strings.len() as u64,
-                    &mut copied_info,
-                )
-            },
-            ViemStatus::BufferTooSmall
-        );
-        assert_eq!(copied_info, info);
-        assert!(writes.iter().all(|write| write.target == u32::MAX));
-        assert!(requests.iter().all(|request| request.kind == u32::MAX));
-        assert!(options.iter().all(|option| option.name == u32::MAX));
-        assert!(marks.iter().all(|mark| mark.name == u32::MAX));
-        assert!(registers.iter().all(|register| register.name == u32::MAX));
-        assert!(jumps.iter().all(|jump| jump.flags == u32::MAX));
-        assert!(text_lines
-            .iter()
-            .all(|line| line.hard_line_index == u64::MAX));
-        assert!(file_formats.iter().all(|value| *value == u32::MAX));
-        assert!(hard_breaks.iter().all(|value| *value == u64::MAX));
-        assert!(strings.iter().all(|value| *value == 0xa5));
-
-        assert_eq!(
-            unsafe {
-                super::viem_effect_batch_copy(
-                    handle,
-                    writes.as_mut_ptr(),
-                    writes.len() as u64,
-                    requests.as_mut_ptr(),
-                    requests.len() as u64,
-                    options.as_mut_ptr(),
-                    options.len() as u64,
-                    marks.as_mut_ptr(),
-                    marks.len() as u64,
-                    registers.as_mut_ptr(),
-                    registers.len() as u64,
-                    jumps.as_mut_ptr(),
-                    jumps.len() as u64,
-                    text_lines.as_mut_ptr(),
-                    text_lines.len() as u64,
-                    file_formats.as_mut_ptr(),
-                    file_formats.len() as u64,
-                    hard_breaks.as_mut_ptr(),
-                    hard_breaks.len() as u64,
-                    strings.as_mut_ptr(),
-                    strings.len() as u64,
-                    &mut copied_info,
-                )
-            },
-            ViemStatus::Ok
-        );
-        assert_eq!(copied_info, info);
+        let mut borrowed = super::ViemEffectBatchViewV1::default();
+        assert_eq!(unsafe { super::viem_effect_batch_read(handle, &mut borrowed) }, ViemStatus::Ok);
+        assert_eq!(borrowed.info, info);
+        let mut second = super::ViemEffectBatchViewV1::default();
+        assert_eq!(unsafe { super::viem_effect_batch_read(handle, &mut second) }, ViemStatus::Ok);
+        assert_eq!(borrowed.strings, second.strings, "immutable storage survives repeated reads");
+        assert_eq!(unsafe { super::viem_effect_batch_read(handle, std::ptr::null_mut()) }, ViemStatus::NullPointer);
+        let writes = unsafe { std::slice::from_raw_parts(borrowed.clipboard_writes, info.clipboard_write_count as usize) }.to_vec();
+        let requests = unsafe { std::slice::from_raw_parts(borrowed.ex_requests, info.ex_request_count as usize) }.to_vec();
+        let options = unsafe { std::slice::from_raw_parts(borrowed.ex_options, info.ex_option_count as usize) }.to_vec();
+        let marks = unsafe { std::slice::from_raw_parts(borrowed.ex_marks, info.ex_mark_count as usize) }.to_vec();
+        let registers = unsafe { std::slice::from_raw_parts(borrowed.ex_registers, info.ex_register_count as usize) }.to_vec();
+        let jumps = unsafe { std::slice::from_raw_parts(borrowed.ex_jumps, info.ex_jump_count as usize) }.to_vec();
+        let text_lines = unsafe { std::slice::from_raw_parts(borrowed.ex_text_lines, info.ex_text_line_count as usize) }.to_vec();
+        let file_formats = unsafe { std::slice::from_raw_parts(borrowed.file_formats, info.file_format_count as usize) }.to_vec();
+        let hard_breaks = unsafe { std::slice::from_raw_parts(borrowed.hard_breaks, info.hard_break_count as usize) }.to_vec();
+        let strings = unsafe { std::slice::from_raw_parts(borrowed.strings, info.string_bytes as usize) }.to_vec();
         assert_eq!(writes[0].target, super::VIEM_CLIPBOARD_TARGET_CLIPBOARD);
         assert_eq!(writes[0].flags, 0);
         assert_eq!(writes[0].register_kind, super::VIEM_REGISTER_KIND_NONE);
@@ -11177,6 +11053,7 @@ mod tests {
         let mut history_ex = ExOutcome::default();
         history_ex.navigation = Some(ExNavigation::HistoryRestoration);
         let history_batch = super::OwnedEffectBatch {
+            export: Default::default(),
             document_id: DocumentId(1),
             document_revision: Revision(2),
             ex_outcome: Some(history_ex),

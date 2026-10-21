@@ -906,23 +906,23 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .selectAll:
             performInput { try session.selectAll() }
         case .selectWord:
-            performInput { try self.selectNativeRange(["v", "i", "w"], sender: sender, session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_SELECT_WORD)) }
         case .selectSentence:
-            performInput { try self.selectNativeRange(["v", "i", "s"], sender: sender, session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_SELECT_SENTENCE)) }
         case .selectParagraph:
-            performInput { try self.selectNativeRange(["v", "i", "p"], sender: sender, session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_SELECT_PARAGRAPH)) }
         case .selectHardLine:
-            performInput { try self.selectNativeRange(["V"], sender: sender, session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_SELECT_LINE)) }
         case .selectVisualRow:
-            performInput { try self.selectNativeRange(["g", "0", "v", "g", "$"], sender: sender, session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_SELECT_VISUAL_ROW)) }
         case .find:
-            performInput { try self.sendNormalSequence(["/"], session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_FIND)) }
         case .findAndReplace:
-            performInput { try self.sendNormalSequence([":", "%", "s", "/"], session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_FIND_REPLACE)) }
         case .findNext:
-            performInput { try self.sendNormalSequence(["n"], session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_FIND_NEXT)) }
         case .findPrevious:
-            performInput { try self.sendNormalSequence(["N"], session: session) }
+            performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_FIND_PREVIOUS)) }
         case .useSelectionForFind:
             useCurrentSelectionForFind(session: session)
         case .jumpToSelection:
@@ -1043,11 +1043,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             listIndentPresentation(unindent: menuCommand == .decreaseIndent)
         case .insertListParagraph:
             listParagraphPresentation()
-        case .save, .saveAs, .exportHTML, .pageSetup,
-             .selectAll, .selectWord, .selectSentence, .selectParagraph,
-             .selectHardLine, .selectVisualRow, .find, .findAndReplace,
-             .findNext, .findPrevious:
+        case .save, .saveAs, .exportHTML, .pageSetup, .selectAll:
             .enabled
+        case .selectWord: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_SELECT_WORD)) == true)
+        case .selectSentence: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_SELECT_SENTENCE)) == true)
+        case .selectParagraph: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_SELECT_PARAGRAPH)) == true)
+        case .selectHardLine: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_SELECT_LINE)) == true)
+        case .selectVisualRow: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_SELECT_VISUAL_ROW)) == true)
+        case .find: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_FIND)) == true)
+        case .findAndReplace: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_FIND_REPLACE)) == true)
+        case .findNext: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_FIND_NEXT)) == true)
+        case .findPrevious: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_FIND_PREVIOUS)) == true)
+
         case .undo:
             EVMenuItemPresentation(
                 isEnabled: canUndo,
@@ -1536,36 +1543,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
     }
 
-    private func sendNormalSequence(_ characters: [Character], session: EVCoreViewSession) throws {
-        if viewPresentation.mode != UInt32(VIEM_MODE_NORMAL) {
-            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-        }
-        for character in characters {
-            _ = try sendCommandCharacter(character, session: session)
-        }
-    }
-
     func selectLineFromPointer(_ event: NSEvent, returningTo mode: UInt32) {
         guard let session else { return }
-        performInput { try self.selectNativeRange(["V"], sender: event, session: session, returningTo: mode) }
-    }
-
-    private func selectNativeRange(_ characters: [Character], sender: Any?, session: EVCoreViewSession, returningTo mode: UInt32? = nil) throws {
-        let returnMode = mode ?? viewPresentation.mode
-        let before = viewPresentation
-        if [UInt32(VIEM_MODE_INSERT), UInt32(VIEM_MODE_REPLACE)].contains(before.mode) {
-            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
-            if before.document_revision == viewPresentation.document_revision {
-                var point = ViemLayoutCaretPointV1()
-                point.document_revision = before.document_revision
-                point.text_offset = before.cursor_utf8_offset
-                point.affinity = before.cursor_affinity
-                _ = try session.placeCursor(point, extendSelection: false)
-            }
-        }
-        try sendNormalSequence(characters, session: session)
-        let mouse = (sender as? NSEvent).map { [.leftMouseDown, .leftMouseDragged].contains($0.type) } == true
-        _ = try session.setSelectionOrigin(mouse ? UInt32(VIEM_SELECTION_ORIGIN_MOUSE) : UInt32(VIEM_SELECTION_ORIGIN_KEY), returningTo: returnMode)
+        performInput { _ = try session.nativeAction(UInt32(VIEM_NATIVE_SELECT_LINE), origin: UInt32(VIEM_SELECTION_ORIGIN_MOUSE), returningTo: mode) }
     }
 
     private func sendCommandCharacter(
@@ -1634,9 +1614,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         let column = point?.column ?? 1
         let searchCount = (viewPresentation.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT)) != 0
             ? " [\(viewPresentation.search_match_current)/\(viewPresentation.search_match_total)]" : ""
+        let pending = withUnsafeBytes(of: viewPresentation.pending_command) {
+            String(decoding: $0.prefix(Int(viewPresentation.pending_command_length)), as: UTF8.self)
+        }
+        let recording = UnicodeScalar(viewPresentation.recording_register).flatMap { $0.value == 0 ? nil : "Recording @\($0)" }
         statusBarState = EVStatusBarState(
-            mode: modeLabel(viewPresentation.mode),
-            message: substituteConfirmationPrompt ?? lastErrorMessage,
+            mode: recording ?? modeLabel(viewPresentation.mode),
+            message: substituteConfirmationPrompt ?? (pending.isEmpty ? lastErrorMessage : pending),
             location: "Ln \(line), Col \(column)" + searchCount,
             lineMode: (try? session?.lineMode()) ?? .visual,
             commandLine: editorView.commandLineRenderState().map {
@@ -1995,113 +1979,12 @@ extension EVEditorSurfaceController: EVCommandTurnHost {
 
     private func displayMessage(for effect: EVExHostEffect) throws -> String? {
         switch effect.kind {
-        case UInt32(VIEM_EX_FRONTEND_MESSAGE): return effect.text
-        case UInt32(VIEM_EX_FRONTEND_OPTIONS):
-            return effect.options.map(formatOption).joined(separator: "  ")
-        case UInt32(VIEM_EX_FRONTEND_MARKS):
-            let rows = effect.marks.map {
-                "\($0.name)  \($0.hardLineIndex + 1)  \($0.graphemeColumn)  \($0.lineText)"
-            }
-            return (["mark  line  col  text"] + rows).joined(separator: "\n")
-        case UInt32(VIEM_EX_FRONTEND_REGISTERS):
-            let rows = effect.registers.map {
-                "\"\($0.name)   \(visibleRegisterText($0.text))"
-            }
-            return (["--- Registers ---"] + rows).joined(separator: "\n")
-        case UInt32(VIEM_EX_FRONTEND_JUMPS):
-            let rows = effect.jumps.map {
-                let current = $0.isCurrent ? ">" : " "
-                return "\(current) \($0.listIndex)  \($0.hardLineIndex + 1)  \($0.graphemeColumn)  \($0.lineText)"
-            }
-            return ([" jump  line  col  text"] + rows).joined(separator: "\n")
-        case UInt32(VIEM_EX_FRONTEND_PRINT_LINES):
-            let numbered = effect.flags & UInt32(VIEM_EX_FRONTEND_NUMBER) != 0
-            let listed = effect.flags & UInt32(VIEM_EX_FRONTEND_LIST) != 0
-            return effect.textLines.map { line in
-                var text = listed
-                    ? visibleListText(line.text) + "$"
-                    : line.text
-                if numbered { text = "\(line.hardLineIndex + 1)\t\(text)" }
-                return text
-            }.joined(separator: "\n")
-        default:
-            return nil
+        case UInt32(VIEM_EX_FRONTEND_MESSAGE), UInt32(VIEM_EX_FRONTEND_OPTIONS),
+             UInt32(VIEM_EX_FRONTEND_MARKS), UInt32(VIEM_EX_FRONTEND_REGISTERS),
+             UInt32(VIEM_EX_FRONTEND_JUMPS), UInt32(VIEM_EX_FRONTEND_PRINT_LINES):
+            return effect.displayText
+        default: return nil
         }
-    }
-
-    private func formatOption(_ option: EVExOptionEffect) -> String {
-        let name: String
-        switch option.name {
-        case UInt32(VIEM_EX_OPTION_WRAP): name = "wrap"
-        case UInt32(VIEM_EX_OPTION_NUMBER): name = "number"
-        case UInt32(VIEM_EX_OPTION_FILE_FORMAT): name = "fileformat"
-        case UInt32(VIEM_EX_OPTION_FILE_FORMATS): name = "fileformats"
-        case 5: name = "ignorecase"
-        case 6: name = "smartcase"
-        case 7: name = "wrapscan"
-        case UInt32(VIEM_EX_OPTION_HLSEARCH): name = "hlsearch"
-        case UInt32(VIEM_EX_OPTION_INCSEARCH): name = "incsearch"
-        case UInt32(VIEM_EX_OPTION_FORMATOPTIONS): name = "formatoptions"
-        case UInt32(VIEM_EX_OPTION_COMMENTS): name = "comments"
-        case UInt32(VIEM_EX_OPTION_FORMATLISTPAT): name = "formatlistpat"
-        case UInt32(VIEM_EX_OPTION_TEXTWIDTH): name = "textwidth"
-        case UInt32(VIEM_EX_OPTION_AUTOINDENT): name = "autoindent"
-        case UInt32(VIEM_EX_OPTION_TABSTOP): name = "tabstop"
-        case UInt32(VIEM_EX_OPTION_SHIFTWIDTH): name = "shiftwidth"
-        case UInt32(VIEM_EX_OPTION_SOFTTABSTOP): name = "softtabstop"
-        case UInt32(VIEM_EX_OPTION_EXPANDTAB): name = "expandtab"
-        case UInt32(VIEM_EX_OPTION_SMARTTAB): name = "smarttab"
-        case UInt32(VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_ENTER): name = "continuecommentsonenter"
-        case UInt32(VIEM_EX_OPTION_CONTINUE_COMMENTS_ON_OPEN_LINE): name = "continuecommentsonopenline"
-        case UInt32(VIEM_EX_OPTION_LIST): name = "list"
-        case UInt32(VIEM_EX_OPTION_LISTCHARS): name = "listchars"
-        case UInt32(VIEM_EX_OPTION_AUTOSELECT): name = "autoselect"
-        case UInt32(VIEM_EX_OPTION_KEYMODEL): name = "keymodel"
-        case UInt32(VIEM_EX_OPTION_SELECTMODE): name = "selectmode"
-
-        default: name = "option\(option.name)"
-        }
-        switch option.value {
-        case let .boolean(value):
-            return value ? name : "no\(name)"
-        case let .fileFormat(value):
-            return "\(name)=\(fileFormatName(value))"
-        case let .fileFormats(values):
-            return "\(name)=\(values.map(fileFormatName).joined(separator: ","))"
-        case let .number(value):
-            if option.name == UInt32(VIEM_EX_OPTION_SOFTTABSTOP) { return "\(name)=\(Int32(bitPattern: value))" }
-            return "\(name)=\(value)"
-        case let .string(value):
-            return "\(name)=\(value)"
-        }
-    }
-
-    private func fileFormatName(_ value: UInt32) -> String {
-        switch value {
-        case UInt32(VIEM_FILE_FORMAT_DOS): "dos"
-        case UInt32(VIEM_FILE_FORMAT_MAC): "mac"
-        default: "unix"
-        }
-    }
-
-    /// List logical line content without letting literal controls create new
-    /// output rows or affect presentation. Hard-line boundaries are added by
-    /// the caller; a literal LF remains visibly distinct as ^J.
-    private func visibleListText(_ value: String) -> String {
-        value.unicodeScalars.map { scalar in
-            switch scalar.value {
-            case 0...31: return "^" + String(UnicodeScalar(scalar.value + 64)!)
-            case 127: return "^?"
-            case 128...159: return String(format: "<%02x>", scalar.value)
-            default: return String(scalar)
-            }
-        }.joined()
-    }
-
-    private func visibleRegisterText(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\n", with: "^J")
-            .replacingOccurrences(of: "\t", with: "^I")
     }
 
     private func clearCommandOutput() {

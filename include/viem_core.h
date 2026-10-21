@@ -263,6 +263,10 @@ typedef struct ViemFormattedPointInfoV1 {
 #define VIEM_KEY_SHIFT_ENTER 19u
 #define VIEM_KEY_WORD_LEFT 20u
 #define VIEM_KEY_WORD_RIGHT 21u
+/* Distinct keypad identity: 20 Home, 21 End, 22 PageUp, 23 PageDown,
+ * 24 Insert, 25 Delete, 26 Plus, 27 Minus, 28 Multiply, 29 Divide,
+ * 30 Enter, 31 Point, 40..49 digits 0..9. Modifiers use the normal bits. */
+#define VIEM_KEY_KEYPAD 34
 #define VIEM_KEY_FUNCTION 22u
 #define VIEM_KEY_COPY_SELECTION 23u
 #define VIEM_KEY_PARAGRAPH_START 24u
@@ -654,6 +658,8 @@ typedef struct ViemExFrontendRequestV1 {
   uint64_t argument_count;
   /* One-based line; zero means last line. Valid only with HAS_LINE. */
   uint64_t argument_line;
+  /* Core-formatted output, independent of the typed request payload. */
+  ViemEffectBytesRefV1 display_text;
 } ViemExFrontendRequestV1;
 
 #define VIEM_EX_FRONTEND_REQUEST_V1_SIZE \
@@ -1632,6 +1638,12 @@ typedef struct ViemViewPresentationV1 {
   /* Valid only with VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT. */
   uint64_t search_match_current;
   uint64_t search_match_total;
+  /* Zero register/count means inactive; pending text is bounded UTF-8 with an
+   * ellipsis when truncated. These values are presentation, never input. */
+  uint32_t recording_register;
+  uint32_t pending_command_length;
+  uint64_t active_count;
+  uint8_t pending_command[32];
 } ViemViewPresentationV1;
 
 #define VIEM_VIEW_PRESENTATION_V1_SIZE \
@@ -2475,37 +2487,25 @@ ViemStatus viem_core_view_flush_mapping_with_host_context_v2(
 
 ViemStatus viem_effect_batch_info(ViemEffectBatchHandle batch,
                                   ViemEffectBatchInfoV1 *out_info);
-/*
- * Copy is all-or-none across every typed array and the UTF-8 arena. A short
- * capacity returns BUFFER_TOO_SMALL plus complete required sizes and writes no
- * array/arena element. These are raw Ex requests: the batch performs no I/O,
- * does not own a prepared artifact-write lifecycle, and does not establish a
- * save point. Route native work and acknowledge exact successful saves through
- * viem_core_mark_saved separately.
- */
-ViemStatus viem_effect_batch_copy(
-    ViemEffectBatchHandle batch,
-    ViemClipboardWriteV1 *clipboard_writes,
-    uint64_t clipboard_write_capacity,
-    ViemExFrontendRequestV1 *ex_requests,
-    uint64_t ex_request_capacity,
-    ViemExOptionDisplayV1 *ex_options,
-    uint64_t ex_option_capacity,
-    ViemExMarkV1 *ex_marks,
-    uint64_t ex_mark_capacity,
-    ViemExRegisterV1 *ex_registers,
-    uint64_t ex_register_capacity,
-    ViemExJumpV1 *ex_jumps,
-    uint64_t ex_jump_capacity,
-    ViemExTextLineV1 *ex_text_lines,
-    uint64_t ex_text_line_capacity,
-    uint32_t *file_formats,
-    uint64_t file_format_capacity,
-    uint64_t *hard_breaks,
-    uint64_t hard_break_capacity,
-    uint8_t *string_bytes,
-    uint64_t string_capacity,
-    ViemEffectBatchInfoV1 *out_info);
+/* One read-only descriptor; pointers remain valid until batch release.
+ * The caller must keep the handle alive while reading; concurrent release is
+ * prohibited. Copy any data needed after release. Zero-count arrays are empty.
+ * Raw file requests perform no I/O and do not establish a save point. */
+typedef struct ViemEffectBatchViewV1 {
+  ViemEffectBatchInfoV1 info;
+  const ViemClipboardWriteV1 *clipboard_writes;
+  const ViemExFrontendRequestV1 *ex_requests;
+  const ViemExOptionDisplayV1 *ex_options;
+  const ViemExMarkV1 *ex_marks;
+  const ViemExRegisterV1 *ex_registers;
+  const ViemExJumpV1 *ex_jumps;
+  const ViemExTextLineV1 *ex_text_lines;
+  const uint32_t *file_formats;
+  const uint64_t *hard_breaks;
+  const uint8_t *strings;
+} ViemEffectBatchViewV1;
+ViemStatus viem_effect_batch_read(ViemEffectBatchHandle batch,
+                                ViemEffectBatchViewV1 *out_batch);
 ViemStatus viem_effect_batch_release(ViemEffectBatchHandle batch);
 
 ViemStatus viem_core_view_place_cursor(
@@ -2533,6 +2533,22 @@ ViemStatus viem_core_set_selection_option(ViemCoreHandle core, uint32_t option_k
 /* Choose native Selection or Vim Select/Visual using the configured options.
  * return_mode is NORMAL, INSERT, or REPLACE: native navigation resumes this
  * mode when it ends the selection. It does not alter the selected extent. */
+#define VIEM_NATIVE_SELECT_WORD 1
+#define VIEM_NATIVE_SELECT_SENTENCE 2
+#define VIEM_NATIVE_SELECT_PARAGRAPH 3
+#define VIEM_NATIVE_SELECT_LINE 4
+#define VIEM_NATIVE_SELECT_VISUAL_ROW 5
+#define VIEM_NATIVE_SELECT_BLOCK 6
+#define VIEM_NATIVE_FIND 7
+#define VIEM_NATIVE_FIND_REPLACE 8
+#define VIEM_NATIVE_FIND_NEXT 9
+#define VIEM_NATIVE_FIND_PREVIOUS 10
+/* Availability uses bit 1 << action. return_mode=0 infers the initiating mode;
+ * INSERT/REPLACE resume typing and all other valid modes resume NORMAL. */
+ViemStatus viem_core_view_native_actions(ViemCoreHandle core, ViemViewId view, uint64_t *out_actions);
+ViemStatus viem_core_view_native_action(ViemCoreHandle core, ViemViewId view, uint32_t action,
+    uint32_t origin, uint32_t return_mode, ViemCoreOutcomeV1 *out_outcome, ViemEffectBatchHandle *out_effects);
+
 ViemStatus viem_core_view_set_selection_origin(
     ViemCoreHandle core, ViemViewId view, uint32_t origin, uint32_t return_mode,
     ViemCoreOutcomeV1 *out_outcome);
@@ -2967,6 +2983,17 @@ ViemStatus viem_effect_batch_copy_clipboard_json(
 /* Application-wide Code stylesheet. Its identity has document/revision zero.
  * Changes never create a buffer transaction. UTF-8/typed output arrays use
  * the same exact-capacity and disjoint-pointer rules as document styles. */
+/* Exact-snapshot local parent candidates as a UTF-8 JSON array of stable IDs.
+ * Null/zero output queries required bytes. All input/output regions are disjoint. */
+/* Pure shared config.json validation/defaults. Returns UTF-8 JSON with
+ * configuration and error fields, one null. Unknown keys survive. No file I/O.
+ * Input/output/required must be disjoint. Size query uses NULL, 0 output. */
+ViemStatus viem_application_config(const uint8_t *input, uint64_t input_length,
+    uint8_t *output, uint64_t capacity, uint64_t *required);
+
+ViemStatus viem_core_style_parent_candidates(ViemCoreHandle core,
+    const ViemStyleSheetIdentityV1 *expected, uint32_t namespace_id, ViemUtf8Slice child,
+    uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_code_style_sheet_info(ViemStyleSheetInfoV1 *output);
 ViemStatus viem_code_copy_style_sheet(const ViemStyleSheetIdentityV1 *expected,
     ViemStyleDefinitionV1 *definitions, uint64_t definition_capacity,

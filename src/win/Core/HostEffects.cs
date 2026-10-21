@@ -12,31 +12,18 @@ internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[]
     public static unsafe HostEffects Read(ulong handle)
     {
         var info = New<ViemEffectBatchInfoV1>(); Check(viem_effect_batch_info(handle, &info), "Read effects");
-        var clipboard = new ViemClipboardWriteV1[checked((int)info.clipboard_write_count)];
-        var requests = new ViemExFrontendRequestV1[checked((int)info.ex_request_count)];
-        var options = new ViemExOptionDisplayV1[checked((int)info.ex_option_count)];
-        var marks = new ViemExMarkV1[checked((int)info.ex_mark_count)];
-        var registers = new ViemExRegisterV1[checked((int)info.ex_register_count)];
-        var jumps = new ViemExJumpV1[checked((int)info.ex_jump_count)];
-        var lines = new ViemExTextLineV1[checked((int)info.ex_text_line_count)];
-        var formats = new uint[checked((int)info.file_format_count)]; var breaks = new ulong[checked((int)info.hard_break_count)];
-        var bytes = new byte[checked((int)info.string_bytes)];
-        fixed (ViemClipboardWriteV1* c = clipboard) fixed (ViemExFrontendRequestV1* r = requests)
-        fixed (ViemExOptionDisplayV1* o = options) fixed (ViemExMarkV1* m = marks) fixed (ViemExRegisterV1* g = registers)
-        fixed (ViemExJumpV1* j = jumps) fixed (ViemExTextLineV1* l = lines) fixed (uint* f = formats) fixed (ulong* b = breaks) fixed (byte* s = bytes)
-            Check(viem_effect_batch_copy(handle, c, (ulong)clipboard.Length, r, (ulong)requests.Length, o, (ulong)options.Length,
-                m, (ulong)marks.Length, g, (ulong)registers.Length, j, (ulong)jumps.Length, l, (ulong)lines.Length,
-                f, (ulong)formats.Length, b, (ulong)breaks.Length, s, (ulong)bytes.Length, &info), "Copy effects");
+        var borrowed = new ViemEffectBatchViewV1();
+        Check(viem_effect_batch_read(handle, &borrowed), "Read effect arrays");
+        var clipboard = new ReadOnlySpan<ViemClipboardWriteV1>(borrowed.clipboard_writes, checked((int)info.clipboard_write_count)).ToArray();
+        var requests = new ReadOnlySpan<ViemExFrontendRequestV1>(borrowed.ex_requests, checked((int)info.ex_request_count)).ToArray();
+        var options = new ReadOnlySpan<ViemExOptionDisplayV1>(borrowed.ex_options, checked((int)info.ex_option_count)).ToArray();
+        var bytes = new ReadOnlySpan<byte>(borrowed.strings, checked((int)info.string_bytes)).ToArray();
         var writes = clipboard.Select((c, i) => new ClipboardWrite(Text(bytes, c.plain_text),
             System.Text.Encoding.UTF8.GetString(Copy((p, n, r) => viem_effect_batch_copy_clipboard_json(handle, (ulong)i, p, n, r))))).ToArray();
-        var printed = requests.Where(r => r.kind == VIEM_EX_FRONTEND_PRINT_LINES)
-            .SelectMany(request => lines.Skip(checked((int)request.first_payload)).Take(checked((int)request.payload_count))
-                .Select(line => FormatPrintedLine(bytes, request.flags, line)));
-        string[] output = printed
-            .Concat(marks.Select(m => $"{(char)m.name}  {m.hard_line_index + 1}:{m.grapheme_column + 1}  {Text(bytes, m.line_text)}"))
-            .Concat(registers.Select(r => $"\"{(char)r.name}  {Text(bytes, r.text)}"))
-            .Concat(jumps.Select(j => $"{j.list_index + 1}  {j.hard_line_index + 1}:{j.grapheme_column + 1}  {Text(bytes, j.line_text)}"))
-            .Concat(options.Select(o => $"{OptionName(o.name)}={((o.value_kind == VIEM_EX_OPTION_VALUE_STRING) ? Text(bytes, o.text) : o.scalar_value.ToString())}" )).ToArray();
+        string[] output = requests.Where(r => r.kind is VIEM_EX_FRONTEND_OPTIONS
+            or VIEM_EX_FRONTEND_MARKS or VIEM_EX_FRONTEND_REGISTERS
+            or VIEM_EX_FRONTEND_JUMPS or VIEM_EX_FRONTEND_PRINT_LINES)
+            .Select(r => Text(bytes, r.display_text)).ToArray();
         var selectionOptions = new Dictionary<uint, string>();
         foreach (var option in options)
             if ((option.name is VIEM_EX_OPTION_KEYMODEL or VIEM_EX_OPTION_SELECTMODE) && option.value_kind == VIEM_EX_OPTION_VALUE_STRING)
@@ -45,20 +32,4 @@ internal sealed record HostEffects(ClipboardWrite[] Clipboard, FrontendRequest[]
                 selectionOptions[option.name] = option.scalar_value == 0 ? "0" : "1";
         return new(writes, requests.Select(r => new FrontendRequest(r, Text(bytes, r.text))).ToArray(), output, selectionOptions);
     }
-    private static string FormatPrintedLine(byte[] bytes, uint flags, ViemExTextLineV1 line)
-    {
-        string text = Text(bytes, line.text);
-        if ((flags & VIEM_EX_FRONTEND_LIST) != 0)
-        {
-            text = string.Concat(text.EnumerateRunes().Select(rune => rune.Value switch
-            {
-                <= 31 => "^" + (char)(rune.Value + 64),
-                127 => "^?",
-                >= 128 and <= 159 => $"<{rune.Value:x2}>",
-                _ => rune.ToString()
-            })) + "$";
-        }
-        return (flags & VIEM_EX_FRONTEND_NUMBER) != 0 ? $"{line.hard_line_index + 1}\t{text}" : text;
-    }
-    private static string OptionName(uint name) => name switch { 1 => "wrap", 2 => "linebreak", 3 => "fileformat", 5 => "ignorecase", 6 => "smartcase", 7 => "wrapscan", 8 => "textwidth", VIEM_EX_OPTION_FORMATOPTIONS => "formatoptions", VIEM_EX_OPTION_COMMENTS => "comments", VIEM_EX_OPTION_FORMATLISTPAT => "formatlistpat", 9 => "autoindent", 10 => "tabstop", 11 => "shiftwidth", 12 => "softtabstop", 13 => "expandtab", 14 => "smarttab", 17 => "list", 18 => "listchars", 19 => "hlsearch", 20 => "incsearch", VIEM_EX_OPTION_AUTOSELECT => "autoselect", VIEM_EX_OPTION_KEYMODEL => "keymodel", VIEM_EX_OPTION_SELECTMODE => "selectmode", VIEM_EX_OPTION_NUMBER => "number", _ => $"option {name}" };
 }

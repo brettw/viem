@@ -107,8 +107,12 @@ internal sealed partial class EditorPane
                 if ((paint.flags & (VIEM_TEXT_PAINT_UNDERLINE | VIEM_TEXT_PAINT_STRIKETHROUGH)) != 0) glyphs.Flush();
                 float baseline = row.baseline - paint.baseline_offset * viewport.scale;
                 float ascent = Math.Max(0, baseline - cluster.typographic_bounds.y);
-                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.DrawLine((float)bounds.X, baseline - viewport.top + 2, (float)bounds.Right, baseline - viewport.top + 2, foreground);
-                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.DrawLine((float)bounds.X, baseline - viewport.top - ascent * .3f, (float)bounds.Right, baseline - viewport.top - ascent * .3f, foreground);
+                // Shared geometry contract: docs/abi-validation.md; macOS EVEditorView.textDecorationsForDrawing.
+                float descent = Math.Max(0, cluster.typographic_bounds.y + cluster.typographic_bounds.height - baseline);
+                float underlineY = MathF.Floor(baseline + Math.Max(1, descent * .35f)) - viewport.top;
+                float strikeY = MathF.Floor(baseline - ascent * .32f) - viewport.top;
+                if ((paint.flags & VIEM_TEXT_PAINT_UNDERLINE) != 0) drawing.FillRectangle((float)bounds.X, underlineY, (float)bounds.Width, 1, foreground);
+                if ((paint.flags & VIEM_TEXT_PAINT_STRIKETHROUGH) != 0) drawing.FillRectangle((float)bounds.X, strikeY, (float)bounds.Width, 1, foreground);
             }
         }
         glyphs.Flush();

@@ -35,6 +35,19 @@ internal sealed record StyleSheet(ViemStyleSheetIdentityV1 Identity, StyleDefini
 internal sealed unsafe partial class CoreView
 {
     private StyleSheet? cachedStyles;
+    public StyleDefinition[] ParentCandidates(StyleSheet sheet, StyleDefinition child)
+    {
+        using var arena = new NativeArena();
+        var id = arena.Utf8(child.Id);
+        var bytes = Copy((data, capacity, required) => {
+            var identity = sheet.Identity;
+            return viem_core_style_parent_candidates(identity.document_id == 0 ? 0 : Document.Handle,
+                &identity, child.Namespace, id, data, capacity, required);
+        });
+        using var result = System.Text.Json.JsonDocument.Parse(bytes);
+        var ids = result.RootElement.EnumerateArray().Select(v => v.GetString()).ToHashSet();
+        return sheet.Styles.Where(s => s.Namespace == child.Namespace && ids.Contains(s.Id)).ToArray();
+    }
     // Opening and idle caret following share the macOS named-style policy.
     // Query only retained core assignments/runs, never typography or syntax work.
     public StyleKey? CurrentStyleEditorKey(StyleSheet sheet)

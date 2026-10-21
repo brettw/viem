@@ -95,8 +95,8 @@ internal sealed partial class EditorWindow
                 else view.SelectionCommand("d");
             }, enabled: () => View?.HasSelection == true && ActivePane?.CanCut == true, inputTarget: true), Separator(),
             Item("Select All", "A", () => { ActivePane?.SelectAll(); return Task.CompletedTask; }),
-            Sub("Select", "S", ActionItem("Word", "W", () => Select("viw")), ActionItem("Sentence", "S", () => Select("vis")), ActionItem("Paragraph", "P", () => Select("vip")), ActionItem("Hard Line", "L", () => Select("V")), ActionItem("Visual Row", "R", () => Select("g0vg$")), ActionItem("Visual Block", "B", () => { uint returnMode = View?.Presentation.mode ?? VIEM_MODE_NORMAL; View?.Key(VIEM_KEY_ESCAPE); View?.Key(VIEM_KEY_CONTROL_CHARACTER, 'q'); View?.SetSelectionOrigin(VIEM_SELECTION_ORIGIN_KEY, returnMode); }, "Ctrl+Q")),
-            Separator(), Sub("Find", "F", ActionItem("Find…", "F", () => Select("/")), ActionItem("Find and Replace…", "R", () => { Select(":"); View?.Text("%s/"); }), ActionItem("Find Next", "N", () => Select("n")), ActionItem("Find Previous", "P", () => Select("N")),
+            Sub("Select", "S", ActionItem("Word", "W", () => Select(VIEM_NATIVE_SELECT_WORD), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_SELECT_WORD) == true), ActionItem("Sentence", "S", () => Select(VIEM_NATIVE_SELECT_SENTENCE), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_SELECT_SENTENCE) == true), ActionItem("Paragraph", "P", () => Select(VIEM_NATIVE_SELECT_PARAGRAPH), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_SELECT_PARAGRAPH) == true), ActionItem("Hard Line", "L", () => Select(VIEM_NATIVE_SELECT_LINE), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_SELECT_LINE) == true), ActionItem("Visual Row", "R", () => Select(VIEM_NATIVE_SELECT_VISUAL_ROW), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_SELECT_VISUAL_ROW) == true), ActionItem("Visual Block", "B", () => Select(VIEM_NATIVE_SELECT_BLOCK), "Ctrl+Q", enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_SELECT_BLOCK) == true)),
+            Separator(), Sub("Find", "F", ActionItem("Find…", "F", () => Select(VIEM_NATIVE_FIND), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_FIND) == true), ActionItem("Find and Replace…", "R", () => Select(VIEM_NATIVE_FIND_REPLACE), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_FIND_REPLACE) == true), ActionItem("Find Next", "N", () => Select(VIEM_NATIVE_FIND_NEXT), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_FIND_NEXT) == true), ActionItem("Find Previous", "P", () => Select(VIEM_NATIVE_FIND_PREVIOUS), enabled: () => View?.NativeActionAvailable(VIEM_NATIVE_FIND_PREVIOUS) == true),
                 ActionItem("Use Selection for Find", "U", () => View?.UseSelectionForFind(), enabled: HasFindSelection),
                 ActionItem("Jump to Selection", "J", () => View?.RevealSelection(), enabled: () => View?.HasSelection == true)),
             Sub("Transformations", "N", ActionItem("Make Uppercase", "U", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", "L", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", "T", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
@@ -151,7 +151,7 @@ internal sealed partial class EditorWindow
         AutomationProperties.SetName(dialog, "About Viem");
         await DeferExternalFileReviews(async () => { await dialog.ShowAsync(); });
     }
-    private void Select(string command) => View?.SelectFromCommand(command);
+    private void Select(uint action) => View?.NativeAction(action);
     private bool HasFindSelection()
     {
         if (View is not { HasSelection: true } view) return false;
