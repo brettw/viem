@@ -1,6 +1,6 @@
 use viem_core::command::ex::{parse_ex, AddressBase, ExAction, ExRange};
 use viem_core::command::{CommandInterpreter, CommandOutput, CommandStatus, InputEvent, Key};
-use viem_core::document::Document;
+use viem_core::document::{Document, Encoding, Format};
 use viem_core::layout::MockTextMeasurementProvider;
 use viem_core::{Core, CoreEvent, ViewId};
 
@@ -157,6 +157,12 @@ fn global_rebases_moves_deletions_insertions_and_multiline_starts() {
         (":g/x/copy .", "x1\nx1\nkeep\nx2\nx2\nx3\nx3\ntail"),
         (r":g/x2\nx3/d", "x1\nkeep\nx3\ntail"),
         (":g/x/normal A!", "x1!\nkeep\nx2!\nx3!\ntail"),
+        // A target joined into the line above is deleted, as in Vim; it never
+        // runs again on the surviving line.
+        (":g/x/.,+1j", "x1 keep\nx2 x3\ntail"),
+        (r":g/x/.,+1s/\n/ /", "x1 keep\nx2 x3\ntail"),
+        // A deleted target is skipped rather than collapsing onto `tail`.
+        (":g/x/+1d", "x1\nx2\ntail"),
     ] {
         let mut d = Document::new("x1\nkeep\nx2\nx3\ntail");
         let mut c = CommandInterpreter::new();
@@ -166,6 +172,18 @@ fn global_rebases_moves_deletions_insertions_and_multiline_starts() {
         assert_eq!(d.text(), "x1\nkeep\nx2\nx3\ntail");
         assert!(!d.undo());
     }
+}
+
+#[test]
+fn global_skips_markdown_paragraphs_merged_into_an_earlier_target() {
+    let source = b"x1\n\nx2\n\nx3\n\nend";
+    let mut d = Document::from_bytes(source.to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut c = CommandInterpreter::new();
+    success(ex(&mut c, &mut d, r":g/x/.,+1s/\n/ /"));
+    assert_eq!(d.text(), "x1 x2\nx3 end");
+    assert!(d.undo());
+    assert_eq!(d.source_bytes(), source);
+    assert!(!d.undo());
 }
 
 #[test]

@@ -1,6 +1,9 @@
 //! Portable, snapshot-bound substitute confirmation. Decisions remain staged
-//! until the interaction ends, so no edit group spans unrelated native events.
+//! until the invocation ends, so a lone invocation holds no edit group between
+//! answers. A confirmed :global publishes each invocation inside one undo group
+//! owned by the invoking view (see `global_confirmation`).
 use super::ex_execute::SubstitutePreview;
+use super::global_confirmation::GlobalConfirmation;
 use super::*;
 
 pub(super) fn scroll_motion(event: &InputEvent) -> Option<ScreenMotion> {
@@ -13,20 +16,48 @@ pub(super) fn scroll_motion(event: &InputEvent) -> Option<ScreenMotion> {
 
 #[derive(Clone, Debug)]
 pub(super) struct SubstituteConfirmation {
+    /// The invocation being asked about. A confirmed :global has none while it
+    /// waits to prepare its next invocation against exact layout.
+    question: Option<SubstituteQuestion>,
+    scope: ConfirmationScope,
+}
+
+#[derive(Clone, Debug)]
+struct SubstituteQuestion {
     preview: std::sync::Arc<SubstitutePreview>,
     current: usize,
     approved: Vec<usize>,
-    invocation: HistoryRestorationSnapshot,
-    remaining: std::collections::VecDeque<std::sync::Arc<SubstitutePreview>>,
-    completed: Vec<(std::sync::Arc<SubstitutePreview>, Vec<usize>)>,
-    deferred_error: Option<CommandStatus>,
+}
+
+#[derive(Clone, Debug)]
+enum ConfirmationScope {
+    /// A lone invocation records the view state from before its first question,
+    /// so undo returns there rather than to the last match asked about.
+    Single(HistoryRestorationSnapshot),
+    /// The rest of a confirmed :global, which publishes this invocation before
+    /// preparing the next target. Its open undo group records restoration.
+    Global(std::sync::Arc<GlobalConfirmation>),
+}
+
+impl SubstituteConfirmation {
+    fn is_current(&self, document: &Document) -> bool {
+        match (&self.question, &self.scope) {
+            (Some(question), _) => question.preview.is_current(document),
+            (None, ConfirmationScope::Global(global)) => global.is_current(document),
+            (None, ConfirmationScope::Single(_)) => false,
+        }
+    }
+
+    fn current_question(&self, document: &Document) -> Option<&SubstituteQuestion> {
+        self.question.as_ref().filter(|question| question.preview.is_current(document))
+    }
 }
 
 impl CommandInterpreter {
     pub(super) fn scroll_substitute_confirmation(
         &mut self, document: &mut Document, context: &mut LayoutCommandContext<'_>, motion: ScreenMotion,
     ) -> CommandOutput {
-        if !self.substitute_confirmation.as_ref().is_some_and(|state| state.preview.is_current(document)) {
+        if !self.substitute_confirmation.as_ref().is_some_and(|state| state.current_question(document).is_some()) {
             return self.handle_substitute_confirmation(document, InputEvent::Key(Key::Escape));
         }
         // Scrolling a question never moves its match or changes an approval.
@@ -42,8 +73,8 @@ impl CommandInterpreter {
 
     /// Plain status text, deliberately separate from an editable Ex prompt.
     pub fn substitute_confirmation_prompt(&self) -> Option<String> {
-        let state = self.substitute_confirmation.as_ref()?;
-        let replacement = &state.preview.edits[state.current].replacement;
+        let question = self.substitute_confirmation.as_ref()?.question.as_ref()?;
+        let replacement = &question.preview.edits[question.current].replacement;
         let visible: String = replacement
             .chars()
             .take(160)
@@ -57,9 +88,9 @@ impl CommandInterpreter {
             .collect();
         Some(format!(
             "Replace with {visible}? (y/n/a/q/l) [{}/{}; {} approved]",
-            state.current + 1,
-            state.preview.matches,
-            state.approved.len()
+            question.current + 1,
+            question.preview.matches,
+            question.approved.len()
         ))
     }
 
@@ -68,21 +99,18 @@ impl CommandInterpreter {
         document: &Document,
     ) -> Option<&HistoryRestorationSnapshot> {
         let state = self.substitute_confirmation.as_ref()?;
-        state
-            .preview
-            .is_current(document)
-            .then_some(&state.invocation)
+        match &state.scope {
+            ConfirmationScope::Single(invocation) if state.current_question(document).is_some() => Some(invocation),
+            _ => None,
+        }
     }
 
     pub(super) fn substitute_confirmation_match(
         &self,
         document: &Document,
     ) -> Option<Range<usize>> {
-        let state = self.substitute_confirmation.as_ref()?;
-        state
-            .preview
-            .is_current(document)
-            .then(|| state.preview.edits[state.current].range.clone())
+        let question = self.substitute_confirmation.as_ref()?.current_question(document)?;
+        Some(question.preview.edits[question.current].range.clone())
     }
 
     pub(super) fn begin_substitute_confirmation(
@@ -95,26 +123,9 @@ impl CommandInterpreter {
                 "Substitute confirmation is not available inside :global",
             );
         }
-        self.begin_substitute_confirmations(document, vec![preview], None)
-    }
-
-    pub(super) fn begin_substitute_confirmations(
-        &mut self, document: &Document, previews: Vec<SubstitutePreview>, deferred_error: Option<CommandStatus>,
-    ) -> CommandOutput {
-        if self.script_depth > 0 {
-            return CommandOutput {
-                status: CommandStatus::ExError(ExCommandError::Execute(
-                    ExExecuteError::UnsupportedCommand(
-                        "Substitute confirmation is not available in scripts".into(),
-                    ),
-                )),
-                ..CommandOutput::complete()
-            };
+        if let Some(output) = self.substitute_confirmation_unavailable() {
+            return output;
         }
-        let mut remaining: std::collections::VecDeque<_> = previews.into_iter().map(std::sync::Arc::new).collect();
-        let Some(preview) = remaining.pop_front() else {
-            return CommandOutput { status: deferred_error.unwrap_or(CommandStatus::Complete), ..CommandOutput::complete() };
-        };
         let invocation = match self.capture_history_restoration(document) {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -126,6 +137,51 @@ impl CommandInterpreter {
                 }
             }
         };
+        self.ask_substitute_confirmation(document, preview, ConfirmationScope::Single(invocation))
+    }
+
+    pub(super) fn substitute_confirmation_unavailable(&self) -> Option<CommandOutput> {
+        (self.script_depth > 0).then(|| CommandOutput {
+            status: CommandStatus::ExError(ExCommandError::Execute(
+                ExExecuteError::UnsupportedCommand(
+                    "Substitute confirmation is not available in scripts".into(),
+                ),
+            )),
+            ..CommandOutput::complete()
+        })
+    }
+
+    /// Ask about the first match of one invocation of a confirmed :global,
+    /// whose undo group is already open.
+    pub(super) fn ask_global_substitute_confirmation(
+        &mut self,
+        document: &Document,
+        preview: SubstitutePreview,
+        global: std::sync::Arc<GlobalConfirmation>,
+    ) -> CommandOutput {
+        self.ask_substitute_confirmation(document, preview, ConfirmationScope::Global(global))
+    }
+
+    /// Hold a confirmed :global between invocations until the coordinator
+    /// continues it with layout of the revision it just published.
+    pub(super) fn await_global_substitute_confirmation(&mut self, global: std::sync::Arc<GlobalConfirmation>) {
+        self.mode = Mode::Normal;
+        self.substitute_confirmation = Some(Box::new(SubstituteConfirmation {
+            question: None,
+            scope: ConfirmationScope::Global(global),
+        }));
+    }
+
+    pub(crate) fn awaits_substitute_continuation(&self) -> bool {
+        self.substitute_confirmation.as_ref().is_some_and(|state| state.question.is_none())
+    }
+
+    fn ask_substitute_confirmation(
+        &mut self,
+        document: &Document,
+        preview: SubstitutePreview,
+        scope: ConfirmationScope,
+    ) -> CommandOutput {
         let old_cursor = self.cursor;
         self.cursor = normalize_normal_cursor_document(
             document,
@@ -133,21 +189,31 @@ impl CommandInterpreter {
             preview.edits[0].range.start,
         );
         self.boundary_affinity = BoundaryAffinity::Downstream;
+        self.preferred_column = None;
+        self.visual_position = None;
+        self.desired_x = None;
         self.mode = Mode::Normal;
         self.substitute_confirmation = Some(Box::new(SubstituteConfirmation {
-            preview,
-            current: 0,
-            approved: Vec::new(),
-            invocation,
-            remaining,
-            completed: Vec::new(),
-            deferred_error,
+            question: Some(SubstituteQuestion {
+                preview: std::sync::Arc::new(preview),
+                current: 0,
+                approved: Vec::new(),
+            }),
+            scope,
         }));
         CommandOutput {
             cursor_moved: old_cursor != self.cursor,
             mode_changed: true,
             ..CommandOutput::pending()
         }
+    }
+
+    /// Whether this view owns an open :global confirmation undo group. The
+    /// coordinator keeps that group open between answers, as it does for
+    /// Insert typing, and closes it before another writer or a save.
+    pub(crate) fn holds_substitute_confirmation_group(&self, document: &Document) -> bool {
+        self.substitute_confirmation.as_ref().is_some_and(|state|
+            matches!(state.scope, ConfirmationScope::Global(_)) && state.is_current(document))
     }
 
     pub(super) fn handle_substitute_confirmation(
@@ -159,7 +225,12 @@ impl CommandInterpreter {
             .substitute_confirmation
             .take()
             .expect("confirmation checked");
-        if !state.preview.is_current(document) {
+        if !state.is_current(document) {
+            // Completed :global invocations stay published; only the current
+            // invocation's staged answers and the remaining targets are lost.
+            if matches!(state.scope, ConfirmationScope::Global(_)) {
+                document.end_edit_group();
+            }
             return CommandOutput {
                 status: CommandStatus::ExError(ExCommandError::Execute(
                     ExExecuteError::UnsupportedCommand(
@@ -170,6 +241,12 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             };
         }
+        let Some(mut question) = state.question.take() else {
+            let ConfirmationScope::Global(global) = state.scope else {
+                unreachable!("only a confirmed :global waits between invocations");
+            };
+            return self.advance_global_confirmation(document, global, None);
+        };
         let choice = match &event {
             InputEvent::Key(Key::Char(choice)) => Some(*choice),
             InputEvent::Key(Key::Escape | Key::Ctrl('c' | 'C' | '[')) => Some('q'),
@@ -178,90 +255,55 @@ impl CommandInterpreter {
         };
         let finish = match choice {
             Some('y') => {
-                state.approved.push(state.current);
-                state.current += 1;
+                question.approved.push(question.current);
+                question.current += 1;
                 false
             }
             Some('n') => {
-                state.current += 1;
+                question.current += 1;
                 false
             }
             Some('a') => {
-                state.approved.extend(state.current..state.preview.matches);
+                question.approved.extend(question.current..question.preview.matches);
                 true
             }
             Some('l') => {
-                state.approved.push(state.current);
+                question.approved.push(question.current);
                 true
             }
             Some('q') => true,
             _ => {
+                state.question = Some(question);
                 self.substitute_confirmation = Some(state);
                 return CommandOutput::pending();
             }
         };
-        if finish || state.current == state.preview.matches {
-            // Like Vim, a/q/l finish this :substitute invocation. A global
-            // continues with its next selected line; Ctrl-C cancels the rest.
-            if matches!(event, InputEvent::Key(Key::Ctrl('c' | 'C'))) { state.remaining.clear(); }
-            if let Some(next) = state.remaining.pop_front() {
-                let previous = std::mem::replace(&mut state.preview, next);
-                state.completed.push((previous, std::mem::take(&mut state.approved)));
-                state.current = 0;
-            } else {
-                state.current = state.preview.matches;
-            }
-        }
-        if state.current < state.preview.matches {
+        if !finish && question.current < question.preview.matches {
             self.cursor = normalize_normal_cursor_document(
                 document,
                 &document.hard_line_snapshot(),
-                state.preview.edits[state.current].range.start,
+                question.preview.edits[question.current].range.start,
             );
             self.boundary_affinity = BoundaryAffinity::Downstream;
             self.preferred_column = None;
             self.visual_position = None;
             self.desired_x = None;
+            state.question = Some(question);
             self.substitute_confirmation = Some(state);
             return CommandOutput {
                 cursor_moved: true,
                 ..CommandOutput::pending()
             };
         }
-        state.completed.push((state.preview, state.approved));
-        let (plan, failure) = match ex_execute::approved_substitution_batch(document, state.completed) {
-            Ok(plan) => plan,
-            Err(error) => return ex_global::ex_error(error),
-        };
-        if let Some(error) = failure {
-            state.deferred_error.get_or_insert(CommandStatus::ExError(ExCommandError::Execute(error)));
+        // Like Vim, a/q/l finish this :substitute invocation. A global
+        // continues with its next selected line; Ctrl-C cancels the rest.
+        if let ConfirmationScope::Global(global) = state.scope {
+            return self.finish_global_invocation(document, global, &question.preview, &question.approved, event);
         }
-        match commit_ex(
-            document,
-            &mut self.ex_state,
-            plan,
-        ) {
+        match commit_ex(document, &mut self.ex_state, question.preview.approved_plan(&question.approved)) {
             Ok(outcome) => {
-                if let Some(pattern) = self.ex_state.previous_substitute_pattern() {
-                    let direction = self
-                        .last_search
-                        .as_ref()
-                        .map_or(SearchDirection::Forward, |(direction, _)| *direction);
-                    self.last_search = Some((direction, pattern.to_owned()));
-                    self.search_highlight_suppressed = false;
-                }
-                if let Some(ExNavigation::TextOffset(offset)) = outcome.navigation {
-                    self.cursor = normalize_normal_cursor_document(
-                        document,
-                        &document.hard_line_snapshot(),
-                        offset,
-                    );
-                }
-                self.preferred_column = None;
-                self.visual_position = None;
-                self.desired_x = None;
+                self.finish_substitute_invocation(document, &outcome);
                 CommandOutput {
-                    status: state.deferred_error.unwrap_or(CommandStatus::Complete),
                     cursor_moved: outcome.document_changed,
                     document_changed: outcome.document_changed,
                     ex_outcome: Some(outcome),
@@ -273,5 +315,26 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             },
         }
+    }
+
+    pub(super) fn finish_substitute_invocation(&mut self, document: &Document, outcome: &ExOutcome) {
+        if let Some(pattern) = self.ex_state.previous_substitute_pattern() {
+            let direction = self
+                .last_search
+                .as_ref()
+                .map_or(SearchDirection::Forward, |(direction, _)| *direction);
+            self.last_search = Some((direction, pattern.to_owned()));
+            self.search_highlight_suppressed = false;
+        }
+        if let Some(ExNavigation::TextOffset(offset)) = outcome.navigation {
+            self.cursor = normalize_normal_cursor_document(
+                document,
+                &document.hard_line_snapshot(),
+                offset,
+            );
+        }
+        self.preferred_column = None;
+        self.visual_position = None;
+        self.desired_x = None;
     }
 }

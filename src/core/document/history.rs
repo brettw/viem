@@ -390,6 +390,13 @@ pub struct HistoryBranch {
     pub preferred: bool,
 }
 
+/// An open undo group detached by [`History::suspend_group`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SuspendedGroup {
+    node: Option<usize>,
+    current: HistoryLocation,
+}
+
 /// Branching history of immutable document states.
 pub(crate) struct History<T, M = ()> {
     nodes: Vec<Node<T, M>>,
@@ -995,6 +1002,24 @@ impl<T, M> History<T, M> {
     pub(crate) fn end_group(&mut self) {
         self.group_node = None;
         self.enforce_retention();
+    }
+
+    /// Detach the open group without finalizing it or enforcing retention.
+    pub(crate) fn suspend_group(&mut self) -> SuspendedGroup {
+        SuspendedGroup { node: self.group_node.take(), current: self.location(self.current) }
+    }
+
+    /// Reattach a suspended group if the current state is still the one it
+    /// was detached from and no other group has started.
+    pub(crate) fn resume_group(&mut self, suspended: SuspendedGroup) -> bool {
+        if self.group_node.is_some()
+            || self.location(self.current) != suspended.current
+            || suspended.node.is_some_and(|node| node != self.current)
+        {
+            return false;
+        }
+        self.group_node = suspended.node;
+        true
     }
 
     #[cfg(test)]

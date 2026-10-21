@@ -141,6 +141,23 @@ fn insert_undo_groups_are_isolated_between_views() {
 }
 
 #[test]
+fn insert_undo_group_survives_movement_in_another_view() {
+    let mut core = Core::new(Document::new("ab"));
+    let first = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+    let second = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);
+    core.handle(first, core_key('i')).unwrap();
+    core.handle(first, core_text("X")).unwrap();
+    // Input that only moves another view's cursor must not split the unit.
+    core.handle(second, core_key('l')).unwrap();
+    core.handle(first, core_text("Y")).unwrap();
+    core.handle(first, CoreEvent::Input(InputEvent::Key(Key::Escape)))
+        .unwrap();
+    assert_eq!(core.document().text(), "XYab");
+    core.handle(first, core_key('u')).unwrap();
+    assert_eq!(core.document().text(), "ab");
+}
+
+#[test]
 fn inactive_view_cursor_rebases_before_its_next_command() {
     let mut core = Core::new(Document::new("abc"));
     let writer = core.add_view(MockTextMeasurementProvider::new(), 300.0, 100.0);

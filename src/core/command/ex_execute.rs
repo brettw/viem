@@ -784,38 +784,6 @@ pub(super) fn substitution_confirms(state: &ExExecutionState, action: &ExAction)
     effective_flags(flags, state.last_substitute.as_ref(), false).confirm
 }
 
-pub(super) fn approved_substitution_batch(
-    document: &Document, previews: Vec<(std::sync::Arc<SubstitutePreview>, Vec<usize>)>,
-) -> Result<(ExPlan, Option<ExExecuteError>), ExExecuteError> {
-    let mut combined = ExPlan::empty(document);
-    let mut edits = Vec::new();
-    let multiple = previews.len() > 1;
-    let mut failure = None;
-    for (preview, approved) in previews {
-        if !preview.is_current(document) { return Err(ExExecuteError::Document(DocumentError::VerificationFailed)); }
-        let plan = preview.approved_plan(&approved);
-        // A failed target must not discard approvals from other global lines.
-        // Validate each target before composing the single final publication.
-        if multiple {
-            if let ExMutation::Model(request) = &plan.mutation {
-                if let Err(error) = document.prepare_model_request(request.clone()) {
-                    failure.get_or_insert_with(|| ex_model_error(error, None));
-                    continue;
-                }
-            }
-        }
-        combined.outcome.try_merge(plan.outcome).map_err(|_| ExExecuteError::AddressOverflow)?;
-        combined.next_substitute = plan.next_substitute;
-        if let ExMutation::Model(ModelRequest::ApplyFragmentEdits { edits: next, .. }) = plan.mutation { edits.extend(next); }
-    }
-    if !edits.is_empty() {
-        combined.mutation = ExMutation::Model(ModelRequest::ApplyFragmentEdits {
-            document: document.id(), revision: document.revision(), edits,
-        });
-    }
-    Ok((combined, failure))
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExPolicyRequest {
     ConfirmSubstitution(Box<SubstitutePreview>),

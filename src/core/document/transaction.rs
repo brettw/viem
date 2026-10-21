@@ -1131,6 +1131,7 @@ impl Document {
             next_projected_block_id: self.next_projected_block_id,
             edit_group_depth: 0,
             edit_group_generation: 0,
+            suspended_edit_group: None,
             position_map_capture: None,
             layout_changes: std::collections::VecDeque::new(),
             artifact_binding: None,

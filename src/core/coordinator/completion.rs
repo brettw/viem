@@ -25,21 +25,36 @@ impl<P: TextMeasurementProvider> Core<P> {
     // Completion is also Insert input even before a candidate is accepted.
     // Share the coordinator's ordinary empty/open-unit ownership transition
     // so native Save can finalize the active view's selected completion.
-    pub(super) fn prepare_input_edit_group(&mut self, view_id: ViewId) {
+    /// Give this view's input its own undo grouping. Another view's open unit
+    /// is parked rather than closed, because input that only moves or reads
+    /// must not split it; `restore_parked_edit_group` decides afterwards.
+    pub(super) fn prepare_input_edit_group(&mut self, view_id: ViewId) -> Option<ParkedEditGroup> {
         if self.replay_undo_floor.is_some() || self.edit_group_owner == Some(view_id) {
-            return;
+            return None;
         }
-        if self.edit_group_owner.take().is_some() {
-            self.document.close_edit_group();
-            self.edit_group_restoration = None;
-        }
-        if self
-            .views
-            .get(&view_id)
-            .is_some_and(|view| matches!(view.commands.mode(), Mode::Insert | Mode::Replace))
-        {
+        let parked = self.edit_group_owner.take().map(|owner| {
+            self.document.suspend_edit_group();
+            ParkedEditGroup { owner, restoration: self.edit_group_restoration.take() }
+        });
+        if self.views.get(&view_id).is_some_and(|view| {
+            matches!(view.commands.mode(), Mode::Insert | Mode::Replace)
+                || view.commands.holds_substitute_confirmation_group(&self.document)
+        }) {
             self.document.begin_edit_group();
             self.edit_group_owner = Some(view_id);
+        }
+        parked
+    }
+
+    /// Return a parked unit to its owner unless the input that ran meanwhile
+    /// published, navigated history, saved or opened a unit of its own; the
+    /// document finalizes it in those cases.
+    pub(super) fn restore_parked_edit_group(&mut self, parked: Option<ParkedEditGroup>) {
+        let Some(parked) = parked else { return };
+        if self.document.resume_edit_group() {
+            debug_assert!(self.edit_group_owner.is_none());
+            self.edit_group_owner = Some(parked.owner);
+            self.edit_group_restoration = parked.restoration;
         }
     }
     pub fn completion_presentation(
@@ -139,8 +154,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                         .map_err(CoreError::Completion)?,
                 );
             }
-            self.prepare_input_edit_group(view_id);
-            self.poll_completion(view_id)?;
+            let parked = self.prepare_input_edit_group(view_id);
+            let polled = self.poll_completion(view_id);
+            self.restore_parked_edit_group(parked);
+            polled?;
             return Ok(Some(CoreOutcome {
                 command: self.views[&view_id]
                     .completion

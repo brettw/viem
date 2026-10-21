@@ -272,6 +272,25 @@ impl Document {
             text: normalized.text,
         })
     }
+    /// The source range, including its terminator, of the physical line that
+    /// contains `at`, without decoding the line.
+    pub(crate) fn physical_line_source_range(&self, at: usize) -> Result<Range<usize>, DocumentError> {
+        self.physical_line_count()?;
+        let index = self.state().source_hard_lines.line_at_offset(at).ok_or(
+            DocumentError::InvalidRange {
+                start: at,
+                end: at,
+                length: self.source_byte_len(),
+            },
+        )?;
+        let range = self
+            .state()
+            .source_hard_lines
+            .get(index)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        Ok(range.start..range.end)
+    }
+
     pub fn physical_line_at_source(&self, at: usize) -> Result<PhysicalSourceLine, DocumentError> {
         self.physical_line_count()?;
         let index = self.state().source_hard_lines.line_at_offset(at).ok_or(

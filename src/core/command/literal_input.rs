@@ -145,7 +145,7 @@ impl CommandInterpreter {
                 if self.plan_compound_replay
                     && self.requires_layout_for_input(document, &event, None)
                 {
-                    self.pending_replay = Some(ReplayPlan::LiteralTerminator(event));
+                    self.pending_replay = Some(ReplayPlan::ContinueAfterPublication(event));
                 } else {
                     output.merge(self.handle_key(document, key)?);
                 }
