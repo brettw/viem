@@ -12,7 +12,10 @@ namespace Viem.Windows.Diagnostics;
 internal static class MenuAccessKeyTests
 {
     private static void Check(bool condition, string name, string? details = null)
-    { if (!condition) throw new InvalidOperationException(details == null ? name : $"{name} ({details})"); FrontendSmokeTests.UiChecks.Add(name); }
+    {
+        if (!condition) throw new InvalidOperationException(details == null ? name : $"{name} ({details})");
+        FrontendSmokeTests.UiChecks.Add(name);
+    }
 
     private static string Label(MenuFlyoutItemBase item) => item switch
     {
@@ -54,11 +57,15 @@ internal static class MenuAccessKeyTests
         bool originalShowMenu = preferences.ShowMenu;
         var document = new CoreDocument("alpha\r\nbeta"u8.ToArray(), format: VIEM_FORMAT_PLAIN_TEXT, fileFormat: 2);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
+        App.Instance.Windows.Add(window);
+        window.Activate();
         var pane = window.ActivePane!;
         await pane.Ready;
         int opened = 0;
-        window.OpenDialogForTesting = () => { opened++; return Task.CompletedTask; };
+        window.OpenDialogForTesting = () => {
+            opened++;
+            return Task.CompletedTask;
+        };
         try
         {
             preferences.Set("windows", "showMenu", true);
@@ -70,7 +77,8 @@ internal static class MenuAccessKeyTests
             var plain = (ToggleMenuFlyoutItem)format.Items[0];
             var code = file.Items.OfType<MenuFlyoutSubItem>().Single(item => item.Text == "Code language");
             var obscure = (MenuFlyoutSubItem)code.Items[1];
-            pane.FocusEditor(); await Task.Delay(80);
+            pane.FocusEditor();
+            await InputRoutingTests.Settle();
             await InputRoutingTests.Key((VirtualKey)format.AccessKey[0], alt: true);
             Check(plain.IsLoaded && code.Items.Count == 3 && obscure.Items.Count == 0,
                 "native Alt+O opens Format without constructing Code language controls");
@@ -78,7 +86,8 @@ internal static class MenuAccessKeyTests
             var open = file.Items.OfType<MenuFlyoutItem>().Single(item => item.Text == "Open…");
             bool openKeytipShown = false;
             open.AccessKeyDisplayRequested += (_, _) => openKeytipShown = true;
-            pane.FocusEditor(); await Task.Delay(80);
+            pane.FocusEditor();
+            await InputRoutingTests.Settle();
             ulong revision = document.State.document_revision;
             await InputRoutingTests.Key(VirtualKey.F, alt: true);
             string afterFile = $"open loaded={open.IsLoaded}, keytip={openKeytipShown}, focus={FocusManager.GetFocusedElement(pane.XamlRoot)?.GetType().Name}";
@@ -90,7 +99,8 @@ internal static class MenuAccessKeyTests
             Check(document.State.document_revision == revision && document.FormattedText() == "alpha\nbeta",
                 "menu access keys do not enter document text or change its revision");
 
-            pane.FocusEditor(); await Task.Delay(80);
+            pane.FocusEditor();
+            await InputRoutingTests.Settle();
             await InputRoutingTests.Text("i");
             await InputRoutingTests.Key(VirtualKey.O);
             Check(document.FormattedText() == "oalpha\nbeta" && opened == 1,
@@ -99,7 +109,8 @@ internal static class MenuAccessKeyTests
             pane.View!.Undo();
 
             preferences.Set("windows", "showMenu", false);
-            pane.FocusEditor(); await Task.Delay(80);
+            pane.FocusEditor();
+            await InputRoutingTests.Settle();
             Check(window.Menu.Visibility == Visibility.Collapsed, "hiding the menu bar collapses it before access-key activation");
             revision = document.State.document_revision;
             openKeytipShown = false;
@@ -115,7 +126,8 @@ internal static class MenuAccessKeyTests
             await WaitForHiddenMenu(window);
             Check(window.Menu.Visibility == Visibility.Collapsed && !preferences.ShowMenu,
                 "Escape dismisses a temporarily opened File menu and restores hidden menu visibility");
-            pane.FocusEditor(); await Task.Delay(80);
+            pane.FocusEditor();
+            await InputRoutingTests.Settle();
             await InputRoutingTests.Key(VirtualKey.F, control: true, alt: true);
             Check(window.Menu.Visibility == Visibility.Collapsed && opened == 2,
                 "Ctrl+Alt input does not reveal the hidden menu bar or invoke a menu access key");
@@ -124,7 +136,8 @@ internal static class MenuAccessKeyTests
                 "temporary menu activation preserves document text and the saved hidden-menu preference");
 
             preferences.Set("windows", "showMenu", true);
-            pane.FocusEditor(); await Task.Delay(80);
+            pane.FocusEditor();
+            await InputRoutingTests.Settle();
             await InputRoutingTests.Key(VirtualKey.F, alt: true);
             await InputRoutingTests.Key(VirtualKey.Escape);
             Check(window.Menu.Visibility == Visibility.Visible && preferences.ShowMenu,
@@ -135,7 +148,8 @@ internal static class MenuAccessKeyTests
         {
             window.OpenDialogForTesting = null;
             preferences.Set("windows", "showMenu", originalShowMenu);
-            App.Instance.Windows.Remove(window); window.Close();
+            App.Instance.Windows.Remove(window);
+            window.Close();
         }
     }
 }

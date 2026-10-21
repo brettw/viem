@@ -29,12 +29,14 @@ internal static class CommandStatusTests
             await InputRoutingTests.Settle();
             pane.FocusEditor();
             await InputRoutingTests.Text(":");
-            Check(pane.PromptControl.LastDrawnText == ":" && pane.StatusControl.Visibility == Visibility.Visible,
+            Check(await SelfTestRunner.Until(() => pane.PromptControl.LastDrawnText == ":"
+                && pane.StatusControl.Visibility == Visibility.Visible),
                 "the first colon draws in a previously hidden status bar");
             foreach (char character in "pwd")
             {
                 await InputRoutingTests.Text(character.ToString());
-                Check(pane.PromptControl.LastDrawnText == ":" + view.Prompt().Text, $"native Ex typing paints the {character} update");
+                Check(await SelfTestRunner.Until(() => pane.PromptControl.LastDrawnText == ":" + view.Prompt().Text),
+                    $"native Ex typing paints the {character} update");
             }
             var promptBounds = pane.PromptControl.TransformToVisual(pane.StatusControl).TransformBounds(
                 new(0, 0, pane.PromptControl.ActualWidth, pane.PromptControl.ActualHeight));
@@ -70,36 +72,8 @@ internal static class CommandStatusTests
                 && FocusManager.GetFocusedElement(pane.XamlRoot) is TextBox,
                 "closing focused output restores editor focus and the hidden-status preference");
 
-            await InputRoutingTests.Text(":set wrap?");
-            await InputRoutingTests.Key(VirtualKey.Enter);
-            Check(pane.CommandOutputText == "wrap=1", ":set queries use status output without a modal dialog");
-            await InputRoutingTests.Text(":e café 日本語");
-            Check(pane.PromptControl.LastDrawnText == ":e café 日本語", "command prompt draws Unicode text");
-            await InputRoutingTests.Key(VirtualKey.Back);
-            Check(pane.PromptControl.LastDrawnText == ":e café 日本", "command prompt redraws native Backspace");
-            await InputRoutingTests.Text(new string('x', 240));
-            Check(pane.CommandOutputText == null && pane.PromptControl.ScrollOffset > 0,
-                "new commands dismiss old output and long prompts scroll to the caret");
-            await InputRoutingTests.Key(VirtualKey.Escape);
-            Check(pane.StatusControl.Visibility == Visibility.Collapsed, "Escape restores the hidden-status preference");
-
-            pane.SetMessage(string.Join("\n", Enumerable.Range(1, 20).Select(i => $"line {i}: " + new string('x', 240))));
-            Check(pane.CommandOutputText?.Length > 4000, "long output replaces the previous result");
-            // ScrollViewer measures its extent on a later WinUI layout pass.
-            for (int i = 0; i < 20 && pane.OutputScrollControl.ScrollableHeight == 0; i++) await Task.Delay(100);
-            Check(pane.StatusControl.ActualHeight == height && pane.OutputScrollControl.ScrollableHeight > 0
-                && pane.OutputScrollControl.ScrollableWidth > 0, "long multiline output scrolls inside one status row");
-            pane.OutputScrollControl.ChangeView(100, 20, null, true);
-            for (int i = 0; i < 20 && (pane.OutputScrollControl.HorizontalOffset == 0 || pane.OutputScrollControl.VerticalOffset == 0); i++) await Task.Delay(100);
-            Check(pane.OutputScrollControl.HorizontalOffset > 0 && pane.OutputScrollControl.VerticalOffset > 0,
-                "output scrolling exposes clipped lines and columns");
-            // Expiration must not take focus from another pane/control.
-            var otherControl = new Button();
-            pane.Children.Add(otherControl); otherControl.Focus(FocusState.Programmatic);
-            pane.ExpireCommandOutput(long.MaxValue);
-            Check(ReferenceEquals(FocusManager.GetFocusedElement(pane.XamlRoot), otherControl)
-                && pane.StatusControl.Visibility == Visibility.Collapsed, "expiring output preserves unrelated control focus");
-            pane.Children.Remove(otherControl); pane.FocusEditor();
+            await UnicodePromptAndCaret(pane, Check);
+            await LongOutputScrolling(pane, height, Check);
             Check(pane.Document.State.document_revision == revision, "prompt and output interaction never edits document text");
         }
         finally { preferences.Set("appearance", "showStatusBar", showStatus); pane.DismissCommandOutput(); }
@@ -158,6 +132,44 @@ internal static class CommandStatusTests
         if (pane.CommandOutputText != Environment.CurrentDirectory || pane.LastError != null)
             throw new InvalidOperationException("The scrolled document hid command output.", pane.LastError);
         FrontendSmokeTests.UiChecks.Add("Ex typing and output work with the cursor outside a large document's regional layout");
+    }
+
+    private static async Task UnicodePromptAndCaret(EditorPane pane, Action<bool, string> Check)
+    {
+        await InputRoutingTests.Text(":set wrap?");
+        await InputRoutingTests.Key(VirtualKey.Enter);
+        Check(pane.CommandOutputText == "wrap=1", ":set queries use status output without a modal dialog");
+        await InputRoutingTests.Text(":e café 日本語");
+        Check(pane.PromptControl.LastDrawnText == ":e café 日本語", "command prompt draws Unicode text");
+        await InputRoutingTests.Key(VirtualKey.Back);
+        Check(pane.PromptControl.LastDrawnText == ":e café 日本", "command prompt redraws native Backspace");
+        await InputRoutingTests.Text(new string('x', 240));
+        Check(pane.CommandOutputText == null && pane.PromptControl.ScrollOffset > 0,
+            "new commands dismiss old output and long prompts scroll to the caret");
+        await InputRoutingTests.Key(VirtualKey.Escape);
+        Check(pane.StatusControl.Visibility == Visibility.Collapsed, "Escape restores the hidden-status preference");
+    }
+
+    private static async Task LongOutputScrolling(EditorPane pane, double height, Action<bool, string> Check)
+    {
+        pane.SetMessage(string.Join("\n", Enumerable.Range(1, 20).Select(i => $"line {i}: " + new string('x', 240))));
+        Check(pane.CommandOutputText?.Length > 4000, "long output replaces the previous result");
+        // ScrollViewer measures its extent on a later WinUI layout pass.
+        await SelfTestRunner.Until(() => pane.OutputScrollControl.ScrollableHeight > 0);
+        Check(pane.StatusControl.ActualHeight == height && pane.OutputScrollControl.ScrollableHeight > 0
+            && pane.OutputScrollControl.ScrollableWidth > 0, "long multiline output scrolls inside one status row");
+        pane.OutputScrollControl.ChangeView(100, 20, null, true);
+        await SelfTestRunner.Until(() => pane.OutputScrollControl.HorizontalOffset > 0
+            && pane.OutputScrollControl.VerticalOffset > 0);
+        Check(pane.OutputScrollControl.HorizontalOffset > 0 && pane.OutputScrollControl.VerticalOffset > 0,
+            "output scrolling exposes clipped lines and columns");
+        // Expiration must not take focus from another pane/control.
+        var otherControl = new Button();
+        pane.Children.Add(otherControl); otherControl.Focus(FocusState.Programmatic);
+        pane.ExpireCommandOutput(long.MaxValue);
+        Check(ReferenceEquals(FocusManager.GetFocusedElement(pane.XamlRoot), otherControl)
+            && pane.StatusControl.Visibility == Visibility.Collapsed, "expiring output preserves unrelated control focus");
+        pane.Children.Remove(otherControl); pane.FocusEditor();
     }
 }
 #endif

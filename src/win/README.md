@@ -299,6 +299,15 @@ and runs the named stages listed in `Diagnostics/SelfTest.cs` in one process,
 then prints the slowest stages. A failing stage does not stop later ones; the
 report names every failing stage. Pass `-Suite <Name>,<Name>` (or set
 `VIEM_TEST_SUITES`) to run selected stages; an unknown name lists them all.
+Case groups also accept a specific case, for example
+`-Suite LinkInteraction.StaleContext` or `-Suite Toolbar.StyleAssignmentUndo`.
+Selecting `LinkInteraction` still runs the whole group. Groups share native
+window chrome. Cases either get a fresh document/view or explicitly restore
+their caret and verify the source baseline after undoing their edits. After a
+failure the next case always gets a fresh document/view. Setup, cases and
+cleanup have separate timings; a failed case does not hide later failures.
+Keep test entry points short: name behaviors, keep related action/assertion
+steps together, and put fixture ownership and repeated native setup in helpers.
 The run has a ten-minute process timeout; use `-TimeoutSeconds` to override it.
 Stages that inject native keyboard or pointer input need the test window to keep
 the foreground, so leave the desktop alone while they run. Keep stages fast:

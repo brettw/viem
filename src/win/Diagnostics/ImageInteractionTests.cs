@@ -18,7 +18,10 @@ namespace Viem.Windows.Diagnostics;
 internal static class ImageInteractionTests
 {
     private static void Check(bool condition, string name)
-    { if (!condition) throw new InvalidOperationException(name); FrontendSmokeTests.UiChecks.Add(name); }
+    {
+        if (!condition) throw new InvalidOperationException(name);
+        FrontendSmokeTests.UiChecks.Add(name);
+    }
 
     internal static async Task Run(Preferences preferences)
     {
@@ -33,8 +36,10 @@ internal static class ImageInteractionTests
         const string source = "![remote](https://example.invalid/a.png)\u0301 tail\n\nplain";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
         try
         {
@@ -82,29 +87,44 @@ internal static class ImageInteractionTests
             pane.ShowInsertImage();
             Check(pane.ImageEditorVisible && pane.ImageApplyLabel == "Apply" && pane.ImageTextValue == "remote" && pane.ImageDestinationValue == "https://example.invalid/a.png",
                 "image editing expands into native alt text and location fields");
-            pane.ImageDestinationValue = "javascript:alert(1)"; pane.ApplyImageEditor();
+            pane.ImageDestinationValue = "javascript:alert(1)";
+            pane.ApplyImageEditor();
             Check(pane.ImageEditorVisible && Source() == source, "invalid image locations retain the draft without changing source");
-            pane.ImageDestinationValue = "missing.png"; pane.ImageTextValue = ""; pane.ApplyImageEditor();
+            pane.ImageDestinationValue = "missing.png";
+            pane.ImageTextValue = "";
+            pane.ApplyImageEditor();
             Check(Source().StartsWith("![](<missing.png>)", StringComparison.Ordinal), "an empty image alt text remains empty when editing its location");
-            view.Undo(); Check(Source() == source, "image edit undo restores exact original source spelling");
+            view.Undo();
+            Check(Source() == source, "image edit undo restores exact original source spelling");
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             var previous = view.ImageContext();
             view.Command("G0");
             bool rejected = false;
-            try { view.EditImage(previous, "stale", "other.png"); } catch (InvalidOperationException) { rejected = true; }
+            try {
+                view.EditImage(previous, "stale", "other.png");
+            } catch (InvalidOperationException) {
+                rejected = true;
+            }
             Check(rejected && Source() == source, "a stale image popup cannot edit a later selection");
-            view.Command("gg0"); view.EditImage(view.ImageContext(), "", "", remove: true);
+            view.Command("gg0");
+            view.EditImage(view.ImageContext(), "", "", remove: true);
             Check(!Source().Contains("![", StringComparison.Ordinal) && !Source().Contains("remote", StringComparison.Ordinal),
                 "deleting an image removes its source construct and alt text");
-            view.Undo(); Check(Source() == source, "image deletion undo restores the exact source");
-            view.Command("G0viw"); pane.ShowInsertImage();
+            view.Undo();
+            Check(Source() == source, "image deletion undo restores the exact source");
+            view.Command("G0viw");
+            pane.ShowInsertImage();
             Check(pane.ImageTextValue == "plain" && pane.ImageApplyLabel == "Insert", "selected text seeds the inserted image's alt text and Insert action");
-            pane.ImageDestinationValue = "https://example.invalid/new.png"; pane.ApplyImageEditor();
+            pane.ImageDestinationValue = "https://example.invalid/new.png";
+            pane.ApplyImageEditor();
             Check(document.FormattedText().EndsWith("\uFFFC", StringComparison.Ordinal), "inserting an image replaces selected text with one atomic object");
             view.Undo();
             Check(pane.LastError == null, "image interaction diagnostics complete without presentation errors");
         }
-        finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+        finally {
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
+        }
         PickedLocationPaths();
     }
 
@@ -159,8 +179,10 @@ internal static class ImageInteractionTests
         const string source = "![old](https://example.invalid/old.png)\n\nbody";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "note.md"), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         EditorWindow? other = null;
         bool closed = false;
         string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
@@ -168,11 +190,14 @@ internal static class ImageInteractionTests
         {
             await InputRoutingTests.Settle();
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-            pane.ShowInsertImage(); pane.ImageTextValue = "draft alt"; pane.ImageDestinationValue = "draft.png";
+            pane.ShowInsertImage();
+            pane.ImageTextValue = "draft alt";
+            pane.ImageDestinationValue = "draft.png";
             Check(pane.ImageBrowseButton is { } browse && AutomationProperties.GetName(browse) == "Choose image file"
                 && browse.Content is FontIcon { Glyph: "\uE8B7" } && Grid.GetColumn(browse) == 1,
                 "the image location row has an accessible folder button to the right of its field");
-            var selection = view.LogicalSelection(); ulong revision = document.State.document_revision;
+            var selection = view.LogicalSelection();
+            ulong revision = document.State.document_revision;
             window.PickImageFileForTesting = suggested => {
                 Check(suggested == directory, "the image picker starts in the current document directory");
                 return Task.FromResult<string?>(null);
@@ -187,52 +212,82 @@ internal static class ImageInteractionTests
             Task pending = pane.BrowseImageLocation();
             Check(pane.ImageBrowseButton?.IsEnabled == false, "a pending image picker prevents duplicate dialogs");
             other = new EditorWindow(preferences, new CoreDocument("Other"u8.ToArray()));
-            App.Instance.Windows.Add(other); other.Activate(); await Task.Delay(100);
-            pane.CaretHoverFocusChanged(); pane.Refresh();
+            App.Instance.Windows.Add(other);
+            other.Activate();
+            await Task.Delay(100);
+            pane.CaretHoverFocusChanged();
+            pane.Refresh();
             Check(pane.ImageEditorVisible && pane.ImageTextValue == "draft alt" && pane.ImageDestinationValue == "draft.png",
                 "native picker focus and window deactivation preserve the image edit draft");
-            window.Activate(); choice.SetResult(path); await pending;
+            window.Activate();
+            choice.SetResult(path);
+            await pending;
             Check(pane.ImageDestinationValue == "picked %23%25.png" && pane.ImageTextValue == "draft alt"
                 && CoreView.SameSelection(view.LogicalSelection(), selection) && document.State.document_revision == revision && Source() == source,
                 "choosing an image updates only its escaped relative location draft without changing document or selection");
-            await other.ClosePane(other.ActivePane!, force: true); App.Instance.Windows.Remove(other); other = null;
+            await other.ClosePane(other.ActivePane!, force: true);
+            App.Instance.Windows.Remove(other);
+            other = null;
             pane.ApplyImageEditor();
             Check(Source().Contains("picked%20%23%25.png", StringComparison.Ordinal), "Apply publishes the picked image location through the existing verified source transaction");
-            view.Undo(); Check(Source() == source, "undo restores exact image source after applying a picker choice");
+            view.Undo();
+            Check(Source() == source, "undo restores exact image source after applying a picker choice");
 
-            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision); pane.ShowInsertImage();
-            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+            pane.ShowInsertImage();
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.PickImageFileForTesting = _ => choice.Task;
             pending = pane.BrowseImageLocation();
-            pane.DismissImagePopup(); pane.ShowInsertImage(); pane.ImageTextValue = "new draft"; pane.ImageDestinationValue = "new.png";
-            choice.SetResult(path); await pending;
+            pane.DismissImagePopup();
+            pane.ShowInsertImage();
+            pane.ImageTextValue = "new draft";
+            pane.ImageDestinationValue = "new.png";
+            choice.SetResult(path);
+            await pending;
             Check(pane.ImageEditorVisible && pane.ImageTextValue == "new draft" && pane.ImageDestinationValue == "new.png" && Source() == source,
                 "a delayed picker result cannot overwrite a cancelled and reopened image draft");
 
-            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.PickImageFileForTesting = _ => choice.Task;
             pending = pane.BrowseImageLocation();
             string? originalPath = document.FilePath;
             document.FilePath = Path.Combine(directory, "moved", "note.md");
-            choice.SetResult(path); await pending;
+            choice.SetResult(path);
+            await pending;
             Check(pane.ImageEditorVisible && pane.ImageDestinationValue == "new.png" && Source() == source,
                 "renaming or saving the document under another path rejects a delayed picker result with a different relative base");
             document.FilePath = originalPath;
 
-            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.PickImageFileForTesting = _ => choice.Task;
             pending = pane.BrowseImageLocation();
-            view.Command("G0"); choice.SetResult(path); await pending;
+            view.Command("G0");
+            choice.SetResult(path);
+            await pending;
             Check(!pane.ImageEditorVisible && Source() == source, "a changed selection rejects a delayed image picker result");
 
-            view.Command("gg0"); pane.ShowInsertImage();
-            choice = new(TaskCreationOptions.RunContinuationsAsynchronously); window.PickImageFileForTesting = _ => choice.Task;
+            view.Command("gg0");
+            pane.ShowInsertImage();
+            choice = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            window.PickImageFileForTesting = _ => choice.Task;
             pending = pane.BrowseImageLocation();
-            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); closed = true;
-            choice.SetResult(path); await pending;
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
+            closed = true;
+            choice.SetResult(path);
+            await pending;
             Check(pane.LastError == null, "an image picker completion after its view closes is ignored without accessing disposed state");
         }
         finally
         {
-            if (other != null) { await other.ClosePane(other.ActivePane!, force: true); App.Instance.Windows.Remove(other); }
-            if (!closed) { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+            if (other != null) {
+                await other.ClosePane(other.ActivePane!, force: true);
+                App.Instance.Windows.Remove(other);
+            }
+            if (!closed) {
+                await window.ClosePane(pane, force: true);
+                App.Instance.Windows.Remove(window);
+            }
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -242,23 +297,32 @@ internal static class ImageInteractionTests
         const string source = "[![alt](https://example.invalid/image.png)](https://example.invalid/page)";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         try
         {
             await InputRoutingTests.Settle();
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             Check(pane.ImagePopupVisible && !pane.LinkPopupVisible, "a linked image shows only its image location toolbar");
-            pane.ShowInsertImage(); pane.Refresh();
+            pane.ShowInsertImage();
+            pane.Refresh();
             Check(pane.ImageEditorVisible && !pane.LinkPopupVisible, "passive link refresh cannot dismiss a linked image's edit draft");
-            pane.ShowInsertLink(); pane.Refresh();
+            pane.ShowInsertLink();
+            pane.Refresh();
             Check(pane.LinkEditorVisible && !pane.ImagePopupVisible, "an explicitly opened parent link editor survives passive image refresh");
-            pane.DismissLinkPopup(); pane.FocusEditor(); pane.Refresh();
+            pane.DismissLinkPopup();
+            pane.FocusEditor();
+            pane.Refresh();
             Check(pane.ImagePopupVisible && !pane.LinkPopupVisible, "closing parent link editing restores the linked image's passive toolbar");
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "switching between nested link and image popups does not mutate source");
         }
-        finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+        finally {
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
+        }
     }
 
     internal static async Task KeyboardSelection(Preferences preferences)
@@ -266,8 +330,10 @@ internal static class ImageInteractionTests
         const string source = "A![alt](https://example.invalid/image.png)B";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         string FocusDetails() => $"editor={pane.ImageEditorVisible}, text='{pane.ImageTextValue}', location='{pane.ImageDestinationValue}', "
             + $"focus={FocusManager.GetFocusedElement(pane.XamlRoot)?.GetType().Name}, "
             + $"focusName={(FocusManager.GetFocusedElement(pane.XamlRoot) is DependencyObject focused ? AutomationProperties.GetName(focused) : "none")}, "
@@ -278,7 +344,8 @@ internal static class ImageInteractionTests
         try
         {
             await InputRoutingTests.Settle();
-            view.Command("i"); view.Key(VIEM_KEY_RIGHT);
+            view.Command("i");
+            view.Key(VIEM_KEY_RIGHT);
             var selection = view.LogicalSelection();
             Check(view.HasSelection && selection.text_start == 1 && selection.text_end == 4
                 && pane.CaretIsOnInlineImage() && pane.ImagePopupVisible
@@ -297,7 +364,10 @@ internal static class ImageInteractionTests
             view.Undo();
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "undo restores the image's original source after keyboard replacement");
-            view.Key(VIEM_KEY_ESCAPE); view.Command("gg0i"); view.Key(VIEM_KEY_RIGHT); view.Key(VIEM_KEY_RIGHT);
+            view.Key(VIEM_KEY_ESCAPE);
+            view.Command("gg0i");
+            view.Key(VIEM_KEY_RIGHT);
+            view.Key(VIEM_KEY_RIGHT);
             var beforeInsert = view.Presentation;
             var insertionContext = view.ImageContext();
             var imageButtonOrigin = window.Toolbar.InsertImage.TransformToVisual(window.Toolbar.Viewport).TransformPoint(new Point());
@@ -306,8 +376,13 @@ internal static class ImageInteractionTests
             window.Toolbar.InsertImage.Click += clicked;
             Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "the image insertion button accepts native keyboard focus");
             var initialFocus = FocusManager.GetFocusedElement(pane.XamlRoot);
-            try { await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space); await InputRoutingTests.Settle(); }
-            finally { window.Toolbar.InsertImage.Click -= clicked; }
+            try {
+                await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+                await InputRoutingTests.Settle();
+            }
+            finally {
+                window.Toolbar.InsertImage.Click -= clicked;
+            }
             Check(pane.ImageEditorVisible && pane.ImageTextValue == "" && pane.ImageDestinationValue == "",
                 "Insert image opens an empty insertion form beside an existing image "
                 + $"(before mode={beforeInsert.mode}, offset={beforeInsert.cursor_utf8_offset}, "
@@ -325,10 +400,14 @@ internal static class ImageInteractionTests
                 "image keyboard activation preserves subsequent native typing including a genuine leading space (before: " + beforeSpaceTyping + "; after: " + afterSpaceTyping + ")");
             pane.ApplyImageEditor();
             Check(document.FormattedText() == "A\uFFFC\uFFFCB", "Insert image creates a new object at the caret without editing the adjacent image");
-            view.Key(VIEM_KEY_ESCAPE); view.Undo();
+            view.Key(VIEM_KEY_ESCAPE);
+            view.Undo();
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "inserting beside an image restores exact original source on undo");
-            view.Key(VIEM_KEY_ESCAPE); view.Command("gg0i"); view.Key(VIEM_KEY_RIGHT); view.Key(VIEM_KEY_RIGHT);
+            view.Key(VIEM_KEY_ESCAPE);
+            view.Command("gg0i");
+            view.Key(VIEM_KEY_RIGHT);
+            view.Key(VIEM_KEY_RIGHT);
             Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "image insertion accepts focus for Enter activation");
             await InputRoutingTests.Key(global::Windows.System.VirtualKey.Enter);
             Check(pane.ImageEditorVisible && pane.ImageDestinationValue == "",
@@ -337,22 +416,29 @@ internal static class ImageInteractionTests
             await InputRoutingTests.Text(" another.png");
             Check(pane.ImageDestinationValue == " another.png", "Enter image activation preserves subsequent native leading-space input (before: " + beforeEnterTyping + "; after: " + FocusDetails()
                 + "; earlier Space before: " + beforeSpaceTyping + "; earlier Space after: " + afterSpaceTyping + ")");
-            pane.DismissImagePopup(suppress: false); pane.FocusEditor();
+            pane.DismissImagePopup(suppress: false);
+            pane.FocusEditor();
             await InputRoutingTests.Drag(window, window.Toolbar.InsertImage, new Point[] { new(.5, .5) }, _ => { }, focusTarget: false);
             Check(pane.ImageEditorVisible && pane.ImageDestinationValue == "", "a direct image toolbar click opens an empty form (" + FocusDetails() + ")");
             string beforePointerTyping = FocusDetails();
             await InputRoutingTests.Text(" clicked.png");
             Check(pane.ImageDestinationValue == " clicked.png", "direct image toolbar clicks preserve subsequent native leading-space input (before: " + beforePointerTyping + "; after: " + FocusDetails() + ")");
-            pane.DismissImagePopup(suppress: false); pane.FocusEditor();
+            pane.DismissImagePopup(suppress: false);
+            pane.FocusEditor();
             Check(window.Toolbar.InsertImage.Focus(FocusState.Programmatic), "image insertion accepts focus for cancellation before deferred field focus");
-            pane.ShowInsertImage(); pane.DismissImagePopup(suppress: false); pane.FocusEditor();
+            pane.ShowInsertImage();
+            pane.DismissImagePopup(suppress: false);
+            pane.FocusEditor();
             var focusAfterDismissal = FocusManager.GetFocusedElement(pane.XamlRoot);
             await Task.Delay(30);
             Check(!pane.ImageEditorVisible && ReferenceEquals(FocusManager.GetFocusedElement(pane.XamlRoot), focusAfterDismissal)
                 && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "dismissing a pending image form cancels deferred focus without source changes or later focus theft");
         }
-        finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+        finally {
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
+        }
     }
 
     internal static async Task LocalPreview(Preferences preferences)
@@ -365,8 +451,10 @@ internal static class ImageInteractionTests
         const string source = "before ![local](wide.bmp) after";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         EditorPane? copy = null;
         try
         {
@@ -374,7 +462,8 @@ internal static class ImageInteractionTests
             Check(pane.LocalImagePreviewCount == 1 && pane.PendingImageLoads == 0, "a relative local raster image decodes within the bounded preview cache");
             var bitmap = pane.SharedImageBitmapForTest("wide.bmp");
             int attempts = pane.ImagePreviewLoadAttempts;
-            copy = window.SplitPane(pane, document); var copyView = await copy.Ready;
+            copy = window.SplitPane(pane, document);
+            var copyView = await copy.Ready;
             Check(bitmap != null && ReferenceEquals(bitmap, copy.SharedImageBitmapForTest("wide.bmp"))
                 && copy.ImagePreviewLoadAttempts == attempts && copy.PendingImageLoads == 0
                 && copyView.Provider.ImageDimensions("wide.bmp") == (1600u, 800u),
@@ -397,7 +486,9 @@ internal static class ImageInteractionTests
                 Check(pane.ImagePreviewLoadAttempts >= attempts && pane.PendingImageLoads == 0, "the requested local image reload completes");
             }
             int reloadAttempt = pane.ImagePreviewLoadAttempts + 1;
-            WriteBitmap(path, 80, 120); pane.ReloadShownImage(); await WaitForLoads(reloadAttempt);
+            WriteBitmap(path, 80, 120);
+            pane.ReloadShownImage();
+            await WaitForLoads(reloadAttempt);
             var reloaded = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
             Check(Math.Abs(reloaded.typographic_bounds.width - 80 * view.Viewport.scale) < .01
                 && Math.Abs(reloaded.typographic_bounds.height - 120 * view.Viewport.scale) < .01,
@@ -405,7 +496,8 @@ internal static class ImageInteractionTests
             Check(copyView.Provider.ImageDimensions("wide.bmp") == (80u, 120u)
                 && ReferenceEquals(copy.SharedImageBitmapForTest("wide.bmp"), pane.SharedImageBitmapForTest("wide.bmp")),
                 "reloading an image publishes the new dimensions and one shared bitmap to both views");
-            await window.ClosePane(copy, force: true); copy = null;
+            await window.ClosePane(copy, force: true);
+            copy = null;
             Check(pane.LocalImagePreviewCount == 1 && pane.PendingImageLoads == 0,
                 "closing one view preserves the surviving view's decoded images");
             float stableHeight = view.Layout().Info.total_height, stableTop = view.Viewport.top;
@@ -420,10 +512,14 @@ internal static class ImageInteractionTests
             await WaitForLoads(reloadAttempt + 1);
             Check(Math.Abs(view.Layout().Info.total_height - stableHeight) < .01 && Math.Abs(view.Viewport.top - stableTop) < .01,
                 "a bitmap-only resource refresh preserves measured document extents");
-            File.Delete(path); pane.ReloadShownImage(); await WaitForLoads(reloadAttempt + 2);
+            File.Delete(path);
+            pane.ReloadShownImage();
+            await WaitForLoads(reloadAttempt + 2);
             Check(pane.ImagePreviewIsBroken("wide.bmp") && pane.LocalImagePreviewCount == 0,
                 "reloading a missing local image replaces its raster with the broken-image icon and URL placeholder");
-            WriteBitmap(path, 40, 40); pane.ReloadShownImage(); await WaitForLoads(reloadAttempt + 3);
+            WriteBitmap(path, 40, 40);
+            pane.ReloadShownImage();
+            await WaitForLoads(reloadAttempt + 3);
             Check(!pane.ImagePreviewIsBroken("wide.bmp") && pane.LocalImagePreviewCount == 1,
                 "Reload recovers a repaired local image after a failed preview");
             Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
@@ -432,7 +528,8 @@ internal static class ImageInteractionTests
         finally
         {
             if (copy != null) await window.ClosePane(copy, force: true);
-            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
             Directory.Delete(directory, recursive: true);
         }
         Check(pane.LocalImagePreviewCount == 0 && pane.PendingImageLoads == 0, "closing the document releases decoded images and cancels its preview work");
@@ -458,8 +555,10 @@ internal static class ImageInteractionTests
             + "\n\n![near](near.bmp)\n\n" + filler + "\n\n![far](far.bmp)\n\nend";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         try
         {
             await BackgroundLayoutTests.Idle(view);
@@ -471,7 +570,8 @@ internal static class ImageInteractionTests
             int probes = view.Provider.ImageDimensionProbes;
             ulong generation = view.Provider.Generation;
             float extent = view.Viewport.maximum_top;
-            view.Command("G"); pane.Refresh();
+            view.Command("G");
+            pane.Refresh();
             for (int i = 0; i < 200 && (view.Provider.ImageState("far.bmp") != InlineImageState.Ready || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
             var far = view.Layout().Clusters.Single(c => view.Provider.ImageDestination(c.render_run) == "far.bmp");
             Check(view.Provider.ImageState("far.bmp") == InlineImageState.Ready && view.Provider.Generation == generation
@@ -482,7 +582,8 @@ internal static class ImageInteractionTests
             // Foreground layout cannot probe: its placeholder changes once.
             {
                 var cold = new CoreDocument(Encoding.UTF8.GetBytes("![cold](near.bmp)"), Path.Combine(directory, "cold.md"), VIEM_FORMAT_MARKDOWN);
-                var coldPane = window.AddPane(cold); var coldView = await coldPane.Ready;
+                var coldPane = window.AddPane(cold);
+                var coldView = await coldPane.Ready;
                 coldView.BackgroundLayout.Enabled = false;
                 for (int i = 0; i < 200 && (coldView.Provider.ImageState("near.bmp") != InlineImageState.Ready || coldPane.PendingImageLoads != 0); i++) await Task.Delay(25);
                 var cluster = coldView.Layout().Clusters.Single(c => coldView.Provider.IsInlineImage(c.render_run));
@@ -491,10 +592,14 @@ internal static class ImageInteractionTests
                 await window.ClosePane(coldPane, force: true);
             }
 
-            view.Command("gg"); pane.Refresh();
+            view.Command("gg");
+            pane.Refresh();
             for (int i = 0; i < 200 && (view.Provider.ImageState("large.bmp") != InlineImageState.Ready || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
             using var surface = new Microsoft.Graphics.Canvas.CanvasRenderTarget(pane.Canvas.Device, (float)pane.Canvas.ActualWidth, (float)pane.Canvas.ActualHeight, pane.Canvas.Dpi);
-            void Draw() { using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing); }
+            void Draw() {
+                using var drawing = surface.CreateDrawingSession();
+                pane.Draw(drawing);
+            }
             // The pane's own frames have already drawn the visible images. At a
             // nondefault display scale smaller images also get device-size copies.
             for (int i = 0; i < 200 && pane.ImageResamplePending; i++) await Task.Delay(25);
@@ -510,7 +615,8 @@ internal static class ImageInteractionTests
             Draw();
             for (int i = 0; i < 200 && pane.ImageResamplePending; i++) await Task.Delay(25);
             int resampled = pane.ScaledImageRenders;
-            Draw(); Draw();
+            Draw();
+            Draw();
             Check(pane.HasScaledImageForTest("large.bmp") && resampled > renders && pane.ScaledImageRenders == resampled
                 && pane.ScaledImageBytes > 0 && !pane.ImageResamplePending,
                 "drawing reuses one resampled copy per bitmap and device size");
@@ -518,7 +624,8 @@ internal static class ImageInteractionTests
         }
         finally
         {
-            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
             Directory.Delete(directory, recursive: true);
         }
         Check(pane.ScaledImageCount == 0 && pane.LocalImagePreviewCount == 0, "closing a view releases its decoded and resampled images");
@@ -541,8 +648,10 @@ internal static class ImageInteractionTests
                 string source = string.Join("\n\n", cases.Select(c => "<img src='sized.bmp' " + c.Item1 + " alt='preserved' title='untouched'>"));
                 var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
                 var window = new EditorWindow(preferences, document);
-                App.Instance.Windows.Add(window); window.Activate();
-                var pane = window.ActivePane!; var view = await pane.Ready;
+                App.Instance.Windows.Add(window);
+                window.Activate();
+                var pane = window.ActivePane!;
+                var view = await pane.Ready;
                 string labels = string.Join(", ", cases.Select(c => c.Item1));
                 try
                 {
@@ -563,53 +672,43 @@ internal static class ImageInteractionTests
                     Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                         "HTML dimensions and unrelated attributes survive native image loading and Markdown Preview off: " + labels);
                 }
-                finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+                finally {
+                    await window.ClosePane(pane, force: true);
+                    App.Instance.Windows.Remove(window);
+                }
             }
         }
-        finally { Directory.Delete(directory, recursive: true); }
+        finally {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     private static void WriteBitmap(string path, int width, int height)
     {
         int stride = (width * 3 + 3) & ~3, bytes = stride * height;
-        using var file = File.Create(path); using var writer = new BinaryWriter(file);
-        writer.Write((ushort)0x4D42); writer.Write(54 + bytes); writer.Write(0); writer.Write(54);
-        writer.Write(40); writer.Write(width); writer.Write(height); writer.Write((ushort)1); writer.Write((ushort)24);
-        writer.Write(0); writer.Write(bytes); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0);
+        using var file = File.Create(path);
+        using var writer = new BinaryWriter(file);
+        writer.Write((ushort)0x4D42);
+        writer.Write(54 + bytes);
+        writer.Write(0);
+        writer.Write(54);
+        writer.Write(40);
+        writer.Write(width);
+        writer.Write(height);
+        writer.Write((ushort)1);
+        writer.Write((ushort)24);
+        writer.Write(0);
+        writer.Write(bytes);
+        writer.Write(0);
+        writer.Write(0);
+        writer.Write(0);
+        writer.Write(0);
         writer.Write(new byte[bytes]);
     }
 
     internal static async Task SizeEditor(Preferences preferences)
     {
-        var draft = new ImageSizeDraft();
-        draft.Reset(200, 101); draft.SetNatural(400, 200);
-        Check(draft.Locked, "image ratio inference accepts a height within one pixel of its natural proportion");
-        draft.Reset(101, 200); draft.SetNatural(200, 400);
-        Check(draft.Locked, "image ratio inference independently accepts a width within one pixel of its natural proportion");
-        draft.Reset(101, 203); draft.SetNatural(200, 400);
-        Check(draft.Locked, "one-pixel ratio tolerance accepts either direction even when the reverse exceeds one pixel");
-        draft.Reset(100, 203); draft.SetNatural(200, 400);
-        Check(!draft.Locked, "image ratio inference rejects dimensions outside both one-pixel tolerances");
-        draft.Reset(80, null); draft.SetNatural(120, 60);
-        Check(draft.Expanded && draft.Locked && draft.Width == "80" && draft.Height == "40",
-            "an image with one authored dimension fills its other dimension using the natural ratio");
-        Check(draft.Dimensions() == (80u, 0u), "displaying a derived height leaves a width-only authored image unchanged");
-        draft.SetExpanded(false);
-        Check(draft.Dimensions() == (80u, 0u), "collapsing the size disclosure preserves authored dimensions");
-        draft.Reset(null, 90); draft.SetNatural(120, 60);
-        Check(draft.Locked && draft.Width == "180" && draft.Height == "90", "height-only sizing retains its authored height");
-        draft.Reset(null, null); draft.SetExpanded(true); draft.SetNatural(120, 60);
-        draft.SetLocked(false); draft.EditHeight("99"); draft.EditWidth("50"); draft.SetLocked(true);
-        Check(draft.Width == "50" && draft.Height == "25", "relocking preserves the most recently edited width");
-        draft.SetLocked(false); draft.EditHeight("40"); draft.SetLocked(true);
-        Check(draft.Width == "80" && draft.Height == "40", "relocking preserves the most recently edited height");
-        draft.EditWidth("0"); bool invalid = false;
-        try { draft.Dimensions(); } catch (InvalidOperationException) { invalid = true; }
-        Check(invalid, "zero image dimensions are invalid drafts instead of silent dimension removal");
-        draft.EditWidth(""); draft.EditHeight(""); draft.SetExpanded(false); draft.SetExpanded(true);
-        Check(draft.Dimensions() == (0u, 0u) && draft.Width == "" && draft.Height == "",
-            "blanking both dimensions explicitly removes sizing and survives reopening the disclosure");
-
+        ImageSizeDraftRules();
         string directory = Path.Combine(Path.GetTempPath(), "viem-image-size-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         WriteBitmap(Path.Combine(directory, "sized.bmp"), 120, 60);
@@ -618,94 +717,27 @@ internal static class ImageInteractionTests
         const string source = "<img src='sized.bmp' width='80' height='180' alt='original' title='keep'>";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
-        string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
-        async Task WaitForImage(EditorPane target, CoreView owner, string destination)
-        {
-            for (int i = 0; i < 200 && (owner.Provider.ImageState(destination) != InlineImageState.Ready || target.PendingImageLoads != 0); i++)
-                await Task.Delay(25);
-            Check(owner.Provider.ImageState(destination) == InlineImageState.Ready && target.PendingImageLoads == 0,
-                "local image insertion or update loads its bitmap without saving or reopening: " + destination);
-        }
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         try
         {
-            await WaitForImage(pane, view, "sized.bmp");
+            await EditImageDimensions(pane, view, document, source);
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
             pane.ShowInsertImage();
-            Check(pane.ImageApplyLabel == "Apply" && pane.ImageSizeExpanded && pane.ImageWidthValue == "80"
-                && pane.ImageHeightValue == "180" && !pane.ImageSizeLocked,
-                "editing explicit stretched dimensions expands the size controls and starts unlocked");
-            pane.ImageHeightValue = "100"; pane.SetImageSizeLocked(true);
-            Check(pane.ImageWidthValue == "200" && pane.ImageHeightValue == "100",
-                "native dimension fields relock around the most recently changed height");
-            pane.SetImageSizeLocked(false); pane.ImageHeightValue = "200"; pane.ImageWidthValue = "250";
-            pane.SetImageSizeLocked(true);
-            Check(pane.ImageWidthValue == "250" && pane.ImageHeightValue == "125",
-                "native dimension fields relock around the most recently changed width");
-            pane.UseNaturalImageSize();
-            Check(pane.ImageWidthValue == "120" && pane.ImageHeightValue == "60", "Use image size restores both intrinsic pixel dimensions");
-            pane.DismissImagePopup(suppress: false); pane.ShowInsertImage(); pane.SetImageSizeLocked(true);
-            Check(pane.ImageWidthValue == "80" && pane.ImageHeightValue == "40",
-                "a reopened image draft forgets prior field history and relocks by preserving width");
+            pane.ImageDestinationValue = "updated.bmp";
             pane.ApplyImageEditor();
-            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-            Check(view.ImageContext().Image is { Width: 80, Height: 40 } && Source().Contains("title='keep'", StringComparison.Ordinal),
-                "applying image size publishes dimensions while preserving unrelated HTML attributes");
-            view.Undo(); Check(Source() == source, "image sizing undo restores exact HTML source");
-            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision); pane.ShowInsertImage();
-            pane.ImageWidthValue = "0"; pane.ApplyImageEditor();
-            Check(pane.ImageEditorVisible && Source() == source, "invalid native image sizing keeps the form open and source untouched");
-            pane.DismissImagePopup(suppress: false); pane.ShowInsertImage();
-            pane.SetImageSizeExpanded(false); pane.ApplyImageEditor();
-            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-            Check(view.ImageContext().Image is { Width: 80, Height: 180 } && Source() == source,
-                "collapsing Specify size only hides controls and Apply preserves exact source");
-            pane.ShowInsertImage(); pane.ImageWidthValue = ""; pane.ImageHeightValue = ""; pane.ApplyImageEditor();
-            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
-            Check(view.ImageContext().Image is { Width: null, Height: null }, "blanking both image dimensions removes explicit image sizing");
-            view.Undo(); Check(Source() == source, "clearing image sizing undo restores exact HTML source");
-
-            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision); pane.ShowInsertImage();
-            pane.ImageDestinationValue = "updated.bmp"; pane.ApplyImageEditor();
             await WaitForImage(pane, view, "updated.bmp");
             Check(!File.Exists(Path.Combine(directory, "source.md")), "image location updates render before the document has ever been saved");
 
-            var fresh = new CoreDocument("body"u8.ToArray(), Path.Combine(directory, "fresh.md"), VIEM_FORMAT_MARKDOWN);
-            var insertPane = window.AddPane(fresh); var insertView = await insertPane.Ready;
-            try
-            {
-                insertView.Command("i"); insertPane.ShowInsertImage();
-                Check(insertPane.ImageApplyLabel == "Insert" && !insertPane.ImageSizeExpanded,
-                    "first image insertion offers Insert and initially collapsed size controls");
-                insertPane.ImageDestinationValue = "sized.bmp"; insertPane.SetImageSizeExpanded(true);
-                for (int i = 0; i < 200 && !insertPane.ImageSizeNaturalKnown; i++) await Task.Delay(25);
-                Check(insertPane.ImageSizeLocked && insertPane.ImageWidthValue == "120" && insertPane.ImageHeightValue == "60",
-                    "expanding a new local image size probes its header and populates natural locked dimensions");
-                insertPane.ImageWidthValue = "80";
-                Check(insertPane.ImageHeightValue == "40", "editing a locked width updates its height proportionally");
-                insertPane.ApplyImageEditor(); await WaitForImage(insertPane, insertView, "sized.bmp");
-                var image = insertView.Layout().Clusters.Single(c => insertView.Provider.IsInlineImage(c.render_run));
-                Check(Math.Abs(image.typographic_bounds.width - 80 * insertView.Viewport.scale) < .01
-                    && Math.Abs(image.typographic_bounds.height - 40 * insertView.Viewport.scale) < .01
-                    && !File.Exists(Path.Combine(directory, "fresh.md")),
-                    "a newly inserted sized image immediately uses its authored geometry and decoded bitmap without saving");
-                insertView.Key(VIEM_KEY_ESCAPE); insertView.Undo();
-                Check(Encoding.UTF8.GetString(fresh.Source(fresh.State.document_revision)) == "body", "sized image insertion is one exact undo unit");
-
-                insertView.Command("gg0i"); insertPane.ShowInsertImage(); insertPane.ImageDestinationValue = "delayed.bmp";
-                insertPane.SetImageSizeExpanded(true); insertPane.DismissImagePopup(suppress: false);
-                insertPane.ShowInsertImage(); insertPane.ImageDestinationValue = "https://example.invalid/no-fetch.png";
-                insertPane.SetImageSizeExpanded(true); await Task.Delay(250);
-                Check(!insertPane.ImageSizeNaturalKnown && insertPane.ImageWidthValue == "" && insertPane.ImageHeightValue == "",
-                    "a cancelled size probe cannot populate a reopened remote-image draft");
-            }
-            finally { await window.ClosePane(insertPane, force: true); }
+            await InsertSizedImage(window, directory);
             Check(pane.LastError == null, "image size interactions finish without native presentation errors");
         }
         finally
         {
-            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -719,8 +751,10 @@ internal static class ImageInteractionTests
         const string source = "![](limit.bmp)";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         try
         {
             async Task WaitForLoads(int attempts)
@@ -732,7 +766,8 @@ internal static class ImageInteractionTests
             {
                 view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
                 int attempts = pane.ImagePreviewLoadAttempts + 1;
-                pane.ReloadShownImage(); await WaitForLoads(attempts);
+                pane.ReloadShownImage();
+                await WaitForLoads(attempts);
             }
             void CheckLimited(string name) => Check(pane.ImagePreviewIsLimited("limit.bmp")
                 && !pane.ImagePreviewIsBroken("limit.bmp") && pane.LocalImagePreviewCount == 0, name);
@@ -741,8 +776,10 @@ internal static class ImageInteractionTests
             void PadFile(long bytes)
             {
                 using var file = new FileStream(path, FileMode.Open, FileAccess.Write);
-                file.SetLength(bytes); file.Position = 2;
-                using var writer = new BinaryWriter(file); writer.Write(checked((int)bytes));
+                file.SetLength(bytes);
+                file.Position = 2;
+                using var writer = new BinaryWriter(file);
+                writer.Write(checked((int)bytes));
             }
 
             await WaitForLoads(1);
@@ -754,37 +791,46 @@ internal static class ImageInteractionTests
             Check(pane.ImagePreviewLoadAttempts == attempts && pane.ImagePreviewIsLimited("limit.bmp"),
                 "an image rejected by size limits stays terminal after bitmap eviction and passive refresh");
 
-            WriteBitmap(path, 5000, 1); await Reload();
+            WriteBitmap(path, 5000, 1);
+            await Reload();
             CheckReady("Reload accepts a replacement whose width is exactly 5000 pixels");
             var wide = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
             Check(wide.typographic_bounds.width <= 1024.01 && wide.typographic_bounds.height <= 1024.01
                 && Math.Abs(wide.typographic_bounds.height / wide.typographic_bounds.width - 1.0 / 5000) < .00001,
                 "accepted wide images fit the 1024-DIP display limit while preserving aspect ratio");
-            WriteBitmap(path, 1, 5001); await Reload();
+            WriteBitmap(path, 1, 5001);
+            await Reload();
             CheckLimited("a 5001-pixel-high local image displays the URL without a broken-image icon");
-            WriteBitmap(path, 1, 5000); await Reload();
+            WriteBitmap(path, 1, 5000);
+            await Reload();
             CheckReady("Reload accepts a replacement whose height is exactly 5000 pixels");
             var tall = view.Layout().Clusters.Single(c => view.Provider.IsInlineImage(c.render_run));
             Check(tall.typographic_bounds.width <= 1024.01 && tall.typographic_bounds.height <= 1024.01
                 && Math.Abs(tall.typographic_bounds.width / tall.typographic_bounds.height - 1.0 / 5000) < .00001,
                 "accepted tall images fit the 1024-DIP display limit while preserving aspect ratio");
 
-            WriteBitmap(path, 1, 1); PadFile(10_000_000); await Reload();
+            WriteBitmap(path, 1, 1);
+            PadFile(10_000_000);
+            await Reload();
             CheckReady("a local raster of exactly 10,000,000 bytes is admitted");
-            PadFile(10_000_001); await Reload();
+            PadFile(10_000_001);
+            await Reload();
             CheckLimited("a local file above 10,000,000 bytes displays the URL without a broken-image icon");
             Check(await LocalImagePreview.CanOpenFile(path), "preview limits do not block an explicit Open action on a local raster");
-            File.WriteAllText(path, "this is not an image"); await Reload();
+            File.WriteAllText(path, "this is not an image");
+            await Reload();
             Check(pane.ImagePreviewIsBroken("limit.bmp") && !pane.ImagePreviewIsLimited("limit.bmp") && pane.LocalImagePreviewCount == 0,
                 "a corrupt image remains distinct from size-limited previews and displays the broken-image icon");
-            WriteBitmap(path, 40, 40); await Reload();
+            WriteBitmap(path, 40, 40);
+            await Reload();
             CheckReady("Reload clears a terminal placeholder after replacing the file with a supported local raster");
             Check(!document.IsDirty && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "image admission limits and explicit reloads preserve document source and dirty state");
         }
         finally
         {
-            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -799,8 +845,10 @@ internal static class ImageInteractionTests
             + string.Join("\n\n", Enumerable.Repeat("Paragraphs keep the wheel viewport away from the document end.", 100));
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         try
         {
             for (int i = 0; i < 200 && (pane.ImagePreviewLoadAttempts == 0 || pane.PendingImageLoads != 0); i++) await Task.Delay(25);
@@ -826,7 +874,8 @@ internal static class ImageInteractionTests
         }
         finally
         {
-            await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
             Directory.Delete(directory, recursive: true);
         }
     }
@@ -836,8 +885,10 @@ internal static class ImageInteractionTests
         const string source = "![alt](https://example.invalid/style.png)";
         var document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: VIEM_FORMAT_MARKDOWN);
         var window = new EditorWindow(preferences, document);
-        App.Instance.Windows.Add(window); window.Activate();
-        var pane = window.ActivePane!; var view = await pane.Ready;
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        var pane = window.ActivePane!;
+        var view = await pane.Ready;
         try
         {
             await InputRoutingTests.Settle();
@@ -849,7 +900,10 @@ internal static class ImageInteractionTests
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "Image style presentation retains the authored source spelling");
         }
-        finally { await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window); }
+        finally {
+            await window.ClosePane(pane, force: true);
+            App.Instance.Windows.Remove(window);
+        }
     }
 
     internal static async Task CacheBudgets(Preferences preferences)
@@ -865,16 +919,29 @@ internal static class ImageInteractionTests
                 {
                     using var file = File.Create(Path.Combine(directory, "image" + i + ".bmp"));
                     using var writer = new BinaryWriter(file);
-                    writer.Write((ushort)0x4D42); writer.Write(54 + bytes); writer.Write(0); writer.Write(54);
-                    writer.Write(40); writer.Write(size); writer.Write(size); writer.Write((ushort)1); writer.Write((ushort)24);
-                    writer.Write(0); writer.Write(bytes); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0);
+                    writer.Write((ushort)0x4D42);
+                    writer.Write(54 + bytes);
+                    writer.Write(0);
+                    writer.Write(54);
+                    writer.Write(40);
+                    writer.Write(size);
+                    writer.Write(size);
+                    writer.Write((ushort)1);
+                    writer.Write((ushort)24);
+                    writer.Write(0);
+                    writer.Write(bytes);
+                    writer.Write(0);
+                    writer.Write(0);
+                    writer.Write(0);
+                    writer.Write(0);
                     writer.Write(new byte[bytes]);
                 }
             }
             string source = string.Join(pixelSize == null ? "\n\n" : " ", Enumerable.Range(0, count).Select(i => "![](image" + i + ".bmp)"));
             var document = new CoreDocument(Encoding.UTF8.GetBytes(source), Path.Combine(directory, "source.md"), VIEM_FORMAT_MARKDOWN);
             var window = new EditorWindow(preferences, document);
-            App.Instance.Windows.Add(window); window.Activate();
+            App.Instance.Windows.Add(window);
+            window.Activate();
             var pane = window.ActivePane!;
             if (budget is long limit) pane.SetImagePreviewByteBudgetForTest(limit);
             var view = await pane.Ready;
@@ -896,7 +963,8 @@ internal static class ImageInteractionTests
             }
             finally
             {
-                await window.ClosePane(pane, force: true); App.Instance.Windows.Remove(window);
+                await window.ClosePane(pane, force: true);
+                App.Instance.Windows.Remove(window);
                 Directory.Delete(directory, recursive: true);
             }
         }
@@ -904,5 +972,166 @@ internal static class ImageInteractionTests
         await Fixture(3, null, null, 0, 3, "failed local image requests ahead of a full queue");
     }
 
+
+    private static void ImageSizeDraftRules()
+    {
+        var draft = new ImageSizeDraft();
+        draft.Reset(200, 101);
+        draft.SetNatural(400, 200);
+        Check(draft.Locked, "image ratio inference accepts a height within one pixel of its natural proportion");
+        draft.Reset(101, 200);
+        draft.SetNatural(200, 400);
+        Check(draft.Locked, "image ratio inference independently accepts a width within one pixel of its natural proportion");
+        draft.Reset(101, 203);
+        draft.SetNatural(200, 400);
+        Check(draft.Locked, "one-pixel ratio tolerance accepts either direction even when the reverse exceeds one pixel");
+        draft.Reset(100, 203);
+        draft.SetNatural(200, 400);
+        Check(!draft.Locked, "image ratio inference rejects dimensions outside both one-pixel tolerances");
+        draft.Reset(80, null);
+        draft.SetNatural(120, 60);
+        Check(draft.Expanded && draft.Locked && draft.Width == "80" && draft.Height == "40",
+            "an image with one authored dimension fills its other dimension using the natural ratio");
+        Check(draft.Dimensions() == (80u, 0u), "displaying a derived height leaves a width-only authored image unchanged");
+        draft.SetExpanded(false);
+        Check(draft.Dimensions() == (80u, 0u), "collapsing the size disclosure preserves authored dimensions");
+        draft.Reset(null, 90);
+        draft.SetNatural(120, 60);
+        Check(draft.Locked && draft.Width == "180" && draft.Height == "90", "height-only sizing retains its authored height");
+        draft.Reset(null, null);
+        draft.SetExpanded(true);
+        draft.SetNatural(120, 60);
+        draft.SetLocked(false);
+        draft.EditHeight("99");
+        draft.EditWidth("50");
+        draft.SetLocked(true);
+        Check(draft.Width == "50" && draft.Height == "25", "relocking preserves the most recently edited width");
+        draft.SetLocked(false);
+        draft.EditHeight("40");
+        draft.SetLocked(true);
+        Check(draft.Width == "80" && draft.Height == "40", "relocking preserves the most recently edited height");
+        draft.EditWidth("0");
+        bool invalid = false;
+        try {
+            draft.Dimensions();
+        } catch (InvalidOperationException) {
+            invalid = true;
+        }
+        Check(invalid, "zero image dimensions are invalid drafts instead of silent dimension removal");
+        draft.EditWidth("");
+        draft.EditHeight("");
+        draft.SetExpanded(false);
+        draft.SetExpanded(true);
+        Check(draft.Dimensions() == (0u, 0u) && draft.Width == "" && draft.Height == "",
+            "blanking both dimensions explicitly removes sizing and survives reopening the disclosure");
+    }
+
+    private static async Task WaitForImage(EditorPane target, CoreView owner, string destination)
+    {
+        for (int i = 0; i < 200 && (owner.Provider.ImageState(destination) != InlineImageState.Ready || target.PendingImageLoads != 0); i++)
+            await Task.Delay(25);
+        Check(owner.Provider.ImageState(destination) == InlineImageState.Ready && target.PendingImageLoads == 0,
+            "local image insertion or update loads its bitmap without saving or reopening: " + destination);
+    }
+
+    private static async Task EditImageDimensions(EditorPane pane, CoreView view, CoreDocument document, string source)
+    {
+        string Source() => Encoding.UTF8.GetString(document.Source(document.State.document_revision));
+        await WaitForImage(pane, view, "sized.bmp");
+        view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+        pane.ShowInsertImage();
+        Check(pane.ImageApplyLabel == "Apply" && pane.ImageSizeExpanded && pane.ImageWidthValue == "80"
+            && pane.ImageHeightValue == "180" && !pane.ImageSizeLocked,
+            "editing explicit stretched dimensions expands the size controls and starts unlocked");
+        pane.ImageHeightValue = "100";
+        pane.SetImageSizeLocked(true);
+        Check(pane.ImageWidthValue == "200" && pane.ImageHeightValue == "100",
+            "native dimension fields relock around the most recently changed height");
+        pane.SetImageSizeLocked(false);
+        pane.ImageHeightValue = "200";
+        pane.ImageWidthValue = "250";
+        pane.SetImageSizeLocked(true);
+        Check(pane.ImageWidthValue == "250" && pane.ImageHeightValue == "125",
+            "native dimension fields relock around the most recently changed width");
+        pane.UseNaturalImageSize();
+        Check(pane.ImageWidthValue == "120" && pane.ImageHeightValue == "60", "Use image size restores both intrinsic pixel dimensions");
+        pane.DismissImagePopup(suppress: false);
+        pane.ShowInsertImage();
+        pane.SetImageSizeLocked(true);
+        Check(pane.ImageWidthValue == "80" && pane.ImageHeightValue == "40",
+            "a reopened image draft forgets prior field history and relocks by preserving width");
+        pane.ApplyImageEditor();
+        view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+        Check(view.ImageContext().Image is { Width: 80, Height: 40 } && Source().Contains("title='keep'", StringComparison.Ordinal),
+            "applying image size publishes dimensions while preserving unrelated HTML attributes");
+        view.Undo();
+        Check(Source() == source, "image sizing undo restores exact HTML source");
+        view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+        pane.ShowInsertImage();
+        pane.ImageWidthValue = "0";
+        pane.ApplyImageEditor();
+        Check(pane.ImageEditorVisible && Source() == source, "invalid native image sizing keeps the form open and source untouched");
+        pane.DismissImagePopup(suppress: false);
+        pane.ShowInsertImage();
+        pane.SetImageSizeExpanded(false);
+        pane.ApplyImageEditor();
+        view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+        Check(view.ImageContext().Image is { Width: 80, Height: 180 } && Source() == source,
+            "collapsing Specify size only hides controls and Apply preserves exact source");
+        pane.ShowInsertImage();
+        pane.ImageWidthValue = "";
+        pane.ImageHeightValue = "";
+        pane.ApplyImageEditor();
+        view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, document.State.document_revision);
+        Check(view.ImageContext().Image is { Width: null, Height: null }, "blanking both image dimensions removes explicit image sizing");
+        view.Undo();
+        Check(Source() == source, "clearing image sizing undo restores exact HTML source");
+    }
+
+    private static async Task InsertSizedImage(EditorWindow window, string directory)
+    {
+        var fresh = new CoreDocument("body"u8.ToArray(), Path.Combine(directory, "fresh.md"), VIEM_FORMAT_MARKDOWN);
+        var insertPane = window.AddPane(fresh);
+        var insertView = await insertPane.Ready;
+        try
+        {
+            insertView.Command("i");
+            insertPane.ShowInsertImage();
+            Check(insertPane.ImageApplyLabel == "Insert" && !insertPane.ImageSizeExpanded,
+                "first image insertion offers Insert and initially collapsed size controls");
+            insertPane.ImageDestinationValue = "sized.bmp";
+            insertPane.SetImageSizeExpanded(true);
+            for (int i = 0; i < 200 && !insertPane.ImageSizeNaturalKnown; i++) await Task.Delay(25);
+            Check(insertPane.ImageSizeLocked && insertPane.ImageWidthValue == "120" && insertPane.ImageHeightValue == "60",
+                "expanding a new local image size probes its header and populates natural locked dimensions");
+            insertPane.ImageWidthValue = "80";
+            Check(insertPane.ImageHeightValue == "40", "editing a locked width updates its height proportionally");
+            insertPane.ApplyImageEditor();
+            await WaitForImage(insertPane, insertView, "sized.bmp");
+            var image = insertView.Layout().Clusters.Single(c => insertView.Provider.IsInlineImage(c.render_run));
+            Check(Math.Abs(image.typographic_bounds.width - 80 * insertView.Viewport.scale) < .01
+                && Math.Abs(image.typographic_bounds.height - 40 * insertView.Viewport.scale) < .01
+                && !File.Exists(Path.Combine(directory, "fresh.md")),
+                "a newly inserted sized image immediately uses its authored geometry and decoded bitmap without saving");
+            insertView.Key(VIEM_KEY_ESCAPE);
+            insertView.Undo();
+            Check(Encoding.UTF8.GetString(fresh.Source(fresh.State.document_revision)) == "body", "sized image insertion is one exact undo unit");
+
+            insertView.Command("gg0i");
+            insertPane.ShowInsertImage();
+            insertPane.ImageDestinationValue = "delayed.bmp";
+            insertPane.SetImageSizeExpanded(true);
+            insertPane.DismissImagePopup(suppress: false);
+            insertPane.ShowInsertImage();
+            insertPane.ImageDestinationValue = "https://example.invalid/no-fetch.png";
+            insertPane.SetImageSizeExpanded(true);
+            await Task.Delay(250);
+            Check(!insertPane.ImageSizeNaturalKnown && insertPane.ImageWidthValue == "" && insertPane.ImageHeightValue == "",
+                "a cancelled size probe cannot populate a reopened remote-image draft");
+        }
+        finally {
+            await window.ClosePane(insertPane, force: true);
+        }
+    }
 }
 #endif

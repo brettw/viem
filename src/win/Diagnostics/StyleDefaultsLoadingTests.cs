@@ -10,7 +10,10 @@ namespace Viem.Windows.Diagnostics;
 internal static class StyleDefaultsLoadingTests
 {
     private static void Check(bool condition, string message)
-    { if (!condition) throw new InvalidOperationException(message); FrontendSmokeTests.UiChecks.Add(message); }
+    {
+        if (!condition) throw new InvalidOperationException(message);
+        FrontendSmokeTests.UiChecks.Add(message);
+    }
     private static void Write(string path, JsonNode json) => File.WriteAllText(path, json.ToJsonString());
     private static JsonObject Read(string path) => JsonNode.Parse(File.ReadAllBytes(path))!.AsObject();
 
@@ -32,6 +35,56 @@ internal static class StyleDefaultsLoadingTests
         string directory = Path.Combine(ownerPreferences.DirectoryPath, "theme-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         var preferences = new Preferences(directory);
+        byte[] midnight = BundledThemeInstallation(preferences, directory);
+        DefaultThemeAndCloning(preferences, directory, midnight);
+        string customPath = preferences.SelectedThemePath!;
+        StylePersistencePreservesExtensions(preferences, customPath);
+        ThemeFilenamesAndDeletion(preferences, directory, customPath, midnight);
+        VimThemeImport(preferences, directory);
+        InvalidThemeFallback(preferences, directory);
+        RetiredProfileFields(directory, midnight);
+        preferences.SelectTheme("Custom");
+        var window = new EditorWindow(preferences);
+        App.Instance.Windows.Add(window);
+        try {
+            window.Activate();
+            await window.ActivePane!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
+            byte[] source = Encoding.UTF8.GetBytes("# Title\n\nBody");
+            // A fresh profile opens Markdown with Preview off (literal Code);
+            // this check needs the Markdown theme family.
+            preferences.Set("editing", "markdownFormattedView", true);
+            string path = Path.Combine(directory, "live.md");
+            File.WriteAllBytes(path, source);
+            await window.OpenPath(path);
+            var view = await window.ActivePane!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
+            var document = view.Document;
+            view.Command("ggi");
+            view.Text("prefix ");
+            view.Key(VIEM_KEY_ESCAPE);
+            byte[] changed = document.Source(document.State.document_revision);
+            ulong revision = document.State.document_revision;
+            var styles = JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN))!.AsObject();
+            styles["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Paragraph")!["character"]!["weight"] = 650;
+            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, Encoding.UTF8.GetBytes(styles.ToJsonString()));
+            Check(document.State.document_revision == revision && document.IsDirty && document.Source(revision).SequenceEqual(changed)
+                && view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 650,
+                "theme style changes apply to open documents without source or revision changes"
+                + $" (revision {revision}->{document.State.document_revision}, dirty={document.IsDirty}, source={document.Source(document.State.document_revision).SequenceEqual(changed)},"
+                + $" weight={view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value}, error={preferences.Error}, theme={preferences.SelectedTheme}@{preferences.SelectedThemePath}, saved weight={JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN))!["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Paragraph")!["character"]!["weight"]}, format={document.State.format}, diagnostics={document.ConfigurationDiagnostics})");
+            view.Undo();
+            Check(document.Source(document.State.document_revision).SequenceEqual(source) && !document.IsDirty,
+                "theme changes preserve the existing source undo record and saved baseline");
+
+        }
+        finally {
+            window.Close();
+            App.Instance.Windows.Remove(window);
+            CoreThemes.ReplaceCodeStyles(ownerPreferences.ThemeStyleDefaults(VIEM_FORMAT_CODE));
+        }
+    }
+
+    private static byte[] BundledThemeInstallation(Preferences preferences, string directory)
+    {
         Check(preferences.SelectedTheme == "Midnight" && preferences.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Midnight Proportional", "Paper", "Typewriter" }),
             "a fresh profile seeds all five bundled themes and selects Midnight");
         foreach (string name in new[] { "Midnight", "Midnight Mono", "Midnight Proportional", "Paper", "Typewriter" }) {
@@ -60,8 +113,17 @@ internal static class StyleDefaultsLoadingTests
         Check(existing.SelectedTheme == "Midnight" && File.ReadAllBytes(existing.SelectedThemePath!).SequenceEqual(midnight),
             "Revert restores the complete bundled theme byte for byte and keeps its selection");
         bool bundledDeleteRejected = false;
-        try { existing.DeleteTheme(); } catch (InvalidOperationException) { bundledDeleteRejected = true; }
+        try {
+            existing.DeleteTheme();
+        } catch (InvalidOperationException) {
+            bundledDeleteRejected = true;
+        }
         Check(bundledDeleteRejected && File.Exists(existing.SelectedThemePath!), "bundled themes cannot be deleted through the theme API");
+        return midnight;
+    }
+
+    private static void DefaultThemeAndCloning(Preferences preferences, string directory, byte[] midnight)
+    {
         preferences.SelectTheme(null);
         byte[] config = File.ReadAllBytes(Path.Combine(directory, "config.json"));
         SetAppearance(preferences, 17);
@@ -73,12 +135,23 @@ internal static class StyleDefaultsLoadingTests
         Check(preferences.SelectedTheme == "Custom" && new Preferences(directory).Theme.Caret == Theme.Rgb(17, 2, 3),
             "New theme clones the current in-memory Default and selects the saved clone");
         foreach (string name in new[] { "", "Default", "../escape", "CON", "custom", new string('a', 33) }) {
-            bool rejected = false; try { preferences.CreateTheme(name); } catch { rejected = true; }
+            bool rejected = false;
+            try {
+                preferences.CreateTheme(name);
+            } catch {
+                rejected = true;
+            }
             Check(rejected && preferences.SelectedTheme == "Custom", $"invalid or duplicate theme name '{name}' preserves the selection");
         }
-        string customPath = preferences.SelectedThemePath!;
-        var external = Read(customPath); external["future"] = new JsonObject { ["enabled"] = true };
-        external["theme"]!["futureColor"] = 42; Status(external)["character"]!["font_families"] = new JsonArray("Consolas"); Write(customPath, external);
+    }
+
+    private static void StylePersistencePreservesExtensions(Preferences preferences, string customPath)
+    {
+        var external = Read(customPath);
+        external["future"] = new JsonObject { ["enabled"] = true };
+        external["theme"]!["futureColor"] = 42;
+        Status(external)["character"]!["font_families"] = new JsonArray("Consolas");
+        Write(customPath, external);
         SetAppearance(preferences, 18);
         var edited = Read(customPath);
         Check(edited["future"]!["enabled"]!.GetValue<bool>() && edited["theme"]!["futureColor"]!.GetValue<int>() == 42
@@ -100,22 +173,30 @@ internal static class StyleDefaultsLoadingTests
             "theme style saving retains extensions but removes cleared feature-map declarations");
         var codeStyles = JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_CODE))!;
         var customStyle = codeStyles["character_styles"]!.AsArray()[0]!.DeepClone();
-        customStyle["id"] = "Theme test style"; customStyle["name"] = "Theme test style";
+        customStyle["id"] = "Theme test style";
+        customStyle["name"] = "Theme test style";
         codeStyles["character_styles"]!.AsArray().Add(customStyle);
         preferences.SaveThemeStyles(VIEM_FORMAT_CODE, Encoding.UTF8.GetBytes(codeStyles.ToJsonString()));
         codeStyles["character_styles"]!.AsArray().Remove(customStyle);
         preferences.SaveThemeStyles(VIEM_FORMAT_CODE, Encoding.UTF8.GetBytes(codeStyles.ToJsonString()));
         Check(!Read(customPath)["styles"]!["code"]!["character_styles"]!.AsArray().Any(entry => entry!["id"]!.GetValue<string>() == "Theme test style"),
             "saving a theme after deleting a style does not restore its old definition");
-        string externalPath = Path.Combine(preferences.ThemesDirectory, ".External"); File.WriteAllBytes(externalPath, midnight);
-        string namedDefaultPath = Path.Combine(preferences.ThemesDirectory, "Default.json"); File.WriteAllBytes(namedDefaultPath, midnight);
+    }
+
+    private static void ThemeFilenamesAndDeletion(Preferences preferences, string directory, string customPath, byte[] midnight)
+    {
+        string externalPath = Path.Combine(preferences.ThemesDirectory, ".External");
+        File.WriteAllBytes(externalPath, midnight);
+        string namedDefaultPath = Path.Combine(preferences.ThemesDirectory, "Default.json");
+        File.WriteAllBytes(namedDefaultPath, midnight);
         Check(preferences.ThemeFiles.Any(file => file.Name == ".External" && file.Path == externalPath),
             "theme catalogue lists every regular file, including extensions other than JSON and leading dots");
         preferences.SelectTheme("Default", namedDefaultPath);
         Check(preferences.SelectedTheme == "Default" && preferences.SelectedThemePath == namedDefaultPath,
             "a file named Default is distinct from the built-in Default selection");
         string duplicateBare = Path.Combine(preferences.ThemesDirectory, "Ocean"), duplicateJson = Path.Combine(preferences.ThemesDirectory, "Ocean.json");
-        File.WriteAllBytes(duplicateBare, midnight); File.WriteAllBytes(duplicateJson, midnight);
+        File.WriteAllBytes(duplicateBare, midnight);
+        File.WriteAllBytes(duplicateJson, midnight);
         preferences.SelectTheme("Ocean", duplicateJson);
         Check(new Preferences(directory).SelectedThemePath == duplicateJson,
             "the selected filename persists when two theme files share a display name");
@@ -131,13 +212,18 @@ internal static class StyleDefaultsLoadingTests
             "deleting the selected theme returns to Default and leaves other themes intact");
 
         preferences.CreateTheme("Disappearing");
-        string disappearedPath = preferences.SelectedThemePath!; File.Delete(disappearedPath);
+        string disappearedPath = preferences.SelectedThemePath!;
+        File.Delete(disappearedPath);
         SetAppearance(preferences, 20);
         Check(preferences.SelectedTheme == null && preferences.Theme.Caret == Theme.Rgb(20, 2, 3) && !File.Exists(disappearedPath)
             && MatchesBuiltInTheme(new Preferences(directory)),
             "editing after an active theme file disappears uses memory-only Default and never recreates the missing file");
+    }
 
-        string vimColors = Path.Combine(directory, "vim", "colors"); Directory.CreateDirectory(vimColors);
+    private static void VimThemeImport(Preferences preferences, string directory)
+    {
+        string vimColors = Path.Combine(directory, "vim", "colors");
+        Directory.CreateDirectory(vimColors);
         byte[] night = Encoding.UTF8.GetBytes("set background=dark\nhi clear\nhi Normal guifg=#c0c0c0 guibg=#101010\nhi Comment guifg=#ff0000\n");
         foreach (string file in new[] { "night.vim", "notes.vimrc", ".hidden.vim" }) File.WriteAllBytes(Path.Combine(vimColors, file), night);
         Check(VimColorSchemes.Available(new[] { vimColors, Path.Combine(directory, "missing") }).Select(scheme => scheme.Name).SequenceEqual(new[] { "night" }),
@@ -150,20 +236,35 @@ internal static class StyleDefaultsLoadingTests
         Check(preferences.ImportVimTheme(night, "Night") == "Night (2)" && preferences.ImportVimTheme(night, "default") == "default (2)"
             && preferences.SelectedTheme == "default (2)", "imported names are numbered on collision and avoid Default");
         bool notVim = false;
-        try { preferences.ImportVimTheme(Encoding.UTF8.GetBytes("prose\n"), "prose"); }
-        catch (InvalidDataException exception) { notVim = exception.Message == "The file contains no Vim highlight commands"; }
+        try {
+            preferences.ImportVimTheme(Encoding.UTF8.GetBytes("prose\n"), "prose");
+        }
+        catch (InvalidDataException exception) {
+            notVim = exception.Message == "The file contains no Vim highlight commands";
+        }
         Check(notVim && preferences.SelectedTheme == "default (2)" && !preferences.ThemeNames.Contains("prose"),
             "a file without highlight commands is rejected without creating a theme");
+    }
 
-        string invalid = Path.Combine(preferences.ThemesDirectory, "Broken.json"); File.WriteAllText(invalid, "{");
-        var root = Read(Path.Combine(directory, "config.json")); root["selectedTheme"] = "Broken"; Write(Path.Combine(directory, "config.json"), root);
+    private static void InvalidThemeFallback(Preferences preferences, string directory)
+    {
+        string invalid = Path.Combine(preferences.ThemesDirectory, "Broken.json");
+        File.WriteAllText(invalid, "{");
+        var root = Read(Path.Combine(directory, "config.json"));
+        root["selectedTheme"] = "Broken";
+        Write(Path.Combine(directory, "config.json"), root);
         var broken = new Preferences(directory);
         Check(broken.SelectedTheme == null && broken.Error != null && File.ReadAllText(invalid) == "{",
             "an invalid selected theme falls back to Default without overwriting the file");
-        root["selectedTheme"] = "Missing"; Write(Path.Combine(directory, "config.json"), root);
+        root["selectedTheme"] = "Missing";
+        Write(Path.Combine(directory, "config.json"), root);
         Check(new Preferences(directory).SelectedTheme == null, "a missing selected theme falls back to Default");
+    }
 
-        string legacyDirectory = Path.Combine(directory, "legacy"); Directory.CreateDirectory(legacyDirectory);
+    private static void RetiredProfileFields(string directory, byte[] midnight)
+    {
+        string legacyDirectory = Path.Combine(directory, "legacy");
+        Directory.CreateDirectory(legacyDirectory);
         string legacyConfigPath = Path.Combine(legacyDirectory, "config.json");
         var legacyConfig = new JsonObject {
             ["version"] = 1, ["theme"] = new JsonObject { ["statusFontSize"] = "obsolete", ["foreground"] = false },
@@ -187,7 +288,9 @@ internal static class StyleDefaultsLoadingTests
 
         Directory.CreateDirectory(ignored.ThemesDirectory);
         string importedPath = Path.Combine(ignored.ThemesDirectory, "Imported.json");
-        var currentTheme = JsonNode.Parse(midnight)!; Status(currentTheme)["character"]!["size"] = 16; Write(importedPath, currentTheme);
+        var currentTheme = JsonNode.Parse(midnight)!;
+        Status(currentTheme)["character"]!["size"] = 16;
+        Write(importedPath, currentTheme);
         ignored.SelectTheme("Imported");
         var selected = new Preferences(legacyDirectory);
         Check(selected.SelectedTheme == "Imported" && selected.SelectedThemePath == importedPath && selected.StatusStyles.Status.Size == 16
@@ -195,42 +298,13 @@ internal static class StyleDefaultsLoadingTests
             && JsonNode.DeepEquals(Read(legacyConfigPath)["theme"], legacyConfig["theme"]),
             "a current-format theme named Imported loads normally despite obsolete profile data");
 
-        string freshDirectory = Path.Combine(directory, "legacy-styles-only"); Directory.CreateDirectory(freshDirectory);
+        string freshDirectory = Path.Combine(directory, "legacy-styles-only");
+        Directory.CreateDirectory(freshDirectory);
         foreach (string file in retiredStyleFiles) File.WriteAllText(Path.Combine(freshDirectory, file), "obsolete stylesheet");
         var fresh = new Preferences(freshDirectory);
         Check(fresh.SelectedTheme == "Midnight" && fresh.ThemeNames.SequenceEqual(new[] { "Midnight", "Midnight Mono", "Midnight Proportional", "Paper", "Typewriter" }) && fresh.Error == null
             && retiredStyleFiles.All(file => File.ReadAllText(Path.Combine(freshDirectory, file)) == "obsolete stylesheet"),
             "obsolete top-level styles do not suppress fresh-profile presets or create an Imported theme");
-
-        preferences.SelectTheme("Custom");
-        var window = new EditorWindow(preferences); App.Instance.Windows.Add(window);
-        try {
-            window.Activate(); await window.ActivePane!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
-            byte[] source = Encoding.UTF8.GetBytes("# Title\n\nBody");
-            // A fresh profile opens Markdown with Preview off (literal Code);
-            // this check needs the Markdown theme family.
-            preferences.Set("editing", "markdownFormattedView", true);
-            string path = Path.Combine(directory, "live.md"); File.WriteAllBytes(path, source); await window.OpenPath(path);
-            var view = await window.ActivePane!.Ready.WaitAsync(TimeSpan.FromSeconds(10));
-            var document = view.Document;
-            view.Command("ggi"); view.Text("prefix "); view.Key(VIEM_KEY_ESCAPE);
-            byte[] changed = document.Source(document.State.document_revision); ulong revision = document.State.document_revision;
-            var styles = JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN))!.AsObject();
-            styles["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Paragraph")!["character"]!["weight"] = 650;
-            preferences.SaveThemeStyles(VIEM_FORMAT_MARKDOWN, Encoding.UTF8.GetBytes(styles.ToJsonString()));
-            Check(document.State.document_revision == revision && document.IsDirty && document.Source(revision).SequenceEqual(changed)
-                && view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 650,
-                "theme style changes apply to open documents without source or revision changes"
-                + $" (revision {revision}->{document.State.document_revision}, dirty={document.IsDirty}, source={document.Source(document.State.document_revision).SequenceEqual(changed)},"
-                + $" weight={view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value}, error={preferences.Error}, theme={preferences.SelectedTheme}@{preferences.SelectedThemePath}, saved weight={JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN))!["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Paragraph")!["character"]!["weight"]}, format={document.State.format}, diagnostics={document.ConfigurationDiagnostics})");
-            view.Undo(); Check(document.Source(document.State.document_revision).SequenceEqual(source) && !document.IsDirty,
-                "theme changes preserve the existing source undo record and saved baseline");
-
-        }
-        finally {
-            window.Close(); App.Instance.Windows.Remove(window);
-            CoreThemes.ReplaceCodeStyles(ownerPreferences.ThemeStyleDefaults(VIEM_FORMAT_CODE));
-        }
     }
 }
 #endif

@@ -17,26 +17,80 @@ internal static class PaneLayoutTests
         if (!condition) throw new InvalidOperationException(message);
         FrontendSmokeTests.UiChecks.Add(message);
     }
-    internal static async Task Run(Preferences preferences)
+    internal static SelfTestRunner.Stage Group(Preferences preferences)
     {
-        bool showStatus = preferences.ShowStatus;
-        preferences.Set("appearance", "showStatusBar", true);
-        var window = new EditorWindow(preferences);
-        App.Instance.Windows.Add(window); window.Activate();
-        try
+        bool showStatus = true;
+        return TestEditor.Group("PaneLayout", preferences, "", [
+            new("CountedHorizontalSplit", editor => RunCase(editor, fixture => fixture.CountedHorizontalSplit())),
+            new("StatusHover", editor => RunCase(editor, fixture => fixture.StatusHover(), threeRows: true)),
+            new("LineUnitsAndResize", editor => RunCase(editor, fixture => fixture.LineUnitsAndResize(), threeRows: true)),
+            new("DragBounds", editor => RunCase(editor, fixture => fixture.DragBounds(), threeRows: true)),
+            new("EyeClickAndDrag", editor => RunCase(editor, fixture => fixture.EyeClickAndDrag(), threeRows: true)),
+            new("StatusBackgroundPointer", editor => RunCase(editor, fixture => fixture.StatusBackgroundPointer(), threeRows: true)),
+            new("BottomBarCreatesSplit", editor => RunCase(editor, fixture => fixture.BottomBarCreatesSplit(), threeRows: true)),
+            new("VerticalSplitAndResize", editor => RunCase(editor, fixture => fixture.VerticalSplitAndResize())),
+            new("NestedSplitterBorders", editor => RunCase(editor, fixture => fixture.NestedSplitterBorders())),
+        ], format: VIEM_FORMAT_PLAIN_TEXT, initialize: () => {
+            showStatus = preferences.ShowStatus;
+            preferences.Set("appearance", "showStatusBar", true);
+        }, cleanup: () => preferences.Set("appearance", "showStatusBar", showStatus) );
+
+        async Task RunCase(TestEditor editor, Func<PaneFixture, Task> test, bool threeRows = false)
         {
-            var first = window.ActivePane!; await first.Ready; await Task.Delay(150);
-            first.View!.Ex("4split"); await window.PendingEffectsForTesting;
-            var upper = window.ActivePane!; await upper.Ready; window.PaneStack.UpdateLayout();
+            var fixture = new PaneFixture(editor);
+            if (threeRows) await fixture.CreateThreeRows();
+            await test(fixture);
+        }
+    }
+
+    private sealed class PaneFixture
+    {
+        private readonly EditorWindow window;
+        private readonly EditorPane first;
+        private readonly CoreView view;
+        private EditorPane second = null!;
+        private EditorPane third = null!;
+
+        internal PaneFixture(TestEditor editor)
+        {
+            window = editor.Window;
+            first = editor.Pane;
+            view = editor.View;
+        }
+
+        internal async Task CreateThreeRows()
+        {
+            second = window.SplitPane(first, first.Document, before: false);
+            await second.Ready;
+            window.PaneStack.Equalize();
+            window.PaneStack.UpdateLayout();
+            third = window.SplitPane(second, first.Document, before: false);
+            await third.Ready;
+            window.PaneStack.Equalize();
+            window.PaneStack.UpdateLayout();
+            await InputRoutingTests.Settle();
+            window.FocusPane(first);
+        }
+
+        private double[] Bars() => window.Panes.Select(p => p.StatusControl.TransformToVisual(window.PaneStack).TransformPoint(new Point()).Y).ToArray();
+
+        internal async Task CountedHorizontalSplit()
+        {
+            first.View!.Ex("4split");
+            await window.PendingEffectsForTesting;
+            var upper = window.ActivePane!;
+            await upper.Ready;
+            window.PaneStack.UpdateLayout();
             Check(window.Panes[0] == upper && window.Panes[1] == first && upper.IsActive
                 && Math.Abs(upper.ActualHeight - upper.StatusBarHeight - upper.View!.DefaultLineHeight * 4) < 1,
                 "counted horizontal split focuses and sizes the new upper pane");
-            upper.View!.Ex("close"); await window.PendingEffectsForTesting;
+            upper.View!.Ex("close");
+            await window.PendingEffectsForTesting;
             window.FocusPane(first);
-            var second = window.SplitPane(first, first.Document, before: false); await second.Ready;
-            window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
-            var third = window.SplitPane(second, first.Document, before: false); await third.Ready;
-            window.PaneStack.Equalize(); window.PaneStack.UpdateLayout(); await Task.Delay(80);
+        }
+
+        internal Task StatusHover()
+        {
             var positionOrigin = first.LocationToggleControl.TransformToVisual(first.StatusControl).TransformPoint(new Point());
             var empty = new Point(positionOrigin.X - 2, first.StatusControl.ActualHeight / 2);
             Check(first.StatusResizeHoverAt(empty) && third.StatusResizeHoverAt(empty),
@@ -45,21 +99,32 @@ internal static class PaneLayoutTests
             Check(!first.StatusResizeHoverAt(new(fileOrigin.X + 2, fileOrigin.Y + first.FilePathControl.ActualHeight / 2))
                 && !first.StatusResizeHoverAt(new(positionOrigin.X + 4, first.StatusControl.ActualHeight / 2)),
                 "filename and position controls retain their usual hover cursors");
-            var view = first.View!;
+            return Task.CompletedTask;
+        }
+
+        internal async Task LineUnitsAndResize()
+        {
             var baseStyle = view.Styles().Styles.Single(s => s.Namespace == VIEM_STYLE_NAMESPACE_BLOCK && s.Id == "Paragraph");
             view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_CHARACTER_SIZE, CoreView.Number(20));
-            var spacing = New<ViemStyleEditValueV1>(); spacing.kind = VIEM_STYLE_VALUE_LINE_SPACING;
-            spacing.enum_value = VIEM_STYLE_LINE_SPACING_MULTIPLIER; spacing.number = 1.5f;
+            var spacing = New<ViemStyleEditValueV1>();
+            spacing.kind = VIEM_STYLE_VALUE_LINE_SPACING;
+            spacing.enum_value = VIEM_STYLE_LINE_SPACING_MULTIPLIER;
+            spacing.number = 1.5f;
             view.EditStyle(baseStyle, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING, spacing);
             Check(Math.Abs(view.DefaultLineHeight - 30) < .001, "pane units use Base Paragraph size times spacing");
             view.Zoom(2);
             Check(Math.Abs(view.DefaultLineHeight - 60) < .001, "pane units include view zoom");
             view.Zoom(1);
-            view.Ex("resize 4"); await window.PendingEffectsForTesting; window.PaneStack.UpdateLayout();
+            view.Ex("resize 4");
+            await window.PendingEffectsForTesting;
+            window.PaneStack.UpdateLayout();
             Check(Math.Abs(first.ActualHeight - first.StatusBarHeight - 120) < 1, "counted pane height excludes its status bar");
-            window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
-            double[] Bars() => window.Panes.Select(p => p.StatusControl.TransformToVisual(window.PaneStack).TransformPoint(new Point()).Y).ToArray();
-            var initial = Bars();
+            window.PaneStack.Equalize();
+            window.PaneStack.UpdateLayout();
+        }
+
+        internal Task DragBounds()
+        {
             window.PaneStack.DragBar(first, 100_000);
             var bottom = Bars();
             Check(Math.Abs(bottom[0] + first.StatusBarHeight - bottom[1]) < .01
@@ -77,20 +142,36 @@ internal static class PaneLayoutTests
             window.PaneStack.DragBar(second, 12);
             Check(Bars()[0] == top[0] && Math.Abs(Bars()[1] - top[1] - 12) < .01,
                 "reversing at the top moves only the grabbed bar");
-            var beforeBottom = Bars(); window.PaneStack.DragBar(third, -100);
+            var beforeBottom = Bars();
+            window.PaneStack.DragBar(third, -100);
             Check(Bars().SequenceEqual(beforeBottom), "the bottom status bar cannot move");
             bool rejected = false;
-            try { window.SplitPane(first, first.Document); } catch (InvalidOperationException e) { rejected = e.Message.Contains("No room to split"); }
+            try {
+                window.SplitPane(first, first.Document);
+            } catch (InvalidOperationException e) {
+                rejected = e.Message.Contains("No room to split");
+            }
             Check(rejected && window.Panes.Count == 3, "splitting a collapsed editor fails without adding a pane");
-            window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
+            window.PaneStack.Equalize();
+            window.PaneStack.UpdateLayout();
+            return Task.CompletedTask;
+        }
+
+        internal async Task EyeClickAndDrag()
+        {
             uint mode = view.CurrentLineMode;
             await InputRoutingTests.Drag(window, first.LocationToggleControl, (global::Windows.Foundation.Point[])[new(.5, .5), new(.5, .5)], _ => { });
             Check(view.CurrentLineMode != mode, "a plain eye click toggles line mode");
-            mode = view.CurrentLineMode; double start = Bars()[0];
+            mode = view.CurrentLineMode;
+            double start = Bars()[0];
             await InputRoutingTests.Drag(window, first.LocationToggleControl,
                 (global::Windows.Foundation.Point[])[new(.5, .5), new(.5, .5 + 40 / first.LocationToggleControl.ActualHeight)], _ => { });
             Check(view.CurrentLineMode == mode && Math.Abs(Bars()[0] - start - 40) < 2,
                 $"dragging the eye resizes panes and consumes its click (mode={mode}->{view.CurrentLineMode}, bar={start}->{Bars()[0]}, focusFirst={window.ActivePane == first}, status={first.StatusBarHeight}, canDrag={window.PaneStack.CanDragBar(first)})");
+        }
+
+        internal async Task StatusBackgroundPointer()
+        {
             window.FocusPane(third);
             var backgroundPoint = new Point(first.LocationToggleControl.TransformToVisual(first.StatusControl).TransformPoint(new Point()).X - 2,
                 first.StatusControl.ActualHeight / 2);
@@ -104,6 +185,10 @@ internal static class PaneLayoutTests
             await InputRoutingTests.Drag(window, first.StatusControl,
                 (global::Windows.Foundation.Point[])[new(backgroundX, .5)], _ => { }, focusTarget: false);
             Check(window.ActivePane == first, "a plain movable-status background click focuses its buffer");
+        }
+
+        internal async Task BottomBarCreatesSplit()
+        {
             double fixedBottom = Bars()[2];
             double bottomX = (third.LocationToggleControl.TransformToVisual(third.StatusControl).TransformPoint(new Point()).X - 2)
                 / third.StatusControl.ActualWidth;
@@ -117,19 +202,30 @@ internal static class PaneLayoutTests
                     new(bottomX, -60 / bottomHeight), new(bottomX, -45 / bottomHeight)], _ => { }, focusTarget: false);
             Check(window.Panes.Count == 4 && window.Panes[3] == third && Bars()[3] == fixedBottom,
                 "crossing above the bottom bar creates exactly one upper pane while keeping the bottom edge fixed");
-            var dragPane = window.Panes[2]; await dragPane.Ready;
+            var dragPane = window.Panes[2];
+            await dragPane.Ready;
             Check(dragPane.Document == third.Document && window.ActivePane == first
                 && Math.Abs(Bars()[2] + dragPane.StatusBarHeight - (fixedBottom - 45)) < 2
                 && third.Document.State.document_revision == beforeDragRevision,
                 "the new upper bar follows continued dragging and reversal without changing focus or source");
-            view.Ex("only"); await window.PendingEffectsForTesting;
+        }
+
+        internal async Task VerticalSplitAndResize()
+        {
+            view.Ex("only");
+            await window.PendingEffectsForTesting;
             window.FocusPane(first);
             ulong revision = first.Document.State.document_revision;
-            view.Ex("vs"); await window.PendingEffectsForTesting;
-            var left = window.ActivePane!; await left.Ready; window.PaneStack.UpdateLayout();
+            view.Ex("vs");
+            await window.PendingEffectsForTesting;
+            var left = window.ActivePane!;
+            await left.Ready;
+            window.PaneStack.UpdateLayout();
             Check(window.Panes.Count == 2 && window.Panes[0] == left && window.Panes[1] == first && left.IsActive && left.Document == first.Document && window.PaneStack.MinimumSize.Width == 205,
                 "vertical Ex split shares a buffer and enforces a 100-DIP minimum per pane");
-            view.Ex("vertical 1resize 24"); await window.PendingEffectsForTesting; window.PaneStack.UpdateLayout();
+            view.Ex("vertical 1resize 24");
+            await window.PendingEffectsForTesting;
+            window.PaneStack.UpdateLayout();
             Check(Math.Abs(left.ActualWidth - Math.Max(100, left.View!.DefaultColumnWidth * 24)) < 1,
                 "indexed vertical resize uses the target pane's default font and zoom");
             window.FocusPane(first);
@@ -147,19 +243,31 @@ internal static class PaneLayoutTests
                 $"native vertical dragging moves the divider and preserves pane focus (width={width}->{first.ActualWidth}, left={left.ActualWidth}, focusFirst={window.ActivePane == first})");
             window.PaneStack.ResizeWidth(left, 1);
             Check(Math.Abs(left.ActualWidth - 100) < .01, "width commands cannot shrink below 100 DIPs");
-            rejected = false;
-            try { window.SplitPane(left, first.Document, vertical: true); } catch (InvalidOperationException e) { rejected = e.Message.Contains("No room to split"); }
+            bool rejected = false;
+            try {
+                window.SplitPane(left, first.Document, vertical: true);
+            } catch (InvalidOperationException e) {
+                rejected = e.Message.Contains("No room to split");
+            }
             Check(rejected && window.Panes.Count == 2, "a vertical split without 205 DIPs fails before adding a view");
             await InputRoutingTests.Drag(window, left.StatusControl, (global::Windows.Foundation.Point[])[new(.3, .5), new(.3, .5)], _ => { });
             Check(window.ActivePane == left, "a plain status-bar click focuses its buffer");
-            left.View!.Ex("vnew"); await window.PendingEffectsForTesting;
+            left.View!.Ex("vnew");
+            await window.PendingEffectsForTesting;
             Check(window.Panes.Count == 2, "vnew obeys the same admission check before creating a document");
             Check(first.Document.State.document_revision == revision, "pane operations preserve the source revision");
-            view.Ex("only"); await window.PendingEffectsForTesting;
-            var middle = window.SplitPane(first, first.Document, before: false); await middle.Ready;
-            var bottomPane = window.SplitPane(middle, first.Document, before: false); await bottomPane.Ready;
-            window.PaneStack.Equalize(); window.PaneStack.UpdateLayout();
-            var bottomRight = window.SplitPane(bottomPane, first.Document, vertical: true, before: false); await bottomRight.Ready;
+        }
+
+        internal async Task NestedSplitterBorders()
+        {
+            var middle = window.SplitPane(first, first.Document, before: false);
+            await middle.Ready;
+            var bottomPane = window.SplitPane(middle, first.Document, before: false);
+            await bottomPane.Ready;
+            window.PaneStack.Equalize();
+            window.PaneStack.UpdateLayout();
+            var bottomRight = window.SplitPane(bottomPane, first.Document, vertical: true, before: false);
+            await bottomRight.Ready;
             window.PaneStack.UpdateLayout();
             var beneathStatus = window.PaneStack.Splitters.Single();
             Check(beneathStatus.HidesTopBorder && beneathStatus.HidesBottomBorder,
@@ -182,7 +290,8 @@ internal static class PaneLayoutTests
             var rightPanes = new List<EditorPane>();
             foreach (var row in new[] { first, middle })
             {
-                var nested = window.SplitPane(row, first.Document, vertical: true, before: false); await nested.Ready;
+                var nested = window.SplitPane(row, first.Document, vertical: true, before: false);
+                await nested.Ready;
                 rightPanes.Add(nested);
             }
             rightPanes.Add(bottomRight);
@@ -217,12 +326,7 @@ internal static class PaneLayoutTests
             Check(survivor == nestedSplitters[0] && survivor.HidesTopBorder && survivor.HidesBottomBorder,
                 "closing neighboring rows updates border clipping on the surviving vertical splitter");
         }
-        finally
-        {
-            foreach (var pane in window.Panes.ToArray()) await window.ClosePane(pane, force: true);
-            App.Instance.Windows.Remove(window);
-            preferences.Set("appearance", "showStatusBar", showStatus);
-        }
+
     }
 }
 #endif
