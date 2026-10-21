@@ -133,6 +133,7 @@ internal static class FrontendSmokeTests
         Scenario(string.Concat(Enumerable.Range(0, 2_000).Select(i => $"Paragraph {i}: **office** and *words* in a long paragraph that wraps across several visual rows.\n\n")), 2, RegionalMarkdownPaging);
         Scenario("\talpha  \n", 1, (doc, view) => VisibleWhitespacePaint(doc, view, device));
         Scenario(string.Concat(Enumerable.Repeat("A long line with office ligatures and AV kerning.\n", 25_000)), 1, LargeDocumentLayout);
+        ConfigurationDefaults();
         NativeKeyPolicy();
 
     }
@@ -292,7 +293,7 @@ internal static class FrontendSmokeTests
     {
         view.Ex("set keymodel=startsel,stopsel selectmode=mouse,key,cmd");
         byte[] before = doc.Source(doc.State.document_revision);
-        view.SelectFromCommand("viw");
+        view.NativeAction(VIEM_NATIVE_SELECT_WORD);
         Check(view.IsTextSelection && view.LogicalSelection().text_start == 0 && view.LogicalSelection().text_end == 5
             && doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before),
             "native text-object selection remains a command sequence when selectmode includes cmd");
@@ -301,9 +302,9 @@ internal static class FrontendSmokeTests
         view.Undo();
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "Select formatting retains one-step undo");
         view.Ex("set noautoselect selectmode=mouse");
-        view.SelectFromCommand("viw", VIEM_SELECTION_ORIGIN_MOUSE);
+        view.NativeAction(VIEM_NATIVE_SELECT_WORD, VIEM_SELECTION_ORIGIN_MOUSE);
         Check(view.IsTextSelection, "native double-click selection uses the mouse option");
-        view.SelectFromCommand("viw", VIEM_SELECTION_ORIGIN_KEY);
+        view.NativeAction(VIEM_NATIVE_SELECT_WORD, VIEM_SELECTION_ORIGIN_KEY);
         Check(view.IsVisual && !view.IsTextSelection, "native menu selection independently uses the key option");
     }
 
@@ -311,7 +312,7 @@ internal static class FrontendSmokeTests
     {
         view.Place(7, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, doc.State.document_revision);
         view.Command("i");
-        view.SelectFromCommand("viw");
+        view.NativeAction(VIEM_NATIVE_SELECT_WORD);
         Check(view.Presentation.mode == VIEM_MODE_SELECTION_CHARACTER
             && view.LogicalSelection().text_start == 7 && view.LogicalSelection().text_end == 13,
             "native menu selection preserves the insertion boundary before entering its command sequence");
@@ -443,8 +444,30 @@ internal static class FrontendSmokeTests
         Check(view.Viewport.top > 0, "large document scrolling");
     }
 
+    private static void ConfigurationDefaults()
+    {
+        var config = Viem.Windows.Shell.Preferences.Normalize(new System.Text.Json.Nodes.JsonObject { ["version"] = 1 });
+        Check(config["editing"]?["textWidth"]?.GetValue<int>() == 80, "configuration defaults come from core");
+        var integralConfig = Viem.Windows.Shell.Preferences.Normalize(System.Text.Json.Nodes.JsonNode.Parse("{\"version\":1,\"editing\":{\"textWidth\":72.0}}")!.AsObject());
+        Check(integralConfig["editing"]?["textWidth"]?.GetValue<uint>() == 72, "integral JSON values normalize for native integer readers");
+        var invalidRecent = new System.Text.Json.Nodes.JsonObject { ["version"] = 1,
+            ["recentDocuments"] = new System.Text.Json.Nodes.JsonArray(Enumerable.Repeat("C:\\test.txt", 11).Select(p => (System.Text.Json.Nodes.JsonNode?)System.Text.Json.Nodes.JsonValue.Create(p)).ToArray()) };
+        bool rejectedRecent = false;
+        try { Viem.Windows.Shell.Preferences.Normalize(invalidRecent); } catch (InvalidDataException) { rejectedRecent = true; }
+        Check(rejectedRecent, "configuration rejects more than ten recent documents on Windows");
+    }
+
     private static void NativeKeyPolicy()
     {
+        Check(KeyPolicy.Route(VirtualKey.Enter, false, false, false, extended: true).Kind == VIEM_KEY_KEYPAD
+            && KeyPolicy.Route(VirtualKey.Enter, false, false, false, extended: false).Kind == VIEM_KEY_ENTER,
+            "keypad Enter retains its distinct identity");
+        Check(KeyPolicy.Route(VirtualKey.NumberPad1, false, false, false).Codepoint == 41
+            && KeyPolicy.Route(VirtualKey.Add, true, false, false).Modifiers == VIEM_KEY_MODIFIER_CONTROL,
+            "keypad digits and arithmetic retain identity and modifiers");
+        Check(KeyPolicy.Route(VirtualKey.Home, false, true, false, extended: false).Kind == VIEM_KEY_KEYPAD
+            && KeyPolicy.Route(VirtualKey.Home, false, true, false, extended: true).Kind == VIEM_KEY_HOME,
+            "keypad navigation differs from the extended navigation cluster");
         foreach (var key in new[] { VirtualKey.A, VirtualKey.B, VirtualKey.D, VirtualKey.E, VirtualKey.F, VirtualKey.H, VirtualKey.I, VirtualKey.J, VirtualKey.K, VirtualKey.L, VirtualKey.M, VirtualKey.N, VirtualKey.O, VirtualKey.P, VirtualKey.Q, VirtualKey.R, VirtualKey.T, VirtualKey.U, VirtualKey.W, VirtualKey.Y })
             Check(KeyPolicy.Route(key, true, false, false).Kind == VIEM_KEY_CONTROL_CHARACTER, $"preserve Ctrl+{key}");
         Check(KeyPolicy.Route(VirtualKey.C, true, false, false, true).Action == NativeAction.Copy, "Ctrl+C overrides literal/vi bindings");

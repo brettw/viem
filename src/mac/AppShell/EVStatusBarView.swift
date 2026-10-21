@@ -286,7 +286,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     filePathLabel.textColor = style.foreground
     modeWidthConstraint.constant = ceil([
       "NORMAL", "INSERT", "REPLACE", "VISUAL", "VISUAL LINE", "VISUAL BLOCK",
-      "SELECTION", "SELECT", "SELECT LINE", "SELECT BLOCK", "COMMAND",
+      "SELECTION", "SELECT", "SELECT LINE", "SELECT BLOCK", "COMMAND", "Recording @W",
     ].map { ($0 as NSString).size(withAttributes: barTextAttributes).width }.max() ?? 0) + 4
     modeLabel.textColor = style.foreground
     messageLabel.textColor = style.foreground.withAlphaComponent(0.75)

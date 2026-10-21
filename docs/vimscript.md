@@ -213,6 +213,18 @@ Attributes include `<silent>`, `<nowait>`, `<unique>`, `<special>`, `<buffer>`,
 remain meaningful, and `\|` preserves a literal bar in a mapping command.
 Expression mappings cannot edit text or switch windows while resolving input.
 
+Keypad notation (`<kEnter>`, `<kHome>`, `<kEnd>`, `<kPageUp>`, `<kPageDown>`,
+`<kInsert>`, `<kDel>`, `<kPlus>`, `<kMinus>`, `<kMultiply>`, `<kDivide>`,
+`<kPoint>` and `<k0>`–`<k9>`) has distinct mapping identities, including
+modifiers. Unmapped keypad keys perform their ordinary key action. Macros retain
+the keypad identity, so later mappings can distinguish replayed keypad input.
+Native event decoding uses physical keypad codes on macOS and virtual-key plus
+extended-key information on Windows.
+
+Status bars show the core's pending command prefix and replace the mode label
+with `Recording @q` while recording register `q`, including during Insert mode.
+These values belong to the view performing the command.
+
 All mappings are buffer-owned; `<buffer>` remains queryable compatibility
 metadata. `lmap` and terminal mappings can be defined and listed but are dormant:
 Viem has no corresponding language-input/terminal mode. F8 and Shift-F10 retain

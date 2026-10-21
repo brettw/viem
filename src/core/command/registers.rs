@@ -691,7 +691,7 @@ fn macro_events_as_put_value(events: &[InputEvent]) -> Option<RegisterValue> {
                 text.push(ctrl_key_as_c0(*character)?);
             }
             InputEvent::Key(
-                Key::ModifiedNavigation { .. } | Key::Function { .. }
+                Key::NativeAction(_) | Key::Keypad { .. } | Key::ModifiedNavigation { .. } | Key::Function { .. }
                 | Key::ShiftEnter | Key::AltEnter
                 | Key::BackTab
                 | Key::Backspace
@@ -757,6 +757,8 @@ fn macro_events_as_register_value(events: &[InputEvent]) -> RegisterValue {
             InputEvent::Key(Key::End) => text.push_str("<End>"),
             InputEvent::Key(Key::DocumentStart) => text.push_str("<C-Home>"),
             InputEvent::Key(Key::DocumentEnd) => text.push_str("<C-End>"),
+            InputEvent::Key(Key::NativeAction(_)) => text.push_str("<NativeAction>"),
+            InputEvent::Key(Key::Keypad { code, modifiers }) => text.push_str(&super::keypad::notation(*code, *modifiers)),
             InputEvent::Key(Key::SelectAll) => text.push_str("<SelectAll>"),
             InputEvent::Key(Key::CopySelection) => text.push_str("<CopySelection>"),
             InputEvent::Key(Key::PasteClipboard) => text.push_str("<PasteClipboard>"),

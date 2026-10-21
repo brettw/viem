@@ -167,6 +167,7 @@ struct EVExHostEffect: Equatable {
     var readAfterOffset: UInt64? = nil
     var readAfterIsSource: Bool = false
     var exitStatus: UInt32? = nil
+    var displayText: String = ""
     var scriptContinuation: UInt64? = nil
 }
 
@@ -291,69 +292,11 @@ extension EVCoreViewSession {
         )
         guard info.batch_handle == handle else { throw EVCoreFrontendError.invalidHostEffect }
 
-        var raw = try EVRawEffectBatch(info: info)
         hostEffectAccessCounters.copyCalls &+= 1
-        var copiedInfo = ViemEffectBatchInfoV1()
-        copiedInfo.struct_size = UInt32(MemoryLayout<ViemEffectBatchInfoV1>.size)
-        let status = raw.clipboardWrites.withUnsafeMutableBufferPointer { clipboardBuffer in
-            raw.exRequests.withUnsafeMutableBufferPointer { requestBuffer in
-                raw.exOptions.withUnsafeMutableBufferPointer { optionBuffer in
-                    raw.exMarks.withUnsafeMutableBufferPointer { markBuffer in
-                        raw.exRegisters.withUnsafeMutableBufferPointer { registerBuffer in
-                            raw.exJumps.withUnsafeMutableBufferPointer { jumpBuffer in
-                                raw.exTextLines.withUnsafeMutableBufferPointer { lineBuffer in
-                                    raw.fileFormats.withUnsafeMutableBufferPointer { formatBuffer in
-                                        raw.hardBreaks.withUnsafeMutableBufferPointer { breakBuffer in
-                                            raw.strings.withUnsafeMutableBufferPointer { stringBuffer in
-                                                viem_effect_batch_copy(
-                                                    handle,
-                                                    clipboardBuffer.baseAddress,
-                                                    UInt64(clipboardBuffer.count),
-                                                    requestBuffer.baseAddress,
-                                                    UInt64(requestBuffer.count),
-                                                    optionBuffer.baseAddress,
-                                                    UInt64(optionBuffer.count),
-                                                    markBuffer.baseAddress,
-                                                    UInt64(markBuffer.count),
-                                                    registerBuffer.baseAddress,
-                                                    UInt64(registerBuffer.count),
-                                                    jumpBuffer.baseAddress,
-                                                    UInt64(jumpBuffer.count),
-                                                    lineBuffer.baseAddress,
-                                                    UInt64(lineBuffer.count),
-                                                    formatBuffer.baseAddress,
-                                                    UInt64(formatBuffer.count),
-                                                    breakBuffer.baseAddress,
-                                                    UInt64(breakBuffer.count),
-                                                    stringBuffer.baseAddress,
-                                                    UInt64(stringBuffer.count),
-                                                    &copiedInfo
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        try hostEffectChecked(status, operation: "Copy host effects")
-        guard copiedInfo.batch_handle == handle,
-              copiedInfo.document_id == info.document_id,
-              copiedInfo.document_revision == info.document_revision,
-              copiedInfo.clipboard_write_count == info.clipboard_write_count,
-              copiedInfo.ex_request_count == info.ex_request_count,
-              copiedInfo.ex_option_count == info.ex_option_count,
-              copiedInfo.ex_mark_count == info.ex_mark_count,
-              copiedInfo.ex_register_count == info.ex_register_count,
-              copiedInfo.ex_jump_count == info.ex_jump_count,
-              copiedInfo.ex_text_line_count == info.ex_text_line_count,
-              copiedInfo.file_format_count == info.file_format_count,
-              copiedInfo.hard_break_count == info.hard_break_count,
-              copiedInfo.string_bytes == info.string_bytes
-        else { throw EVCoreFrontendError.invalidHostEffect }
+        var borrowed = ViemEffectBatchViewV1()
+        try hostEffectChecked(viem_effect_batch_read(handle, &borrowed), operation: "Read host effect arrays")
+        guard borrowed.info.batch_handle == handle else { throw EVCoreFrontendError.invalidHostEffect }
+        let raw = try EVRawEffectBatch(borrowed: borrowed)
         var exported = try raw.exported()
         for index in exported.clipboardWrites.indices {
             exported.clipboardWrites[index].fragmentJSON = try readClipboardJSON(operation: "Read clipboard formats") { bytes, capacity, required in
@@ -365,18 +308,23 @@ extension EVCoreViewSession {
 }
 
 private extension EVRawEffectBatch {
-    init(info: ViemEffectBatchInfoV1) throws {
-        self.info = info
-        clipboardWrites = Array(repeating: ViemClipboardWriteV1(), count: try hostEffectCount(info.clipboard_write_count))
-        exRequests = Array(repeating: ViemExFrontendRequestV1(), count: try hostEffectCount(info.ex_request_count))
-        exOptions = Array(repeating: ViemExOptionDisplayV1(), count: try hostEffectCount(info.ex_option_count))
-        exMarks = Array(repeating: ViemExMarkV1(), count: try hostEffectCount(info.ex_mark_count))
-        exRegisters = Array(repeating: ViemExRegisterV1(), count: try hostEffectCount(info.ex_register_count))
-        exJumps = Array(repeating: ViemExJumpV1(), count: try hostEffectCount(info.ex_jump_count))
-        exTextLines = Array(repeating: ViemExTextLineV1(), count: try hostEffectCount(info.ex_text_line_count))
-        fileFormats = Array(repeating: 0, count: try hostEffectCount(info.file_format_count))
-        hardBreaks = Array(repeating: 0, count: try hostEffectCount(info.hard_break_count))
-        strings = Array(repeating: 0, count: try hostEffectCount(info.string_bytes))
+    init(borrowed: ViemEffectBatchViewV1) throws {
+        info = borrowed.info
+        func copy<T>(_ pointer: UnsafePointer<T>?, _ count: UInt64) throws -> [T] {
+            let size = try hostEffectCount(count)
+            guard size == 0 || pointer != nil else { throw EVCoreFrontendError.invalidHostEffect }
+            return Array(UnsafeBufferPointer(start: pointer, count: size))
+        }
+        clipboardWrites = try copy(borrowed.clipboard_writes, info.clipboard_write_count)
+        exRequests = try copy(borrowed.ex_requests, info.ex_request_count)
+        exOptions = try copy(borrowed.ex_options, info.ex_option_count)
+        exMarks = try copy(borrowed.ex_marks, info.ex_mark_count)
+        exRegisters = try copy(borrowed.ex_registers, info.ex_register_count)
+        exJumps = try copy(borrowed.ex_jumps, info.ex_jump_count)
+        exTextLines = try copy(borrowed.ex_text_lines, info.ex_text_line_count)
+        fileFormats = try copy(borrowed.file_formats, info.file_format_count)
+        hardBreaks = try copy(borrowed.hard_breaks, info.hard_break_count)
+        strings = try copy(borrowed.strings, info.string_bytes)
     }
 
     func exported() throws -> EVHostEffectBatch {
@@ -453,6 +401,7 @@ private extension EVRawEffectBatch {
                 readAfterOffset: request.kind == UInt32(VIEM_EX_FRONTEND_READ) ? request.hard_line_start : nil,
                 readAfterIsSource: request.flags & UInt32(VIEM_EX_FRONTEND_READ_SOURCE) != 0,
                 exitStatus: exitStatus,
+                displayText: try string(request.display_text),
                 scriptContinuation: request.kind == UInt32(VIEM_EX_FRONTEND_SCRIPT_CONTINUATION) ? request.window_count : nil
             )
         }

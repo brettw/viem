@@ -519,7 +519,7 @@ impl KeyMappings {
 }
 
 /// The input key for one key of Vim notation. Keys Viem's input vocabulary
-/// cannot express (`<Plug>`, `<SNR>`, `<Insert>`, keypad and mouse keys)
+/// cannot express (`<Plug>`, `<SNR>`, `<Insert>` and mouse keys)
 /// become private-use characters, so they still match mapping sequences
 /// exactly; `<Ignore>` and `<Nul>` produce no key.
 pub(crate) fn notation_key(notation: &crate::vimscript::keys::Notation) -> Option<Key> {
@@ -545,24 +545,23 @@ pub(crate) fn notation_key(notation: &crate::vimscript::keys::Notation) -> Optio
     let navigation = |plain: Key, navigation: NavigationKey| {
         if modifiers == 0 { plain } else { canonical_mapping_key(Key::ModifiedNavigation { key: navigation, modifiers }) }
     };
+    if matches!(key, SpecialKey::KeypadHome | SpecialKey::KeypadEnd | SpecialKey::KeypadPageUp
+        | SpecialKey::KeypadPageDown | SpecialKey::KeypadInsert | SpecialKey::KeypadDelete
+        | SpecialKey::KeypadPlus | SpecialKey::KeypadMinus | SpecialKey::KeypadMultiply
+        | SpecialKey::KeypadDivide | SpecialKey::KeypadEnter | SpecialKey::KeypadPoint | SpecialKey::Keypad(_)) {
+        return Some(Key::Keypad { code: key.code() as u8, modifiers });
+    }
     Some(match key {
         SpecialKey::Up => navigation(Key::Up, NavigationKey::Up),
         SpecialKey::Down => navigation(Key::Down, NavigationKey::Down),
         SpecialKey::Left => navigation(Key::Left, NavigationKey::Left),
         SpecialKey::Right => navigation(Key::Right, NavigationKey::Right),
-        SpecialKey::Home | SpecialKey::KeypadHome => navigation(Key::Home, NavigationKey::Home),
-        SpecialKey::End | SpecialKey::KeypadEnd => navigation(Key::End, NavigationKey::End),
-        SpecialKey::PageUp | SpecialKey::KeypadPageUp => navigation(Key::PageUp, NavigationKey::PageUp),
-        SpecialKey::PageDown | SpecialKey::KeypadPageDown => navigation(Key::PageDown, NavigationKey::PageDown),
-        SpecialKey::Delete | SpecialKey::KeypadDelete => Key::Delete,
+        SpecialKey::Home => navigation(Key::Home, NavigationKey::Home),
+        SpecialKey::End => navigation(Key::End, NavigationKey::End),
+        SpecialKey::PageUp => navigation(Key::PageUp, NavigationKey::PageUp),
+        SpecialKey::PageDown => navigation(Key::PageDown, NavigationKey::PageDown),
+        SpecialKey::Delete => Key::Delete,
         SpecialKey::Backspace => Key::Backspace,
-        SpecialKey::KeypadEnter => Key::Enter,
-        SpecialKey::KeypadPlus => Key::Char('+'),
-        SpecialKey::KeypadMinus => Key::Char('-'),
-        SpecialKey::KeypadMultiply => Key::Char('*'),
-        SpecialKey::KeypadDivide => Key::Char('/'),
-        SpecialKey::KeypadPoint => Key::Char('.'),
-        SpecialKey::Keypad(digit) => Key::Char((b'0' + digit) as char),
         SpecialKey::F(number) if number <= 35 => Key::Function { number, modifiers },
         SpecialKey::Ignore | SpecialKey::Nul => return None,
         other => Key::Char(char::from_u32(SPECIAL_BASE + other.code()).expect("special keys are private-use scalars")),
@@ -602,6 +601,7 @@ pub(crate) fn render_key_notation(keys: &[Key]) -> String {
     let mut text = String::new();
     for key in keys {
         match key {
+            Key::Keypad { code, modifiers } => text.push_str(&super::keypad::notation(*code, *modifiers)),
             Key::Char('<') => text.push_str("<lt>"),
             Key::Char(' ') => text.push_str("<Space>"),
             Key::Char(character) => text.push(*character),

@@ -818,3 +818,26 @@ mod integration_tests {
         assert_eq!(core.document().revision(), revision);
     }
 }
+
+/// Shared bounds for persisted profiles and live detection configuration.
+pub fn validate_filename_associations(associations: &[FilenameAssociation]) -> Result<(), String> {
+        if associations.len() > 256
+            || associations.iter().any(|a| {
+                a.pattern.is_empty()
+                    || a.pattern.len() > 256
+                    || a.pattern.contains('\0')
+                    || a.language.is_empty()
+                    || a.language.len() > 128
+                    || !a
+                        .language
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_+.#-".contains(&b))
+            })
+        {
+            return Err("Filename association profile exceeds its bounds".into());
+        }
+    if serde_json::to_vec(associations).map_err(|e| e.to_string())?.len() > 128 * 1024 {
+        return Err("Encoded filename associations exceed 128 KiB".into());
+    }
+    Ok(())
+}

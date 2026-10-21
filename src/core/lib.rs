@@ -3,6 +3,7 @@
 //! The crate intentionally exposes a small facade. Document state, Vim command
 //! interpretation, and layout are separate modules with one-way dependencies.
 
+pub mod application_config;
 pub mod command;
 pub mod document;
 pub mod ffi;

@@ -230,3 +230,5 @@ mod vimscript_continuation;
 mod modifiable;
 
 mod registers_marks;
+
+mod frontend_contracts;

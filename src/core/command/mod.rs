@@ -33,6 +33,11 @@ mod indentation;
 mod literal_input;
 mod insert_controls;
 mod input_keys;
+mod status;
+mod native_actions;
+mod keypad;
+pub use keypad::valid_keypad_code;
+pub use native_actions::{NativeAction, NativeActionKind};
 mod whitespace;
 pub use whitespace::VisibleWhitespaceSetting;
 pub mod search_regex;
@@ -192,6 +197,9 @@ pub enum CommandLineKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Key {
+    NativeAction(NativeAction),
+    /// Vim keypad code (20..31 or 40..49), with the usual modifier bits.
+    Keypad { code: u8, modifiers: u8 },
     Char(char),
     Escape,
     Enter,
@@ -1532,6 +1540,7 @@ pub struct CommandInterpreter {
     /// change opened a new entry (Vim's `b_new_change`).
     last_change_unit: Option<(u64, bool)>,
     last_visual: Option<VisualMemory>,
+    status_input: String,
     recording: Option<(char, Vec<InputEvent>)>,
     last_macro: Option<char>,
     compound_replay_depth: usize,
@@ -1738,6 +1747,7 @@ impl CommandInterpreter {
             last_change_unit: None,
             jump_index: 0,
             last_visual: None,
+            status_input: String::new(),
             recording: None,
             last_macro: None,
             compound_replay_depth: 0,
@@ -2506,6 +2516,9 @@ impl CommandInterpreter {
         event: &InputEvent,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> bool {
+        if let InputEvent::Key(Key::NativeAction(action)) = event {
+            return action.kind.needs_layout();
+        }
         if matches!(event, InputEvent::Key(Key::CopySelection)) {
             return self.mode == Mode::VisualBlock
                 || self.mode == Mode::VisualLine && self.line_mode == LineMode::Visual;
@@ -3330,6 +3343,9 @@ impl CommandInterpreter {
         document: &mut Document,
         event: InputEvent,
     ) -> Result<CommandOutput, DocumentError> {
+        if let InputEvent::Key(Key::NativeAction(action)) = event {
+            return self.native_action(document, action, None);
+        }
         if matches!(event, InputEvent::Key(Key::CopySelection)) {
             return self.copy_platform_selection(document, None);
         }
@@ -3602,7 +3618,7 @@ impl CommandInterpreter {
                 && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
             || self.insert_control_g_pending()
             || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
-            || matches!(&event, InputEvent::Key(Key::SelectAll | Key::PasteClipboard | Key::PasteClipboardMatchingStyle | Key::AltEnter)) {
+            || matches!(&event, InputEvent::Key(Key::NativeAction(_) | Key::SelectAll | Key::PasteClipboard | Key::PasteClipboardMatchingStyle | Key::AltEnter)) {
             return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
         }
         if (matches!(self.mode, Mode::Insert | Mode::Replace)
@@ -4601,6 +4617,9 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             });
         }
+        if let InputEvent::Key(Key::NativeAction(action)) = event {
+            return self.native_action(document, action, Some(context));
+        }
         if self.mapping_applies(&event) && !self.plan_compound_replay {
             return Ok(CommandOutput::unsupported(
                 "key mappings with a supplied layout require the core coordinator",
@@ -4626,6 +4645,10 @@ impl CommandInterpreter {
         let event = self.normalized_input_event(event);
         let paragraph_navigation = Self::is_paragraph_navigation_input(&event);
         self.record_event(&event);
+        let event = match event {
+            InputEvent::Key(key @ Key::Keypad { .. }) => InputEvent::Key(self.normalized_input_key(key)),
+            other => other,
+        };
         if self.substitute_confirmation.is_some() {
             if let Some(motion) = substitute_confirmation::scroll_motion(&event) {
                 return Ok(self.scroll_substitute_confirmation(document, context, motion));
@@ -4736,6 +4759,7 @@ impl CommandInterpreter {
     }
 
     fn record_event(&mut self, event: &InputEvent) {
+        self.record_status_input(event);
         // Ctrl-G U applies only to the immediately following horizontal key.
         // This transition runs for typed plans as well as legacy execution.
         if !matches!(event, InputEvent::Key(Key::Left | Key::Right))
@@ -4856,6 +4880,7 @@ impl CommandInterpreter {
         document: &Document,
         key: Key,
     ) -> Option<CommandOutput> {
+        let key = self.normalized_input_key(key);
         if self.handles_literal_input(&InputEvent::Key(key)) { return None; }
         if let Some(output) = self.cancel_register_operand(key) { return Some(output); }
         if let Some(output) = self.try_handle_window_key(document, key) { return Some(output); }
@@ -4893,6 +4918,12 @@ impl CommandInterpreter {
         if matches!(key, Key::Ctrl('g' | 'G' | 't' | 'T')) && self.search_options.incsearch {
             return Some(self.navigate_incremental_search(document, matches!(key, Key::Ctrl('g' | 'G'))));
         }
+        let (key, extend) = match key {
+            Key::ModifiedNavigation { key, modifiers } => (key.key(), modifiers & 1 != 0),
+            key => (key, false),
+        };
+        let navigation_anchor = self.command_line_state.as_ref().map(|state|
+            state.buffer.selection_anchor.unwrap_or(state.buffer.cursor));
         let output = match key {
             Key::Escape => {
                 self.mode = self
@@ -4994,6 +5025,13 @@ impl CommandInterpreter {
             _ => CommandOutput::unsupported(format!("command-line key {key:?}")),
         };
         self.invalidate_changed_incremental_navigation();
+        if extend && matches!(key, Key::Left | Key::Right | Key::WordLeft | Key::WordRight
+            | Key::Home | Key::End | Key::DocumentStart | Key::DocumentEnd
+            | Key::ParagraphStart | Key::ParagraphEnd) {
+            if let Some(state) = self.command_line_state.as_mut() {
+                state.buffer.selection_anchor = navigation_anchor;
+            }
+        }
         Some(output)
     }
 
@@ -11988,7 +12026,7 @@ impl CommandInterpreter {
                 "cursor motion is unavailable while a deferred Visual Block insertion is collected",
             )),
             Key::Escape => unreachable!("handled above"),
-            Key::SelectAll | Key::CopySelection | Key::PasteClipboard | Key::PasteClipboardMatchingStyle => self.handle_key(document, key),
+            Key::NativeAction(_) | Key::Keypad { .. } | Key::SelectAll | Key::CopySelection | Key::PasteClipboard | Key::PasteClipboardMatchingStyle => self.handle_key(document, key),
         }
     }
 

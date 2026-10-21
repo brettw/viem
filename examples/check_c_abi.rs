@@ -4,10 +4,12 @@ use std::path::Path;
 use std::process::{Command, ExitCode};
 use viem_core::ffi::*;
 
+include!(concat!(env!("OUT_DIR"), "/abi_layout_checks.rs"));
+
 fn main() -> ExitCode {
     match check_c_abi() {
         Ok(()) => {
-            println!("C header matches the Rust ABI assertions.");
+            println!("C header matches Rust: {} struct layouts, {} field offsets, plus signature and constant assertions.", GENERATED_LAYOUT_COUNTS.0, GENERATED_LAYOUT_COUNTS.1);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -56,7 +58,7 @@ fn check_c_abi() -> Result<(), String> {
 }
 
 fn probe_source() -> String {
-    format!(
+    let mut source = format!(
         r#"
 #include "viem_core.h"
 #include <stddef.h>
@@ -625,17 +627,8 @@ static void typecheck(void) {{
       viem_core_view_send_text_with_host_context_v2;
   ViemStatus (*effect_info)(ViemEffectBatchHandle,
       ViemEffectBatchInfoV1 *) = viem_effect_batch_info;
-  ViemStatus (*effect_copy)(ViemEffectBatchHandle,
-      ViemClipboardWriteV1 *, uint64_t,
-      ViemExFrontendRequestV1 *, uint64_t,
-      ViemExOptionDisplayV1 *, uint64_t,
-      ViemExMarkV1 *, uint64_t,
-      ViemExRegisterV1 *, uint64_t,
-      ViemExJumpV1 *, uint64_t,
-      ViemExTextLineV1 *, uint64_t,
-      uint32_t *, uint64_t, uint64_t *, uint64_t,
-      uint8_t *, uint64_t, ViemEffectBatchInfoV1 *) =
-      viem_effect_batch_copy;
+  ViemStatus (*effect_read)(ViemEffectBatchHandle,
+      ViemEffectBatchViewV1 *) = viem_effect_batch_read;
   ViemStatus (*effect_release)(ViemEffectBatchHandle) =
       viem_effect_batch_release;
   ViemStatus (*place_cursor)(ViemCoreHandle, ViemViewId,
@@ -687,7 +680,7 @@ static void typecheck(void) {{
 
   (void)send_key_with_host_context;
   (void)send_text_with_host_context; (void)effect_info;
-  (void)effect_copy; (void)effect_release;
+  (void)effect_read; (void)effect_release;
   (void)place_cursor; (void)undo; (void)redo;
   (void)composition_begin; (void)composition_update;
   (void)composition_overlay_info; (void)copy_composition_range;
@@ -845,5 +838,7 @@ static void typecheck(void) {{
         composition_overlay_info = std::mem::size_of::<ViemCompositionOverlayInfoV1>(),
         composition_overlay_range = std::mem::size_of::<ViemCompositionOverlayUtf8RangeV1>(),
         outcome = std::mem::size_of::<ViemCoreOutcomeV1>(),
-    )
+    );
+    append_generated_layout_checks(&mut source);
+    source
 }

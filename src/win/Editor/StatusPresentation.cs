@@ -317,7 +317,7 @@ internal sealed partial class EditorPane
         locationToggle.Foreground = new SolidColorBrush(style.Foreground);
         filePath.FontFamily = statusMeasure.FontFamily = mode.FontFamily;
         filePath.FontSize = statusMeasure.FontSize = mode.FontSize;
-        mode.Width = Math.Ceiling(new[] { "NORMAL", "INSERT", "REPLACE", "VISUAL", "V-LINE", "V-BLOCK",
+        mode.Width = Math.Ceiling(new[] { "Recording @W", "NORMAL", "INSERT", "REPLACE", "VISUAL", "V-LINE", "V-BLOCK",
             "SELECTION", "SELECT", "S-LINE", "S-BLOCK", "COMMAND" }.Max(MeasureStatusText));
         UpdateFilePathText();
         UpdateStatusPresentation();

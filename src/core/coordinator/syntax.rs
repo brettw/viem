@@ -185,21 +185,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         associations: Vec<detection::FilenameAssociation>,
     ) -> Result<(), String> {
-        if associations.len() > 256
-            || associations.iter().any(|a| {
-                a.pattern.is_empty()
-                    || a.pattern.len() > 256
-                    || a.pattern.contains('\0')
-                    || a.language.is_empty()
-                    || a.language.len() > 128
-                    || !a
-                        .language
-                        .bytes()
-                        .all(|b| b.is_ascii_alphanumeric() || b"_+.#-".contains(&b))
-            })
-        {
-            return Err("Filename association profile exceeds its bounds".into());
-        }
+        detection::validate_filename_associations(&associations)?;
         self.syntax.filename_associations = associations;
         if self.syntax.detection.is_some() {
             self.refresh_code_detection();

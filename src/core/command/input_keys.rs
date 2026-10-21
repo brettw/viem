@@ -64,15 +64,17 @@ impl CommandInterpreter {
 
     pub(super) fn normalized_input_event(&self, event: InputEvent) -> InputEvent {
         match event {
+            InputEvent::Key(key @ Key::Keypad { .. }) => InputEvent::Key(key),
             InputEvent::Key(key) => InputEvent::Key(self.normalized_input_key(key)),
             event => event,
         }
     }
 
     pub(super) fn normalized_input_key(&self, key: Key) -> Key {
-        if self.mode == Mode::CommandLine {
-            if let Key::ModifiedNavigation { key, .. } = key { return key.key(); }
-        }
+        let key = match key {
+            Key::Keypad { code, modifiers } if !self.literal_input_pending() => keypad::fallback(code, modifiers),
+            other => other,
+        };
         if self.is_native_selection() && key == Key::Tab { return key; }
         if self.is_text_selection() && NavigationKey::from_key(key).is_some() { return key; }
         if self.literal_input_pending() {

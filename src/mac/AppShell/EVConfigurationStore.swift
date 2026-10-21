@@ -1,4 +1,5 @@
 import Foundation
+import CViemCore
 import CoreFoundation
 
 extension Notification.Name {
@@ -55,8 +56,7 @@ public final class EVConfigurationStore {
     activeTheme = (try? EVThemeFile.builtin()) ?? [:]
     do {
       if manager.fileExists(atPath: file.path) {
-        root = try Self.readObject(Data(contentsOf: file))
-        try Self.validate(root)
+        root = try Self.normalized(Self.readObject(Data(contentsOf: file)))
       } else {
         if let value = legacy?.object(forKey: "EVEditing.SmartQuotes.v1") as? Bool {
           root["editing"] = ["smartQuotes": value]
@@ -76,6 +76,7 @@ public final class EVConfigurationStore {
       writable = false
       root = ["version": 1]
     }
+    root = (try? Self.normalized(root)) ?? root
     if writable {
       do { try initializeThemes(newProfile: newProfile) }
       catch {
@@ -125,7 +126,7 @@ public final class EVConfigurationStore {
   }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
   public func showFormattingToolbar(for format: EVSourceFormat) -> Bool {
-    (root["formattingToolbar"] as? [String: Bool])?[format.rawValue] ?? true
+    (root["formattingToolbar"] as? [String: Any])?[format.rawValue] as? Bool ?? true
   }
   public func setShowFormattingToolbar(_ visible: Bool, for format: EVSourceFormat) throws {
     try update(section: "formattingToolbar", values: [format.rawValue: visible])
@@ -201,8 +202,7 @@ public final class EVConfigurationStore {
     let file = directory.appendingPathComponent("config.json")
     guard manager.fileExists(atPath: file.path) else { return }
     do {
-      let candidate = try Self.readObject(Data(contentsOf: file))
-      try Self.validate(candidate)
+      let candidate = try Self.normalized(Self.readObject(Data(contentsOf: file)))
       root = candidate
       lastError = nil
       writable = true
@@ -276,7 +276,7 @@ public final class EVConfigurationStore {
       // control or application instance are retained. Invalid external changes
       // remain on disk and are reported by the settings window.
       let exists = manager.fileExists(atPath: url.path)
-      if exists { candidate = try Self.readObject(Data(contentsOf: url)); try Self.validate(candidate) }
+      if exists { candidate = try Self.normalized(Self.readObject(Data(contentsOf: url))) }
       let changed = try mutation(&candidate)
       // This removed preference never controls resource lookup. Retire old
       // values on the next settings write while retaining unrelated fields.
@@ -284,7 +284,7 @@ public final class EVConfigurationStore {
         code.removeValue(forKey: "vimSyntaxDirectory")
         candidate["code"] = code
       }
-      try Self.validate(candidate)
+      candidate = try Self.normalized(candidate)
       if changed || !exists { try write(candidate, to: url) }
       root = candidate
       lastError = nil
@@ -314,81 +314,30 @@ public final class EVConfigurationStore {
           version.intValue == 3, version.doubleValue == 3
     else { throw invalid("Unsupported Code stylesheet version; expected 3") }
   }
-  static func validate(_ object: [String: Any]) throws {
-    try validateVersion(object)
-    for key in ["selectedTheme", "selectedThemeFile"] {
-      if let value = object[key], !(value is NSNull), !(value is String) {
-        throw invalid("Selected theme must be a theme name and filename, or null for Default")
+  /// The core owns the config.json schema, default values and diagnostics.
+  static func normalized(_ object: [String: Any]) throws -> [String: Any] {
+    let input = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    return try input.withUnsafeBytes { buffer in
+      var required: UInt64 = 0
+      let status = viem_application_config(buffer.bindMemory(to: UInt8.self).baseAddress,
+        UInt64(buffer.count), nil, 0, &required)
+      guard status == VIEM_STATUS_BUFFER_TOO_SMALL || status == VIEM_STATUS_OK,
+            required <= UInt64(Int.max) else { throw invalid("Could not validate configuration (\(status))") }
+      var output = Data(count: Int(required))
+      let copied = output.withUnsafeMutableBytes { bytes in
+        viem_application_config(buffer.bindMemory(to: UInt8.self).baseAddress, UInt64(buffer.count),
+          bytes.bindMemory(to: UInt8.self).baseAddress, UInt64(bytes.count), &required)
       }
-    }
-    if let raw = object["windows"] {
-      guard let windows = raw as? [String: Any] else { throw invalid("Invalid window settings") }
-      if windows["documentFrame"] != nil, documentWindowFrame(in: object) == nil {
-        throw invalid("Document window frame must have finite coordinates and positive dimensions")
-      }
-    }
-    if let raw = object["recentDocuments"] {
-      guard let paths = raw as? [String], paths.count <= 10,
-            paths.allSatisfy(isValidRecentDocumentPath) else {
-        throw invalid("Recent documents must be an array of at most 10 absolute paths, each at most 16 KiB")
-      }
-    }
-    if let raw = object["view"] {
-      guard let fields = raw as? [String: Any] else { throw invalid("Invalid View settings") }
-      if let value = fields["margins"] {
-        let margins = try JSONDecoder().decode(EVViewMargins.self, from: JSONSerialization.data(withJSONObject: value))
-        guard margins.isValid else { throw invalid("View margins must be between 0 and 1000 pixels") }
-      }
-    }
-    for (section, key) in [("editing", "caretHoverEffect"), ("editing", "markdownAutodetect"), ("editing", "smartQuotes"), ("editing", "markdownFormattedView"), ("appearance", "showStatusBar")] {
-      if let raw = object[section] {
-        guard let fields = raw as? [String: Any] else { throw invalid("Invalid \(section) settings") }
-        if let value = fields[key] {
-          guard let boolean = value as? NSNumber, CFGetTypeID(boolean) == CFBooleanGetTypeID() else { throw invalid("\(key) must be Boolean") }
-        }
-      }
-    }
-    if let raw = object["formattingToolbar"] {
-      guard let fields = raw as? [String: Any], fields.values.allSatisfy({ value in
-        guard let boolean = value as? NSNumber else { return false }
-        return CFGetTypeID(boolean) == CFBooleanGetTypeID()
-      }) else { throw invalid("Formatting toolbar visibility must be Boolean per format") }
-    }
-    if let value = (object["editing"] as? [String: Any])?["textWidth"], validTextWidth(value) == nil {
-      throw invalid("textWidth must be a positive whole number of columns up to 4294967295")
-    }
-    if let editing = object["editing"] as? [String: Any] {
-      if let raw = editing["indentation"] {
-        let value = try JSONDecoder().decode(EVIndentationOptions.self, from: JSONSerialization.data(withJSONObject: raw, options: .fragmentsAllowed))
-        guard value.isValid else { throw invalid("Invalid indentation defaults") }
-      }
-      if let raw = editing["whitespacePresentation"] {
-        let value = try JSONDecoder().decode(EVWhitespacePresentationOptions.self, from: JSONSerialization.data(withJSONObject: raw, options: .fragmentsAllowed))
-        guard (0...1024).contains(value.codeWrappedLineIndent) else { throw invalid("Wrapped line indent (Code) must be a whole number from 0 to 1024") }
-        guard value.isValid else { throw invalid(EVListcharsSettings.validationError(value.visibleWhitespace.listchars) ?? "Invalid Visible whitespace style") }
-      }
-    }
-    if let raw = object["code"] {
-      guard let fields = raw as? [String: Any] else { throw invalid("Invalid Code settings") }
-      if let rawAssociations = fields["filenameAssociations"] {
-        guard let entries = rawAssociations as? [[String: Any]], entries.count <= 256 else {
-          throw invalid("Code filename associations must be an array of at most 256 entries")
-        }
-        var normalized: [EVCodeFilenameAssociation] = []
-        for entry in entries {
-          guard let pattern = entry["pattern"] as? String, !pattern.isEmpty, pattern.utf8.count <= 256, !pattern.contains("\0"),
-                let language = entry["language"] as? String, !language.isEmpty, language.utf8.count <= 128,
-                language.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [95, 43, 46, 35, 45].contains($0) }) else {
-            throw invalid("Each Code filename association requires a pattern of 1–256 bytes and a language name of 1–128 ASCII letters, digits, or _+.#- characters")
-          }
-          normalized.append(EVCodeFilenameAssociation(pattern: pattern, language: language))
-        }
-        guard try JSONEncoder().encode(normalized).count <= 128 * 1024 else {
-          throw invalid("Encoded Code filename associations must fit within 128 KiB")
-        }
-      }
+      guard copied == VIEM_STATUS_OK else { throw invalid("Could not validate configuration (\(copied))") }
+      // The core already bounds the configuration; its envelope adds a few bytes.
+      guard let response = try JSONSerialization.jsonObject(with: output) as? [String: Any]
+      else { throw invalid("Invalid configuration response") }
+      if let error = response["error"] as? String { throw invalid(error) }
+      guard let configuration = response["configuration"] as? [String: Any] else { throw invalid("Invalid configuration response") }
+      return configuration
     }
   }
+  static func validate(_ object: [String: Any]) throws { _ = try normalized(object) }
   /// A positive unsigned 32-bit integer. Booleans, fractions, zero, negative
   /// values, overflow, and non-numbers are rejected.
   private static func validTextWidth(_ value: Any?) -> UInt32? {

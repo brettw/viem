@@ -50,6 +50,8 @@ internal sealed unsafe partial class CoreView : IDisposable
     public ViemViewPresentationV1 Presentation { get { var p = New<ViemViewPresentationV1>(); Check(viem_core_view_presentation(Document.Handle, Id, &p), "Read presentation"); return p; } }
     public ViemViewportStateV1 Viewport { get { var p = New<ViemViewportStateV1>(); Check(viem_core_view_viewport_state(Document.Handle, Id, &p), "Read viewport"); return p; } }
     public ViemViewLineLocationV1 Location { get { var p = New<ViemViewLineLocationV1>(); Check(viem_core_view_line_location(Document.Handle, Id, &p), "Read location"); return p; } }
+    public static string PendingCommand(ViemViewPresentationV1 value) =>
+        Encoding.UTF8.GetString(value.pending_command, checked((int)value.pending_command_length));
     public bool IsVisual => Presentation.mode is VIEM_MODE_VISUAL_CHARACTER or VIEM_MODE_VISUAL_LINE or VIEM_MODE_VISUAL_BLOCK;
     public static bool IsTextSelectionMode(uint mode) => mode is VIEM_MODE_SELECT_CHARACTER or VIEM_MODE_SELECT_LINE or VIEM_MODE_SELECT_BLOCK
         or VIEM_MODE_SELECTION_CHARACTER or VIEM_MODE_SELECTION_LINE or VIEM_MODE_SELECTION_BLOCK;
@@ -131,22 +133,12 @@ internal sealed unsafe partial class CoreView : IDisposable
         if (IsTextSelection) Key(VIEM_KEY_CONTROL_CHARACTER, 'o');
         Command(command);
     }
-    public void SelectFromCommand(string command, uint origin = VIEM_SELECTION_ORIGIN_KEY, uint? returnMode = null)
-    {
-        var before = Presentation;
-        returnMode ??= before.mode;
-        Key(VIEM_KEY_ESCAPE);
-        if ((before.mode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE) && before.document_revision == Document.State.document_revision)
-            Place(before.cursor_utf8_offset, before.cursor_affinity, before.document_revision);
-        foreach (var rune in command.EnumerateRunes())
-        {
-            // selectmode=cmd may make the leading v enter Select mode. The
-            // remaining synthetic text-object keys are still commands.
-            if (IsTextSelection) Key(VIEM_KEY_CONTROL_CHARACTER, 'g');
-            Key(VIEM_KEY_CHARACTER, (uint)rune.Value);
-        }
-        if (HasSelection) SetSelectionOrigin(origin, returnMode.Value);
+    public bool NativeActionAvailable(uint action) {
+        ulong mask = 0; Check(viem_core_view_native_actions(Document.Handle, Id, &mask), "Read action availability");
+        return (mask & (1UL << (int)action)) != 0;
     }
+    public void NativeAction(uint action, uint origin = VIEM_SELECTION_ORIGIN_KEY, uint returnMode = 0) =>
+        Send((_, outcome, effects) => viem_core_view_native_action(Document.Handle, Id, action, origin, returnMode, outcome, effects));
     public void SetSelectionOrigin(uint origin, uint returnMode = VIEM_MODE_NORMAL) => Apply(o => viem_core_view_set_selection_origin(Document.Handle, Id, origin,
         returnMode is VIEM_MODE_INSERT or VIEM_MODE_REPLACE ? returnMode : VIEM_MODE_NORMAL, o));
     public void Paste(bool plain = false)

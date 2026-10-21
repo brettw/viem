@@ -138,7 +138,7 @@ internal static class CommandStatusTests
     {
         await InputRoutingTests.Text(":set wrap?");
         await InputRoutingTests.Key(VirtualKey.Enter);
-        Check(pane.CommandOutputText == "wrap=1", ":set queries use status output without a modal dialog");
+        Check(pane.CommandOutputText == "wrap", ":set queries use status output without a modal dialog");
         await InputRoutingTests.Text(":e café 日本語");
         Check(pane.PromptControl.LastDrawnText == ":e café 日本語", "command prompt draws Unicode text");
         await InputRoutingTests.Key(VirtualKey.Back);

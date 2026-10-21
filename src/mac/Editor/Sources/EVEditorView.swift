@@ -1621,6 +1621,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         surface.dismissCommandOutput()
         guard let session = surface.session else { return }
         customCaretBlinkController.restartAfterActivity()
+        if !compositionActive, let code = keypadCode(event.keyCode) {
+            let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
+            let bits: UInt32 = (modifiers.contains(.shift) ? 1 : 0) | (modifiers.contains(.control) ? 2 : 0)
+                | (modifiers.contains(.option) ? 4 : 0) | (modifiers.contains(.command) ? 8 : 0)
+            surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_KEYPAD), codepoint: code, modifiers: bits) }
+            return
+        }
         if routeLiteralInput(event) { return }
         let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         if event.keyCode == 100, shortcutModifiers.isEmpty {
@@ -3672,6 +3679,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let ascent = max(0, baseline - CGFloat(cluster.typographic_bounds.y))
             let descent = max(0, CGFloat(cluster.typographic_bounds.y + cluster.typographic_bounds.height) - baseline)
             if resolved.underline {
+                // Shared geometry contract: docs/abi-validation.md; Windows DrawingCache.DrawTextForeground.
                 let y = floor(baseline + max(1, descent * 0.35))
                 result.append(
                     EVTextDecoration(
@@ -4434,5 +4442,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     private func isGraphemeBoundary(_ index: String.Index, in text: String) -> Bool {
         index == text.endIndex || text.indices.contains(index)
+    }
+}
+
+// NSEvent physical key codes distinguish keypad Return and arithmetic from text.
+func keypadCode(_ keyCode: UInt16) -> UInt32? {
+    switch keyCode {
+    case 76: 30
+    case 65: 31
+    case 67: 28
+    case 69: 26
+    case 75: 29
+    case 78: 27
+    case 82...89: UInt32(keyCode - 82 + 40)
+    case 91: 48
+    case 92: 49
+    default: nil
     }
 }
