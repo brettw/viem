@@ -56,12 +56,16 @@ fn parses_mark_pattern_global_grammar_and_delimiter_escapes() {
     assert!(
         matches!(parse_ex(":v/foo/").unwrap().action, ExAction::Global { command, invert: true, .. } if command == "print")
     );
+    for mark in ['\'', '`', '[', ']', '.', '^', 'A', 'Z'] {
+        let command = parse_ex(&format!(":'{mark}d")).unwrap();
+        let Some(ExRange::Single(address)) = command.range else { panic!("mark address") };
+        assert_eq!(address.base, AddressBase::Mark(mark));
+    }
     for invalid in [
         ":g",
         ":globalx/foo/d",
         ":g|foo|d",
         ":'1d",
-        ":''d",
         ":g\\foo\\d",
     ] {
         assert!(parse_ex(invalid).is_err(), "{invalid}");

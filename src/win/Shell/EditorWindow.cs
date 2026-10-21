@@ -655,6 +655,21 @@ internal sealed partial class EditorWindow : Window
                             if (!force && !await ConfirmDiscard(pane)) throw new OperationCanceledException();
                             AddPane(NewDocument(), replacing: pane); break;
                         case VIEM_EX_FRONTEND_EDIT: if (request.Text.Length > 0 && !string.Equals(ResolvePath(request.Text), pane.Document.FilePath, StringComparison.OrdinalIgnoreCase)) await OpenPath(request.Text, false, force, targetPane: pane); else if (pane.Document.FilePath != null) await Reload(pane, force); break;
+                        case VIEM_EX_FRONTEND_JUMP_FILE_MARK:
+                            var mark = CoreView.ResolveFileMark(request.Value.window_command);
+                            var destination = App.Instance.Windows.Where(w => !w.closed).SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p)))
+                                .FirstOrDefault(item => item.Pane.Document.State.document_id == mark.DocumentId);
+                            if (destination.Pane == null)
+                            {
+                                if (mark.Path.Length == 0) throw new InvalidOperationException("The marked buffer is no longer open.");
+                                await OpenPath(mark.Path, targetPane: pane);
+                                destination = App.Instance.Windows.Where(w => !w.closed).SelectMany(w => w.Panes.Select(p => (Window: w, Pane: p)))
+                                    .FirstOrDefault(item => item.Pane.Document.FilePath is string path && FileIdentity.Same(path, mark.Path));
+                            }
+                            if (destination.Pane == null) throw new InvalidOperationException("The marked file could not be opened.");
+                            await destination.Window.ShowLinkedPane(destination.Pane, null);
+                            (await destination.Pane.Ready).JumpToFileMark(mark, force);
+                            break;
                         case VIEM_EX_FRONTEND_EDIT_ALTERNATE:
                             if (pane.AlternatePath is not string alternate) throw new InvalidOperationException("E23: No alternate file");
                             await OpenPath(alternate, false, force, targetPane: pane);

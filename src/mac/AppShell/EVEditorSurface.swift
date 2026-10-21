@@ -150,6 +150,16 @@ public struct EVDocumentPersistenceState: Equatable, Sendable {
 /// A revision-tagged native document operation requested by one completed
 /// core command turn. AppKit owns the dialogs and I/O; the core remains the
 /// authority for the source bytes, dirty state, and command semantics.
+public struct EVFileMarkTarget: Sendable {
+  public let name: UInt32
+  public let generation: UInt64
+  public let documentID: UInt64
+  public let path: String
+  public init(name: UInt32, generation: UInt64, documentID: UInt64, path: String) {
+    self.name = name; self.generation = generation; self.documentID = documentID; self.path = path
+  }
+}
+
 public struct EVDocumentHostRequest: Equatable, Sendable {
   public enum Kind: Equatable, Sendable {
     case split
@@ -157,6 +167,7 @@ public struct EVDocumentHostRequest: Equatable, Sendable {
     case edit
     /// `CTRL-^`: edit the pane's alternate file.
     case editAlternate
+    case jumpFileMark(name: UInt32, linewise: Bool)
     case editNewWindow
     case navigateArgument
     case printWorkingDirectory
@@ -404,6 +415,9 @@ public protocol EVEditorSurface: AnyObject {
   func htmlExportData() async throws -> Data
   /// Startup line in the first argument; UInt64.max selects its last line.
   func goToLine(_ line: UInt64)
+  func setAlternateFile(_ path: String?)
+  func resolveFileMark(_ name: UInt32) throws -> EVFileMarkTarget
+  func jumpToFileMark(_ target: EVFileMarkTarget, linewise: Bool) throws
   func insertFileContents(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws
   func applyScriptAutoselect(_ enabled: Bool) throws
   func applyScriptViewOptions() throws
@@ -432,6 +446,9 @@ extension EVEditorSurface {
   public func showDocumentMessage(_ message: String) {}
   public func htmlExportData() async throws -> Data { throw EVDocumentHostError.unsupportedRequest }
   public func goToLine(_ line: UInt64) {}
+  public func setAlternateFile(_ path: String?) {}
+  public func resolveFileMark(_ name: UInt32) throws -> EVFileMarkTarget { throw EVDocumentHostError.unsupportedRequest }
+  public func jumpToFileMark(_ target: EVFileMarkTarget, linewise: Bool) throws { throw EVDocumentHostError.unsupportedRequest }
   public func insertFileContents(_ bytes: Data, after: UInt64, source: Bool, expected: EVDocumentPersistenceState) throws { throw EVDocumentHostError.unsupportedRequest }
   public func applyScriptAutoselect(_ enabled: Bool) throws {}
   public func applyScriptViewOptions() throws {}

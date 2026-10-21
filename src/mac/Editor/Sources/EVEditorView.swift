@@ -235,7 +235,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.masksToBounds = true
-        registerForDraggedTypes([.fileURL])
+        registerForDraggedTypes([.fileURL, .string])
         setAccessibilityElement(true)
         setAccessibilityRole(.textArea)
         setAccessibilityLabel("Viem editor")
@@ -2678,11 +2678,17 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
         guard !draggingEntered(sender).isEmpty else { return false }
+        if EVFileDrop.fileURLs(on: sender.draggingPasteboard).isEmpty,
+           let text = sender.draggingPasteboard.string(forType: .string), let surface {
+            unmarkText()
+            guard !hasMarkedText(), surface.session?.hasActiveComposition != true else { return false }
+            return surface.acceptTextDrop(text)
+        }
         return performFileDrop(on: sender.draggingPasteboard)
     }
 
     func fileDropOperation(on pasteboard: NSPasteboard, sourceMask: NSDragOperation) -> NSDragOperation {
-        guard surface?.acceptsFileDrops == true, !EVFileDrop.fileURLs(on: pasteboard).isEmpty else { return [] }
+        guard surface?.acceptsFileDrops == true, !EVFileDrop.fileURLs(on: pasteboard).isEmpty || pasteboard.string(forType: .string) != nil else { return [] }
         return EVFileDrop.operation(for: sourceMask)
     }
 

@@ -259,4 +259,58 @@ import XCTest
         XCTAssertFalse(backend.persistenceState.isDirty)
         withExtendedLifetime(window) {}
     }
+    func testSpecialRegistersExpressionPromptAndAcceptedDrop() throws {
+        let (backend, surface, session, window) = try makeSurface()
+        backend.updateFilename("/tmp/viem-register-native.txt")
+        surface.setAlternateFile("/tmp/viem-previous-native.txt")
+        let clipboard = Pasteboard(); clipboard.text = "untouched clipboard"; surface.pasteboard = clipboard
+        surface.performInput { _ = try session.sendTestKeys("\"=6 * 7") }
+        XCTAssertEqual(surface.commandLine?.prompt, "=")
+        surface.performInput {
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+            _ = try session.sendTestKeys("p")
+        }
+        XCTAssertEqual(try backend.formattedText(), "d42ocument")
+        surface.performInput { _ = try session.sendTestKeys("u") }
+        surface.performInput {
+            _ = try session.sendTestKeys(":echo @% @#")
+            _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+        }
+        XCTAssertTrue(surface.commandOutput?.contains("/tmp/viem-register-native.txt /tmp/viem-previous-native.txt") == true)
+        XCTAssertTrue(surface.acceptTextDrop("dropped"))
+        XCTAssertEqual(clipboard.text, "untouched clipboard")
+        surface.performInput { _ = try session.sendTestKeys("u\"~p") }
+        XCTAssertTrue(try backend.formattedText().contains("dropped"))
+        withExtendedLifetime(window) {}
+    }
+
+    func testFileMarkRegistryRebasesAndRejectsReassignedGeneration() throws {
+        let (first, firstSurface, firstSession, firstWindow) = try makeSurface()
+        first.updateFilename("/tmp/viem-first-mark.txt")
+        firstSurface.performInput { _ = try firstSession.sendTestKeys("lmZ") }
+        let target = try firstSurface.resolveFileMark(90)
+        XCTAssertEqual(target.path, "/tmp/viem-first-mark.txt")
+        firstSurface.performInput {
+            _ = try firstSession.sendTestKeys("ggix")
+            _ = try firstSession.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+        }
+        try firstSurface.jumpToFileMark(target, linewise: false)
+        XCTAssertEqual(firstSurface.viewPresentation.cursor_utf8_offset, 2)
+        let (second, secondSurface, secondSession, secondWindow) = try makeSurface()
+        second.updateFilename("/tmp/viem-second-mark.txt")
+        secondSurface.performInput { _ = try secondSession.sendTestKeys("mZ") }
+        let replacement = try secondSurface.resolveFileMark(90)
+        XCTAssertNotEqual(target.generation, replacement.generation)
+        XCTAssertThrowsError(try firstSurface.jumpToFileMark(target, linewise: false))
+        try secondSurface.jumpToFileMark(replacement, linewise: false)
+        firstSurface.performInput {
+            _ = try firstSession.sendTestKeys(":delmarks Z")
+            _ = try firstSession.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+        }
+        XCTAssertThrowsError(try firstSurface.resolveFileMark(90))
+        secondSurface.performInput { _ = try secondSession.sendTestKeys("h") }
+        XCTAssertThrowsError(try secondSurface.resolveFileMark(90), "old owners cannot resurrect a deleted mark")
+        withExtendedLifetime((firstWindow, secondWindow)) {}
+    }
+
 }

@@ -281,6 +281,13 @@ _Static_assert(VIEM_CLIPBOARD_TURN_ENTRY_V2_SIZE ==
     sizeof(ViemClipboardTurnEntryV2), "clipboard turn entry size macro");
 _Static_assert(offsetof(ViemClipboardTurnEntryV2, plain_text) ==
     {clipboard_turn_text}, "clipboard turn text offset");
+_Static_assert(sizeof(ViemFileMarkTargetV1) == {file_mark_target}, "file mark target");
+_Static_assert(VIEM_FILE_MARK_TARGET_V1_SIZE == sizeof(ViemFileMarkTargetV1), "file mark size macro");
+static ViemStatus (*file_mark_target)(uint32_t, uint64_t, ViemFileMarkTargetV1 *, uint8_t *, uint64_t) = viem_file_mark_target;
+static ViemStatus (*jump_file_mark)(ViemCoreHandle, ViemViewId, uint32_t, uint64_t, uint32_t, ViemCoreOutcomeV1 *) = viem_core_view_jump_file_mark;
+static ViemStatus (*host_register)(ViemCoreHandle, ViemViewId, uint32_t, const uint8_t *, uint64_t) = viem_core_view_set_host_register;
+static ViemStatus (*drop_text)(ViemCoreHandle, ViemViewId, const uint8_t *, uint64_t, const ViemCommandTurnContextV2 *, ViemCoreOutcomeV1 *, ViemEffectBatchHandle *) = viem_core_view_drop_text;
+_Static_assert(offsetof(ViemFileMarkTargetV1, generation) == {file_mark_generation}, "file mark generation offset");
 _Static_assert(sizeof(ViemCommandTurnContextV2) == {command_turn_context},
     "command turn context");
 _Static_assert(VIEM_COMMAND_TURN_CONTEXT_V2_SIZE ==
@@ -733,6 +740,8 @@ static void typecheck(void) {{
         formatted_point_column = std::mem::offset_of!(ViemFormattedPointInfoV1, grapheme_column),
         clipboard_turn_entry = std::mem::size_of::<ViemClipboardTurnEntryV2>(),
         clipboard_turn_text = std::mem::offset_of!(ViemClipboardTurnEntryV2, plain_text),
+        file_mark_target = std::mem::size_of::<ViemFileMarkTargetV1>(),
+        file_mark_generation = std::mem::offset_of!(ViemFileMarkTargetV1, generation),
         command_turn_context = std::mem::size_of::<ViemCommandTurnContextV2>(),
         effect_bytes_ref = std::mem::size_of::<ViemEffectBytesRefV1>(),
         clipboard_write = std::mem::size_of::<ViemClipboardWriteV1>(),

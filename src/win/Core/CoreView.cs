@@ -277,7 +277,7 @@ internal sealed unsafe partial class CoreView : IDisposable
         var info = New<ViemCommandLineInfoV1>(); Check(viem_core_view_command_line_info(Document.Handle, Id, &info), "Read prompt");
         var identity = info.identity;
         var bytes = Copy((p, n, r) => { var expected = identity; var result = New<ViemCommandLineInfoV1>(); uint s = viem_core_view_copy_command_line(Document.Handle, Id, &expected, p, n, &result); *r = result.utf8_length; return s; });
-        return (identity.kind switch { 1 => ":", 2 => "/", 3 => "?", _ => "" }) + Encoding.UTF8.GetString(bytes);
+        return (identity.kind switch { 1 => ":", 2 => "/", 3 => "?", 4 => "=", _ => "" }) + Encoding.UTF8.GetString(bytes);
     }
     public string SubstitutePrompt() => Encoding.UTF8.GetString(Copy((p, n, r) => viem_core_view_copy_substitute_confirmation(Document.Handle, Id, p, n, r)));
     public void Poll()

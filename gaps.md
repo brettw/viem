@@ -13,20 +13,7 @@ the script host profile. See [AGENTS.md](AGENTS.md),
 [Vim script support](docs/vimscript.md) and [split views](docs/window-panes.md)
 for the current commitments.
 
-## 1. Normal mode
-
-No known gaps remain in the audited Normal command list.
-
-## 2. Visual modes and text objects
-
-No known gaps remain in the audited Visual command and text-object list.
-
-## 3. Search and prompts
-
-No known gaps remain in the audited search and prompt list. Windows prompt
-keyboard selection is covered separately in B5 below.
-
-## 4. Ex commands
+## 1. Ex commands
 
 - **Overlapping confirmed substitutions inside `:global` remain unsupported.**
   Confirmation now supports disjoint per-target substitutions, inherited flags,
@@ -60,34 +47,7 @@ keyboard selection is covered separately in B5 below.
   See [global confirmation](src/core/command/global_confirmation.rs) and
   [confirmation tests](tests/all/substitute_confirmation.rs).
 
-## 5. `:set` options
-
-No known gaps remain in the audited option list. Deliberately unsupported
-options are recorded in [the option profile](docs/vimscript.md#deliberately-unsupported-options).
-
-## 6. Registers and marks
-
-- **`/` and `:` are not generally addressable registers.** Prompt Ctrl-R and
-  script register reads can access the last search/Ex command, but
-  [`is_valid_register`](src/core/command/registers.rs) excludes both names.
-  Normal `"/p` and `":p` therefore fail.
-- **Other missing registers:** `#` (alternate file), `~` (drop) and `=`
-  (expression). The expression register is explicitly rejected by the prompt
-  handler and is not accepted by Normal register selection. A script expression
-  evaluator now exists, but is not wired to expression-register input.
-- **Script reads lose the current filename (new).**
-  [`script_register`](src/core/command/scripting.rs) returns an empty string
-  unconditionally for `%`. In a document bound to `/tmp/gaps-audit.txt`,
-  `:echo '[' . @% . ']' '[' . getreg('%') . ']'` prints `[] []`, while prompt
-  `<Ctrl-R>%` inserts `/tmp/gaps-audit.txt`. Script reads should use the current
-  artifact context as the other filename-register paths do.
-- **Special marks are missing:** `'[`/`']` (last change or yank), `'.`
-  (last change), `'^` (last insert), `''` and doubled backtick (previous
-  position), and `A`-`Z` cross-file marks. The mark handlers in
-  [`command/mod.rs`](src/core/command/mod.rs) accept local `a`-`z` and remembered
-  Visual `<`/`>` marks only.
-
-## 7. Shared frontend and ABI issues
+## 2. Shared frontend and ABI issues
 
 These include observed platform differences and remaining interface maintenance
 concerns. Native dialogs, event decoding and native caret blinking belong in the

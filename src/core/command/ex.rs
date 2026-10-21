@@ -101,6 +101,7 @@ pub enum ExAction {
     UndoList,
     Delete(RegisterCount),
     Yank(RegisterCount),
+    PutExpression(String),
     Put {
         register: Option<char>,
     },
@@ -603,7 +604,7 @@ impl<'a> Parser<'a> {
             Some('\'') => {
                 self.bump();
                 let name = self.bump().ok_or(ExParseError { offset: self.at, kind: ExParseErrorKind::InvalidAddress })?;
-                if !matches!(name, 'a'..='z' | '<' | '>') {
+                if !super::marks::valid_mark(name) {
                     return self.error(ExParseErrorKind::InvalidAddress);
                 }
                 AddressBase::Mark(name)
@@ -740,9 +741,9 @@ impl<'a> Parser<'a> {
             CommandName::UndoList => no_args(ExAction::UndoList),
             CommandName::Delete => Ok(ExAction::Delete(parse_register_count(args, args_offset)?)),
             CommandName::Yank => Ok(ExAction::Yank(parse_register_count(args, args_offset)?)),
-            CommandName::Put => Ok(ExAction::Put {
-                register: parse_optional_register(args, args_offset)?,
-            }),
+            CommandName::Put => if let Some(expression) = args.strip_prefix('=') {
+                Ok(ExAction::PutExpression(expression.to_owned()))
+            } else { Ok(ExAction::Put { register: parse_optional_register(args, args_offset)? }) },
             CommandName::Join => Ok(ExAction::Join {
                 count: parse_optional_count(args, args_offset)?,
             }),
@@ -1440,7 +1441,7 @@ fn parse_register(value: &str, offset: usize) -> Result<char, ExParseError> {
 }
 
 fn is_valid_register(register: char) -> bool {
-    register.is_ascii_alphanumeric() || matches!(register, '"' | '-' | '_' | '+' | '*' | '.' | '%')
+    super::registers::is_valid_register(register)
 }
 
 /// Vim's line-command tail is a count followed by any combination of p/#/l.
@@ -2386,11 +2387,11 @@ fn parse_mark_deletions(args: &str, offset: usize) -> Result<Vec<char>, ExParseE
     let mut index = 0;
     while index < chars.len() {
         let first = chars[index];
-        if !matches!(first, 'a'..='z' | '<' | '>') {
+        if !super::marks::valid_mark(first) {
             return Err(ExParseError { offset, kind: ExParseErrorKind::UnexpectedArgument(args.into()) });
         }
         if chars.get(index + 1) == Some(&'-') {
-            let last = chars.get(index + 2).copied().filter(|last| first.is_ascii_lowercase() && last.is_ascii_lowercase() && *last >= first)
+            let last = chars.get(index + 2).copied().filter(|last| ((first.is_ascii_lowercase() && last.is_ascii_lowercase()) || (first.is_ascii_uppercase() && last.is_ascii_uppercase())) && *last >= first)
                 .ok_or_else(|| ExParseError { offset, kind: ExParseErrorKind::UnexpectedArgument(args.into()) })?;
             names.extend(first..=last); index += 3;
         } else { names.push(first); index += 1; }

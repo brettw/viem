@@ -49,6 +49,7 @@ impl CommandInterpreter {
         if depth >= 64 {
             return Some(CommandOutput::unsupported("command-line register expansion nesting limit"));
         }
+        if key == Key::Char('=') { return Some(self.begin_expression_register(Some(insertion))); }
         let text = match self.command_line_register_value(document, key) {
             Ok(text) => text,
             Err(output) => return Some(output),
@@ -108,7 +109,7 @@ impl CommandInterpreter {
         }
     }
 
-    fn insert_command_line_register(&mut self, document: &Document, input: &RegisterValue, insertion: RegisterInsertion, depth: usize) -> CommandOutput {
+    pub(super) fn insert_command_line_register(&mut self, document: &Document, input: &RegisterValue, insertion: RegisterInsertion, depth: usize) -> CommandOutput {
         // Vim represents register line separators as literal CR in a prompt,
         // including the final separator of a linewise register.
         let text: String = input.text.char_indices().map(|(at, character)| {

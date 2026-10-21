@@ -14,6 +14,8 @@
 //! capacity, then provide a sufficiently large buffer. Returned byte strings
 //! are length-delimited and never NUL-terminated.
 
+mod registers;
+pub use registers::*;
 mod argument_list;
 pub use argument_list::*;
 mod view_restoration;
@@ -507,6 +509,7 @@ pub const VIEM_EX_FRONTEND_APPLICATION_OPTION: u32 = 31;
 pub const VIEM_EX_FRONTEND_SCRIPT_CONTINUATION: u32 = 32;
 /// Edit the pane's alternate file (`CTRL-^`), which the host tracks.
 pub const VIEM_EX_FRONTEND_EDIT_ALTERNATE: u32 = 33;
+pub const VIEM_EX_FRONTEND_JUMP_FILE_MARK: u32 = 34;
 pub const VIEM_EX_FRONTEND_STARTUP_APPLICATION: u32 = 1 << 15;
 
 pub const VIEM_WINDOW_FOCUS_DOWN: u32 = 1;
@@ -2006,6 +2009,7 @@ pub const VIEM_COMMAND_LINE_KIND_NONE: u32 = 0;
 pub const VIEM_COMMAND_LINE_KIND_EX: u32 = 1;
 pub const VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD: u32 = 2;
 pub const VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD: u32 = 3;
+pub const VIEM_COMMAND_LINE_KIND_EXPRESSION: u32 = 4;
 
 /// Exact identity of one command-line byte export. The opaque state identity
 /// changes whenever the exported kind, cursor, or UTF-8 bytes change, even
@@ -3881,6 +3885,11 @@ fn export_ex_frontend_request(
                 output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
                 set_ex_path(&mut output, strings, path.as_deref())?;
             }
+            ExFileRequest::JumpFileMark { name, linewise } => {
+                output.kind = VIEM_EX_FRONTEND_JUMP_FILE_MARK;
+                output.window_command = *name as u32;
+                output.flags |= u32::from(*linewise) * VIEM_EX_FRONTEND_FORCE;
+            }
             ExFileRequest::EditAlternate { force } => {
                 output.kind = VIEM_EX_FRONTEND_EDIT_ALTERNATE;
                 output.flags |= u32::from(*force) * VIEM_EX_FRONTEND_FORCE;
@@ -4277,6 +4286,7 @@ enum CoreRegistryEntry {
 }
 
 struct CoreRegistry {
+    file_marks: std::collections::BTreeMap<char, crate::coordinator::FileMarkTarget>,
     next_handle: ViemCoreHandle,
     cores: HashMap<ViemCoreHandle, CoreRegistryEntry>,
 }
@@ -4284,6 +4294,7 @@ struct CoreRegistry {
 impl CoreRegistry {
     fn new() -> Self {
         Self {
+            file_marks: Default::default(),
             next_handle: 1,
             cores: HashMap::new(),
         }
@@ -4326,9 +4337,15 @@ impl Drop for CoreLease {
         let Some(core) = self.core.take() else {
             return;
         };
+        let file_marks = core.file_mark_targets();
         let Ok(mut registry) = core_registry().lock() else {
             return;
         };
+        for (name, target) in file_marks {
+            if registry.file_marks.get(&name).is_none_or(|old| old.generation <= target.generation) {
+                registry.file_marks.insert(name, target);
+            }
+        }
         if let Some(entry @ CoreRegistryEntry::Busy) = registry.cores.get_mut(&self.handle) {
             *entry = CoreRegistryEntry::Ready(core);
         }
@@ -4389,7 +4406,16 @@ fn with_core_mut<R>(
     operation: impl FnOnce(&mut Core<CTextMeasurementProvider>) -> Result<R, ViemStatus>,
 ) -> Result<R, ViemStatus> {
     let mut core = checkout_core(handle)?;
-    operation(core.core_mut())
+    let ownership = {
+        let registry = core_registry().lock().map_err(|_| ViemStatus::InternalError)?;
+        registry.file_marks.iter().fold(0, |mask, (name, target)| {
+            if !target.deleted && target.document == core.core().document().id() { mask | (1 << (*name as u32 - 'A' as u32)) } else { mask }
+        })
+    };
+    core.core_mut().set_file_mark_ownership(ownership);
+    let result = operation(core.core_mut());
+    core.core_mut().sync_register_filename();
+    result
 }
 
 /// Return the ABI version without consulting any document state.
@@ -6134,6 +6160,7 @@ struct VisualSelectionExport {
 fn command_line_kind_to_ffi(kind: Option<CommandLineKind>) -> u32 {
     match kind {
         None => VIEM_COMMAND_LINE_KIND_NONE,
+        Some(CommandLineKind::Expression) => VIEM_COMMAND_LINE_KIND_EXPRESSION,
         Some(CommandLineKind::Ex) => VIEM_COMMAND_LINE_KIND_EX,
         Some(CommandLineKind::SearchForward) => VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD,
         Some(CommandLineKind::SearchBackward) => VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD,
@@ -6147,6 +6174,7 @@ fn command_line_kind_is_valid(kind: u32) -> bool {
             | VIEM_COMMAND_LINE_KIND_EX
             | VIEM_COMMAND_LINE_KIND_SEARCH_FORWARD
             | VIEM_COMMAND_LINE_KIND_SEARCH_BACKWARD
+            | VIEM_COMMAND_LINE_KIND_EXPRESSION
     )
 }
 

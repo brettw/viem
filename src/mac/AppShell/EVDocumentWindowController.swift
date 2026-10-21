@@ -1007,6 +1007,29 @@ extension EVDocumentWindowController {
       }
       edit(document, in: openingPane, path: request.path, force: request.force, completion: completion)
 
+    case .jumpFileMark(let name, let linewise):
+      do {
+        let target = try openingPane.editorSurface.resolveFileMark(name)
+        for controller in Self.instances.compactMap(\.value) where !controller.isClosed {
+          if let pane = controller.paneContainer.panes.first(where: { $0.document?.editorBackend.persistenceState.documentID == target.documentID }) {
+            if let index = controller.paneContainer.panes.firstIndex(where: { $0 === pane }) { controller.paneContainer.focusPane(at: index) }
+            controller.window?.makeKeyAndOrderFront(nil)
+            try pane.editorSurface.jumpToFileMark(target, linewise: linewise)
+            completion(.success(nil)); return
+          }
+        }
+        guard !target.path.isEmpty else { throw EVDocumentHostError.noDocumentURL }
+        guard !persistence.isDirty || hasOtherView(of: document, excluding: openingPane) else { throw EVDocumentHostError.documentModified }
+        edit(document, in: openingPane, path: target.path, force: false) { [weak self] result in
+          do {
+            _ = try result.get()
+            guard let self else { throw EVDocumentHostError.staleRequest }
+            try self.documentContentController.editorSurface.jumpToFileMark(target, linewise: linewise)
+            completion(.success(nil))
+          } catch { completion(.failure(error)) }
+        }
+      } catch { completion(.failure(error)) }
+
     case .editAlternate:
       guard let alternate = openingPane.alternateURL else {
         completion(.failure(EVDocumentHostError.noAlternateFile))
@@ -1675,7 +1698,7 @@ final class EVDocumentContentViewController: NSViewController,
   var argumentList: EVArgumentList?
   var argumentIndex: Int?
   /// The file this pane showed before its current document (`CTRL-^`).
-  var alternateURL: URL?
+  var alternateURL: URL? { didSet { editorSurface.setAlternateFile(alternateURL?.path) } }
 
   let editorSurface: any EVEditorSurface
   private let configuration: EVConfigurationStore

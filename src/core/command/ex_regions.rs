@@ -137,6 +137,7 @@ pub(super) fn prepare<R: ExRegisterReader + ?Sized>(
                     ExRegisterEffectKind::Yank
                 },
                 requested: arguments.register,
+                range: range.text.clone(),
                 value,
             });
         }

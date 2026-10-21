@@ -29,7 +29,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public CoreView? View { get; private set; }
     internal ulong RememberedArgument { get; set; } = ulong.MaxValue;
     /// <summary>The file this pane showed before its current document (Ctrl-^).</summary>
-    internal string? AlternatePath { get; set; }
+    private string? alternatePath;
+    internal string? AlternatePath { get => alternatePath; set { alternatePath = value; View?.SetHostRegister(35, value ?? ""); } }
     internal ulong? InitialHeightLines { get; set; }
     internal bool InitialVerticalSplit { get; set; }
     internal bool? InitialNumber { get; set; }
@@ -182,8 +183,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
             Run(() => { if (ctrl) View.StepZoom(p.Properties.MouseWheelDelta > 0); else { RefreshScrollGeometry(); var v = View.Viewport; float delta = -p.Properties.MouseWheelDelta / 120f * 60; View.Scroll(v.left + ((p.Properties.IsHorizontalMouseWheel || Down(VirtualKey.Shift)) ? delta : 0), v.top + ((!p.Properties.IsHorizontalMouseWheel && !Down(VirtualKey.Shift)) ? delta : 0)); } }); e.Handled = true;
         };
         Canvas.AllowDrop = true;
-        Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems)) e.AcceptedOperation = DataPackageOperation.Copy; };
-        Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } } catch (Exception error) { Report(error); } };
+        Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems) || e.DataView.Contains(StandardDataFormats.Text)) e.AcceptedOperation = DataPackageOperation.Copy; };
+        Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } else if (e.DataView.Contains(StandardDataFormats.Text)) { var text = await e.DataView.GetTextAsync(); View?.DropText(text); } } catch (Exception error) { Report(error); } };
         input.GotFocus += (_, _) => {
             // WinUI queues focus events. A previous pane can receive GotFocus
             // after native focus already belongs to a newer pane or control.
@@ -244,6 +245,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (View != null) { ResetImagePreviews(); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
         var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
+        View.SetHostRegister(35, AlternatePath ?? "");
         View.Changed += Refresh; View.Effects += ApplyEffects;
         bool applyStartup = !preferences.StartupApplicationOptionsApplied;
         preferences.StartupApplicationOptionsApplied = true;
@@ -281,7 +283,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); ResetImagePreviews();
         Document.Changed -= DocumentChanged;
         if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.Dispose(); }
-        Document = document; View = prepared;
+        Document = document; View = prepared; View.SetHostRegister(35, AlternatePath ?? "");
         Document.Changed += DocumentChanged;
         if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; Run(() => View.TakeStartupEffects(false)); }
         mapping.Stop(); compositionRejected = composing; composing = false; ClearInput();

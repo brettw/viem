@@ -26,6 +26,7 @@ pub(super) fn allowed(action: &ExAction) -> bool {
             | ExAction::Delete(_)
             | ExAction::Yank(_)
             | ExAction::Put { .. }
+            | ExAction::PutExpression(_)
             | ExAction::Join { .. }
             | ExAction::Copy { .. }
             | ExAction::Move { .. }

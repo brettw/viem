@@ -15,6 +15,13 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         var statusBarStateDidChange: ((EVStatusBarState) -> Void)?
         weak var documentHostEffectHandler: (any EVDocumentHostEffectHandling)?
         var defaultLineHeight: CGFloat? { 20 }
+        var fileMark: EVFileMarkTarget?
+        var markJumps: [(UInt32, Bool)] = []
+        func resolveFileMark(_ name: UInt32) throws -> EVFileMarkTarget {
+            guard let fileMark, fileMark.name == name else { throw EVDocumentHostError.staleRequest }
+            return fileMark
+        }
+        func jumpToFileMark(_ target: EVFileMarkTarget, linewise: Bool) throws { markJumps.append((target.name, linewise)) }
 
         func perform(menuCommand _: EVMenuCommand, sender _: Any?) {}
         func presentation(for _: EVMenuCommand) -> EVMenuItemPresentation { .disabled }
@@ -81,6 +88,29 @@ final class EVDocumentHostEffectsTests: XCTestCase {
             persistenceState.isDirty = false
             persistenceStateDidChange?(persistenceState)
         }
+    }
+
+    func testFileMarkJumpFocusesExistingDocumentWithoutDiscardingDirtyOrigin() throws {
+        let sourceBackend = Backend(data: Data("dirty".utf8), documentID: 8001)
+        let targetBackend = Backend(data: Data("target".utf8), dirty: false, documentID: 8002)
+        let (_, source) = makeController(backend: sourceBackend)
+        let (_, target) = makeController(backend: targetBackend)
+        defer { source.close(); target.close() }
+        let sourceSurface = try XCTUnwrap(source.documentContentController.editorSurface as? Surface)
+        let targetSurface = try XCTUnwrap(target.documentContentController.editorSurface as? Surface)
+        sourceSurface.fileMark = EVFileMarkTarget(name: 65, generation: 1, documentID: 8002, path: "/tmp/target.txt")
+        let done = expectation(description: "file mark navigation")
+        var result: Result<String?, Error>?
+        source.perform(documentHostRequests: [request(.jumpFileMark(name: 65, linewise: true), backend: sourceBackend)]) {
+            result = $0; done.fulfill()
+        }
+        wait(for: [done], timeout: 5)
+        XCTAssertNoThrow(try result?.get())
+        XCTAssertEqual(targetSurface.markJumps.count, 1)
+        XCTAssertEqual(targetSurface.markJumps.first?.0, 65)
+        XCTAssertEqual(targetSurface.markJumps.first?.1, true)
+        XCTAssertTrue(sourceBackend.persistenceState.isDirty)
+        XCTAssertTrue(sourceSurface.markJumps.isEmpty)
     }
 
     func testWindowInstallsItselfAsTypedDocumentHost() throws {

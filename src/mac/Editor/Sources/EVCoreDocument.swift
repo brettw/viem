@@ -1131,7 +1131,7 @@ final class EVCoreViewSession {
 
     /// Commands with host effects keep ownership/release and error precedence
     /// together. The caller still decides whether the turn needs host context.
-    private func performHostEffectTurn(
+    func performHostEffectTurn(
         _ operation: String,
         _ body: (UnsafeMutablePointer<ViemCoreOutcomeV1>, UnsafeMutablePointer<ViemEffectBatchHandle>) -> UInt32
     ) throws -> ViemCoreOutcomeV1 {
@@ -2018,7 +2018,7 @@ final class EVCoreViewSession {
 
     /// Publish successful native operations through one composition and source
     /// change path; failed C calls never update the session's last outcome.
-    private func performCoreOperation(
+    func performCoreOperation(
         _ operation: String,
         transition: CompositionTransition = .cancelIfChanged,
         pendingCharacterSelection: ViemLogicalSelectionIdentityV1? = nil,
@@ -2085,7 +2085,7 @@ final class EVCoreViewSession {
     }
 }
 
-private enum CompositionTransition {
+enum CompositionTransition {
     case activate
     case deactivate
     case cancelIfChanged
