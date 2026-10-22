@@ -134,8 +134,9 @@ layout, so more threads than cores do not help.
 
 Both sides of a comparison must use the same harness source; case identities
 are not comparable across harness changes. `scripts/validate.py consistency
---baseline REV` builds REV in a cached worktree with the current harness and
-reuses its results while the revision, harness and options are unchanged.
+--baseline REV` builds REV in a temporary worktree with the current harness,
+removes the worktree and its build when the probe ends, and reuses the results
+while the revision, harness and options are unchanged.
 
 ## Retained-history benchmark
 
@@ -195,7 +196,9 @@ fuzz/target-plain/aarch64-apple-darwin/release/open_document INPUT
 ```
 
 `run.sh` keeps going after failures and writes them to `fuzz/artifacts/`;
-corpora grow in `fuzz/corpus/<target>` (both ignored). Replay an artifact with
+corpora grow in `fuzz/corpus/<target>` (both ignored). The builds are reused by
+later campaigns and replays until `fuzz/clean.sh` removes them (also part of
+`make clean` and `scripts/clean-win.ps1`); it keeps corpora and findings. Replay an artifact with
 the instrumented binary for a sanitizer report, or the `--plain` build to time
 it: ASan and coverage are roughly ten times slower, so many campaign timeouts
 are not slow without them. Set `VIEM_FUZZ_CONSISTENCY=1` to make

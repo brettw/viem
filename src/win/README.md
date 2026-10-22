@@ -109,6 +109,9 @@ The first build restores the locked Cargo/NuGet dependencies. After restoration,
 Rust dependencies cannot find MSVC, run from a VS 2026 Developer PowerShell.
 Open `Viem.Windows.csproj` in Visual Studio to debug the C# frontend, after
 building the Rust library. All intermediate output stays under `target/windows`.
+`scripts/clean-win.ps1` removes every build output, like `make clean` on macOS:
+`target` (including test output and consistency baselines) and the fuzz builds.
+Close Viem first; Windows cannot delete a running executable.
 
 The NuGet lock file includes the SDK-selected NativeAOT compiler and linker.
 When upgrading the .NET SDK's servicing version, refresh it with
@@ -324,6 +327,8 @@ or scrollbars, including during keyboard focus or accessibility navigation.
 `scripts/test-win-vim-runtime.ps1` additionally checks build/publish inventories,
 stale-file removal, native syntax paint after relocation into a path containing
 spaces and non-ASCII characters, and editing/Tree-sitter with missing resources.
+It removes its published apps when it finishes, and keeps its reports and
+profiles under `target/windows-validation/vim-*` only after a failure.
 Use `-NoRustBuild` to reuse the Rust DLL while still exercising MSBuild packaging.
 It checks native WinUI keyboard focus, text and command-key routing, status-line
 prompt painting and command output (including hidden bars and scrolled documents), vi editing,
