@@ -61,6 +61,12 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   refactors or when asked; also run memory measurements for changes with a
   plausible memory impact. Back deliberate memory or performance tradeoffs with
   numbers and record the decision.
+- Fuzz builds and campaign results are large and kept until removed. After
+  running a fuzz campaign (`scripts/fuzz-backend.py` or `fuzz/run.sh`), end
+  your message with a bold line suggesting that the user consider cleaning the
+  output: `fuzz/clean.sh` removes the fuzz builds, `target/fuzz-campaigns`
+  holds backend results, and `make clean` (`scripts/clean-win.ps1` on Windows)
+  removes every build output.
 - Tests are deterministic and sit at the document, command, layout and
   coordinator boundaries. Cover source round trips and patch locality,
   incremental-versus-fresh results, encodings and mixed line endings, exact

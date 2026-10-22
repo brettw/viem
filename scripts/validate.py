@@ -33,9 +33,10 @@ Stages (run in the order given):
                     preflight, with a stall watchdog.
 
 Baselines are built from a detached worktree of the requested revision in
-target/validation/baselines/<commit>/ with the current consistency harness, and
-their probe results are reused while the revision, harness and probe options
-are unchanged. After deleting target/, run `git worktree prune`. Timing-sensitive stages never overlap; run one invocation at a
+target/validation/baselines/<commit>/ with the current consistency harness.
+The worktree and its build are removed when the probe finishes or fails; the
+probe results are kept and reused while the revision, harness and probe options
+are unchanged. Timing-sensitive stages never overlap; run one invocation at a
 time when measurements matter.
 """
 
@@ -55,6 +56,7 @@ from validation_support import build_lock, child_options, input_identity, enviro
 
 ROOT = Path(__file__).resolve().parent.parent
 HARNESS = ["examples/fuzz_consistency.rs", "examples/fuzz_consistency/corpus.rs"]
+BASELINES = ROOT / "target" / "validation" / "baselines"
 STAGES = ["check", "focused", "suites", "consistency", "consistency-full", "memory", "native", "contract", "tooling"]
 
 
@@ -62,8 +64,8 @@ class StageFailure(Exception):
     pass
 
 
-def git(*args, cwd=ROOT):
-    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+def git(*args, cwd=None):
+    return subprocess.run(["git", *args], cwd=cwd or ROOT, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def source_identity():
@@ -235,21 +237,35 @@ def stage_suites(run, args):
     run.command("suites", "integration", ["cargo", "test", "--test", "all"])
 
 
-def baseline_worktree(run, revision):
-    commit = git("rev-parse", f"{revision}^{{commit}}")
-    base = ROOT / "target" / "validation" / "baselines" / commit
+def remove_baseline_builds():
+    """Remove every baseline worktree and its build output, keeping cached probe results.
+
+    Each is a complete release build of an old commit. The build lock serializes
+    validation runs, so none is in use; this also removes leftovers of an
+    interrupted run and registrations of worktrees deleted with target/.
+    """
+    for tree in BASELINES.glob("*/src"):
+        subprocess.run(["git", "worktree", "remove", "--force", "--force", str(tree)], cwd=ROOT,
+                       capture_output=True)
+        if tree.exists():
+            shutil.rmtree(tree)
+    for target in BASELINES.glob("*/target"):
+        shutil.rmtree(target)
+    git("worktree", "prune")
+
+
+def baseline_worktree(commit, base):
+    remove_baseline_builds()
     tree = base / "src"
-    if not (tree / ".git").exists():
-        base.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "worktree", "add", "--detach", str(tree), commit], cwd=ROOT,
-                       check=True, capture_output=True)
+    base.mkdir(parents=True, exist_ok=True)
+    git("worktree", "add", "--detach", str(tree), commit)
     # The comparison needs one case identity, so the baseline core runs the
     # current harness. A harness change that the baseline cannot build is
     # reported rather than silently compared with a different harness.
     for path in HARNESS:
         (tree / path).parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / path, tree / path)
-    return commit, base, tree
+    return tree
 
 
 def probe_arguments(full, args):
@@ -271,23 +287,28 @@ def stage_consistency(run, args, full):
     candidate = cargo_artifact(run, stage, ["--release", "--example", "fuzz_consistency"], "fuzz_consistency")
     baseline_dir = None
     if args.baseline:
-        commit, base, tree = baseline_worktree(run, args.baseline)
+        commit = git("rev-parse", f"{args.baseline}^{{commit}}")
+        base = BASELINES / commit
         key = hashlib.sha256(json.dumps([commit, file_digest(HARNESS), probe]).encode()).hexdigest()[:16]
         baseline_dir = base / f"consistency-{key}"
         if (baseline_dir / "manifest.json").exists():
             print(f"[{stage}] reusing baseline results {baseline_dir}", flush=True)
         else:
             try:
-                executable = cargo_artifact(run, stage, ["--release", "--example", "fuzz_consistency"],
-                                            "fuzz_consistency", cwd=tree,
-                                            env={"CARGO_TARGET_DIR": str(base / "target")})
-            except StageFailure as failure:
-                raise StageFailure(f"{failure}. The baseline {args.baseline} cannot build the current "
-                                   "consistency harness (for example it predates an API the harness "
-                                   "uses); choose a newer baseline") from failure
-            if baseline_dir.exists():
-                shutil.rmtree(baseline_dir)
-            run.command(stage, "baseline-probe", [executable, *probe, "--out", str(baseline_dir)], cwd=tree)
+                tree = baseline_worktree(commit, base)
+                try:
+                    executable = cargo_artifact(run, stage, ["--release", "--example", "fuzz_consistency"],
+                                                "fuzz_consistency", cwd=tree,
+                                                env={"CARGO_TARGET_DIR": str(base / "target")})
+                except StageFailure as failure:
+                    raise StageFailure(f"{failure}. The baseline {args.baseline} cannot build the current "
+                                       "consistency harness (for example it predates an API the harness "
+                                       "uses); choose a newer baseline") from failure
+                if baseline_dir.exists():
+                    shutil.rmtree(baseline_dir)
+                run.command(stage, "baseline-probe", [executable, *probe, "--out", str(baseline_dir)], cwd=tree)
+            finally:
+                remove_baseline_builds()
         run.manifest["baseline"] = {"revision": args.baseline, "commit": commit, "results": str(baseline_dir)}
         run.save()
     out = run.out / stage

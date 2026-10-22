@@ -78,8 +78,11 @@ make clean
 make debug
 ```
 
-`make clean` removes the repository's `.build` and `target` directories, including
-the application bundle, Swift/Clang module caches, and Rust build artifacts.
+`make clean` removes every build output: the repository's `.build` and `target`
+directories, including the application bundle, Swift/Clang module caches, Rust
+build artifacts, test output and consistency baselines, and the fuzz builds
+(`fuzz/clean.sh`). Fuzz corpora and findings are kept. It also forgets the
+deleted baseline worktrees with `git worktree prune`.
 
 Run the portable and native test suites independently:
 

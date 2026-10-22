@@ -169,6 +169,33 @@ class ValidationTests(unittest.TestCase):
             self.assertEqual(len(set(logs)), 2)
             self.assertTrue(all(Path(log).exists() for log in logs))
 
+    def test_baseline_worktrees_and_builds_are_removed_but_results_kept(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            for path in validate.HARNESS:
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text('harness')
+            def git(*args): subprocess.run(['git', *args], cwd=root, check=True, capture_output=True)
+            git('init', '-q'); git('add', '.')
+            git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'base')
+            baselines = root / 'target/validation/baselines'
+            with mock.patch.object(validate, 'ROOT', root), mock.patch.object(validate, 'BASELINES', baselines):
+                commit = validate.git('rev-parse', 'HEAD')
+                # An interrupted run left a worktree and build for another commit.
+                stale = validate.baseline_worktree(commit, baselines / 'stale')
+                (baselines / 'stale/target').mkdir()
+                tree = validate.baseline_worktree(commit, baselines / commit)
+                self.assertFalse(stale.exists())
+                self.assertFalse((baselines / 'stale/target').exists())
+                (baselines / commit / 'target').mkdir()
+                results = baselines / commit / 'consistency-key'
+                results.mkdir(); (results / 'manifest.json').write_text('{}')
+                validate.remove_baseline_builds()
+                self.assertFalse(tree.exists())
+                self.assertFalse((baselines / commit / 'target').exists())
+                self.assertTrue((results / 'manifest.json').exists())
+                self.assertEqual(len(validate.git('worktree', 'list', '--porcelain').split('\n\n')), 1)
+
     @unittest.skipUnless(os.name == 'posix', 'process-group interruption is POSIX-specific')
     def test_interruption_stops_descendants_and_records_elapsed_command(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -1,4 +1,5 @@
-/target*/
+/target/
+/target-plain/
 /corpus/
 /artifacts/
 /logs/

@@ -1,6 +1,8 @@
 param([switch]$NoRustBuild)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
+$testRoot = $null
+$passed = $false
 Push-Location $projectRoot
 try {
     & python -B -m unittest discover -s scripts/tests -p test_vim_runtime.py
@@ -61,7 +63,7 @@ try {
         if (!(Test-Path -LiteralPath $report)) { throw "App exited $($process.ExitCode) without a syntax report." }
         $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
         if (!$result.passed -or $process.ExitCode -ne 0) { throw $result.error }
-        Write-Output "$Name`: $($result.count) syntax checks passed. Report: $report"
+        Write-Output "$Name`: $($result.count) syntax checks passed."
     }
     try {
         Test-Syntax $build 'build'
@@ -85,5 +87,19 @@ try {
     finally {
         foreach ($key in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key]) }
     }
+    $passed = $true
 }
-finally { Pop-Location }
+finally {
+    Pop-Location
+    # Each run publishes two complete apps. Remove them, and after success the
+    # reports and profiles too; a failure keeps those for diagnosis.
+    if ($testRoot -and (Test-Path -LiteralPath $testRoot)) {
+        try {
+            if ($passed) { Remove-Item -LiteralPath $testRoot -Recurse -Force }
+            else {
+                Get-ChildItem -LiteralPath $testRoot -Directory | Where-Object { $_.Name -notlike '*-profile' } |
+                    Remove-Item -Recurse -Force
+            }
+        } catch { Write-Warning "Could not remove test output under $testRoot`: $_" }
+    }
+}

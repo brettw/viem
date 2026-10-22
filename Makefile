@@ -19,6 +19,10 @@ run: run-release
 check-abi:
 	cargo run --locked --example check_c_abi
 
-# Remove path-dependent Swift/Clang caches as well as Rust build artifacts.
+# Remove every build output: path-dependent Swift/Clang caches, Rust builds,
+# test output and consistency baselines (all under target/), and fuzz builds.
+# scripts/clean-win.ps1 does the same on Windows.
 clean:
 	rm -rf .build target
+	fuzz/clean.sh
+	git worktree prune
