@@ -232,3 +232,4 @@ mod modifiable;
 mod registers_marks;
 
 mod frontend_contracts;
+mod open_line_contexts;

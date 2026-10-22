@@ -340,7 +340,14 @@ fn empty_structural_owner_keyboard_edits_preserve_neighbors_and_history() {
             if matches!(key, Key::Enter | Key::ShiftEnter) { input(&mut core, view, InputEvent::key('i')); }
             input(&mut core, view, InputEvent::Key(key));
             if key != Key::Enter {
-                let range = match key { Key::ShiftEnter => at..at + 1, Key::Char('O') => at + 1..at + 1, _ => at..at };
+                // Opening a line in code adds a literal line to the same owner.
+                let code = original.style.0 == "Code Block";
+                let range = match key {
+                    Key::ShiftEnter => at..at + 1,
+                    Key::Char('o' | 'O') if code => at..at + 1,
+                    Key::Char('O') => at + 1..at + 1,
+                    _ => at..at,
+                };
                 let retained = core.document().projection().blocks().iter().find(|block| block.range == range)
                     .unwrap_or_else(|| panic!("missing retained owner in {source:?} after {key:?}"));
                 let original_lists = original.containers.iter().filter_map(|member| {

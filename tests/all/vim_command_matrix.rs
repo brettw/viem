@@ -108,6 +108,16 @@ fn repeat_macro_and_undo_grouping_conformance() {
         "operator deletion and following Insert session must share one undo unit"
     );
 
+    // A counted open line is one undo unit with its typing, and dot keeps
+    // the count.
+    let (mut core, view) = new_core("one\ntwo", 500.0);
+    run_notation(&mut core, view, "3oX<Esc>").expect("counted open line is supported");
+    assert_eq!(core.document().text(), "one\nX\nX\nX\ntwo");
+    run_notation(&mut core, view, ".").expect("dot repeats a counted open line");
+    assert_eq!(core.document().text(), "one\nX\nX\nX\nX\nX\nX\ntwo");
+    run_notation(&mut core, view, "uu").expect("open line undo is supported");
+    assert_eq!(core.document().text(), "one\ntwo", "each open line and its typing is one undo unit");
+
     let (mut core, view) = new_core("one two three four", 500.0);
     run_notation(&mut core, view, "qadwq@a").expect("macro record and replay are supported");
     assert_eq!(core.document().text(), "three four");

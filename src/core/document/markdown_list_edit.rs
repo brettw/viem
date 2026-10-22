@@ -576,10 +576,19 @@ impl Document {
         if let Some((prepared, _)) = self.prepare_literal_terminal_break(at, "")? {
             return Ok(prepared);
         }
-        if self.format()==Format::Markdown && self.projection().table_cell_at(origin).is_some() {
-            return self.prepare_text_edits(vec![TextEdit::new(at..at,"\n")]);
-        }
         if self.format().is_markdown() {
+            // Table cells and code (including front matter) take Enter's
+            // in-owner hard break: a new row inside the cell or a literal line
+            // inside the code, never a following paragraph outside it.
+            let code = edit_boundary::paragraph_at(self, origin)?
+                .map(|block| edit_boundary::is_code_paragraph(self, &block))
+                .transpose()?
+                .unwrap_or(false);
+            if code || self.projection().table_cell_at(origin).is_some() {
+                let payload = FormattedTextPayload::new(&self.hard_line_snapshot(), "\n", vec![0])
+                    .map_err(|_| DocumentError::VerificationFailed)?;
+                return self.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(at..at, payload)]);
+            }
             return self.prepare_open_paragraph(at, origin, after);
         }
         self.prepare_text_edits_with_patches(vec![TextEdit::new(at..at, "\n")], None)
@@ -684,8 +693,6 @@ impl Document {
                     scratch.encoding().encode_fragment(&syntax)?,
                 )]),
             )?
-        } else if self.format() == Format::Markdown && block.style.0 == "Code Block" {
-            scratch.prepare_markdown_code_open(at, &block, after)?
         } else if block.range.is_empty() && block.kind == BlockKind::Paragraph
             && block.list_level().is_some() && !self.is_trailing_blank_list_paragraph(&block)? {
             scratch.prepare_list_paragraph(at, BoundaryAffinity::Downstream)?
@@ -810,135 +817,6 @@ impl Document {
             return Err(DocumentError::VerificationFailed.into());
         }
         Ok(prepared)
-    }
-
-    fn prepare_markdown_code_open(
-        &self,
-        at: usize,
-        block: &crate::document::Block,
-        after: bool,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        if crate::document::markdown_indented_code::source_block(self, block)?.is_some() {
-            return self.prepare_with_fenced_indented_code(std::slice::from_ref(block), |doc| {
-                let block = edit_boundary::paragraph_at(doc, at)?
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                doc.prepare_markdown_code_open(at, &block, after)
-            });
-        }
-        let fence = crate::document::markdown_code::fenced_source(self, block)?
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let opening = fence.opening;
-        let bytes = self
-            .state()
-            .source
-            .bytes_in(opening.clone())
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        let opening_text = self.encoding().decode_region(&bytes, opening.start)?.text;
-        let opening_text = opening_text.trim_end_matches(['\r', '\n']);
-        let ending = self.file_format().spelling();
-        let closing_end = fence.closing_content_end.unwrap_or(fence.body.end);
-        let closed = fence.closing_text.is_some();
-        let closing_marker = fence
-            .closing_text
-            .unwrap_or_else(|| (fence.delimiter as char).to_string().repeat(fence.width));
-        // Moving the closer must keep it inside the same quote/list container.
-        let prefix = if matches!(block.kind, BlockKind::ListItem { .. }) {
-            fence.body_prefix.len()
-        } else {
-            crate::document::markdown_quotes::prefix(&fence.body_prefix)
-        };
-        let closing_text = format!("{}{closing_marker}", &fence.body_prefix[..prefix]);
-        let (range, syntax) = if after && at == block.range.end {
-            let syntax = if closed {
-                let count = if at < self.text().len() {
-                    let next = self
-                        .projection()
-                        .source_insertion_point(at + 1, true)
-                        .ok_or(DocumentError::AmbiguousProjection)?;
-                    let bytes = self
-                        .state()
-                        .source
-                        .bytes_in(closing_end..next)
-                        .ok_or(DocumentError::AmbiguousProjection)?;
-                    let decoded = self.encoding().decode_region(&bytes, closing_end)?;
-                    (4usize)
-                        .saturating_sub(
-                            super::normalize(&decoded, self.file_format()).endings.len(),
-                        )
-                        .max(1)
-                } else {
-                    2
-                };
-                ending.repeat(count)
-            } else {
-                format!("{ending}{closing_text}{ending}{ending}")
-            };
-            (closing_end..closing_end, syntax)
-        } else if !after && at == block.range.start {
-            let count = if at > 0 {
-                let previous = self
-                    .projection()
-                    .source_insertion_point(at - 1, false)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let bytes = self
-                    .state()
-                    .source
-                    .bytes_in(previous..opening.start)
-                    .ok_or(DocumentError::AmbiguousProjection)?;
-                let decoded = self.encoding().decode_region(&bytes, previous)?;
-                (4usize)
-                    .saturating_sub(super::normalize(&decoded, self.file_format()).endings.len())
-                    .max(1)
-            } else {
-                2
-            };
-            (opening.start..opening.start, ending.repeat(count))
-        } else {
-            let source_at = self
-                .projection()
-                .source_insertion_point(at, at == block.range.start)
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let prose = |range: std::ops::Range<usize>| {
-                self.text()[range]
-                    .split('\n')
-                    .map(|line| {
-                        let mut escaped = String::new();
-                        for character in line.chars() {
-                            if character.is_ascii_punctuation() {
-                                escaped.push('\\');
-                            }
-                            escaped.push(character);
-                        }
-                        escaped
-                    })
-                    .collect::<Vec<_>>()
-                    .join("<br>")
-            };
-            if after {
-                (
-                    source_at..closing_end,
-                    format!(
-                        "{ending}{closing_text}{ending}{ending}{}",
-                        prose(at..block.range.end)
-                    ),
-                )
-            } else {
-                (
-                    opening.start..source_at,
-                    format!(
-                        "{}{ending}{ending}{opening_text}{ending}",
-                        prose(block.range.start..at)
-                    ),
-                )
-            }
-        };
-        self.prepare_text_edits_with_patches(
-            vec![TextEdit::new(at..at, "\n")],
-            Some(vec![SourcePatch::primary(
-                range,
-                self.encoding().encode_fragment(&syntax)?,
-            )]),
-        )
     }
 
     fn prepare_markdown_list_split(

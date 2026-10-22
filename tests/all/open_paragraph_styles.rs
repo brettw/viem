@@ -60,24 +60,22 @@ fn opening_above_and_below_uses_the_originating_heading_following_style() {
 }
 
 #[test]
-fn code_open_uses_following_prose_and_keeps_existing_code() {
-    for (format, source) in [
-        (Format::Markdown, "```rust\ncode\n```"),
+fn code_open_adds_a_code_line_and_keeps_the_fence() {
+    let source = "```rust\ncode\n```";
+    for (key, expected, bytes) in [
+        ('o', "code\nbody", "```rust\ncode\nbody\n```"),
+        ('O', "body\ncode", "```rust\nbody\ncode\n```"),
     ] {
-        for (key, expected, expected_styles) in [
-            ('o', "code\nbody", vec!["Code Block", "Paragraph"]),
-            ('O', "body\ncode", vec!["Paragraph", "Code Block"]),
-        ] {
-            let mut document = open(source, format);
-            let mut commands = CommandInterpreter::new();
-            input(&mut commands, &mut document, InputEvent::key(key));
-            input(&mut commands, &mut document, InputEvent::text("body"));
-            input(&mut commands, &mut document, InputEvent::Key(Key::Escape));
-            assert_eq!(document.text(), expected, "{format:?} {key}");
-            assert_eq!(styles(&document), expected_styles, "{format:?} {key}");
-            assert!(document.undo());
-            assert_eq!(document.source_bytes(), source.as_bytes());
-        }
+        let mut document = open(source, Format::Markdown);
+        let mut commands = CommandInterpreter::new();
+        input(&mut commands, &mut document, InputEvent::key(key));
+        input(&mut commands, &mut document, InputEvent::text("body"));
+        input(&mut commands, &mut document, InputEvent::Key(Key::Escape));
+        assert_eq!(document.text(), expected, "{key}");
+        assert_eq!(document.source_bytes(), bytes.as_bytes(), "{key}");
+        assert_eq!(styles(&document), vec!["Code Block"], "{key}");
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }
 
@@ -181,30 +179,29 @@ fn counted_open_and_dot_evaluate_each_new_paragraph_style_and_share_undo() {
 }
 
 #[test]
-fn open_from_a_middle_code_row_keeps_the_other_side_preformatted() {
-    for (format, source) in [
-        (Format::Markdown, "```rust\none\ntwo\n```"),
-    ] {
-        let mut document = open(source, format);
-        let mut commands = CommandInterpreter::new();
-        input(&mut commands, &mut document, InputEvent::key('o'));
-        input(&mut commands, &mut document, InputEvent::text("X"));
-        input(&mut commands, &mut document, InputEvent::Key(Key::Escape));
-        assert_eq!(document.text(), "one\nX\ntwo", "{format:?}");
-        assert_eq!(
-            styles(&document),
-            vec!["Code Block", "Paragraph"],
-            "{format:?}"
-        );
-        assert!(document.undo());
-        assert_eq!(document.source_bytes(), source.as_bytes());
-    }
+fn open_from_a_middle_code_row_stays_in_the_code_block() {
+    let source = "```rust\none\ntwo\n```";
+    let mut document = open(source, Format::Markdown);
+    let mut commands = CommandInterpreter::new();
+    input(&mut commands, &mut document, InputEvent::key('o'));
+    input(&mut commands, &mut document, InputEvent::text("X"));
+    input(&mut commands, &mut document, InputEvent::Key(Key::Escape));
+    assert_eq!(document.text(), "one\nX\ntwo");
+    assert_eq!(document.source_bytes(), b"```rust\none\nX\ntwo\n```");
+    assert_eq!(styles(&document), vec!["Code Block"]);
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
 }
 
 #[test]
-fn open_preserves_empty_and_unclosed_code_paragraphs() {
-    for source in ["```\n\n```", "```\n```", "```", "```\ncode"] {
-        for key in ['o', 'O'] {
+fn open_adds_lines_to_empty_and_unclosed_code_paragraphs() {
+    for (source, below, above) in [
+        ("```\n\n```", "```\n\nX\n```", "```\nX\n\n```"),
+        ("```\n```", "```\n\nX\n```", "```\nX\n\n```"),
+        ("```", "```\n\nX", "```\nX\n"),
+        ("```\ncode", "```\ncode\nX", "```\nX\ncode"),
+    ] {
+        for (key, expected) in [('o', below), ('O', above)] {
             let mut document = open(source, Format::Markdown);
             let original = document.text().to_owned();
             let mut commands = CommandInterpreter::new();
@@ -216,16 +213,11 @@ fn open_preserves_empty_and_unclosed_code_paragraphs() {
                     format!("{original}\nX")
                 } else {
                     format!("X\n{original}")
-                }
+                },
+                "{source:?} {key}"
             );
-            assert_eq!(
-                styles(&document),
-                if key == 'o' {
-                    vec!["Code Block", "Paragraph"]
-                } else {
-                    vec!["Paragraph", "Code Block"]
-                }
-            );
+            assert_eq!(String::from_utf8(document.source_bytes()).unwrap(), expected, "{source:?} {key}");
+            assert_eq!(styles(&document), vec!["Code Block"], "{source:?} {key}");
         }
     }
 }
