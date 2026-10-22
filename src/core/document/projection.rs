@@ -5299,6 +5299,16 @@ pub(crate) fn splice_line_local_projection(
             provenance_indices.end += 1;
         }
     }
+    // A final empty paragraph's seed lies on its row before the document's
+    // final line terminator, inside the region, at its half-open end.
+    if !literal_mapping {
+        while runs.get(provenance_indices.end).is_some_and(|span|
+            span.formatted == (old_formatted.end..old_formatted.end) && span.source.is_empty()
+                && old_source.start <= span.source.start && span.source.end < old_source.end
+                && old_formatted.end == previous.text.byte_len()) {
+            provenance_indices.end += 1;
+        }
+    }
     // A paragraph that ends inside inline markup, such as `<b>…</b></p>`,
     // records its following break as an empty source span at the end of its
     // last content, which lies inside the region. The break moves with that
@@ -6006,8 +6016,18 @@ fn project_markdown_lines(
     while line_index < input_lines.len() {
         let line = &input_lines[line_index];
         let output_start = builder.output.len();
-        let source_at = Some(builder.unit_at(line.start).map_or(source_content_end, |unit| unit.source.start));
-        let source_end = builder.unit_at(line.end).map_or(source_content_end, |unit| unit.source.start);
+        // A final empty row has no unit. After a final line terminator it is
+        // the last source row before that terminator (inside its quote, and
+        // where typing belongs), not the boundary after the terminator.
+        let final_row = quote_context.len().checked_sub(1).filter(|last| line.is_empty()
+            && line_index + 1 == input_lines.len()
+            && quote_context[*last].range == (source_content_end..source_content_end))
+            .and_then(|last| quote_context.get(last.checked_sub(1)?))
+            .map(|row| row.range.end);
+        let source_at = Some(builder.unit_at(line.start).map_or_else(
+            || final_row.unwrap_or(source_content_end), |unit| unit.source.start));
+        let source_end = builder.unit_at(line.end).map_or_else(
+            || final_row.unwrap_or(source_content_end), |unit| unit.source.start);
         let at = source_at.unwrap();
         containers.retain(|container| at < container.range.end);
         while let Some(container) = syntax.containers.get(container_index).filter(|container| container.range.start <= source_end) {
@@ -6389,8 +6409,9 @@ fn project_markdown_lines(
         if output_start == output_end && (matches!(kind, BlockKind::ListItem { .. } | BlockKind::Heading(_)) || quoted) {
             // Structural prefixes are source syntax. Empty blocks retain the
             // boundary after their prefix, including an empty ATX heading.
-            let content_at = builder.unit_at(content_start)
-                .map_or_else(|| block_syntax.map_or(source_content_end, |syntax| syntax.content.start), |unit| unit.source.start);
+            let content_at = builder.unit_at(content_start).map_or_else(
+                || block_syntax.map_or_else(|| final_row.unwrap_or(source_content_end), |syntax| syntax.content.start),
+                |unit| unit.source.start);
             let at = if heading.is_some() || quoted { content_at } else {
                 context.map_or_else(|| quote.map_or(content_at, |quote| quote.content_start), |context| context.content_start)
             };

@@ -533,6 +533,71 @@ impl Document {
         Ok(self.prepare_list_indent(at..at, true).ok())
     }
 
+    /// The single blank source line between a parent item's paragraph and
+    /// the first item of its nested list starting at `item`. An empty item
+    /// needs that line to interrupt the paragraph; a nonempty one does not.
+    pub(crate) fn list_interruption_separator(&self, item: usize) -> Result<Option<std::ops::Range<usize>>, DocumentError> {
+        if self.format() != Format::Markdown {
+            return Ok(None);
+        }
+        let Some(block) = edit_boundary::paragraph_at(self, item)? else { return Ok(None) };
+        let BlockKind::ListItem { level: level @ 1.., item_start: true, container_start: true, .. } = block.kind else {
+            return Ok(None);
+        };
+        if block.range.start != item || item == 0 {
+            return Ok(None);
+        }
+        let projection = self.projection();
+        let Some(parent) = projection.blocks_for_region(&(item - 1..item - 1)).into_iter()
+            .find(|parent| parent.range.end + 1 == item) else { return Ok(None) };
+        if parent.range.is_empty() || parent.list_level() != Some(level - 1)
+            || parent.quote_depth != block.quote_depth {
+            return Ok(None);
+        }
+        let Some(parent_source) = projection.source_range(parent.range.clone()) else { return Ok(None) };
+        let Some(item_source) = projection.source_insertion_point(item, true) else { return Ok(None) };
+        let lines = &self.state().source_hard_lines;
+        let line = |offset: usize| lines.line_at_offset(offset).and_then(|index| Some((index, lines.get(index)?)));
+        let (Some((parent_line, _)), Some((item_line, _))) =
+            (line(parent_source.end.saturating_sub(1).max(parent_source.start)), line(item_source)) else {
+            return Ok(None);
+        };
+        if item_line != parent_line + 2 {
+            return Ok(None);
+        }
+        let Some(blank) = lines.get(parent_line + 1) else { return Ok(None) };
+        let bytes = self.state().source.bytes_in(blank.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+        let text = self.encoding().decode_region(&bytes, blank.start)?.text;
+        Ok(text.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'>' | b'\r' | b'\n')).then_some(blank))
+    }
+
+    /// Remove the interruption separator once the item it introduced has
+    /// text. Verification proves the formatted text and every block's
+    /// structure are unchanged, so only the parent list's looseness changes.
+    pub(crate) fn prepare_list_interruption_separator_removal(
+        &self,
+        item: usize,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        let Some(separator) = self.list_interruption_separator(item)? else { return Ok(None) };
+        let Some(block) = edit_boundary::paragraph_at(self, item)? else { return Ok(None) };
+        if block.range.is_empty() {
+            return Ok(None);
+        }
+        let region = item - 1..block.range.end;
+        let prepared = self.prepare_text_edits_with_patches(
+            Vec::new(),
+            Some(vec![SourcePatch::primary(separator, Vec::new())]),
+        )?;
+        let PreparedPublication::State(candidate) = &prepared.publication else { return Ok(None) };
+        let structure = |projection: &FormattedDocument| projection.blocks_for_region(&region).into_iter()
+            .map(|block| (block.range.clone(), block.kind.clone(), block.style.clone(), block.quote_depth))
+            .collect::<Vec<_>>();
+        if structure(&candidate.projection) != structure(self.projection()) {
+            return Ok(None);
+        }
+        Ok(Some(prepared))
+    }
+
     /// An empty paragraph spelled only by blank lines after a list's last
     /// item: exiting an item leaves it, and the parser still assigns it to
     /// that item. It is an independent paragraph, not an item continuation.

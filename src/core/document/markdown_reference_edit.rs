@@ -104,6 +104,22 @@ impl Document {
             {
                 continue;
             }
+            // A new paragraph or line opened at either outer boundary leaves
+            // the definition's own source intact: it is not an edit of it.
+            let mut boundary_only = true;
+            for patch in patches.iter().filter(|patch| source.start <= patch.range.start && patch.range.end <= source.end) {
+                let replacement = self.encoding().decode_region(&patch.replacement, patch.range.start)?.text;
+                let trailing = self.state().source.bytes_in(patch.range.end..source.end)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let trailing = self.encoding().decode_region(&trailing, patch.range.end)?.text;
+                let before = patch.range.start == source.start && replacement.ends_with(['\n', '\r']);
+                let after = !trailing.contains(|ch: char| !matches!(ch, '\n' | '\r'))
+                    && replacement.starts_with(['\n', '\r']);
+                boundary_only &= patch.range.is_empty() && (before || after);
+            }
+            if boundary_only {
+                continue;
+            }
             // Whitespace authored beside a folded definition ending must add
             // a visible space, rather than merge into its source indentation.
             // Retire just this definition and protect the new whitespace; its

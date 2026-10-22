@@ -28,9 +28,24 @@ fn push_blank_run(
     if pairs == 0 {
         replacements.push((start..input.endings[last].normalized.end, "", false));
     }
+    // An odd run that ends with the final line terminator keeps that
+    // terminator as trivia. The last empty paragraph is then the blank row
+    // before it (inside its quote, where typing belongs), not the boundary
+    // after the terminator. An even run needs every ending as separators.
+    let terminal = pairs > 0 && (last - first + 1) % 2 == 1
+        && last + 1 == input.endings.len() && lines[last + 1].is_empty();
     for pair in 0..pairs {
         let from = first + pair * 2;
-        let to = if pair + 1 == pairs { last } else { from + 1 };
+        let to = if pair + 1 < pairs { from + 1 } else if terminal { last - 1 } else { last };
+        if pair + 1 == pairs && terminal {
+            let begin = if pair == 0 { start } else { input.endings[from].normalized.start };
+            replacements.push((begin..input.endings[to].normalized.end, "\n", true));
+            if !lines[last].is_empty() {
+                replacements.push((lines[last].clone(), "", false));
+            }
+            replacements.push((input.endings[last].normalized.clone(), "", false));
+            continue;
+        }
         let begin = if pair == 0 { start } else { input.endings[from].normalized.start };
         replacements.push((begin..input.endings[to].normalized.end, "\n", true));
         if pair + 1 < pairs {
