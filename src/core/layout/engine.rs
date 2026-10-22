@@ -1774,6 +1774,39 @@ impl LayoutSnapshot {
         self.selection_rectangles_for_validated_range(range, empty_affinity)
     }
 
+    /// Materialized selection geometry in which each of `whole_tables`, whose
+    /// text the selection completely contains, is painted as its complete
+    /// cells, as a cell selection is, rather than as its text.
+    pub fn materialized_selection_rectangles_with_tables(
+        &self,
+        range: TextRange,
+        empty_affinity: BoundaryAffinity,
+        whole_tables: &[u64],
+    ) -> Result<Vec<SelectionRectangle>, LayoutError> {
+        let mut rectangles = self.materialized_selection_rectangles(range, empty_affinity)?;
+        if whole_tables.is_empty() {
+            return Ok(rectangles);
+        }
+        fn whole<'a>(row: &'a VisualRow, tables: &[u64]) -> Option<&'a TableCellGeometry> {
+            row.table_cell.as_ref().filter(|cell| tables.contains(&cell.table_id))
+        }
+        rectangles.retain(|rectangle| whole(&self.rows[rectangle.row_index], whole_tables).is_none());
+        let mut painted = BTreeSet::new();
+        for (row_index, row) in self.rows.iter().enumerate() {
+            if let Some(cell) = whole(row, whole_tables) {
+                if painted.insert((cell.table_id, cell.row, cell.column)) {
+                    rectangles.push(SelectionRectangle { rect: cell.rect, row_index });
+                }
+            }
+        }
+        rectangles.sort_by(|left, right| {
+            left.row_index
+                .cmp(&right.row_index)
+                .then_with(|| left.rect.x.total_cmp(&right.rect.x))
+        });
+        Ok(rectangles)
+    }
+
     fn selection_rectangles_for_validated_range(
         &self,
         range: TextRange,

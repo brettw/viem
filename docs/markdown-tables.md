@@ -378,24 +378,36 @@ logical cells are selected.
   overrides. The active caret may subsequently have the normal view-local
   typing override after the selection is collapsed.
 - Delete and Backspace clear selected cell contents, including internal breaks,
-  but retain every cell, row, the header, and column alignment. Clearing an
-  entire table rectangle still leaves the table. Cut uses the same clear action
-  after preparing its clipboard payload. Word similarly distinguishes
-  [clearing contents from deleting a table](https://support.microsoft.com/en-us/word/delete-a-table),
-  but uses Backspace to remove a selected whole table. Viem deliberately makes
-  both deletion keys clear a Cell selection and reserves removal for structural
-  actions or whole-owner selection.
-- Replacement typing clears the rectangle and inserts text into the anchor
-  cell, then collapses there in Insert mode; it does not duplicate text across
-  all cells. The change and subsequent typing use native replacement grouping.
-  An IME commit follows that same transaction; cancellation preserves contents.
+  but retain every cell, row, the header, and column alignment. Cut uses the
+  same clear action after preparing its clipboard payload. Word similarly distinguishes
+  [clearing contents from deleting a table](https://support.microsoft.com/en-us/word/delete-a-table).
+- A rectangle of every cell, whichever opposite corners name it, selects the
+  table itself. Delete, Backspace, Cut, Vim `d`/`x`, and replacement typing
+  (including Enter and IME commits) remove or replace the whole table exactly
+  as an ordinary selection of the table's text would: the text, or an empty
+  paragraph, takes the table's place inside its list or quote owners, keeping
+  the final line ending, as one undo unit. Copy, yank and paste keep the cell
+  behavior below; a matrix paste of matching dimensions fills the cells.
+- Replacement typing into a partial rectangle clears it and inserts text into
+  the anchor cell, then collapses there in Insert mode; it does not duplicate
+  text across all cells. The change and subsequent typing use native
+  replacement grouping. An IME commit follows that same transaction;
+  cancellation preserves contents.
 - Native Copy retains the rectangle and interaction mode. Escape clears the
   rectangle according to the originating native/Vim selection policy without
   changing text. Undo/redo follows the repository's recorded restoration policy;
   it need not restore an active native rectangle.
 
-Ordinary nonrectangular selections retain their exact logical extent. Partial
-cell deletion cannot turn into row deletion. Whole-owner deletion may remove a
+Ordinary nonrectangular selections within one table retain their exact
+logical extent. Partial cell deletion cannot turn into row deletion. A
+character selection in Preview that reaches into a table from outside it,
+whether by pointer or keyboard, selects that whole table: a table is either
+completely selected or not selected, depending on whether the selection
+boundary lies inside it or beyond its edge. The caret stays where it was placed.
+A completely selected table is painted as a Cell selection of every cell, while
+the surrounding text keeps its text highlight. Deleting or replacing such a
+selection removes the table with the text, as if the table were one paragraph:
+the remaining text joins across the table's former place. Whole-owner deletion may remove a
 fully selected table and its opaque source contents, just as other complete
 owner deletion does. Unsupported cross-owner mutations fail without clearing a
 convenient source hull.

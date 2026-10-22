@@ -11026,6 +11026,16 @@ impl CommandInterpreter {
     }
 
     fn visual_extent(&self, document: &Document) -> MotionExtent {
+        let mut extent = self.literal_visual_extent(document);
+        if extent.kind == MotionKind::Characterwise {
+            extent.range = whole_table_extent(document, extent.range);
+        }
+        extent
+    }
+
+    /// The selection's own extent, before a reach into a table from outside
+    /// it is widened to the whole table.
+    fn literal_visual_extent(&self, document: &Document) -> MotionExtent {
         let lines = document.hard_line_snapshot();
         let anchor = self.visual_anchor.unwrap_or(self.cursor);
         if self.mode == Mode::VisualLine {
@@ -16913,6 +16923,24 @@ fn command_document_error(error: ModelTransactionError) -> DocumentError {
         // report a generic verification failure.
         _ => DocumentError::VerificationFailed,
     }
+}
+
+/// A Preview selection that reaches into a table from outside it selects the
+/// whole table: a table is either completely selected or not selected. A
+/// selection within one table keeps its exact cell-local extent.
+fn whole_table_extent(document: &Document, range: Range<usize>) -> Range<usize> {
+    if !document.format().is_markdown() || range.is_empty() {
+        return range;
+    }
+    let projection = document.projection();
+    let first = projection.table_at(range.start)
+        .filter(|table| table.range.start <= range.start && range.start < table.range.end);
+    let last = projection.table_at(range.end)
+        .filter(|table| table.range.start < range.end && range.end <= table.range.end);
+    if first.zip(last).is_some_and(|(first, last)| first.id == last.id) {
+        return range;
+    }
+    first.map_or(range.start, |table| table.range.start)..last.map_or(range.end, |table| table.range.end)
 }
 
 fn command_position_document_error(error: PositionError) -> DocumentError {

@@ -17,6 +17,10 @@ pub(crate) struct ReplacementTypingContext {
 pub(crate) struct ReplacementParagraphStyle {
     pub code_language: Option<String>,
     pub style: super::StyleId,
+    /// The replacement removes the table that owns this paragraph. Table cell
+    /// styles belong to table syntax and are never assigned to a paragraph,
+    /// so the replacement keeps the style of the paragraph left in its place.
+    pub removes_table: bool,
     pub quote_depth: usize,
     pub markdown_prefix: Option<String>,
 }
@@ -63,11 +67,14 @@ impl Document {
         else {
             return Ok(None);
         };
+        let removes_table = self.projection().table_at(owner.range.start)
+            .is_some_and(|table| range.start <= table.range.start && table.range.end <= range.end);
         let paragraph = ReplacementParagraphStyle {
             // Image appearance is derived from the paragraph's contents. Once
             // replacement turns it into prose there is no image-only owner to
             // restore in source.
             style: if owner.style.0 == "Image" { self.projection().style_sheet().base_paragraph.clone() } else { owner.style.clone() },
+            removes_table,
             quote_depth: owner.quote_depth,
             markdown_prefix: self.markdown_replacement_prefix(owner)? ,
             code_language: owner.code_language.clone(),
@@ -94,6 +101,12 @@ impl Document {
                 true,
             )
             .map_err(|_| DocumentError::AmbiguousProjection)?
+        } else if removes_table {
+            // The cell's appearance (a bold header) leaves with its table;
+            // only the text's own formatting is inherited.
+            super::rich_text::resolved_character_at_in_paragraph(self.projection(), sample,
+                Some(&self.projection().style_sheet().base_paragraph))
+                .ok_or(DocumentError::AmbiguousProjection)?
         } else {
             super::rich_text::resolved_character_at(self.projection(), sample)
                 .ok_or(DocumentError::AmbiguousProjection)?

@@ -195,7 +195,7 @@ impl CommandInterpreter {
     pub(crate) fn select_pointer_row_range(&mut self, document: &Document, row: Range<usize>, extend: bool) {
         self.select_pointer_range(document, row, extend);
         self.pointer_rows = true;
-        let range = self.visual_extent(document).range;
+        let range = self.literal_visual_extent(document).range;
         if document.format() != Format::Markdown { return; }
         let Some(table) = document.projection().table_at(range.start) else { return; };
         let end = range.end.saturating_sub(usize::from(range.end > range.start));

@@ -1,6 +1,7 @@
 //! Structural edits confined to an existing table parse only that table. The
 //! surrounding projection, text and source-line indexes retain shared subtrees.
 use super::*;
+use crate::document::{Block, BlockKind};
 impl Document {
     pub(super) fn prepare_table_local_reprojection(
         &self,
@@ -27,12 +28,13 @@ impl Document {
         {
             return Ok(None);
         }
-        // A table nested in a list or quote inherits owner grammar that a
-        // table-only restart cannot reproduce or safely splice away.
-        if self.projection().blocks_for_region(&table.range).iter()
-            .any(|block| !block.containers.is_empty()) {
-            return Ok(None);
-        }
+        // A table nested in a list or quote is parsed without its owners. Its
+        // cells inherit their owner context from the old table, after proving
+        // that the inheritance reproduces the old table exactly.
+        let old_blocks = self.projection().blocks_for_region(&table.range).into_iter()
+            .filter(|block| table.range.start <= block.range.start && block.range.end <= table.range.end)
+            .collect::<Vec<_>>();
+        let nested = old_blocks.iter().any(|block| !block.containers.is_empty());
         // The final ending separates this table from the following source row
         // (or exposes the terminal empty row in Source). The table-only parse
         // omits that ending, so it cannot prove an edit which consumes it.
@@ -102,9 +104,51 @@ impl Document {
         let new_bytes = source
             .bytes_in(new_source.clone())
             .ok_or(DocumentError::VerificationFailed)?;
-        let (old_local, _, old_parsed_source) = parse(old_bytes.clone(), old_source.clone())?;
-        let (regional, source_ranges, new_parsed_source) =
+        let (mut old_local, _, old_parsed_source) = parse(old_bytes.clone(), old_source.clone())?;
+        let (mut regional, source_ranges, new_parsed_source) =
             parse(new_bytes.clone(), new_source.clone())?;
+        if nested {
+            if old_local.tables().len() != 1 || regional.tables().len() != 1
+                || !inherit_table_owner_context(&mut old_local, &old_blocks)
+                || !inherit_table_owner_context(&mut regional, &old_blocks)
+            {
+                return Ok(None);
+            }
+            let inherited = old_local.blocks_for_region(&(0..old_local.text_tree().byte_len()));
+            let attributes = |block: &Block| {
+                let mut attributes = (*block.attributes).clone();
+                attributes.direct_formatting = None;
+                attributes
+            };
+            if inherited.len() != old_blocks.len()
+                || inherited.iter().zip(&old_blocks).any(|(new, old)| {
+                    new.range.start + table.range.start != old.range.start
+                        || new.range.end + table.range.start != old.range.end
+                        || attributes(new) != attributes(old)
+                })
+            {
+                return Ok(None);
+            }
+            // Owner continuation depends only on each row's prefix. A row
+            // keeps its owners when it reuses the spelling of a retained
+            // continuation row; the first row's prefix may also open them.
+            let prefix = |source: &super::super::source::SourceSnapshot, row: &super::super::MarkdownTableSourceRow| {
+                source.bytes_in(row.source_range.start..row.source_body.start)
+            };
+            let old_prefixes = table.source_rows.iter()
+                .map(|row| prefix(&self.state().source, row))
+                .collect::<Option<Vec<_>>>()
+                .ok_or(DocumentError::VerificationFailed)?;
+            let rows = &regional.tables()[0].source_rows;
+            for (index, row) in rows.iter().enumerate() {
+                let spelling = prefix(&source, row).ok_or(DocumentError::VerificationFailed)?;
+                let retained = if index == 0 { spelling == old_prefixes[0] }
+                    else { old_prefixes[1..].contains(&spelling) };
+                if !retained {
+                    return Ok(None);
+                }
+            }
+        }
         if old_local.tables().len() != 1
             || regional.tables().len() != 1
             || old_local.tables()[0].range != (0..old_local.text_tree().byte_len())
@@ -120,7 +164,8 @@ impl Document {
         }
         // Match source contributors inside the table so unchanged cells retain
         // their anchors even when rows or columns move to different ordinals.
-        let edits = source_backed_reprojection_edits_with_patches(&old_local, &regional, patches)
+        let edits = source_backed_reprojection_edits_with_patches(&old_local, &regional, patches);
+        let edits = cell_local_edits(&old_local, &regional, &edits).unwrap_or(edits)
             .into_iter()
             .map(|edit| {
                 TextEdit::new(
@@ -167,6 +212,29 @@ impl Document {
             &mut next_id,
         )
         .map_err(super::super::block_identity_document_error)?;
+        if nested {
+            // Every cell must reconcile to one owner path. An owner that also
+            // holds paragraphs outside the table keeps its identity rather than
+            // splitting from them; one wholly inside it may be renewed, as by
+            // complete reprojection, when no cell text survives.
+            let (first, last) = (&old_blocks[0], &old_blocks[old_blocks.len() - 1]);
+            let shared = first.containers.iter().zip(last.containers.iter())
+                .map(|(start, end)| (!start.starts_here || !end.ends_here).then_some(start.container.id))
+                .collect::<Vec<_>>();
+            let range = table.range.start..table.range.start + projected_bytes;
+            let cells = projection.blocks_for_region(&range).into_iter()
+                .filter(|block| range.start <= block.range.start && block.range.end <= range.end)
+                .collect::<Vec<_>>();
+            let owners = |block: &Block| block.containers.iter()
+                .map(|member| member.container.id).collect::<Vec<_>>();
+            let path = cells.first().map(owners).unwrap_or_default();
+            if path.len() != shared.len()
+                || path.iter().zip(&shared).any(|(id, shared)| shared.is_some_and(|shared| shared != *id))
+                || cells.iter().any(|block| owners(block) != path)
+            {
+                return Ok(None);
+            }
+        }
         let first_source = self
             .state()
             .source_hard_lines
@@ -430,4 +498,94 @@ impl Document {
                 row.range.start..row.range.start + projected_bytes)),
         }))
     }
+}
+
+/// Give the cells of a table parsed without its owners the owner context of
+/// the old table's cells. Corresponding cells keep their own context; after a
+/// structural change the first and last cells keep the old edge memberships
+/// and interior cells share the old interior context, which must be uniform.
+fn inherit_table_owner_context(projection: &mut FormattedDocument, old: &[Block]) -> bool {
+    let mut blocks = projection.blocks_for_region(&(0..projection.text_tree().byte_len()));
+    let (count, old_count) = (blocks.len(), old.len());
+    if count == 0 || old_count == 0 || count != old_count && (count < 2 || old_count < 2) {
+        return false;
+    }
+    let context = |block: &Block| (block.kind.clone(), block.quote_depth, block.list_loose, block.list_editing,
+        block.containers.iter().map(|member| (member.container.id, member.starts_here, member.ends_here))
+            .collect::<Vec<_>>());
+    let interior = old.get(1..old_count.saturating_sub(1)).unwrap_or_default();
+    if interior.iter().any(|block| context(block) != context(&interior[0])) {
+        return false;
+    }
+    for (index, block) in blocks.iter_mut().enumerate() {
+        let source = if count == old_count {
+            &old[index]
+        } else if index == 0 {
+            &old[0]
+        } else if index + 1 == count {
+            &old[old_count - 1]
+        } else if let Some(source) = interior.first() {
+            source
+        } else {
+            return false;
+        };
+        if matches!(source.kind, BlockKind::ListItem { .. }) {
+            block.kind = source.kind.clone();
+        }
+        block.quote_depth = source.quote_depth;
+        block.list_loose = source.list_loose;
+        block.list_editing = source.list_editing;
+        block.containers = source.containers.clone();
+    }
+    projection.try_install_paragraph_partition(blocks).is_ok()
+}
+
+/// Cell separators are structural and have no source contributor, so a change
+/// to adjacent cells matches as one edit spanning them. When the table keeps
+/// its shape, confine each change to its own cell so that every cell keeps its
+/// identity and anchors, as the separators between them do.
+fn cell_local_edits(old: &FormattedDocument, new: &FormattedDocument, edits: &[TextEdit]) -> Option<Vec<TextEdit>> {
+    let cells = |projection: &FormattedDocument| projection.tables().first().map(|table| table.rows.iter()
+        .map(|row| row.cells.iter().map(|cell| cell.range.clone()).collect::<Vec<_>>()).collect::<Vec<_>>());
+    let (old_rows, new_rows) = (cells(old)?, cells(new)?);
+    if old_rows.len() != new_rows.len()
+        || old_rows.iter().zip(&new_rows).any(|(old, new)| old.len() != new.len())
+    {
+        return None;
+    }
+    let (old_cells, new_cells) = (old_rows.concat(), new_rows.concat());
+    let contained = |edit: &TextEdit, cell: &Range<usize>| cell.start <= edit.range.start && edit.range.end <= cell.end;
+    if edits.iter().all(|edit| old_cells.iter().any(|cell| contained(edit, cell))) {
+        return None;
+    }
+    let (old_text, new_text) = (old.text(), new.text());
+    let mut result = Vec::new();
+    for (old_cell, new_cell) in old_cells.iter().zip(&new_cells) {
+        let crossing = edits.iter().any(|edit| !contained(edit, old_cell)
+            && edit.range.start <= old_cell.end && old_cell.start <= edit.range.end);
+        if !crossing {
+            result.extend(edits.iter().filter(|edit| contained(edit, old_cell)).cloned());
+            continue;
+        }
+        let (before, after) = (&old_text[old_cell.clone()], &new_text[new_cell.clone()]);
+        let prefix = before.char_indices().zip(after.chars())
+            .find(|((_, a), b)| a != b).map_or(before.len().min(after.len()), |((at, _), _)| at);
+        let suffix = before[prefix..].chars().rev().zip(after[prefix..].chars().rev())
+            .take_while(|(a, b)| a == b).map(|(a, _)| a.len_utf8()).sum::<usize>();
+        if prefix + suffix < before.len().max(after.len()) {
+            result.push(TextEdit::new(old_cell.start + prefix..old_cell.end - suffix,
+                &after[prefix..after.len() - suffix]));
+        }
+    }
+    // The cells changed only as these edits say, and everything between them
+    // is identical, exactly when they reproduce the new table text.
+    let mut text = String::with_capacity(new_text.len());
+    let mut at = 0;
+    for edit in &result {
+        text.push_str(&old_text[at..edit.range.start]);
+        text.push_str(&edit.replacement);
+        at = edit.range.end;
+    }
+    text.push_str(&old_text[at..]);
+    (text == new_text).then_some(result)
 }

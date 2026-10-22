@@ -338,15 +338,39 @@ pub(super) fn resolved_character_at(
     )
 }
 
+/// Resolve the character at `at` as if its paragraph had `paragraph` style,
+/// for inheritance that outlives the paragraph's own assignment.
+pub(super) fn resolved_character_at_in_paragraph(
+    document: &FormattedDocument,
+    at: usize,
+    paragraph: Option<&super::StyleId>,
+) -> Option<super::ResolvedCharacterStyle> {
+    resolve_character_at(document, at, document.style_sheet(), document.document_style(), paragraph)
+}
+
 pub(super) fn resolved_character_at_with_style_context(
     document: &FormattedDocument,
     at: usize,
     style_sheet: &super::StyleSheet,
     document_style: &super::DocumentStyleAssignment,
 ) -> Option<super::ResolvedCharacterStyle> {
+    resolve_character_at(document, at, style_sheet, document_style, None)
+}
+
+fn resolve_character_at(
+    document: &FormattedDocument,
+    at: usize,
+    style_sheet: &super::StyleSheet,
+    document_style: &super::DocumentStyleAssignment,
+    paragraph: Option<&super::StyleId>,
+) -> Option<super::ResolvedCharacterStyle> {
     let blocks = document.blocks_for_region(&(at..at));
     let block = blocks.iter().find(|block| block.range.contains(&at))?;
-    let paragraph_style = if block.style.0 == "Image" { &style_sheet.base_paragraph } else { &block.style };
+    let paragraph_style = match paragraph {
+        Some(style) => style,
+        None if block.style.0 == "Image" => &style_sheet.base_paragraph,
+        None => &block.style,
+    };
     let paragraph_defaults = &block.direct_default_character;
     let mut direct = CharacterProperties::default();
     let mut semantic = CharacterProperties::default();

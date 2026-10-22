@@ -1173,7 +1173,7 @@ impl Document {
                     block.range.contains(&selection.start) || block.range.start == selection.start
                 })
                 .ok_or(DocumentError::AmbiguousProjection)?;
-            if current.style != paragraph.style {
+            if current.style != paragraph.style && !paragraph.removes_table {
                 let request = if let Some((ordered, _)) = paragraph.style.list_family_level() {
                     ModelRequest::SetListStyle {
                         document: scratch.id(),

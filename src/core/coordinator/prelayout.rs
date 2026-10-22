@@ -831,4 +831,51 @@ mod tests {
         assert_eq!(layout.regional_cached_line_count(), lines, "the document is completely prepared");
         assert!(core.prepare_view_prelayout(view, true).unwrap().is_none());
     }
+
+    #[test]
+    fn clearing_a_nested_table_keeps_retained_geometry_and_the_viewport() {
+        let source = include_str!("../../../docs/markdown_demo.md");
+        let mut core = Core::new(Document::from_bytes_detect_encoding(source.as_bytes().to_vec(), Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 700.0, 400.0);
+        fill(&mut core, view, true);
+        assert!(verified_everywhere(&core, view));
+        let table = core.document().projection().tables().iter()
+            .find(|table| core.document().text()[table.range.clone()].contains("Inside the list"))
+            .unwrap().clone();
+        assert!(core.document().projection().blocks_for_region(&table.range).iter().all(|block| !block.containers.is_empty()));
+        // Show the table in the middle of the viewport, as when selecting it.
+        // Clearing every body cell keeps the table; a rectangle of every cell
+        // would remove it.
+        let row = core.document().projection().presentation_line_at_offset(table.range.start).unwrap();
+        let y = core.layout(view).unwrap().hard_line_range_height(0..row).unwrap().height() as f32;
+        core.handle(view, CoreEvent::SetViewportOrigin { left: 0.0, top: Some(y - 150.0) }).unwrap();
+        let extent = core.layout(view).unwrap().content_height();
+        assert!(extent.is_exact());
+        let before = screen(&core, view);
+        assert!(before.iter().any(|(range, _, _)| table.range.start <= range.start && range.end <= table.range.end));
+        core.select_table_cells(view, core.document().id(), core.document().revision(), Some(crate::command::TableSelectionExtent {
+            table: table.id, anchor_row: 1, anchor_column: 0,
+            active_row: table.rows.len() - 1, active_column: table.columns.len() - 1,
+        })).unwrap();
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Delete))).unwrap();
+        let cleared = core.document().projection().tables().iter()
+            .find(|candidate| candidate.range.start == table.range.start).unwrap().clone();
+        assert!(cleared.rows.iter().skip(1).all(|row| row.cells.iter().all(|cell| cell.range.is_empty())));
+        // Retained heights survive the edit; only lines near it may need
+        // layout again, which preparation completes without moving anything.
+        assert_eq!(core.layout(view).unwrap().content_height().height(), extent.height(), "empty cells keep the table's height");
+        assert!(core.views[&view].layout.regional_cached_line_count() + 8
+            >= core.document().projection().presentation_line_count(), "only lines near the table need layout");
+        // Text outside the table keeps its place on screen.
+        let outside = |rows: Vec<(std::ops::Range<usize>, i32, usize)>, table: &std::ops::Range<usize>| rows.into_iter()
+            .filter(|(range, _, _)| range.end < table.start || range.start > table.end)
+            .map(|(range, y, _)| (if range.start > table.end {
+                range.start as isize - table.end as isize } else { range.start as isize - table.start as isize }, y))
+            .collect::<Vec<_>>();
+        let after = screen(&core, view);
+        assert_eq!(outside(after, &cleared.range), outside(before.clone(), &table.range));
+        fill(&mut core, view, true);
+        assert_eq!(core.layout(view).unwrap().content_height(), extent);
+        assert_eq!(outside(screen(&core, view), &cleared.range), outside(before, &table.range));
+    }
 }
