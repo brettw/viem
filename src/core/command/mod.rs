@@ -4124,6 +4124,11 @@ impl CommandInterpreter {
         if !matches!(key, Key::Enter | Key::Backspace) {
             return Ok(None);
         }
+        if key == Key::Enter {
+            if let Some(request) = document.code_block_exit_request(self.cursor)? {
+                return Ok(Some(request));
+            }
+        }
         if key == Key::Backspace && self.mode == Mode::Replace
             && self.insert_session.as_ref().and_then(|session| session.replace_journal.last())
                 .is_some_and(|entry| entry.frontier() == Some(self.cursor))

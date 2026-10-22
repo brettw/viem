@@ -262,22 +262,22 @@ fn exiting_an_empty_numbered_item_restarts_only_following_siblings() {
             (
                 "1. first\n2.\n3. last",
                 2,
-                "1. first\n\nPlain\n\n1. last",
+                "1. first\n\n<span></span>Plain\n\n1. last",
             ),
             (
                 "8. first\n9.\n10. last\n11. tail",
                 9,
-                "8. first\n\nPlain\n\n1. last\n2. tail",
+                "8. first\n\n<span></span>Plain\n\n1. last\n2. tail",
             ),
             (
                 "8. first\n   3. child\n   4. other child\n9.\n10. last",
                 9,
-                "8. first\n   3. child\n   4. other child\n\nPlain\n\n1. last",
+                "8. first\n   3. child\n   4. other child\n\n<span></span>Plain\n\n1. last",
             ),
             (
                 "8. first\n9.\n10. last\n    3. child\n    4. other child\n11. tail",
                 9,
-                "8. first\n\nPlain\n\n1. last\n   3. child\n   4. other child\n2. tail",
+                "8. first\n\n<span></span>Plain\n\n1. last\n   3. child\n   4. other child\n2. tail",
             ),
         ] {
             let mut core = Core::new(open(source, format));

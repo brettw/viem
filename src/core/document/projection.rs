@@ -3805,14 +3805,16 @@ impl FormattedDocument {
     /// Markdown analog of [`Self::install_code_styles_incrementally`]: splice
     /// `previous`'s code-block spans across the text edit hull, shifting the
     /// rest lazily, then replace the spans of each `replaced` block region
-    /// with the spans of its current runs. Returns false when the previous
-    /// spans cannot be reused, in which case nothing changes.
+    /// with the spans of its current runs. Each pair gives the previous and
+    /// current owner ranges; ownership can shrink outside the text edit hull.
+    /// Returns false when the previous spans cannot be reused, in which case
+    /// nothing changes.
     pub(crate) fn install_markdown_code_styles_incrementally(
         &mut self,
         sheet: Arc<StyleSheet>,
         previous: &FormattedDocument,
         hull: Option<&(Range<usize>, Range<usize>)>,
-        replaced: &[Range<usize>],
+        replaced: &[(Range<usize>, Range<usize>)],
         runs_in: &dyn Fn(&Range<usize>) -> Vec<super::syntax::SyntaxRun>,
     ) -> bool {
         let Some(old) = previous.markdown_code_presentation.as_ref()
@@ -3834,6 +3836,29 @@ impl FormattedDocument {
         }
         let mut spans = old.spans.clone();
         let mut stats = RangeSpliceStats::default();
+        // Remove the old owners before mapping offsets. Replacing only their
+        // current ranges would retain the old tail when a code boundary moves
+        // before an unchanged newline that the text diff excludes.
+        for (region, _) in replaced {
+            if region.end > old_len { return false; }
+            let indices = spans.overlapping_index_span(region);
+            let Some(items) = spans.get_range(&indices) else { return false };
+            let mut kept = Vec::with_capacity(items.len());
+            for span in items {
+                if span.range.start >= region.end || span.range.end <= region.start {
+                    kept.push(span);
+                } else {
+                    if span.range.start < region.start {
+                        kept.push(span.with_range(span.range.start..region.start));
+                    }
+                    if span.range.end > region.end {
+                        kept.push(span.with_range(region.end..span.range.end));
+                    }
+                }
+            }
+            let Some(next) = spans.splice(indices, kept, 0, 0, &mut stats) else { return false };
+            spans = next;
+        }
         if let Some((old_hull, new_hull)) = hull {
             let indices = spans.overlapping_index_span(old_hull);
             let Some(items) = spans.get_range(&indices) else { return false };
@@ -3844,7 +3869,7 @@ impl FormattedDocument {
             spans = next;
         }
         let names = markdown_code_style_names(&sheet);
-        for region in replaced {
+        for (_, region) in replaced {
             if region.end > new_len {
                 return false;
             }
@@ -5300,11 +5325,19 @@ pub(crate) fn splice_line_local_projection(
         }
     }
     // A final empty paragraph's seed lies on its row before the document's
-    // final line terminator, inside the region, at its half-open end.
+    // final line terminator, inside the region, at its half-open end. A full
+    // tail reparse also replaces a seed exactly at EOF: no untouched suffix
+    // owns that point, and the regional projection supplies its new owner.
     if !literal_mapping {
+        let replaces_eof = literal_topology
+            && old_source.end == previous.source_content_end
+            && old_formatted.end == previous.text.byte_len()
+            && new_source.end == new_source_content_end
+            && new_formatted_end == target_text.byte_len();
         while runs.get(provenance_indices.end).is_some_and(|span|
             span.formatted == (old_formatted.end..old_formatted.end) && span.source.is_empty()
-                && old_source.start <= span.source.start && span.source.end < old_source.end
+                && old_source.start <= span.source.start
+                && (span.source.end < old_source.end || replaces_eof && span.source.end == old_source.end)
                 && old_formatted.end == previous.text.byte_len()) {
             provenance_indices.end += 1;
         }
@@ -6262,9 +6295,12 @@ fn project_markdown_lines(
                     let indent = normalized.text[fence_start..line.end].bytes().take_while(|byte| *byte == b' ').count();
                     let trim = normalized.text[row.clone()].bytes().take_while(|byte| *byte == b' ').take(indent).count();
                     builder.emit_range(row.start + trim, row.end);
-                    if input_lines[index].is_empty() {
+                    if row.start + trim == row.end {
+                        // Optional fence indentation is hidden even on a
+                        // blank row. Its caret belongs after that prefix,
+                        // just as it does after a quote or list prefix.
                         let at = builder
-                            .unit_at(input_lines[index].start)
+                            .unit_at(row.end)
                             .map_or(source_content_end, |unit| unit.source.start);
                         builder.push_provenance(ProvenanceSpan {
                             formatted: output_start..output_start,
@@ -7007,6 +7043,33 @@ mod tests {
     use crate::document::history::History;
     use crate::document::line_endings::{normalize, FileFormat};
     use crate::document::{Encoding, Splice};
+
+    #[test]
+    fn markdown_code_boundary_shrink_removes_old_spans_outside_the_text_edit_hull() {
+        use crate::document::syntax::{SyntaxRun, SyntaxStyleName};
+        let projection = |text: &str| {
+            crate::document::Document::from_bytes(text.as_bytes().to_vec(), Encoding::Utf8, Format::PlainText)
+                .unwrap().projection().clone()
+        };
+        let mut previous = projection("code\n\nkeep");
+        let mut current = projection("code\n\n\nkeep");
+        let sheet = crate::document::code_style::markdown_sheet(
+            previous.style_sheet(), &crate::document::code_style::default_sheet());
+        let run = |range| SyntaxRun {
+            range,
+            name: SyntaxStyleName("ViemCodeBase".into()),
+            origin: "fixture".into(),
+            priority: -1,
+        };
+        previous.install_markdown_code_styles(sheet.clone(), &[run(0..5), run(6..10)]);
+        // An unchanged newline has moved out of the first code owner, while
+        // an independent owner after the insertion only shifts by one byte.
+        assert!(current.install_markdown_code_styles_incrementally(
+            sheet.clone(), &previous, Some(&(6..6, 6..7)), &[(0..5, 0..4)],
+            &|region| vec![run(region.clone())]));
+        assert!(current.markdown_code_styles_match(&sheet, &[run(0..4), run(7..11)]));
+        assert!(current.layout_style_spans_for_region(&(4..7)).is_empty());
+    }
 
     #[test]
     fn indexed_interior_and_hidden_source_queries_match_contributor_scans() {
