@@ -1684,6 +1684,26 @@ impl CommandInterpreter {
 }
 
 impl CommandInterpreter {
+    /// Visual `o`: the cursor and anchor change places. In Physical Source
+    /// line meaning the source anchor and the remembered physical cursor
+    /// change places too, so operators keep covering the same lines.
+    pub(super) fn swap_visual_ends(&mut self, document: &Document) {
+        let source_cursor = (self.line_mode == LineMode::PhysicalSource)
+            .then(|| self.physical_source_cursor(document).ok().and_then(|at| document.source_point(at).ok()))
+            .flatten();
+        let Some(anchor) = self.visual_anchor.as_mut() else { return };
+        std::mem::swap(anchor, &mut self.cursor);
+        if let Some(source_cursor) = source_cursor {
+            let previous = self.visual_source_anchor.replace(source_cursor).filter(|source| {
+                source.document() == document.id() && source.revision() == document.revision()
+            });
+            match previous {
+                Some(previous) => self.remember_physical_cursor(document, previous.offset()),
+                None => self.physical_cursor = None,
+            }
+        }
+    }
+
     pub(super) fn enter_mode_visual_line(
         &mut self,
         document: &Document,
@@ -1692,37 +1712,44 @@ impl CommandInterpreter {
         let origin = self.cursor;
         let mut source_target = None;
         let mut source_anchor = None;
+        // As in Vim, `V` keeps the cursor where it is, and a count moves it
+        // to the last selected line at the same column.
         let active = if self.line_mode == LineMode::PhysicalSource {
             let line = self.physical_line(document).ok()?;
-            source_anchor = document
-                .source_point(self.physical_source_cursor(document).ok()?)
-                .ok();
-            let target = document
-                .physical_line(
-                    line.index
-                        .saturating_add(count.saturating_sub(1))
-                        .min(document.physical_source_line_number_count().saturating_sub(1)),
-                )
-                .ok()?;
-            source_target = Some(target.content_range.start);
-            document
-                .visible_point_for_source(target.content_range.start, true)
-                .ok()?
-        } else {
-            let snapshot = self.line_layout.as_ref()?;
-            let current = self.current_visual_position(snapshot).ok()?;
-            let rows = match layout_motion::command_row_span(
-                snapshot,
-                current,
-                count.saturating_sub(1).min(isize::MAX as usize) as isize,
-            ) {
-                Ok(rows) => rows,
-                Err(error) => return Some(layout_error(error)),
-            };
+            let at = self.physical_source_cursor(document).ok()?;
+            source_anchor = document.source_point(at).ok();
             if count == 1 {
                 origin
             } else {
-                snapshot.rows[rows.end - 1].text_range.start
+                let target = document
+                    .physical_line(
+                        line.index
+                            .saturating_add(count - 1)
+                            .min(document.physical_source_line_number_count().saturating_sub(1)),
+                    )
+                    .ok()?;
+                let at = at.clamp(line.content_range.start, line.content_range.end);
+                let column = self.preferred_column.unwrap_or(
+                    document.physical_source_text(line.content_range.start..at).ok()?.graphemes(true).count(),
+                );
+                self.preferred_column = Some(column);
+                let prefix = target.text.trim_end_matches('\n').graphemes(true).take(column).collect::<String>();
+                let source = target.content_range.start + document.encoding().encode_fragment(&prefix).ok()?.len();
+                source_target = Some(source);
+                normalize_normal_cursor_document(document, &document.hard_line_snapshot(),
+                    document.visible_point_for_source(source, true).ok()?)
+            }
+        } else if count == 1 {
+            origin
+        } else {
+            let snapshot = self.line_layout.as_ref()?;
+            let current = self.current_visual_position(snapshot).ok()?;
+            match gj(snapshot, current, count - 1, self.desired_x) {
+                Ok(motion) => {
+                    self.desired_x = Some(motion.desired_x);
+                    motion.position.text_offset
+                }
+                Err(error) => return Some(layout_error(error)),
             }
         };
         self.mode = Mode::VisualLine;

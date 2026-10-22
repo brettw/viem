@@ -8,6 +8,10 @@
   `EVCodeBlockLanguageTests` fails.
 - **Code-style persistence.** Rename/deletion persistence fails in
   `EVCodeStylesTests`.
+- **Uppercase `</PRE>` end tag.** pulldown-cmark ends a `<pre>` HTML block
+  only at a lowercase `</pre>`; CommonMark and GitHub match it
+  case-insensitively. `<PRE>x</PRE>` followed by a blank line and `## Next`
+  keeps the heading inside the HTML block as literal text.
 
 ## Open questions
 

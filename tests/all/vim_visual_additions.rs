@@ -334,3 +334,58 @@ fn visual_line_yank_then_put_above_lands_before_the_selection() {
         assert_eq!(core.document().source_bytes(), source.as_bytes(), "{format:?} {source:?}");
     }
 }
+
+/// (line, column), both 1-based, as Vim's `getpos(".")` reports them.
+fn line_column(core: &TestCore, view: ViewId) -> (usize, usize) {
+    let at = cursor(core, view);
+    let text = core.document().text();
+    let start = text[..at].rfind('\n').map_or(0, |newline| newline + 1);
+    (text[..at].matches('\n').count() + 1, at - start + 1)
+}
+
+/// Expected positions and line counts were checked against Vim 9.2 with
+/// `vim -Nu NONE`. `V` keeps the cursor column, a count moves it to the last
+/// selected line at the same column, and Visual `o` swaps both ends, so the
+/// operator still covers every selected line.
+#[test]
+fn visual_line_keeps_columns_and_o_swaps_the_whole_selection_in_both_line_meanings() {
+    let source = "alpha one\nbravo two\ncharlie three\ndelta four\necho five\n";
+    for format in [Format::PlainText, Format::Code] {
+        for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            for (keys, position, lines) in [
+                ("lllV", (1, 4), 5),
+                ("3lll3V", (3, 6), 5),
+                ("llllVj", (2, 5), 5),
+                ("llllVjjk", (2, 5), 5),
+                ("jlllVjjo", (2, 4), 5),
+                ("jlllVjjoy", (2, 4), 5),
+                ("jlllVjjy", (2, 1), 5),
+                ("jlllVjjd", (2, 1), 2),
+                ("jlllVjjod", (2, 1), 2),
+                ("jlllVjjood", (2, 1), 2),
+                ("3lll3Vd", (1, 1), 2),
+            ] {
+                let context = format!("{format:?} {mode:?} {keys}");
+                let (mut core, view) = editor(source, format);
+                core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();
+                run(&mut core, view, &format!("<Esc>{keys}"));
+                assert_eq!(line_column(&core, view), position, "{context}");
+                assert_eq!(core.document().text().lines().count(), lines, "{context}");
+            }
+        }
+    }
+}
+
+#[test]
+fn physical_visual_o_in_markdown_keeps_the_selected_source_lines() {
+    let source = "alpha one\n\nbravo two\n\ncharlie three\n\ndelta four\n";
+    for (keys, swapped) in [("jjVjjd", "jjVjjod"), ("jjjjVkkd", "jjjjVkkood")] {
+        let result = |keys: &str| {
+            let (mut core, view) = editor(source, Format::Markdown);
+            core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource)).unwrap();
+            run(&mut core, view, keys);
+            core.document().source_bytes()
+        };
+        assert_eq!(result(swapped), result(keys), "{swapped} versus {keys}");
+    }
+}

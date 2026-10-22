@@ -1580,9 +1580,6 @@ pub struct CommandInterpreter {
     reflow_options: crate::document::ReflowOptions,
     indentation: crate::document::IndentationSetting,
     generated_indent: Option<indentation::GeneratedIndent>,
-    /// Formatted start of a new first nested item whose interruption blank
-    /// line this Insert session generated; see `settle_generated_list_separator`.
-    generated_list_separator: Option<usize>,
     restored_indent: Option<usize>,
     visible_whitespace: VisibleWhitespaceSetting,
     /// Canonical language selecting the reflow comment profile.
@@ -1779,7 +1776,6 @@ impl CommandInterpreter {
             reflow_options: crate::document::ReflowOptions::default(),
             indentation: Default::default(),
             generated_indent: None,
-            generated_list_separator: None,
             restored_indent: None,
             visible_whitespace: Default::default(),
             reflow_language: None,
@@ -3428,7 +3424,6 @@ impl CommandInterpreter {
                 }
                 self.finish_select_visual_once(&output);
                 self.finish_insert_normal_once(document, &mut output);
-                output.document_changed |= self.settle_generated_list_separator(document, false)?;
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
                 self.finish_clipboard_writes(&mut output);
@@ -3507,7 +3502,6 @@ impl CommandInterpreter {
                     context.viewport_command = false;
                     return Ok(output);
                 }
-                output.document_changed |= self.settle_generated_list_separator(document, false)?;
                 self.finish_explicit_register_prefix(&output);
                 self.position_revision = Some(document.revision());
                 self.finish_clipboard_writes(&mut output);
@@ -3645,8 +3639,7 @@ impl CommandInterpreter {
             && (matches!(&event, InputEvent::Key(Key::Enter | Key::Tab | Key::BackTab | Key::Backspace | Key::Ctrl('t' | 'T' | 'd' | 'D')))
                 || matches!(&event, InputEvent::Key(Key::ShiftEnter))
                     && context.document().literal_terminal_break_cursor(self.cursor, 0).is_some()
-                || self.generated_indent.is_some()
-                || self.generated_list_separator.is_some()))
+                || self.generated_indent.is_some()))
             || !self.typing_style.is_empty()
             || self
                 .insert_session
@@ -5724,9 +5717,7 @@ impl CommandInterpreter {
                 CommandOutput::pending()
             }
             Key::Char('o' | 'O') => {
-                if let Some(anchor) = self.visual_anchor.as_mut() {
-                    std::mem::swap(anchor, &mut self.cursor);
-                }
+                self.swap_visual_ends(document);
                 CommandOutput {
                     cursor_moved: true,
                     ..CommandOutput::complete()
@@ -13119,7 +13110,6 @@ impl CommandInterpreter {
             expansion_changed |= output.document_changed;
             expansion_changed |= self.cleanup_generated_indent(document)?;
         }
-        expansion_changed |= self.settle_generated_list_separator(document, true)?;
         self.retire_typing_context();
         if let Some(session) = self.insert_session.take() {
             let last_inserted = session.last_inserted.clone();
@@ -13192,9 +13182,6 @@ impl CommandInterpreter {
             });
         let origin_end = line_end(&document.hard_line_snapshot(), self.cursor);
         let mut prefix = self.continuation_indent(document, origin_end, true, above);
-        let separated = |document: &Document, at: usize| document.paragraph_range_at(at).ok()
-            .and_then(|range| document.list_interruption_separator(range.start).ok().flatten().map(|_| range.start));
-        let origin_separated = separated(document, self.cursor).is_some();
         document.begin_edit_group();
         if self.line_mode == LineMode::PhysicalSource && !document.format().is_literal() {
             self.open_physical_line(document, above)?;
@@ -13204,9 +13191,6 @@ impl CommandInterpreter {
                 .commit_model_transaction(prepared)
                 .map_err(command_document_error)?;
             self.cursor = cursor;
-            // Only a blank line this open wrote is temporary support; an
-            // authored separator before the origin item stays.
-            self.generated_list_separator = separated(document, self.cursor).filter(|_| !origin_separated);
         }
         // Visual O may split an interior wrapped row while its caret stays
         // at the preceding fragment's end. That is not a leading-whitespace
@@ -13248,32 +13232,6 @@ impl CommandInterpreter {
             mode_changed: true,
             ..CommandOutput::complete()
         })
-    }
-
-    /// An empty first nested item needs a blank line to interrupt its
-    /// parent's paragraph. Once the item that this session opened has text,
-    /// remove the blank line it generated, in the same undo unit, so the
-    /// parent list keeps its tightness. Removal is optional: an unverified
-    /// candidate leaves the separator. `finishing` retires the capture.
-    fn settle_generated_list_separator(&mut self, document: &mut Document, finishing: bool) -> Result<bool, DocumentError> {
-        let Some(item) = self.generated_list_separator else { return Ok(false) };
-        let in_item = self.insert_session.is_some()
-            && document.paragraph_range_at(self.cursor).is_ok_and(|range| range.start == item);
-        let removed = if in_item || finishing {
-            match document.prepare_list_interruption_separator_removal(item) {
-                Ok(Some(prepared)) => {
-                    document.commit_model_transaction(prepared).map_err(command_document_error)?;
-                    true
-                }
-                _ => false,
-            }
-        } else {
-            false
-        };
-        if removed || finishing || !in_item {
-            self.generated_list_separator = None;
-        }
-        Ok(removed)
     }
 
     fn delete_characters(
