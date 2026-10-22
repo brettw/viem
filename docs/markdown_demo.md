@@ -233,8 +233,9 @@ To leave a code block in Preview, press Enter three times after its last
 nonblank line. The third Enter replaces the two empty code lines with an empty
 paragraph after the block. A single blank line can stay in the code; Shift-Enter
 always adds another code line. Inside a list or quote, the new paragraph stays
-in that surrounding container. Front matter and HTML preformatted blocks keep
-their literal Enter behavior.
+in that surrounding container. Front matter needs only two Enters after its
+last nonblank line. Backspace in an empty code or front-matter block removes
+its delimiters. HTML preformatted blocks keep their literal Enter behavior.
 
 ~~~
 Tilde fences work too.
