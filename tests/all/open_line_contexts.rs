@@ -403,3 +403,48 @@ fn a_final_blank_quote_row_projects_inside_the_quote() {
         assert_eq!(depths, quote_depths, "{source:?}");
     }
 }
+
+#[test]
+fn enter_at_a_first_nested_item_start_retires_its_blank_line_when_the_new_item_gets_text() {
+    let source = "- a\n  - b\n- c\n";
+    for (keys, expected) in [
+        (vec![Key::Char('I'), Key::Enter, Key::Up, Key::Char('X')], "- a\n  - X\n  - b\n- c\n"),
+        (vec![Key::Char('I'), Key::Enter, Key::Char('Y'), Key::Escape, Key::Char('k'), Key::Char('i'), Key::Char('X')], "- a\n  - X\n  - Yb\n- c\n"),
+    ] {
+        let context = format!("{keys:?}");
+        let mut editor = Editor::open(source, Format::Markdown);
+        editor.place_at("b");
+        press(&mut editor, &keys, &context);
+        press(&mut editor, &[Key::Escape], &context);
+        assert_eq!(editor.source(), expected, "{context}");
+        assert!(loose(&editor).iter().all(|loose| !loose), "{context}");
+        assert_reopens(&editor, &context);
+        // The typing in the new item is its own undo unit; undoing it restores
+        // the separator the empty item needs.
+        editor.undo();
+        assert!(editor.source().starts_with("- a\n\n  - \n"), "{context}: {:?}", editor.source());
+    }
+}
+
+#[test]
+fn an_ime_commit_into_a_new_first_nested_item_retires_its_blank_line_in_the_commit() {
+    use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
+    let mut editor = Editor::open("- a\n  - b\n- c\n", Format::Markdown);
+    editor.place_at("b");
+    press(&mut editor, &[Key::Char('O')], "O");
+    let at = editor.core.command_state(editor.view).unwrap().cursor();
+    let target = CompositionTarget::at_offsets(editor.core.document(), at..at).unwrap();
+    for event in [
+        CompositionEvent::Begin(target),
+        CompositionEvent::Update(CompositionUpdate::new("猫", 3..3)),
+    ] {
+        editor.core.handle(editor.view, CoreEvent::Composition(event)).unwrap();
+    }
+    assert_eq!(editor.source(), "- a\n\n  - \n  - b\n- c\n", "composition changes no source");
+    editor.core.handle(editor.view, CoreEvent::Composition(CompositionEvent::Commit)).unwrap();
+    assert_eq!(editor.source(), "- a\n  - 猫\n  - b\n- c\n");
+    assert_reopens(&editor, "IME");
+    press(&mut editor, &[Key::Escape], "Escape");
+    editor.undo();
+    assert_eq!(editor.source(), "- a\n\n  - \n  - b\n- c\n", "the commit is its own undo unit");
+}

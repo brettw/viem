@@ -107,14 +107,17 @@ fn languages(document: &Document) -> Vec<Option<String>> {
 }
 
 #[test]
-fn joining_a_code_block_with_the_following_text_keeps_its_language() {
-    let pre = "Intro\n\n<pre lang=\"rust\">fn main() {\n}</pre>\n\n## Next\n";
+fn joining_a_code_block_with_the_following_text_keeps_its_settings() {
+    let pre = "Intro\n\n<pre lang=\"rust\" class=\"x\">fn main() {\n}</pre>\n\n## Next\n";
     let fence = "Intro\n\n```rust title=\"x\"\nfn main() {\n}\n```\n\nNext\n";
     for (source, keys, expected) in [
-        (pre, vec![Key::Char('J')], "Intro\n\n```rust\nfn main() {\n} Next\n```\n"),
-        (pre, vec![Key::Char('j'), Key::Char('I'), Key::Backspace], "Intro\n\n```rust\nfn main() {\n}Next\n```\n"),
-        (pre, vec![Key::Char('A'), Key::Delete], "Intro\n\n```rust\nfn main() {\n}Next\n```\n"),
-        ("Intro\n\n<pre lang=\"rust\">fn main() {\n}</pre>\n\nNext\n", vec![Key::Char('J')], "Intro\n\n```rust\nfn main() {\n} Next\n```\n"),
+        (pre, vec![Key::Char('J')], "Intro\n\n<pre lang=\"rust\" class=\"x\">fn main() {\n} Next</pre>\n"),
+        (pre, vec![Key::Char('j'), Key::Char('I'), Key::Backspace], "Intro\n\n<pre lang=\"rust\" class=\"x\">fn main() {\n}Next</pre>\n"),
+        (pre, vec![Key::Char('A'), Key::Delete], "Intro\n\n<pre lang=\"rust\" class=\"x\">fn main() {\n}Next</pre>\n"),
+        // The joined text is literal code, so HTML-significant characters
+        // are escaped and inline Markdown syntax is not carried along.
+        ("Intro\n\n<pre lang=\"rust\">fn main() {\n}</pre>\n\nNext **bold** a<b & c\nmore\n", vec![Key::Char('J')],
+            "Intro\n\n<pre lang=\"rust\">fn main() {\n} Next bold a&lt;b &amp; c more</pre>\n"),
         (fence, vec![Key::Char('J')], "Intro\n\n```rust title=\"x\"\nfn main() {\n} Next\n```\n"),
         (fence, vec![Key::Char('j'), Key::Char('I'), Key::Backspace], "Intro\n\n```rust title=\"x\"\nfn main() {\n}Next\n```\n"),
     ] {

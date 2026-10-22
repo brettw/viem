@@ -646,7 +646,9 @@ fn join_following_paragraph(
     }) else {
         return Ok(None);
     };
-    let Some(fence) = fenced_source(document, code)? else { return Ok(None); };
+    let Some(fence) = fenced_source(document, code)? else {
+        return join_following_into_pre(document, code, following, range, replacement);
+    };
     let Some(closing_text) = fence.closing_text.as_deref() else { return Ok(None); };
     let code_source = fence.body.clone();
     let delimiter = fence.delimiter;
@@ -740,6 +742,59 @@ fn join_following_paragraph(
         appended.replace('\n', &format!("{}{}", document.file_format().spelling(), fence.body_prefix)),
     ));
     Ok(Some(patches))
+}
+
+/// A passive `<pre>` keeps its tag and every attribute when the following
+/// paragraph joins it: the paragraph's visible text moves before `</pre>`,
+/// escaped as literal HTML text. Anything else between the body and the end
+/// tag declines to the general Markdown conversion.
+pub(super) fn join_following_into_pre(
+    document: &Document,
+    code: &super::Block,
+    following: &super::Block,
+    range: &Range<usize>,
+    replacement: &str,
+) -> Result<Option<Vec<(Range<usize>, String)>>, DocumentError> {
+    let projection = document.projection();
+    if code.range.is_empty() || range.start != code.range.end {
+        return Ok(None);
+    }
+    let body_end = projection.source_range(code.range.clone()).ok_or(DocumentError::AmbiguousProjection)?.end;
+    let following_source = projection.source_range(following.range.clone())
+        .or_else(|| projection.source_insertion_point(following.range.start, true).map(|at| at..at))
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let bytes = document.state().source.bytes_in(body_end..following_source.end)
+        .ok_or(DocumentError::AmbiguousProjection)?;
+    let between = document.encoding().decode_region(&bytes, body_end)?.text;
+    let Some(tag) = between.to_ascii_lowercase().find("</pre") else { return Ok(None) };
+    let Some(close) = between[tag..].find('>').map(|at| tag + at + 1) else { return Ok(None) };
+    if !between[..tag].trim().is_empty() {
+        return Ok(None);
+    }
+    let tail = projection.text_tree().slice(range.end..following.range.end)
+        .map_err(DocumentError::FormattedTextStorage)?;
+    let mut joined = String::new();
+    for ch in format!("{replacement}{tail}").chars() {
+        match ch {
+            '&' => joined.push_str("&amp;"),
+            '<' => joined.push_str("&lt;"),
+            '>' => joined.push_str("&gt;"),
+            '\n' => joined.push_str(document.file_format().spelling()),
+            ch if document.encoding().encode_fragment(&ch.to_string()).is_err() => {
+                joined.push_str(&format!("&#{};", ch as u32));
+            }
+            ch => joined.push(ch),
+        }
+    }
+    joined.push_str(&between[..close]);
+    // The end tag's own row may continue after it; the joined paragraph's
+    // syntax before its text is replaced, its trailing source is kept.
+    let after_tag = &between[close..];
+    let row_end = after_tag.find(['\n', '\r']).unwrap_or(after_tag.len());
+    if !after_tag[..row_end].trim().is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(vec![(body_end..following_source.end, joined)]))
 }
 
 /// Once a code paragraph joins preceding prose, its literal body needs prose

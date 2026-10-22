@@ -600,6 +600,23 @@ impl Document {
                 contributor_patches = Some(patches);
             }
         }
+        // Joining the following paragraph into a passive `<pre>` keeps its tag
+        // and attributes, such as its language.
+        if let [edit] = edits {
+            let blocks = self.projection().blocks_for_region(&edit.range);
+            let code = blocks.iter().find(|block| block.style.0 == "Code Block" && block.range.end == edit.range.start);
+            let following = blocks.iter().find(|block| block.range.start <= edit.range.end
+                && edit.range.end <= block.range.end && block.range.start > edit.range.start);
+            if let (Some(code), Some(following)) = (code, following) {
+                if let Some(patches) = super::super::markdown_code::join_following_into_pre(self, code, following, &edit.range, &edit.replacement)? {
+                    let patches = patches.into_iter().map(|(range, syntax)| Ok(SourcePatch::primary(range, self.encoding().encode_fragment(&syntax)?)))
+                        .collect::<Result<Vec<_>, DocumentError>>()?;
+                    if let Ok(prepared) = self.prepare_text_edits_with_patches(edits.to_vec(), Some(patches)) {
+                        return Ok(Some(prepared));
+                    }
+                }
+            }
+        }
         // Crossing out of a passive block keeps the existing Markdown policy:
         // expose that block as equivalent Markdown before joining its neighbor.
         // This conversion is never used for a contained edit.
