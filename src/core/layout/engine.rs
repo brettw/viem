@@ -6880,15 +6880,23 @@ fn resolve_line_paragraph(
     paragraphs: &[ParagraphLayoutStyle],
     fallback_style: &ResolvedTextStyle,
 ) -> LineParagraphLayout {
-    let paragraph_index = paragraphs.iter().position(|paragraph| {
-        if line.is_empty() {
-            paragraph.text_range.start == line.start
-                || (paragraph.text_range.start < line.start
-                    && line.start < paragraph.text_range.end)
-        } else {
+    // An empty hard line at a nonempty paragraph's end follows that
+    // paragraph's final internal hard break, so it is the paragraph's last
+    // row (inside a code block's fence or a quote), not unowned canvas.
+    let paragraph_index = if line.is_empty() {
+        paragraphs
+            .iter()
+            .position(|paragraph| paragraph.text_range.start == line.start)
+            .or_else(|| {
+                paragraphs.iter().position(|paragraph| {
+                    paragraph.text_range.start < line.start && line.start <= paragraph.text_range.end
+                })
+            })
+    } else {
+        paragraphs.iter().position(|paragraph| {
             paragraph.text_range.start <= line.start && line.end <= paragraph.text_range.end
-        }
-    });
+        })
+    };
     if let Some(index) = paragraph_index {
         let style = paragraphs[index].clone();
         return LineParagraphLayout {

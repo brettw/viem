@@ -119,6 +119,7 @@ pub(super) fn markdown_document(document: &FormattedDocument) -> String {
             {
                 let fence = "`".repeat(longest_run(&text, '`').max(2) + 1);
                 output.push_str(&fence);
+                output.push_str(fence_language(block));
                 output.push('\n');
                 output.text(text, start, TextSpelling::Literal);
                 output.push('\n');
@@ -257,6 +258,15 @@ fn markdown_inline_text(
         output.push_str(marker);
     }
     for tag in decorations.into_iter().rev() { output.push_str(&format!("</{tag}>")); }
+}
+
+/// Re-spelling a code block as a fence (a passive `<pre lang>` exposed as
+/// Markdown before a join, for example) keeps its language. A backtick
+/// fence's info string cannot contain a backtick.
+fn fence_language(block: &crate::document::Block) -> &str {
+    block.code_language.as_deref().filter(|language| {
+        block.code_kind.language_editable() && !language.contains(['`', '\n', '\r'])
+    }).unwrap_or("")
 }
 
 fn longest_run(text: &str, delimiter: char) -> usize {

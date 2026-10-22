@@ -1491,6 +1491,32 @@ fn selected_markdown_source(
         if body <= start && body > line_start {
             prefixes.push(builder.source_range(line_start..body));
         }
+        // A selection that includes a fenced block's opening fence and ends at
+        // its last body character owns the closing fence too. Without it the
+        // pasted fence would absorb whatever follows the paste.
+        for block in document.projection().blocks_for_region(&(range.end..range.end)) {
+            if block.range.end != range.end || block.range.start <= range.start || block.style.0 != "Code Block" {
+                continue;
+            }
+            let closing_end = if block.markdown_html {
+                // A passive `<pre>` closes with its HTML block's end tag.
+                super::super::markdown_syntax::Blocks::parse(
+                    &super::super::markdown_syntax::grammar_text(&input),
+                    super::super::markdown_syntax::ParseContext::source_region(input.source_at(0), document.projection().source_content_start()),
+                ).to_source(&input).blocks.iter()
+                    .find(|html| matches!(html.role, super::super::markdown_syntax::BlockRole::Html)
+                        && html.range.start < hull.end && hull.end <= html.range.end)
+                    .map(|html| document.physical_line_at_source(html.range.end.saturating_sub(1).max(html.range.start))
+                        .map(|line| line.content_range.end))
+                    .transpose()?
+            } else {
+                super::super::markdown_code::fenced_source(document, &block)?
+                    .and_then(|fence| fence.closing_content_end)
+            };
+            if let Some(closing_end) = closing_end.filter(|closing_end| hull.end <= *closing_end && *closing_end <= band.end) {
+                suffixes.push(hull.end..closing_end);
+            }
+        }
     }
     prefixes.sort_by_key(|r| (r.start, r.end));
     suffixes.sort_by_key(|r| (r.start, r.end));

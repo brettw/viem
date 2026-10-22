@@ -143,6 +143,7 @@ fn markdown(
             let text = &document.text()[block.range.clone()];
             let fence = "`".repeat(longest_run(&text, '`').max(2) + 1);
             output.push_str(&fence);
+            output.push_str(fence_language(block));
             output.push('\n');
             output.push_str(&continuation);
             let mut start = block.range.start;
