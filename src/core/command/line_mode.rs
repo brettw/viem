@@ -1517,11 +1517,13 @@ impl CommandInterpreter {
         .ok()?;
         Some(point.text_offset)
     }
+    /// The selected lines, their count, and whether the cursor's line
+    /// precedes the anchor's.
     pub(super) fn mode_visual_extent(
         &self,
         document: &Document,
         snapshot: Option<&LayoutSnapshot>,
-    ) -> Option<(LineExtent, usize)> {
+    ) -> Option<(LineExtent, usize, bool)> {
         if self.mode != Mode::VisualLine {
             return None;
         }
@@ -1550,6 +1552,7 @@ impl CommandInterpreter {
                     whole: true,
                 },
                 first.index.abs_diff(last.index) + 1,
+                last.index < first.index,
             ));
         }
         let snapshot =
@@ -1582,6 +1585,7 @@ impl CommandInterpreter {
                 whole: true,
             },
             a.start.abs_diff(b.start) + 1,
+            b.start < a.start,
         ))
     }
     pub(crate) fn line_selection_range(
@@ -1590,7 +1594,7 @@ impl CommandInterpreter {
         snapshot: Option<&LayoutSnapshot>,
     ) -> Option<Range<usize>> {
         self.mode_visual_extent(document, snapshot)
-            .map(|(extent, _)| extent.text)
+            .map(|(extent, ..)| extent.text)
             .or_else(|| self.linear_visual_selection_range(document))
     }
     pub(super) fn apply_mode_visual_operator(
@@ -1604,12 +1608,16 @@ impl CommandInterpreter {
             // checked extent to the intersected hard lines.
             return Ok(None);
         }
-        let Some((extent, count)) = self.mode_visual_extent(document, self.line_layout.as_ref())
+        let Some((extent, count, cursor_leads)) =
+            self.mode_visual_extent(document, self.line_layout.as_ref())
         else {
             return Ok(None);
         };
         self.remember_visual();
         let register = self.requested_register.take();
+        let start = extent.text.start;
+        let source_start = extent.source.as_ref().map(|source| source.start);
+        let cursor_before = self.cursor;
         let mut output = self.apply_mode_line_extent(
             document,
             operator,
@@ -1621,6 +1629,18 @@ impl CommandInterpreter {
         )?;
         if output.status != CommandStatus::Complete {
             return Ok(Some(output));
+        }
+        if operator == Operator::Yank && !cursor_leads {
+            // Like Vim, the yank leaves the cursor at the start of the
+            // region unless the cursor already sits on its first line.
+            self.cursor = start;
+            self.boundary_affinity = BoundaryAffinity::Downstream;
+            if let Some(source) = source_start {
+                self.remember_physical_cursor(document, source);
+            }
+            self.visual_position = None;
+            self.desired_x = None;
+            output.cursor_moved = self.cursor != cursor_before;
         }
         self.visual_anchor = None;
         self.visual_to_line_end = false;
@@ -1878,7 +1898,7 @@ impl CommandInterpreter {
         document: &mut Document,
         insert_space: bool,
     ) -> Result<Option<CommandOutput>, DocumentError> {
-        let Some((extent, count)) = self.mode_visual_extent(document, self.line_layout.as_ref())
+        let Some((extent, count, _)) = self.mode_visual_extent(document, self.line_layout.as_ref())
         else {
             return Ok(None);
         };

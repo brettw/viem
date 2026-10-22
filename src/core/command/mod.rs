@@ -8696,7 +8696,7 @@ impl CommandInterpreter {
         self.requested_register = None;
         let shape = self.visual_repeat_shape(document);
         let range = match self.mode_visual_extent(document, self.line_layout.as_ref()) {
-            Some((extent, _)) => extent.text,
+            Some((extent, ..)) => extent.text,
             None => self.visual_extent(document).range,
         };
         let remembered = self.visual_anchor.map(|anchor| VisualMemory {
@@ -11304,9 +11304,15 @@ impl CommandInterpreter {
         });
         let shape = self.visual_repeat_shape(document);
         let extent = self.visual_extent(document);
-        let visual_yank_target = extent.range.start;
         let cursor_before = self.cursor;
         let lines = document.hard_line_snapshot();
+        // Vim leaves the cursor at the start of the yanked region, except
+        // that a linewise yank keeps a cursor on a line above the anchor.
+        let visual_yank_target = if extent.kind == MotionKind::Linewise
+            && self.visual_anchor.is_some_and(|anchor| self.cursor < line_start(&lines, anchor))
+        {
+            self.cursor
+        } else { extent.range.start };
         let deletion_class = ordinary_deletion_class(&lines, &extent);
         let register = self.requested_register.take();
         let command = VisualOperatorRepeat {
