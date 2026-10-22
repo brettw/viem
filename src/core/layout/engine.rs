@@ -6930,14 +6930,10 @@ fn resolve_line_paragraph(
             .iter()
             .position(|paragraph| paragraph.text_range.start == line.start)
             .or_else(|| {
-                paragraphs.iter().position(|paragraph| {
-                    paragraph.text_range.start < line.start && line.start <= paragraph.text_range.end
-                })
+                paragraphs.iter().position(|paragraph| paragraph.contains_hard_line(line))
             })
     } else {
-        paragraphs.iter().position(|paragraph| {
-            paragraph.text_range.start <= line.start && line.end <= paragraph.text_range.end
-        })
+        paragraphs.iter().position(|paragraph| paragraph.contains_hard_line(line))
     };
     if let Some(index) = paragraph_index {
         let style = paragraphs[index].clone();

@@ -507,7 +507,7 @@ fn retain_regional_styles(
             .chain(following_line_range)
             .zip(&table_lines)
             .any(|(line, &table_line)| {
-                paragraph_matches_line(paragraph.text_range.clone(), line)
+                paragraph.contains_hard_line(line)
                     // A table presentation row contains several paragraph
                     // leaves. Keep their owner paths as well as cell metrics.
                     || table_line
@@ -532,15 +532,6 @@ fn following_style_end(
         .next_grapheme_boundary(following.start)?
         .unwrap_or(following.start)
         .min(following.end))
-}
-
-fn paragraph_matches_line(paragraph: Range<usize>, line: &Range<usize>) -> bool {
-    if line.is_empty() {
-        paragraph.start == line.start
-            || (paragraph.start < line.start && line.start < paragraph.end)
-    } else {
-        paragraph.start <= line.start && line.end <= paragraph.end
-    }
 }
 
 fn document_line_range(

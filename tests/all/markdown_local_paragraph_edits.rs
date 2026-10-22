@@ -522,12 +522,12 @@ fn list_editing_reads_only_the_surrounding_lists() {
         document_revision: core.document().revision(), text_offset: at,
         affinity: BoundaryAffinity::Downstream, extend_selection: false,
     }).unwrap();
-    // Continuing the list renumbers the following item; removing the new
-    // item's treatment leaves a separator inside the same loose list and
-    // renumbers again. Both inspect only this list run.
+    // Continuing the list renumbers the following item. Exiting the new empty
+    // item creates an unindented paragraph and restarts the following list.
+    // Both inspect only the surrounding list runs.
     for (label, key, expected) in [
         ("Enter", Key::Enter, "1. First item\n2. Second item\n3. \n4. Third item\n\n"),
-        ("Backspace", Key::Backspace, "1. First item\n2. Second item\n\n\n\n3. Third item\n\n"),
+        ("Backspace", Key::Backspace, "1. First item\n2. Second item\n\n<span></span>\n\n1. Third item\n\n"),
     ] {
         let (result, work) = measure_document_work(|| core.handle(view, CoreEvent::Input(InputEvent::Key(key))));
         result.unwrap();

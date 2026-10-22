@@ -139,6 +139,13 @@ pub struct ParagraphLayoutStyle {
 }
 
 impl ParagraphLayoutStyle {
+    /// A final empty hard line follows an internal break and remains inside
+    /// its paragraph. At a shared boundary, a paragraph starting there takes
+    /// precedence over the preceding paragraph's trailing row.
+    pub(super) fn contains_hard_line(&self, line: &Range<usize>) -> bool {
+        self.text_range.start <= line.start && line.end <= self.text_range.end
+    }
+
     /// Shared native furniture / HTML export marker vocabulary. Deeper lists
     /// retain the fourth shipped style rather than cycling.
     pub(crate) fn list_marker_type(ordered: bool, level: u8) -> &'static str {
