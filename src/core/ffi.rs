@@ -6307,12 +6307,32 @@ fn checked_selection_range(
     TextRange::new(start, end).map_err(|_| ViemStatus::CoreFailure)
 }
 
+/// Visible tables that a linear selection completely contains. They are
+/// painted as complete cells, as a cell selection is.
+fn wholly_selected_tables(document: &Document, snapshot: &LayoutSnapshot, range: &std::ops::Range<usize>) -> Vec<u64> {
+    let mut checked = Vec::new();
+    let mut whole = Vec::new();
+    for cell in snapshot.table_cells() {
+        if checked.contains(&cell.table_id) {
+            continue;
+        }
+        checked.push(cell.table_id);
+        if document.projection().table_at(cell.text_range.start).is_some_and(|table| table.id == cell.table_id
+            && range.start <= table.range.start && table.range.end <= range.end)
+        {
+            whole.push(cell.table_id);
+        }
+    }
+    whole
+}
+
 fn push_selection_rectangles(
     snapshot: &LayoutSnapshot,
     range: TextRange,
     empty_affinity: BoundaryAffinity,
     segment_index: usize,
     expected_row: Option<usize>,
+    whole_tables: &[u64],
     rectangles: &mut Vec<ViemVisualSelectionRectangleV1>,
 ) -> Result<(), ViemStatus> {
     let resolved = if expected_row.is_some() {
@@ -6322,7 +6342,7 @@ fn push_selection_rectangles(
         // Linear selection endpoints may have scrolled out of the regional
         // snapshot. Keep their complete logical segment and export the exact
         // geometry that is materialized, including selected hard breaks.
-        snapshot.materialized_selection_rectangles(range, empty_affinity)
+        snapshot.materialized_selection_rectangles_with_tables(range, empty_affinity, whole_tables)
     }
     .map_err(layout_query_status)?;
     let mut matched = false;
@@ -6424,6 +6444,7 @@ fn export_visual_selection(
                 state.boundary_affinity(),
                 0,
                 None,
+                &wholly_selected_tables(document, snapshot, &range),
                 &mut rectangles,
             )?;
             kind
@@ -6457,6 +6478,7 @@ fn export_visual_selection(
                     segment.left_affinity,
                     segment_index,
                     Some(segment.row_index),
+                    &[],
                     &mut rectangles,
                 )?;
             }

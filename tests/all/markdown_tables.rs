@@ -1068,3 +1068,132 @@ fn audit_no_op_inline_formatting_through_cell_boundary() {
         assert_eq!(document.source_bytes(), source.as_bytes());
     }
 }
+
+/// Tables nested in list and quote owners are reparsed alone; their cells
+/// inherit the owners' context. Every table intent must stay regional and
+/// match a fresh parse, including the owners' identities around the table.
+#[test]
+fn nested_table_intents_stay_regional_and_match_a_fresh_parse() {
+    use viem_core::document::{ProjectionWorkScope, SemanticInlineStyle};
+    fn table_shape(document: &Document) -> Vec<String> {
+        document.projection().tables().iter().map(|table| format!("{:?} {:?} {:?} {:?} {:?}",
+            table.range, table.source_range, table.columns,
+            table.rows.iter().map(|row| (row.range.clone(), row.source_range.clone(),
+                row.cells.iter().map(|cell| (cell.range.clone(), cell.source_range.clone(), cell.missing)).collect::<Vec<_>>()))
+                .collect::<Vec<_>>(),
+            table.source_rows.iter().collect::<Vec<_>>())).collect()
+    }
+    // Owner identities are compared by first appearance, so equal owner trees
+    // compare equal across independently assigned identities.
+    fn block_shape(document: &Document) -> Vec<String> {
+        let mut owners = Vec::new();
+        document.projection().blocks().iter().map(|block| {
+            let containers = block.containers.iter().map(|member| {
+                let owner = owners.iter().position(|id| *id == member.container.id).unwrap_or_else(|| {
+                    owners.push(member.container.id);
+                    owners.len() - 1
+                });
+                (owner, member.container.kind, member.starts_here, member.ends_here)
+            }).collect::<Vec<_>>();
+            format!("{:?} {:?} {:?} {} {} {containers:?}", block.range, block.kind, block.style,
+                block.quote_depth, block.list_loose)
+        }).collect()
+    }
+    let sources = [
+        "- A list item with a table\n\n  | Item | Value |\n  | --- | ---: |\n  | Inside the list | 4 |\n  | x | y |\n\nafter",
+        "> | Quoted item | Value |\n> | --- | ---: |\n> | Inside the quotation | 7 |\n> | x | y |\n\nafter",
+        "before\n\n- item\n\n  > | A | B |\n  > | - | - |\n  > | 1 | 2 |\n  > | 3 | 4 |\n- next",
+        "intro\n\n- | A | B |\n  | - | - |\n  | 1 | 2 |\n  | 3 | 4 |\n- next",
+        "> - item\n>\n>   | A | B |\n>   | :- | -: |\n>   | 1 | 2 |\n>   | 3 | 4 |",
+    ];
+    let mut failures = Vec::new();
+    for source in sources {
+        let probe = doc(source, Format::Markdown);
+        let table = &probe.projection().tables()[0];
+        let (id, rows, columns) = (table.id, table.rows.len(), table.columns.len());
+        let mut intents = vec![
+            TableEditIntent::ClearCells { table: id, rows: 0..rows, columns: 0..columns },
+            TableEditIntent::ClearCells { table: id, rows: 1..2, columns: 1..2 },
+            TableEditIntent::ReplaceCells { table: id, rows: 0..rows, columns: 0..columns,
+                text: "new".into(), anchor_row: 0, anchor_column: 0 },
+            TableEditIntent::ReplaceCells { table: id, rows: 1..rows, columns: 0..1,
+                text: "a|b\nc".into(), anchor_row: 2, anchor_column: 0 },
+            TableEditIntent::InsertColumn { table: id, column: 0, after: false },
+            TableEditIntent::InsertColumn { table: id, column: columns - 1, after: true },
+            TableEditIntent::DeleteColumn { table: id, column: 0 },
+            TableEditIntent::SetAlignment { table: id, column: 0, alignment: TableAlignment::Center },
+            TableEditIntent::SetCellsSemanticStyle { table: id, rows: 0..rows, columns: 0..1,
+                style: SemanticInlineStyle::Strong, enabled: true },
+        ];
+        for row in 0..rows {
+            intents.push(TableEditIntent::InsertRow { table: id, row, after: true });
+            intents.push(TableEditIntent::DeleteRow { table: id, row });
+            if row > 0 {
+                intents.push(TableEditIntent::InsertRow { table: id, row, after: false });
+            }
+        }
+        for intent in intents {
+            let mut document = doc(source, Format::Markdown);
+            let (prepared, _) = match document.prepare_table_edit(document.id(), document.revision(), intent.clone()) {
+                Ok(prepared) => prepared,
+                Err(error) => { failures.push(format!("{source:?} {intent:?}: {error:?}")); continue; }
+            };
+            // Like a top-level table's, the final row's ending separates the
+            // table from following content, so changing it is verified completely.
+            let final_ending = matches!(intent, TableEditIntent::InsertRow { row, after: true, .. }
+                | TableEditIntent::DeleteRow { row, .. } if row + 1 == rows);
+            if !final_ending
+                && prepared.summary().projection_work().scope() != ProjectionWorkScope::RegionalHardLines {
+                failures.push(format!("{source:?} {intent:?}: {:?}", prepared.summary().projection_work().scope()));
+            }
+            document.commit_model_transaction(prepared).unwrap();
+            let fresh = doc(&String::from_utf8(document.source_bytes()).unwrap(), Format::Markdown);
+            assert_eq!(document.text(), fresh.text(), "{source:?} {intent:?}");
+            assert_eq!(table_shape(&document), table_shape(&fresh), "{source:?} {intent:?}");
+            assert_eq!(block_shape(&document), block_shape(&fresh), "{source:?} {intent:?}");
+            let edited = document.source_bytes();
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes(), "{source:?} {intent:?}");
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), edited, "{source:?} {intent:?}");
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// Text beside a whole table is edited together with it: the table leaves an
+/// empty paragraph that the text edit joins, as if the table were one paragraph.
+#[test]
+fn text_edits_reaching_exactly_a_whole_table_edge_remove_the_table() {
+    for source in [
+        "before\n\n| A | B |\n| - | - |\n| x | y |\n\nafter",
+        "- item\n\n  | A | B |\n  | - | - |\n  | x | y |\n\n- next",
+        "> before\n>\n> | A | B |\n> | - | - |\n> | x | y |\n>\n> after",
+    ] {
+        let probe = doc(source, Format::Markdown);
+        let table = probe.projection().tables()[0].range.clone();
+        let len = probe.text().len();
+        for range in [2..table.end, table.start..len - 2] {
+            for replacement in ["", "new"] {
+                let mut document = doc(source, Format::Markdown);
+                let mut expected = document.text().to_owned();
+                expected.replace_range(range.clone(), replacement);
+                document
+                    .apply_model_request(ModelRequest::ApplyTextEdits {
+                        document: document.id(),
+                        revision: document.revision(),
+                        edits: vec![TextEdit::new(range.clone(), replacement)],
+                    })
+                    .unwrap_or_else(|error| panic!("{source:?} {range:?} {replacement:?}: {error:?}"));
+                assert_eq!(document.text(), expected, "{source:?} {range:?}");
+                assert!(document.projection().tables().is_empty());
+                let edited = document.source_bytes();
+                assert_eq!(doc(&String::from_utf8(edited.clone()).unwrap(), Format::Markdown).text(), expected);
+                assert!(document.undo());
+                assert_eq!(document.source_bytes(), source.as_bytes());
+                assert!(document.redo());
+                assert_eq!(document.source_bytes(), edited);
+            }
+        }
+    }
+}

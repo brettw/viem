@@ -935,3 +935,155 @@ fn audit_native_typing_into_quoted_empty_cells() {
         }
     }
 }
+
+const WHOLE_TABLE_SOURCES: [&str; 4] = [
+    SOURCE,
+    "before\n\n| A | B |\n| - | - |\n| x | y |\n\nafter",
+    "- item\n\n  | A | B |\n  | - | - |\n  | x | y |\n\nafter",
+    "> | A | B |\n> | - | - |\n> | x | y |\n\nafter",
+];
+
+/// Remove the table's text exactly as an ordinary selection of it would.
+fn assert_table_replaced(core: &mut Editor, view: ViewId, source: &str, replacement: &str, label: &str) {
+    let original = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut expected = original.text().to_owned();
+    expected.replace_range(original.projection().tables()[0].range.clone(), replacement);
+    assert_eq!(core.document().text(), expected, "{label}: {source:?}");
+    assert!(core.document().projection().tables().is_empty(), "{label}: {source:?}");
+    // The text left in the table's place stays in the table's owners.
+    let owners = |document: &Document, at: usize| document.projection().blocks().iter()
+        .find(|block| block.range.start <= at && at <= block.range.end)
+        .map(|block| (block.quote_depth, block.containers.iter()
+            .map(|member| member.container.kind).collect::<Vec<_>>()));
+    let start = original.projection().tables()[0].range.start;
+    assert_eq!(owners(core.document(), start), owners(&original, start), "{label}: {source:?}");
+    assert!(core.table_selection(view).unwrap().is_none(), "{label}: {source:?}");
+    let edited = core.document().source_bytes();
+    let fresh = Document::from_bytes(edited.clone(), Encoding::Utf8, Format::Markdown).unwrap();
+    assert_eq!(fresh.text(), expected, "{label}: {source:?}");
+    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+    assert_eq!(core.document().source_bytes(), source.as_bytes(), "{label}: {source:?}");
+    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+    assert_eq!(core.document().source_bytes(), edited, "{label}: {source:?}");
+}
+
+/// Name the whole rectangle by one of its four pairs of opposite corners.
+fn select_every_cell(core: &mut Editor, view: ViewId, corners: usize) {
+    let table = &core.document().projection().tables()[0];
+    let (rows, columns) = (table.rows.len() - 1, table.columns.len() - 1);
+    let (a, b) = [((0, 0), (rows, columns)), ((rows, columns), (0, 0)),
+        ((0, columns), (rows, 0)), ((rows, 0), (0, columns))][corners];
+    select(core, view, a, b);
+}
+
+#[test]
+fn every_cell_selected_deletion_and_typing_replace_the_whole_table() {
+    for source in WHOLE_TABLE_SOURCES {
+        for corners in 0..4 {
+            for (input, replacement) in [(InputEvent::Key(Key::Delete), ""), (InputEvent::text("new"), "new")] {
+                let (mut core, view) = editor(source);
+                select_every_cell(&mut core, view, corners);
+                let label = format!("{input:?} corners={corners}");
+                core.handle_with_layout(view, CoreEvent::Input(input.clone()))
+                    .unwrap_or_else(|error| panic!("{label}: {source:?}: {error:?}"));
+                if !replacement.is_empty() {
+                    assert_eq!(core.command_state(view).unwrap().mode(), viem_core::command::Mode::Insert, "{label}");
+                    let table_start = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)
+                        .unwrap().projection().tables()[0].range.start;
+                    assert_eq!(core.command_state(view).unwrap().cursor(), table_start + replacement.len(), "{label}");
+                }
+                assert_table_replaced(&mut core, view, source, replacement, &label);
+            }
+        }
+    }
+}
+
+#[test]
+fn every_cell_selected_native_cut_and_vim_d_remove_the_whole_table() {
+    for source in WHOLE_TABLE_SOURCES {
+        let (mut core, view) = editor(source);
+        select_every_cell(&mut core, view, 2);
+        let context = ClipboardCommandContext::new().with_write(ClipboardTarget::Clipboard);
+        prefix(&mut core, view, &context);
+        let outcome = core.handle(view, CoreEvent::InputWithClipboard {
+            input: InputEvent::key('d'), clipboard: context,
+        }).unwrap();
+        assert_eq!(outcome.command.unwrap().clipboard_writes.len(), 1, "{source:?}");
+        assert_table_replaced(&mut core, view, source, "", "native Cut");
+
+        let (mut core, view) = editor(source);
+        for key in ":set noautoselect\r".chars() {
+            let key = if key == '\r' { Key::Enter } else { Key::Char(key) };
+            core.handle(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        select_every_cell(&mut core, view, 3);
+        core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('d')))
+            .unwrap_or_else(|error| panic!("Vim d: {source:?}: {error:?}"));
+        assert_table_replaced(&mut core, view, source, "", "Vim d");
+    }
+}
+
+fn place(core: &mut Editor, view: ViewId, at: usize, extend: bool) {
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document().revision(),
+        text_offset: at,
+        affinity: viem_core::document::BoundaryAffinity::Downstream,
+        extend_selection: extend,
+    })
+    .unwrap();
+}
+
+#[test]
+fn selection_reaching_into_a_table_from_outside_selects_the_whole_table() {
+    for source in [
+        "before\n\n| A | B |\n| - | - |\n| x | y |\n\nafter",
+        "- before\n\n  | A | B |\n  | - | - |\n  | x | y |\n\n  after",
+        "> before\n>\n> | A | B |\n> | - | - |\n> | x | y |\n>\n> after",
+    ] {
+        let (mut core, view) = editor(source);
+        let table = core.document().projection().tables()[0].range.clone();
+        let text = core.document().text().to_owned();
+        let (before, after) = (text.find("fore").unwrap(), text.find("ter").unwrap());
+        let inside = text.find('B').unwrap();
+        for (anchor, active, expected) in [
+            (before, inside, before..table.end),
+            (after, inside, table.start..after),
+            (inside, before, before..table.end),
+            (inside, after, table.start..after),
+            (before, after, before..after),
+            (before, table.start, before..table.start),
+            (after, table.end + 1, table.end + 1..after),
+        ] {
+            place(&mut core, view, anchor, false);
+            place(&mut core, view, active, true);
+            let selection = core.list_selection_identity(view).unwrap();
+            assert_eq!(selection.range(), expected, "{source:?}: {anchor} -> {active}");
+            assert_eq!(selection.active(), active, "the caret stays where it was placed");
+        }
+        // A selection within one table keeps its exact cell-local extent.
+        let last = text[..table.end].rfind('y').unwrap();
+        place(&mut core, view, inside, false);
+        place(&mut core, view, last, true);
+        assert_eq!(core.list_selection_identity(view).unwrap().range(), inside..last, "{source:?}");
+    }
+    // Deleting or replacing such a selection removes the text and the table.
+    let source = "before\n\n| A | B |\n| - | - |\n| x | y |\n\nafter";
+    for (input, expected) in [(InputEvent::Key(Key::Delete), "be\n\nafter"), (InputEvent::text("z"), "bez\n\nafter")] {
+        let (mut core, view) = editor(source);
+        let text = core.document().text().to_owned();
+        place(&mut core, view, text.find("fore").unwrap(), false);
+        place(&mut core, view, text.find('B').unwrap(), true);
+        core.handle_with_layout(view, CoreEvent::Input(input.clone())).unwrap();
+        assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{input:?}");
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{input:?}");
+    }
+    // Reaching from one table into another selects both completely.
+    let source = "| A | B |\n| - | - |\n| x | y |\n\nbetween\n\n| C | D |\n| - | - |\n| z | w |";
+    let (mut core, view) = editor(source);
+    let tables = core.document().projection().tables().iter().map(|table| table.range.clone()).collect::<Vec<_>>();
+    place(&mut core, view, tables[0].start + 2, false);
+    place(&mut core, view, tables[1].start + 2, true);
+    assert_eq!(core.list_selection_identity(view).unwrap().range(), tables[0].start..tables[1].end);
+}
+

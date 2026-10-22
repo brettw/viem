@@ -883,6 +883,30 @@ fn delimiter(alignment: TableAlignment) -> String {
 }
 
 impl Document {
+    /// A whole table and the text beside it are two supported changes: the
+    /// table is replaced by an empty paragraph, which the text edit then joins
+    /// to its neighbor. Compose their patches; the caller verifies the result.
+    fn text_with_whole_table_patches(
+        &self,
+        edit: &TextEdit,
+        table: Range<usize>,
+    ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
+        let text = if edit.range.start < table.start {
+            edit.range.start..table.start
+        } else {
+            table.start..edit.range.end - table.len()
+        };
+        let mut scratch = self.scratch_document();
+        let mut composition = super::replacement::PatchComposition::new(self.source_byte_len());
+        for edit in [TextEdit::new(table, ""), TextEdit::new(text, edit.replacement.clone())] {
+            let prepared = scratch.prepare_text_edits(vec![edit])?;
+            for patch in prepared.summary.source_patches.iter().rev() {
+                composition.splice(patch.range(), patch.replacement());
+            }
+            scratch.commit_model_transaction(prepared)?;
+        }
+        Ok(composition.source_patches())
+    }
     pub(super) fn table_text_patches(
         &self,
         edit: &TextEdit,
@@ -904,28 +928,31 @@ impl Document {
                     "Editing across a table boundary requires a row action.",
                 ));
             }
+            if let Some((table, _, _)) = self.projection().table_cell_at(edit.range.end).filter(|(table, _, _)|
+                edit.range.start < table.range.start && edit.range.end == table.range.end)
+            {
+                return self.text_with_whole_table_patches(edit, table.range.clone()).map(Some);
+            }
             return self.table_following_literal_pipe_patches(edit, affinity);
         };
         if edit.range == table.range && edit.range != cell.range && !edit.range.is_empty() {
             // A one-cell table's text range is also its only cell's range.
             // Ordinary text replacement still edits that cell; removing the
             // table is an explicit line/row or whole-document intention.
-            // The physical ending after the last row also supports the
-            // unselected following paragraph boundary. Keep its original
-            // spelling when the table has a following formatted owner.
-            let end = if table.range.end < self.projection().text_tree().byte_len() {
-                table
-                    .source_rows
-                    .last()
-                    .map_or(table.source_range.end, |row| row.source_body.end)
-            } else {
-                table.source_range.end
-            };
+            // The first row's owner prefix (a list indent or quote marker)
+            // also owns the replacement, and the physical ending after the
+            // last row separates it from what follows or ends the file, as
+            // it does after a replaced paragraph. Keep both spellings.
+            let start = table.source_rows.first().map_or(table.source_range.start, |row| row.source_body.start);
+            let end = table.source_rows.last().map_or(table.source_range.end, |row| row.source_body.end);
             return Ok(Some(vec![SourcePatch::primary(
-                table.source_range.start..end,
+                start..end,
                 self.encoding()
                     .encode_fragment(&self.table_literal_text(&edit.replacement))?,
             )]));
+        }
+        if edit.range.start == table.range.start && edit.range.end > table.range.end {
+            return self.text_with_whole_table_patches(edit, table.range.clone()).map(Some);
         }
         if edit.range.end > cell.range.end {
             return Err(unsupported(

@@ -86,16 +86,17 @@ impl CommandInterpreter {
             .iter()
             .find(|table| table.id == extent.table)
             .ok_or(DocumentError::UnsupportedFormatting)?;
-        let anchor = table
-            .rows
-            .get(extent.anchor_row)
-            .and_then(|row| row.cells.get(extent.anchor_column))
-            .ok_or(DocumentError::UnsupportedFormatting)?;
-        let active = table
-            .rows
-            .get(extent.active_row)
-            .and_then(|row| row.cells.get(extent.active_column))
-            .ok_or(DocumentError::UnsupportedFormatting)?;
+        let cell = |row: usize, column: usize| table.rows.get(row).and_then(|value| value.cells.get(column))
+            .ok_or(DocumentError::UnsupportedFormatting);
+        let (mut anchor, mut active) = (cell(extent.anchor_row, extent.anchor_column)?,
+            cell(extent.active_row, extent.active_column)?);
+        // A rectangle of every cell selects the table itself, whichever pair
+        // of opposite corners named it. Name it by its first and last cells
+        // so that its offsets span exactly the table's text.
+        if extent.rows() == (0..table.rows.len()) && extent.columns() == (0..table.columns.len()) {
+            let (first, last) = (cell(0, 0)?, cell(table.rows.len() - 1, table.columns.len() - 1)?);
+            (anchor, active) = if active.range.start < anchor.range.start { (last, first) } else { (first, last) };
+        }
         let return_mode = if self.table_cells.is_some() {
             self.selection_return_mode
         } else {
@@ -110,8 +111,11 @@ impl CommandInterpreter {
             active: active.id,
         });
         self.table_tab_selection = false;
-        self.visual_anchor = Some(anchor.range.start);
-        self.cursor = active.range.end;
+        // The offsets span both edge cells in the rectangle's direction, so a
+        // rectangle of every cell spans exactly the table's text.
+        let backward = active.range.start < anchor.range.start;
+        self.visual_anchor = Some(if backward { anchor.range.end } else { anchor.range.start });
+        self.cursor = if backward { active.range.start } else { active.range.end };
         self.position_revision = Some(document.revision());
         self.mode = Mode::VisualCharacter;
         self.set_selection_origin(SelectionOrigin::Mouse);
@@ -153,6 +157,21 @@ impl CommandInterpreter {
         self.position_revision = Some(document.revision());
         self.visual_position = None;
         self.desired_x = None;
+    }
+
+    /// A Cell selection of every cell selects the table itself. Deleting or
+    /// replacing it removes the table, so hand the ordinary text-selection
+    /// path exactly the table's text.
+    fn select_whole_table_text(&mut self, document: &Document, extent: &TableSelectionExtent) -> bool {
+        let Some(table) = document.projection().tables().iter().find(|table| table.id == extent.table) else {
+            return false;
+        };
+        if extent.rows() != (0..table.rows.len()) || extent.columns() != (0..table.columns.len()) {
+            return false;
+        }
+        // The rectangle's offsets already span the table in its direction.
+        self.table_cells = None;
+        true
     }
 
     pub(crate) fn finish_native_table_edit(
@@ -398,6 +417,9 @@ impl CommandInterpreter {
                             ..CommandOutput::complete()
                         }));
                     }
+                    if *operation != 'y' && self.select_whole_table_text(document, &extent) {
+                        return Ok(None);
+                    }
                     if let Err(output) = self.require_register_write_kind(requested, *operation == 'y') {
                         return Ok(Some(output));
                     }
@@ -459,6 +481,9 @@ impl CommandInterpreter {
             if replacement.is_some()
                 || matches!(event, InputEvent::Key(Key::Delete | Key::Backspace))
             {
+                if self.select_whole_table_text(document, &extent) {
+                    return Ok(None);
+                }
                 let intent = match replacement.as_ref() {
                     Some(text) => TableEditIntent::ReplaceCells {
                         table: extent.table,

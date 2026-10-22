@@ -665,3 +665,46 @@ fn selected_ranges_include_offscreen_cells_and_failed_copies_do_not_write() {
     assert_eq!(aliased, selection);
     assert_eq!(source(&f), text.as_bytes());
 }
+
+/// A selection reaching into a table from outside selects the whole table,
+/// which the exported selection paints as complete cells, as a cell selection is.
+#[test]
+fn selection_reaching_into_a_table_exports_its_complete_cells() {
+    let f = table_ffi_fixture(b"before\n\n| A | longer header |\n| - | - |\n| x | y |\n\nafter", VIEM_FORMAT_MARKDOWN);
+    let mut outcome = ViemCoreOutcomeV1::default();
+    // From "fore" into "longer header" in the formatted text "before\nA\nlonger header\nx\ny\nafter".
+    for (text_offset, flags) in [(2, 0), (12, VIEM_PLACE_CURSOR_EXTEND_SELECTION)] {
+        let place = ViemPlaceCursorV1 {
+            struct_size: VIEM_PLACE_CURSOR_V1_SIZE,
+            document_revision: state(&f).document_revision,
+            text_offset,
+            affinity: VIEM_BOUNDARY_AFFINITY_DOWNSTREAM,
+            flags,
+            ..Default::default()
+        };
+        assert_eq!(unsafe { viem_core_view_place_cursor(f.handle, f.view, &place, &mut outcome) }, ViemStatus::Ok);
+    }
+    let mut info = ViemVisualSelectionInfoV1::default();
+    assert_eq!(unsafe { viem_core_view_visual_selection_info(f.handle, f.view, &mut info) }, ViemStatus::Ok);
+    let mut segments = vec![ViemVisualSelectionSegmentV1::default(); info.segment_count as usize];
+    let mut rectangles = vec![ViemVisualSelectionRectangleV1::default(); info.rectangle_count as usize];
+    let mut copied = ViemVisualSelectionInfoV1::default();
+    assert_eq!(
+        unsafe {
+            viem_core_view_copy_visual_selection(f.handle, f.view, &info.identity, segments.as_mut_ptr(),
+                segments.len() as u64, rectangles.as_mut_ptr(), rectangles.len() as u64, &mut copied)
+        },
+        ViemStatus::Ok
+    );
+    assert_eq!((segments[0].text_start, segments[0].text_end), (2, 26), "the whole table is selected");
+    let cells = cells(&f);
+    assert_eq!(cells.len(), 4);
+    let inside = |inner: &ViemLayoutRectV1, outer: &ViemLayoutRectV1| inner.x >= outer.x && inner.y >= outer.y
+        && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+    for cell in &cells {
+        let painted = rectangles.iter().filter(|rectangle| inside(&rectangle.rect, &cell.rect)).collect::<Vec<_>>();
+        assert_eq!(painted.len(), 1, "cell {},{}: {painted:?}", cell.row, cell.column);
+        assert_eq!(painted[0].rect, cell.rect, "cell {},{} is painted completely", cell.row, cell.column);
+    }
+    assert!(rectangles.len() > cells.len(), "the text before the table keeps its highlight");
+}
