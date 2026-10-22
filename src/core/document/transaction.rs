@@ -2683,7 +2683,7 @@ impl Document {
         Ok(escaped)
     }
 
-    fn prepare_formatted_payload_edits(
+    pub(super) fn prepare_formatted_payload_edits(
         &self,
         mut edits: Vec<FormattedPayloadEdit>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
