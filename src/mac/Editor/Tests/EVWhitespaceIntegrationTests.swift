@@ -20,10 +20,19 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         style.subscript = true
         XCTAssertEqual(EVEditorView.whitespaceTextAttributes(style, inherited: inherited, scale: 2).baselineOffset, -8)
     }
-    private func fixture(_ source: String, type: String = "public.plain-text") throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVEditingPreferences) {
+    private func fixture(_ source: String, type: String = "public.plain-text", font: String? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVEditingPreferences) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-whitespace-native-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory)
+        if let font {
+            try EVStyleTestFixtures.configure(configuration, format: type == EVDocument.codeType ? .code : .plainText, declarations: [
+                (.baseParagraph, .characterFontFamilies, .stringList([font])),
+                (.baseParagraph, .characterFontFace, .string("")),
+                (.baseParagraph, .characterFontAxes, .string("{}")),
+                (.baseParagraph, .characterSize, .float(16)),
+                (.baseParagraph, .characterWeight, .unsigned(400)),
+            ])
+        }
         let preferences = EVEditingPreferences(configuration: configuration)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data(source.utf8), typeName: type)
@@ -221,6 +230,130 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         let (_, rich, _) = try fixture("word ", type: EVDocument.markdownType)
         XCTAssertFalse(rich.presentation(for: .showInvisibleCharacters).isEnabled)
         XCTAssertTrue(try XCTUnwrap(rich.layoutSnapshot).whitespace.markers.isEmpty)
+    }
+
+    func testIndentAlignmentMenuUsesCoreTextPositionsAndPreservesEditingState() throws {
+        let source = "  if (a == b ||\n      c == d) {"
+        let (backend, surface, _) = try fixture(source, type: EVDocument.codeType, font: "Helvetica")
+        let session = try XCTUnwrap(surface.session)
+        let before = try XCTUnwrap(surface.layoutSnapshot)
+        func x(_ offset: UInt64, in snapshot: EVLayoutExport) throws -> Float {
+            try XCTUnwrap(snapshot.clusters.first { $0.text_start == offset }).x
+        }
+        XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, .off)
+        XCTAssertTrue(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled)
+        XCTAssertGreaterThan(abs(try x(6, in: before) - x(22, in: before)), 1)
+        let revision = try backend.revision()
+        let state = backend.persistenceState
+        _ = try session.sendText("A")
+        surface.refreshPresentation()
+        let cursor = surface.viewPresentation.cursor_utf8_offset
+        surface.perform(menuCommand: .alignIndentsToPreviousLine, sender: nil)
+        let aligned = try XCTUnwrap(surface.layoutSnapshot)
+        XCTAssertEqual(try x(6, in: aligned), try x(22, in: aligned), accuracy: 0.01,
+            "The continuation's c aligns with the anchor's a using native proportional-font geometry")
+        XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, .on)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, cursor)
+        XCTAssertEqual(try backend.revision(), revision)
+        XCTAssertEqual(backend.persistenceState, state)
+        XCTAssertFalse(surface.canUndo)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.codeType), Data(source.utf8))
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+        try session.sendTestKeys("gg02lrW")
+        surface.refreshPresentation()
+        XCTAssertEqual(try backend.formattedText(), "  Wf (a == b ||\n      c == d) {")
+        let edited = try XCTUnwrap(surface.layoutSnapshot)
+        XCTAssertEqual(try x(6, in: edited), try x(22, in: edited), accuracy: 0.01)
+        XCTAssertGreaterThan(try x(22, in: edited), try x(22, in: aligned),
+            "Changing the anchor prefix updates the dependent line's native geometry")
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.codeType), Data(source.utf8))
+        XCTAssertEqual(geometry(try XCTUnwrap(surface.layoutSnapshot)), geometry(aligned))
+        surface.perform(menuCommand: .alignIndentsToPreviousLine, sender: nil)
+        XCTAssertEqual(geometry(try XCTUnwrap(surface.layoutSnapshot)), geometry(before))
+    }
+
+    func testIndentAlignmentUsesCompositionOverlayAndCancellationRestoresAnchorGeometry() throws {
+        let source = "  if (a == b ||\n      c == d) {"
+        let (backend, surface, _) = try fixture(source, type: EVDocument.codeType, font: "Helvetica")
+        let session = try XCTUnwrap(surface.session)
+        surface.perform(menuCommand: .alignIndentsToPreviousLine, sender: nil)
+        try session.sendTestKeys("gg02li")
+        surface.refreshPresentation()
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 2)
+        let before = try XCTUnwrap(surface.layoutSnapshot)
+        let revision = try backend.revision()
+        surface.editorView.setMarkedText("W", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: 2, length: 1))
+        XCTAssertTrue(session.hasActiveComposition)
+        let overlay = try XCTUnwrap(surface.layoutSnapshot)
+        let anchor = try XCTUnwrap(overlay.clusters.first { $0.text_start == 6 })
+        let child = try XCTUnwrap(overlay.clusters.first { $0.text_start == 22 })
+        XCTAssertEqual(anchor.x, child.x, accuracy: 0.01)
+        XCTAssertGreaterThan(child.x, try XCTUnwrap(before.clusters.first { $0.text_start == 22 }).x)
+        XCTAssertEqual(try backend.revision(), revision)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.codeType), Data(source.utf8))
+        surface.editorView.cancelOperation(nil)
+        XCTAssertFalse(session.hasActiveComposition)
+        XCTAssertEqual(geometry(try XCTUnwrap(surface.layoutSnapshot)), geometry(before))
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.codeType), Data(source.utf8))
+        XCTAssertFalse(surface.canUndo)
+    }
+
+    func testIndentAlignmentIsViewLocalAndExplicitChoiceSurvivesDefaultChanges() throws {
+        let source = "  if (a == b ||\n      c == d) {"
+        let (backend, first, preferences) = try fixture(source, type: EVDocument.codeType, font: "Helvetica")
+        let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        second.loadViewIfNeeded()
+        second.editorView.editingPreferences = preferences
+        _ = try XCTUnwrap(second.session).resize(width: 500, height: 240)
+        second.refreshPresentation()
+        first.perform(menuCommand: .alignIndentsToPreviousLine, sender: nil)
+        XCTAssertEqual(first.presentation(for: .alignIndentsToPreviousLine).state, .on)
+        XCTAssertEqual(second.presentation(for: .alignIndentsToPreviousLine).state, .off)
+        first.perform(menuCommand: .alignIndentsToPreviousLine, sender: nil)
+        var options = preferences.whitespacePresentation
+        options.alignIndentsToPreviousLine = true
+        XCTAssertTrue(preferences.setWhitespacePresentation(options))
+        XCTAssertEqual(first.presentation(for: .alignIndentsToPreviousLine).state, .off)
+        XCTAssertEqual(second.presentation(for: .alignIndentsToPreviousLine).state, .on)
+        XCTAssertFalse(first.canUndo || second.canUndo)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.codeType), Data(source.utf8))
+    }
+
+    func testIndentAlignmentLeavesMonospacedCodeAndTextGeometryUnchanged() throws {
+        let source = "  if (a == b ||\n      c == d) {"
+        for (type, font) in [(EVDocument.codeType, "Menlo"), (EVDocument.plainTextType, "Helvetica")] {
+            let (backend, surface, preferences) = try fixture(source, type: type, font: font)
+            let before = try XCTUnwrap(surface.layoutSnapshot)
+            var options = preferences.whitespacePresentation
+            options.alignIndentsToPreviousLine = true
+            XCTAssertTrue(preferences.setWhitespacePresentation(options))
+            XCTAssertEqual(geometry(try XCTUnwrap(surface.layoutSnapshot)), geometry(before), type)
+            XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled, type == EVDocument.codeType)
+            XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
+        }
+        let (_, markdown, _) = try fixture(source, type: EVDocument.markdownType)
+        XCTAssertFalse(markdown.presentation(for: .alignIndentsToPreviousLine).isEnabled)
+    }
+
+    func testIndentAlignmentMenuFollowsMarkdownPreviewPresentation() throws {
+        let source = "  if (a == b ||\n      c == d) {"
+        let (backend, surface, _) = try fixture(source, type: EVDocument.markdownType)
+        XCTAssertEqual(backend.sourceFormat, .markdown)
+        XCTAssertFalse(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled)
+        surface.setMarkdownPreview(false)
+        XCTAssertEqual(backend.sourceFormat, .code)
+        XCTAssertTrue(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled)
+        surface.perform(menuCommand: .alignIndentsToPreviousLine, sender: nil)
+        XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, .on)
+        surface.setMarkdownPreview(true)
+        XCTAssertFalse(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled)
+        surface.setMarkdownPreview(false)
+        XCTAssertTrue(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled)
+        XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, .on)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
     }
 
     func testMalformedFFISettingsAreRejectedAtomically() throws {

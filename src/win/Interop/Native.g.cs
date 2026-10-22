@@ -407,7 +407,7 @@ internal unsafe struct ViemShapeRequestV1
 internal unsafe struct ViemShapeResponseV1
 {
     public uint @struct_size;
-    public uint @reserved;
+    public uint @default_font_is_monospaced;
     public ulong @document_id;
     public ulong @document_revision;
     public ulong @measurement_environment_id;
@@ -2421,6 +2421,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_set_whitespace_presentation_defaults(ulong @core, byte* @json, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_visible_whitespace(ulong @core, ulong @view, byte @enabled);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_align_indents_to_previous_line(ulong @core, ulong @view, byte @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_whitespace_markers(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemLayoutRectV1* @expected_viewport, byte* @output, ulong @capacity, ulong* @out_length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

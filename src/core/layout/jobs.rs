@@ -336,6 +336,8 @@ pub struct LayoutJobRequest {
     input: CapturedLayoutInput,
     captured_view: LayoutJobViewConfiguration,
     table_measurements: Option<super::engine::tables::TableMeasurementCache>,
+    indent_projection: Option<Arc<crate::document::FormattedDocument>>,
+    indent_index: Option<super::engine::indent_alignment::IndentSnapshot>,
 }
 
 /// Structural accounting for one worker request. Counts are exposed instead of
@@ -1047,6 +1049,8 @@ where
         input,
         captured_view,
         table_measurements: None,
+        indent_projection: (view.whitespace_presentation().align_indents_to_previous_line && document.format().is_code()).then(|| Arc::new(document.projection().clone())),
+        indent_index: view.indent_index.clone(),
     })
 }
 
@@ -1078,6 +1082,7 @@ pub struct LayoutJobCandidate {
     cancellation: LayoutCancellationToken,
     product: LayoutJobProduct,
     table_measurements: super::engine::tables::TableMeasurementCache,
+    indent_index: Option<super::engine::indent_alignment::IndentSnapshot>,
 }
 
 impl LayoutJobCandidate {
@@ -1226,6 +1231,7 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
         });
     }
 
+    engine.prepare_indent_alignment(request.indent_projection.clone(), request.indent_index.clone(), request.captured_view.whitespace.tabstop);
     engine.reuse_captured_font_metrics(&request.captured_view);
     if let Some(cache) = &request.table_measurements { engine.install_table_measurements(cache.clone()); }
     let snapshot = match &request.input {
@@ -1346,6 +1352,7 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
         cancellation: request.cancellation.clone(),
         product,
         table_measurements: engine.table_measurements(),
+        indent_index: engine.indent_alignment.snapshot.clone(),
     })
 }
 
@@ -1512,6 +1519,10 @@ fn install_layout_job_impl(
             )
             .map_err(LayoutJobInstallRejection::HeightIndex)?,
     };
+    if !view.indent_index.as_ref().zip(candidate.indent_index.as_ref())
+        .is_some_and(|(current, candidate)| current.has_longer_compatible_prefix(candidate)) {
+        view.indent_index = candidate.indent_index;
+    }
     Ok(InstalledLayoutJob {
         job_id,
         layout_revision,
@@ -1763,6 +1774,7 @@ mod tests {
                         visual_order: (0..clusters.len()).collect(),
                         clusters,
                         default_metrics: metrics,
+                        default_font_is_monospaced: false,
                         diagnostics: Vec::new(),
                     }
                 })
@@ -2224,6 +2236,8 @@ mod tests {
         let requirements = inspect_layout_provider(&engine);
         let request = LayoutJobRequest {
             table_measurements: None,
+        indent_projection: None,
+        indent_index: None,
             job_id: LayoutJobId(1),
             priority: LayoutJobPriority::Background,
             document_id: document.id(),
@@ -2290,6 +2304,8 @@ mod tests {
         let requirements = inspect_layout_provider(&engine);
         let request = LayoutJobRequest {
             table_measurements: None,
+        indent_projection: None,
+        indent_index: None,
             job_id: LayoutJobId(1),
             priority: LayoutJobPriority::ViewportOverscan,
             document_id: document.id(),
@@ -2764,6 +2780,8 @@ mod tests {
         let requirements = inspect_layout_provider(&engine);
         let request = LayoutJobRequest {
             table_measurements: None,
+        indent_projection: None,
+        indent_index: None,
             job_id: LayoutJobId(1),
             priority: LayoutJobPriority::ChangedVisibleRows,
             document_id: document.id(),

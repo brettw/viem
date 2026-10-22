@@ -117,6 +117,7 @@ public struct EVWhitespacePresentationOptions: Codable, Equatable, Sendable {
   public var codeWhitespace = EVWhitespaceWidth.paragraphEn
   public var otherWhitespace = EVWhitespaceWidth.spaces
   public var codeWrappedLineIndent = 4
+  public var alignIndentsToPreviousLine = false
   public var visibleWhitespace = EVVisibleWhitespaceOptions()
   public init() {}
 
@@ -125,13 +126,14 @@ public struct EVWhitespacePresentationOptions: Codable, Equatable, Sendable {
       && visibleWhitespace.style.isValid && EVListcharsSettings.validationError(visibleWhitespace.listchars) == nil
   }
 
-  private enum CodingKeys: String, CodingKey { case codeWhitespace, otherWhitespace, codeWrappedLineIndent, visibleWhitespace }
+  private enum CodingKeys: String, CodingKey { case codeWhitespace, otherWhitespace, codeWrappedLineIndent, alignIndentsToPreviousLine, visibleWhitespace }
   public init(from decoder: Decoder) throws {
     self.init()
     let values = try decoder.container(keyedBy: CodingKeys.self)
     codeWhitespace = try values.decodeIfPresentStrict(EVWhitespaceWidth.self, forKey: .codeWhitespace) ?? codeWhitespace
     otherWhitespace = try values.decodeIfPresentStrict(EVWhitespaceWidth.self, forKey: .otherWhitespace) ?? otherWhitespace
     codeWrappedLineIndent = try values.decodeIfPresentStrict(Int.self, forKey: .codeWrappedLineIndent) ?? codeWrappedLineIndent
+    alignIndentsToPreviousLine = try values.decodeIfPresentStrict(Bool.self, forKey: .alignIndentsToPreviousLine) ?? alignIndentsToPreviousLine
     visibleWhitespace = try values.decodeIfPresentStrict(EVVisibleWhitespaceOptions.self, forKey: .visibleWhitespace) ?? visibleWhitespace
   }
 }

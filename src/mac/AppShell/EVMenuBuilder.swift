@@ -390,6 +390,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(coreItem("Show line numbers", command: .showLineNumbers))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
+        menu.addItem(coreItem("Align indents to previous line", command: .alignIndentsToPreviousLine))
         menu.addItem(.separator())
         menu.addItem(coreItem("Zoom In", command: .zoomIn, key: "=", modifiers: [.command]))
         menu.addItem(coreItem("Zoom Out", command: .zoomOut, key: "-", modifiers: [.command]))

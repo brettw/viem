@@ -1024,7 +1024,7 @@ pub const VIEM_SHAPE_REQUEST_V1_SIZE: u32 = size_of::<ViemShapeRequestV1>() as u
 #[derive(Clone, Copy, Debug)]
 pub struct ViemShapeResponseV1 {
     pub struct_size: u32,
-    pub reserved: u32,
+    pub default_font_is_monospaced: u32,
     pub document_id: u64,
     pub document_revision: u64,
     pub measurement_environment_id: u64,
@@ -1044,7 +1044,7 @@ impl Default for ViemShapeResponseV1 {
     fn default() -> Self {
         Self {
             struct_size: size_of::<Self>() as u32,
-            reserved: 0,
+            default_font_is_monospaced: 0,
             document_id: 0,
             document_revision: 0,
             measurement_environment_id: 0,
@@ -3227,8 +3227,11 @@ fn render_threading_from_response(raw: u32) -> Result<RenderRunThreading, Measur
 unsafe fn shaped_fragment_from_ffi(
     response: &ViemShapeResponseV1,
 ) -> Result<ShapedFragment, MeasurementError> {
-    if response.struct_size < VIEM_SHAPE_RESPONSE_V1_SIZE || response.reserved != 0 {
+    if response.struct_size < VIEM_SHAPE_RESPONSE_V1_SIZE {
         return Err(measurement_failure("shaping response prefix is too small"));
+    }
+    if response.default_font_is_monospaced > 1 {
+        return Err(measurement_failure("invalid default-font monospace trait"));
     }
     let mut fonts = std::collections::BTreeMap::new();
     let clusters = unsafe {
@@ -3274,6 +3277,7 @@ unsafe fn shaped_fragment_from_ffi(
         clusters,
         visual_order,
         default_metrics: text_metrics_from_ffi(response.default_metrics),
+        default_font_is_monospaced: response.default_font_is_monospaced != 0,
         diagnostics,
     })
 }
@@ -11961,6 +11965,16 @@ mod tests {
         _context: *mut c_void, _handles: *const ViemRenderRunHandleV1, _count: u64,
     ) -> *mut c_void { std::ptr::NonNull::<u8>::dangling().as_ptr().cast() }
     unsafe extern "C" fn paint_test_release_render_runs(_lease: *mut c_void) {}
+
+    #[test]
+    fn shaping_response_requires_a_boolean_native_monospace_trait() {
+        let mut response = ViemShapeResponseV1::default();
+        assert!(!unsafe { super::shaped_fragment_from_ffi(&response) }.unwrap().default_font_is_monospaced);
+        response.default_font_is_monospaced = 1;
+        assert!(unsafe { super::shaped_fragment_from_ffi(&response) }.unwrap().default_font_is_monospaced);
+        response.default_font_is_monospaced = 2;
+        assert!(matches!(unsafe { super::shaped_fragment_from_ffi(&response) }, Err(crate::layout::MeasurementError::InvalidResponse(_))));
+    }
 
     #[test]
     fn render_resource_lease_releases_once_after_final_snapshot_handle() {

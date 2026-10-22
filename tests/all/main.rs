@@ -58,6 +58,7 @@ mod history_model;
 mod history_restoration_retention;
 mod history_retention;
 mod incremental_match_style;
+mod indent_anchor_index;
 mod input_assistance;
 mod input_layout_atomicity;
 mod input_quote_context;
@@ -234,3 +235,5 @@ mod registers_marks;
 mod frontend_contracts;
 mod open_line_contexts;
 mod markdown_block_edges;
+
+mod indent_alignment;

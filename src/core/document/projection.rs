@@ -1980,6 +1980,14 @@ impl FormattedDocument {
         self.table_lines.as_ref().unwrap_or(&self.hard_lines).len()
     }
 
+    /// O(1) proof that semantic line boundaries and their identities are
+    /// unchanged. Equal UTF-8 alone is insufficient after line-ending policy
+    /// or projection changes; a false result only declines cache reuse.
+    pub(crate) fn shares_presentation_lines_with(&self, other: &Self) -> bool {
+        self.table_lines.as_ref().unwrap_or(&self.hard_lines)
+            .shares_storage_with(other.table_lines.as_ref().unwrap_or(&other.hard_lines))
+    }
+
     pub fn presentation_line_range(&self, index: usize) -> Option<Range<usize>> {
         self.table_lines.as_ref().unwrap_or(&self.hard_lines).get(index).map(|line| line.range)
     }

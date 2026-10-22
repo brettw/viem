@@ -65,7 +65,7 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(format.item(withTitle: "Word wrap")?.tag, EVMenuCommand.wordWrap.rawValue)
         let view = try submenu("View", of: menu)
         XCTAssertEqual(tokens(in: view), [
-            "Show Status Bar", "-", "Show line numbers", "Show Invisible Characters", "-",
+            "Show Status Bar", "-", "Show line numbers", "Show Invisible Characters", "Align indents to previous line", "-",
             "Zoom In", "Zoom Out", "Actual Size", "-", "Enter Full Screen",
         ])
         let file = try submenu("File", of: menu)
@@ -527,6 +527,10 @@ final class EVMenuBuilderTests: XCTestCase {
         let view = try submenu("View", of: menu)
         let index = try XCTUnwrap(view.items.firstIndex(where: { $0.title == "Show line numbers" }))
         XCTAssertEqual(view.items[index + 1].title, "Show Invisible Characters")
+        XCTAssertEqual(view.items[index + 2].title, "Align indents to previous line")
+        XCTAssertEqual(view.items[index + 2].tag, EVMenuCommand.alignIndentsToPreviousLine.rawValue)
+        XCTAssertEqual(view.items[index + 2].action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))
+        XCTAssertNil(view.items[index + 2].target)
         XCTAssertTrue(view.showsStateColumn)
         XCTAssertEqual(view.items[index].tag, EVMenuCommand.showLineNumbers.rawValue)
         XCTAssertEqual(view.items[index].action, #selector(EVEditorCommandRouting.performEditorMenuCommand(_:)))

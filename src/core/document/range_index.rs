@@ -74,6 +74,18 @@ pub(super) struct OrderedRangeStore<T> {
 }
 
 impl<T: Clone + RangedItem> OrderedRangeStore<T> {
+    /// Conservative O(1) identity comparison, including lazy transforms.
+    pub(super) fn shares_storage_with(&self, other: &Self) -> bool {
+        self.inner.root_origin == other.inner.root_origin
+            && self.inner.root_auxiliary_shift == other.inner.root_auxiliary_shift
+            && self.inner.root_revision == other.inner.root_revision
+            && match (&self.inner.root, &other.inner.root) {
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
         self.inner.visit_retained_memory(visitor);
     }

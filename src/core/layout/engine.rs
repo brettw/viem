@@ -31,6 +31,8 @@ pub use tables::{TableCellGeometry, TableGeometry};
 use unwrapped::{HorizontalMaterialization, UnwrappedSummaryCache};
 #[path = "whitespace_geometry.rs"]
 mod whitespace_geometry;
+#[path = "indent_alignment.rs"]
+pub(crate) mod indent_alignment;
 use whitespace_geometry::attach_whitespace_units;
 
 #[cfg(test)]
@@ -637,6 +639,7 @@ pub struct RegionalHardLineLayout {
 /// preceding text was edited.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LineLayoutInputs {
+    aligned_indent_width: Option<u64>,
     style_sheet_revision: StyleSheetRevision,
     document_insets: EdgeInsets,
     default_style: ResolvedTextStyle,
@@ -681,6 +684,7 @@ pub(super) fn line_layout_inputs(
         })
         .collect();
     LineLayoutInputs {
+        aligned_indent_width: None,
         style_sheet_revision: document_styles.style_sheet_revision,
         document_insets: document_styles.document_insets,
         default_style: document_styles.default_shaping_style.clone(),
@@ -2023,6 +2027,7 @@ pub(crate) struct LayoutJobViewConfiguration {
     /// Its complete dependency key is rechecked by the worker engine.
     pub(super) default_font_metrics: Option<DefaultFontMetrics>,
     pub(super) whitespace: WhitespaceConfiguration,
+    pub(super) alignment_style_runs: Option<Arc<Vec<ShapeStyleRun>>>,
     width: f32,
     height: f32,
     viewport_left: f32,
@@ -2067,6 +2072,7 @@ pub struct ViewLayout {
     paragraph_styles: super::style::ParagraphStyleCache,
     whitespace: WhitespaceConfiguration,
     whitespace_bounds: std::cell::RefCell<super::whitespace::WhitespaceBoundsCache>,
+    pub(crate) indent_index: Option<indent_alignment::IndentSnapshot>,
     width: f32,
     height: f32,
     viewport_left: f32,
@@ -2088,7 +2094,7 @@ pub struct ViewLayout {
     geometry_changes: std::collections::VecDeque<(u64, Option<Range<usize>>)>,
     default_style: ResolvedTextStyle,
     default_style_is_override: bool,
-    style_runs: Vec<ShapeStyleRun>,
+    style_runs: Arc<Vec<ShapeStyleRun>>,
     style_runs_are_override: bool,
     snapshot: Option<LayoutSnapshot>,
     height_index: ViewHeightIndex,
@@ -2135,6 +2141,7 @@ impl ViewLayout {
             paragraph_styles: Default::default(),
             whitespace: WhitespaceConfiguration::default(),
             whitespace_bounds: Default::default(),
+            indent_index: None,
             width: finite_nonnegative(width),
             height: finite_nonnegative(height),
             viewport_left: 0.0,
@@ -2148,7 +2155,7 @@ impl ViewLayout {
             geometry_changes: std::collections::VecDeque::new(),
             default_style: ResolvedTextStyle::default(),
             default_style_is_override: false,
-            style_runs: Vec::new(),
+            style_runs: Arc::new(Vec::new()),
             style_runs_are_override: false,
             snapshot: None,
             height_index: ViewHeightIndex::new_estimated(1, DEFAULT_ESTIMATED_HARD_LINE_HEIGHT)
@@ -2169,6 +2176,11 @@ impl ViewLayout {
 
     pub(crate) fn is_rebased_to(&self, revision: Revision) -> bool {
         self.rebased_document_revision == Some(revision)
+    }
+
+    /// Synchronize indentation summaries and return their expanded dirty range.
+    pub(crate) fn synchronize_indent_projection(&mut self, projection: Arc<crate::document::FormattedDocument>) -> Range<usize> {
+        self.indent_index.as_mut().map_or(0..0, |index| index.synchronize(projection, self.whitespace.tabstop))
     }
 
     /// Absorb one committed document change without discarding unaffected
@@ -2346,11 +2358,14 @@ impl ViewLayout {
         if tabstop == 0 || tabstop > 1024 { return Err(ListCharsError("tabstop must be between 1 and 1024".into())); }
         let next = WhitespaceConfiguration { options, format, tabstop };
         if self.whitespace != next {
-            let geometry_changed = self.whitespace.basis() != next.basis()
+            let geometry_changed = self.whitespace.options.align_indents_to_previous_line != next.options.align_indents_to_previous_line
+                || (next.options.align_indents_to_previous_line && self.whitespace.format.is_code() != next.format.is_code())
+                || self.whitespace.basis() != next.basis()
                 || self.whitespace.tabstop != next.tabstop
                 || (self.wrap && (self.whitespace.format.is_code() != next.format.is_code()
                     || (next.format.is_code() && self.whitespace.options.code_wrapped_line_indent
                         != next.options.code_wrapped_line_indent)));
+            if !next.options.align_indents_to_previous_line || !next.format.is_code() { self.indent_index = None; }
             self.whitespace = next;
             self.bump_configuration(geometry_changed);
         }
@@ -2426,8 +2441,8 @@ impl ViewLayout {
                 ..run
             })
             .collect::<Vec<_>>();
-        if !self.style_runs_are_override || self.style_runs != style_runs {
-            self.style_runs = style_runs;
+        if !self.style_runs_are_override || self.style_runs.as_ref() != &style_runs {
+            self.style_runs = Arc::new(style_runs);
             self.style_runs_are_override = true;
             self.bump_configuration(true);
         }
@@ -2931,6 +2946,15 @@ impl ViewLayout {
     /// style that keeps line heights cannot move the scroll extent. Every other
     /// line is retained as for a paint-only publication.
     pub(crate) fn invalidate_syntax_presentation_lines(&mut self, lines: Range<usize>) {
+        let lines = if self.whitespace.options.align_indents_to_previous_line && self.whitespace.format.is_code() {
+            lines.start..self.indent_index.as_ref().map_or(lines.end, |index| index.dependent_end(&lines))
+        } else { lines };
+        self.invalidate_geometry_lines(lines);
+    }
+
+    /// Invalidate an already expanded dependency range. Callers that have
+    /// proved a geometry barrier must not expand the same dependency twice.
+    pub(crate) fn invalidate_geometry_lines(&mut self, lines: Range<usize>) {
         let count = self.height_index.hard_line_count();
         let lines = lines.start.min(count)..lines.end.min(count);
         if self.height_index.invalidate_retaining_estimates(lines.clone()).is_err() {
@@ -2970,7 +2994,7 @@ impl ViewLayout {
     #[cfg(test)]
     pub(super) fn capture_for_layout_job(&self) -> LayoutJobViewConfiguration {
         let style_runs = if self.style_runs_are_override {
-            self.style_runs.clone()
+            self.style_runs.as_ref().clone()
         } else {
             Vec::new()
         };
@@ -2985,6 +3009,7 @@ impl ViewLayout {
             cached_lines: BTreeMap::new(),
             default_font_metrics: None,
             whitespace: self.whitespace.clone(),
+            alignment_style_runs: (self.style_runs_are_override && self.whitespace.options.align_indents_to_previous_line).then(|| self.style_runs.clone()),
             width: self.width,
             height: self.height,
             viewport_left: self.viewport_left,
@@ -4064,6 +4089,7 @@ struct RelativeFragment {
     clusters: RelativeClusters,
     visual_order: Vec<usize>,
     default_metrics: TextMetrics,
+    default_font_is_monospaced: bool,
     diagnostics: Vec<RelativeDiagnostic>,
 }
 
@@ -4296,6 +4322,7 @@ pub struct LayoutEngine<P: TextMeasurementProvider> {
     decoration_shape_cache: ShapeCache,
     unwrapped_summary_cache: UnwrappedSummaryCache,
     table_cache: tables::TableMeasurementCache,
+    pub(crate) indent_alignment: indent_alignment::IndentAlignment,
 }
 
 impl<P: TextMeasurementProvider> LayoutEngine<P> {
@@ -4318,6 +4345,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             decoration_shape_cache: ShapeCache::new(DEFAULT_DECORATION_SHAPE_CACHE_BYTES),
             unwrapped_summary_cache: UnwrappedSummaryCache::default(),
             table_cache: tables::TableMeasurementCache::default(),
+            indent_alignment: Default::default(),
         }
     }
 
@@ -4376,6 +4404,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         document: &Document,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
+        self.prepare_indent_alignment((view.whitespace.options.align_indents_to_previous_line && document.format().is_code())
+            .then(|| Arc::new(document.projection().clone())), view.indent_index.clone(), view.whitespace.tabstop);
         let document_styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), 0..document.projection().text_tree().byte_len(), view.search_matches(document.id(), document.revision()), document.format())?;
         let hard_lines = (0..document.projection().presentation_line_count())
             .filter_map(|index| document.projection().presentation_line_range(index))
@@ -4387,7 +4417,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             &hard_lines,
             view,
             Some(document_styles),
-        )
+        )?;
+        view.indent_index = self.indent_alignment.snapshot.clone();
+        Ok(())
     }
 
     /// Snapshot-oriented entry point useful to background jobs and unit tests.
@@ -4654,7 +4686,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             .transpose()?;
 
         let render_run_policy = self.provider.render_run_policy();
-        let line_inputs = line_slices
+        let mut line_inputs = line_slices
             .iter()
             .enumerate()
             .map(|(offset, slice)| {
@@ -4667,6 +4699,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 )
             })
             .collect::<Vec<_>>();
+        for (input, slice) in line_inputs.iter_mut().zip(line_slices) {
+            input.aligned_indent_width = self.aligned_indent_width_for_line(slice.full_range.start, view,
+                &document_styles.whitespace_shaping_style, document_id, document_revision, &control)?.map(f64::to_bits);
+        }
         let cached_any_line = |offset: usize, slice: &HardLineLayoutSlice| {
             view.cached_lines.get(&slice.hard_line_index).filter(|cached| {
                 cached.render_run_policy == render_run_policy
@@ -4854,6 +4890,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 if view.default_style_is_override { &default_style } else { &paragraph.style.default_shaping_style }, style_runs,
                 view.scale, document_id, document_revision, &control,
                 whitespace_leading, line_slice.checkpoint.as_ref().map_or(0.0, |c| c.cumulative_advance))?;
+            self.align_indent_clusters(&mut clusters, line_slice.full_range.start, view,
+                &document_styles.whitespace_shaping_style, document_id, document_revision, &control)?;
             let right_to_left = line_slice.checkpoint.as_ref().map_or_else(
                 || {
                     paragraph_is_right_to_left(
@@ -4895,7 +4933,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                             LayoutError::MalformedMeasurement("a partial Code indent requires its text snapshot"),
                         )?;
                         let (leading, prefix_statistics) = self.code_leading_indent_from_tree(tree, &line_slice.full_range, view,
-                            whitespace_unit, line_default_style, style_runs,
+                            whitespace_unit, &document_styles.whitespace_shaping_style, line_default_style, style_runs,
                             document_id, document_revision, &control)?;
                         work_statistics.segmented_text_bytes += prefix_statistics.segmented_text_bytes;
                         work_statistics.shaping_fragment_count += prefix_statistics.shaping_fragment_count;
@@ -5357,10 +5395,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             )
         };
         let style_runs = if view.style_runs_are_override {
-            view.style_runs.clone()
+            view.style_runs.as_ref().clone()
         } else {
             document_styles.as_ref().map_or_else(
-                || view.style_runs.clone(),
+                || view.style_runs.as_ref().clone(),
                 |styles| styles.shaping_runs.clone(),
             )
         };
@@ -5543,6 +5581,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let (_, _, tab_units) = self.layout_whitespace_clusters(&mut clusters, text, 0, &view.whitespace, whitespace_unit,
                 if view.default_style_is_override { &default_style } else { &paragraph.style.default_shaping_style }, &style_runs,
                 view.scale, document_id, document_revision, control, true, 0.0)?;
+            self.align_indent_clusters(&mut clusters, line_range.start, &whitespace_view,
+                whitespace_style, document_id, document_revision, control)?;
             let right_to_left = paragraph_is_right_to_left(
                 &paragraph.style,
                 &text[line_range.clone()],
@@ -6278,6 +6318,7 @@ impl RelativeFragment {
             clusters: RelativeClusters::from_absolute(&fragment.clusters, origin),
             visual_order: fragment.visual_order.clone(),
             default_metrics: fragment.default_metrics.clone(),
+            default_font_is_monospaced: fragment.default_font_is_monospaced,
             diagnostics: fragment
                 .diagnostics
                 .iter()
@@ -6309,6 +6350,7 @@ impl RelativeFragment {
             clusters,
             visual_order: self.visual_order.clone(),
             default_metrics: self.default_metrics.clone(),
+            default_font_is_monospaced: self.default_font_is_monospaced,
             diagnostics: self
                 .diagnostics
                 .iter()
@@ -9835,6 +9877,7 @@ mod tests {
             }),
         };
         let mut provider = crate::layout::MockTextMeasurementProvider::new();
+        provider.set_default_font_is_monospaced(true);
         let valid = provider.shape_batch(&[request.clone()]).unwrap().remove(0);
         assert_eq!(valid.clusters.len(), 1);
         assert_eq!(valid.clusters[0].text_range, 10..12);
@@ -9848,6 +9891,7 @@ mod tests {
             MetricsGeneration(1),
             30,
         );
+        assert!(rebased.default_font_is_monospaced);
         assert_eq!(rebased.text_range, 30..31);
         assert_eq!(rebased.clusters[0].text_range, 30..32);
 

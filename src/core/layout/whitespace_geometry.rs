@@ -48,12 +48,17 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         line: &Range<usize>,
         view: &LayoutJobViewConfiguration,
         whitespace_unit: f32,
+        whitespace_style: &ResolvedTextStyle,
         default_style: &ResolvedTextStyle,
         style_runs: &[ShapeStyleRun],
         document_id: DocumentId,
         revision: Revision,
         control: &LayoutRunControl<'_>,
     ) -> Result<(f64, LayoutWorkStatistics), LayoutComputationError> {
+        if let Some(width) = self.aligned_indent_width_for_line(line.start, view, whitespace_style,
+            document_id, revision, control)? {
+            return Ok((width, LayoutWorkStatistics::default()));
+        }
         let mut prefix_end = line.start;
         while prefix_end < line.end {
             control.checkpoint()?;

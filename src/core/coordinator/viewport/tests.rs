@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 mod scroll_endpoints;
 mod horizontal_reveal;
 mod history;
+mod indent_alignment;
 
 const LINE: &str = "let value = 42; // comment\n";
 

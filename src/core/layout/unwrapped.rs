@@ -33,6 +33,7 @@ struct FragmentSummary {
 #[derive(PartialEq)]
 struct SummaryKey {
     code_wrap: bool,
+    aligned_indent_width: Option<u64>,
     whitespace_style: ResolvedTextStyle,
     whitespace_basis: super::super::WhitespaceBasis,
     whitespace_tabstop: u32,
@@ -798,6 +799,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             let image_max_width = if inline_images.is_empty() { 0 } else { image_box.width.to_bits() };
             let summary_key = SummaryKey {
                 code_wrap: view.wrap && view.whitespace.format.is_code(),
+                aligned_indent_width: self.aligned_indent_width_for_line(full_range.start, view,
+                    &styles.whitespace_shaping_style, document_id, document_revision, &control)?.map(f64::to_bits),
                 whitespace_style: styles.whitespace_shaping_style.clone(),
                 whitespace_basis: view.whitespace.basis(),
                 whitespace_tabstop: view.whitespace.tabstop,
@@ -876,6 +879,10 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         whitespace_leading,
                         whitespace_advance,
                     )?;
+                    let original_advance: f64 = fragment.clusters.iter().map(|c| f64::from(c.advance)).sum();
+                    self.align_indent_clusters(&mut fragment.clusters, full_range.start, view,
+                        &styles.whitespace_shaping_style, document_id, document_revision, &control)?;
+                    whitespace_advance += fragment.clusters.iter().map(|c| f64::from(c.advance)).sum::<f64>() - original_advance;
                     let run_start = runs.len();
                     for cluster in &fragment.clusters {
                         if cluster.text_range.start != expected
@@ -963,6 +970,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                             full_range,
                             view,
                             whitespace_unit,
+                            &styles.whitespace_shaping_style,
                             shaping_style,
                             style_runs,
                             document_id,
@@ -1166,6 +1174,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     summary.whitespace_leading,
                     summary.whitespace_advance,
                 )?;
+                self.align_indent_clusters(&mut fragment.clusters, full_range.start, view,
+                    &styles.whitespace_shaping_style, document_id, document_revision, &control)?;
                 statistics.segmented_text_bytes += summary.text.len();
                 statistics.shaping_fragment_count += 1;
                 for run in &runs[summary.runs.clone()] {
