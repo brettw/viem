@@ -604,6 +604,173 @@ fn revisiting_a_new_empty_list_item_keeps_backspace_semantic() {
     }
 }
 
+fn caret_x(core: &Editor, view: ViewId) -> f32 {
+    let at = core.command_state(view).unwrap().cursor();
+    let layout = core.layout(view).unwrap().snapshot().unwrap();
+    let caret = layout.caret_point(at, BoundaryAffinity::Downstream).unwrap();
+    layout.caret_geometry(caret).unwrap().rect.x
+}
+
+#[test]
+fn exiting_an_empty_list_item_immediately_unindents_the_caret() {
+    use viem_core::document::ContainerKind;
+    for source in [
+        "intro\n\n- body",
+        "intro\n\n- body\n",
+        "intro\n\n- body\n\n",
+        "intro\n\n- body\n- tail",
+        "intro\n\n- body\n\nsuffix",
+        "intro\n\n* body",
+        "intro\n\n9) body\n10) tail",
+        "intro\r\n\r\n- body\r\n",
+        "> intro\n>\n> - body",
+    ] {
+        for exit in [Key::Enter, Key::Backspace] {
+            let (mut core, view) = open(source, Format::Markdown);
+            insert_at(&mut core, view, 0);
+            let outside_x = caret_x(&core, view);
+            let at = core.document().text().find("body").unwrap() + 4;
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: at,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            input(&mut core, view, InputEvent::Key(Key::Enter));
+            assert!(caret_x(&core, view) > outside_x, "{source:?} {exit:?}: new item");
+            let empty = core.command_state(view).unwrap().cursor();
+            input(&mut core, view, InputEvent::Key(exit));
+            assert_eq!(core.command_state(view).unwrap().cursor(), empty, "{source:?} {exit:?}");
+            assert_eq!(caret_x(&core, view), outside_x, "{source:?} {exit:?}: exit");
+            let block = core.document().projection().blocks().iter()
+                .find(|block| block.range == (empty..empty)).unwrap();
+            assert!(!block.containers.iter().any(|member|
+                matches!(member.container.kind, ContainerKind::List { .. } | ContainerKind::ListItem)),
+                "{source:?} {exit:?}: {block:?}");
+            let reopened = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+            let fresh = reopened.projection().blocks().iter()
+                .find(|block| block.range == (empty..empty)).unwrap();
+            assert!(!fresh.containers.iter().any(|member|
+                matches!(member.container.kind, ContainerKind::List { .. } | ContainerKind::ListItem)),
+                "{source:?} {exit:?}: reopened {fresh:?}");
+            reopen_and_history(&mut core, view, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn option_enter_keeps_empty_continuation_carets_indented() {
+    for source in ["intro\n\n- body", "intro\n\n- body\n- tail", "intro\n\n1. body", "> intro\n>\n> - body"] {
+        let (mut core, view) = open(source, Format::Markdown);
+        insert_at(&mut core, view, 0);
+        let outside_x = caret_x(&core, view);
+        let at = core.document().text().find("body").unwrap() + 4;
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document().revision(), text_offset: at,
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        let owner = core.document().projection().blocks().iter()
+            .find(|block| block.range.start <= at && at <= block.range.end).unwrap().clone();
+        for _ in 0..2 {
+            input(&mut core, view, InputEvent::Key(Key::AltEnter));
+            let empty = core.command_state(view).unwrap().cursor();
+            assert!(caret_x(&core, view) > outside_x, "{source:?}");
+            let block = core.document().projection().blocks().iter()
+                .find(|block| block.range == (empty..empty)).unwrap();
+            assert!(matches!(block.kind, viem_core::document::BlockKind::ListItem { item_start: false, .. }), "{source:?}");
+            assert!(block.containers.iter().map(|member| &member.container)
+                .eq(owner.containers.iter().map(|member| &member.container)), "{source:?}");
+        }
+        reopen_and_history(&mut core, view, source.as_bytes());
+    }
+}
+
+#[test]
+fn exiting_an_empty_item_reuses_its_existing_explicit_body() {
+    for (source, expected) in [
+        ("- first\n- <span></span>", "- first\n\n<span></span>"),
+        ("- first\n- <span></span>\n- tail", "- first\n\n<span></span>\n\n- tail"),
+    ] {
+        for exit in [Key::Enter, Key::Backspace] {
+            let (mut core, view) = open(source, Format::Markdown);
+            insert_at(&mut core, view, "first\n".len());
+            input(&mut core, view, InputEvent::Key(exit));
+            assert_eq!(core.document().source_bytes(), expected.as_bytes(), "{source:?} {exit:?}");
+            assert_eq!(core.command_state(view).unwrap().cursor(), "first\n".len(), "{source:?} {exit:?}");
+            reopen_and_history(&mut core, view, source.as_bytes());
+        }
+    }
+}
+
+#[test]
+fn removing_a_whole_list_needs_no_empty_body_between_its_prose_paragraphs() {
+    let source = "- first\n- \n- last";
+    let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    document.set_list_style(0..document.text().len(), None).unwrap();
+    assert_eq!(document.source_bytes(), b"first\n\n\n\nlast");
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+    assert!(document.redo());
+    assert_eq!(document.source_bytes(), b"first\n\n\n\nlast");
+}
+
+#[test]
+fn enter_in_an_unclosed_empty_code_block_replaces_its_eof_caret_locally() {
+    use crate::markdown_test_support::place_insert_boundary;
+    use viem_core::command::CommandInterpreter;
+    use viem_core::document::measure_document_work;
+
+    let mut measured = None;
+    for paragraphs in [100, 5000] {
+        let prefix = "Unrelated *styled* prose.\n\n".repeat(paragraphs);
+        let source = format!("{prefix}Guard.\n\n```rust\n");
+        let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let code = document.projection().blocks().last().unwrap().clone();
+        assert!(code.range.is_empty());
+        assert_eq!(code.style.0, "Code Block");
+        assert!(document.projection().provenance().iter().any(|span|
+            span.formatted == code.range && span.source == (source.len()..source.len())),
+            "fixture exercises the empty code owner's exact EOF caret");
+        let at = code.range.end;
+        let mut commands = CommandInterpreter::new();
+        place_insert_boundary(&mut commands, &mut document, at);
+
+        let (result, work) = measure_document_work(||
+            commands.handle(&mut document, InputEvent::Key(Key::Enter)));
+        result.unwrap();
+        assert_eq!(work.full_projection_candidates, 0, "{work:?}");
+        assert_eq!(work.source_full_materializations, 0, "{work:?}");
+        assert_eq!(work.formatted_full_materialized_bytes, 0, "{work:?}");
+        assert_eq!(work.formatted_compatibility_materialized_bytes, 0, "{work:?}");
+        assert!(work.source_decoded_bytes < 8192, "{work:?}");
+        assert!(work.projected_formatted_bytes < 4096, "{work:?}");
+        let current = (work.source_decoded_bytes, work.projected_formatted_bytes, work.model_requests);
+        if let Some(previous) = measured {
+            assert_eq!(previous, current, "unrelated prefix changes empty code Enter work: {work:?}");
+        }
+        measured = Some(current);
+        assert_eq!(commands.cursor(), at + 1);
+        let code = document.projection().blocks().last().unwrap();
+        assert_eq!(code.style.0, "Code Block");
+        assert_eq!(&document.text()[code.range.clone()], "\n");
+        let fresh = Document::from_bytes(document.source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+        assert_eq!(fresh.projection().provenance(), document.projection().provenance(),
+            "the old EOF caret must not survive beside the new code boundary");
+        crate::support::assert_reopens_as_displayed(&document, "empty code Enter");
+
+        commands.handle(&mut document, InputEvent::text("next")).unwrap();
+        let code = document.projection().blocks().last().unwrap();
+        assert_eq!(code.style.0, "Code Block");
+        assert_eq!(&document.text()[code.range.clone()], "\nnext");
+        let saved = document.source_bytes();
+        assert!(saved.starts_with(prefix.as_bytes()));
+        crate::support::assert_reopens_as_displayed(&document, "typing after empty code Enter");
+        commands.handle(&mut document, InputEvent::Key(Key::Escape)).unwrap();
+        assert!(document.undo());
+        assert_eq!(document.source_bytes(), source.as_bytes());
+        assert!(document.redo());
+        assert_eq!(document.source_bytes(), saved);
+    }
+}
+
 #[test]
 fn tab_and_backtab_inside_a_list_item_change_structure_and_stay_in_the_insert_undo_unit() {
     use viem_core::document::BlockKind;

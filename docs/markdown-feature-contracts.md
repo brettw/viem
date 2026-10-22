@@ -48,8 +48,9 @@ mapped source coordinates, including a BOM's content offset. `Interior` and
 must not be passed as a new whole document. Inline body parsing uses the fragment
 context; full-source grammar callers state their document context explicitly.
 
-`CodeBlockKind` owns language editability, treatment removal, default-language
-eligibility, creation eligibility, fixed labels and clipboard representation.
+`CodeBlockKind` owns language editability, treatment removal (including empty
+owners), the blank-line threshold for Enter to exit, default-language eligibility,
+creation eligibility, fixed labels and clipboard representation.
 Layout and authoring consume these queries. Low-level delimiter parsers still
 inspect the concrete owner kind because source spelling is their responsibility.
 Do not infer authoring capabilities from a presentation label or style name.

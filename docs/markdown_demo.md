@@ -105,6 +105,9 @@ number stays visible as continuation text:
 In Preview, use Option-Enter on macOS or Alt-Enter on Windows to add a paragraph
 within a list item. The same action is available in Style > Paragraph. Enter
 starts the next item; Shift-Enter adds a line break within the paragraph.
+Enter or Backspace on an empty final item exits the list and immediately
+returns the caret to the paragraph's unindented start. Nested items leave one
+list level at a time.
 
 - This is a loose list.
 
@@ -225,6 +228,14 @@ is open. Language changes preserve the document's scroll position. Choose None
 to use its Code Block style. New blocks use the preceding block's language,
 or the following block's when there is no preceding block; the first defaults
 to None.
+
+To leave a code block in Preview, press Enter three times after its last
+nonblank line. The third Enter replaces the two empty code lines with an empty
+paragraph after the block. A single blank line can stay in the code; Shift-Enter
+always adds another code line. Inside a list or quote, the new paragraph stays
+in that surrounding container. Front matter needs only two Enters after its
+last nonblank line. Backspace in an empty code or front-matter block removes
+its delimiters. HTML preformatted blocks keep their literal Enter behavior.
 
 ~~~
 Tilde fences work too.

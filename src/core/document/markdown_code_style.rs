@@ -9,7 +9,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(range)?;
         let blocks = structural_style::selected_blocks(self, range);
-        if !enabled && blocks.iter().any(|block| !block.code_kind.treatment_removable()) {
+        if !enabled && blocks.iter().any(|block| !block.code_kind.treatment_removable(block.range.is_empty())) {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
         if !enabled && self.format() == Format::Markdown {
@@ -101,23 +101,14 @@ impl Document {
                 let first_end = raw.find('\n').unwrap_or(raw.len());
                 let opening = &raw[..first_end];
                 let quote = super::super::markdown_quotes::container_prefix(opening);
-                let (delimiter, width) = super::super::projection::markdown_fence(
-                    &opening[quote..],
-                )
-                .ok_or(DocumentError::UnsupportedFormatting)?;
+                let fence = super::super::markdown_code::fenced_source(self, &block)?
+                    .ok_or(DocumentError::UnsupportedFormatting)?;
                 let last_start = raw.rfind('\n').map_or(raw.len(), |at| at + 1);
-                let closing = &raw[last_start..];
-                let prefix = super::super::markdown_quotes::prefix(closing);
-                let closed = super::super::markdown_syntax::fence_close(
-                    &closing[prefix..],
-                    delimiter,
-                    width,
-                );
+                let closed = fence.closing_content_end.is_some();
                 let body_end = if closed { last_start - 1 } else { raw.len() };
                 let prose = prose_from_code(&visible);
                 let prose = if matches!(block.kind, super::super::BlockKind::ListItem { .. }) {
-                    let continuation = super::super::markdown_code::fenced_source(self, &block)?
-                        .map(|fence| fence.body_prefix).unwrap_or_default();
+                    let continuation = fence.body_prefix;
                     prose.split('\n').enumerate().map(|(index, line)| {
                         format!("{}{line}", if index == 0 { &opening[..quote] } else { &continuation })
                     }).collect::<Vec<_>>().join("\n")
@@ -178,15 +169,28 @@ impl Document {
                 combined.push(patch);
             }
         }
-        let mut prepared = self.prepare_text_edits_with_patches(Vec::new(), Some(combined))?;
+        let empty_removal = !enabled && targets.len() == 1 && targets[0].is_empty();
+        let mut prepared = if empty_removal {
+            // An empty owner's removal keeps formatted text unchanged. Its
+            // explicit syntax patches still need a bounded verification band;
+            // an unqualified source-only edit would rebuild the whole file.
+            self.prepare_text_edits_with_patch_policy(
+                vec![TextEdit::new(targets[0].clone(), "")], Some(combined), true,
+            )?
+        } else {
+            self.prepare_text_edits_with_patches(Vec::new(), Some(combined))?
+        };
         if prepared.is_no_op() {
             return Ok(prepared);
         }
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };
-        if candidate.projection.text() != self.text()
-            || candidate.projection.blocks().len() != self.projection().blocks().len()
+        // The authored empty edit already verified exact text equality over
+        // its dependency band. Check owner count without materializing every
+        // paragraph; the target's resulting treatment is checked below.
+        if (!empty_removal && candidate.projection.text() != self.text())
+            || candidate.projection.block_count() != self.projection().block_count()
         {
             return Err(DocumentError::VerificationFailed.into());
         }

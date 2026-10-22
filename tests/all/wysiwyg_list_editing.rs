@@ -503,10 +503,10 @@ fn enter_on_empty_items_leaves_one_level_at_a_time() {
     // Each Enter on the empty item: a nested item lifts one level, a top-level
     // item leaves its list, and a quoted paragraph then leaves its quote.
     for (source, steps) in [
-        ("- a\n  - b\n  - \n\nafter", ["- a\n  - b\n- \n\nafter", "- a\n  - b\n\n\n\nafter", "- a\n  - b\n\n\n\n\n\nafter"]),
-        ("- a\n  - b\n    - c\n    - \n\nafter", ["- a\n  - b\n    - c\n  - \n\nafter", "- a\n  - b\n    - c\n- \n\nafter", "- a\n  - b\n    - c\n\n\n\nafter"]),
-        ("1. a\n   1. b\n   2. \n2. d", ["1. a\n   1. b\n2. \n3. d", "1. a\n   1. b\n\n\n\n1. d", "1. a\n   1. b\n\n      <span></span>\n   2. \n\n1. d"]),
-        ("> - a\n>   - b\n>   - ", ["> - a\n>   - b\n> - ", "> - a\n>   - b\n\n> ", "> - a\n>   - b\n\n"]),
+        ("- a\n  - b\n  - \n\nafter", ["- a\n  - b\n- \n\nafter", "- a\n  - b\n\n<span></span>\n\nafter", "- a\n  - b\n\n<span></span>\n\n\n\nafter"]),
+        ("- a\n  - b\n    - c\n    - \n\nafter", ["- a\n  - b\n    - c\n  - \n\nafter", "- a\n  - b\n    - c\n- \n\nafter", "- a\n  - b\n    - c\n\n<span></span>\n\nafter"]),
+        ("1. a\n   1. b\n   2. \n2. d", ["1. a\n   1. b\n2. \n3. d", "1. a\n   1. b\n\n<span></span>\n\n1. d", "1. a\n   1. b\n\n<span></span>\n\n\n\n1. d"]),
+        ("> - a\n>   - b\n>   - ", ["> - a\n>   - b\n> - ", "> - a\n>   - b\n\n> <span></span>", "> - a\n>   - b\n\n<span></span>"]),
     ] {
         let mut editor = Editor::open(source, Format::Markdown);
         editor.type_keys("i");

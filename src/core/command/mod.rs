@@ -4124,6 +4124,11 @@ impl CommandInterpreter {
         if !matches!(key, Key::Enter | Key::Backspace) {
             return Ok(None);
         }
+        if key == Key::Enter {
+            if let Some(request) = document.code_block_exit_request(self.cursor)? {
+                return Ok(Some(request));
+            }
+        }
         if key == Key::Backspace && self.mode == Mode::Replace
             && self.insert_session.as_ref().and_then(|session| session.replace_journal.last())
                 .is_some_and(|entry| entry.frontier() == Some(self.cursor))
@@ -4167,7 +4172,8 @@ impl CommandInterpreter {
         let Some(prepared) = Self::prepare_paragraph_key(document, key, request.clone())? else {
             return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
         };
-        next.cursor = if matches!(key, Key::ShiftEnter | Key::AltEnter) {
+        next.cursor = if matches!(key, Key::ShiftEnter | Key::AltEnter)
+            || matches!(request, ModelRequest::ExitCodeBlock { .. }) {
             prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?
         } else {
             prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
@@ -4192,6 +4198,7 @@ impl CommandInterpreter {
         key: Key,
         request: ModelRequest,
     ) -> Result<CommandOutput, DocumentError> {
+        let exits_code = matches!(request, ModelRequest::ExitCodeBlock { .. });
         let Some(prepared) = Self::prepare_paragraph_key(document, key, request)? else {
             return Ok(CommandOutput::complete());
         };
@@ -4199,7 +4206,8 @@ impl CommandInterpreter {
             document.literal_terminal_break_cursor(self.cursor, 0)
                 .unwrap_or(prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?)
         } else {
-            prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
+            prepared_cursor(document, &prepared, self.cursor,
+                if exits_code { Association::AfterInsertion } else { Association::BeforeInsertion })?
         };
         let changed = !prepared.is_no_op();
         let record = if changed && (self.mode == Mode::Replace && matches!(key, Key::Enter | Key::AltEnter)

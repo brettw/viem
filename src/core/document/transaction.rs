@@ -24,6 +24,8 @@ mod markdown_block_styles;
 mod markdown_code_style;
 #[path = "markdown_code_language.rs"]
 mod markdown_code_language;
+#[path = "markdown_code_exit.rs"]
+mod markdown_code_exit;
 #[path = "markdown_front_matter_edit.rs"]
 mod markdown_front_matter_edit;
 #[path = "markdown_gfm_edit.rs"]
@@ -327,6 +329,12 @@ pub enum ModelRequest {
         revision: Revision,
         at: usize,
     },
+    /// Replace two trailing empty code lines with a paragraph after the block.
+    ExitCodeBlock {
+        document: DocumentId,
+        revision: Revision,
+        at: usize,
+    },
     /// Split a paragraph while retaining its Markdown list-item owner.
     InsertListParagraph {
         document: DocumentId,
@@ -414,6 +422,7 @@ impl ModelRequest {
             | Self::SetParagraphStyle { document, .. }
             | Self::AssignNamedStyle { document, .. }
             | Self::ContinueList { document, .. }
+            | Self::ExitCodeBlock { document, .. }
             | Self::InsertListParagraph { document, .. }
             | Self::InsertHardBreak { document, .. }
             | Self::OpenLine { document, .. }
@@ -442,6 +451,7 @@ impl ModelRequest {
             | Self::SetParagraphStyle { revision, .. }
             | Self::AssignNamedStyle { revision, .. }
             | Self::ContinueList { revision, .. }
+            | Self::ExitCodeBlock { revision, .. }
             | Self::InsertListParagraph { revision, .. }
             | Self::InsertHardBreak { revision, .. }
             | Self::OpenLine { revision, .. }
@@ -1298,6 +1308,7 @@ impl Document {
                 self.prepare_persisted_style_intent(intent)
             }
             ModelRequest::ContinueList { at, .. } => self.prepare_structural_list_enter(at),
+            ModelRequest::ExitCodeBlock { at, .. } => self.prepare_code_block_exit(at),
             ModelRequest::InsertListParagraph { at, affinity, .. } => {
                 self.prepare_list_paragraph(at, affinity)
             }
@@ -3596,6 +3607,19 @@ impl Document {
                     Some(super::ListStyle::Bullet) => format!("{}- ", " ".repeat(indent)),
                     Some(super::ListStyle::Numbered) => {
                         format!("{}{}. ", " ".repeat(indent), ordinal - 1)
+                    }
+                    None if index == first && line.is_empty() && complete_marker.is_some()
+                        && source_body[remove_source..].bytes()
+                            .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+                        && self.projection().blocks_for_region(&line).iter()
+                        .any(|block| block.containers.iter().any(|member|
+                            matches!(member.container.kind, super::ContainerKind::List { .. })
+                                && !member.starts_here)) => {
+                        // Bare blank rows after an item still belong to that
+                        // list. Give the exited paragraph an explicit body so
+                        // it immediately loses its list owner and indentation,
+                        // including when another list item follows it.
+                        format!("{}<span></span>", " ".repeat(indent))
                     }
                     None => " ".repeat(indent),
                 }
