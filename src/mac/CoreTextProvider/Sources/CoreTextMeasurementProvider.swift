@@ -552,7 +552,6 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
 
     var response = ViemShapeResponseV1()
     response.struct_size = UInt32(MemoryLayout<ViemShapeResponseV1>.size)
-    response.reserved = 0
     response.document_id = request.document_id
     response.document_revision = request.document_revision
     response.measurement_environment_id = measurementEnvironmentID
@@ -564,6 +563,7 @@ public final class CoreTextMeasurementProvider: @unchecked Sendable {
     response.visual_order = arena.storeVisualOrder(order.map(UInt64.init))
     response.visual_order_count = UInt64(order.count)
     response.default_metrics = fontMetrics(defaultStyle.font).ffi
+    response.default_font_is_monospaced = CTFontGetSymbolicTraits(defaultStyle.font).contains(.traitMonoSpace) ? 1 : 0
     response.diagnostics = arena.storeDiagnostics(ffiDiagnostics)
     response.diagnostic_count = UInt64(ffiDiagnostics.count)
     return response

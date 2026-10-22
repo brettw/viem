@@ -20,6 +20,7 @@ struct EVWhitespaceMarkerExport: Codable, Equatable {
     var markers: [EVWhitespaceMarker] = []
     var enabled = true
     var applicable = true
+    var alignIndentsToPreviousLine = false
 }
 
 struct EVWhitespaceExportCache {
@@ -45,6 +46,9 @@ extension EVCoreDocumentBackend {
 extension EVCoreViewSession {
     func setVisibleWhitespace(_ enabled: Bool) throws {
         try checked(viem_core_view_set_visible_whitespace(document.core, viewID, enabled ? 1 : 0), operation: "Show visible whitespace")
+    }
+    func setAlignIndentsToPreviousLine(_ enabled: Bool) throws {
+        try checked(viem_core_view_set_align_indents_to_previous_line(document.core, viewID, enabled ? 1 : 0), operation: "Align indents to previous line")
     }
     func setWhitespaceDefaults(indentation: EVIndentationOptions, presentation: EVWhitespacePresentationOptions) throws {
         try document.configureWhitespace(indentation: indentation, presentation: presentation)

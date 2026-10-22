@@ -956,6 +956,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .showInvisibleCharacters:
             guard layoutSnapshot?.whitespace.applicable == true else { return }
             performInput { try session.setVisibleWhitespace(!(self.layoutSnapshot?.whitespace.enabled ?? true)) }
+        case .alignIndentsToPreviousLine:
+            guard backend.sourceFormat == .code else { return }
+            performInput { try session.setAlignIndentsToPreviousLine(!(self.layoutSnapshot?.whitespace.alignIndentsToPreviousLine ?? false)) }
         case .zoomIn:
             setZoom(adjacentTo: zoomScale, increasing: true, session: session)
         case .zoomOut:
@@ -1097,6 +1100,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .showInvisibleCharacters:
             EVMenuItemPresentation(isEnabled: layoutSnapshot?.whitespace.applicable == true,
                                   state: layoutSnapshot?.whitespace.enabled == true ? .on : .off)
+        case .alignIndentsToPreviousLine:
+            EVMenuItemPresentation(isEnabled: backend.sourceFormat == .code,
+                                  state: layoutSnapshot?.whitespace.alignIndentsToPreviousLine == true ? .on : .off)
         case .useSelectionForFind:
             EVMenuItemPresentation(
                 isEnabled: selectedUTF8Ranges().contains(where: { !$0.isEmpty })

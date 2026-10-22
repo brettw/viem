@@ -14,6 +14,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.materialize_immediate_viewport(id, ImmediateLayoutIntent::PreserveViewport)?;
         self.rematerialize_active_composition(id, false)
     }
+    /// A view option, independent of document history and other splits.
+    pub fn set_align_indents_to_previous_line(&mut self, id: ViewId, enabled: bool) -> Result<(), CoreError> {
+        self.views.get_mut(&id).ok_or(CoreError::UnknownView(id))?.align_indents_override = Some(enabled);
+        self.materialize_immediate_viewport(id, ImmediateLayoutIntent::PreserveViewport)?;
+        self.rematerialize_active_composition(id, false)
+    }
+
     pub fn set_indentation_defaults(
         &mut self,
         options: IndentationOptions,
@@ -65,6 +72,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             &self.whitespace_defaults.visible_whitespace.listchars,
         );
         let mut options = self.whitespace_defaults.clone();
+        options.align_indents_to_previous_line = view.align_indents_override.unwrap_or(options.align_indents_to_previous_line);
         options.visible_whitespace.enabled = view.commands.visible_whitespace().enabled();
         options.visible_whitespace.listchars =
             view.commands.visible_whitespace().listchars().into();

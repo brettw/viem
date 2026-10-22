@@ -845,7 +845,9 @@ typedef struct ViemShapeRequestV1 {
 
 typedef struct ViemShapeResponseV1 {
   uint32_t struct_size;
-  uint32_t reserved;
+  /* 0/1 native fixed-pitch trait of the resolved default-style font, independent
+   * of fallback glyphs/style runs. Query native traits, never font names. */
+  uint32_t default_font_is_monospaced;
   uint64_t document_id;
   uint64_t document_revision;
   uint64_t measurement_environment_id;
@@ -3107,6 +3109,9 @@ ViemStatus viem_validate_whitespace_presentation(const uint8_t *json, uint64_t l
 ViemStatus viem_core_set_indentation_defaults(ViemCoreHandle core, const uint8_t *json, uint64_t length);
 ViemStatus viem_core_set_whitespace_presentation_defaults(ViemCoreHandle core, const uint8_t *json, uint64_t length);
 ViemStatus viem_core_view_set_visible_whitespace(ViemCoreHandle core, ViemViewId view, uint8_t enabled);
+/* View-local presentation only. Off by default; applies in Code with a
+ * proportionally spaced resolved font. Source and undo are unchanged. */
+ViemStatus viem_core_view_set_align_indents_to_previous_line(ViemCoreHandle core, ViemViewId view, uint8_t enabled);
 /* Exact presentation-snapshot and viewport UTF-8 JSON batch:
    {style, markers:[{text,rowIndex,x,y,width,height}], enabled, applicable}.
    All input/output regions must be disjoint. Count and copy pass the same

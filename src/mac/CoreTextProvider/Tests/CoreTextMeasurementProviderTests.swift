@@ -246,6 +246,21 @@ struct CoreTextMeasurementProviderTests {
     #expect(CoreTextMeasurementProvider.defaultFontSize == 14)
   }
 
+  @Test("Resolved default-font traits distinguish native proportional and monospaced faces")
+  func resolvedDefaultFontTraits() throws {
+    let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 42)
+    for (family, expected) in [("SF Pro", UInt32(0)), ("ui-monospace", UInt32(1)),
+                               ("Menlo", UInt32(1)), ("Missing Viem monospace font", UInt32(0))] {
+      // Empty fragments and fallback-only emoji still describe the resolved
+      // default font, rather than the font of the first rendered glyph.
+      for text in ["", " ", "im", "👩🏽‍💻"] {
+        let result = try shape(provider: provider, text: text, globalStart: 0, fontFamily: family)
+        #expect(result.response.default_font_is_monospaced == expected,
+                "The native trait of \(family) must be independent of fragment text.")
+      }
+    }
+  }
+
   @Test("ASCII shaping is proportional and owns global UTF-8 ranges")
   func proportionalASCII() throws {
     let provider = CoreTextMeasurementProvider(measurementEnvironmentID: 41)

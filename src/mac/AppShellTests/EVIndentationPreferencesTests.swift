@@ -21,6 +21,7 @@ final class EVIndentationPreferencesTests: XCTestCase {
     XCTAssertEqual(store.whitespacePresentation.codeWhitespace, .paragraphEn)
     XCTAssertEqual(store.whitespacePresentation.otherWhitespace, .spaces)
     XCTAssertEqual(store.whitespacePresentation.codeWrappedLineIndent, 4)
+    XCTAssertFalse(store.whitespacePresentation.alignIndentsToPreviousLine)
     XCTAssertTrue(store.whitespacePresentation.visibleWhitespace.enabled)
     XCTAssertEqual(store.whitespacePresentation.visibleWhitespace.listchars, "tab:>-,trail:*,extends:>,precedes:<")
     XCTAssertEqual(store.whitespacePresentation.visibleWhitespace.style.foreground?.blue ?? 0, 139 / 255, accuracy: 0.000001)
@@ -34,6 +35,7 @@ final class EVIndentationPreferencesTests: XCTestCase {
     var whitespace = store.whitespacePresentation
     whitespace.otherWhitespace = .paragraphEn
     whitespace.codeWrappedLineIndent = 6
+    whitespace.alignIndentsToPreviousLine = true
     whitespace.visibleWhitespace.listchars = "tab:>-,leadtab:>.,space:·,eol:$"
     try store.setWhitespacePresentation(whitespace)
     let reopened = EVConfigurationStore(directory: directory)
@@ -43,6 +45,7 @@ final class EVIndentationPreferencesTests: XCTestCase {
     let editing = try XCTUnwrap(json["editing"] as? [String: Any])
     XCTAssertNotNil((editing["indentation"] as? [String: Any])?["continueCommentsOnOpenLine"])
     XCTAssertEqual((editing["whitespacePresentation"] as? [String: Any])?["codeWrappedLineIndent"] as? Int, 6)
+    XCTAssertEqual((editing["whitespacePresentation"] as? [String: Any])?["alignIndentsToPreviousLine"] as? Bool, true)
   }
 
   func testPartialDefaultsRejectNullAndInvalidConfigurationWithoutOverwriting() throws {
@@ -51,6 +54,8 @@ final class EVIndentationPreferencesTests: XCTestCase {
       #""indentation":{"shiftwidth":-1}"#, #""indentation":{"softtabstop":-2}"#,
       #""indentation":{"autoindent":null}"#, #""indentation":{"expandtab":1}"#,
       #""whitespacePresentation":{"codeWhitespace":"pixels"}"#,
+      #""whitespacePresentation":{"alignIndentsToPreviousLine":null}"#,
+      #""whitespacePresentation":{"alignIndentsToPreviousLine":1}"#,
       #""whitespacePresentation":{"codeWrappedLineIndent":-1}"#,
       #""whitespacePresentation":{"codeWrappedLineIndent":1025}"#,
       #""whitespacePresentation":{"codeWrappedLineIndent":1.5}"#,
@@ -227,6 +232,11 @@ final class EVIndentationPreferencesTests: XCTestCase {
     popup.sendAction(popup.action, to: popup.target)
     XCTAssertEqual(preferences.whitespacePresentation.otherWhitespace, .paragraphEn)
     XCTAssertEqual(preferences.whitespacePresentation.codeWhitespace, .paragraphEn)
+    let alignIndents = try XCTUnwrap(descendants(window.contentView).first { $0.accessibilityLabel() == "Align indents to previous line" } as? NSButton)
+    XCTAssertEqual(alignIndents.state, .off)
+    alignIndents.performClick(nil)
+    XCTAssertTrue(preferences.whitespacePresentation.alignIndentsToPreviousLine)
+    XCTAssertTrue(store.whitespacePresentation.alignIndentsToPreviousLine)
     var edited: EVConfigurationStore?
     let oldAction = EVEditingPreferences.editVisibleWhitespaceStyle
     EVEditingPreferences.editVisibleWhitespaceStyle = { edited = $0 }

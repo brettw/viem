@@ -868,6 +868,7 @@ fn document_layout_change(
 }
 
 struct View<P: TextMeasurementProvider> {
+    align_indents_override: Option<bool>,
     commands: CommandInterpreter,
     search: search::SearchViewState,
     syntax_wait: crate::document::syntax::service::SyntaxWaitState,
@@ -1974,6 +1975,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.views.insert(
             id,
             View {
+                align_indents_override: None,
                 commands,
                 layout,
                 engine,
@@ -3574,7 +3576,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                     map,
                     local_change.as_ref(),
                 );
+                let indent_dirty = view.layout.synchronize_indent_projection(std::sync::Arc::new(self.document.projection().clone()));
                 view.layout.rebase_document_change(&change);
+                if !indent_dirty.is_empty() && view.layout.whitespace_presentation().align_indents_to_previous_line {
+                    view.layout.invalidate_geometry_lines(indent_dirty);
+                    view.long_line_checkpoints = LongLineCheckpointCache::default();
+                }
                 view.engine.rebase_document_change(&change);
             }
             view.long_line_checkpoints.rebase(&self.document, map);
@@ -3782,6 +3789,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .unwrap_or(base_text_end);
         let styles = DocumentLayoutStyles::resolve_region_for_presentation(self.document.projection(), base_text_start..style_end, self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()), self.document.format())
         .map_err(LayoutError::from)?;
+        let indent_marked_style = resolved_composition_shaping_style(&styles, overlay.replacement_range().start, overlay.base_utf8_len(), affinity);
         let styles = composition_layout_styles(styles, &overlay, affinity)?;
         composed_layout
             .synchronize_document_hard_line_count(overlay_line_count, true)
@@ -3798,6 +3806,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             .views
             .get_mut(&view_id)
             .expect("composition view remains attached during synchronous layout");
+        if self.document.format().is_code() && composed_layout.whitespace_presentation().align_indents_to_previous_line {
+            view.engine.prepare_indent_composition(std::sync::Arc::new(self.document.projection().clone()),
+                overlay.layout_text_tree().map_err(DocumentError::FormattedTextStorage)?, overlay.replacement_range(), overlay.marked_text(), indent_marked_style.clone(),
+                composed_layout.indent_index.clone(), composed_layout.whitespace_tabstop())?;
+        }
         let region = view.engine.layout_hard_line_region_cancellable(
             self.document.id(),
             self.document.revision(),
@@ -3952,7 +3965,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .unwrap_or_else(|| to_base(style_capture.end, true));
             let styles = DocumentLayoutStyles::resolve_region_for_presentation(self.document.projection(), to_base(capture.start, false)..style_end, self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()), self.document.format())
             .map_err(LayoutError::from)?;
-            let styles = composition_layout_styles(styles, &overlay, affinity)?;
+            let indent_marked_style = resolved_composition_shaping_style(&styles, overlay.replacement_range().start, overlay.base_utf8_len(), affinity);
+        let styles = composition_layout_styles(styles, &overlay, affinity)?;
             let mut captured_view = composed_layout.capture_for_regional_layout_job(style_capture);
             if stream_overflow {
                 captured_view.set_horizontal_focus(focus);
@@ -3967,6 +3981,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .views
                 .get_mut(&view_id)
                 .ok_or(CoreError::UnknownView(view_id))?;
+            if self.document.format().is_code() && composed_layout.whitespace_presentation().align_indents_to_previous_line {
+                view.engine.prepare_indent_composition(std::sync::Arc::new(self.document.projection().clone()),
+                overlay.layout_text_tree().map_err(DocumentError::FormattedTextStorage)?, overlay.replacement_range(), overlay.marked_text(), indent_marked_style.clone(),
+                    composed_layout.indent_index.clone(), composed_layout.whitespace_tabstop())?;
+            }
             let slice = crate::layout::HardLineLayoutSlice {
                 indentation_tree,
                 full_range: full_range.clone(),

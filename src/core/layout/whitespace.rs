@@ -43,6 +43,8 @@ pub struct WhitespacePresentationOptions {
     pub other_whitespace: WhitespaceBasis,
     /// Extra leading-width units reserved as a margin on wrapped Code rows.
     pub code_wrapped_line_indent: u32,
+    /// Align Code indentation with logical columns on preceding anchor lines.
+    pub align_indents_to_previous_line: bool,
     pub visible_whitespace: VisibleWhitespaceOptions,
 }
 impl Default for WhitespacePresentationOptions {
@@ -51,6 +53,7 @@ impl Default for WhitespacePresentationOptions {
             code_whitespace: WhitespaceBasis::ParagraphEn,
             other_whitespace: WhitespaceBasis::Spaces,
             code_wrapped_line_indent: 4,
+            align_indents_to_previous_line: false,
             visible_whitespace: Default::default(),
         }
     }

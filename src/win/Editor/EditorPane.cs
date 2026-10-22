@@ -52,6 +52,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private CompletionState? completion;
     private WhitespaceExport? whitespace;
     internal bool WhitespaceEnabled => whitespace?.Enabled ?? true;
+    internal bool AlignIndentsToPreviousLine => whitespace?.AlignIndentsToPreviousLine ?? false;
     private (string Text, string Fragment)? clipboardOverride;
     private readonly DispatcherTimer blink = new();
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };

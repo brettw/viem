@@ -19,6 +19,23 @@ pub extern "C" fn viem_core_view_set_visible_whitespace(
     })
 }
 
+#[no_mangle]
+pub extern "C" fn viem_core_view_set_align_indents_to_previous_line(
+    handle: ViemCoreHandle,
+    view: ViemViewId,
+    enabled: u8,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        if enabled > 1 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        with_core_mut(handle, |core| {
+            core.set_align_indents_to_previous_line(ViewId(view), enabled != 0)
+                .map_err(core_status)
+        })
+    })
+}
+
 unsafe fn decode_options<T: serde::de::DeserializeOwned>(
     bytes: *const u8,
     length: u64,
@@ -146,7 +163,8 @@ pub unsafe extern "C" fn viem_core_view_copy_whitespace_markers(
                     .whitespace_presentation()
                     .visible_whitespace
                     .enabled;
-            serde_json::to_vec(&serde_json::json!({"style": style, "markers": values, "enabled": enabled, "applicable": applicable}))
+            let align_indents = layout.whitespace_presentation().align_indents_to_previous_line;
+            serde_json::to_vec(&serde_json::json!({"alignIndentsToPreviousLine": align_indents, "style": style, "markers": values, "enabled": enabled, "applicable": applicable}))
                 .map_err(|_| ViemStatus::InvalidArgument)
         })?;
         unsafe { out_length.write(checked_export_count(bytes.len())?) };

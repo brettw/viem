@@ -367,6 +367,11 @@ pub struct ShapedFragment {
     pub visual_order: Vec<usize>,
     /// Supplies line geometry even when `text_range` is empty.
     pub default_metrics: TextMetrics,
+    /// Native fixed-pitch trait of the font resolved for `default_style`.
+    /// Independent of fallback glyphs and style runs in this fragment. Providers
+    /// must query the resolved font; names and sample advance guesses are not
+    /// authoritative. Valid only for this fragment's metrics generation.
+    pub default_font_is_monospaced: bool,
     pub diagnostics: Vec<ShapingDiagnostic>,
 }
 

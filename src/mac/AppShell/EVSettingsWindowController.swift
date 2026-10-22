@@ -37,6 +37,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private var whitespacePopups: [String: NSPopUpButton] = [:]
   private var listcharsFields: [String: NSTextField] = [:]
   private weak var visibleWhitespaceCheckbox: NSButton?
+  private weak var alignIndentsCheckbox: NSButton?
   private var wells: [Int: NSColorWell] = [:]
   private var fields: [Int: NSTextField] = [:]
   private let preview = EVThemePreview()
@@ -392,7 +393,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     let explanation = NSTextField(wrappingLabelWithString: "Defaults apply to new and inheriting documents. Changing these settings leaves existing text unchanged. Paragraph en uses half the paragraph font size for whitespace width. Wrapped line indent uses the Code whitespace width.")
     explanation.textColor = .secondaryLabelColor
     explanation.font = .systemFont(ofSize: 12)
-    let indentation = section("Indentation and tabs", views: [numbers] + switches + [widths, explanation])
+    let alignIndents = NSButton(checkboxWithTitle: "Align indents to previous line", target: self, action: #selector(changeAlignIndents(_:)))
+    alignIndents.setAccessibilityLabel("Align indents to previous line")
+    alignIndentsCheckbox = alignIndents
+    let indentation = section("Indentation and tabs", views: [numbers] + switches + [widths, alignIndents, explanation])
     stack.addArrangedSubview(indentation)
     indentation.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
 
@@ -463,6 +467,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     whitespacePopups["codeWhitespace"]?.selectItem(at: presentation.codeWhitespace == .spaces ? 0 : 1)
     whitespacePopups["otherWhitespace"]?.selectItem(at: presentation.otherWhitespace == .spaces ? 0 : 1)
     visibleWhitespaceCheckbox?.state = presentation.visibleWhitespace.enabled ? .on : .off
+    alignIndentsCheckbox?.state = presentation.alignIndentsToPreviousLine ? .on : .off
     let entries = EVListcharsSettings.displayEntries(presentation.visibleWhitespace.listchars)
     for (key, field) in listcharsFields { field.stringValue = entries[key] ?? "" }
     if selectedCategory == 2 {
@@ -528,6 +533,13 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   @objc private func changeVisibleWhitespace(_ sender: NSButton) {
     var options = editingPreferences.whitespacePresentation
     options.visibleWhitespace.enabled = sender.state == .on
+    editingPreferences.setWhitespacePresentation(options)
+    refreshEditingPreferences()
+  }
+
+  @objc private func changeAlignIndents(_ sender: NSButton) {
+    var options = editingPreferences.whitespacePresentation
+    options.alignIndentsToPreviousLine = sender.state == .on
     editingPreferences.setWhitespacePresentation(options)
     refreshEditingPreferences()
   }

@@ -9,7 +9,7 @@ namespace Viem.Windows.Core;
 internal sealed record PromptState(ViemCommandLineInfoV1 Info, string Text, ulong Anchor, ulong Active);
 internal sealed record CompletionState(ViemCompletionInfoV1 Info, string[] Items);
 internal sealed record WhitespaceMarker(string Text, ulong Row, float X, float Y, float Width, float Height);
-internal sealed record WhitespaceExport(JsonElement Style, WhitespaceMarker[] Markers, bool Enabled);
+internal sealed record WhitespaceExport(JsonElement Style, WhitespaceMarker[] Markers, bool Enabled, bool AlignIndentsToPreviousLine);
 
 internal sealed unsafe partial class CoreView
 {
@@ -54,7 +54,7 @@ internal sealed unsafe partial class CoreView
         var bounds = new ViemLayoutRectV1 { x = viewport.left, y = viewport.top, width = layout.viewport_width, height = layout.viewport_height };
         byte[] bytes = Copy((p, n, r) => { var expected = layout.identity; var rect = bounds; return viem_core_view_copy_whitespace_markers(Document.Handle, Id, &expected, &rect, p, n, r); });
         using var json = JsonDocument.Parse(bytes);
-        return new(json.RootElement.GetProperty("style").Clone(), json.RootElement.GetProperty("markers").EnumerateArray().Select(m => new WhitespaceMarker(m.GetProperty("text").GetString()!, m.GetProperty("rowIndex").GetUInt64(), m.GetProperty("x").GetSingle(), m.GetProperty("y").GetSingle(), m.GetProperty("width").GetSingle(), m.GetProperty("height").GetSingle())).ToArray(), json.RootElement.GetProperty("enabled").GetBoolean());
+        return new(json.RootElement.GetProperty("style").Clone(), json.RootElement.GetProperty("markers").EnumerateArray().Select(m => new WhitespaceMarker(m.GetProperty("text").GetString()!, m.GetProperty("rowIndex").GetUInt64(), m.GetProperty("x").GetSingle(), m.GetProperty("y").GetSingle(), m.GetProperty("width").GetSingle(), m.GetProperty("height").GetSingle())).ToArray(), json.RootElement.GetProperty("enabled").GetBoolean(), json.RootElement.GetProperty("alignIndentsToPreviousLine").GetBoolean());
     }
     public byte[] ClipboardJson(ulong start, ulong end)
     {

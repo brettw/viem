@@ -11,6 +11,7 @@ pub struct MockTextMeasurementProvider {
     batch_calls: usize,
     request_calls: usize,
     ligatures: bool,
+    default_font_is_monospaced: bool,
     response_generation_override: Option<MetricsGeneration>,
     failure: Option<(usize, String)>,
 }
@@ -24,6 +25,7 @@ impl Default for MockTextMeasurementProvider {
             batch_calls: 0,
             request_calls: 0,
             ligatures: true,
+            default_font_is_monospaced: false,
             response_generation_override: None,
             failure: None,
         }
@@ -46,6 +48,12 @@ impl MockTextMeasurementProvider {
         measurement_environment_id: MeasurementEnvironmentId,
     ) {
         self.measurement_environment_id = measurement_environment_id;
+    }
+
+    /// Controls the provider's declared native font trait independently of
+    /// family names, which are opaque to the portable layout implementation.
+    pub fn set_default_font_is_monospaced(&mut self, monospaced: bool) {
+        self.default_font_is_monospaced = monospaced;
     }
 
     pub fn set_ligatures(&mut self, enabled: bool) {
@@ -480,6 +488,7 @@ impl MockTextMeasurementProvider {
             clusters,
             visual_order,
             default_metrics,
+            default_font_is_monospaced: self.default_font_is_monospaced,
             diagnostics: Vec::new(),
         }
     }

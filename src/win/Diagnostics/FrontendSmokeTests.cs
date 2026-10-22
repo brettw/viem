@@ -132,6 +132,7 @@ internal static class FrontendSmokeTests
         Scenario("# Heading\n\nHello **office** and مرحبا 👩‍💻.\n", 2, (doc, view) => BatchedGlyphBrushes(doc, view, device));
         Scenario(string.Concat(Enumerable.Range(0, 2_000).Select(i => $"Paragraph {i}: **office** and *words* in a long paragraph that wraps across several visual rows.\n\n")), 2, RegionalMarkdownPaging);
         Scenario("\talpha  \n", 1, (doc, view) => VisibleWhitespacePaint(doc, view, device));
+        Scenario("  if (a == b ||\n      c == d) {", VIEM_FORMAT_CODE, (doc, view) => IndentAlignment(doc, view, device, dispatcher));
         Scenario(string.Concat(Enumerable.Repeat("A long line with office ligatures and AV kerning.\n", 25_000)), 1, LargeDocumentLayout);
         ConfigurationDefaults();
         NativeKeyPolicy();
@@ -415,6 +416,64 @@ internal static class FrontendSmokeTests
         Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(before), "whitespace drawing leaves source unchanged");
     }
 
+    private static void IndentAlignment(CoreDocument doc, CoreView view, CanvasDevice device, DispatcherQueue dispatcher)
+    {
+        byte[] styles = view.ExportStyleDefaults();
+        byte[] source = doc.Source(doc.State.document_revision);
+        using var other = new CoreView(doc, device, dispatcher, 700, 400);
+        try
+        {
+            foreach (string family in new[] { "Segoe UI", "Consolas" })
+            {
+                var sheet = System.Text.Json.Nodes.JsonNode.Parse(styles)!;
+                var blocks = sheet["block_styles"]!.AsArray();
+                var paragraph = blocks.SingleOrDefault(s => s!["id"]!.GetValue<string>() == "Paragraph");
+                if (paragraph == null) {
+                    paragraph = new System.Text.Json.Nodes.JsonObject {
+                        ["id"] = "Paragraph", ["name"] = "Base Paragraph", ["role"] = "Paragraph",
+                        ["based_on"] = null, ["next_paragraph_style"] = null,
+                        ["block"] = new System.Text.Json.Nodes.JsonObject(),
+                    };
+                    blocks.Add(paragraph);
+                }
+                paragraph["character"] = new System.Text.Json.Nodes.JsonObject {
+                    ["font_families"] = new System.Text.Json.Nodes.JsonArray(family),
+                    ["font_face"] = "", ["font_axes"] = new System.Text.Json.Nodes.JsonObject(), ["size"] = 16, ["weight"] = 400,
+                };
+                CoreThemes.ReplaceCodeStyles(Encoding.UTF8.GetBytes(sheet.ToJsonString()));
+                view.AlignIndentsToPreviousLine(false);
+                var baseline = view.Layout();
+                var state = doc.State;
+                float X(LayoutSnapshot snapshot, ulong offset) => snapshot.Clusters.First(c => c.text_start == offset).x;
+                view.AlignIndentsToPreviousLine(true);
+                var aligned = view.Layout();
+                other.Refresh();
+                Check(view.Whitespace(aligned.Info).AlignIndentsToPreviousLine
+                    && !other.Whitespace(other.Layout().Info).AlignIndentsToPreviousLine,
+                    "indent alignment is local to the selected view");
+                if (family == "Segoe UI") {
+                    Check(Math.Abs(X(baseline, 6) - X(baseline, 22)) > 1,
+                        "proportional native fixture has unequal independent indentation widths");
+                    Check(Math.Abs(X(aligned, 6) - X(aligned, 22)) < .01,
+                        "DirectWrite aligns continuation c with anchor a in a proportional font");
+                    view.Command("gg02lrW");
+                    var edited = view.Layout();
+                    Check(Math.Abs(X(edited, 6) - X(edited, 22)) < .01 && X(edited, 22) > X(aligned, 22),
+                        "editing the anchor prefix updates dependent DirectWrite geometry");
+                    view.Undo();
+                } else {
+                    Check(baseline.Clusters.Select(c => (c.x, c.advance)).SequenceEqual(aligned.Clusters.Select(c => (c.x, c.advance))),
+                        "indent alignment leaves monospaced DirectWrite geometry unchanged");
+                    Check(doc.State.document_revision == state.document_revision,
+                        "indent alignment does not create an edit");
+                }
+                Check(doc.Source(doc.State.document_revision).AsSpan().SequenceEqual(source),
+                    "indent alignment and undo retain the exact source bytes");
+            }
+        }
+        finally { CoreThemes.ReplaceCodeStyles(styles); }
+    }
+
     private static void LargeDocumentLayout(CoreDocument doc, CoreView view)
     {
         long initial = view.Provider.ShapedCharacters;
@@ -448,6 +507,8 @@ internal static class FrontendSmokeTests
     {
         var config = Viem.Windows.Shell.Preferences.Normalize(new System.Text.Json.Nodes.JsonObject { ["version"] = 1 });
         Check(config["editing"]?["textWidth"]?.GetValue<int>() == 80, "configuration defaults come from core");
+        Check(config["editing"]?["whitespacePresentation"]?["alignIndentsToPreviousLine"]?.GetValue<bool>() == false,
+            "indent alignment defaults off in the portable settings schema");
         var integralConfig = Viem.Windows.Shell.Preferences.Normalize(System.Text.Json.Nodes.JsonNode.Parse("{\"version\":1,\"editing\":{\"textWidth\":72.0}}")!.AsObject());
         Check(integralConfig["editing"]?["textWidth"]?.GetValue<uint>() == 72, "integral JSON values normalize for native integer readers");
         var invalidRecent = new System.Text.Json.Nodes.JsonObject { ["version"] = 1,

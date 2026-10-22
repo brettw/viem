@@ -45,6 +45,9 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private NativeArena arena = new();
     private readonly Dictionary<GlyphInkKey, global::Windows.Foundation.Rect> inkBounds = new();
     private readonly Dictionary<nint, GlyphFontMetadata> fontMetadata = new();
+    // Font classification follows the same resolved default style as shaping,
+    // independent of syntax runs or fallback faces in the requested text.
+    private readonly Dictionary<MarkerFont, bool> defaultFontTraits = new();
     private ulong inkGeneration;
     internal int CachedGlyphBounds => inkBounds.Count;
     public ulong Generation => frozenGeneration ?? (ulong)Volatile.Read(ref shared.Generation);
@@ -394,6 +397,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             struct_size = (uint)sizeof(ViemShapeResponseV1), document_id = request.document_id, document_revision = request.document_revision,
             measurement_environment_id = request.measurement_environment_id, metrics_generation = request.metrics_generation,
             text_start = request.text_start, text_end = request.text_end, default_metrics = metrics,
+            default_font_is_monospaced = whole.default_font_is_monospaced,
             clusters = nativeClusters, cluster_count = (ulong)clusters.Count,
             visual_order = arena.Copy<ulong>(order), visual_order_count = (ulong)order.Length
         };
@@ -401,7 +405,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
 
     private ViemShapeResponseV1 ShapeText(ViemShapeRequestV1 request)
     {
-        if (inkGeneration != Generation) { inkBounds.Clear(); fontMetadata.Clear(); inkGeneration = Generation; }
+        if (inkGeneration != Generation) { inkBounds.Clear(); fontMetadata.Clear(); defaultFontTraits.Clear(); inkGeneration = Generation; }
         string before = Text(request.context_before), interior = Text(request.text), after = Text(request.context_after);
         string text = before + interior + after;
         var map = new Utf8IndexMap(text);
@@ -457,6 +461,9 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         using var clusterTiming = Diagnostics.StartupPerformance.Measure("shape.clusters");
         using var clusterCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.clusters");
         var line = layout.LineMetrics[0];
+        var defaultMarkerFont = MarkerFont.From(request.default_style, request.scale);
+        bool defaultMonospaced = DefaultFontIsMonospaced(request.default_style, request.scale,
+            defaultMarkerFont, format, request.style_run_count == 0 && (text.Length == 0 || text.All(c => c == ' ')) ? capture : null);
         var defaultMetrics = new ViemTextMetricsV1 {
             ascent = Math.Max(0, line.Baseline), descent = Math.Max(0, line.Height - line.Baseline), leading = 0
         };
@@ -471,7 +478,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         // arguments across fragments, bounded to 1,024 entries per shaper and
         // scoped to its device/metrics generation. Workers own separate caches.
         var fontNames = new Dictionary<string, ViemUtf8Slice>(StringComparer.Ordinal);
-        var markerFonts = new Dictionary<int, MarkerFont>();
+        var markerFonts = new Dictionary<int, MarkerFont> { [-1] = defaultMarkerFont };
         int start = 0;
         var boundaries = new HashSet<int>(StringInfo.ParseCombiningCharacters(text)) { text.Length };
         var nativeClusters = layout.ClusterMetrics;
@@ -588,9 +595,35 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             struct_size = (uint)sizeof(ViemShapeResponseV1), document_id = request.document_id, document_revision = request.document_revision,
             measurement_environment_id = request.measurement_environment_id, metrics_generation = request.metrics_generation,
             text_start = request.text_start, text_end = request.text_end, default_metrics = defaultMetrics,
+            default_font_is_monospaced = defaultMonospaced ? 1u : 0u,
             clusters = nativeGeometry, cluster_count = (ulong)clusters.Count,
             visual_order = arena.Copy<ulong>(order), visual_order_count = (ulong)order.Length
         };
+    }
+
+    private bool DefaultFontIsMonospaced(ViemResolvedTextStyleV1 style, float scale,
+        MarkerFont key, CanvasTextFormat format, GlyphCapture? whitespaceCapture)
+    {
+        if (defaultFontTraits.TryGetValue(key, out bool known)) return known;
+        bool monospaced;
+        if (whitespaceCapture?.FirstFont is { } existing) monospaced = existing.IsMonospaced;
+        else
+        {
+            // A space probe resolves the actual default-style face even if the
+            // requested text consists entirely of fallback emoji or styled runs.
+            // Each provider owns at most 32 cached traits, reset with its fonts.
+            using var probe = new CanvasTextLayout(device, " ", format, 1, 16_777_216);
+            using var native = new NativeReference(FontVariations.NativeLayout(probe));
+            if (native.Pointer == 0) throw new InvalidOperationException("The DirectWrite font probe is unavailable.");
+            bool variable = ApplyStyle(probe, native.Pointer, 0, 1, style, scale);
+            var capture = new GlyphCapture(GetFontMetadata);
+            if (variable) DirectWriteGlyphCapture.Draw(probe, capture);
+            else probe.DrawToTextRenderer(capture, Vector2.Zero);
+            monospaced = capture.FirstFont?.IsMonospaced
+                ?? throw new InvalidOperationException("DirectWrite returned no default font for a space.");
+        }
+        if (defaultFontTraits.Count < 32) defaultFontTraits[key] = monospaced;
+        return monospaced;
     }
 
     internal static ulong[] VisualOrder(IReadOnlyList<uint> levels)
@@ -726,6 +759,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         responseResources.Clear();
         inkBounds.Clear();
         fontMetadata.Clear();
+        defaultFontTraits.Clear();
         measurement.Dispose();
         GC.KeepAlive(generationCallback); GC.KeepAlive(shapeCallback); GC.KeepAlive(retainCallback);
     }
@@ -807,6 +841,7 @@ internal sealed unsafe class GlyphFontMetadata
     public CanvasFontFace Font { get; }
     public string? Family { get; }
     public bool ColorGlyph { get; }
+    public bool IsMonospaced { get; }
     public float Ascent { get; }
     public float Descent { get; }
     public float LineGap { get; }
@@ -817,6 +852,7 @@ internal sealed unsafe class GlyphFontMetadata
         Family = names.FirstOrDefault();
         ColorGlyph = names.Any(n => n.Contains("Emoji", StringComparison.OrdinalIgnoreCase));
         Ascent = font.Ascent; Descent = font.Descent; LineGap = font.LineGap;
+        IsMonospaced = font.IsMonospaced;
     }
 }
 internal readonly record struct GlyphPart(GlyphFontMetadata Metadata, float Size, CanvasGlyph[] Glyphs, uint BidiLevel, Vector2 Offset)
@@ -831,6 +867,7 @@ internal sealed partial class GlyphCapture(Func<CanvasFontFace, GlyphFontMetadat
     private sealed record Run(Vector2 Point, GlyphFontMetadata? Font, float Size, CanvasGlyph[] Glyphs, uint Bidi, int[] Map, int Start, Dictionary<int, int> Ends, float[] Advances);
     private readonly List<Run> runs = [];
     public int RunCount => runs.Count;
+    public GlyphFontMetadata? FirstFont => runs.FirstOrDefault(run => run.Font != null)?.Font;
     public bool PixelSnappingDisabled => true;
     public Matrix3x2 Transform => Matrix3x2.Identity;
     public float Dpi => 96;

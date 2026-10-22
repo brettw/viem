@@ -5,10 +5,16 @@ pub(crate) const CARET_REVEAL_WIDTH: f32 = 2.0;
 
 pub mod panes;
 mod composition;
+mod indent_projection;
 mod block_box;
 mod direction;
 mod engine;
 mod height_index;
+mod indent_anchor_index;
+pub use indent_anchor_index::{
+    IndentAnchorIndex, IndentAnchorIndexError, IndentAnchorStatistics, IndentAnchorWork,
+    IndentDependents, LineIndentation,
+};
 mod persistent_map;
 mod jobs;
 mod long_line_cache;

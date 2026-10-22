@@ -591,7 +591,12 @@ internal static class ChromeStyleTests
         var invisibleItem = viewMenu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Show Invisible Characters");
         Check(viewMenu.Items.IndexOf(numberItem) + 1 == viewMenu.Items.IndexOf(invisibleItem),
             "Show line numbers appears immediately before Show Invisible Characters in the View menu");
+        var alignIndentsItem = viewMenu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Align indents to previous line");
+        Check(viewMenu.Items.IndexOf(invisibleItem) + 1 == viewMenu.Items.IndexOf(alignIndentsItem),
+            "Align indents to previous line appears immediately after Show Invisible Characters in the View menu");
         await SetViewMenuOpen(true);
+        Check(!alignIndentsItem.IsChecked && alignIndentsItem.IsEnabled == (document.State.format == VIEM_FORMAT_CODE),
+            "indent alignment defaults off and is available only in Code");
         Check(!numberItem.IsChecked && numberItem.IsEnabled && numberItem.Focus(FocusState.Programmatic),
             "the line-number menu check reflects the active view's initially disabled number option");
         var beforeMenu = document.State;

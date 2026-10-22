@@ -386,7 +386,7 @@ unsafe extern "C" fn fake_shape_batch(
     {
         *output = ViemShapeResponseV1 {
             struct_size: VIEM_SHAPE_RESPONSE_V1_SIZE,
-            reserved: 0,
+            default_font_is_monospaced: 0,
             document_id: request.document_id,
             document_revision: request.document_revision,
             measurement_environment_id: request.measurement_environment_id,

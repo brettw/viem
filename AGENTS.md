@@ -439,6 +439,12 @@ Deliberate presentation differences from GitHub:
   frontends never infer it from offset and affinity.
 - Visible whitespace markers (`list`/`listchars`) appear only in Text and Code
   and change no text, geometry, search, clipboard or serialization.
+- **Align indents to previous line** is a view-local option, off by default,
+  for Code in proportionally spaced fonts. Align a leading whitespace prefix
+  to the corresponding logical column on the nearest preceding line with no
+  greater indentation. Keep anchor queries and edits bounded, and obtain exact
+  offscreen anchor prefixes through cancellable native shaping; see
+  [indent alignment](docs/indent-alignment.md).
 - New layout work needs cache-invalidation and large-document tests: a million
   short lines, 100 MiB of mixed-encoding text, multi-megabyte single lines
   wrapped and unwrapped, mixed fonts, bidi and emoji, two views of different
