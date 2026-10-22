@@ -245,11 +245,15 @@
             "bold" : false,
             "direction" : null,
             "font_axes" : {
-
+              "CASL" : 0,
+              "CRSV" : 0,
+              "MONO" : 0,
+              "slnt" : 0,
+              "wght" : 300
             },
-            "font_face" : "",
+            "font_face" : "Sans Linear Light",
             "font_families" : [
-              "system-ui"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -268,10 +272,70 @@
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 400
+            "weight" : 300
           },
           "id" : "Status bar",
           "name" : "Status bar",
+          "next_paragraph_style" : null,
+          "role" : "Container"
+        },
+        {
+          "based_on" : "Status bar",
+          "block" : {
+            "alignment" : null,
+            "background" : {
+              "alpha" : 1,
+              "blue" : 0.38674157857894897,
+              "green" : 0.19268515706062317,
+              "red" : 0.070672564208507538
+            },
+            "base_direction" : null,
+            "border_bottom_color" : null,
+            "border_bottom_width" : 0,
+            "border_left_color" : null,
+            "border_left_width" : 0,
+            "border_right_color" : null,
+            "border_right_width" : 0,
+            "border_top_color" : null,
+            "border_top_width" : 0,
+            "first_line_indent" : null,
+            "leading_indent" : null,
+            "line_spacing" : null,
+            "margin_bottom" : null,
+            "margin_left" : null,
+            "margin_right" : null,
+            "margin_top" : null,
+            "padding_bottom" : null,
+            "padding_left" : null,
+            "padding_right" : null,
+            "padding_top" : null,
+            "trailing_indent" : null
+          },
+          "character" : {
+            "background" : null,
+            "bold" : null,
+            "direction" : null,
+            "font_axes" : {
+
+            },
+            "font_face" : "",
+            "font_families" : [
+              "system-ui"
+            ],
+            "foreground" : null,
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : null,
+            "subscript" : null,
+            "superscript" : null,
+            "underline" : null,
+            "weight" : 400
+          },
+          "id" : "Status bar command",
+          "name" : "Status bar command",
           "next_paragraph_style" : null,
           "role" : "Container"
         }
@@ -1795,9 +1859,17 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : null,
-            "font_face" : null,
-            "font_families" : null,
+            "font_axes" : {
+              "CASL" : 0,
+              "CRSV" : 0,
+              "MONO" : 0,
+              "slnt" : 0,
+              "wght" : 350
+            },
+            "font_face" : "Mono Casual Light",
+            "font_families" : [
+              "Recursive"
+            ],
             "foreground" : null,
             "language" : null,
             "letter_spacing" : null,
@@ -1808,7 +1880,7 @@
             "subscript" : null,
             "superscript" : null,
             "underline" : null,
-            "weight" : null
+            "weight" : 350
           },
           "id" : "Image",
           "name" : "Image",
@@ -2239,11 +2311,15 @@
             "bold" : false,
             "direction" : null,
             "font_axes" : {
-
+              "CASL" : 0,
+              "CRSV" : 0,
+              "MONO" : 0,
+              "slnt" : 0,
+              "wght" : 300
             },
-            "font_face" : "",
+            "font_face" : "Sans Linear Light",
             "font_families" : [
-              "system-ui"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -2262,7 +2338,7 @@
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 400
+            "weight" : 300
           },
           "id" : "Status bar",
           "name" : "Status bar",
@@ -2275,9 +2351,9 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "blue" : 0.38674157857894897,
+              "green" : 0.19268515706062317,
+              "red" : 0.070672564208507538
             },
             "base_direction" : null,
             "border_bottom_color" : null,
@@ -2305,15 +2381,14 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : null,
-            "font_face" : null,
-            "font_families" : null,
-            "foreground" : {
-              "alpha" : 1,
-              "blue" : 0.11999999731779099,
-              "green" : 0.054999999701976776,
-              "red" : 0.019999999552965164
+            "font_axes" : {
+
             },
+            "font_face" : "",
+            "font_families" : [
+              "system-ui"
+            ],
+            "foreground" : null,
             "language" : null,
             "letter_spacing" : null,
             "open_type_features" : null,
@@ -2323,7 +2398,7 @@
             "subscript" : null,
             "superscript" : null,
             "underline" : null,
-            "weight" : null
+            "weight" : 400
           },
           "id" : "Status bar command",
           "name" : "Status bar command",
@@ -3749,9 +3824,9 @@
             "border_left_width" : null,
             "border_right_color" : {
               "alpha" : 1,
-              "blue" : 0.97999999999999998,
-              "green" : 0.93000000000000005,
-              "red" : 0.90000000000000002
+              "blue" : 0.98000001907348633,
+              "green" : 0.93000000715255737,
+              "red" : 0.89999997615814209
             },
             "border_right_width" : null,
             "border_top_color" : null,
@@ -3778,9 +3853,9 @@
             "font_families" : null,
             "foreground" : {
               "alpha" : 1,
-              "blue" : 0.97999999999999998,
-              "green" : 0.93000000000000005,
-              "red" : 0.90000000000000002
+              "blue" : 0.98000001907348633,
+              "green" : 0.93000000715255737,
+              "red" : 0.89999997615814209
             },
             "language" : null,
             "letter_spacing" : null,
@@ -3803,10 +3878,10 @@
           "block" : {
             "alignment" : "End",
             "background" : {
-              "alpha" : 0.11850358499999999,
-              "blue" : 0.94048830000000005,
-              "green" : 0.94048830000000005,
-              "red" : 0.94048830000000005
+              "alpha" : 0.11850358545780182,
+              "blue" : 0.94048827886581421,
+              "green" : 0.94048827886581421,
+              "red" : 0.94048827886581421
             },
             "base_direction" : null,
             "border_bottom_color" : null,
@@ -3814,10 +3889,10 @@
             "border_left_color" : null,
             "border_left_width" : 0,
             "border_right_color" : {
-              "alpha" : 0.29650858000000002,
-              "blue" : 0.97999999999999998,
-              "green" : 0.93000000000000005,
-              "red" : 0.90000000000000002
+              "alpha" : 0.29650858044624329,
+              "blue" : 0.98000001907348633,
+              "green" : 0.93000000715255737,
+              "red" : 0.89999997615814209
             },
             "border_right_width" : 1,
             "border_top_color" : null,
@@ -3847,10 +3922,10 @@
               "system-ui"
             ],
             "foreground" : {
-              "alpha" : 0.29810998,
-              "blue" : 0.97999999999999998,
-              "green" : 0.93000000000000005,
-              "red" : 0.90000000000000002
+              "alpha" : 0.29810997843742371,
+              "blue" : 0.98000001907348633,
+              "green" : 0.93000000715255737,
+              "red" : 0.89999997615814209
             },
             "language" : null,
             "letter_spacing" : 0,
@@ -3887,7 +3962,7 @@
             "first_line_indent" : 0,
             "leading_indent" : 0,
             "line_spacing" : {
-              "Multiplier" : 1.1000000000000001
+              "Multiplier" : 1.1000000238418579
             },
             "margin_bottom" : 0,
             "margin_left" : 0,
@@ -3981,11 +4056,15 @@
             "bold" : false,
             "direction" : null,
             "font_axes" : {
-
+              "CASL" : 0,
+              "CRSV" : 0,
+              "MONO" : 0,
+              "slnt" : 0,
+              "wght" : 300
             },
-            "font_face" : "",
+            "font_face" : "Sans Linear Light",
             "font_families" : [
-              "system-ui"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -4004,7 +4083,7 @@
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 400
+            "weight" : 300
           },
           "id" : "Status bar",
           "name" : "Status bar",
@@ -4017,9 +4096,9 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.91000000000000003,
-              "green" : 0.78000000000000003,
-              "red" : 0.68000000000000005
+              "blue" : 0.38674157857894897,
+              "green" : 0.19268515706062317,
+              "red" : 0.070672564208507538
             },
             "base_direction" : null,
             "border_bottom_color" : null,
@@ -4047,15 +4126,14 @@
             "background" : null,
             "bold" : null,
             "direction" : null,
-            "font_axes" : null,
-            "font_face" : null,
-            "font_families" : null,
-            "foreground" : {
-              "alpha" : 1,
-              "blue" : 0.12,
-              "green" : 0.055,
-              "red" : 0.02
+            "font_axes" : {
+
             },
+            "font_face" : "",
+            "font_families" : [
+              "system-ui"
+            ],
+            "foreground" : null,
             "language" : null,
             "letter_spacing" : null,
             "open_type_features" : null,
@@ -4065,7 +4143,7 @@
             "subscript" : null,
             "superscript" : null,
             "underline" : null,
-            "weight" : null
+            "weight" : 400
           },
           "id" : "Status bar command",
           "name" : "Status bar command",
@@ -4080,9 +4158,9 @@
           "name" : "Incremental match",
           "properties" : {
             "background" : {
-              "alpha" : 0.40000000000000002,
+              "alpha" : 0.40000000596046448,
               "blue" : 0,
-              "green" : 0.85999999999999999,
+              "green" : 0.86000001430511475,
               "red" : 1
             },
             "bold" : null,

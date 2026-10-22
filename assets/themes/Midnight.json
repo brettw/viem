@@ -108,11 +108,15 @@
             "bold" : false,
             "direction" : null,
             "font_axes" : {
-
+              "CASL" : 0,
+              "CRSV" : 0,
+              "MONO" : 0,
+              "slnt" : 0,
+              "wght" : 300
             },
-            "font_face" : "",
+            "font_face" : "Sans Linear Light",
             "font_families" : [
-              "system-ui"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -131,10 +135,71 @@
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 400
+            "weight" : 300
           },
           "id" : "Status bar",
           "name" : "Status bar",
+          "next_paragraph_style" : null,
+          "role" : "Container"
+        },
+        {
+          "based_on" : "Status bar",
+          "block" : {
+            "alignment" : null,
+            "background" : {
+              "alpha" : 1,
+              "blue" : 0.38674157857894897,
+              "green" : 0.19268515706062317,
+              "red" : 0.070672564208507538
+            },
+            "base_direction" : null,
+            "border_bottom_color" : null,
+            "border_bottom_width" : 0,
+            "border_left_color" : null,
+            "border_left_width" : 0,
+            "border_right_color" : null,
+            "border_right_width" : 0,
+            "border_top_color" : null,
+            "border_top_width" : 0,
+            "first_line_indent" : null,
+            "leading_indent" : null,
+            "line_spacing" : null,
+            "margin_bottom" : null,
+            "margin_left" : null,
+            "margin_right" : null,
+            "margin_top" : null,
+            "padding_bottom" : null,
+            "padding_left" : null,
+            "padding_right" : null,
+            "padding_top" : null,
+            "trailing_indent" : null
+          },
+          "character" : {
+            "background" : null,
+            "bold" : null,
+            "direction" : null,
+            "font_axes" : null,
+            "font_face" : null,
+            "font_families" : null,
+            "foreground" : {
+              "alpha" : 1,
+              "blue" : 0.94048827886581421,
+              "green" : 0.94048827886581421,
+              "red" : 0.94048827886581421
+            },
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : null,
+            "subscript" : null,
+            "superscript" : null,
+            "underline" : null,
+            "weight" : null
+          },
+          "id" : "Status bar command",
+          "name" : "Status bar command",
           "next_paragraph_style" : null,
           "role" : "Container"
         }
@@ -1811,11 +1876,15 @@
             "bold" : false,
             "direction" : null,
             "font_axes" : {
-
+              "CASL" : 0,
+              "CRSV" : 0,
+              "MONO" : 0,
+              "slnt" : 0,
+              "wght" : 300
             },
-            "font_face" : "",
+            "font_face" : "Sans Linear Light",
             "font_families" : [
-              "system-ui"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -1834,7 +1903,7 @@
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 400
+            "weight" : 300
           },
           "id" : "Status bar",
           "name" : "Status bar",
@@ -1847,9 +1916,9 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "blue" : 0.38674157857894897,
+              "green" : 0.19268515706062317,
+              "red" : 0.070672564208507538
             },
             "base_direction" : null,
             "border_bottom_color" : null,
@@ -1882,9 +1951,9 @@
             "font_families" : null,
             "foreground" : {
               "alpha" : 1,
-              "blue" : 0.11999999731779099,
-              "green" : 0.054999999701976776,
-              "red" : 0.019999999552965164
+              "blue" : 0.94048827886581421,
+              "green" : 0.94048827886581421,
+              "red" : 0.94048827886581421
             },
             "language" : null,
             "letter_spacing" : null,
@@ -3310,11 +3379,11 @@
     "text" : {
       "block_styles" : [
         {
-          "based_on" : null,
+          "based_on" : "Builtin line number",
           "block" : {
-            "alignment" : "Start",
+            "alignment" : null,
             "background" : null,
-            "base_direction" : "Natural",
+            "base_direction" : null,
             "border_bottom_color" : null,
             "border_bottom_width" : null,
             "border_left_color" : null,
@@ -3322,36 +3391,81 @@
             "border_right_color" : null,
             "border_right_width" : null,
             "border_top_color" : null,
-            "border_top_width" : 0,
-            "first_line_indent" : 0,
-            "leading_indent" : 0,
-            "line_spacing" : {
-              "Multiplier" : 1.1000000000000001
-            },
-            "margin_bottom" : 0,
+            "border_top_width" : null,
+            "first_line_indent" : null,
+            "leading_indent" : null,
+            "line_spacing" : null,
+            "margin_bottom" : null,
             "margin_left" : null,
             "margin_right" : null,
-            "margin_top" : 0,
+            "margin_top" : null,
             "padding_bottom" : null,
             "padding_left" : null,
-            "padding_right" : 0,
-            "padding_top" : 15,
-            "trailing_indent" : 0
+            "padding_right" : null,
+            "padding_top" : null,
+            "trailing_indent" : null
           },
           "character" : {
             "background" : null,
             "bold" : null,
-            "direction" : "Natural",
+            "direction" : null,
+            "font_axes" : null,
+            "font_face" : null,
+            "font_families" : null,
+            "foreground" : null,
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : null,
+            "subscript" : null,
+            "superscript" : null,
+            "underline" : null,
+            "weight" : null
+          },
+          "id" : "Builtin current line number",
+          "name" : "Current line number",
+          "next_paragraph_style" : null,
+          "role" : "Paragraph"
+        },
+        {
+          "based_on" : "Paragraph",
+          "block" : {
+            "alignment" : "End",
+            "background" : null,
+            "base_direction" : null,
+            "border_bottom_color" : null,
+            "border_bottom_width" : 0,
+            "border_left_color" : null,
+            "border_left_width" : 0,
+            "border_right_color" : null,
+            "border_right_width" : 1,
+            "border_top_color" : null,
+            "border_top_width" : 0,
+            "first_line_indent" : null,
+            "leading_indent" : null,
+            "line_spacing" : null,
+            "margin_bottom" : 0,
+            "margin_left" : 0,
+            "margin_right" : 0,
+            "margin_top" : 0,
+            "padding_bottom" : 0,
+            "padding_left" : 4,
+            "padding_right" : 4,
+            "padding_top" : 0,
+            "trailing_indent" : null
+          },
+          "character" : {
+            "background" : null,
+            "bold" : false,
+            "direction" : null,
             "font_axes" : {
-              "CASL" : 0,
-              "CRSV" : 0,
-              "MONO" : 0,
-              "slnt" : 0,
-              "wght" : 300
+
             },
-            "font_face" : "Mono Casual Light",
+            "font_face" : "",
             "font_families" : [
-              "Recursive"
+              "system-ui"
             ],
             "foreground" : null,
             "language" : null,
@@ -3359,12 +3473,66 @@
             "open_type_features" : {
 
             },
-            "script_position" : "Normal",
-            "size" : 16,
+            "size" : 11,
             "slant" : "Upright",
             "strikethrough" : false,
+            "subscript" : false,
+            "superscript" : false,
             "underline" : false,
-            "weight" : 300
+            "weight" : 400
+          },
+          "id" : "Builtin line number",
+          "name" : "Line number",
+          "next_paragraph_style" : null,
+          "role" : "Paragraph"
+        },
+        {
+          "based_on" : null,
+          "based_on_variant" : "code",
+          "block" : {
+            "alignment" : null,
+            "background" : null,
+            "base_direction" : null,
+            "border_bottom_color" : null,
+            "border_bottom_width" : null,
+            "border_left_color" : null,
+            "border_left_width" : null,
+            "border_right_color" : null,
+            "border_right_width" : null,
+            "border_top_color" : null,
+            "border_top_width" : null,
+            "first_line_indent" : null,
+            "leading_indent" : 0,
+            "line_spacing" : null,
+            "margin_bottom" : 0,
+            "margin_left" : null,
+            "margin_right" : null,
+            "margin_top" : null,
+            "padding_bottom" : null,
+            "padding_left" : null,
+            "padding_right" : null,
+            "padding_top" : null,
+            "trailing_indent" : 0
+          },
+          "character" : {
+            "background" : null,
+            "bold" : null,
+            "direction" : null,
+            "font_axes" : null,
+            "font_face" : null,
+            "font_families" : null,
+            "foreground" : null,
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "script_position" : "Normal",
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : null,
+            "subscript" : null,
+            "superscript" : null,
+            "underline" : null,
+            "weight" : null
           },
           "id" : "Paragraph",
           "name" : "Base Paragraph",
@@ -3418,11 +3586,15 @@
             "bold" : false,
             "direction" : null,
             "font_axes" : {
-
+              "CASL" : 0,
+              "CRSV" : 0,
+              "MONO" : 0,
+              "slnt" : 0,
+              "wght" : 300
             },
-            "font_face" : "",
+            "font_face" : "Sans Linear Light",
             "font_families" : [
-              "system-ui"
+              "Recursive"
             ],
             "foreground" : {
               "alpha" : 1,
@@ -3441,7 +3613,7 @@
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 400
+            "weight" : 300
           },
           "id" : "Status bar",
           "name" : "Status bar",
@@ -3454,9 +3626,9 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "blue" : 0.38674157857894897,
+              "green" : 0.19268515706062317,
+              "red" : 0.070672564208507538
             },
             "base_direction" : null,
             "border_bottom_color" : null,
@@ -3489,9 +3661,9 @@
             "font_families" : null,
             "foreground" : {
               "alpha" : 1,
-              "blue" : 0.11999999731779099,
-              "green" : 0.054999999701976776,
-              "red" : 0.019999999552965164
+              "blue" : 0.94048827886581421,
+              "green" : 0.94048827886581421,
+              "red" : 0.94048827886581421
             },
             "language" : null,
             "letter_spacing" : null,
@@ -3517,9 +3689,9 @@
           "name" : "Incremental match",
           "properties" : {
             "background" : {
-              "alpha" : 0.40000000000000002,
+              "alpha" : 0.40000000596046448,
               "blue" : 0,
-              "green" : 0.85999999999999999,
+              "green" : 0.86000001430511475,
               "red" : 1
             },
             "bold" : null,
@@ -3535,6 +3707,8 @@
             "size" : null,
             "slant" : null,
             "strikethrough" : null,
+            "subscript" : null,
+            "superscript" : null,
             "underline" : null,
             "weight" : null
           }
