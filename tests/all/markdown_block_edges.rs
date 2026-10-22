@@ -81,6 +81,100 @@ fn enter_at_the_end_of_a_code_block_keeps_the_new_row_inside_its_box() {
     }
 }
 
+/// A background job may capture just the empty caret row. Its owner must not
+/// depend on a preceding nonempty row happening to be in the same request.
+fn assert_isolated_code_caret_row(editor: &Editor, padding: f32, context: &str) {
+    use viem_core::layout::{
+        compute_layout_job, inspect_layout_provider, prepare_layout_job, HardLineLayoutRegion,
+        LayoutCancellationToken, LayoutEngine, LayoutExecutionContext, LayoutJobId,
+        LayoutJobPriority, LayoutJobRegion, MockTextMeasurementProvider, ViewLayout,
+    };
+    let document = editor.document();
+    let at = editor.core.command_state(editor.view).unwrap().cursor();
+    let owner = document.projection().blocks().iter()
+        .filter(|block| block.range.start <= at && at <= block.range.end)
+        .max_by_key(|block| block.range.start).unwrap();
+    assert_eq!(owner.style.0, "Code Block", "{context}");
+    let line = document.projection().hard_line_at_offset(at).unwrap();
+    assert_eq!(document.projection().hard_line_range(line), Some(at..at), "{context}");
+    let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+    let requirements = inspect_layout_provider(&engine);
+    let mut view = ViewLayout::new(800., 2000.);
+    let request = prepare_layout_job(document, &mut view, requirements, LayoutJobId(1),
+        LayoutJobPriority::ChangedVisibleRows,
+        LayoutJobRegion::HardLines(HardLineLayoutRegion::new(line..line + 1).unwrap()),
+        LayoutCancellationToken::new()).unwrap();
+    let candidate = compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+    let rows = candidate.regional_snapshot().lines()[0].rows();
+    assert_eq!(rows.len(), 1, "{context}");
+    let row = &rows[0];
+    assert_eq!(row.paragraph_id, Some(owner.id), "{context}: isolated empty row keeps its owner");
+    let background = row.decorations.iter().find(|decoration|
+        decoration.kind == DecorationKind::BlockBackground
+            && decoration.paint.foreground == Color { red: 1., green: 0., blue: 0., alpha: 1. })
+        .unwrap_or_else(|| panic!("{context}: isolated empty row has its code background"));
+    let bottom = background.typographic_bounds.y + background.typographic_bounds.height;
+    assert!((bottom - row.y - row.height() - padding).abs() < 0.01,
+        "{context}: bottom padding remains below the empty code row: {row:?}");
+    let snapshot = editor.core.layout(editor.view).unwrap().snapshot().unwrap();
+    let caret = snapshot.caret_point(at, BoundaryAffinity::Downstream).unwrap();
+    let complete = &snapshot.rows[snapshot.caret_geometry(caret).unwrap().row_index];
+    assert_eq!(row.ascent, complete.ascent, "{context}: code font ascent");
+    assert_eq!(row.descent, complete.descent, "{context}: code font descent");
+    assert_eq!(row.height(), complete.height(), "{context}: code line height");
+    assert_eq!(row.carets[0].x, complete.carets[0].x, "{context}: code indentation");
+}
+
+#[test]
+fn isolated_background_jobs_keep_both_trailing_code_rows_and_their_bottom_padding() {
+    let padding = 12.;
+    for (source, body, retained_enters) in [
+        ("Before\n\n```rust\ncode\n```", "code", 2),
+        ("Before\n\n```rust\ncode\n```\n\nAfter", "code", 2),
+        ("Before\n\n```rust\ncode", "code", 2),
+        ("Before\n\n> ```rust\n> code\n> ```", "code", 2),
+        ("---\nkey: value\n---\n\nAfter", "key: value", 1),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        set_block_style(&mut editor, "Code Block", StyleProperty::BlockBackground,
+            StylePropertyValue::Color(Color { red: 1., green: 0., blue: 0., alpha: 1. }));
+        set_block_style(&mut editor, "Code Block", StyleProperty::BlockPaddingBottom, StylePropertyValue::Float(padding));
+        set_block_style(&mut editor, "Code Block", StyleProperty::BlockPaddingLeft, StylePropertyValue::Float(24.));
+        editor.place_at(body);
+        editor.key(Key::Char('A'));
+        for enter in 1..=retained_enters {
+            editor.key(Key::Enter);
+            assert_isolated_code_caret_row(&editor, padding, &format!("{source:?}: Enter {enter}"));
+            assert_reopens_as_displayed(editor.document(), source);
+        }
+    }
+}
+
+#[test]
+fn open_commands_keep_empty_code_rows_in_isolated_background_jobs() {
+    let padding = 12.;
+    for source in ["Before\n\n```rust\ncode\n```", "Before\n\n```rust\n```"] {
+        for command in ['o', 'O'] {
+            let mut editor = Editor::open(source, Format::Markdown);
+            set_block_style(&mut editor, "Code Block", StyleProperty::BlockBackground,
+                StylePropertyValue::Color(Color { red: 1., green: 0., blue: 0., alpha: 1. }));
+            set_block_style(&mut editor, "Code Block", StyleProperty::BlockPaddingBottom, StylePropertyValue::Float(padding));
+            let code = editor.document().projection().blocks().iter()
+                .find(|block| block.style.0 == "Code Block").unwrap().range.clone();
+            editor.place(code.start);
+            editor.key(Key::Char(command));
+            // O before nonempty content has another code row below it, so
+            // only a final row owns bottom padding.
+            let at = editor.core.command_state(editor.view).unwrap().cursor();
+            let end = editor.document().projection().blocks().iter()
+                .find(|block| block.style.0 == "Code Block").unwrap().range.end;
+            assert_isolated_code_caret_row(&editor, if at == end { padding } else { 0. },
+                &format!("{source:?}: {command}"));
+            assert_reopens_as_displayed(editor.document(), source);
+        }
+    }
+}
+
 #[test]
 fn a_trailing_hard_break_row_belongs_to_its_paragraph() {
     for source in ["> quote\n\nAfter\n", "- item\n- next\n", "Para\n\nAfter\n"] {

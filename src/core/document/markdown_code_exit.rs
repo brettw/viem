@@ -1,23 +1,24 @@
-//! Leave a literal code owner by replacing its two final empty lines with an
-//! ordinary paragraph. The retained body and authored fence stay byte-exact.
+//! Leave a literal code owner after its configured number of final blank rows.
+//! The retained body and authored fence stay byte-exact.
 use super::*;
 
 impl Document {
     fn code_block_exit_tail(&self, at: usize) -> Result<Option<(super::super::Block, Range<usize>)>, DocumentError> {
         if self.format() != Format::Markdown { return Ok(None); }
         let Some(block) = super::super::edit_boundary::paragraph_at(self, at)? else { return Ok(None) };
-        if at != block.range.end || !block.code_kind.treatment_removable()
-            || block.markdown_html || !super::super::edit_boundary::is_code_paragraph(self, &block)? {
+        if at != block.range.end || block.markdown_html
+            || !super::super::edit_boundary::is_code_paragraph(self, &block)? {
             return Ok(None);
         }
         let lines = self.hard_line_snapshot();
         let current = lines.line_at_offset(at).map_err(|_| DocumentError::AmbiguousProjection)?;
-        let Some(previous) = current.index().checked_sub(1).and_then(|index| lines.line(index)) else { return Ok(None) };
-        // Both empty rows must belong to this code owner. The separator before
-        // them is consumed too, leaving the retained final code line intact.
-        if previous.content_range().start < block.range.start { return Ok(None); }
-        for line in [&current, &previous] {
+        let mut first_blank = at;
+        for distance in 0..block.code_kind.exit_blank_lines() {
+            let Some(line) = current.index().checked_sub(distance).and_then(|index| lines.line(index))
+                else { return Ok(None) };
             let range = line.content_range();
+            if range.start < block.range.start { return Ok(None); }
+            first_blank = range.start;
             let mut offset = range.start;
             while offset < range.end {
                 let bytes = self.projection().text_tree().byte_chunk_at(offset);
@@ -27,7 +28,9 @@ impl Document {
                 offset += length;
             }
         }
-        let tail = previous.content_range().start.saturating_sub(1).max(block.range.start)..at;
+        // Consume the separator before these rows too, leaving the retained
+        // final code line intact. Each row must belong to this code owner.
+        let tail = first_blank.saturating_sub(1).max(block.range.start)..at;
         Ok(Some((block, tail)))
     }
 
@@ -68,10 +71,9 @@ impl Document {
         ];
         let cursor = tail.start + 1;
         let prepared = if tail.len() == 1 && self.projection().text_tree().byte_chunk_at(tail.start).first() == Some(&b'\n') {
-            // An initially empty block has only one internal break to replace
-            // with a paragraph boundary. Its flat text stays the same while
-            // its hard-line ownership deliberately changes. Verify that
-            // structural intention explicitly, retaining an identity caret map.
+            // A single internal break becomes a paragraph boundary. Its flat
+            // text stays the same while its hard-line ownership changes. Verify
+            // this structural intention explicitly, retaining an identity caret map.
             let mut prepared = self.prepare_reprojected_source_patches(patches)?;
             let PreparedPublication::State(candidate) = &prepared.publication else {
                 return Err(DocumentError::VerificationFailed.into());

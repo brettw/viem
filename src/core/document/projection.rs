@@ -95,7 +95,11 @@ pub enum CodeClipboardRepresentation { Source, FencedYaml }
 
 impl CodeBlockKind {
     pub fn language_editable(self) -> bool { self == Self::Ordinary }
-    pub fn treatment_removable(self) -> bool { self == Self::Ordinary }
+    pub fn treatment_removable(self, empty: bool) -> bool { self == Self::Ordinary || empty }
+    /// Number of final blank rows consumed when Enter leaves this owner.
+    pub fn exit_blank_lines(self) -> usize {
+        match self { Self::Ordinary => 2, Self::FrontMatter => 1 }
+    }
     pub fn supplies_language_default(self) -> bool { self == Self::Ordinary }
     pub fn creatable_in_preview(self) -> bool { self == Self::Ordinary }
     pub fn clipboard_representation(self) -> CodeClipboardRepresentation {

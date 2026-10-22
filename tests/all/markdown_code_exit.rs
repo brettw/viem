@@ -1,5 +1,5 @@
-//! Enter exits a final code row only after two blank rows; the resulting
-//! paragraph is usable before its first typed character and survives reopening.
+//! Ordinary code exits after two blank rows and front matter after one. The
+//! resulting paragraph is usable before typing and survives reopening.
 use crate::support::{assert_exact_undo_redo, assert_reopens_as_displayed, Editor};
 use crate::markdown_test_support::{place_insert_boundary, EncodedFixture};
 use viem_core::command::{CommandInterpreter, InputEvent, Key, Mode};
@@ -55,6 +55,7 @@ fn assert_exited(editor: &mut Editor, original: &Block, retained: &str, context:
     let previous = code(editor);
     assert_eq!(&editor.document().text()[previous.range.clone()], retained, "{context}");
     assert_eq!(previous.code_language, original.code_language, "{context}");
+    assert_eq!(previous.code_kind, original.code_kind, "{context}");
     let paragraph = caret_owner(editor);
     assert!(paragraph.range.is_empty() && !is_code(&paragraph), "{context}: {paragraph:?}");
     assert_eq!(paragraph.quote_depth, original.quote_depth, "{context}");
@@ -291,8 +292,8 @@ fn initially_empty_code_block_exits_when_a_second_blank_row_already_exists() {
 }
 
 #[test]
-fn front_matter_and_passive_pre_keep_their_literal_enter_behavior() {
-    for source in ["---\nvalue: yes\n\n\n---", "<pre lang=\"rust\">code\n\n</pre>"] {
+fn passive_pre_keeps_its_literal_enter_behavior() {
+    for source in ["<pre lang=\"rust\">code\n\n</pre>", "<pre>code\n\n</pre>"] {
         let mut editor = Editor::open(source, Format::Markdown);
         let original = code(&editor);
         insert_at(&mut editor, original.range.end);
@@ -304,6 +305,186 @@ fn front_matter_and_passive_pre_keep_their_literal_enter_behavior() {
         assert_reopens_as_displayed(editor.document(), source);
         let saved = editor.source();
         assert_exact_undo_redo(&mut editor, source, &saved, source);
+    }
+}
+
+#[test]
+fn two_enters_exit_front_matter_before_any_text_is_typed() {
+    for source in [
+        "---\nname: example\n---",
+        "---\nname: example\n---\n",
+        "--- \t\nname: example\n---\t ",
+        "---\nname: example\n---\n\n**Tail** &amp; [link](target)\n",
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        let original = code(&editor);
+        assert!(original.is_front_matter());
+        insert_at(&mut editor, original.range.end);
+        press(&mut editor, Key::Enter);
+        assert!(caret_owner(&editor).is_front_matter(), "first Enter: {source:?}");
+        assert_eq!(&editor.document().text()[code(&editor).range], "name: example\n");
+        assert_reopens_as_displayed(editor.document(), source);
+        press(&mut editor, Key::Enter);
+        assert_exited(&mut editor, &original, "name: example", source);
+        if source.contains("**Tail**") {
+            assert!(editor.source().ends_with("\n\n**Tail** &amp; [link](target)\n"));
+        }
+        editor.type_keys("after");
+        assert!(!is_code(&caret_owner(&editor)), "{source:?}");
+        assert_reopens_as_displayed(editor.document(), source);
+        let saved = editor.source();
+        assert_exact_undo_redo(&mut editor, source, &saved, source);
+    }
+}
+
+#[test]
+fn enter_on_an_existing_blank_front_matter_row_exits_and_retains_its_envelope() {
+    for (source, retained) in [
+        ("---\n---", ""),
+        ("---\n\n---", ""),
+        ("---\nname: example\n\n---", "name: example"),
+        ("---\nname: example\n \t\n---", "name: example"),
+        ("---\nname: example\n\n\n---", "name: example\n"),
+        ("---\n\n---\n\n**Tail**", ""),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        let original = code(&editor);
+        insert_at(&mut editor, original.range.end);
+        press(&mut editor, Key::Enter);
+        assert_exited(&mut editor, &original, retained, source);
+        assert!(code(&editor).is_front_matter());
+        let saved = editor.source();
+        assert_exact_undo_redo(&mut editor, source, &saved, source);
+    }
+}
+
+#[test]
+fn whitespace_only_front_matter_row_exits_on_enter() {
+    let source = "---\n  name: example\n---";
+    let mut editor = Editor::open(source, Format::Markdown);
+    let original = code(&editor);
+    insert_at(&mut editor, original.range.end);
+    press(&mut editor, Key::Enter);
+    editor.type_keys("  ");
+    assert_eq!(&editor.document().text()[code(&editor).range], "  name: example\n  ");
+    press(&mut editor, Key::Enter);
+    assert_exited(&mut editor, &original, "  name: example", source);
+    let saved = editor.source();
+    assert_exact_undo_redo(&mut editor, source, &saved, source);
+}
+
+#[test]
+fn front_matter_internal_blank_rows_and_explicit_line_commands_stay_literal() {
+    for (source, at, key, expected) in [
+        ("---\nfirst: 1\n\nlast: 2\n---", "first: 1\n".len(), Key::Enter, "first: 1\n\n\nlast: 2"),
+        ("---\nname: example\n\n---", "name: example\n".len(), Key::ShiftEnter, "name: example\n\n"),
+        ("---\nname: example\n\n---", "name: example\n".len(), Key::Char('o'), "name: example\n\n"),
+    ] {
+        let mut editor = Editor::open(source, Format::Markdown);
+        if key == Key::Char('o') { editor.place(at); }
+        else { insert_at(&mut editor, at); }
+        press(&mut editor, key);
+        assert!(caret_owner(&editor).is_front_matter(), "{source:?}, {key:?}");
+        assert_eq!(editor.document().text(), expected, "{source:?}, {key:?}");
+        assert_reopens_as_displayed(editor.document(), source);
+        let saved = editor.source();
+        assert_exact_undo_redo(&mut editor, source, &saved, source);
+    }
+}
+
+#[test]
+fn backspace_deletes_empty_front_matter_and_ordinary_code_envelopes() {
+    for envelope in ["---\n---", "--- \t\n\n---\t", "```rust\n```", "~~~rust\n\n~~~~ "] {
+        for suffix in ["", "\n", "\n\n**Tail** &amp; [link](target)\n"] {
+            let source = format!("{envelope}{suffix}");
+            let mut editor = Editor::open(&source, Format::Markdown);
+            let original = code(&editor);
+            assert!(original.range.is_empty(), "{source:?}");
+            insert_at(&mut editor, original.range.start);
+            press(&mut editor, Key::Backspace);
+            assert_eq!(editor.source(), suffix, "{source:?}");
+            assert!(editor.document().projection().blocks().iter().all(|block| !is_code(block)), "{source:?}");
+            assert_eq!(editor.core.command_state(editor.view).unwrap().cursor(), 0);
+            assert!(!is_code(&caret_owner(&editor)));
+            assert_reopens_as_displayed(editor.document(), &source);
+            let saved = editor.source();
+            assert_exact_undo_redo(&mut editor, &source, &saved, &source);
+        }
+    }
+}
+
+#[test]
+fn backspace_removes_empty_nested_code_envelopes_and_retains_parent_containers() {
+    for (opening_prefix, continuation) in [
+        ("> ", "> "),
+        ("-\t", "\t"),
+        ("- > ", "  > "),
+        ("> - ", ">   "),
+        ("> - > ", ">   > "),
+    ] {
+        for closed in [false, true] {
+            let before = "__Before__ &amp; [link](before)\n\n";
+            let after = if closed { "\n\n**Tail** &amp; [link](after)\n" } else { "" };
+            let closer = if closed { format!("\n{continuation}```") } else { String::new() };
+            let source = format!("{before}{opening_prefix}```rust{closer}{after}");
+            let expected = format!("{before}{opening_prefix}{after}");
+            let mut editor = Editor::open(&source, Format::Markdown);
+            let original = code(&editor);
+            assert!(original.range.is_empty(), "{source:?}");
+            let parents = original.containers.iter()
+                .filter(|member| member.container.kind != ContainerKind::CodeBlock)
+                .map(|member| member.container.kind).collect::<Vec<_>>();
+            assert!(!parents.is_empty(), "fixture must exercise a nested owner: {source:?}");
+
+            insert_at(&mut editor, original.range.start);
+            press(&mut editor, Key::Backspace);
+
+            assert_eq!(editor.source(), expected, "{source:?}");
+            assert_eq!(editor.core.command_state(editor.view).unwrap().cursor(), original.range.start, "{source:?}");
+            assert!(editor.document().projection().blocks().iter().all(|block| !is_code(block)), "{source:?}");
+            let paragraph = caret_owner(&editor);
+            assert!(paragraph.range.is_empty(), "{source:?}: {paragraph:?}");
+            assert_eq!(paragraph.kind, original.kind, "{source:?}");
+            assert_eq!(paragraph.quote_depth, original.quote_depth, "{source:?}");
+            assert_eq!(list_depth(&paragraph), list_depth(&original), "{source:?}");
+            assert_eq!(paragraph.containers.iter().map(|member| member.container.kind).collect::<Vec<_>>(), parents, "{source:?}");
+            assert_reopens_as_displayed(editor.document(), &source);
+            assert_exact_undo_redo(&mut editor, &source, &expected, &source);
+        }
+    }
+}
+
+#[test]
+fn front_matter_exit_and_empty_deletion_preserve_encoding_bom_and_endings() {
+    for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Utf16Be, Encoding::Latin1] {
+        for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
+            for bom in [false, true] {
+                if encoding == Encoding::Latin1 && bom { continue; }
+                let fixture = EncodedFixture { encoding, file_format, bom };
+                for (source, expected, key) in [
+                    ("--- \t\nname: 'café'\n\n---\t", "--- \t\nname: 'café'\n---\t\n\n", Key::Enter),
+                    ("---\n---", "---\n---\n\n", Key::Enter),
+                    ("--- \t\n\n---\t\n\n**Tail** &amp; [link](target)\n", "\n\n**Tail** &amp; [link](target)\n", Key::Backspace),
+                ] {
+                    let before = fixture.bytes(source);
+                    let after = fixture.bytes(expected);
+                    let mut document = fixture.open(source);
+                    let at = document.projection().blocks()[0].range.end;
+                    let mut commands = CommandInterpreter::new();
+                    place_insert_boundary(&mut commands, &mut document, at);
+                    commands.handle(&mut document, InputEvent::Key(key))
+                        .unwrap_or_else(|error| panic!("{fixture:?}, {source:?}, {key:?}: {error:?}"));
+                    assert_eq!(document.source_bytes(), after, "{fixture:?}, {source:?}, {key:?}");
+                    if key == Key::Enter { assert!(document.projection().blocks()[0].is_front_matter()); }
+                    else { assert!(document.projection().blocks().iter().all(|block| !is_code(block))); }
+                    let owner = document.projection().blocks().iter()
+                        .find(|block| block.range == (commands.cursor()..commands.cursor())).unwrap();
+                    assert!(!is_code(owner), "{fixture:?}, {key:?}");
+                    commands.handle(&mut document, InputEvent::Key(Key::Escape)).unwrap();
+                    fixture.assert_history(&mut document, &before, &after);
+                }
+            }
+        }
     }
 }
 
@@ -416,7 +597,7 @@ fn ineligible_code_exit_requests_leave_source_revision_and_history_unchanged() {
         ("```rust\ncode\n```", Format::Markdown, 4),
         ("```rust\ncode\n\n```", Format::Markdown, 5),
         ("```rust\ncode\n\n\nmore\n```", Format::Markdown, 6),
-        ("---\ncode\n\n\n---", Format::Markdown, 6),
+        ("---\ncode\n---", Format::Markdown, 4),
         ("<pre>code\n\n</pre>", Format::Markdown, 6),
         ("code\n\n", Format::PlainText, 6),
         ("code\n\n", Format::Code, 6),
@@ -434,16 +615,16 @@ fn ineligible_code_exit_requests_leave_source_revision_and_history_unchanged() {
 
 #[test]
 fn stale_foreign_and_nonmodifiable_code_exit_requests_are_atomic() {
-    let source = "```rust\ncode\n\n\n```";
+    for (source, at) in [("```rust\ncode\n\n\n```", 6), ("---\ncode\n\n---", 5), ("---\n---", 0)] {
     for failure in ["foreign", "stale", "nonmodifiable", "late policy", "late revision"] {
         let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
-        let mut request = ModelRequest::ExitCodeBlock { document: document.id(), revision: document.revision(), at: 6 };
+        let mut request = ModelRequest::ExitCodeBlock { document: document.id(), revision: document.revision(), at };
         let prepared = if failure.starts_with("late") {
             Some(document.prepare_model_request(request.clone()).unwrap())
         } else { None };
         if failure == "foreign" {
             let foreign = Document::new("other");
-            request = ModelRequest::ExitCodeBlock { document: foreign.id(), revision: document.revision(), at: 6 };
+            request = ModelRequest::ExitCodeBlock { document: foreign.id(), revision: document.revision(), at };
         }
         if matches!(failure, "stale" | "late revision") {
             document.insert(0, "x").unwrap();
@@ -458,5 +639,78 @@ fn stale_foreign_and_nonmodifiable_code_exit_requests_are_atomic() {
         assert_eq!(document.source_bytes(), before, "{failure}");
         assert_eq!(document.revision(), revision, "{failure}");
         assert_eq!(document.history_status(), history, "{failure}");
+    }
+    }
+}
+
+#[test]
+fn empty_envelope_deletion_rejects_foreign_stale_and_nonmodifiable_requests_atomically() {
+    for source in ["---\n---", "```rust\n```"] {
+        for failure in ["foreign", "stale", "nonmodifiable", "late policy", "late revision"] {
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let style = document.projection().style_sheet().base_paragraph.clone();
+            let mut request = ModelRequest::SetParagraphStyle {
+                document: document.id(), revision: document.revision(), range: 0..0, style: style.clone(),
+            };
+            let prepared = if failure.starts_with("late") {
+                Some(document.prepare_model_request(request.clone()).unwrap())
+            } else { None };
+            if failure == "foreign" {
+                let foreign = Document::new("other");
+                request = ModelRequest::SetParagraphStyle {
+                    document: foreign.id(), revision: document.revision(), range: 0..0, style,
+                };
+            }
+            if matches!(failure, "stale" | "late revision") { document.insert(0, "x").unwrap(); }
+            if matches!(failure, "nonmodifiable" | "late policy") { document.set_modifiable(false); }
+            let before = document.source_bytes();
+            let revision = document.revision();
+            let history = document.history_status();
+            let result = if let Some(prepared) = prepared { document.commit_model_transaction(prepared) }
+                else { document.apply_model_request(request) };
+            assert!(result.is_err(), "{source:?}, {failure}");
+            assert_eq!(document.source_bytes(), before, "{source:?}, {failure}");
+            assert_eq!(document.revision(), revision, "{source:?}, {failure}");
+            assert_eq!(document.history_status(), history, "{source:?}, {failure}");
+        }
+    }
+}
+
+#[test]
+fn code_exit_and_empty_deletion_do_not_scan_unrelated_following_prose() {
+    for (envelope, key) in [
+        ("---\nname: example\n\n---", Key::Enter),
+        ("---\n---", Key::Enter),
+        ("---\n---", Key::Backspace),
+        ("```rust\n```", Key::Backspace),
+    ] {
+        let mut measured = None;
+        for paragraphs in [100, 5000] {
+            let unrelated = "Unrelated *styled* prose.\n\n".repeat(paragraphs);
+            let source = format!("{envelope}\n\nGuard.\n\n{unrelated}");
+            let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+            let at = document.projection().blocks()[0].range.end;
+            let mut commands = CommandInterpreter::new();
+            place_insert_boundary(&mut commands, &mut document, at);
+            let (result, work) = measure_document_work(|| commands.handle(&mut document, InputEvent::Key(key)));
+            result.unwrap_or_else(|error| panic!("{envelope:?}, {key:?}, paragraphs={paragraphs}: {error:?}"));
+            assert_eq!(work.full_projection_candidates, 0, "{envelope:?}, {key:?}: {work:?}");
+            assert_eq!(work.source_full_materializations, 0, "{envelope:?}, {key:?}: {work:?}");
+            assert_eq!(work.formatted_full_materialized_bytes, 0, "{envelope:?}, {key:?}: {work:?}");
+            assert_eq!(work.formatted_compatibility_materialized_bytes, 0, "{envelope:?}, {key:?}: {work:?}");
+            assert!(work.source_decoded_bytes < 8192, "{envelope:?}, {key:?}: {work:?}");
+            assert!(work.projected_formatted_bytes < 4096, "{envelope:?}, {key:?}: {work:?}");
+            let current = (work.source_decoded_bytes, work.projected_formatted_bytes, work.model_requests);
+            if let Some(previous) = measured { assert_eq!(previous, current, "{envelope:?}, {key:?}: {work:?}"); }
+            measured = Some(current);
+            let saved = document.source_bytes();
+            assert!(saved.ends_with(unrelated.as_bytes()));
+            assert_reopens_as_displayed(&document, &format!("{envelope:?}, {key:?}"));
+            commands.handle(&mut document, InputEvent::Key(Key::Escape)).unwrap();
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            assert!(document.redo());
+            assert_eq!(document.source_bytes(), saved);
+        }
     }
 }

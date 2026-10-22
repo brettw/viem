@@ -947,7 +947,24 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         .ok_or(DocumentError::AmbiguousProjection)?;
     let lines = &document.state().source_hard_lines;
     let first = lines.line_at_offset(body.start).ok_or(DocumentError::AmbiguousProjection)?;
-    let Some(mut opening) = lines.get(first.saturating_sub(1)) else {
+    let first_line = lines.get(first).ok_or(DocumentError::AmbiguousProjection)?;
+    let read = |line: &Range<usize>| {
+        let bytes = document.state().source.bytes_in(line.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        document.encoding().decode_region(&bytes, line.start)
+    };
+    // An unclosed empty fence can anchor its body at the end of the opening
+    // row itself. Prefer that proven opener over an unrelated preceding row.
+    let same_row_opener = if !block.is_front_matter() && block.range.is_empty()
+        && body.is_empty() && body.end == document.source_byte_len()
+        && first_line.end == body.start
+    {
+        let text = read(&first_line)?;
+        let prefix = super::markdown_quotes::container_prefix(&text.text);
+        super::projection::markdown_fence(&text.text[prefix..]).is_some()
+    } else { false };
+    let Some(mut opening) = (if same_row_opener { Some(first_line.clone()) }
+        else { lines.get(first.saturating_sub(1)) }) else {
         return Ok(None);
     };
     if block.is_front_matter() {
@@ -955,11 +972,6 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         // starts after it, including when a linewise edit removes that owner.
         opening.start = document.projection().source_content_start();
     }
-    let read = |line: &Range<usize>| {
-        let bytes = document.state().source.bytes_in(line.clone())
-            .ok_or(DocumentError::AmbiguousProjection)?;
-        document.encoding().decode_region(&bytes, line.start)
-    };
     let text = read(&opening)?;
     let prefix = super::markdown_quotes::container_prefix(&text.text);
     let marker = if block.is_front_matter() {
@@ -973,7 +985,6 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         return Ok(None);
     };
     let opening_marker = opening.start + document.encoding().encode_fragment(&text.text[..prefix])?.len();
-    let first_line = lines.get(first).ok_or(DocumentError::AmbiguousProjection)?;
     let prefix_bytes = document.state().source.bytes_in(first_line.start..body.start)
         .ok_or(DocumentError::AmbiguousProjection)?;
     let body_prefix = document.encoding().decode_region(&prefix_bytes, first_line.start)?.text;

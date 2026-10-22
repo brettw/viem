@@ -337,8 +337,11 @@ Deliberate presentation differences from GitHub:
   In an ordinary Markdown code block, Enter at the end of two consecutive
   blank lines replaces those lines with a paragraph after the code block,
   retaining any surrounding list or quote. A single blank line stays in code;
-  Shift-Enter always adds a literal code line. Front matter and passive HTML
-  preformatted blocks retain literal Enter behavior.
+  Shift-Enter always adds a literal code line. Front matter uses the same exit
+  behavior with one blank line (double Enter), and Backspace removes an empty
+  front-matter envelope just as it removes an empty code fence. Until exit,
+  blank rows retain their code-owner caret geometry and bottom padding.
+  Passive HTML preformatted blocks retain literal Enter behavior.
 - Headings, quotes, lists and Code Blocks change through semantic operations.
   List actions apply to whole items with their descendants and renumber
   affected ordered runs in the same transaction, keeping the first run's
