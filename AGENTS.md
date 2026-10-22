@@ -67,6 +67,13 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   output: `fuzz/clean.sh` removes the fuzz builds, `target/fuzz-campaigns`
   holds backend results, and `make clean` (`scripts/clean-win.ps1` on Windows)
   removes every build output.
+- Keep build caches while a worktree is actively being used. After its changes
+  are merged and the worktree is no longer needed, preserve final validation
+  reports and useful reproducers outside the worktree, verify there are no
+  uncommitted changes or running jobs, and archive or remove agent-created
+  worktrees. Cleanup is part of completing the task and needs no separate
+  request. Never remove another active task's worktree or the primary checkout.
+  If retaining a completed worktree, report its path, disk usage and reason.
 - Tests are deterministic and sit at the document, command, layout and
   coordinator boundaries. Cover source round trips and patch locality,
   incremental-versus-fresh results, encodings and mixed line endings, exact
