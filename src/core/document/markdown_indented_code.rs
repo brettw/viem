@@ -19,7 +19,7 @@ pub(super) struct CodeBlock {
 
 /// Consume indentation in columns. A tab crossing the boundary leaves spaces
 /// in the literal body; its physical byte remains their shared contributor.
-fn strip_indent(text: &str, target: usize) -> Option<(usize, usize)> {
+pub(super) fn strip_indent(text: &str, target: usize) -> Option<(usize, usize)> {
     strip_indent_from(text, target, 0)
 }
 

@@ -32,7 +32,8 @@ fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &st
     let source = format!("{prefix}{}{}", &text[range.clone()], definitions);
     let mut result = BTreeMap::new();
     let start = context.metadata_end(&source);
-    let mut events = Parser::new_ext(&source[start..], Options::ENABLE_STRIKETHROUGH)
+    let grammar = fence_grammar_text(&source[start..]);
+    let mut events = Parser::new_ext(&grammar, Options::ENABLE_STRIKETHROUGH)
         .into_offset_iter().map(|(event, span)| (event, span.start + start..span.end + start));
     while let Some((event, mut span)) = events.next() {
         if span.start < offset || span.end > range.len() + offset { continue; }
@@ -105,7 +106,8 @@ impl ParseContext {
 pub(super) fn definitions(text: &str, context: ParseContext) -> (String, Vec<Range<usize>>) {
     if !text.contains("]:") { return (String::new(), Vec::new()); }
     let parse_start = context.metadata_end(text);
-    let parser = Parser::new(&text[parse_start..]);
+    let grammar = fence_grammar_text(&text[parse_start..]);
+    let parser = Parser::new(&grammar);
     let mut ranges: Vec<_> = parser.reference_definitions().iter()
         .map(|(_, value)| value.span.start + parse_start..value.span.end + parse_start).collect();
     ranges.sort_by_key(|range| range.start);
@@ -150,6 +152,33 @@ pub(super) fn definitions(text: &str, context: ParseContext) -> (String, Vec<Ran
 
 #[cfg(test)]
 mod definition_tests {
+    #[test]
+    fn fence_grammar_shadow_preserves_other_trailing_tabs() {
+        for source in ["prose ```\t\n", "![alt ```\t](image)", "```\nbody\t\n```", "plain\t\n"] {
+            assert!(matches!(super::fence_grammar_text(source), std::borrow::Cow::Borrowed(_)), "{source:?}");
+        }
+        for source in ["```\t\n", ">   ~~~~ \t\n", "-\t```\n\t```\t\n"] {
+            let shadow = super::fence_grammar_text(source);
+            assert_eq!(shadow.len(), source.len());
+            assert!(matches!(shadow, std::borrow::Cow::Owned(_)), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn closing_fence_whitespace_does_not_create_an_extra_empty_paragraph() {
+        for delimiter in ["```", "~~~"] {
+            for suffix in ["", " ", "\t", " \t"] {
+                let source = format!("{delimiter}rust title=\"keep\"\ncode\n{delimiter}{delimiter}{suffix}\n\n");
+                let document = super::super::Document::from_bytes(source.as_bytes().to_vec(),
+                    super::super::Encoding::Utf8, super::super::Format::Markdown).unwrap();
+                assert_eq!(document.text(), "code\n", "{source:?}");
+                assert_eq!(document.projection().blocks().len(), 2, "{source:?}");
+                assert!(document.projection().blocks()[1].containers.is_empty(), "{source:?}");
+                assert_eq!(document.source_bytes(), source.as_bytes());
+            }
+        }
+    }
+
     #[test]
     fn front_matter_does_not_supply_markdown_definitions_or_inline_scopes() {
         let source = "---\n[ref]: /metadata\ntext: **literal**\n---\n\n[ref]: /document\n\n**body**";
@@ -210,7 +239,8 @@ mod definition_tests {
 pub(super) fn needs_reference_context(text: &str) -> bool {
     if !text.contains('[') { return false; }
     let mut consumed = 0;
-    for (event, range) in Parser::new(text).into_offset_iter() {
+    let grammar = fence_grammar_text(text);
+    for (event, range) in Parser::new(&grammar).into_offset_iter() {
         if range.start < consumed { continue; }
         if matches!(event, Event::Start(Tag::Link { link_type: LinkType::Inline, .. } | Tag::Image { link_type: LinkType::Inline, .. })) {
             if text[consumed..range.start].contains('[') { return true; }
@@ -267,6 +297,36 @@ pub(super) fn fence_close(line: &str, delimiter: u8, length: usize) -> bool {
     count >= length && body[count..].bytes().all(|c| matches!(c, b' ' | b'\t'))
 }
 
+/// pulldown-cmark's closing-fence scanner accepts trailing spaces but not
+/// tabs. Both are permitted by Markdown and by our source fence recognizer.
+/// Use an offset-preserving grammar view so that its container ranges agree
+/// without changing any authored whitespace or literal code text.
+fn fence_grammar_text(text: &str) -> std::borrow::Cow<'_, str> {
+    let mut replacement = None;
+    if text.contains('\t') {
+        let mut start = 0;
+        for line in text.split_inclusive('\n') {
+            let content = line.strip_suffix('\n').unwrap_or(line);
+            let body = content.trim_end_matches([' ', '\t']);
+            let suffix = &content[body.len()..];
+            let fence = &content[super::markdown_quotes::container_prefix(content)..];
+            if suffix.contains('\t')
+                && fence.as_bytes().first().is_some_and(|delimiter| {
+                    matches!(delimiter, b'`' | b'~')
+                        && fence_close(fence, *delimiter, 3)
+                }) {
+                let bytes = replacement.get_or_insert_with(|| text.as_bytes().to_vec());
+                for byte in &mut bytes[start + body.len()..start + content.len()] {
+                    if *byte == b'\t' { *byte = b' '; }
+                }
+            }
+            start += line.len();
+        }
+    }
+    replacement.map_or(std::borrow::Cow::Borrowed(text),
+        |bytes| std::borrow::Cow::Owned(String::from_utf8(bytes).unwrap()))
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum BlockRole { Heading(u8), Html, Rule }
 #[derive(Clone, Debug)]
@@ -316,7 +376,8 @@ impl Blocks {
         let mut result = Self::default();
         result.front_matter = context.permits_metadata().then(|| super::markdown_front_matter::recognize(text)).flatten();
         let parse_start = result.front_matter.as_ref().map_or(0, |front| front.range.end);
-        let parser = Parser::new_ext(&text[parse_start..], Options::ENABLE_TABLES);
+        let grammar = fence_grammar_text(&text[parse_start..]);
+        let parser = Parser::new_ext(&grammar, Options::ENABLE_TABLES);
         let mut tables = super::markdown_tables::TableParser::default();
         result.definitions = definitions(text, context).1;
         if let Some(front) = &result.front_matter {

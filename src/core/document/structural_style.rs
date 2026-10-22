@@ -207,6 +207,8 @@ impl Document {
         range: Range<usize>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let selected = selected_blocks(self, &range);
+        let empty_list_reset = selected.len() == 1 && selected[0].range.is_empty()
+            && matches!(selected[0].kind, super::super::BlockKind::ListItem { item_start: true, .. });
         if !selected.is_empty()
             && selected.iter().all(|block| {
                 block.quote_depth > 0
@@ -240,7 +242,15 @@ impl Document {
         if patches.is_empty() {
             return Ok(self.no_op_prepared());
         }
-        let mut prepared = self.prepare_reprojected_source_patches(patches)?;
+        let mut prepared = if empty_list_reset {
+            // Removing an empty item's marker changes only its treatment.
+            // Keep the verified formatted map when an explicit empty body is
+            // added; source-derived recovery would move its caret to the next
+            // item instead of retaining this paragraph's boundary.
+            self.prepare_text_edits_with_patches(formatted.formatted_edits(), Some(patches))?
+        } else {
+            self.prepare_reprojected_source_patches(patches)?
+        };
         let PreparedPublication::State(candidate) = &prepared.publication else {
             return Err(DocumentError::VerificationFailed.into());
         };

@@ -993,15 +993,24 @@ pub(super) fn fenced_source(document: &Document, block: &super::Block) -> Result
         let normalized = super::line_endings::normalize(&decoded, document.file_format());
         let quote = super::markdown_quotes::prefix(&normalized.text);
         let line_body = normalized.text[quote..].trim_end_matches('\n');
-        let container = if matches!(block.kind, super::BlockKind::ListItem { .. }) { result.body_prefix[super::markdown_quotes::prefix(&result.body_prefix)..].len() } else { 0 };
-        let trim = line_body.bytes().take(container).take_while(|b| *b == b' ').count();
-        let value = &line_body[trim..];
-        if if block.is_front_matter() { front_matter_delimiter(value) }
-            else { super::markdown_syntax::fence_close(value, delimiter, width) } {
+        let container = if matches!(block.kind, super::BlockKind::ListItem { .. }) {
+            result.body_prefix[super::markdown_quotes::prefix(&result.body_prefix)..].bytes()
+                .fold(0, |column, byte| column + if byte == b'\t' { 4 - column % 4 } else { 1 })
+        } else { 0 };
+        let (trim, padding) = if container == 0 { (0, 0) } else {
+            let Some(indent) = super::markdown_indented_code::strip_indent(line_body, container) else { continue; };
+            indent
+        };
+        // A tab can supply the item's indentation and up to three remaining
+        // fence-indent columns. Retain those columns for closing recognition.
+        let value = if padding == 0 { std::borrow::Cow::Borrowed(&line_body[trim..]) }
+            else { std::borrow::Cow::Owned(format!("{}{}", " ".repeat(padding), &line_body[trim..])) };
+        if if block.is_front_matter() { front_matter_delimiter(&value) }
+            else { super::markdown_syntax::fence_close(&value, delimiter, width) } {
             result.closing_content_end = Some(normalized.endings.last()
                 .filter(|ending| ending.source.end == line.end)
                 .map_or(line.end, |ending| ending.source.start));
-            result.closing_text = Some(value.to_owned());
+            result.closing_text = Some(value.into_owned());
             result.closing = Some(line);
             break;
         }

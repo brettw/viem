@@ -234,3 +234,4 @@ mod registers_marks;
 mod frontend_contracts;
 mod open_line_contexts;
 mod markdown_block_edges;
+mod markdown_code_exit;

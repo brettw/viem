@@ -330,7 +330,8 @@ impl Document {
     }
 
     /// Publish by splicing the `previous` publication's spans across the
-    /// intervening text edits and replacing only the `replaced` block regions.
+    /// intervening text edits and replacing only the `replaced` block regions,
+    /// each paired with its range in the previous publication.
     /// Returns false, changing nothing, when the previous spans cannot be
     /// reused.
     pub(crate) fn install_markdown_code_presentation_incrementally(
@@ -338,7 +339,7 @@ impl Document {
         sheet: std::sync::Arc<StyleSheet>,
         previous: &FormattedDocument,
         hull: Option<&(std::ops::Range<usize>, std::ops::Range<usize>)>,
-        replaced: &[std::ops::Range<usize>],
+        replaced: &[(std::ops::Range<usize>, std::ops::Range<usize>)],
         runs_in: &dyn Fn(&std::ops::Range<usize>) -> Vec<super::super::syntax::SyntaxRun>,
     ) -> bool {
         if self.format() != Format::Markdown {

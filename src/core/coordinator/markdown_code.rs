@@ -939,6 +939,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             if entry.published_language.as_ref() != Some(&block.code_language) {
                 republish.insert(id);
             }
+            // Equal body text can move across a semantic code boundary even
+            // when the document's text diff does not touch its current range.
+            if !reused {
+                republish.insert(id);
+            }
             entry.service.set_language(block.code_language.clone());
             entry.service.set_filename(None);
             let mut map = None;
@@ -1054,11 +1059,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             let hull = previous.text_tree().changed_extent(self.document.projection().text_tree());
             let touched = |range: &std::ops::Range<usize>| hull.as_ref()
                 .is_some_and(|(_, new)| range.start <= new.end && new.start <= range.end);
-            let replaced: Vec<_> = inputs.iter()
+            let replaced = inputs.iter()
                 .map(|(id, _)| (id, &requests[id].0.range))
                 .filter(|(id, range)| republish.contains(*id) || touched(range))
-                .map(|(_, range)| range.clone())
-                .collect();
+                .map(|(id, range)| services[id].published_range.clone().map(|old| (old, range.clone())))
+                .collect::<Option<Vec<_>>>();
+            let Some(replaced) = replaced else { return false };
             let runs_in = |region: &std::ops::Range<usize>| inputs.iter()
                 .find(|(id, _)| requests[id].0.range == *region)
                 .map_or_else(Vec::new, |(id, input)| block_runs(id, input));

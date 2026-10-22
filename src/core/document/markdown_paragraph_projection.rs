@@ -205,39 +205,21 @@ impl Document {
         let new_source = start..rebase_source_boundary(end, patches, Association::AfterInsertion)?;
         if new_source.len() > 65536 { return candidate::decline(Strategy::IndependentParagraph, "new owner source exceeds the regional limit"); }
         let revision = Revision(self.next_revision);
-        // Whether the original band ends with the document's terminal ending
-        // and every patch ends at or before it, recorded by the first parse.
-        let retains_terminal = std::cell::Cell::new(false);
-        let terminal_row_nonblank = std::cell::Cell::new(false);
         let parse = |source: &super::super::source::SourceSnapshot, range: Range<usize>|
             -> Result<(FormattedDocument, Vec<Range<usize>>, usize), ModelTransactionError> {
             let bytes = source.bytes_in(range.clone()).ok_or(DocumentError::VerificationFailed)?;
             let decoded = self.encoding().decode_region(&bytes, range.start)?;
             let normalized = normalize(&decoded, self.file_format());
-            // Terminal trivia shares insertion ownership with the final body.
-            // Compound split/style edits require the complete boundary proof;
-            // this optimization handles only independently delimited bodies.
-            // A guarded structural band may retain the terminal ending when its
-            // patches all end before it and the row preceding it stays blank or
-            // nonblank, as when continuing a list. After a nonblank row the
-            // ending stays untouched trivia; after a blank row it pairs with
-            // the preceding ending into a separator, and the band parses every
-            // ending to the end exactly as the complete parse does. An edit
-            // changing that role changes the terminal paragraph's ownership.
-            if let Some(terminal) = normalized.endings.last()
-                .filter(|ending| range.end == source.len() && ending.source.end == range.end)
-            {
-                let row_start = normalized.endings.len().checked_sub(2)
-                    .map_or(0, |index| normalized.endings[index].normalized.end);
-                let nonblank = !normalized.text[row_start..terminal.normalized.start].trim().is_empty();
-                if std::ptr::eq(source, &self.state().source) {
-                    retains_terminal.set(guarded
-                        && patches.iter().all(|patch| patch.range.end <= terminal.source.start));
-                    terminal_row_nonblank.set(nonblank);
-                }
-                if !retains_terminal.get() || nonblank != terminal_row_nonblank.get() {
-                    return Err(DocumentError::UnsupportedFormatting.into());
-                }
+            // Terminal trivia can become an empty paragraph, including when
+            // a code exit adds the first final ending. A guarded band captures
+            // every source row and owner through EOF; its old semantic match
+            // and unchanged preceding guard prove that no outside owner is
+            // affected. Reparse that complete tail rather than requiring the
+            // final ending to keep its old blank/nonblank role. Unguarded
+            // bodies still need the broader boundary proof.
+            if !guarded && normalized.endings.last()
+                .is_some_and(|ending| range.end == source.len() && ending.source.end == range.end) {
+                return Err(DocumentError::UnsupportedFormatting.into());
             }
             // A newly blank edge row joins the retained separator outside
             // this band. Its endings must be paired with that separator, not
