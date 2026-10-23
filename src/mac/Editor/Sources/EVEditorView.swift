@@ -2126,8 +2126,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     func pointerCursor(at point: NSPoint) -> NSCursor {
         if gutterSelectionDragging { return EVLineNumberGutter.selectionCursor }
+        if tables.isSelectingColumns { return EVTableInteraction.columnSelectionCursor }
         if caretHoverPointerPressed { return .iBeam }
         if isRowSelectionPoint(point) { return EVLineNumberGutter.selectionCursor }
+        if tables.columnSelectionCell(at: point) != nil { return EVTableInteraction.columnSelectionCursor }
         if textViewportRect.contains(point),
            EVSelectionModes.hasInsertionCaret(surface?.viewPresentation.mode ?? UInt32(VIEM_MODE_NORMAL)) {
             return .iBeam
@@ -2153,6 +2155,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func resetCursorRects() {
         let cursor: NSCursor = gutterSelectionDragging ? EVLineNumberGutter.selectionCursor
+            : tables.isSelectingColumns ? EVTableInteraction.columnSelectionCursor
             : caretHoverPointerPressed ? .iBeam : .arrow
         addCursorRect(bounds, cursor: cursor)
         guard !caretHoverPointerPressed && !gutterSelectionDragging else { return }
@@ -2370,8 +2373,15 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if gutterSelectionDragging {
             wordSelectionDragging = false
             tables.endDrag()
+            tables.beganRowSelection()
             selectGutterRow(at: local, extending: false)
             EVLineNumberGutter.selectionCursor.set()
+            window?.invalidateCursorRects(for: self)
+            return
+        }
+        if tables.beginColumnSelection(at: local) {
+            wordSelectionDragging = false
+            EVTableInteraction.columnSelectionCursor.set()
             window?.invalidateCursorRects(for: self)
             return
         }
@@ -2407,6 +2417,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             EVLineNumberGutter.selectionCursor.set()
             return
         }
+        if tables.isSelectingColumns {
+            tables.dragColumns(to: convert(event.locationInWindow, from: nil))
+            return
+        }
         if !wordSelectionDragging && tables.drag(to: convert(event.locationInWindow, from: nil)) { updateDragAutoscroll(for: convert(event.locationInWindow, from: nil)); return }
         placeCursor(for: event, extending: true)
         updateDragAutoscroll(for: convert(event.locationInWindow, from: nil))
@@ -2414,6 +2428,8 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
 
     override func mouseUp(with event: NSEvent) {
         endPointerCursorLock()
+        // Controls for selected rows or columns appear once the gesture ends.
+        tables.endColumnSelection()
         caretHoverLocation = nil
         wordSelectionDragging = false
         pointerCursor(at: convert(event.locationInWindow, from: nil)).set()

@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn row_selection_margins_include_list_markers_but_reserve_table_controls() {
+    fn row_selection_margins_include_list_markers_and_reach_tables() {
         for source in ["- first item wraps over many many many many words\n  - nested item", "| head | other |\n| --- | --- |\n| body | last |"] {
             let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
             let mut core = Core::new(document);
@@ -147,7 +147,7 @@ mod tests {
             let requests = core.views[&view].engine.provider().request_calls();
             for row in snapshot.rows.iter() {
                 let y = row.y + row.height() / 2.;
-                let edge = row.table_cell.as_ref().map_or(row.paragraph_content_x - 2., |cell| cell.table_x - 20.);
+                let edge = row.table_cell.as_ref().map_or(row.paragraph_content_x - 2., |cell| cell.table_x + 1.);
                 assert!(snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: edge - 0.1, y }).unwrap());
                 assert!(!snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: edge, y }).unwrap());
                 assert!(!snapshot.row_selection_hit_test(crate::layout::LayoutPoint { x: row.paragraph_content_x - 1., y }).unwrap());

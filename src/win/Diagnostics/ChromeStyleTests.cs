@@ -240,6 +240,11 @@ internal static class ChromeStyleTests
         Check(mirroredColor.SequenceEqual(new byte[] { 5, 6, 7, 8, 1, 2, 3, 4 }), "cursor mirroring preserves complete BGRA pixels including alpha");
         using (var cursor = GutterCursor.Create())
             Check(cursor is not Microsoft.UI.Input.InputSystemCursor, "gutter selection creates an owned custom mirrored cursor");
+        byte[] stacked = [1, 2, 3, 4], flipped = new byte[4];
+        GutterCursor.FlipRows(stacked, flipped, 4, 1, halves: 2);
+        Check(flipped.SequenceEqual(new byte[] { 2, 1, 4, 3 }), "monochrome cursor flipping keeps AND and XOR images in place");
+        using (var cursor = GutterCursor.CreateColumnSelection())
+            Check(cursor is not Microsoft.UI.Input.InputSystemCursor, "column selection creates an owned custom down-arrow cursor");
     }
 
     private static void GutterFramePolicy()

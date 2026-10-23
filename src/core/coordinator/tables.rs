@@ -3,6 +3,21 @@ use super::*;
 use crate::command::TableSelectionExtent;
 use crate::document::TableEditIntent;
 
+/// An action on the current selection of complete table rows or columns.
+/// Insertions go outside the selected group; insertions and alignment keep
+/// the group selected.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TableSelectionAction {
+    InsertRowAbove,
+    InsertRowBelow,
+    DeleteRows,
+    InsertColumnLeft,
+    InsertColumnRight,
+    DeleteColumns,
+    /// Aligns every selected column of a column group.
+    SetAlignment(crate::document::TableAlignment),
+}
+
 impl<P: TextMeasurementProvider> Core<P> {
     /// Capture one bounded visible-table width refinement. The native scheduler
     /// computes this immutable request off the buffer's serial owner, then asks
@@ -304,12 +319,98 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
+    pub(super) fn apply_table_selection_edit(
+        &mut self,
+        view: ViewId,
+        expected: LogicalSelectionIdentity,
+        action: TableSelectionAction,
+    ) -> Result<CoreOutcome, CoreError> {
+        if self.list_selection_identity(view)? != expected {
+            return Err(CoreError::StaleLogicalSelection);
+        }
+        let extent = self.table_selection(view)?.ok_or(CoreError::StaleLogicalSelection)?;
+        let table = self
+            .document
+            .projection()
+            .tables()
+            .iter()
+            .find(|table| table.id == extent.table)
+            .ok_or(CoreError::StaleLogicalSelection)?;
+        let (rows, columns) = (extent.rows(), extent.columns());
+        let (whole_rows, whole_columns) =
+            (columns == (0..table.columns.len()), rows == (0..table.rows.len()));
+        let required = match action {
+            TableSelectionAction::InsertRowAbove
+            | TableSelectionAction::InsertRowBelow
+            | TableSelectionAction::DeleteRows => whole_rows.then_some(()).ok_or("Select complete table rows first."),
+            _ => whole_columns.then_some(()).ok_or("Select complete table columns first."),
+        };
+        required.map_err(DocumentError::UnsupportedTableEdit)?;
+        let id = table.id;
+        let shifted_rows = TableSelectionExtent {
+            anchor_row: extent.anchor_row + 1,
+            active_row: extent.active_row + 1,
+            ..extent
+        };
+        let shifted_columns = TableSelectionExtent {
+            anchor_column: extent.anchor_column + 1,
+            active_column: extent.active_column + 1,
+            ..extent
+        };
+        let (intent, keep) = match action {
+            TableSelectionAction::InsertRowAbove if rows.start == 0 => {
+                return Err(DocumentError::UnsupportedTableEdit(
+                    "A row cannot be inserted above the header.",
+                )
+                .into());
+            }
+            TableSelectionAction::InsertRowAbove => (
+                TableEditIntent::InsertRow { table: id, row: rows.start, after: false },
+                Some(shifted_rows),
+            ),
+            TableSelectionAction::InsertRowBelow => (
+                TableEditIntent::InsertRow { table: id, row: rows.end - 1, after: true },
+                Some(extent),
+            ),
+            TableSelectionAction::DeleteRows => (TableEditIntent::DeleteRows { table: id, rows }, None),
+            TableSelectionAction::InsertColumnLeft => (
+                TableEditIntent::InsertColumn { table: id, column: columns.start, after: false },
+                Some(shifted_columns),
+            ),
+            TableSelectionAction::InsertColumnRight => (
+                TableEditIntent::InsertColumn { table: id, column: columns.end - 1, after: true },
+                Some(extent),
+            ),
+            TableSelectionAction::DeleteColumns => {
+                (TableEditIntent::DeleteColumns { table: id, columns }, None)
+            }
+            TableSelectionAction::SetAlignment(alignment) => (
+                TableEditIntent::SetAlignment { table: id, columns, alignment },
+                Some(extent),
+            ),
+        };
+        self.apply_table_edit_selecting(view, expected.document(), expected.revision(), intent, keep)
+    }
+
     pub(super) fn apply_table_edit(
         &mut self,
         view: ViewId,
         document: DocumentId,
         revision: Revision,
         intent: TableEditIntent,
+    ) -> Result<CoreOutcome, CoreError> {
+        self.apply_table_edit_selecting(view, document, revision, intent, None)
+    }
+
+    /// `selection`, when present, replaces the invoking view's selection after
+    /// the edit instead of placing its caret in the edited cell.
+    fn apply_table_edit_selecting(
+        &mut self,
+        view: ViewId,
+        document: DocumentId,
+        revision: Revision,
+        intent: TableEditIntent,
+        selection: Option<TableSelectionExtent>,
     ) -> Result<CoreOutcome, CoreError> {
         if document != self.document.id() || revision != self.document.revision() {
             return Err(CoreError::StaleLogicalSelection);
@@ -322,7 +423,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 | TableEditIntent::SetCellsStrikethrough { .. }
                 | TableEditIntent::AssignCellsNamedStyle { .. }
         );
-        let enter_insert = matches!(
+        let enter_insert = selection.is_none() && matches!(
             intent,
             TableEditIntent::Insert { .. }
                 | TableEditIntent::InsertRow { .. }
@@ -360,7 +461,21 @@ impl<P: TextMeasurementProvider> Core<P> {
         for (id, commands) in mapped {
             self.views.get_mut(&id).expect("prepared view").commands = commands;
         }
-        if !preserve_selection {
+        // A structural edit can renumber the table identity; the caret cell
+        // names the edited table in the published projection.
+        let reselected = selection.is_some_and(|extent| {
+            let Some(table) = self.document.projection().table_at(caret).map(|table| table.id) else {
+                return false;
+            };
+            let commands = &mut self.views.get_mut(&view).expect("prepared view").commands;
+            let mut candidate = commands.clone();
+            if candidate.select_table_cells(&self.document, &TableSelectionExtent { table, ..extent }).is_err() {
+                return false;
+            }
+            *commands = candidate;
+            true
+        });
+        if !preserve_selection && !reselected {
             self.views
                 .get_mut(&view)
                 .expect("prepared view")

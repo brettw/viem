@@ -1,15 +1,19 @@
 //! Exact-revision table actions and snapshot-bound cell geometry.
 use super::*;
 use crate::document::{TableAlignment, TableEditIntent};
+use crate::TableSelectionAction;
 
 pub const VIEM_TABLE_CAN_INSERT: u32 = 1;
 pub const VIEM_TABLE_IN_TABLE: u32 = 2;
 pub const VIEM_TABLE_HEADER: u32 = 4;
 pub const VIEM_TABLE_CELL_SELECTED: u32 = 8;
+pub const VIEM_TABLE_ROW_SELECTION: u32 = 16;
+pub const VIEM_TABLE_COLUMN_SELECTION: u32 = 32;
 pub const VIEM_TABLE_ALIGN_UNSPECIFIED: u32 = 0;
 pub const VIEM_TABLE_ALIGN_LEFT: u32 = 1;
 pub const VIEM_TABLE_ALIGN_CENTER: u32 = 2;
 pub const VIEM_TABLE_ALIGN_RIGHT: u32 = 3;
+pub const VIEM_TABLE_ALIGN_MIXED: u32 = 4;
 pub const VIEM_TABLE_INSERT_ROW_ABOVE: u32 = 1;
 pub const VIEM_TABLE_INSERT_ROW_BELOW: u32 = 2;
 pub const VIEM_TABLE_DELETE_ROW: u32 = 3;
@@ -30,6 +34,8 @@ pub struct ViemTableContextV1 {
     pub column: u64,
     pub rows: u64,
     pub columns: u64,
+    pub row_end: u64,
+    pub column_end: u64,
     pub alignment: u32,
     pub reserved: u32,
 }
@@ -92,6 +98,21 @@ fn alignment_to_ffi(value: TableAlignment) -> u32 {
         TableAlignment::Right => 3,
     }
 }
+/// The shared alignment of a column group. Unspecified and left alignment
+/// look alike, so a group of only those two reports left.
+fn group_alignment(columns: &[TableAlignment]) -> u32 {
+    let first = columns.first().copied().unwrap_or(TableAlignment::Unspecified);
+    if columns.iter().all(|value| *value == first) {
+        alignment_to_ffi(first)
+    } else if columns
+        .iter()
+        .all(|value| matches!(value, TableAlignment::Unspecified | TableAlignment::Left))
+    {
+        VIEM_TABLE_ALIGN_LEFT
+    } else {
+        VIEM_TABLE_ALIGN_MIXED
+    }
+}
 fn alignment_from_ffi(value: u32) -> Result<TableAlignment, ViemStatus> {
     Ok(match value {
         0 => TableAlignment::Unspecified,
@@ -131,6 +152,8 @@ fn context_at(
             .ok_or(ViemStatus::CoreFailure)? as u64;
         result.rows = table.rows.len() as u64;
         result.columns = table.columns.len() as u64;
+        result.row_end = result.row + 1;
+        result.column_end = result.column + 1;
         result.alignment = alignment_to_ffi(table.columns[result.column as usize]);
         if result.row == 0 {
             result.flags |= VIEM_TABLE_HEADER;
@@ -159,7 +182,38 @@ pub unsafe extern "C" fn viem_core_view_table_context(
                 .command_state(ViewId(view))
                 .ok_or(ViemStatus::InvalidView)?
                 .cursor();
-            context_at(core, ViewId(view), cursor)
+            let mut result = context_at(core, ViewId(view), cursor)?;
+            // A selection of complete rows or columns is the target itself.
+            if let Some(extent) = core.table_selection(ViewId(view)).map_err(core_status)? {
+                let (rows, columns) = (extent.rows(), extent.columns());
+                let table = core
+                    .document()
+                    .projection()
+                    .tables()
+                    .iter()
+                    .find(|table| table.id == extent.table)
+                    .ok_or(ViemStatus::CoreFailure)?;
+                let mut flags = 0;
+                if columns == (0..table.columns.len()) {
+                    flags |= VIEM_TABLE_ROW_SELECTION;
+                }
+                if rows == (0..table.rows.len()) {
+                    flags |= VIEM_TABLE_COLUMN_SELECTION;
+                }
+                if flags != 0 {
+                    result.flags = VIEM_TABLE_IN_TABLE | flags;
+                    if rows.start == 0 {
+                        result.flags |= VIEM_TABLE_HEADER;
+                    }
+                    result.table_id = table.id;
+                    (result.row, result.row_end) = (rows.start as u64, rows.end as u64);
+                    (result.column, result.column_end) = (columns.start as u64, columns.end as u64);
+                    result.rows = table.rows.len() as u64;
+                    result.columns = table.columns.len() as u64;
+                    result.alignment = group_alignment(&table.columns[columns]);
+                }
+            }
+            Ok(result)
         })?;
         unsafe { output.write(result) };
         Ok(())
@@ -253,9 +307,14 @@ pub unsafe extern "C" fn viem_core_view_table_action(
             || request.reserved != 0
             || request.expected.struct_size < VIEM_TABLE_CONTEXT_V1_SIZE
             || request.expected.reserved != 0
-            || request.expected.flags & !(VIEM_TABLE_IN_TABLE | VIEM_TABLE_HEADER) != 0
+            || request.expected.flags
+                & !(VIEM_TABLE_IN_TABLE
+                    | VIEM_TABLE_HEADER
+                    | VIEM_TABLE_ROW_SELECTION
+                    | VIEM_TABLE_COLUMN_SELECTION)
+                != 0
             || request.expected.flags & VIEM_TABLE_IN_TABLE == 0
-            || request.expected.alignment > VIEM_TABLE_ALIGN_RIGHT
+            || request.expected.alignment > VIEM_TABLE_ALIGN_MIXED
             || (request.action != VIEM_TABLE_SET_ALIGNMENT && request.alignment != 0)
             || request.alignment > VIEM_TABLE_ALIGN_RIGHT
         {
@@ -277,24 +336,73 @@ pub unsafe extern "C" fn viem_core_view_table_action(
                 .iter()
                 .find(|table| table.id == request.expected.table_id)
                 .ok_or(ViemStatus::StaleRevision)?;
-            let row =
-                usize::try_from(request.expected.row).map_err(|_| ViemStatus::LengthOverflow)?;
-            let column =
-                usize::try_from(request.expected.column).map_err(|_| ViemStatus::LengthOverflow)?;
-            if row >= table.rows.len()
-                || column >= table.columns.len()
+            let checked = |value| usize::try_from(value).map_err(|_| ViemStatus::LengthOverflow);
+            let row = checked(request.expected.row)?;
+            let column = checked(request.expected.column)?;
+            let rows = row..checked(request.expected.row_end)?;
+            let columns = column..checked(request.expected.column_end)?;
+            let selection_flags =
+                request.expected.flags & (VIEM_TABLE_ROW_SELECTION | VIEM_TABLE_COLUMN_SELECTION);
+            if rows.is_empty()
+                || columns.is_empty()
+                || selection_flags == 0 && (rows.len() != 1 || columns.len() != 1)
+            {
+                return Err(ViemStatus::InvalidArgument);
+            }
+            if rows.end > table.rows.len()
+                || columns.end > table.columns.len()
                 || request.expected.rows != table.rows.len() as u64
                 || request.expected.columns != table.columns.len() as u64
             {
                 return Err(ViemStatus::StaleRevision);
             }
-            if request.expected.alignment != alignment_to_ffi(table.columns[column])
+            if selection_flags != 0 {
+                let extent = core
+                    .table_selection(ViewId(view))
+                    .map_err(core_status)?
+                    .ok_or(ViemStatus::StaleRevision)?;
+                let mut actual = 0;
+                if extent.columns() == (0..table.columns.len()) {
+                    actual |= VIEM_TABLE_ROW_SELECTION;
+                }
+                if extent.rows() == (0..table.rows.len()) {
+                    actual |= VIEM_TABLE_COLUMN_SELECTION;
+                }
+                if extent.table != table.id
+                    || extent.rows() != rows
+                    || extent.columns() != columns
+                    || actual != selection_flags
+                {
+                    return Err(ViemStatus::StaleRevision);
+                }
+            }
+            if request.expected.alignment != group_alignment(&table.columns[columns.clone()])
                 || (request.expected.flags & VIEM_TABLE_HEADER != 0) != (row == 0)
             {
                 return Err(ViemStatus::StaleRevision);
             }
-            if request.action == VIEM_TABLE_INSERT_ROW_ABOVE && row == 0 {
+            if request.action == VIEM_TABLE_INSERT_ROW_ABOVE && row == 0
+                || request.action == VIEM_TABLE_SET_ALIGNMENT
+                    && selection_flags != 0
+                    && selection_flags & VIEM_TABLE_COLUMN_SELECTION == 0
+            {
                 return Err(ViemStatus::UnsupportedOperation);
+            }
+            let group = match request.action {
+                VIEM_TABLE_INSERT_ROW_ABOVE => Some((VIEM_TABLE_ROW_SELECTION, TableSelectionAction::InsertRowAbove)),
+                VIEM_TABLE_INSERT_ROW_BELOW => Some((VIEM_TABLE_ROW_SELECTION, TableSelectionAction::InsertRowBelow)),
+                VIEM_TABLE_DELETE_ROW => Some((VIEM_TABLE_ROW_SELECTION, TableSelectionAction::DeleteRows)),
+                VIEM_TABLE_INSERT_COLUMN_LEFT => Some((VIEM_TABLE_COLUMN_SELECTION, TableSelectionAction::InsertColumnLeft)),
+                VIEM_TABLE_INSERT_COLUMN_RIGHT => Some((VIEM_TABLE_COLUMN_SELECTION, TableSelectionAction::InsertColumnRight)),
+                VIEM_TABLE_DELETE_COLUMN => Some((VIEM_TABLE_COLUMN_SELECTION, TableSelectionAction::DeleteColumns)),
+                VIEM_TABLE_SET_ALIGNMENT => Some((
+                    VIEM_TABLE_COLUMN_SELECTION,
+                    TableSelectionAction::SetAlignment(alignment_from_ffi(request.alignment)?),
+                )),
+                _ => None,
+            };
+            if let Some((_, action)) = group.filter(|(flag, _)| selection_flags & flag != 0) {
+                return dispatch_event(core, view, CoreEvent::TableSelectionEdit { expected: selection, action });
             }
             let table = table.id;
             let intent = match request.action {
@@ -308,7 +416,7 @@ pub unsafe extern "C" fn viem_core_view_table_action(
                     row,
                     after: true,
                 },
-                VIEM_TABLE_DELETE_ROW => TableEditIntent::DeleteRow { table, row },
+                VIEM_TABLE_DELETE_ROW => TableEditIntent::DeleteRows { table, rows },
                 VIEM_TABLE_INSERT_COLUMN_LEFT => TableEditIntent::InsertColumn {
                     table,
                     column,
@@ -319,17 +427,16 @@ pub unsafe extern "C" fn viem_core_view_table_action(
                     column,
                     after: true,
                 },
-                VIEM_TABLE_DELETE_COLUMN => TableEditIntent::DeleteColumn { table, column },
-                VIEM_TABLE_SET_ALIGNMENT => TableEditIntent::SetAlignment {
+                VIEM_TABLE_DELETE_COLUMN => TableEditIntent::DeleteColumns {
                     table,
-                    column,
-                    alignment: alignment_from_ffi(request.alignment)?,
-                },
-                VIEM_TABLE_CLEAR_CELL => TableEditIntent::ClearCells {
-                    table,
-                    rows: row..row + 1,
                     columns: column..column + 1,
                 },
+                VIEM_TABLE_SET_ALIGNMENT => TableEditIntent::SetAlignment {
+                    table,
+                    columns,
+                    alignment: alignment_from_ffi(request.alignment)?,
+                },
+                VIEM_TABLE_CLEAR_CELL => TableEditIntent::ClearCells { table, rows, columns },
                 _ => return Err(ViemStatus::InvalidArgument),
             };
             dispatch_event(

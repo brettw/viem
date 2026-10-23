@@ -708,3 +708,196 @@ fn selection_reaching_into_a_table_exports_its_complete_cells() {
     }
     assert!(rectangles.len() > cells.len(), "the text before the table keeps its highlight");
 }
+
+fn select_cells(f: &TableFfiFixture, anchor: (u64, u64), active: (u64, u64)) {
+    let c = context(f);
+    let request = ViemTableSelectionV1 {
+        struct_size: VIEM_TABLE_SELECTION_V1_SIZE,
+        active: 1,
+        document_id: c.selection.document_id,
+        document_revision: c.selection.document_revision,
+        table_id: c.table_id,
+        anchor_row: anchor.0,
+        anchor_column: anchor.1,
+        active_row: active.0,
+        active_column: active.1,
+    };
+    let mut out = ViemCoreOutcomeV1::default();
+    assert_eq!(
+        unsafe { viem_core_view_select_table_cells(f.handle, f.view, &request, &mut out) },
+        ViemStatus::Ok
+    );
+}
+fn selected_cells(f: &TableFfiFixture) -> Option<((u64, u64), (u64, u64))> {
+    let mut value = ViemTableSelectionV1::default();
+    assert_eq!(
+        unsafe { viem_core_view_table_selection(f.handle, f.view, &mut value) },
+        ViemStatus::Ok
+    );
+    (value.active != 0).then_some((
+        (value.anchor_row, value.anchor_column),
+        (value.active_row, value.active_column),
+    ))
+}
+fn perform(f: &TableFfiFixture, expected: ViemTableContextV1, kind: u32) -> ViemStatus {
+    let mut out = ViemCoreOutcomeV1::default();
+    unsafe { viem_core_view_table_action(f.handle, f.view, &action(expected, kind), &mut out) }
+}
+fn span(c: &ViemTableContextV1) -> (u64, u64, u64, u64) {
+    (c.row, c.row_end, c.column, c.column_end)
+}
+
+#[test]
+fn selected_complete_rows_are_one_target_and_insertions_keep_the_selection() {
+    let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
+    let single = context(&f);
+    assert_eq!(span(&single), (0, 1, 0, 1));
+    // A partial rectangle is not a group target.
+    select_cells(&f, (1, 0), (2, 1));
+    assert_eq!(context(&f).flags & (VIEM_TABLE_ROW_SELECTION | VIEM_TABLE_COLUMN_SELECTION), 0);
+
+    select_cells(&f, (1, 0), (2, 2));
+    let rows = context(&f);
+    assert_eq!(rows.flags, VIEM_TABLE_IN_TABLE | VIEM_TABLE_ROW_SELECTION);
+    assert_eq!(span(&rows), (1, 3, 0, 3));
+    for stale in [
+        ViemTableContextV1 { row_end: 2, ..rows },
+        ViemTableContextV1 { flags: rows.flags | VIEM_TABLE_COLUMN_SELECTION, ..rows },
+    ] {
+        assert_eq!(perform(&f, stale, VIEM_TABLE_DELETE_ROW), ViemStatus::StaleRevision);
+    }
+    assert_eq!(perform(&f, rows, VIEM_TABLE_SET_ALIGNMENT), ViemStatus::UnsupportedOperation);
+    assert_eq!(source(&f), TABLE);
+
+    assert_eq!(perform(&f, rows, VIEM_TABLE_INSERT_ROW_ABOVE), ViemStatus::Ok);
+    assert_eq!(
+        source(&f),
+        b"| A | B | C |\n| :-- | :-: | --: |\n|  |  |  |\n| one | two | three |\n| four | five | six |"
+    );
+    assert_eq!(selected_cells(&f), Some(((2, 0), (3, 2))));
+    let rows = context(&f);
+    assert_eq!((rows.rows, span(&rows)), (4, (2, 4, 0, 3)));
+    assert_eq!(perform(&f, rows, VIEM_TABLE_INSERT_ROW_BELOW), ViemStatus::Ok);
+    assert_eq!(selected_cells(&f), Some(((2, 0), (3, 2))));
+    let rows = context(&f);
+    assert_eq!(rows.rows, 5);
+    assert_eq!(perform(&f, rows, VIEM_TABLE_DELETE_ROW), ViemStatus::Ok);
+    assert_eq!(selected_cells(&f), None);
+    let after = context(&f);
+    assert_eq!((after.rows, after.row, after.selection.kind), (3, 2, VIEM_LOGICAL_SELECTION_KIND_NONE));
+    assert_eq!(source(&f), b"| A | B | C |\n| :-- | :-: | --: |\n|  |  |  |\n|  |  |  |");
+}
+
+#[test]
+fn selected_row_groups_with_the_header_clear_it_or_remove_the_table() {
+    let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
+    select_cells(&f, (1, 2), (0, 0));
+    let rows = context(&f);
+    assert_eq!(rows.flags, VIEM_TABLE_IN_TABLE | VIEM_TABLE_HEADER | VIEM_TABLE_ROW_SELECTION);
+    assert_eq!(perform(&f, rows, VIEM_TABLE_INSERT_ROW_ABOVE), ViemStatus::UnsupportedOperation);
+    assert_eq!(perform(&f, rows, VIEM_TABLE_INSERT_ROW_BELOW), ViemStatus::Ok);
+    assert_eq!(selected_cells(&f), Some(((1, 2), (0, 0))));
+    assert_eq!(perform(&f, context(&f), VIEM_TABLE_DELETE_ROW), ViemStatus::Ok);
+    assert_eq!(source(&f), b"|  |  |  |\n| :-- | :-: | --: |\n|  |  |  |\n| four | five | six |");
+
+    select_cells(&f, (0, 0), (2, 2));
+    let all = context(&f);
+    assert_eq!(
+        all.flags,
+        VIEM_TABLE_IN_TABLE | VIEM_TABLE_HEADER | VIEM_TABLE_ROW_SELECTION | VIEM_TABLE_COLUMN_SELECTION
+    );
+    assert_eq!(perform(&f, all, VIEM_TABLE_DELETE_ROW), ViemStatus::Ok);
+    assert_eq!(source(&f), b"");
+}
+
+#[test]
+fn selected_complete_columns_are_one_target_and_insertions_keep_the_selection() {
+    let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
+    select_cells(&f, (2, 1), (0, 2));
+    let columns = context(&f);
+    assert_eq!(columns.flags, VIEM_TABLE_IN_TABLE | VIEM_TABLE_HEADER | VIEM_TABLE_COLUMN_SELECTION);
+    assert_eq!(span(&columns), (0, 3, 1, 3));
+    assert_eq!(columns.alignment, VIEM_TABLE_ALIGN_MIXED);
+    // Row actions on a column group keep their single-row meaning.
+    assert_eq!(perform(&f, columns, VIEM_TABLE_INSERT_ROW_ABOVE), ViemStatus::UnsupportedOperation);
+
+    assert_eq!(perform(&f, columns, VIEM_TABLE_INSERT_COLUMN_LEFT), ViemStatus::Ok);
+    assert_eq!(selected_cells(&f), Some(((2, 2), (0, 3))));
+    let columns = context(&f);
+    assert_eq!((columns.columns, span(&columns)), (4, (0, 3, 2, 4)));
+    assert_eq!(perform(&f, columns, VIEM_TABLE_INSERT_COLUMN_RIGHT), ViemStatus::Ok);
+    assert_eq!(selected_cells(&f), Some(((2, 2), (0, 3))));
+    assert_eq!(context(&f).columns, 5);
+    assert_eq!(perform(&f, context(&f), VIEM_TABLE_DELETE_COLUMN), ViemStatus::Ok);
+    assert_eq!(selected_cells(&f), None);
+    assert_eq!(context(&f).columns, 3);
+    assert_eq!(
+        source(&f),
+        b"| A |   |   |\n| :-- | :---: | ---: |\n| one |   |   |\n| four |   |   |"
+    );
+
+    select_cells(&f, (0, 0), (2, 2));
+    assert_eq!(perform(&f, context(&f), VIEM_TABLE_DELETE_COLUMN), ViemStatus::Ok);
+    assert_eq!(source(&f), b"");
+}
+
+#[test]
+fn single_cell_contexts_reject_group_spans() {
+    let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
+    let single = context(&f);
+    for invalid in [
+        ViemTableContextV1 { row_end: 2, ..single },
+        ViemTableContextV1 { column_end: 0, ..single },
+    ] {
+        assert_eq!(perform(&f, invalid, VIEM_TABLE_INSERT_ROW_BELOW), ViemStatus::InvalidArgument);
+    }
+    assert_eq!(
+        perform(&f, ViemTableContextV1 { flags: single.flags | VIEM_TABLE_ROW_SELECTION, ..single }, VIEM_TABLE_DELETE_ROW),
+        ViemStatus::StaleRevision
+    );
+    assert_eq!(source(&f), TABLE);
+}
+
+fn align(f: &TableFfiFixture, expected: ViemTableContextV1, alignment: u32) -> ViemStatus {
+    let mut out = ViemCoreOutcomeV1::default();
+    let request = ViemTableActionV1 { alignment, ..action(expected, VIEM_TABLE_SET_ALIGNMENT) };
+    unsafe { viem_core_view_table_action(f.handle, f.view, &request, &mut out) }
+}
+
+#[test]
+fn selected_column_groups_share_one_alignment_and_keep_the_selection() {
+    let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
+    select_cells(&f, (0, 1), (2, 2));
+    let columns = context(&f);
+    assert_eq!(columns.alignment, VIEM_TABLE_ALIGN_MIXED);
+    assert_eq!(align(&f, columns, VIEM_TABLE_ALIGN_MIXED), ViemStatus::InvalidArgument);
+    assert_eq!(align(&f, ViemTableContextV1 { alignment: VIEM_TABLE_ALIGN_RIGHT, ..columns }, VIEM_TABLE_ALIGN_LEFT),
+        ViemStatus::StaleRevision);
+    assert_eq!(align(&f, columns, VIEM_TABLE_ALIGN_RIGHT), ViemStatus::Ok);
+    assert_eq!(
+        source(&f),
+        b"| A | B | C |\n| :-- | -: | --: |\n| one | two | three |\n| four | five | six |"
+    );
+    assert_eq!(selected_cells(&f), Some(((0, 1), (2, 2))));
+    let columns = context(&f);
+    assert_eq!(columns.alignment, VIEM_TABLE_ALIGN_RIGHT);
+    // Aligning columns that already share the alignment changes nothing.
+    let revision = state(&f).document_revision;
+    assert_eq!(align(&f, columns, VIEM_TABLE_ALIGN_RIGHT), ViemStatus::Ok);
+    assert_eq!(state(&f).document_revision, revision);
+    assert_eq!(align(&f, columns, VIEM_TABLE_ALIGN_UNSPECIFIED), ViemStatus::Ok);
+    select_cells(&f, (0, 0), (2, 1));
+    assert_eq!(context(&f).alignment, VIEM_TABLE_ALIGN_LEFT, "Unspecified and left look alike");
+}
+
+#[test]
+fn deleting_the_header_row_by_itself_clears_it() {
+    let f = table_ffi_fixture(TABLE, VIEM_FORMAT_MARKDOWN);
+    let header = context(&f);
+    assert_eq!(header.row, 0);
+    assert_eq!(perform(&f, header, VIEM_TABLE_DELETE_ROW), ViemStatus::Ok);
+    assert_eq!(
+        source(&f),
+        b"|  |  |  |\n| :-- | :-: | --: |\n| one | two | three |\n| four | five | six |"
+    );
+}

@@ -1650,13 +1650,14 @@ impl LayoutSnapshot {
 
     /// The left selection margin follows the exact displayed row's content box,
     /// including paragraph/list padding, without requiring its glyphs to be
-    /// materialized. Keep a small text-placement slop and the native table row
-    /// controls' activation strip outside this region.
+    /// materialized. Keep a small text-placement slop outside this region. A
+    /// table row's margin reaches through the table's left border, sharing it
+    /// with the native row controls that hovering there shows.
     pub(crate) fn row_selection_hit_test(&self, point: LayoutPoint) -> Result<bool, LayoutError> {
         if !point.x.is_finite() { return Err(LayoutError::InvalidGeometry); }
         let row = self.gutter_row(point.y)?;
         let right = row.table_cell.as_ref().map_or(
-            row.paragraph_content_x - 2., |cell| cell.table_x - 20.);
+            row.paragraph_content_x - 2., |cell| cell.table_x + 1.);
         Ok(point.x < right || row.decorations.iter().any(|decoration| {
             // Text furniture is the synthetic list label. RTL labels sit on
             // the right; only the label itself joins the selection gutter,

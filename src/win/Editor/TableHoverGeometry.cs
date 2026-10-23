@@ -2,7 +2,7 @@ using Windows.Foundation;
 
 namespace Viem.Windows.Editor;
 
-internal enum TableHoverKind { Column, LeftRow, RightRow }
+internal enum TableHoverKind { Column, LeftRow, RightRow, RowSelection, ColumnSelection }
 
 /// <summary>Table hover bands use document edges, never viewport clipping edges.</summary>
 internal static class TableHoverGeometry
@@ -21,20 +21,23 @@ internal static class TableHoverGeometry
         bool ownsRow = point.Y >= cell.Top && (point.Y < cell.Bottom
             || point.Y == cell.Bottom && cell.Bottom == table.Bottom);
         if (!ownsRow) return null;
-        if (point.X >= table.Left - 20 && point.X <= table.Left + 1) return TableHoverKind.LeftRow;
-        if (point.X >= table.Right - 1 && point.X <= table.Right + 20) return TableHoverKind.RightRow;
+        // The left zone is the row's selection margin, through the table's
+        // border; the right zone reaches the right edge of the viewport.
+        if (point.X < table.Left + 1) return TableHoverKind.LeftRow;
+        if (point.X >= table.Right - 1) return TableHoverKind.RightRow;
         return null;
     }
 
-    internal static Rect Activation(TableHoverKind kind, Rect cell, Rect table) => kind switch {
+    internal static Rect Activation(TableHoverKind kind, Rect cell, Rect table, Rect viewport) => kind switch {
         TableHoverKind.Column => new(cell.X, table.Y - 3, cell.Width, 4),
-        TableHoverKind.LeftRow => new(table.X - 20, cell.Y, 21, cell.Height),
-        _ => new(table.Right - 1, cell.Y, 21, cell.Height),
+        TableHoverKind.LeftRow => new(viewport.Left, cell.Y, Math.Max(0, table.Left + 1 - viewport.Left), cell.Height),
+        TableHoverKind.RightRow => new(table.Right - 1, cell.Y, Math.Max(0, viewport.Right - table.Right + 1), cell.Height),
+        _ => new(cell.X, cell.Y, 0, 0),
     };
 
     internal static Rect Placement(TableHoverKind kind, Rect cell, Rect table, Size widget, Size viewport)
     {
-        bool column = kind == TableHoverKind.Column;
+        bool column = kind is TableHoverKind.Column or TableHoverKind.ColumnSelection;
         double left = table.Left - widget.Width - 4, right = table.Right + 4;
         double x = column ? cell.X + cell.Width / 2 - widget.Width / 2
             : kind == TableHoverKind.RightRow ? right : left;

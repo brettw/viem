@@ -1019,6 +1019,8 @@ internal unsafe struct ViemTableContextV1
     public ulong @column;
     public ulong @rows;
     public ulong @columns;
+    public ulong @row_end;
+    public ulong @column_end;
     public uint @alignment;
     public uint @reserved;
 }
@@ -1928,10 +1930,13 @@ internal static unsafe partial class Native
     public const uint VIEM_TABLE_IN_TABLE = 2u;
     public const uint VIEM_TABLE_HEADER = 4u;
     public const uint VIEM_TABLE_CELL_SELECTED = 8u;
+    public const uint VIEM_TABLE_ROW_SELECTION = 16u;
+    public const uint VIEM_TABLE_COLUMN_SELECTION = 32u;
     public const uint VIEM_TABLE_ALIGN_UNSPECIFIED = 0u;
     public const uint VIEM_TABLE_ALIGN_LEFT = 1u;
     public const uint VIEM_TABLE_ALIGN_CENTER = 2u;
     public const uint VIEM_TABLE_ALIGN_RIGHT = 3u;
+    public const uint VIEM_TABLE_ALIGN_MIXED = 4u;
     public const uint VIEM_TABLE_INSERT_ROW_ABOVE = 1u;
     public const uint VIEM_TABLE_INSERT_ROW_BELOW = 2u;
     public const uint VIEM_TABLE_DELETE_ROW = 3u;

@@ -302,7 +302,7 @@ fn deleting_selected_cells_in_another_view_retires_the_rectangle() {
         CoreEvent::TableEdit {
             document: core.document().id(),
             revision: core.document().revision(),
-            intent: TableEditIntent::DeleteRow { table, row: 1 },
+            intent: TableEditIntent::DeleteRows { table, rows: 1..2 },
         },
     )
     .unwrap();

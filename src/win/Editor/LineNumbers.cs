@@ -74,7 +74,7 @@ internal sealed partial class EditorPane
         caretHoverLocation = null; SetCaretHover(null); MoveCodeBlockLanguageHover(null);
         if (composing) { compositionRejected = true; ClearInput(); }
         tableCellDrag = false; tableDragAnchor = null; tableDragIdentity = null;
-        HideTableWidget(); FocusEditor();
+        tablePrefersColumns = false; DismissTableWidget(); FocusEditor();
         dragPoint = args.GetCurrentPoint(Canvas).Position;
         View.SelectPointerRow((float)dragPoint.Y);
         wordSelectionDragging = false;
@@ -96,8 +96,11 @@ internal sealed partial class EditorPane
     }
     private void EndPointerSelection(UIElement owner, PointerRoutedEventArgs args)
     {
+        bool selectedRowsOrColumns = gutterSelectionDragging || tableColumnGesture != null;
         pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
         owner.ReleasePointerCapture(args.Pointer);
+        // Controls for selected rows or columns appear once the gesture ends.
+        if (selectedRowsOrColumns) EndTableColumnSelection();
         UpdatePointerRegion(args.GetCurrentPoint(Canvas).Position); args.Handled = true;
     }
 

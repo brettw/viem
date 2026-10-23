@@ -32,33 +32,42 @@ internal static unsafe class GutterCursor
     [DllImport("combase.dll")] private static extern int WindowsDeleteString(nint text);
     [DllImport("combase.dll")] private static extern int RoGetActivationFactory(nint text, in Guid iid, out nint factory);
 
-    internal static InputCursor Create()
+    internal static InputCursor Create() => Owned(TransformSystemCursor(32512 /* IDC_ARROW */, vertical: false), FallbackArrow);
+
+    /// The system up arrow turned to point down, for selecting table columns.
+    internal static InputCursor CreateColumnSelection() => Owned(TransformSystemCursor(32516 /* IDC_UPARROW */, vertical: true), FallbackDownArrow);
+
+    private static InputCursor Owned(nint cursor, Func<nint> fallback)
     {
-        nint cursor = MirrorSystemArrow();
-        if (cursor == 0) cursor = FallbackArrow();
+        if (cursor == 0) cursor = fallback();
         try { return FromHandle(cursor); }
         catch (Exception error) when (error is Win32Exception or COMException) {
-            System.Diagnostics.Trace.TraceWarning("Gutter cursor unavailable: {0}", error.Message);
+            System.Diagnostics.Trace.TraceWarning("Custom cursor unavailable: {0}", error.Message);
             return InputSystemCursor.Create(InputSystemCursorShape.Arrow);
         }
         finally { if (cursor != 0) DestroyCursor(cursor); }
     }
 
-    private static nint MirrorSystemArrow()
+    /// Mirrors a shared system cursor horizontally, or flips it vertically.
+    private static nint TransformSystemCursor(nint id, bool vertical)
     {
-        nint arrow = LoadCursor(0, 32512 /* IDC_ARROW: shared, never destroy */);
-        if (arrow == 0 || !GetIconInfo(arrow, out var original)) return 0;
+        nint source = LoadCursor(0, id /* shared, never destroy */);
+        if (source == 0 || !GetIconInfo(source, out var original)) return 0;
         nint mask = 0, color = 0, dc = GetDC(0);
         try {
             if (dc == 0 || GetObject(original.Mask, Marshal.SizeOf<Bitmap>(), out var size) == 0
                 || size.Width <= 0 || size.Width > 512 || size.Height <= 0 || size.Height > 1024
                 || original.HotX >= size.Width) return 0;
-            mask = MirrorBitmap(dc, original.Mask, monochrome: true);
-            if (original.Color != 0) color = MirrorBitmap(dc, original.Color, monochrome: false);
+            // A monochrome cursor's mask stacks its AND and XOR images.
+            int halves = original.Color == 0 ? 2 : 1, height = size.Height / halves;
+            if (original.HotY >= height) return 0;
+            mask = TransformBitmap(dc, original.Mask, monochrome: true, vertical, halves);
+            if (original.Color != 0) color = TransformBitmap(dc, original.Color, monochrome: false, vertical, 1);
             if (mask == 0 || (original.Color != 0 && color == 0)) return 0;
-            var mirrored = new IconInfo { HotX = (uint)size.Width - 1 - original.HotX,
-                HotY = original.HotY, Mask = mask, Color = color };
-            return CreateIconIndirect(ref mirrored);
+            var transformed = new IconInfo { Mask = mask, Color = color,
+                HotX = vertical ? original.HotX : (uint)size.Width - 1 - original.HotX,
+                HotY = vertical ? (uint)height - 1 - original.HotY : original.HotY };
+            return CreateIconIndirect(ref transformed);
         }
         finally {
             if (mask != 0) DeleteObject(mask);
@@ -69,16 +78,28 @@ internal static unsafe class GutterCursor
         }
     }
 
-    private static nint MirrorBitmap(nint dc, nint bitmap, bool monochrome)
+    private static nint TransformBitmap(nint dc, nint bitmap, bool monochrome, bool vertical, int halves)
     {
         if (GetObject(bitmap, Marshal.SizeOf<Bitmap>(), out var size) == 0
-            || size.Width <= 0 || size.Width > 512 || size.Height <= 0 || size.Height > 1024) return 0;
+            || size.Width <= 0 || size.Width > 512 || size.Height <= 0 || size.Height > 1024
+            || size.Height % halves != 0) return 0;
         var info = Info(size.Width, size.Height, monochrome);
         int stride = ((size.Width * info.BitCount + 31) / 32) * 4;
         byte[] source = new byte[checked(stride * size.Height)], target = new byte[source.Length];
         if (GetDIBits(dc, bitmap, 0, (uint)size.Height, source, ref info, 0) != size.Height) return 0;
-        MirrorRows(source, target, size.Width, size.Height, stride, monochrome);
+        if (vertical) FlipRows(source, target, size.Height, stride, halves);
+        else MirrorRows(source, target, size.Width, size.Height, stride, monochrome);
         return MakeBitmap(dc, ref info, target);
+    }
+
+    /// Reverses row order within each of `halves` stacked images.
+    internal static void FlipRows(ReadOnlySpan<byte> source, Span<byte> target, int height, int stride, int halves)
+    {
+        int band = height / halves;
+        for (int y = 0; y < height; y++) {
+            int from = y / band * band + band - 1 - y % band;
+            source.Slice(from * stride, stride).CopyTo(target.Slice(y * stride, stride));
+        }
     }
 
     internal static void MirrorRows(ReadOnlySpan<byte> source, Span<byte> target,
@@ -110,10 +131,16 @@ internal static unsafe class GutterCursor
 
     // A white arrow with a black outline if the current system image cannot
     // be read. The tip and hotspot are at the upper right of the arrow.
-    private static nint FallbackArrow()
+    private static nint FallbackArrow() =>
+        PolygonCursor([(27, 2), (27, 23), (22, 18), (18, 27), (14, 25), (18, 16), (10, 16)], 26, 3);
+
+    // A centered white down arrow with a black outline; the tip is the hotspot.
+    private static nint FallbackDownArrow() =>
+        PolygonCursor([(13, 3), (19, 3), (19, 15), (25, 15), (16, 27), (7, 15), (13, 15)], 16, 26);
+
+    private static nint PolygonCursor((double X, double Y)[] polygon, uint hotX, uint hotY)
     {
         const int size = 32;
-        (double X, double Y)[] polygon = [(27, 2), (27, 23), (22, 18), (18, 27), (14, 25), (18, 16), (10, 16)];
         bool Inside(double x, double y) {
             bool inside = false;
             for (int i = 0, j = polygon.Length - 1; i < polygon.Length; j = i++) {
@@ -138,7 +165,7 @@ internal static unsafe class GutterCursor
         try {
             color = MakeBitmap(0, ref colorInfo, colors); mask = MakeBitmap(0, ref maskInfo, maskBytes);
             if (color == 0 || mask == 0) return 0;
-            var info = new IconInfo { HotX = 26, HotY = 3, Color = color, Mask = mask };
+            var info = new IconInfo { HotX = hotX, HotY = hotY, Color = color, Mask = mask };
             return CreateIconIndirect(ref info);
         }
         finally { if (color != 0) DeleteObject(color); if (mask != 0) DeleteObject(mask); }
@@ -146,7 +173,7 @@ internal static unsafe class GutterCursor
 
     private static InputCursor FromHandle(nint cursor)
     {
-        if (cursor == 0) throw new Win32Exception("Cannot create the gutter selection cursor.");
+        if (cursor == 0) throw new Win32Exception("Cannot create a custom selection cursor.");
         nint name = 0, factory = 0, result = 0;
         try {
             const string runtimeClass = "Microsoft.UI.Input.InputCursor";
