@@ -371,14 +371,28 @@ final class EVFormattingToolbarTests: XCTestCase {
       surface.requestVerticalViewport(top: CGFloat(rowBaseline - 120))
       // The toolbar now forbids this, but existing undo history can contain it.
       surface.performInput { _ = try session.setBlockQuote(true, expected: session.listSelection()) }
-      let before = try baseline()
+      let viewport = surface.viewportState.top
+      let codeStart = UInt64(text.substring(to: text.range(of: "graph LR").location).utf8.count)
+      let unchangedRows = try session.layoutExport().rows.filter {
+        $0.text_end <= codeStart && $0.y >= viewport && $0.text_start < $0.text_end
+      }.map { (offset: $0.text_start, baseline: $0.baseline - viewport) }
+      XCTAssertFalse(unchangedRows.isEmpty)
+      func assertViewport() throws {
+        XCTAssertEqual(surface.viewportState.top, viewport, accuracy: 0.1)
+        let rows = try session.layoutExport().rows
+        for before in unchangedRows {
+          let row = try XCTUnwrap(rows.first { $0.text_start == before.offset })
+          XCTAssertEqual(row.baseline - surface.viewportState.top, before.baseline, accuracy: 0.1,
+            "Undo and redo preserve surrounding text, while the edited block reflows naturally")
+        }
+      }
       surface.perform(menuCommand: .undo, sender: nil)
       XCTAssertNil(surface.commandOutput)
-      XCTAssertEqual(try baseline(), before, accuracy: 0.1)
+      try assertViewport()
       XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
       surface.perform(menuCommand: .redo, sender: nil)
       XCTAssertNil(surface.commandOutput)
-      XCTAssertEqual(try baseline(), before, accuracy: 0.1)
+      try assertViewport()
     }
   }
 

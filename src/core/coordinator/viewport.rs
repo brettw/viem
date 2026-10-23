@@ -24,48 +24,12 @@ pub(super) fn anchor_geometry(
     }
 }
 
+/// Delayed syntax metrics may pin a visible caret's baseline. Ordinary edits
+/// retain the viewport text anchor instead; see docs/viewport-stability.md.
 /// Capture only a caret that is actually on screen in the displayed revision.
 pub(super) fn capture_caret_baseline_anchor<P: TextMeasurementProvider>(
     document: &Document,
     view: &View<P>,
-) -> Option<ViewportTextAnchor> {
-    capture_baseline_anchor(document, view, false)
-}
-
-/// Preserve the original editing row, not the insertion boundary which may
-/// itself advance when a growing word wraps. Syntax-only reflow instead pins
-/// the current caret's baseline through its new glyph metrics.
-pub(super) fn capture_edit_baseline_anchor<P: TextMeasurementProvider>(
-    document: &Document,
-    view: &View<P>,
-) -> Option<ViewportTextAnchor> {
-    capture_baseline_anchor(document, view, true)
-}
-
-pub(super) fn composition_caret_baseline<P: TextMeasurementProvider>(
-    document: &Document,
-    view: &View<P>,
-) -> Option<f32> {
-    let overlay = if let Some(composition) = &view.composition {
-        composition.overlay(document).ok()?
-    } else {
-        view.completion.as_ref()?.overlay(document).ok()??
-    };
-    let layout = view.composition_layout.as_ref()?;
-    let snapshot = layout.snapshot()?;
-    let offset = overlay.selected_range_in_overlay().end;
-    let geometry = snapshot
-        .logical_endpoint_geometry(offset, BoundaryAffinity::Downstream)
-        .or_else(|_| snapshot.logical_endpoint_geometry(offset, BoundaryAffinity::Upstream))
-        .ok()?;
-    let baseline = snapshot.rows[geometry.row_index].baseline - layout.viewport_top();
-    (baseline >= 0. && baseline <= layout.height()).then_some(baseline)
-}
-
-fn capture_baseline_anchor<P: TextMeasurementProvider>(
-    document: &Document,
-    view: &View<P>,
-    row_start: bool,
 ) -> Option<ViewportTextAnchor> {
     let snapshot = view.layout.snapshot()?;
     if snapshot.document_id != document.id() || snapshot.document_revision != document.revision() {
@@ -89,30 +53,13 @@ fn capture_baseline_anchor<P: TextMeasurementProvider>(
     if row.baseline < top || row.baseline > top + view.layout.height() {
         return None;
     }
-    // A sparse unwrapped row can retain its whole logical range while only
-    // the band around the caret has geometry. Its offscreen start can disappear
-    // from the next band, so use the visible caret as that edit's anchor.
-    let row_start = row_start && snapshot
-        .logical_endpoint_geometry(row.text_range.start, BoundaryAffinity::Downstream)
-        .is_ok_and(|geometry| {
-            geometry.rect.x >= view.layout.viewport_left()
-                && geometry.rect.x <= view.layout.viewport_left() + view.layout.width()
-        });
     let anchor = document
         .text_anchor(
             document
-                .text_point(if row_start {
-                    row.text_range.start
-                } else {
-                    position.text_offset
-                })
+                .text_point(position.text_offset)
                 .ok()?,
             Association::BeforeInsertion,
-            if row_start {
-                BoundaryAffinity::Downstream
-            } else {
-                position.affinity
-            },
+            position.affinity,
             DeletionRecovery::PreferFollowingThenPreceding,
         )
         .ok()?;
@@ -121,6 +68,26 @@ fn capture_baseline_anchor<P: TextMeasurementProvider>(
         offset_from_reference: top - row.baseline,
         reference: ViewportAnchorReference::Baseline,
     })
+}
+
+/// Preview geometry uses overlay coordinates and may refine estimated prefix
+/// heights. Preserve the same text anchor as the source-backed layout so an
+/// unchanged preview can commit without baseline compensation.
+pub(super) fn restore_composition_viewport(
+    layout: &mut ViewLayout,
+    overlay: &CompositionOverlay,
+    anchor: Option<ViewportTextAnchor>,
+) -> Result<(), LayoutError> {
+    let Some(anchor) = anchor else { return Ok(()); };
+    let Some(offset) = overlay.overlay_offset_for_base_boundary(
+        anchor.anchor.offset(), anchor.anchor.association(),
+    ) else { return Ok(()); };
+    let Some(snapshot) = layout.snapshot() else { return Ok(()); };
+    let Ok(geometry) = snapshot.logical_endpoint_geometry(offset, anchor.anchor.affinity()) else {
+        return Ok(());
+    };
+    let top = anchor.viewport_top(&snapshot.rows[geometry.row_index]);
+    layout.set_viewport_top(top)
 }
 
 /// Baseline preservation is subordinate only to visibility of the changed

@@ -91,7 +91,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                         && geometry.rect.x <= view.layout.viewport_left() + view.layout.width()
                 })
         });
-        let anchor = caret_anchor.or(view.viewport_anchor);
+        // Refining table widths keeps the viewport, allowing affected rows
+        // to reflow naturally. Only delayed syntax metrics pin the baseline.
+        let anchor = view.viewport_anchor;
         let result = self.install_view_layout_job(view_id, candidate);
         let view = self.views.get_mut(&view_id).expect("validated view");
         if view

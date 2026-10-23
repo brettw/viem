@@ -15,32 +15,32 @@ fn aligned_fixture(
     let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Code).unwrap();
     let mut core = Core::new(document);
     core.set_code_language(crate::document::syntax::detection::LanguageSelection::None);
-    // Let the initial syntax poll publish its empty coverage before installing
-    // the controlled sheet; otherwise adding the first view replaces it.
     let view = core.add_view(MockTextMeasurementProvider::new(), 600.0, height);
-    let mut sheet = code_style::default_sheet();
-    sheet
-        .insert_character_style(
-            CharacterStyle {
-                id: StyleId("test:large".into()),
-                based_on: None,
-                properties: CharacterProperties {
-                    size: Some(36.0.into()),
-                    ..Default::default()
-                },
-            },
-            StyleDefinitionMetadata::generated("Large"),
-        )
-        .unwrap();
-    sheet.revision = code_style::snapshot().revision;
-    core.publish_code_presentation_runs(Arc::new(sheet), &[]);
     core.set_align_indents_to_previous_line(view, true).unwrap();
-    assert_eq!(
-        code_style::resolve_syntax_name(core.document.projection().style_sheet(), "Large"),
-        Some(&StyleId("test:large".into())),
-        "the controlled metric style must survive layout polling"
-    );
     (core, view, child)
+}
+
+/// Shape the explicitly published test presentation without polling the live
+/// syntax service. Even language None can asynchronously complete empty
+/// coverage; polling would replace these injected runs and their private sheet
+/// with the service store and global sheet. These tests isolate dependency
+/// invalidation, not provider scheduling or global stylesheet publication.
+fn layout_controlled_presentation(core: &mut Core<MockTextMeasurementProvider>, id: ViewId) {
+    let job = core.allocate_layout_job_id().unwrap();
+    let lines = core.document.projection().presentation_line_count();
+    let view = core.views.get_mut(&id).unwrap();
+    let region = ViewportLayoutRegion::new(0..lines, view.layout.viewport_top(), view.layout.height()).unwrap();
+    let request = prepare_layout_job(
+        &core.document,
+        &mut view.layout,
+        inspect_layout_provider(&view.engine),
+        job,
+        LayoutJobPriority::ChangedVisibleRows,
+        LayoutJobRegion::Viewport(region),
+        LayoutCancellationToken::new(),
+    ).unwrap();
+    let candidate = compute_layout_job(&mut view.engine, &request, view.immediate_layout_context).unwrap();
+    core.install_view_layout_job(id, candidate).unwrap();
 }
 
 fn x(core: &Core<MockTextMeasurementProvider>, view: ViewId, offset: usize) -> f32 {
@@ -60,6 +60,22 @@ fn x(core: &Core<MockTextMeasurementProvider>, view: ViewId, offset: usize) -> f
 fn syntax_metrics_on_an_anchor_invalidate_distant_dependents_without_touching_source() {
     let intervening = 32;
     let (mut core, view, child) = aligned_fixture(intervening, 2400.0);
+    let mut sheet = code_style::default_sheet();
+    sheet
+        .insert_character_style(
+            CharacterStyle {
+                id: StyleId("test:large".into()),
+                based_on: None,
+                properties: CharacterProperties {
+                    size: Some(36.0.into()),
+                    ..Default::default()
+                },
+            },
+            StyleDefinitionMetadata::generated("Large"),
+        )
+        .unwrap();
+    core.publish_code_presentation_runs(Arc::new(sheet), &[]);
+    layout_controlled_presentation(&mut core, view);
     let child_line = intervening + 1;
     let barrier_line = child_line + 1;
     assert!((x(&core, view, 6) - x(&core, view, child)).abs() < 0.001);
@@ -96,8 +112,7 @@ fn syntax_metrics_on_an_anchor_invalidate_distant_dependents_without_touching_so
             .is_some(),
         "a less-indented line ends the affected dependency subtree"
     );
-    core.materialize_immediate_viewport(view, ImmediateLayoutIntent::PreserveViewport)
-        .unwrap();
+    layout_controlled_presentation(&mut core, view);
     assert!((x(&core, view, 6) - x(&core, view, child)).abs() < 0.001);
     assert!(x(&core, view, child) > before);
     assert_eq!(core.document.source_bytes(), bytes);

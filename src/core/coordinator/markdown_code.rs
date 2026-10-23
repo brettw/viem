@@ -837,6 +837,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let presentation_changed = sheets_changed || self.syntax.markdown.revision != Some(revision);
         let mut changed =
             presentation_changed || self.syntax.markdown.services.keys().ne(requests.keys());
+        let mut completed_analysis = false;
         let mut invalidated = Vec::new();
         if changed {
             // A block that is no longer requested loses its highlighting where
@@ -984,6 +985,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             entry.input = Some(input.clone());
             let deferred = position >= visible_blocks && offscreen_publications >= MAX_OFFSCREEN_PUBLICATIONS;
             let completed = !deferred && entry.service.poll(input.identity());
+            completed_analysis |= completed;
             if completed && position >= visible_blocks {
                 offscreen_publications += 1;
             }
@@ -1029,6 +1031,11 @@ impl<P: TextMeasurementProvider> Core<P> {
         } else {
             invalidated.extend(changed_blocks);
         }
+        if sheets_changed {
+            for view in self.views.values_mut() {
+                update_viewport_anchor(&self.document, view);
+            }
+        }
         let previous = self.document.projection().clone();
         let sheet = match &self.syntax.markdown.merged_sheet {
             Some((document, code, sheet)) if *document == document_sheet_revision && *code == code_sheet.revision => sheet.clone(),
@@ -1044,10 +1051,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .map(|(id, view)| (*id, view.layout.viewport_left(), view.layout.viewport_top()))
                 .collect::<Vec<_>>()
         });
-        let anchors = if retain_scroll {
-            BTreeMap::new()
-        } else {
+        let anchors = if completed_analysis && !sheets_changed && !retain_scroll {
             self.caret_anchors_for_publication()
+        } else {
+            BTreeMap::new()
         };
         // Spans of unchanged blocks shift across the edit; only blocks whose
         // text, language or analysis changed, or that the edit touches, are

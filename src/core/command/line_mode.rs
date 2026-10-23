@@ -1870,6 +1870,7 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         let mut joined = document.physical_source_text(first.content_range.clone())?;
+        let first_text_len = joined.len();
         let mut cursor = joined.len();
         let mut previous = joined.clone();
         let profile = (document.format().is_code() && self.reflow_options.has('j')).then(|| self.reflow_options.profile());
@@ -1903,8 +1904,14 @@ impl CommandInterpreter {
                 .encoding()
                 .encode_fragment(&joined[..cursor])?
                 .len();
-        document
-            .replace_physical_source(first.source_range.start..last.content_range.end, joined)?;
+        // The first line's text is unchanged by a join. Replacing it would
+        // collapse interior anchors and move an AfterInsertion viewport anchor
+        // at its start to the end of the joined text, scrolling a visible edit.
+        // Keep that source prefix and its identities; replace only its suffix.
+        document.replace_physical_source(
+            first.content_range.end..last.content_range.end,
+            joined.split_off(first_text_len),
+        )?;
         self.cursor = document.visible_point_for_source(source_cursor, true)?;
         self.visual_position = None;
         self.remember_physical_cursor(document, source_cursor);

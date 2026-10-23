@@ -33,6 +33,8 @@ Product and engineering requirements live in [AGENTS.md](../AGENTS.md).
   and remaining platform gaps.
 - [Native background layout](windows-background-layout.md): worker ownership,
   cache-only installation, cancellation and native regression checks.
+- [Viewport stability](viewport-stability.md): scroll anchoring, minimal caret
+  reveal and the exception for delayed syntax geometry.
 - [Code formatting](code-formatting.md): reflow flags, language context, overrides, and list prefixes.
 - [Indent alignment](indent-alignment.md): optional proportional-font alignment,
   persistent anchor indexing, dependency invalidation and geometry.

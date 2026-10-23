@@ -358,6 +358,130 @@ final class EVBlockExitTests: XCTestCase {
         }
     }
 
+    private struct ViewportLandmarks {
+        let left: Float
+        let rows: [(offset: UInt64, screenY: CGFloat)]
+    }
+
+    private func scrolledEmptyParagraph(_ owner: String) throws
+        -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, String) {
+        let prefix = (0..<40).map { "Earlier paragraph \($0)" }.joined(separator: "\n\n")
+        let suffix = (0..<40).map { "Later paragraph \($0)" }.joined(separator: "\n\n")
+        let source = "\(prefix)\n\nBefore\n\n\(owner)\n\nAfter\n\n\(suffix)"
+        let (backend, surface, session) = try makeSurface(source)
+        let text = try backend.formattedText() as NSString
+        let before = text.range(of: "Before\n")
+        XCTAssertNotEqual(before.location, NSNotFound)
+        let offset = before.location + before.length
+        XCTAssertEqual(text.substring(with: NSRange(location: offset, length: 1)), "\n",
+            "The fixture must contain an editable empty paragraph between Before and After")
+        surface.performInput { _ = try session.sendText("i") }
+        // AX placement requires existing geometry. Place this distant logical
+        // boundary through the session so it acquires its own visible layout.
+        var point = ViemLayoutCaretPointV1()
+        point.struct_size = UInt32(MemoryLayout<ViemLayoutCaretPointV1>.size)
+        point.document_revision = surface.viewPresentation.document_revision
+        point.text_offset = UInt64(offset)
+        point.affinity = UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM)
+        surface.performInput { _ = try session.placeCursor(point, extendSelection: false) }
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, UInt64(offset))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        let layout = try XCTUnwrap(surface.layoutSnapshot)
+        let caret = try nativeCaret(surface, in: layout)
+        let row = try XCTUnwrap(layout.rows.first { $0.row_index == caret.rowIndex })
+        // Keep the edit well inside a scrolled viewport, with unchanged text
+        // above it and enough suffix to avoid end-of-document clamping.
+        surface.requestVerticalViewport(top: CGFloat(row.baseline) - 180)
+        XCTAssertGreaterThan(surface.viewportState.top, 0)
+        return (backend, surface, session, source)
+    }
+
+    private func viewportLandmarks(_ surface: EVEditorSurfaceController) throws -> ViewportLandmarks {
+        let layout = try XCTUnwrap(surface.layoutSnapshot)
+        let caret = surface.viewPresentation.cursor_utf8_offset
+        let rows = layout.rows.filter {
+            $0.text_start < caret && $0.text_start < $0.text_end
+                && $0.y - surface.viewportState.top > 24
+        }.map { row in
+            (offset: row.text_start, screenY: surface.editorView.viewPoint(fromLayoutPoint:
+                CGPoint(x: 0, y: CGFloat(row.baseline))).y)
+        }
+        XCTAssertGreaterThanOrEqual(rows.count, 2, "Track unchanged visible text above the edited block")
+        return ViewportLandmarks(left: surface.viewportState.left, rows: rows)
+    }
+
+    private func assertViewport(_ expected: ViewportLandmarks, in surface: EVEditorSurfaceController,
+                                file: StaticString = #filePath, line: UInt = #line) throws {
+        let layout = try XCTUnwrap(surface.layoutSnapshot, file: file, line: line)
+        XCTAssertEqual(surface.viewportState.left, expected.left, accuracy: 0.1, file: file, line: line)
+        // Replacing estimated prefix heights may change both document-space
+        // row positions and the numeric scroll origin. The contract is that
+        // these unchanged visible landmarks stay at the same screen position.
+        for landmark in expected.rows {
+            let row = try XCTUnwrap(layout.rows.first { $0.text_start == landmark.offset }, file: file, line: line)
+            let screenY = surface.editorView.viewPoint(fromLayoutPoint: CGPoint(x: 0, y: CGFloat(row.baseline))).y
+            XCTAssertEqual(screenY, landmark.screenY, accuracy: 0.1,
+                "Unchanged text above the edit must stay stationary", file: file, line: line)
+        }
+        let caret = try caretRect(surface)
+        XCTAssertGreaterThanOrEqual(caret.minY, 0, file: file, line: line)
+        XCTAssertLessThanOrEqual(caret.maxY, surface.editorView.bounds.height, file: file, line: line)
+        XCTAssertNil(surface.commandOutput, file: file, line: line)
+    }
+
+    private func caretScreenBaseline(_ surface: EVEditorSurfaceController) throws -> CGFloat {
+        let layout = try XCTUnwrap(surface.layoutSnapshot)
+        let caret = try nativeCaret(surface, in: layout)
+        let row = try XCTUnwrap(layout.rows.first { $0.row_index == caret.rowIndex })
+        return surface.editorView.viewPoint(fromLayoutPoint: CGPoint(x: 0, y: CGFloat(row.baseline))).y
+    }
+
+    func testCreatingAnEmptyCodeBlockKeepsScrolledTextStationaryThroughUndoAndRedo() throws {
+        let (backend, surface, session, source) = try scrolledEmptyParagraph("<span></span>")
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Paragraph")
+        let before = try viewportLandmarks(surface)
+        let baseline = try caretScreenBaseline(surface)
+        let toolbar = surface.formattingToolbar
+        toolbar.refresh()
+        toolbar.toggleCodeBlock(toolbar.codeBlock)
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Code Block")
+        XCTAssertFalse(codeFills(try XCTUnwrap(surface.layoutSnapshot)).isEmpty)
+        try assertViewport(before, in: surface)
+        XCTAssertGreaterThan(abs(try caretScreenBaseline(surface) - baseline), 1,
+            "The changed block may move its caret; the viewport must not compensate for its padding")
+        let created = try backend.serializedSource(typeName: EVDocument.markdownType)
+
+        surface.editorView.cancelOperation(nil)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        try assertViewport(before, in: surface)
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), created)
+        try assertViewport(before, in: surface)
+    }
+
+    func testBackspaceInAnEmptyCodeBlockKeepsScrolledTextStationaryThroughUndoAndRedo() throws {
+        let (backend, surface, session, source) = try scrolledEmptyParagraph("```\n```")
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Code Block")
+        let before = try viewportLandmarks(surface)
+        let baseline = try caretScreenBaseline(surface)
+        surface.editorView.keyDown(with: try key(51))
+        XCTAssertEqual(try session.selectedNamedStyles().paragraph?.rawValue, "Paragraph")
+        XCTAssertTrue(codeFills(try XCTUnwrap(surface.layoutSnapshot)).isEmpty)
+        try assertViewport(before, in: surface)
+        XCTAssertGreaterThan(abs(try caretScreenBaseline(surface) - baseline), 1,
+            "Removing code padding moves the caret naturally, without scrolling the document")
+        let removed = try backend.serializedSource(typeName: EVDocument.markdownType)
+
+        surface.editorView.cancelOperation(nil)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        try assertViewport(before, in: surface)
+        surface.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), removed)
+        try assertViewport(before, in: surface)
+    }
+
     func testOpenAboveAndBelowKeepBlankCodeAndFrontMatterRowsInsideTheirPaintedBox() throws {
         for delimiter in ["```", "---"] {
             for command in ["o", "O"] {
