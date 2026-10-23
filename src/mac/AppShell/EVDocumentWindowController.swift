@@ -398,10 +398,12 @@ extension EVDocumentWindowController {
   /// requested by `-o`, including when the first file was already open.
   /// A freshly loaded first document can already own the initial surface;
   /// accept only that exact document and filename instead of a pristine blank.
+  /// Report the window selected for the first argument so a terminal launch
+  /// can keep it in front when app activation completes.
   public func openArgumentList(
     _ urls: [URL], splitCount: Int?, initialLine: UInt64?, vertical: Bool = false,
     preparedFirstDocument: EVDocument? = nil,
-    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+    completion: @escaping @MainActor (Result<NSWindow?, Error>) -> Void
   ) {
     guard !isClosed, !isPerformingDocumentHostEffect,
       let original = activeDocument else {
@@ -422,7 +424,7 @@ extension EVDocumentWindowController {
     var firstTarget: (EVDocumentWindowController, EVDocumentContentViewController)?
     isPerformingDocumentHostEffect = true
 
-    func finish(_ result: Result<String?, Error>) {
+    func finish(_ result: Result<Void, Error>) {
       if !installedNewPane && firstTarget != nil {
         // Every requested file was already shown. Retire the unused blank
         // without ever presenting another document window.
@@ -432,15 +434,15 @@ extension EVDocumentWindowController {
         paneContainer.focusPane(at: 0)
         updateActiveDocumentChrome()
       }
+      var selectedWindow: NSWindow?
       if let (controller, target) = firstTarget, !controller.isClosed,
         let index = controller.paneContainer.panes.firstIndex(where: { $0 === target }) {
         controller.paneContainer.focusPane(at: index)
         controller.updateActiveDocumentChrome()
-        if controller.window?.isMiniaturized == true { controller.window?.deminiaturize(nil) }
         controller.showWindow(nil)
-        controller.window?.makeKeyAndOrderFront(nil)
+        selectedWindow = controller.window
       }
-      finishDocumentHostEffect(result, completion: completion)
+      finishDocumentHostEffect(result.map { _ in selectedWindow }, completion: completion)
     }
 
     // The native loader can complete synchronously. Drain those completions
@@ -463,7 +465,7 @@ extension EVDocumentWindowController {
       guard !isClosed else {
         finish(.failure(EVDocumentHostError.staleRequest)); return
       }
-      guard index < argumentLimit else { finish(.success(nil)); return }
+      guard index < argumentLimit else { finish(.success(())); return }
       // Reusing another window or an earlier argument consumes no space here.
       // Once this window is full, leave the next new target lazy without even
       // reading it, while allowing already represented arguments to be reused.
@@ -471,7 +473,7 @@ extension EVDocumentWindowController {
         guard list.urls.indices.contains(index),
           let existing = EVDocumentIdentity.existingDocument(at: list.urls[index]),
           Self.windowShowing(document: existing) != nil else {
-          finish(.success(nil)); return
+          finish(.success(())); return
         }
       }
 
@@ -639,9 +641,9 @@ extension EVDocumentWindowController {
     } else { openTarget() }
   }
 
-  fileprivate func finishDocumentHostEffect(
-    _ result: Result<String?, Error>,
-    completion: @escaping @MainActor (Result<String?, Error>) -> Void
+  fileprivate func finishDocumentHostEffect<Success>(
+    _ result: Result<Success, Error>,
+    completion: @escaping @MainActor (Result<Success, Error>) -> Void
   ) {
     isPerformingDocumentHostEffect = false
     completion(result)

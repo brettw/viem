@@ -17,6 +17,10 @@ documents to close. Launch or handoff failure returns a nonzero status; file-ope
 errors after acceptance are shown in the GUI. Use `blocking-viem` when the caller
 needs to wait for editing to finish.
 
+On both platforms, a terminal launch brings the requested document window to
+the foreground with keyboard focus, including when other Viem windows are
+already open. This applies to ordinary and blocking launches.
+
 Both helpers live beside `Viem` in `Contents/MacOS`. The bundle has no `bin`
 directory or command symlinks. You can create an external symlink named `viem`
 in an existing directory on your `PATH`, for example:

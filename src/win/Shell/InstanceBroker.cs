@@ -1,9 +1,11 @@
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using Microsoft.UI.Dispatching;
+using Microsoft.Win32.SafeHandles;
 
 namespace Viem.Windows.Shell;
 
@@ -23,6 +25,8 @@ internal sealed class InstanceBroker : IDisposable
     private readonly Mutex mutex;
     private readonly string pipeName;
     private readonly CancellationTokenSource stopped = new();
+    [DllImport("kernel32.dll")] private static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint processId);
+    [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(uint processId);
     public bool IsPrimary { get; }
     public InstanceBroker(string profile)
     {
@@ -36,6 +40,8 @@ internal sealed class InstanceBroker : IDisposable
         await client.ConnectAsync(5000);
         byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(invocation, FrontendJsonContext.Default.OpenInvocation);
         if (bytes.Length > 1_048_576) throw new InvalidDataException("The launch request is too large.");
+        // Pass the terminal launch's foreground permission to the primary before it opens the window.
+        if (GetNamedPipeServerProcessId(client.SafePipeHandle, out uint primaryId)) _ = AllowSetForegroundWindow(primaryId);
         await client.WriteAsync(BitConverter.GetBytes(bytes.Length)); await client.WriteAsync(bytes); await client.FlushAsync();
         byte[] ack = new byte[1]; using var timeout = new CancellationTokenSource(5000); await client.ReadExactlyAsync(ack, timeout.Token);
         if (ack[0] != 1) throw new IOException("The running Viem instance did not accept the launch request.");

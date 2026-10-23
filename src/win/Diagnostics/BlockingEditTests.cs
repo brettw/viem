@@ -55,12 +55,20 @@ internal static class BlockingEditTests
         var initial = new EditorWindow(preferences);
         App.Instance.Windows.Add(initial); initial.Closed += (_, _) => App.Instance.Windows.Remove(initial); initial.Activate();
         await initial.ActivePane!.Ready;
-        await initial.OpenPath(path);
+        await initial.OpenPath(Path.Combine(directory, "already-open.txt"));
         await initial.ActivePane!.Ready;
         using var first = Start("COMMIT_EDITMSG", directory);
-        using var second = Start("COMMIT_EDITMSG", directory);
+        Process? second = null;
         try
         {
+            await Until(() => App.Instance.BlockingEdits.CountForTesting == 1);
+            var window = App.Instance.Windows.Single(w => w.Panes.Any(p => p.Document.FilePath == path));
+            var pane = window.Panes.Single(p => p.Document.FilePath == path);
+            Check(window != initial, "blocking launch creates a window for its new document");
+            await InputRoutingTests.CheckForegroundEditor(window, pane, "blocking launch focuses its new document window above the existing editor");
+            initial.Activate();
+            await Until(() => InputRoutingTests.ForegroundWindowForTesting == initial.Hwnd);
+            second = Start("COMMIT_EDITMSG", directory);
             try { await Until(() => App.Instance.BlockingEdits.CountForTesting == 2); }
             catch (Exception error)
             {
@@ -69,8 +77,7 @@ internal static class BlockingEditTests
                 if (second.HasExited) failures += " second: " + second.ExitCode + " " + await second.StandardError.ReadToEndAsync();
                 throw new InvalidOperationException("Pending sessions: " + App.Instance.BlockingEdits.CountForTesting + "; " + failures, error);
             }
-            var window = App.Instance.Windows.First(w => w.Panes.Any(p => p.Document.FilePath == path));
-            var pane = window.Panes.First(p => p.Document.FilePath == path);
+            await InputRoutingTests.CheckForegroundEditor(window, pane, "blocking relaunch focuses the window that already owns the requested file");
             var document = pane.Document;
             var other = new EditorWindow(preferences, document);
             App.Instance.Windows.Add(other); other.Closed += (_, _) => App.Instance.Windows.Remove(other); other.Activate();
@@ -99,7 +106,11 @@ internal static class BlockingEditTests
         finally
         {
             if (!first.HasExited) first.Kill();
-            if (!second.HasExited) second.Kill();
+            if (second != null)
+            {
+                if (!second.HasExited) second.Kill();
+                second.Dispose();
+            }
         }
 
         string lockedPath = Path.Combine(directory, "locked.txt"); File.WriteAllText(lockedPath, "locked");
