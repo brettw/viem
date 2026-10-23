@@ -67,8 +67,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
     {
         if (disposed) return;
         ProtectedCursor = gutterSelectionDragging ? gutterCursor ??= GutterCursor.Create()
+            : tableColumnGesture != null ? columnCursor ??= GutterCursor.CreateColumnSelection()
             : pressedPointer != null ? textInsertionCursor
             : pointerOverGutter ? gutterCursor ??= GutterCursor.Create()
+            : pointerOverColumnStrip ? columnCursor ??= GutterCursor.CreateColumnSelection()
             : pointerOverText && (presentation.mode == VIEM_MODE_INSERT || CoreView.IsTextSelectionMode(presentation.mode)) ? textInsertionCursor : textArrowCursor;
     }
 
@@ -82,14 +84,16 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (disposed) return;
         pointerOverText = point.X >= 0 && point.X < Canvas.ActualWidth && point.Y >= 0 && point.Y < Canvas.ActualHeight;
         pointerOverGutter = point.X >= -GutterWidth && point.X < 0 && point.Y >= 0 && point.Y < Canvas.ActualHeight;
+        pointerOverColumnStrip = false;
         if (pointerOverText) {
-            try { pointerOverGutter = IsRowSelectionPoint(point); }
+            try { pointerOverGutter = IsRowSelectionPoint(point); pointerOverColumnStrip = !pointerOverGutter && TableColumnStripCell(point) != null; }
             catch (CoreException) { pointerOverGutter = false; } // Stale hover geometry cannot start an edit.
         }
         UpdatePointerCursor();
     }
 #if DEBUG
     internal string PointerCursorForTesting => ReferenceEquals(ProtectedCursor, gutterCursor) ? "row"
+        : ReferenceEquals(ProtectedCursor, columnCursor) ? "column"
         : ReferenceEquals(ProtectedCursor, textInsertionCursor) ? "text" : "arrow";
     internal bool RowSelectionPointForTesting(Point point) => IsRowSelectionPoint(point);
     internal bool PointerSelectionActiveForTesting => pressedPointer != null || gutterSelectionDragging || dragging;
@@ -163,7 +167,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.PointerPressed += OnPointerPressed;
         Canvas.PointerMoved += OnPointerMoved;
         Canvas.PointerEntered += (_, e) => { UpdatePointerRegion(e.GetCurrentPoint(Canvas).Position); MoveCodeBlockLanguageHover(e.GetCurrentPoint(Canvas).Position); };
-        Canvas.PointerExited += (_, _) => { pointerOverText = pointerOverGutter = false; UpdatePointerCursor(); MoveCodeBlockLanguageHover(null); caretHoverLocation = null; SetCaretHover(null); };
+        Canvas.PointerExited += (_, _) => { pointerOverText = pointerOverGutter = pointerOverColumnStrip = false; UpdatePointerCursor(); MoveCodeBlockLanguageHover(null); caretHoverLocation = null; SetCaretHover(null); };
         Canvas.PointerReleased += (_, e) => {
             if (pressedPointer != e.Pointer.PointerId) return;
             EndPointerSelection(Canvas, e);
@@ -174,7 +178,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.DoubleTapped += (_, e) => Run(() => {
             var p = e.GetPosition(Canvas);
             if (pointerClickCount >= 3) { e.Handled = true; return; }
-            if (gutterSelectionDragging || IsRowSelectionPoint(p)) { e.Handled = true; return; }
+            if (gutterSelectionDragging || tableColumnGesture != null || IsRowSelectionPoint(p) || TableColumnStripCell(p) != null) { e.Handled = true; return; }
             if (SelectInlineImage(p)) { e.Handled = true; return; }
             View?.Place((float)p.X, (float)p.Y, wholeWords: true);
             wordSelectionDragging = true; e.Handled = true;
@@ -505,6 +509,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
             // Classify only after completion/composition has published its geometry.
             if (snapshot == null) return;
             if (IsRowSelectionPoint(point)) { BeginGutterSelection(Canvas, e); return; }
+            if (BeginTableColumnSelection(point)) {
+                pointerClickCount = 0; pressedPointer = e.Pointer.PointerId; dragPoint = point; dragging = true;
+                if (!Canvas.CapturePointer(e.Pointer)) { pressedPointer = null; dragging = false; EndTableColumnSelection(); }
+                UpdatePointerCursor(); return;
+            }
             int clicks = TrackPointerClick(e, point);
             if (clicks >= 3) {
                 // Normalization precedes the hit test: Escape from Insert can
@@ -527,7 +536,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             var location = e.GetCurrentPoint(Canvas).Position;
             TableHover(location); UpdatePointerRegion(location);
             MoveCodeBlockLanguageHover(location);
-            if (pointerOverGutter) { caretHoverLocation = null; SetCaretHover(null); }
+            if (pointerOverGutter || pointerOverColumnStrip) { caretHoverLocation = null; SetCaretHover(null); }
             else MoveCaretHover(location);
             return;
         }
@@ -539,6 +548,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         }
         dragPoint = point.Position;
         if (gutterSelectionDragging) { ContinueGutterSelection(e); return; }
+        if (tableColumnGesture != null) { Run(() => DragTableColumns(dragPoint)); e.Handled = true; return; }
         if (!dragging)
         {
             // WinUI can report movement at the press point. Match the pane-bar
@@ -837,7 +847,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         statusDragTarget = null; statusDragNeedsSplit = false;
         Canvas.ReleasePointerCaptures(); lineNumberCanvas.ReleasePointerCaptures();
         status.ReleasePointerCaptures();
-        ProtectedCursor = null; gutterCursor?.Dispose(); textArrowCursor.Dispose(); textInsertionCursor.Dispose();
+        ProtectedCursor = null; gutterCursor?.Dispose(); columnCursor?.Dispose(); textArrowCursor.Dispose(); textInsertionCursor.Dispose();
         ClearNumberLayouts(); ClearStatusText(); View?.Dispose(); View = null; prompt.Dispose(); status.Dispose(); statusBox.RemoveFromVisualTree(); statusTextCanvas.RemoveFromVisualTree(); lineNumberCanvas.RemoveFromVisualTree(); scrollbarPaint.RemoveFromVisualTree(); Canvas.RemoveFromVisualTree();
     }
 }

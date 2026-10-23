@@ -1849,10 +1849,22 @@ typedef struct ViemLogicalSelectionIdentityV1 {
 #define VIEM_TABLE_IN_TABLE 2u
 #define VIEM_TABLE_HEADER 4u
 #define VIEM_TABLE_CELL_SELECTED 8u
+/* Cursor contexts only: the view's cell selection covers complete rows and/or
+ * complete columns. row..row_end and column..column_end then name the selected
+ * group, and row, column and delete actions of that kind apply to the group.
+ * Insertions go outside the group and keep it selected. Alignment applies to
+ * every column of a column group and keeps it selected. Deleting rows that
+ * include the header but not every row clears the header instead of deleting
+ * it, with or without a group. */
+#define VIEM_TABLE_ROW_SELECTION 16u
+#define VIEM_TABLE_COLUMN_SELECTION 32u
 #define VIEM_TABLE_ALIGN_UNSPECIFIED 0u
 #define VIEM_TABLE_ALIGN_LEFT 1u
 #define VIEM_TABLE_ALIGN_CENTER 2u
 #define VIEM_TABLE_ALIGN_RIGHT 3u
+/* Context only: the target columns differ. Unspecified and left together report
+ * left. Setting an alignment applies it to every target column. */
+#define VIEM_TABLE_ALIGN_MIXED 4u
 #define VIEM_TABLE_INSERT_ROW_ABOVE 1u
 #define VIEM_TABLE_INSERT_ROW_BELOW 2u
 #define VIEM_TABLE_DELETE_ROW 3u
@@ -1871,6 +1883,9 @@ typedef struct ViemTableContextV1 {
   uint64_t column;
   uint64_t rows;
   uint64_t columns;
+  /* Exclusive ends of the target; row + 1 and column + 1 for one cell. */
+  uint64_t row_end;
+  uint64_t column_end;
   uint32_t alignment;
   uint32_t reserved;
 } ViemTableContextV1;
@@ -2703,8 +2718,9 @@ typedef struct ViemLineNumberRegionV1 {
 ViemStatus viem_core_view_number(ViemCoreHandle core, ViemViewId view, uint32_t *out_enabled);
 ViemStatus viem_core_view_set_number(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
 /* Query row-selection margins/list labels in document-layout DIPs. Exact current
- * geometry is required. Excludes two DIPs before prose content and the table
- * row-control strip. Native number columns remain independent fixed hot areas. */
+ * geometry is required. Excludes two DIPs before prose content; a table row's
+ * margin reaches its table's left edge, where native row controls also appear.
+ * Native number columns remain independent fixed hot areas. */
 ViemStatus viem_core_view_row_selection_hit_test(ViemCoreHandle core, ViemViewId view,
     const ViemLayoutSnapshotIdentityV1 *expected, float x, float y, uint32_t *out_hit);
 /* Select a complete displayed row at document-layout y. Table gutter gestures

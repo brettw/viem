@@ -88,7 +88,9 @@ final class EVTableEditingTests: XCTestCase {
         let menu = NSMenu()
         interaction.appendMenu(to: menu, event: key)
         XCTAssertFalse(menu.items.contains { $0.title.hasPrefix("Insert row above") })
-        XCTAssertTrue(menu.items.contains { $0.title == "Delete header row" })
+        XCTAssertFalse(menu.items.contains { $0.title.hasPrefix("Delete") && $0.title.hasSuffix("row") },
+            "The header row by itself has no delete")
+        XCTAssertTrue(menu.items.contains { $0.title == "Insert row below header row" })
         XCTAssertTrue(menu.items.contains { $0.title == "Insert column left of column 1" })
         let align = try XCTUnwrap(menu.items.first { $0.title == "Column 1 alignment" }?.submenu)
         XCTAssertEqual(align.items.map(\.title), ["Left", "Center", "Right"])
@@ -114,7 +116,7 @@ final class EVTableEditingTests: XCTestCase {
                 XCTAssertFalse(widget.isHidden)
                 let labels = widget.arrangedSubviews.compactMap { $0.accessibilityLabel() }
                 XCTAssertEqual(labels, cell.row == 0
-                    ? ["Delete header", "Insert row below row 1"]
+                    ? ["Insert row below row 1"]
                     : ["Insert row above row \(cell.row + 1)", "Delete row \(cell.row + 1)", "Insert row below row \(cell.row + 1)"])
                 if right { XCTAssertGreaterThanOrEqual(widget.frame.minX, table.maxX, "Prefer the side that activated the widget when there is room") }
                 // Cross the gap and enter a button without rebuilding or retargeting it.
@@ -166,8 +168,13 @@ final class EVTableEditingTests: XCTestCase {
             XCTAssertTrue(labels(at: NSPoint(x: x, y: secondRect.minY)).contains("Delete row 2"))
             XCTAssertTrue(labels(at: NSPoint(x: x, y: table.maxY)).contains("Delete row 3"))
         }
-        XCTAssertTrue(labels(at: NSPoint(x: table.maxX + 20, y: secondRect.midY)).contains("Delete row 2"))
-        XCTAssertTrue(labels(at: NSPoint(x: table.maxX + 21, y: secondRect.midY)).isEmpty)
+        // Both row zones reach the editor's edges.
+        for x in [table.maxX + 21, editor.bounds.maxX - 1, editor.bounds.minX, table.minX] {
+            XCTAssertTrue(labels(at: NSPoint(x: x, y: secondRect.midY)).contains("Delete row 2"), "x=\(x)")
+            XCTAssertEqual(editor.isRowSelectionPoint(NSPoint(x: x, y: secondRect.midY)), x <= table.minX, "x=\(x)")
+        }
+        XCTAssertTrue(labels(at: NSPoint(x: table.minX + 2, y: secondRect.midY)).isEmpty)
+        XCTAssertTrue(labels(at: NSPoint(x: table.maxX - 2, y: secondRect.midY)).isEmpty)
 
         let bounds = editor.bounds
         defer { editor.bounds = bounds }
@@ -180,6 +187,138 @@ final class EVTableEditingTests: XCTestCase {
             "A clipped right edge does not become a hotspot at the viewport boundary")
         XCTAssertTrue(labels(at: NSPoint(x: table.maxX, y: secondRect.midY)).isEmpty,
             "Offscreen table geometry cannot activate a widget")
+    }
+
+    private func buttons(_ widget: NSStackView) -> [String] { widget.arrangedSubviews.compactMap { $0.accessibilityLabel() } }
+    private func press(_ label: String, in widget: NSStackView) throws {
+        try XCTUnwrap(widget.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == label }).performClick(nil)
+    }
+
+    func testSelectedRowsShowGroupControlsAtTheActiveRowAndInsertionsKeepTheSelection() throws {
+        let text = "| A | B |\n| --- | --- |\n| one | 1 |\n| two | 2 |\n| three | 3 |"
+        let (backend, surface, session) = try surface(text)
+        let editor = surface.editorView
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let interaction = EVTableInteraction(editor: editor)
+        let widget = try XCTUnwrap(editor.subviews.last as? NSStackView)
+        let first = try XCTUnwrap(snapshot.tableCells.first { $0.row == 1 })
+        let second = try XCTUnwrap(snapshot.tableCells.first { $0.row == 2 })
+        let margin = NSPoint(x: editor.textViewportRect.minX + 1, y: editor.viewRect(first.rect).midY)
+        XCTAssertTrue(editor.isRowSelectionPoint(margin))
+        XCTAssertTrue(editor.pointerCursor(at: margin) === EVLineNumberGutter.selectionCursor)
+        _ = try session.selectPointerRow(y: CGFloat(first.rect.y + first.rect.height / 2), in: snapshot.info, extending: false)
+        _ = try session.selectPointerRow(y: CGFloat(second.rect.y + second.rect.height / 2), in: snapshot.info, extending: true)
+        surface.refreshPresentation(); interaction.invalidate()
+        XCTAssertFalse(widget.isHidden)
+        XCTAssertEqual(buttons(widget), ["Insert row above rows 2–3", "Delete rows 2–3", "Insert row below rows 2–3"])
+        XCTAssertEqual(widget.frame.midY, editor.viewRect(second.rect).midY, accuracy: 1, "Controls follow the active row")
+        interaction.moved(to: NSPoint(x: margin.x, y: editor.viewRect(snapshot.tableCells.first { $0.row == 3 }!.rect).midY))
+        XCTAssertEqual(buttons(widget), ["Insert row above rows 2–3", "Delete rows 2–3", "Insert row below rows 2–3"],
+            "Hovering another row keeps the selection's controls")
+
+        try press("Insert row above rows 2–3", in: widget)
+        surface.refreshPresentation()
+        let selection = try session.tableSelection()
+        XCTAssertEqual([selection.anchor_row, selection.active_row].sorted(), [2, 3])
+        XCTAssertEqual(try session.tableContext().rows, 5)
+        XCTAssertEqual(buttons(widget), ["Insert row above rows 3–4", "Delete rows 3–4", "Insert row below rows 3–4"])
+        try press("Delete rows 3–4", in: widget)
+        surface.refreshPresentation()
+        XCTAssertEqual(try session.tableSelection().active, 0)
+        XCTAssertTrue(widget.isHidden)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data("| A | B |\n| --- | --- |\n|  |  |\n| three | 3 |".utf8))
+    }
+
+    func testSelectedRowsIncludingTheHeaderClearItWithoutInsertingAbove() throws {
+        let (backend, surface, session) = try surface("| A | B |\n| --- | --- |\n| one | 1 |\n| two | 2 |")
+        let editor = surface.editorView
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let interaction = EVTableInteraction(editor: editor)
+        let widget = try XCTUnwrap(editor.subviews.last as? NSStackView)
+        for (row, y) in [(0, false), (1, true)] {
+            let cell = try XCTUnwrap(snapshot.tableCells.first { $0.row == row })
+            _ = try session.selectPointerRow(y: CGFloat(cell.rect.y + cell.rect.height / 2), in: snapshot.info, extending: y)
+        }
+        surface.refreshPresentation(); interaction.invalidate()
+        XCTAssertEqual(buttons(widget), ["Delete rows 1–2", "Insert row below rows 1–2"])
+        try press("Delete rows 1–2", in: widget)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data("|  |  |\n| --- | --- |\n| two | 2 |".utf8))
+    }
+
+    func testColumnStripSelectsColumnsAndShowsGroupControlsAtTheLastColumn() throws {
+        let text = "Intro\n\nRoom above\n\n| A | B | C |\n| :-- | :-: | --: |\n| one | two | three |\n| four | five | six |"
+        let (backend, surface, session) = try surface(text)
+        let editor = surface.editorView
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let interaction = EVTableInteraction(editor: editor)
+        let widget = try XCTUnwrap(editor.subviews.last as? NSStackView)
+        func strip(_ column: UInt64) throws -> NSPoint {
+            let cell = try XCTUnwrap(snapshot.tableCells.first { $0.row == 0 && $0.column == column })
+            return NSPoint(x: editor.viewRect(cell.rect).midX, y: editor.viewRect(cell.table_rect).minY - 1)
+        }
+        XCTAssertTrue(editor.pointerCursor(at: try strip(1)) === EVTableInteraction.columnSelectionCursor)
+        XCTAssertFalse(editor.pointerCursor(at: NSPoint(x: try strip(1).x, y: try strip(1).y + 8)) === EVTableInteraction.columnSelectionCursor)
+        XCTAssertEqual(EVTableInteraction.columnSelectionCursor.hotSpot, NSPoint(x: 7.5, y: 19))
+
+        XCTAssertTrue(interaction.beginColumnSelection(at: try strip(1)))
+        interaction.dragColumns(to: try strip(2))
+        XCTAssertTrue(widget.isHidden, "Controls wait for the gesture to end")
+        interaction.endColumnSelection()
+        let selection = try session.tableSelection()
+        XCTAssertEqual([selection.anchor_column, selection.active_column], [1, 2])
+        XCTAssertEqual([selection.anchor_row, selection.active_row], [0, 2])
+        let bottom = try XCTUnwrap(snapshot.tableCells.first { $0.row == 2 && $0.column == 2 })
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, bottom.text_end,
+            "Like row selection, a rightward drag puts the caret at the end of the last selected cell")
+        XCTAssertEqual(buttons(widget), ["Insert column left of columns 2–3", "Columns 2–3 alignment", "Delete columns 2–3",
+            "Insert column right of columns 2–3"])
+        let last = try XCTUnwrap(snapshot.tableCells.first { $0.row == 0 && $0.column == 2 })
+        XCTAssertEqual(widget.frame.midX, editor.viewRect(last.rect).midX, accuracy: 1)
+        XCTAssertLessThanOrEqual(widget.frame.maxY, editor.viewRect(last.table_rect).minY)
+
+        // Alignment applies to every selected column and keeps the selection.
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: 0))
+        let menu = NSMenu()
+        interaction.appendMenu(to: menu, event: key)
+        XCTAssertFalse(menu.items.contains { $0.title.hasPrefix("Delete row") || $0.title.hasPrefix("Insert row") })
+        let align = try XCTUnwrap(menu.items.first { $0.title == "Columns 2–3 alignment" }?.submenu)
+        XCTAssertEqual(align.items.map(\.state), [.off, .off, .off], "Mixed alignments mark no choice")
+        align.performActionForItem(at: try XCTUnwrap(align.items.firstIndex { $0.title == "Center" }))
+        surface.refreshPresentation()
+        XCTAssertTrue(String(decoding: try backend.serializedSource(typeName: EVDocument.markdownType), as: UTF8.self)
+            .contains("| :-- | :-: | :--: |"))
+        XCTAssertEqual(try session.tableContext().alignment, UInt32(VIEM_TABLE_ALIGN_CENTER))
+        XCTAssertEqual([try session.tableSelection().anchor_column, try session.tableSelection().active_column], [1, 2])
+        interaction.invalidate()
+        XCTAssertEqual(buttons(widget)[1], "Columns 2–3 alignment")
+
+        try press("Insert column right of columns 2–3", in: widget)
+        surface.refreshPresentation()
+        XCTAssertEqual(try session.tableContext().columns, 4)
+        XCTAssertEqual([try session.tableSelection().anchor_column, try session.tableSelection().active_column], [1, 2])
+        try press("Delete columns 2–3", in: widget)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
+            Data("Intro\n\nRoom above\n\n| A |   |\n| :-- | :---: |\n| one |   |\n| four |   |".utf8))
+
+        // A single selected column keeps its alignment control.
+        _ = try session.undo(); surface.refreshPresentation()
+        let current = try XCTUnwrap(surface.layoutSnapshot)
+        let header = try XCTUnwrap(current.tableCells.first { $0.row == 0 && $0.column == 0 })
+        XCTAssertTrue(interaction.beginColumnSelection(at: NSPoint(x: editor.viewRect(header.rect).midX, y: editor.viewRect(header.table_rect).minY)))
+        interaction.endColumnSelection()
+        XCTAssertEqual(buttons(widget), ["Insert column left of column 1", "Column 1 alignment", "Delete column 1", "Insert column right of column 1"])
+
+        // A leftward drag puts the caret at the start of the first column's header.
+        let third = try XCTUnwrap(current.tableCells.first { $0.row == 0 && $0.column == 2 })
+        XCTAssertTrue(interaction.beginColumnSelection(at: NSPoint(x: editor.viewRect(third.rect).midX, y: editor.viewRect(third.table_rect).minY)))
+        let second = try XCTUnwrap(current.tableCells.first { $0.row == 0 && $0.column == 1 })
+        interaction.dragColumns(to: NSPoint(x: editor.viewRect(second.rect).midX, y: editor.viewRect(second.table_rect).minY))
+        interaction.endColumnSelection()
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, second.text_start)
+        XCTAssertEqual(buttons(widget).first, "Insert column left of columns 2–3")
     }
 
     func testRowHoverDoesNotShowWidgetsWithPreviewOff() throws {

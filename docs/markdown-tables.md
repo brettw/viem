@@ -299,11 +299,36 @@ alignment, with minimal necessary syntax patches. It affects header and body
 together. Explicitly choosing Left may record explicit left alignment even when
 the previous unspecified alignment already appeared left-aligned.
 
-Hovering either table side border or its **20 DIP gutter outside that side** shows
-a row widget for that row: **Insert row above**, **Delete row**, **Insert row below**,
-using plus/up, minus, and plus/down icons. Both sides target the same row actions;
-prefer placing the widget beside the side that activated it. The header has no
-Insert row above option; Insert row below creates the first body row.
+The top-border strip is also a column selection target. Over it the pointer is
+a centered down arrow in the platform arrow's style (black with a white outline
+on macOS, white with a black outline on Windows). Pressing it selects every cell
+of that column, and dragging extends the selection by whole columns. As with
+row selection, the caret ends the selection in the drag's direction: at the end
+of the last column's final cell, or at the start of the first column's header.
+
+Hovering a row to the left of the table, from the editor's left edge through
+the table's left border, or to the right of it, from the right border to the
+editor's right edge, shows a row widget for that row: **Insert row above**,
+**Delete row**, **Insert row below**, using plus/up, minus, and plus/down icons.
+Both sides target the same row actions; prefer placing the widget beside the
+side that activated it. The header shows only Insert row below, which creates
+the first body row. The left zone is the row-selection margin: it shows the
+reversed arrow, and pressing or dragging there selects complete table rows.
+
+While the selection is complete table rows, or complete columns, a widget for
+the group replaces hover widgets. It sits beside the selection's active row, or
+above its active column, and its actions apply to the whole group. Insertions go
+outside the group, above or left of its first member or below or right of its
+last, and keep the group selected. Insert row above is unavailable when the
+group includes the header. Deleting every row or every column removes the
+table. Deleting a row group that includes the header but not every row deletes
+its body rows and clears the header's cells, as every row deletion does. Column
+alignment applies to every selected column and keeps them selected; when their
+alignments differ, the popup marks no choice. A selection of every cell shows
+the controls of the gesture that made it, rows by default.
+
+Hover widgets, menus and accessibility actions offer no Delete for the header
+row by itself; its widget offers only Insert row below.
 
 Widgets overlay rather than reflow the document. Keep the target fixed while
 moving into the widget or its alignment popup; its hit region includes the path
@@ -329,14 +354,11 @@ column identities before an action; stale geometry cannot retarget an edit.
   Put the caret in the first new cell after row insertion, or the new column's
   cell in the previously active row after column insertion.
 - Deleting a body row removes that row. Deleting the last body row leaves a
-  valid header-only table. Deleting the header promotes the first body row and
-  gives it header treatment; column alignment remains unchanged. Materialize
-  missing cells in a short promoted row so its header matches the delimiter.
-  An overfull body row's ignored source cells cannot become extra header cells
-  or be discarded. If no equivalent preserved representation is possible,
-  reject promotion with an explanation that the row has extra source cells;
-  leave the entire deletion unchanged.
-- Deleting a header-only row or the final column removes the table. Preserve
+  valid header-only table. Any row deletion that includes the header but not
+  every row, from native actions or Vim line commands, keeps the header row and
+  clears its cells; it never promotes a body row.
+- Deleting every row, including a header-only table's header, or the final
+  column removes the table. Preserve
   surrounding content and metadata; leave a valid ordinary caret boundary,
   including an empty ordinary paragraph when it was the only document content.
 - After deletion, prefer the following surviving row/column, otherwise the
@@ -502,7 +524,7 @@ implementation lands.
 | Parsing | GFM table examples 198–205; optional pipes; short delimiter runs; every alignment; mismatched headers; header-only tables; empty, missing, excess cells; escaped pipes/backslashes/code; entities; block termination; list/quote ownership; literal code/HTML contexts. |
 | Insertion | Click-open and drag-open; native jitter threshold; cell press/drag/release; hover; outside/Escape/capture loss; above/left cancellation; right/bottom independent clamping and mixed corners; growth to 20 × 50; small screens; keyboard/accessibility; stale originating targets; counts excluding the header. |
 | Geometry/styles | Minimum sizes measured from Table cell; wider headers; multiline/mixed-font/bidi/emoji cells; shrinking after maximum deletion; shared borders; per-column alignment; theme/zoom/fallback changes; horizontal scrolling; blank-cell carets. |
-| Editing | Inline formatting and protected pipes; Enter/Shift-Enter and `<br>` variants inside/outside tables; literal code contexts; repeated Tab traversal/last-cell append; boundary deletion; row-major search/Ex and cell-local visual lines; physical row commands; IME commit/cancel; all row/column insert/delete cases including ragged header promotion and last-column removal. |
+| Editing | Inline formatting and protected pipes; Enter/Shift-Enter and `<br>` variants inside/outside tables; literal code contexts; repeated Tab traversal/last-cell append; boundary deletion; row-major search/Ex and cell-local visual lines; physical row commands; IME commit/cancel; all row/column insert/delete cases including header clearing and last-column removal. |
 | Selection/clipboard | Text-to-cell transition; multiline/RTL/empty cells; reversed rectangles; autoscroll; mixed formatting; clear versus structural deletion; native Copy preservation; exact replacement scope; matrix paste/mismatch; quoted tabular fallback; register and command policies. |
 | Preservation | No-op byte equality; minimal patches; ragged/excess cells; opaque content; mixed endings/encodings/BOMs; final terminators; reopening edits; exact undo/redo; cancellation/stale failures; multiple views. |
 | Scale | More than 20 columns and 50 rows; very large tables and cells; cold visible interaction; edits near/offscreen width maxima; work-count bounds; cache eviction; rapid resize/style/edit changes; stale background results; native memory/latency. |

@@ -285,14 +285,14 @@ fn whole_table_visual_selection_delete_removes_hidden_delimiter() {
     assert_eq!(core.document().source_bytes(), SOURCE.as_bytes());
 }
 #[test]
-fn one_column_dd_consumes_complete_row_and_promotes_header() {
+fn one_column_dd_on_the_header_clears_it_without_promoting_a_row() {
     let source = "| header |\n| :--: |\n| body |\n| last |";
     let (mut core, view) = editor(source);
     for input in [InputEvent::key('d'), InputEvent::key('d')] {
         core.handle(view, CoreEvent::Input(input)).unwrap();
     }
-    assert_eq!(core.document().text(), "body\nlast");
-    assert_eq!(core.document().projection().tables()[0].rows.len(), 2);
+    assert_eq!(core.document().source_bytes(), b"|  |\n| :--: |\n| body |\n| last |");
+    assert_eq!(core.document().projection().tables()[0].rows.len(), 3);
     assert_eq!(
         core.document().projection().tables()[0].columns[0],
         viem_core::document::TableAlignment::Center

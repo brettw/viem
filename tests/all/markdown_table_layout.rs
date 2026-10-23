@@ -219,7 +219,7 @@ fn audit_narrow_nested_table_insert_and_row_delete_recover_on_resize() {
     let table = core.document().projection().tables()[0].id;
     core.handle_with_layout(view, viem_core::CoreEvent::TableEdit {
         document: core.document().id(), revision: core.document().revision(),
-        intent: TableEditIntent::DeleteRow {table, row: 0},
+        intent: TableEditIntent::DeleteRows { table, rows: 0..1 },
     }).unwrap();
     core.handle(view, viem_core::CoreEvent::SetViewportOrigin {left: 0., top: Some(f32::MAX)}).unwrap();
     for (width,height) in [(40.,30.),(300.,200.)] {

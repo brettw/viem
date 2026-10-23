@@ -143,22 +143,26 @@ pub enum TableEditIntent {
         row: usize,
         after: bool,
     },
-    DeleteRow {
+    /// Deletes a contiguous row group. Deleting every row removes the table.
+    /// Otherwise a table keeps its header row: a group that includes it
+    /// clears its cells instead of deleting it.
+    DeleteRows {
         table: u64,
-        row: usize,
+        rows: Range<usize>,
     },
     InsertColumn {
         table: u64,
         column: usize,
         after: bool,
     },
-    DeleteColumn {
+    DeleteColumns {
         table: u64,
-        column: usize,
+        columns: Range<usize>,
     },
+    /// Sets the alignment of every column in a contiguous group.
     SetAlignment {
         table: u64,
-        column: usize,
+        columns: Range<usize>,
         alignment: TableAlignment,
     },
     ClearCells {

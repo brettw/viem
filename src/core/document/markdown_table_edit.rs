@@ -88,9 +88,9 @@ impl Document {
         }
         let id = match &intent {
             TableEditIntent::InsertRow { table, .. }
-            | TableEditIntent::DeleteRow { table, .. }
+            | TableEditIntent::DeleteRows { table, .. }
             | TableEditIntent::InsertColumn { table, .. }
-            | TableEditIntent::DeleteColumn { table, .. }
+            | TableEditIntent::DeleteColumns { table, .. }
             | TableEditIntent::SetAlignment { table, .. }
             | TableEditIntent::ClearCells { table, .. }
             | TableEditIntent::ReplaceCells { table, .. }
@@ -149,56 +149,35 @@ impl Document {
                 patches.push(SourcePatch::primary(source..source, encode(&body)?));
                 expected_rows += 1;
             }
-            TableEditIntent::DeleteRow { row, .. } => {
-                if row >= table.rows.len() {
-                    return Err(unsupported("The selected table row no longer exists."));
+            TableEditIntent::DeleteRows { rows, .. } => {
+                if rows.is_empty() || rows.end > table.rows.len() {
+                    return Err(unsupported("The selected table rows no longer exist."));
                 }
-                if table.rows.len() == 1 {
+                if rows == (0..table.rows.len()) {
                     remove = true;
-                } else if row == 0 {
-                    let promoted = &table.source_rows[2];
-                    if promoted.source_cells.len() > table.columns.len() {
-                        return Err(unsupported("This row has extra source cells and cannot be promoted to the header without losing them."));
-                    }
-                    let header = &table.source_rows[0];
-                    let mut replacement = self
-                        .table_source_text(header.source_range.start..header.source_body.start)?;
-                    replacement.push_str(&self.table_source_text(
-                        promoted.source_body.start..promoted.source_range.end,
-                    )?);
-                    if promoted.source_cells.len() < table.columns.len() {
-                        let tail = self.table_source_text(
-                            promoted.source_cells.last().unwrap().end..promoted.source_range.end,
-                        )?;
-                        let cut = replacement.len() - tail.len();
-                        let outer = if tail.contains('|') { "" } else { " |" };
-                        replacement.insert_str(
-                            cut,
-                            &format!(
-                                "{}{outer}",
-                                " | ".repeat(table.columns.len() - promoted.source_cells.len())
-                            ),
-                        );
-                    }
-                    if !replacement.ends_with(['\n', '\r']) {
-                        replacement.push_str(newline);
-                    }
-                    patches.push(SourcePatch::primary(
-                        table.rows[0].source_range.clone(),
-                        encode(&replacement)?,
-                    ));
-                    patches.push(SourcePatch::primary(
-                        table.rows[1].source_range.clone(),
-                        Vec::new(),
-                    ));
                 } else {
-                    patches.push(SourcePatch::primary(
-                        table.rows[row].source_range.clone(),
-                        Vec::new(),
-                    ));
+                    // A table keeps its header row. Deleting it, alone or with
+                    // body rows, clears its cells instead of promoting a row.
+                    if rows.start == 0 {
+                        for column in 0..table.columns.len() {
+                            if !table.rows[0].cells[column].range.is_empty() {
+                                patches.extend(self.table_cell_replacement(table, 0, column, "")?);
+                            }
+                        }
+                    }
+                    let body = rows.start.max(1)..rows.end;
+                    for row in body.clone() {
+                        patches.push(SourcePatch::primary(
+                            table.rows[row].source_range.clone(),
+                            Vec::new(),
+                        ));
+                    }
+                    if patches.is_empty() {
+                        return Ok((self.no_op_prepared(), table.rows[0].cells[0].range.start));
+                    }
+                    expected_rows -= body.len();
+                    target_row = rows.start.min(expected_rows - 1);
                 }
-                expected_rows -= 1;
-                target_row = row.min(expected_rows.saturating_sub(1));
             }
             TableEditIntent::InsertColumn { column, after, .. } => {
                 if column >= table.columns.len() {
@@ -239,63 +218,73 @@ impl Document {
                 }
                 expected_columns += 1;
             }
-            TableEditIntent::DeleteColumn { column, .. } => {
-                if column >= table.columns.len() {
-                    return Err(unsupported("The selected table column no longer exists."));
+            TableEditIntent::DeleteColumns { columns, .. } => {
+                if columns.is_empty() || columns.end > table.columns.len() {
+                    return Err(unsupported("The selected table columns no longer exist."));
                 }
-                if table.columns.len() == 1 {
+                if columns == (0..table.columns.len()) {
                     remove = true;
                 } else {
                     for row in &table.source_rows {
-                        if let Some(cell) = row.source_cells.get(column) {
-                            let range = if column == 0 {
-                                cell.start
-                                    ..row.source_cells.get(1).map_or(cell.end, |next| next.start)
-                            } else {
-                                row.source_cells[column - 1].end..cell.end
-                            };
-                            patches.push(SourcePatch::primary(range, Vec::new()));
+                        let cells = &row.source_cells;
+                        if columns.start >= cells.len() {
+                            continue;
                         }
+                        let last = columns.end.min(cells.len()) - 1;
+                        let range = if columns.start == 0 {
+                            cells[0].start..cells.get(last + 1).map_or(cells[last].end, |next| next.start)
+                        } else {
+                            cells[columns.start - 1].end..cells[last].end
+                        };
+                        patches.push(SourcePatch::primary(range, Vec::new()));
                     }
                 }
-                expected_columns -= 1;
-                target_column = column.min(expected_columns.saturating_sub(1));
+                expected_columns -= columns.len();
+                target_column = columns.start.min(expected_columns.saturating_sub(1));
             }
             TableEditIntent::SetAlignment {
-                column, alignment, ..
+                columns, alignment, ..
             } => {
-                if table.columns.get(column) == Some(&alignment) {
-                    return Ok((
-                        self.no_op_prepared(),
-                        table.rows[0].cells[column].range.start,
-                    ));
+                if columns.is_empty() || columns.end > table.columns.len() {
+                    return Err(unsupported("The selected table columns no longer exist."));
                 }
                 let row = &table.source_rows[1];
-                let range = row
-                    .source_cells
-                    .get(column)
-                    .ok_or_else(|| unsupported("The selected table column no longer exists."))?;
-                let raw = self.table_source_text(range.clone())?;
-                let leading = raw.len() - raw.trim_start_matches([' ', '\t']).len();
-                let trailing = raw.len() - raw.trim_end_matches([' ', '\t']).len();
-                let body = raw.trim_matches([' ', '\t']);
-                let dashes = body.bytes().filter(|b| *b == b'-').count().max(1);
-                let marker = match alignment {
-                    TableAlignment::Unspecified => "-".repeat(dashes),
-                    TableAlignment::Left => format!(":{}", "-".repeat(dashes)),
-                    TableAlignment::Center => format!(":{}:", "-".repeat(dashes)),
-                    TableAlignment::Right => format!("{}:", "-".repeat(dashes)),
-                };
-                patches.push(SourcePatch::primary(
-                    range.clone(),
-                    encode(&format!(
-                        "{}{}{}",
-                        &raw[..leading],
-                        marker,
-                        &raw[raw.len() - trailing..]
-                    ))?,
-                ));
-                target_column = column;
+                for column in columns.clone() {
+                    if table.columns[column] == alignment {
+                        continue;
+                    }
+                    let range = row
+                        .source_cells
+                        .get(column)
+                        .ok_or_else(|| unsupported("The selected table column no longer exists."))?;
+                    let raw = self.table_source_text(range.clone())?;
+                    let leading = raw.len() - raw.trim_start_matches([' ', '\t']).len();
+                    let trailing = raw.len() - raw.trim_end_matches([' ', '\t']).len();
+                    let body = raw.trim_matches([' ', '\t']);
+                    let dashes = body.bytes().filter(|b| *b == b'-').count().max(1);
+                    let marker = match alignment {
+                        TableAlignment::Unspecified => "-".repeat(dashes),
+                        TableAlignment::Left => format!(":{}", "-".repeat(dashes)),
+                        TableAlignment::Center => format!(":{}:", "-".repeat(dashes)),
+                        TableAlignment::Right => format!("{}:", "-".repeat(dashes)),
+                    };
+                    patches.push(SourcePatch::primary(
+                        range.clone(),
+                        encode(&format!(
+                            "{}{}{}",
+                            &raw[..leading],
+                            marker,
+                            &raw[raw.len() - trailing..]
+                        ))?,
+                    ));
+                }
+                if patches.is_empty() {
+                    return Ok((
+                        self.no_op_prepared(),
+                        table.rows[0].cells[columns.start].range.start,
+                    ));
+                }
+                target_column = columns.start;
             }
             TableEditIntent::ClearCells { rows, columns, .. }
             | TableEditIntent::ReplaceCells {
@@ -511,14 +500,17 @@ impl Document {
             let prepared = scratch.prepare_text_edits(vec![TextEdit::new(selected, "")])?;
             apply(&mut scratch, prepared)?;
         }
-        for row in full_rows.into_iter().rev() {
+        // Complete rows are contiguous. Deleting the header among them clears it.
+        if let (Some(&first), Some(&last)) = (full_rows.first(), full_rows.last()) {
             let table = scratch.projection().tables()[table_index].id;
             let (prepared, _) = scratch.prepare_table_edit(
                 scratch.id(),
                 scratch.revision(),
-                TableEditIntent::DeleteRow { table, row },
+                TableEditIntent::DeleteRows { table, rows: first..last + 1 },
             )?;
-            apply(&mut scratch, prepared)?;
+            if !prepared.is_no_op() {
+                apply(&mut scratch, prepared)?;
+            }
         }
         self.prepare_reprojected_source_patches(composition.source_patches())
             .map(Some)

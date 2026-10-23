@@ -135,7 +135,7 @@ fn insert_empty_header_body_then_edit_and_undo_exactly() {
     }
 }
 #[test]
-fn rows_columns_alignment_and_header_promotion() {
+fn rows_columns_alignment_and_header_clearing() {
     let mut document = doc("| A | B |\n| :- | -: |\n| x | y |\n", Format::Markdown);
     let table = document.projection().tables()[0].id;
     action(
@@ -161,32 +161,84 @@ fn rows_columns_alignment_and_header_promotion() {
         &mut document,
         TableEditIntent::SetAlignment {
             table,
-            column: 1,
+            columns: 1..2,
             alignment: TableAlignment::Center,
         },
     );
     let table = document.projection().tables()[0].id;
     action(
         &mut document,
-        TableEditIntent::DeleteColumn { table, column: 1 },
+        TableEditIntent::DeleteColumns { table, columns: 1..2 },
     );
     assert_eq!(document.text(), "A\nB\nx\ny");
     let table = document.projection().tables()[0].id;
-    action(&mut document, TableEditIntent::DeleteRow { table, row: 0 });
-    assert_eq!(document.text(), "x\ny");
-    assert_eq!(document.projection().tables()[0].rows.len(), 1);
+    action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..1 });
+    assert_eq!(document.text(), "\n\nx\ny", "Deleting the header clears it instead of promoting a row");
+    assert_eq!(document.projection().tables()[0].rows.len(), 2);
     let table = document.projection().tables()[0].id;
     action(
         &mut document,
-        TableEditIntent::DeleteColumn { table, column: 1 },
+        TableEditIntent::DeleteColumns { table, columns: 1..2 },
     );
     let table = document.projection().tables()[0].id;
     action(
         &mut document,
-        TableEditIntent::DeleteColumn { table, column: 0 },
+        TableEditIntent::DeleteColumns { table, columns: 0..1 },
     );
     assert!(document.projection().tables().is_empty());
     assert_eq!(document.text(), "");
+}
+#[test]
+fn row_groups_delete_body_rows_and_clear_a_retained_header() {
+    let source = "| A | B |\n| - | - |\n| c | d |\n| e | f |\n| g | h |\n";
+    let mut document = doc(source, Format::Markdown);
+    let table = document.projection().tables()[0].id;
+    let caret = action(&mut document, TableEditIntent::DeleteRows { table, rows: 1..3 });
+    assert_eq!(document.source_bytes(), b"| A | B |\n| - | - |\n| g | h |\n");
+    assert_eq!(document.projection().tables()[0].rows[1].cells[0].range.start, caret);
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+
+    // The header survives a group that does not cover the whole table.
+    let table = document.projection().tables()[0].id;
+    let caret = action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..2 });
+    assert_eq!(document.source_bytes(), b"|  |  |\n| - | - |\n| e | f |\n| g | h |\n");
+    assert_eq!(document.projection().tables()[0].rows[0].cells[0].range.start, caret);
+    assert!(document.undo());
+    let table = document.projection().tables()[0].id;
+    action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..1 });
+    assert_eq!(document.source_bytes(), b"|  |  |\n| - | - |\n| c | d |\n| e | f |\n| g | h |\n");
+    // Clearing an already empty header alone changes nothing.
+    let table = document.projection().tables()[0].id;
+    let revision = document.revision();
+    action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..1 });
+    assert_eq!(document.revision(), revision);
+    assert!(document.undo());
+
+    let table = document.projection().tables()[0].id;
+    action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..4 });
+    assert!(document.projection().tables().is_empty());
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
+}
+#[test]
+fn column_groups_delete_together_including_short_rows() {
+    let source = "| A | B | C | D |\n| - | :- | -: | - |\n| a | b |\n| w | x | y | z |\n";
+    let mut document = doc(source, Format::Markdown);
+    let table = document.projection().tables()[0].id;
+    action(&mut document, TableEditIntent::DeleteColumns { table, columns: 1..3 });
+    assert_eq!(document.source_bytes(), b"| A | D |\n| - | - |\n| a |\n| w | z |\n");
+    assert_eq!(document.projection().tables()[0].columns.len(), 2);
+    assert!(document.undo());
+    let table = document.projection().tables()[0].id;
+    action(&mut document, TableEditIntent::DeleteColumns { table, columns: 0..2 });
+    assert_eq!(document.source_bytes(), b"| C | D |\n| -: | - |\n||\n| y | z |\n");
+    assert!(document.undo());
+    let table = document.projection().tables()[0].id;
+    action(&mut document, TableEditIntent::DeleteColumns { table, columns: 0..4 });
+    assert!(document.projection().tables().is_empty());
+    assert!(document.undo());
+    assert_eq!(document.source_bytes(), source.as_bytes());
 }
 #[test]
 fn typing_pipe_multiline_and_missing_cell() {
@@ -207,18 +259,17 @@ fn typing_pipe_multiline_and_missing_cell() {
         .contains("p\\|q<br>r"));
 }
 #[test]
-fn excess_header_promotion_is_rejected_atomically() {
+fn deleting_the_header_clears_it_and_keeps_extra_body_cells() {
     let mut document = doc("a | b\n- | -\nx | y | hidden\n", Format::Markdown);
     let original = document.source_bytes();
     let table = document.projection().tables()[0].id;
-    assert!(document
-        .prepare_table_edit(
-            document.id(),
-            document.revision(),
-            TableEditIntent::DeleteRow { table, row: 0 }
-        )
-        .is_err());
+    action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..1 });
+    assert_eq!(document.projection().tables()[0].rows.len(), 2);
+    assert!(document.projection().tables()[0].rows[0].cells.iter().all(|cell| cell.range.is_empty()));
+    assert!(String::from_utf8(document.source_bytes()).unwrap().contains("x | y | hidden"));
+    assert!(document.undo());
     assert_eq!(document.source_bytes(), original);
+    let table = document.projection().tables()[0].id;
     action(
         &mut document,
         TableEditIntent::InsertColumn {
@@ -596,7 +647,7 @@ fn unicode_and_utf16_crlf_tables_preserve_untouched_artifact_bytes() {
         &mut document,
         TableEditIntent::SetAlignment {
             table,
-            column: 0,
+            columns: 0..1,
             alignment: TableAlignment::Center,
         },
     );
@@ -717,7 +768,7 @@ fn whole_cell_replacement_keeps_first_character_style() {
         .contains("**new**"));
 }
 #[test]
-fn missing_cells_can_clear_and_ragged_body_can_be_promoted() {
+fn missing_cells_can_clear_and_a_ragged_table_header_clears() {
     let mut document = doc("a | b | c\n- | - | -\nvalue\n", Format::Markdown);
     let table = document.projection().tables()[0].id;
     action(
@@ -731,8 +782,8 @@ fn missing_cells_can_clear_and_ragged_body_can_be_promoted() {
     assert_eq!(document.text(), "a\nb\nc\n\n\n");
     assert!(document.undo());
     let table = document.projection().tables()[0].id;
-    action(&mut document, TableEditIntent::DeleteRow { table, row: 0 });
-    assert_eq!(document.text(), "value\n\n");
+    action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..1 });
+    assert_eq!(document.text(), "\n\n\nvalue\n\n");
     assert_eq!(document.projection().tables()[0].columns.len(), 3);
 }
 #[test]
@@ -779,7 +830,7 @@ fn table_noop_actions_do_not_create_history_or_dirty_source() {
     for intent in [
         TableEditIntent::SetAlignment {
             table,
-            column: 0,
+            columns: 0..1,
             alignment: TableAlignment::Center,
         },
         TableEditIntent::ClearCells {
@@ -804,7 +855,7 @@ fn table_noop_actions_do_not_create_history_or_dirty_source() {
     }
 }
 #[test]
-fn owned_table_header_insertion_and_promotion_keep_list_and_quote_prefixes() {
+fn owned_table_header_insertion_and_clearing_keep_list_and_quote_prefixes() {
     for source in ["- a | b\n  - | -\n  c | d\n", "> a | b\n> - | -\n> c | d\n"] {
         let mut document = doc(source, Format::Markdown);
         let table = document.projection().tables()[0].id;
@@ -819,8 +870,8 @@ fn owned_table_header_insertion_and_promotion_keep_list_and_quote_prefixes() {
         assert_eq!(document.projection().tables()[0].rows.len(), 3);
         assert!(document.undo());
         let table = document.projection().tables()[0].id;
-        action(&mut document, TableEditIntent::DeleteRow { table, row: 0 });
-        assert_eq!(document.text(), "c\nd");
+        action(&mut document, TableEditIntent::DeleteRows { table, rows: 0..1 });
+        assert_eq!(document.text(), "\n\nc\nd");
         assert!(
             document.projection().blocks()[0].quote_depth > 0
                 || !document.projection().blocks()[0].containers.is_empty()
@@ -1120,14 +1171,14 @@ fn nested_table_intents_stay_regional_and_match_a_fresh_parse() {
                 text: "a|b\nc".into(), anchor_row: 2, anchor_column: 0 },
             TableEditIntent::InsertColumn { table: id, column: 0, after: false },
             TableEditIntent::InsertColumn { table: id, column: columns - 1, after: true },
-            TableEditIntent::DeleteColumn { table: id, column: 0 },
-            TableEditIntent::SetAlignment { table: id, column: 0, alignment: TableAlignment::Center },
+            TableEditIntent::DeleteColumns { table: id, columns: 0..1 },
+            TableEditIntent::SetAlignment { table: id, columns: 0..1, alignment: TableAlignment::Center },
             TableEditIntent::SetCellsSemanticStyle { table: id, rows: 0..rows, columns: 0..1,
                 style: SemanticInlineStyle::Strong, enabled: true },
         ];
         for row in 0..rows {
             intents.push(TableEditIntent::InsertRow { table: id, row, after: true });
-            intents.push(TableEditIntent::DeleteRow { table: id, row });
+            intents.push(TableEditIntent::DeleteRows { table: id, rows: row..row + 1 });
             if row > 0 {
                 intents.push(TableEditIntent::InsertRow { table: id, row, after: false });
             }
@@ -1140,8 +1191,11 @@ fn nested_table_intents_stay_regional_and_match_a_fresh_parse() {
             };
             // Like a top-level table's, the final row's ending separates the
             // table from following content, so changing it is verified completely.
-            let final_ending = matches!(intent, TableEditIntent::InsertRow { row, after: true, .. }
-                | TableEditIntent::DeleteRow { row, .. } if row + 1 == rows);
+            let final_ending = match &intent {
+                TableEditIntent::InsertRow { row, after: true, .. } => row + 1 == rows,
+                TableEditIntent::DeleteRows { rows: deleted, .. } => deleted.end == rows,
+                _ => false,
+            };
             if !final_ending
                 && prepared.summary().projection_work().scope() != ProjectionWorkScope::RegionalHardLines {
                 failures.push(format!("{source:?} {intent:?}: {:?}", prepared.summary().projection_work().scope()));

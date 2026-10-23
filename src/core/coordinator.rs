@@ -47,6 +47,7 @@ mod input_layout;
 mod prelayout;
 mod formatting;
 mod tables;
+pub use tables::TableSelectionAction;
 mod links;
 mod images;
 mod startup;
@@ -388,6 +389,11 @@ pub enum CoreEvent {
         document: DocumentId,
         revision: Revision,
         intent: crate::document::TableEditIntent,
+    },
+    /// Inserts beside or deletes the selected complete table rows or columns.
+    TableSelectionEdit {
+        expected: LogicalSelectionIdentity,
+        action: TableSelectionAction,
     },
     InsertListParagraph {
         expected: LogicalSelectionIdentity,
@@ -5512,6 +5518,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             CoreEvent::TableEdit { document, revision, intent } => {
                 return self.apply_table_edit(view_id, document, revision, intent);
             }
+            CoreEvent::TableSelectionEdit { expected, action } => {
+                return self.apply_table_selection_edit(view_id, expected, action);
+            }
             CoreEvent::IndentList { expected, unindent } => {
                 if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }
                 self.reject_table_block_formatting(&expected)?;
@@ -6724,6 +6733,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             | CoreEvent::SetListStyle { .. }
             | CoreEvent::SetBlockQuote { .. }
             | CoreEvent::TableEdit { .. }
+            | CoreEvent::TableSelectionEdit { .. }
             | CoreEvent::IndentList { .. }
             | CoreEvent::SetParagraphStyle { .. }
             | CoreEvent::AssignNamedStyle { .. } => {

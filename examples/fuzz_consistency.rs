@@ -532,7 +532,7 @@ impl H {
                 Some((table, row, _)) => self.send(CoreEvent::TableEdit {
                     document: doc_id,
                     revision,
-                    intent: TableEditIntent::DeleteRow { table, row },
+                    intent: TableEditIntent::DeleteRows { table, rows: row..row + 1 },
                 }),
                 None => Res::Ok,
             },
@@ -540,7 +540,7 @@ impl H {
                 Some((table, _, column)) => self.send(CoreEvent::TableEdit {
                     document: doc_id,
                     revision,
-                    intent: TableEditIntent::DeleteColumn { table, column },
+                    intent: TableEditIntent::DeleteColumns { table, columns: column..column + 1 },
                 }),
                 None => Res::Ok,
             },
