@@ -326,7 +326,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             sheet = generated;
         }
         let delta = self.syntax.service.take_publication_delta();
-        self.publish_code_presentation(sheet, &delta);
+        self.publish_code_presentation(sheet, &delta, completed);
         self.syntax.published = Some(publication);
         true
     }
@@ -449,9 +449,24 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         sheet: Arc<crate::document::StyleSheet>,
         delta: &crate::document::syntax::service::PublicationDelta,
+        completed_analysis: bool,
     ) {
-        let caret_anchors = self.caret_anchors_for_publication();
         let sheet_changed = code_metrics_changed(&self.syntax.sheet, &sheet);
+        if sheet_changed {
+            // A new style choice supersedes any syntax adjustment that has
+            // not reached the screen yet. Capture the displayed viewport.
+            for view in self.views.values_mut() {
+                update_viewport_anchor(&self.document, view);
+            }
+        }
+        // Explicit style changes use ordinary viewport preservation, even if
+        // a worker happens to finish in the same poll. Only delayed analysis
+        // may compensate for a visible caret's changed font metrics.
+        let caret_anchors = if completed_analysis && !sheet_changed {
+            self.caret_anchors_for_publication()
+        } else {
+            BTreeMap::new()
+        };
         let has_metric_styles = self.sheet_has_metric_styles(&sheet);
         // The previous presentation is only compared when a run can change
         // metrics; the unbounded comparison needs the projection as displayed.

@@ -910,7 +910,7 @@ fn caret_screen_y(core: &Core<MockTextMeasurementProvider>, view: ViewId, offset
 }
 
 #[test]
-fn a_small_reflow_preserves_the_caret_baseline_and_never_lays_out_the_whole_document() {
+fn a_small_reflow_preserves_top_visible_text_and_never_lays_out_the_whole_document() {
     for command in ["2gqq", "2gww"] {
         let (mut core, view) = scrolled_code(20_000);
         core.set_text_width_default(60);
@@ -936,10 +936,11 @@ fn a_small_reflow_preserves_the_caret_baseline_and_never_lays_out_the_whole_docu
             CommandStatus::Complete
         ));
         assert!(core.document().text()[caret..caret + 40].starts_with("// comment line"));
-        // The edited row keeps its screen baseline: no recentering, and no
-        // bottom alignment. The numeric origin may shift when a partial
-        // layout's estimated heights above the anchor change.
-        assert_eq!(caret_screen_y(&core, view, caret), baseline, "{command}");
+        // H placed the caret on the top visible row: retain that text's
+        // screen position, not an arbitrary editing baseline. Refining prefix
+        // estimates can change the numeric origin and introduce f32 rounding.
+        assert!((caret_screen_y(&core, view, caret) - baseline).abs() < 0.01,
+            "{command}: top visible text moved from {baseline} to {}", caret_screen_y(&core, view, caret));
         assert!(
             baseline >= 0. && baseline < height / 2.,
             "{command}: {baseline} of {height}"

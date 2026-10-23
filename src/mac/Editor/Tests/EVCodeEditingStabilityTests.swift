@@ -35,18 +35,22 @@ final class EVCodeEditingStabilityTests: XCTestCase {
         try assertCurrentBoundedLayout(fixture)
     }
 
-    func testLargerSyntaxMovesCaretOnlyEnoughToExposeItsWholeRow() async throws {
+    func testExplicitSyntaxFontChangePreservesViewportAndLetsTheCaretMoveNaturally() async throws {
         let fixture = try makeFixture(highlighting: true)
         try await waitForCommentSize(14, fixture: fixture)
         fixture.surface.requestVerticalViewport(top: 18_000)
         try await waitForCommentSize(14, fixture: fixture)
         try placeInsertCaret(fixture, screenFraction: 0.3)
-        var state = try caretState(fixture)
+        let state = try caretState(fixture)
         fixture.surface.requestVerticalViewport(top: CGFloat(state.row.baseline - state.row.ascent - 1))
-        state = try caretState(fixture)
-        let priorBaseline = state.screenBaseline
         let client: NSTextInputClient = fixture.surface.editorView
         client.insertText("x", replacementRange: implicitRange)
+        let before = try caretState(fixture)
+        let beforeLayout = try XCTUnwrap(fixture.surface.layoutSnapshot)
+        let anchorRow = try XCTUnwrap(beforeLayout.rows.first {
+            $0.y + $0.line_advance > fixture.surface.viewportState.top
+        })
+        let anchorScreenY = anchorRow.y - fixture.surface.viewportState.top
         let session = try EVCodeStyleSession(configuration: fixture.configuration)
         let snapshot = try session.snapshot()
         let comment = try XCTUnwrap(snapshot.definitions.first { $0.name == "Comment" })
@@ -55,15 +59,17 @@ final class EVCodeEditingStabilityTests: XCTestCase {
         try await waitForCaretCommentSize(36, fixture: fixture)
 
         let styled = try caretState(fixture)
-        let height = try XCTUnwrap(fixture.surface.layoutSnapshot).info.viewport_height
+        let afterLayout = try XCTUnwrap(fixture.surface.layoutSnapshot)
+        let anchorAfter = try XCTUnwrap(afterLayout.rows.first { $0.text_start == anchorRow.text_start })
+        XCTAssertEqual(anchorAfter.y - fixture.surface.viewportState.top, anchorScreenY, accuracy: 0.5,
+                       "An explicit style edit preserves the viewport's text row instead of the caret baseline")
+        XCTAssertGreaterThan(abs(styled.screenBaseline - before.screenBaseline), 1,
+                             "The caret moves naturally with the deliberately enlarged font")
+        let height = afterLayout.info.viewport_height
         let margins = EVViewPreferences(configuration: fixture.configuration).margins
-        let ascentFromRowTop = styled.row.baseline - styled.row.y
-        let belowBaseline = styled.row.line_advance - ascentFromRowTop
-        let nearestVisibleBaseline = min(max(priorBaseline, Float(margins.top) + ascentFromRowTop),
-                                         height - Float(margins.bottom) - belowBaseline)
-        XCTAssertEqual(styled.screenBaseline, nearestVisibleBaseline, accuracy: 0.5,
-                       "Only the smallest scroll needed to reveal the taller caret row inside the margins is allowed")
-        XCTAssertEqual(styled.row.y - fixture.surface.viewportState.top, Float(margins.top), accuracy: 0.5)
+        XCTAssertGreaterThanOrEqual(styled.row.y - fixture.surface.viewportState.top, Float(margins.top) - 0.5)
+        XCTAssertLessThanOrEqual(styled.row.y + styled.row.line_advance - fixture.surface.viewportState.top,
+                                height - Float(margins.bottom) + 0.5)
         try assertCurrentBoundedLayout(fixture)
     }
 

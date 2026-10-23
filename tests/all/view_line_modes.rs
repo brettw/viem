@@ -434,6 +434,43 @@ fn joins_use_actual_boundaries_in_the_selected_line_domain() {
 }
 
 #[test]
+fn physical_joins_retain_anchors_in_the_unchanged_first_line() {
+    use viem_core::document::{Association, BoundaryAffinity, DeletionRecovery, MappingOutcome};
+    let source = "header\nalpha 🙂\n  beta\n  gamma\ntail";
+    for (prefix, expected, cursor) in [
+        ("", "header\nalpha 🙂 beta\n  gamma\ntail", "header\nalpha 🙂".len()),
+        ("g", "header\nalpha 🙂  beta\n  gamma\ntail", "header\nalpha 🙂".len()),
+        ("3", "header\nalpha 🙂 beta gamma\ntail", "header\nalpha 🙂 beta".len()),
+    ] {
+        let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap();
+        let (mut core, view) = editor(document, 600.);
+        keys(&mut core, view, "2G");
+        let offsets = ["header\n".len(), "header\nalpha ".len()];
+        let anchors = offsets.map(|at| core.document().text_anchor(
+            core.document().text_point(at).unwrap(), Association::AfterInsertion,
+            BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding,
+        ).unwrap());
+        keys(&mut core, view, prefix);
+        let outcome = core.handle(view, CoreEvent::Input(InputEvent::key('J'))).unwrap();
+        assert_eq!(outcome.command.unwrap().status, CommandStatus::Complete);
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+        assert_eq!(core.command_state(view).unwrap().cursor(), cursor);
+        let map = outcome.position_map.unwrap();
+        for (anchor, expected_offset) in anchors.into_iter().zip(offsets) {
+            let mapped = match map.map_text_anchor(anchor).unwrap() {
+                MappingOutcome::Exact(anchor) | MappingOutcome::Moved(anchor) => anchor,
+                outcome => panic!("{prefix}J lost unchanged first-line identity: {outcome:?}"),
+            };
+            assert_eq!(mapped.offset(), expected_offset, "{prefix}J moved unchanged first-line text");
+        }
+        keys(&mut core, view, "u");
+        assert_eq!(core.document().source_bytes(), source.as_bytes());
+        key(&mut core, view, Key::Ctrl('r'));
+        assert_eq!(core.document().source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
 fn location_in_resumed_first_hard_line_has_exact_global_and_fragment_ordinals() {
     use viem_core::command::CommandInterpreter;
     use viem_core::layout::{

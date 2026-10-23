@@ -199,10 +199,6 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// timing-dependent candidate navigation or intermediate previews.
     pub fn accept_completion(&mut self, view_id: ViewId) -> Result<CoreOutcome, CoreError> {
         self.retire_stale_completion(view_id)?;
-        let baseline = self
-            .views
-            .get(&view_id)
-            .and_then(|view| viewport::composition_caret_baseline(&self.document, view));
         let view = self
             .views
             .get_mut(&view_id)
@@ -229,32 +225,6 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         match self.handle(view_id, CoreEvent::Input(InputEvent::Text(suffix))) {
             Ok(mut outcome) => {
-                if let Some(baseline) = baseline {
-                    let view = self
-                        .views
-                        .get_mut(&view_id)
-                        .expect("accepted completion retains view");
-                    if let Ok(point) = self.document.text_point(view.commands.cursor()) {
-                        if let Ok(anchor) = self.document.text_anchor(
-                            point,
-                            Association::BeforeInsertion,
-                            view.commands.boundary_affinity(),
-                            DeletionRecovery::PreferFollowingThenPreceding,
-                        ) {
-                            view.viewport_anchor = Some(ViewportTextAnchor {
-                                anchor,
-                                offset_from_reference: -baseline,
-                                reference: ViewportAnchorReference::Baseline,
-                            });
-                            if let Err(error) = self.materialize_immediate_viewport(
-                                view_id,
-                                ImmediateLayoutIntent::PreserveViewportAndRevealCaret,
-                            ) {
-                                self.record_presentation_error(view_id, error);
-                            }
-                        }
-                    }
-                }
                 outcome.layout_changed = true;
                 Ok(outcome)
             }

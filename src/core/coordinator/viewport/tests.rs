@@ -14,6 +14,7 @@ mod scroll_endpoints;
 mod horizontal_reveal;
 mod history;
 mod indent_alignment;
+mod edit_policy;
 
 const LINE: &str = "let value = 42; // comment\n";
 

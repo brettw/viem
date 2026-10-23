@@ -449,10 +449,14 @@ Deliberate presentation differences from GitHub:
   shaping; offscreen heights may stay estimated.
 - Scrolling uses continuous layout units and one core-owned extent for wheel,
   keyboard and scrollbars; estimates are not clamps. Preserve the viewport's
-  text anchor, and the editing row's screen baseline while it fits, through
-  edits, reflow, composition, height refinement and asynchronous font or syntax
-  results. Reveal minimally; never recenter or jump to the end. Cache-only
-  pre-layout never moves visible text, the caret or the scroll anchor.
+  text anchor and its screen offset through edits, reflow, composition and
+  height refinement; changed content and the caret may move naturally. Only
+  asynchronous syntax highlighting that changes geometry preserves the visible
+  editing row's screen baseline while it fits, because delayed movement is
+  distracting. Reveal minimally; never recenter or jump to the end. Cache-only
+  pre-layout never moves visible text, the caret or the scroll anchor. See
+  [viewport stability](docs/viewport-stability.md) for the decision and priority
+  rules.
 - Core decides whether the cursor occupies a grapheme or an insertion boundary;
   frontends never infer it from offset and affinity.
 - Visible whitespace markers (`list`/`listchars`) appear only in Text and Code

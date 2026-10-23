@@ -1209,13 +1209,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         if !self.document.format().is_code() && self.document.style_defaults_installed(json) {
             return Ok(Vec::new());
         }
-        let anchors: BTreeMap<_, _> = self.views.iter().filter_map(|(id, view)| {
-            capture_caret_baseline_anchor(&self.document, view).map(|anchor| (*id, anchor))
-        }).collect();
+        for view in self.views.values_mut() {
+            update_viewport_anchor(&self.document, view);
+        }
         let diagnostics = self.document.replace_style_defaults(json)?;
-        for (id, view) in &mut self.views {
+        for view in self.views.values_mut() {
             cancel_active_layout_work(view);
-            if let Some(anchor) = anchors.get(id) { view.viewport_anchor = Some(*anchor); }
             view.layout.invalidate_syntax_presentation(true);
             view.long_line_checkpoints = LongLineCheckpointCache::default();
         }
@@ -2902,11 +2901,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret
                     && coverage.end < caret
                     && self.document.projection().presentation_line_range(following_line)
-                        .is_some_and(|line| line.start == caret)
+                        .is_some_and(|line| line.start <= caret && caret <= line.end)
                 {
                     // Enter can split a giant paragraph. Preserve the saved
                     // row and shape the new paragraph's first bounded slice in
                     // the same published snapshot before revealing the caret.
+                    // Subsequent typing still anchors the viewport in the old
+                    // paragraph, so the caret need not remain at the new start.
                     let preceding = candidate.regional_snapshot().clone();
                     let request = self.prepare_view_layout_job(
                         view_id,
@@ -3833,6 +3834,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         composed_layout
             .publish_layout_job_viewport(job_id, region, requested_top)
             .map_err(LayoutError::from)?;
+        viewport::restore_composition_viewport(&mut composed_layout, &overlay, view.viewport_anchor)?;
         if reveal_selection {
             viewport::reveal_layout_row_at(
                 &mut composed_layout,
@@ -4033,6 +4035,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 composed_layout
                     .publish_layout_job_viewport(job_id, region, top)
                     .map_err(LayoutError::from)?;
+                viewport::restore_composition_viewport(&mut composed_layout, &overlay, view.viewport_anchor)?;
                 if reveal_selection {
                     viewport::reveal_layout_row_at(
                         &mut composed_layout,
@@ -4420,11 +4423,21 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 
+    /// An ordinary action supersedes an uninstalled syntax-only adjustment.
+    /// Capture the displayed viewport while its source revision is still current.
+    fn retire_syntax_baseline_anchors(&mut self) {
+        for view in self.views.values_mut() {
+            if view.viewport_anchor.is_some_and(|anchor| anchor.reference == ViewportAnchorReference::Baseline) {
+                update_viewport_anchor(&self.document, view);
+            }
+        }
+    }
+
     /// Prepare all controller images before a native transaction commits. The
     /// caller chooses ordinary or Markdown-view anchor association; every
     /// view must map successfully before any live controller is replaced.
     fn prepare_mapped_commands(
-        &self,
+        &mut self,
         map: &PositionMap,
         capture_anchors: fn(
             &CommandInterpreter,
@@ -4454,6 +4467,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }));
             }
         }
+        self.retire_syntax_baseline_anchors();
         Ok(next_commands)
     }
 
@@ -5029,6 +5043,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .document
             .prepare_model_request(request)
             .map_err(command_model_transaction_error)?;
+        self.retire_syntax_baseline_anchors();
         let committed = self
             .document
             .commit_model_transaction(prepared)
@@ -5838,10 +5853,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .views
                     .get_mut(&view_id)
                     .expect("view existence checked above");
+                let same_size = width == view.layout.width() && height == view.layout.height();
+                if !same_size {
+                    update_viewport_anchor(&self.document, view);
+                }
                 let requirements = inspect_layout_provider(&view.engine);
                 let current =
                     current_snapshot_for_layout(&self.document, &view.layout, requirements);
-                let same_size = width == view.layout.width() && height == view.layout.height();
                 if same_size && current.is_some() {
                     // AppKit can lay out its unchanged surface after every key.
                     // A current viewport needs neither another shaping pass nor
@@ -5963,6 +5981,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     view.layout.set_scale(scale)?;
                     let changed = view.layout.configuration_generation() != before;
                     if changed {
+                        update_viewport_anchor(&self.document, view);
                         cancel_active_layout_work(view);
                     }
                     changed
@@ -6084,6 +6103,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .views
                     .get_mut(&view_id)
                     .expect("view existence checked above");
+                if wrap != view.layout.wrap() {
+                    update_viewport_anchor(&self.document, view);
+                }
                 let before = view.layout.configuration_generation();
                 view.layout.set_wrap(wrap);
                 view.commands
@@ -6171,14 +6193,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 } else {
                     false
                 };
-                let edit_anchor = viewport::capture_edit_baseline_anchor(
-                    &self.document,
-                    self.views.get(&view_id).expect("validated view"),
-                );
+                self.retire_syntax_baseline_anchors();
                 let target_view = self
                     .views
                     .get_mut(&view_id)
                     .expect("view existence checked above");
+                update_viewport_anchor(&self.document, target_view);
                 let before = self.document.revision();
                 let old_viewport_top = target_view.layout.viewport_top();
                 let resolution = if requires_layout || input.is_none() {
@@ -6295,16 +6315,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                 }
                 let changed = self.document.revision() != before;
-                if changed && !command.history_navigation {
-                    if let Some(anchor) = edit_anchor {
-                        // Rebase this pre-edit boundary with the transaction.
-                        // Unlike a new caret reveal, local typing must not
-                        // recenter because the old layout revision is stale.
-                        // History instead preserves the viewport's text anchor:
-                        // the current editing row may split or move on Undo.
-                        target_view.viewport_anchor = Some(anchor);
-                    }
-                }
+                // Ordinary edits keep the viewport's text anchor. Pinning the
+                // editing baseline would turn intentional paragraph/font changes
+                // into scrolling of otherwise unchanged surrounding content.
                 let cursor_moved = command.cursor_moved;
                 let history_navigation = command.history_navigation;
                 // Search prompts temporarily change mode while retaining the
@@ -6319,7 +6332,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .map_or(changed || cursor_moved, |requests| {
                         requests.contains(&CommandPresentationRequest::RevealCaret)
                     });
-                let command_presentation_intent = if command_requests_reveal && changed && edit_anchor.is_some() {
+                let command_presentation_intent = if command_requests_reveal && changed {
                     ImmediateLayoutIntent::PreserveViewportAndRevealCaret
                 } else if command_requests_reveal {
                     ImmediateLayoutIntent::RevealCaret
@@ -7565,9 +7578,6 @@ impl<P: TextMeasurementProvider> Core<P> {
 
     fn commit_composition(&mut self, view_id: ViewId) -> Result<CoreOutcome, CoreError> {
         self.install_buffer_commands(view_id);
-        let composition_baseline = viewport::composition_caret_baseline(
-            &self.document, self.views.get(&view_id).expect("validated composition view"),
-        );
         let session = self
             .views
             .get(&view_id)
@@ -7642,6 +7652,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
         }
 
+        self.retire_syntax_baseline_anchors();
         let (commit, committed_model) = request.apply_with_model_transaction(&mut self.document)?;
         let revision = committed_model.after_revision();
         debug_assert_eq!(committed_model.before_revision(), before);
@@ -7691,22 +7702,6 @@ impl<P: TextMeasurementProvider> Core<P> {
         if changed {
             self.rebase_viewport_anchors(&exact_position_map)?;
         }
-        let mut presentation_intent = ImmediateLayoutIntent::RevealCaret;
-        if let Some(baseline) = composition_baseline {
-            let view = self.views.get_mut(&view_id).expect("validated composition view");
-            let point = self.document.text_point(caret_offset)
-                .expect("composition preparation validated the committed caret");
-            let anchor = self.document.text_anchor(
-                point, Association::BeforeInsertion, view.commands.boundary_affinity(),
-                DeletionRecovery::PreferFollowingThenPreceding,
-            ).expect("validated composition caret has a persistent anchor");
-            view.viewport_anchor = Some(ViewportTextAnchor {
-                anchor,
-                offset_from_reference: -baseline,
-                reference: ViewportAnchorReference::Baseline,
-            });
-            presentation_intent = ImmediateLayoutIntent::PreserveViewportAndRevealCaret;
-        }
         self.publish_buffer_commands(view_id);
 
         let mut composition_changes = vec![ViewCompositionChange {
@@ -7744,7 +7739,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             // make the committed composition appear to have rolled back.
             self.materialize_views_after_document_change(
                 view_id,
-                presentation_intent,
+                ImmediateLayoutIntent::PreserveViewportAndRevealCaret,
             );
         }
 
