@@ -65,7 +65,7 @@ public enum EVApplication {
                     delegate.processLaunchArguments(parsed.arguments, workingDirectory:
                         URL(fileURLWithPath: request.workingDirectory, isDirectory: true),
                         blockingCompletion: parsed.completion, launchCompletion: parsed.launchCompletion,
-                        deferOpening: true)
+                        forwarded: true)
                     return nil
                 } catch { return error.localizedDescription }
             }
@@ -74,7 +74,7 @@ public enum EVApplication {
         }
     }
 
-    static func activateForCommandLineLaunch() {
+    static func activateForCommandLineLaunch(onFailure: @escaping @MainActor () -> Void) {
         // Sonoma and later ignore ignoringOtherApps. Ask Launch Services to
         // hand activation to the actual document owner, not the short-lived
         // process that forwarded the command-line request to this instance. Unwind
@@ -82,10 +82,9 @@ public enum EVApplication {
         // Include modal panels: a forwarded request can open a recovery alert
         // before returning from its current main-dispatch block.
         RunLoop.main.perform(inModes: [.default, .modalPanel]) {
-            let application = NSApplication.shared
             let bundle = Bundle.main.bundleURL
             guard bundle.pathExtension == "app" else {
-                application.activate()
+                if !NSRunningApplication.current.activate(options: []) { onFailure() }
                 return
             }
             let configuration = NSWorkspace.OpenConfiguration()
@@ -102,6 +101,7 @@ public enum EVApplication {
             NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
                 if let error {
                     FileHandle.standardError.write(Data("Viem: Could not activate editor: \(error.localizedDescription)\n".utf8))
+                    DispatchQueue.main.async { onFailure() }
                 }
             }
         }
@@ -151,12 +151,19 @@ final class EVApplicationDelegate: NSObject,
     private var hasProcessedLaunchArguments = false
     private var pendingLaunches: [(EVLaunchArguments, URL, UUID?, Bool)] = []
     private var isProcessingLaunch = false
+    private final class LaunchActivation {
+        weak var window: NSWindow?
+    }
+    private var pendingLaunchActivation: LaunchActivation?
     var documentFactory: () -> EVDocument = { EVDocument() }
     var mainWindow: () -> NSWindow? = { NSApplication.shared.mainWindow }
     var applicationWindows: () -> [NSWindow] = { NSApplication.shared.windows }
+    var applicationIsActive: () -> Bool = { NSApplication.shared.isActive }
     var hasOpenDocumentWindows: () -> Bool = { EVDocumentWindowController.hasOpenDocumentWindows }
     var terminateApplication: () -> Void = { NSApplication.shared.terminate(nil) }
-    var activateForCommandLineLaunch: () -> Void = { EVApplication.activateForCommandLineLaunch() }
+    var activateForCommandLineLaunch: (@escaping @MainActor () -> Void) -> Void = {
+        EVApplication.activateForCommandLineLaunch(onFailure: $0)
+    }
     var recordRecentDocument: (URL) -> Void
 
     init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments(),
@@ -191,6 +198,14 @@ final class EVApplicationDelegate: NSObject,
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // AppKit can restore the previously key window when Launch Services
+        // activates us after the requested document has already been shown.
+        let window = pendingLaunchActivation?.window
+        pendingLaunchActivation = nil
+        if let window, window.isVisible, !window.isMiniaturized,
+           NSApplication.shared.modalWindow == nil, window.attachedSheet == nil {
+            window.makeKeyAndOrderFront(nil)
+        }
         try? configuration.ensureCurrentThemeExists()
     }
 
@@ -317,7 +332,7 @@ final class EVApplicationDelegate: NSObject,
     func processLaunchArguments(_ arguments: EVLaunchArguments, workingDirectory: URL,
                                blockingCompletion: EVBlockingEditCompletion? = nil,
                                launchCompletion: EVBlockingEditCompletion? = nil,
-                               deferOpening: Bool = false) {
+                               forwarded: Bool = false) {
         let token: UUID?
         do { token = try blockingCompletion.map { try EVBlockingEditSessions.shared.begin($0) } }
         catch {
@@ -326,12 +341,13 @@ final class EVApplicationDelegate: NSObject,
             FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8))
             return
         }
-        pendingLaunches.append((arguments, workingDirectory, token, token != nil || launchCompletion != nil))
+        let activates = forwarded || token != nil || launchCompletion != nil
+        pendingLaunches.append((arguments, workingDirectory, token, activates))
         // A normal CLI caller waits only for acceptance, including on a cold
         // launch. Recovery dialogs and file-open errors belong to the GUI and
         // must not keep the terminal waiting for user interaction.
         launchCompletion?.finish(exitCode: 0)
-        if deferOpening { DispatchQueue.main.async { [self] in processNextLaunch() } }
+        if forwarded { DispatchQueue.main.async { [self] in processNextLaunch() } }
         else { processNextLaunch() }
     }
 
@@ -339,20 +355,37 @@ final class EVApplicationDelegate: NSObject,
         guard !isProcessingLaunch, !pendingLaunches.isEmpty else { return }
         isProcessingLaunch = true
         let (arguments, workingDirectory, blockingToken, activates) = pendingLaunches.removeFirst()
+        let activation = activates ? LaunchActivation() : nil
+        pendingLaunchActivation = activation
         // Recovery/open panels must receive the same handoff as the eventual
         // editor window. The completion socket still owns the caller's wait.
-        if activates { activateForCommandLineLaunch() }
+        if let activation {
+            activateForCommandLineLaunch { [weak self] in
+                if self?.pendingLaunchActivation === activation { self?.pendingLaunchActivation = nil }
+            }
+        }
+        func finish(in window: NSWindow? = nil) {
+            if applicationIsActive() { pendingLaunchActivation = nil }
+            else { pendingLaunchActivation?.window = window }
+            NSApplication.shared.activate()
+            isProcessingLaunch = false
+            processNextLaunch()
+        }
         guard !arguments.isEmpty else {
             if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
+            let window: NSWindow?
             if hasNoOpenWindows {
-                launchPlaceholderDocument = createUntitledDocument()
-            } else if let window = mainWindow() ?? applicationWindows().first(where: {
-                !($0 is NSPanel) && ($0.isVisible || $0.isMiniaturized)
-            }) {
-                if window.isMiniaturized { window.deminiaturize(nil) }
-                window.makeKeyAndOrderFront(nil)
+                let document = createUntitledDocument()
+                launchPlaceholderDocument = document
+                window = document.windowControllers.first?.window
+            } else {
+                window = mainWindow() ?? applicationWindows().first(where: {
+                    !($0 is NSPanel) && ($0.isVisible || $0.isMiniaturized)
+                })
+                if window?.isMiniaturized == true { window?.deminiaturize(nil) }
+                window?.makeKeyAndOrderFront(nil)
             }
-            finishLaunch()
+            finish(in: window)
             return
         }
         let urls = arguments.filenames.map {
@@ -372,7 +405,7 @@ final class EVApplicationDelegate: NSObject,
                     if blockingToken == nil { NSApplication.shared.presentError(error) }
                     else { FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8)) }
                 }
-                finishLaunch()
+                finish()
                 return
             }
         }
@@ -386,7 +419,7 @@ final class EVApplicationDelegate: NSObject,
         guard let controller = document.windowControllers.first as? EVDocumentWindowController else {
             if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
             document.showWindows()
-            finishLaunch()
+            finish(in: document.windowControllers.first?.window)
             return
         }
         controller.argumentDocumentOpener = { [weak self] url, _, completion in
@@ -407,18 +440,14 @@ final class EVApplicationDelegate: NSObject,
                     controller.close()
                 }
             }
-            if case let .failure(error) = result {
+            switch result {
+            case let .success(window): finish(in: window)
+            case let .failure(error):
                 if blockingToken == nil { NSApplication.shared.presentError(error) }
                 else { FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8)) }
+                finish()
             }
-            finishLaunch()
         }
-    }
-
-    private func finishLaunch() {
-        NSApplication.shared.activate()
-        isProcessingLaunch = false
-        processNextLaunch()
     }
 
     /// CLI launches also work directly from the executable, where an app

@@ -36,6 +36,21 @@ internal static class InputRoutingTests
     [DllImport("user32.dll")] internal static extern uint GetDoubleClickTime();
     internal static nint ForegroundWindowForTesting => GetForegroundWindow();
     internal static nint KeyboardFocusForTesting => GetFocus();
+    internal static async Task CheckForegroundEditor(Shell.EditorWindow window, EditorPane pane, string name)
+    {
+        var input = Find<TextBox>(pane);
+        if (!await SelfTestRunner.Until(() => GetForegroundWindow() == window.Hwnd && window.ActivePane == pane
+            && input != null && ReferenceEquals(FocusManager.GetFocusedElement(pane.XamlRoot), input)))
+        {
+            nint foreground = GetForegroundWindow();
+            GetWindowThreadProcessId(foreground, out uint foregroundProcess);
+            var focused = FocusManager.GetFocusedElement(pane.XamlRoot);
+            throw new InvalidOperationException($"{name}: foreground={foreground:x} (pid={foregroundProcess}), target={window.Hwnd:x} (pid={Environment.ProcessId}), "
+                + $"activeWindow={window.IsWindowActive}, activePane={window.ActivePane == pane}, nativeFocus={GetFocus():x}, "
+                + $"focused={focused?.GetType().Name}, inputFound={input != null}, focusedIsInput={ReferenceEquals(focused, input)}");
+        }
+        FrontendSmokeTests.UiChecks.Add(name);
+    }
 
     internal static async Task Drag(Window owner, FrameworkElement element, IReadOnlyList<global::Windows.Foundation.Point> fractions, Action<int> inspect, bool focusTarget = true, bool doubleClick = false, int clickCount = 1)
     {

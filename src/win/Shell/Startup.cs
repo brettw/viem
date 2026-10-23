@@ -1,5 +1,7 @@
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using Microsoft.UI.Windowing;
 using Viem.Windows.Editor;
 using Viem.Windows.Interop;
 using static Viem.Windows.Interop.Native;
@@ -64,8 +66,33 @@ internal sealed partial class EditorWindow
 #endif
     internal void ReceiveInvocation(OpenInvocation request)
     {
-        async Task Next(Task previous) { await previous; try { Activate(); await OpenInvocation(request); ActivePane?.FocusEditor(); } catch (Exception error) { ActivePane?.Report(error); } }
+        async Task Next(Task previous)
+        {
+            await previous;
+            try
+            {
+                if (request.Arguments.Length == 0 && request.CompletionPipe == null)
+                {
+                    ActivateLaunchWindow();
+                    ActivePane?.FocusEditor();
+                }
+                else await OpenInvocation(request);
+            }
+            catch (Exception error)
+            {
+                if (closed) return;
+                ActivateLaunchWindow();
+                ActivePane?.Report(error);
+            }
+        }
         invocationQueue = Next(invocationQueue);
+    }
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(nint hwnd);
+    private void ActivateLaunchWindow()
+    {
+        if (AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } presenter) presenter.Restore();
+        Activate();
+        _ = SetForegroundWindow(Hwnd);
     }
     private async Task OpenInvocation(OpenInvocation request)
     {
@@ -103,6 +130,8 @@ internal sealed partial class EditorWindow
             if (File.Exists(paths[0])) _ = await File.ReadAllBytesAsync(paths[0]);
             var window = NewWindow(null); await window.OpenArguments(request); return;
         }
+        // File pickers and recovery prompts belong to the window opening a new document.
+        if (!represented) ActivateLaunchWindow();
         App.Instance.Arguments.Clear(); App.Instance.Arguments.AddRange(paths);
         int split = args.SplitCount == 0 ? Math.Max(1, paths.Length) : args.SplitCount ?? 1;
         split = Math.Clamp(split, 1, Math.Max(1, args.VerticalSplits ? (int)((paneGrid.ActualWidth + 5) / 105) : (int)(paneGrid.ActualHeight / preferences.StatusHeight)));
@@ -121,7 +150,9 @@ internal sealed partial class EditorWindow
             foreach (var pane in Panes) await pane.Ready.WaitAsync(TimeSpan.FromSeconds(15));
             var view = await first.Ready.WaitAsync(TimeSpan.FromSeconds(15));
             if (args.InitialLine != null) view.GoToLine(args.InitialLine.Value);
-            var owner = App.Instance.Windows.First(w => w.Panes.Contains(first)); owner.Activate(); owner.SetActive(first); first.FocusEditor();
+            var owner = App.Instance.Windows.First(w => w.Panes.Contains(first));
+            owner.ActivateLaunchWindow();
+            owner.FocusPane(first);
         }
     }
     private sealed record LaunchArguments(string[] Filenames, int? SplitCount, ulong? InitialLine, bool VerticalSplits, string? Error);

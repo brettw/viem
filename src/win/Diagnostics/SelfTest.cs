@@ -218,6 +218,9 @@ internal sealed partial class EditorWindow
         var opened = App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath == forwarded);
         if (opened?.View?.Location.hard_line != 2 || App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document.FilePath?.EndsWith("deferred.txt") == true)) throw new InvalidOperationException("CLI handoff did not retain caller directory, first-file policy and +line.");
         FrontendSmokeTests.UiChecks.Add("second-process CLI handoff, relative paths, +line and lazy file arguments");
+        var owner = App.Instance.Windows.Single(w => w.Panes.Contains(opened));
+        if (owner == this) throw new InvalidOperationException("The forwarded file did not open in a new window.");
+        await InputRoutingTests.CheckForegroundEditor(owner, opened, "second-process CLI launch focuses the new document window");
     }
 }
 #endif

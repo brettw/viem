@@ -202,29 +202,35 @@ func run() throws {
         (attribute(application, kAXWindowsAttribute) as? [AXUIElement] ?? [])
             .filter { !editors($0).isEmpty }
     }
-    func focused(_ text: String, filename: String, paneCount: Int) -> Bool {
+    func focused(_ text: String, filename: String, paneCount: Int, windowCount: Int = 1) -> Bool {
         let documentWindows = windows()
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == primary.processIdentifier,
-              documentWindows.count == 1, editors(documentWindows[0]).count == paneCount,
-              let documentPath = attribute(documentWindows[0], kAXDocumentAttribute) as? String,
+              documentWindows.count == windowCount,
+              let focusedWindow = attribute(application, kAXFocusedWindowAttribute),
+              let window = documentWindows.first(where: { CFEqual($0, focusedWindow) }),
+              editors(window).count == paneCount,
+              let documentPath = attribute(window, kAXDocumentAttribute) as? String,
               let documentURL = URL(string: documentPath),
               canonical(documentURL) == canonical(temporary.appendingPathComponent(filename)),
-              let focusedWindow = attribute(application, kAXFocusedWindowAttribute),
-              CFEqual(focusedWindow, documentWindows[0]),
               let focusedEditor = attribute(application, kAXFocusedUIElementAttribute),
-              let expected = editors(documentWindows[0]).first(where: {
+              let expected = editors(window).first(where: {
                   attribute($0, kAXValueAttribute) as? String == text
               }) else { return false }
         return CFEqual(focusedEditor, expected)
     }
     func closeDocumentWindow() throws {
-        guard windows().count == 1, let close = attribute(windows()[0], kAXCloseButtonAttribute) else {
-            throw TestFailure("Expected one document window with an accessible close button.")
+        let documentWindows = windows()
+        guard let focusedWindow = attribute(application, kAXFocusedWindowAttribute),
+              let window = documentWindows.first(where: { CFEqual($0, focusedWindow) }),
+              let close = attribute(window, kAXCloseButtonAttribute) else {
+            throw TestFailure("Expected a focused document window with an accessible close button.")
         }
         try require(AXUIElementPerformAction(close as! AXUIElement, kAXPressAction as CFString) == .success,
             "Could not close the test document window.")
         try waitFor("document window closes while its GUI process remains") {
-            windows().isEmpty && !primary.isTerminated
+            let remaining = windows()
+            return remaining.count == documentWindows.count - 1
+                && !remaining.contains { CFEqual($0, window) } && !primary.isTerminated
         }
     }
 
@@ -234,6 +240,20 @@ func run() throws {
     try requireSuccess(cliCold, message: "CLI helper completes while its document remains open")
     try require(focused(coldText, filename: coldName, paneCount: 1) && !primary.isTerminated,
         "CLI completion must leave its requested document open in the foreground.")
+    for launcher in [executable, externalCLI, helper] {
+        try bringToFront(backgroundApplication)
+        let caller = try launch(launcher, [warmName])
+        try waitFor("\(launcher.lastPathComponent) brings the new document window in front of the existing one") {
+            focused(warmText, filename: warmName, paneCount: 1, windowCount: 2)
+        }
+        if launcher == helper { try requireWaiting([caller]) }
+        else { try requireSuccess(caller, message: "launcher returns while the new window is open") }
+        try closeDocumentWindow()
+        if launcher == helper { try requireSuccess(caller) }
+        try waitFor("the original document window is available after the new window closes") {
+            focused(coldText, filename: coldName, paneCount: 1)
+        }
+    }
     try closeDocumentWindow()
 
     try bringToFront(backgroundApplication)

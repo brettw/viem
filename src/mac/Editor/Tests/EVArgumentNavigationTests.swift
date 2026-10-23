@@ -52,10 +52,11 @@ import XCTest
     }
 
     func launch(split: Int? = nil, line: UInt64? = nil) async throws {
-      let result: Result<String?, Error> = await withCheckedContinuation { continuation in
+      let result: Result<NSWindow?, Error> = await withCheckedContinuation { continuation in
         window.openArgumentList(urls, splitCount: split, initialLine: line) { continuation.resume(returning: $0) }
       }
-      _ = try result.get()
+      let selectedWindow = try result.get()
+      XCTAssertTrue(selectedWindow === window.window)
     }
 
     var document: EVDocument { window.activeDocument! }

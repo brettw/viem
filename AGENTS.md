@@ -663,6 +663,8 @@ text, excludes editor furniture, and needs no network resources.
 
 - One process runs per user. Later launches forward their arguments and working
   directory, and report handoff failures instead of starting another process.
+  Terminal launches bring the requested document window to the foreground,
+  including when other document windows are already open.
   Names, symlinks and hard links of the same file share one buffer and history.
   Launch helpers preserve the caller's working directory, and development
   `make run*` targets refuse to start while Viem is running. See

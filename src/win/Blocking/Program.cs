@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
 
 // The GUI can outlive this process. Only the requested document's completion
 // determines when Git may continue; exiting a forwarding GUI process does not.
@@ -21,6 +22,9 @@ try
     launch.ArgumentList.Add(pipeName);
     launch.ArgumentList.Add(path);
     using var process = Process.Start(launch) ?? throw new IOException("Could not launch Viem.");
+    // Pass the terminal launch's foreground permission through the GUI child.
+    // A forwarding child grants it to the existing instance before handoff.
+    _ = AllowSetForegroundWindow((uint)process.Id);
     // Bound startup only. Human editing has no timeout. Once connected, a GUI
     // crash closes the pipe and ReadExactlyAsync fails instead of hanging.
     using (var startup = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
@@ -34,3 +38,6 @@ catch (Exception error)
     Console.Error.WriteLine("blocking-viem: " + error.Message);
     return 1;
 }
+
+[DllImport("user32.dll", EntryPoint = "AllowSetForegroundWindow")]
+static extern bool AllowSetForegroundWindow(uint processId);
