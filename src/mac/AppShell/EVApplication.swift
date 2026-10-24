@@ -82,26 +82,29 @@ public enum EVApplication {
         // Include modal panels: a forwarded request can open a recovery alert
         // before returning from its current main-dispatch block.
         RunLoop.main.perform(inModes: [.default, .modalPanel]) {
-            let bundle = Bundle.main.bundleURL
-            guard bundle.pathExtension == "app" else {
-                if !NSRunningApplication.current.activate(options: []) { onFailure() }
-                return
-            }
-            let configuration = NSWorkspace.OpenConfiguration()
-            configuration.activates = true
-            configuration.allowsRunningApplicationSubstitution = false
-            configuration.addsToRecentItems = false
-            configuration.promptsUserIfNeeded = false
-            // A default reopen event can create a blank window or focus a
-            // different document. This request only transfers activation.
-            configuration.appleEvent = NSAppleEventDescriptor(
-                eventClass: AEEventClass(kAEMiscStandards), eventID: AEEventID(kAEActivate),
-                targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
-                transactionID: AETransactionID(kAnyTransactionID))
-            NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
-                if let error {
-                    FileHandle.standardError.write(Data("Viem: Could not activate editor: \(error.localizedDescription)\n".utf8))
-                    DispatchQueue.main.async { onFailure() }
+            // This callback is scheduled exclusively on the main run loop.
+            MainActor.assumeIsolated {
+                let bundle = Bundle.main.bundleURL
+                guard bundle.pathExtension == "app" else {
+                    if !NSRunningApplication.current.activate(options: []) { onFailure() }
+                    return
+                }
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                configuration.allowsRunningApplicationSubstitution = false
+                configuration.addsToRecentItems = false
+                configuration.promptsUserIfNeeded = false
+                // A default reopen event can create a blank window or focus a
+                // different document. This request only transfers activation.
+                configuration.appleEvent = NSAppleEventDescriptor(
+                    eventClass: AEEventClass(kAEMiscStandards), eventID: AEEventID(kAEActivate),
+                    targetDescriptor: nil, returnID: AEReturnID(kAutoGenerateReturnID),
+                    transactionID: AETransactionID(kAnyTransactionID))
+                NSWorkspace.shared.openApplication(at: bundle, configuration: configuration) { _, error in
+                    if let error {
+                        FileHandle.standardError.write(Data("Viem: Could not activate editor: \(error.localizedDescription)\n".utf8))
+                        DispatchQueue.main.async { onFailure() }
+                    }
                 }
             }
         }
@@ -429,7 +432,7 @@ final class EVApplicationDelegate: NSObject,
         }
         controller.openArgumentList(urls, splitCount: arguments.splitCount,
             initialLine: arguments.initialLine, vertical: arguments.verticalSplits,
-            preparedFirstDocument: preparedFirstDocument) { [self] result in
+            preparedFirstDocument: preparedFirstDocument) { result in
             if let blockingToken {
                 if case .success = result, let url = urls.first,
                    let opened = EVDocumentIdentity.existingDocument(at: url),

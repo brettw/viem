@@ -36,6 +36,10 @@ include the encoding, ending, BOM, source/selection and requested operation.
 Check owner kinds or container identities when two structures have the same
 visible text, such as a rule and an empty paragraph.
 
+Code-row deletion must keep following paragraphs outside retained code, including
+when the final body row is empty. Test fenced, indented, nested and passive HTML
+code through Vim and native line selections; keep explicit `J` joining distinct.
+
 Keep shared demo fixtures structurally stable when tests consume them. New
 syntax that must appear at document start belongs in a linked standalone demo.
 

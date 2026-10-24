@@ -6,9 +6,9 @@ import XCTest
 
 @MainActor
 final class EVDocumentScrollbarsIntegrationTests: XCTestCase {
-    private func makeSurface(_ source: String, typeName: String = EVDocument.plainTextType) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
+    private func makeSurface(_ source: String, typeName: String? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: typeName)
+        try backend.read(source: Data(source.utf8), typeName: typeName ?? EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 160)
