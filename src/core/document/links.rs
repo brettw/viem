@@ -831,6 +831,17 @@ impl Document {
         true
     }
 
+    /// A GFM extended autolink: bare text whose link Markdown derives from
+    /// that text, unlike explicit or `<...>` link syntax.
+    pub(crate) fn is_bare_autolink(&self, link: &LinkSnapshot) -> Result<bool, DocumentError> {
+        if !link.editable || link.destination_source.is_some() {
+            return Ok(false);
+        }
+        let open = self.encoding().encode_fragment("<")?;
+        Ok(self.state().source.bytes_in(link.source.start..link.source.start + open.len()).as_deref()
+            != Some(open.as_slice()))
+    }
+
     /// Convert only an editable automatic-link construct to explicit Markdown
     /// before splitting its label. This is a speculative mutation, never a
     /// toolbar capability query; passive HTML anchors remain unavailable.
@@ -838,6 +849,17 @@ impl Document {
         &self,
         range: Range<usize>,
         affinity: BoundaryAffinity,
+    ) -> Result<(PreparedModelTransaction, Range<usize>), ModelTransactionError> {
+        self.prepare_canonical_autolink_spelled(range, affinity, true)
+    }
+
+    /// `plain` permits the URL itself as the label; otherwise its
+    /// punctuation is escaped, so later inline syntax cannot pair with it.
+    pub(crate) fn prepare_canonical_autolink_spelled(
+        &self,
+        range: Range<usize>,
+        affinity: BoundaryAffinity,
+        plain: bool,
     ) -> Result<(PreparedModelTransaction, Range<usize>), ModelTransactionError> {
         let link = self
             .link_at_boundary(range.start, affinity)?
@@ -856,20 +878,28 @@ impl Document {
             Format::Markdown,
             self.file_format(),
         )?;
-        let replacement = self.encoding().encode_fragment(&format!(
-            "[{}](<{}>)",
-            escape_label(&link.text),
-            escape_destination(&link.destination)
-        ))?;
-        let explicit = Document::from_bytes_with_file_format(
-            replacement.clone(),
-            self.encoding(),
-            Format::Markdown,
-            self.file_format(),
-        )?;
-        if original.text() != explicit.text() {
-            return Err(DocumentError::VerificationFailed.into());
+        // The URL itself is the plainest label: link text recognizes no
+        // autolink. Escape it only when its punctuation would form syntax.
+        let mut explicit = None;
+        for label in [link.text.clone(), escape_label(&link.text)].into_iter().skip(usize::from(!plain)) {
+            let replacement = self.encoding().encode_fragment(&format!(
+                "[{label}](<{}>)", escape_destination(&link.destination)))?;
+            let candidate = Document::from_bytes_with_file_format(
+                replacement.clone(),
+                self.encoding(),
+                Format::Markdown,
+                self.file_format(),
+            )?;
+            if original.text() == candidate.text()
+                && original.projection().style_spans() == candidate.projection().style_spans()
+            {
+                explicit = Some(replacement);
+                break;
+            }
         }
+        let Some(replacement) = explicit else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
         let patch = SourcePatch::primary(link.source.clone(), replacement);
         let prepared = self.prepare_text_edits_with_patch_policy(Vec::new(), Some(vec![patch]), true)?;
         Ok((prepared, range))

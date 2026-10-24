@@ -580,8 +580,15 @@ impl Document {
         Ok(self.encoding().decode_region(&bytes, range.start)?.text)
     }
     fn table_literal_text(&self, text: &str) -> String {
+        self.table_literal_text_after(Some(""), text)
+    }
+
+    /// Cell text following `preceding` on its row (see
+    /// `autolink_literal_ranges`); later lines follow a `<br>`.
+    fn table_literal_text_after(&self, preceding: Option<&str>, text: &str) -> String {
         text.split('\n')
-            .map(|line| {
+            .enumerate()
+            .map(|(index, line)| {
                 let leading = line.len() - line.trim_start_matches([' ', '\t']).len();
                 let trailing = line.trim_end_matches([' ', '\t']).len().max(leading);
                 let spaces = |value: &str| {
@@ -590,16 +597,67 @@ impl Document {
                         .map(|ch| if ch == ' ' { "&#32;" } else { "&#9;" })
                         .collect::<String>()
                 };
+                let mut before = if index == 0 { preceding.map(str::to_owned) } else { Some("<br>".to_owned()) };
+                if let Some(before) = &mut before { before.push_str(&spaces(&line[..leading])); }
                 format!(
                     "{}{}{}",
                     spaces(&line[..leading]),
-                    escape_markdown_insert_in_encoding(&line[leading..trailing], self.encoding())
+                    super::super::projection::escape_markdown_prose_in_encoding(
+                        before.as_deref(), &line[leading..trailing], self.encoding())
                         .replace('|', "\\|"),
                     spaces(&line[trailing..])
                 )
             })
             .collect::<Vec<_>>()
             .join("<br>")
+    }
+
+    /// Whitespace references protect a cell's edges. Typing text beside one
+    /// makes it interior, where it is ordinary whitespace again: respell the
+    /// run just before an insertion at the cell's end, or just after one at
+    /// its start, together with the insertion.
+    fn table_interior_whitespace_patches(
+        &self,
+        edit: &TextEdit,
+        cell: &MarkdownTableCell,
+        affinity: Option<BoundaryAffinity>,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        let blank = |text: &str| text.chars().all(|ch| matches!(ch, ' ' | '\t'));
+        if !edit.range.is_empty() || blank(&edit.replacement) {
+            return Ok(None);
+        }
+        let old = self.projection().text_tree().slice(cell.range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let at = edit.range.start - cell.range.start;
+        let run = if blank(&old[at..]) && !edit.replacement.starts_with([' ', '\t']) {
+            let start = old[..at].trim_end_matches([' ', '\t']).len();
+            (!blank(&old[..start])).then_some(start..at)
+        } else if blank(&old[..at]) && !edit.replacement.ends_with([' ', '\t']) {
+            let end = old.len() - old[at..].trim_start_matches([' ', '\t']).len();
+            (!blank(&old[end..])).then_some(at..end)
+        } else {
+            None
+        };
+        let Some(run) = run.filter(|run| !run.is_empty()) else { return Ok(None) };
+        let mut patches = Vec::new();
+        for (offset, ch) in old[run.clone()].char_indices() {
+            let start = cell.range.start + run.start + offset;
+            let source = self.projection().source_range(start..start + ch.len_utf8())
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            if self.table_source_text(source.clone())? != ch.to_string() {
+                patches.push(SourcePatch::primary(source, self.encoding().encode_fragment(&ch.to_string())?));
+            }
+        }
+        if patches.is_empty() {
+            return Ok(None);
+        }
+        let source = super::super::source_edit::insertion_point(self.projection(), edit.range.start, affinity)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let preceding = if run.end == at { Some(" ".to_owned()) } else { self.autolink_prefix(source)? };
+        patches.push(SourcePatch::primary(source..source, self.encoding().encode_fragment(
+            &self.table_literal_text_after(preceding.as_deref(), &edit.replacement))?));
+        patches.sort_by_key(|patch| patch.range.start);
+        Ok(Some(patches))
     }
     fn table_cell_replacement(
         &self,
@@ -1014,6 +1072,9 @@ impl Document {
             None => self.projection().markdown_replacement_begins_in_code(&edit.range),
         };
         if !in_code && !edit.replacement.contains(['|', '\n']) {
+            if let Some(patches) = self.table_interior_whitespace_patches(edit, cell, affinity)? {
+                return Ok(Some(patches));
+            }
             if let Some(patches) = self.table_edge_whitespace_patches(edit, cell, affinity)? {
                 return Ok(Some(patches));
             }
@@ -1026,11 +1087,6 @@ impl Document {
                 "A literal code span cannot contain a table cell line break.",
             ));
         }
-        let syntax = if in_code {
-            edit.replacement.replace('|', "\\|")
-        } else {
-            self.table_literal_text(&edit.replacement)
-        };
         let source = if edit.range.is_empty() {
             let outside_code = if affinity == Some(BoundaryAffinity::Downstream) {
                 super::super::markdown_code::closing_boundary(self, edit.range.start)?.map(|closing| closing.end)
@@ -1046,6 +1102,11 @@ impl Document {
             self.projection()
                 .source_range(edit.range.clone())
                 .ok_or(DocumentError::AmbiguousProjection)?
+        };
+        let syntax = if in_code {
+            edit.replacement.replace('|', "\\|")
+        } else {
+            self.table_literal_text_after(self.autolink_prefix(source.start)?.as_deref(), &edit.replacement)
         };
         Ok(Some(vec![SourcePatch::primary(
             source,
@@ -1131,8 +1192,8 @@ impl Document {
         let mut primary = if edit.range.is_empty() {
             let at = super::super::source_edit::insertion_point(self.projection(), edit.range.start, affinity)
                 .ok_or(DocumentError::AmbiguousProjection)?;
-            vec![SourcePatch::primary(at..at,
-                self.encoding().encode_fragment(&self.table_literal_text(&edit.replacement))?)]
+            vec![SourcePatch::primary(at..at, self.encoding().encode_fragment(
+                &self.table_literal_text_after(self.autolink_prefix(at)?.as_deref(), &edit.replacement))?)]
         } else {
             self.markdown_line_local_text_rewrite_patches(&edit.range, &edit.replacement)?
                 .ok_or(DocumentError::AmbiguousProjection)?

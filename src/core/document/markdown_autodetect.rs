@@ -90,6 +90,7 @@ impl Document {
                 .text()
                 .contains(['*', '_', '~', '`', ')', '.', '-', '>', '#', '[', ']', '+'])
             && !edit.payload.text().starts_with(' ')
+            && self.word_underscore_escape(&edit)?.is_none()
         {
             return self
                 .prepare_insertion_with_typing_context(edit, named, values, inherited)
@@ -321,6 +322,29 @@ impl Document {
                 None,
             ));
         }
+        // A letter or digit typed after `\_` that follows one makes that
+        // underscore intraword, where it can never delimit emphasis, so its
+        // pending protection is no longer needed.
+        let first = if let Some(backslash) = self.word_underscore_escape(&edit)? {
+            let mut respelled = sources.clone();
+            respelled.splice(backslash, &[]);
+            match self.prepare_text_edits_with_patch_policy(
+                formatted.clone().formatted_edits(), Some(respelled.clone().source_patches()), true,
+            ) {
+                Ok(prepared) => {
+                    sources = respelled;
+                    prepared
+                }
+                Err(ModelTransactionError::Document(
+                    DocumentError::UnsupportedFormatting
+                    | DocumentError::VerificationFailed
+                    | DocumentError::FormattedPayloadCannotReproject,
+                )) => first,
+                Err(error) => return Err(error),
+            }
+        } else {
+            first
+        };
         let Some(recognition) = scratch.recognize_markdown(caret, &input)? else {
             // Keep incomplete syntax escaped even when today's parser would
             // permit a bare marker. Later typing must not reinterpret an
@@ -337,6 +361,9 @@ impl Document {
                 // (markers, rules, setext underlines) or, for `#`, as a
                 // heading's closing sequence. After other content on the line
                 // they are literal, as in `path-specific`.
+                if ch == '_' && scratch.underscore_is_intraword(start + index)? {
+                    continue;
+                }
                 if matches!(ch, '-' | '+' | '#')
                     && scratch.line_has_content_before(start + index)?
                     && !(ch == '#' && super::super::edit_boundary::paragraph_at(&scratch, start + index)?
@@ -415,6 +442,45 @@ impl Document {
             )) => Ok((first, caret, start, None)),
             Err(error) => Err(error),
         }
+    }
+
+    /// Whether the `_` at `at` lies between letters or digits, where Markdown
+    /// never treats it as an emphasis delimiter.
+    fn underscore_is_intraword(&self, at: usize) -> Result<bool, DocumentError> {
+        let text = self.projection().text_tree();
+        let character = |range: Option<Range<usize>>| -> Result<bool, DocumentError> {
+            let Some(range) = range else { return Ok(false) };
+            Ok(text.slice(range).map_err(DocumentError::FormattedTextStorage)?
+                .chars().next().is_some_and(char::is_alphanumeric))
+        };
+        let end = at + '_'.len_utf8();
+        Ok(character(self.previous_grapheme_boundary(at).map(|before| before..at))?
+            && character(self.next_grapheme_boundary(end).map(|after| end..after))?)
+    }
+
+    /// The backslash of an escaped `_` after a letter or digit, when `edit`
+    /// inserts a letter or digit just after it and so makes it intraword.
+    /// The insertion lies after that source, whose offsets it keeps.
+    fn word_underscore_escape(&self, edit: &FormattedPayloadEdit) -> Result<Option<Range<usize>>, DocumentError> {
+        let at = edit.range.start;
+        if !edit.range.is_empty() || !edit.payload.text().chars().next().is_some_and(char::is_alphanumeric) {
+            return Ok(None);
+        }
+        let Some(underscore) = self.previous_grapheme_boundary(at) else { return Ok(None) };
+        let Some(before) = self.previous_grapheme_boundary(underscore) else { return Ok(None) };
+        let text = self.projection().text_tree();
+        if text.slice(underscore..at).map_err(DocumentError::FormattedTextStorage)? != "_"
+            || !text.slice(before..underscore).map_err(DocumentError::FormattedTextStorage)?
+                .chars().next().is_some_and(char::is_alphanumeric)
+        {
+            return Ok(None);
+        }
+        let escaped = self.encoding().encode_fragment("\\_")?;
+        let backslash = self.encoding().encode_fragment("\\")?.len();
+        Ok(self.projection().provenance_for_region(&(underscore..at)).into_iter()
+            .find(|span| span.formatted == (underscore..at))
+            .filter(|span| self.state().source.bytes_in(span.source.clone()).as_deref() == Some(escaped.as_slice()))
+            .map(|span| span.source.start..span.source.start + backslash))
     }
 
     /// Return a raw-syntax patch only for independently mapped literal input.

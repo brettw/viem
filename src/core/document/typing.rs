@@ -2,7 +2,7 @@
 //! stages never publish history. Their local patch lists are composed against
 //! the original source, then verified and committed as one model transaction.
 use super::*;
-use crate::document::{FontSlant, LinkEditIntent, ReplacementTypingContext, StylePropertyValue};
+use crate::document::{FontSlant, LinkEditIntent, LinkSnapshot, ReplacementTypingContext, StylePropertyValue};
 
 use super::replacement::PatchComposition;
 
@@ -61,6 +61,149 @@ impl Document {
         self.prepared_text_point(&prepared, caret)?;
         self.prepared_text_point(&prepared, start)?;
         Ok((prepared, caret, start))
+    }
+
+    /// Character treatment must not change an extended autolink it touches:
+    /// its delimiters would become link text, and passive HTML ends the link.
+    /// Use `prepare` directly when every such link survives unchanged;
+    /// otherwise convert those links to explicit links first, so the
+    /// treatment applies to (or around) their labels.
+    pub(crate) fn prepare_preserving_autolinks(
+        &self,
+        range: &Range<usize>,
+        prepare: impl Fn(&Document) -> Result<PreparedModelTransaction, ModelTransactionError>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let prepared = self.prepare_treating_autolinks(range, prepare)?;
+        self.collapse_plain_url_links(prepared, range)
+    }
+
+    /// A link written as `[url](<url>)`, the spelling that keeps a treated
+    /// URL a link, returns to a bare URL once its text is plain again and
+    /// that shows the same text and styles.
+    fn collapse_plain_url_links(
+        &self,
+        prepared: PreparedModelTransaction,
+        range: &Range<usize>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let link_style = StyleApplication::Automatic("Link".into());
+        if !self.projection().style_spans_for_region(range).iter().any(|span| span.application == link_style) {
+            return Ok(prepared);
+        }
+        let candidate = self.prepared_candidate_document(&prepared)?;
+        let mut collapsed = Vec::new();
+        let mut shown = Vec::new();
+        for span in candidate.projection().style_spans_for_region(range) {
+            if span.application != link_style {
+                continue;
+            }
+            let Some(link) = candidate.link_snapshot_at(candidate.text_point(span.range.start)?)?
+                .filter(|link| link.editable && link.destination_source.is_some())
+            else { continue };
+            let bytes = candidate.state().source.bytes_in(link.source.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let authored = candidate.encoding().decode_region(&bytes, link.source.start)?.text;
+            let destination = super::super::links::escape_destination(&link.destination);
+            if ![link.text.clone(), super::super::links::escape_label(&link.text)].iter()
+                    .any(|label| authored == format!("[{label}](<{destination}>)"))
+                || super::super::markdown_syntax::autolink(&link.text, 0, link.text.len())
+                    != Some((link.text.len(), link.destination.clone()))
+            {
+                continue;
+            }
+            collapsed.push(SourcePatch::primary(link.source.clone(), candidate.encoding().encode_fragment(&link.text)?));
+            shown.push(link.range);
+        }
+        if collapsed.is_empty() {
+            return Ok(prepared);
+        }
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        for patch in prepared.summary.source_patches.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        collapsed.sort_by_key(|patch| patch.range.start);
+        for patch in collapsed.iter().rev() {
+            sources.splice(patch.range(), patch.replacement());
+        }
+        let unchanged = self.projection().text_tree().slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let Ok(bare) = self.prepare_text_edits_with_patch_policy(
+            vec![TextEdit::new(range.clone(), unchanged)], Some(sources.source_patches()), true)
+        else {
+            return Ok(prepared);
+        };
+        let result = self.prepared_candidate_document(&bare)?;
+        Ok(if shown.iter().all(|link| result.projection().style_spans_for_region(link)
+            == candidate.projection().style_spans_for_region(link)) { bare } else { prepared })
+    }
+
+    fn prepare_treating_autolinks(
+        &self,
+        range: &Range<usize>,
+        prepare: impl Fn(&Document) -> Result<PreparedModelTransaction, ModelTransactionError>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let mut links: Vec<LinkSnapshot> = Vec::new();
+        if self.format() == Format::Markdown {
+            for span in self.projection().style_spans_for_region(range) {
+                if span.application != StyleApplication::Automatic("Link".into())
+                    || span.range.end <= range.start || range.end <= span.range.start {
+                    continue;
+                }
+                if let Some(link) = self.link_snapshot_at(self.text_point(span.range.start)?)?
+                    .filter(|link| link.editable && link.destination_source.is_none()
+                        && !links.iter().any(|known| known.source == link.source))
+                {
+                    links.push(link);
+                }
+            }
+        }
+        if links.is_empty() {
+            return prepare(self);
+        }
+        let direct = if links.iter().all(|link| range.start <= link.range.start && link.range.end <= range.end) {
+            let direct = prepare(self);
+            if let Ok(prepared) = &direct {
+                let candidate = self.prepared_candidate_document(prepared)?;
+                let mut kept = true;
+                for link in &links {
+                    kept &= candidate.link_snapshot_at(candidate.text_point(link.range.start)?)?
+                        .is_some_and(|after| after.range == link.range && after.destination == link.destination);
+                }
+                if kept {
+                    return direct;
+                }
+            }
+            Some(direct)
+        } else {
+            None
+        };
+        let canonical = |plain: bool| -> Result<PreparedModelTransaction, ModelTransactionError> {
+            let mut scratch = self.scratch_document();
+            let mut sources = PatchComposition::new(self.source_byte_len());
+            let mut publish = |scratch: &mut Document, prepared: PreparedModelTransaction| -> Result<(), ModelTransactionError> {
+                for patch in prepared.summary.source_patches.iter().rev() {
+                    sources.splice(patch.range(), patch.replacement());
+                }
+                scratch.commit_model_transaction(prepared)?;
+                Ok(())
+            };
+            for link in links.iter().rev() {
+                let (explicit, _) = scratch.prepare_canonical_autolink_spelled(
+                    link.range.clone(), BoundaryAffinity::Downstream, plain)?;
+                publish(&mut scratch, explicit)?;
+            }
+            let treated = prepare(&scratch)?;
+            publish(&mut scratch, treated)?;
+            let unchanged = self.projection().text_tree().slice(range.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            self.prepare_text_edits_with_patch_policy(
+                vec![TextEdit::new(range.clone(), unchanged)], Some(sources.source_patches()), true)
+        };
+        // Plain URL labels read best, but their punctuation can pair with
+        // the treatment's delimiters; escaped labels cannot.
+        let canonical = canonical(true).or_else(|_| canonical(false));
+        match (canonical, direct) {
+            (Ok(prepared), _) => Ok(prepared),
+            (Err(_), Some(Err(error))) | (Err(error), _) => Err(error),
+        }
     }
 
     pub(crate) fn prepare_autolink_selection_removal(
@@ -936,10 +1079,15 @@ impl Document {
             && edit.payload.text().chars().any(char::is_whitespace)
             && !edit.payload.text().contains(['\r', '\n'])
         {
+            // A bare URL is text: whitespace ends or splits it, as Markdown
+            // shows. Other automatic links keep their label and destination.
             let affinity = edit.boundary_affinity.unwrap_or(BoundaryAffinity::Downstream);
-            if self.link_at_boundary(at, affinity)?.is_some_and(|link|
-                link.editable && link.destination_source.is_none()) {
-                return self.prepare_typing_with_canonical_link(edit, named, values, true);
+            if let Some(link) = self.link_at_boundary(at, affinity)?
+                .filter(|link| link.editable && link.destination_source.is_none())
+            {
+                if !self.is_bare_autolink(&link)? {
+                    return self.prepare_typing_with_canonical_link(edit, named, values, true);
+                }
             }
         }
         if named.is_none() && inherited.is_none() && edit.payload.text().trim().is_empty() {

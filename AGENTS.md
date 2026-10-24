@@ -639,9 +639,8 @@ Comment and list handling is in [code formatting](docs/code-formatting.md).
 - In Markdown Preview, external plain text pastes as Markdown. Complete blocks
   keep their structure, a leading or trailing partial paragraph joins the
   surrounding text, and code spans, code blocks and table cells keep the text
-  literal. A paragraph whose Markdown shows exactly its source, such as a bare
-  URL, is inserted like typed text. Paste and Match Style, and text that
-  Markdown can't represent, insert literally with block syntax protected.
+  literal. Paste and Match Style, and text that Markdown can't represent, insert
+  literally with block syntax protected.
 - Preview Copy publishes plain text, native rich text and a versioned private
   fragment; malformed private data never breaks plain paste. Code copies its
   literal source without syntax styles. Windows `+` and `*` share one clipboard.

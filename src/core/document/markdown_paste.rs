@@ -133,8 +133,8 @@ impl Document {
             if text == source {
                 return Ok(None);
             }
-            return Ok(self.prepare_clipboard_fragment(range.clone(), &fragment, &text)
-                .ok().flatten().map(|prepared| (prepared, range.start + text.len())));
+            return Ok(self.prepare_rich_paragraph(range.clone(), source, &fragment, &text).ok().flatten()
+                .map(|prepared| (prepared, range.start + text.len())));
         }
         if self.projection().table_cell_at(range.start).is_some()
             || self.projection().table_cell_at(range.end).is_some()
@@ -270,9 +270,81 @@ impl Document {
                 .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
             Some(self.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(at..at, payload)])?)
         } else {
-            self.prepare_clipboard_fragment(at..at, &fragment, &text)?
+            self.prepare_rich_paragraph(at..at, source, &fragment, &text)?
         };
         Ok(prepared.map(|prepared| (prepared, text.len())))
+    }
+
+    /// A pasted paragraph with Markdown to interpret reproduces its isolated
+    /// appearance, unless one of its bare URLs touches a word beside `range`.
+    /// Markdown then joins them or prevents the link, as it would in typed
+    /// source, so the paragraph is inserted as written.
+    fn prepare_rich_paragraph(
+        &self,
+        range: Range<usize>,
+        source: &str,
+        fragment: &crate::document::ClipboardFragment,
+        text: &str,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if self.bare_url_meets_neighbor(&range, source)? {
+            if let Some(prepared) = self.prepare_verbatim_paragraph(range.clone(), source, text).ok().flatten() {
+                return Ok(Some(prepared));
+            }
+        }
+        self.prepare_clipboard_fragment(range, fragment, text)
+    }
+
+    /// Whether a bare URL at either end of pasted Markdown touches a word
+    /// beside `range`.
+    fn bare_url_meets_neighbor(&self, range: &Range<usize>, source: &str) -> Result<bool, DocumentError> {
+        let urls = super::super::markdown_syntax::autolink_literal_ranges(Some(""), source);
+        let text = self.projection().text_tree();
+        let word = |range: Option<Range<usize>>| -> Result<bool, DocumentError> {
+            let Some(range) = range else { return Ok(false) };
+            Ok(text.slice(range).map_err(DocumentError::FormattedTextStorage)?
+                .chars().next().is_some_and(|ch| !ch.is_whitespace()))
+        };
+        Ok(urls.first().is_some_and(|url| url.start == 0)
+                && word(self.previous_grapheme_boundary(range.start).map(|before| before..range.start))?
+            || urls.last().is_some_and(|url| url.end == source.len())
+                && word(self.next_grapheme_boundary(range.end).map(|after| range.end..after))?)
+    }
+
+    /// Insert one pasted single-line paragraph's Markdown as written. The
+    /// displayed text must still be exactly the pasted text.
+    fn prepare_verbatim_paragraph(
+        &self,
+        range: Range<usize>,
+        source: &str,
+        text: &str,
+    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
+        if source.contains('\n') {
+            return Ok(None);
+        }
+        let Ok(bytes) = self.encoding().encode_fragment(source) else { return Ok(None) };
+        let mut scratch = self.scratch_document();
+        let mut sources = PatchComposition::new(self.source_byte_len());
+        let mut apply = |scratch: &mut Document, prepared: PreparedModelTransaction| -> Result<(), ModelTransactionError> {
+            for patch in prepared.summary.source_patches.iter().rev() {
+                sources.splice(patch.range(), patch.replacement());
+            }
+            scratch.commit_model_transaction(prepared)?;
+            Ok(())
+        };
+        if !range.is_empty() {
+            let deleted = scratch.prepare_text_edits(vec![TextEdit::new(range.clone(), "")])?;
+            apply(&mut scratch, deleted)?;
+        }
+        let Some(at) = super::super::source_edit::insertion_point(
+            scratch.projection(), range.start, Some(BoundaryAffinity::Downstream))
+        else {
+            return Ok(None);
+        };
+        let inserted = scratch.prepare_text_edits_with_patch_policy(
+            vec![TextEdit::new(range.start..range.start, text)], Some(vec![SourcePatch::primary(at..at, bytes)]), true)?;
+        apply(&mut scratch, inserted)?;
+        self.prepare_text_edits_with_patch_policy(vec![TextEdit::new(range, text)], Some(sources.source_patches()), true)
+            .map(Some)
     }
 
     /// Put complete copied Markdown blocks above (or below) the paragraph at
