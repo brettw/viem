@@ -627,6 +627,10 @@ Comment and list handling is in [code formatting](docs/code-formatting.md).
 - Native **SELECTION** (`autoselect`, on by default) is separate from Vim Visual
   and Select: native selections are half-open and Vim's are inclusive. See
   [native selection](docs/native-selection.md).
+- Gutter selection uses `V`'s line selection and the view's line meaning,
+  including its command selection policy. The caret stays at the end of the
+  last selected line; reversing a drag retains the complete initial line.
+  Tables retain complete-row selection and row controls with that Vim policy.
 - Native Copy keeps the selection, mode and pending state; it is not a yank.
   `"*c` copies to `*` using yank grammar.
 - Native Paste follows gVim's clipboard `gP` helpers

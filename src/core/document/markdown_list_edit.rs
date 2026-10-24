@@ -666,7 +666,7 @@ impl Document {
         let support = if heading_start.is_some() {
             Vec::new()
         } else {
-            self.markdown_structural_support(&[TextEdit::new(at..at, "\n")])?
+            self.markdown_structural_support(&[TextEdit::new(at..at, "\n")], None)?
         };
         if !support.is_empty() {
             return self.prepare_markdown_supporting_patches(support, |doc| {

@@ -330,7 +330,8 @@ fn empty_paragraph_put_and_enter_keep_whitespace_boundary_work_regional() {
             for table_count in [4, 4096] {
                 let suffix = format!("b\n\nafter\n\n{}", "| first | second |\n| --- | --- |\n| alpha | beta |\n\n".repeat(table_count));
                 let original = encode_fixture(&format!("before\n\na\n \n \n \n{suffix}").replace('\n', "\r\n"), encoding);
-                let expected = encode_fixture(&format!("before\n\na\n \n \n\n{suffix}").replace('\n', "\r\n"), encoding);
+                let blank = if put { "\n" } else { " \n" };
+                let expected = encode_fixture(&format!("before\n\na\n \n{blank}\n{suffix}").replace('\n', "\r\n"), encoding);
                 let mut document = Document::from_bytes_with_file_format(original.clone(), encoding, Format::Markdown, FileFormat::Dos).unwrap();
                 let before_tables = document.projection().tables().clone();
                 let before_text = document.projection().text_tree().clone();
@@ -340,7 +341,7 @@ fn empty_paragraph_put_and_enter_keep_whitespace_boundary_work_regional() {
                 let before_operation = if put {
                     commands.handle(&mut document, InputEvent::key('d')).unwrap();
                     assert_eq!(commands.handle(&mut document, InputEvent::key('d')).unwrap().status, CommandStatus::Complete);
-                    encode_fixture(&format!("before\n\na\n \n {suffix}").replace('\n', "\r\n"), encoding)
+                    encode_fixture(&format!("before\n\na\n \n{suffix}").replace('\n', "\r\n"), encoding)
                 } else {
                     assert!(commands.set_cursor_from_pointer(&document, at + 1, BoundaryAffinity::Downstream, true));
                     original.clone()

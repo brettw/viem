@@ -242,6 +242,7 @@ impl Document {
     pub(super) fn markdown_structural_support(
         &self,
         edits: &[TextEdit],
+        selected_rows: Option<&Range<usize>>,
     ) -> Result<Vec<SourcePatch>, ModelTransactionError> {
         if self.format() != Format::Markdown {
             return Ok(Vec::new());
@@ -265,6 +266,14 @@ impl Document {
             let range =
                 edit.range.start.saturating_sub(2)..(edit.range.end + 1).min(text.byte_len());
             for block in self.projection().blocks_for_region(&range) {
+                // Whole-row removal retires selected owners. Unlike a join,
+                // it must not normalize a surviving rule or Setext heading
+                // merely because that owner touches the selected boundary.
+                if selected_rows.is_some_and(|rows| !(if block.range.is_empty() {
+                    rows.contains(&block.range.start) || *rows == block.range
+                } else { rows.start < block.range.end && block.range.start < rows.end })) {
+                    continue;
+                }
                 if !seen.insert(block.id) {
                     continue;
                 }

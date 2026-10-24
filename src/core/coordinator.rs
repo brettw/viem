@@ -455,8 +455,8 @@ pub enum CoreEvent {
         affinity: BoundaryAffinity,
         extend_selection: bool,
     },
-    /// Select a complete displayed row from exact layout geometry, retaining
-    /// its original extent while a gutter drag changes direction.
+    /// Select the hit row with Visual Line's line meaning and command policy,
+    /// retaining its original extent while a gutter drag changes direction.
     SelectPointerRow {
         document_revision: Revision,
         layout_revision: LayoutRevision,

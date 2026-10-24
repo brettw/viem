@@ -1002,6 +1002,9 @@ struct MappedSplice {
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CompactSpliceTransition {
     extents: Arc<[MappedSplice]>,
+    /// Source-backed empty owners survive even though their separators change
+    /// spelling. Sorted in both coordinate domains; shared by the inverse.
+    boundaries: Arc<[(usize, usize)]>,
     inverted: bool,
     source_revision: Revision,
     source_len: usize,
@@ -1017,12 +1020,12 @@ impl CompactSpliceTransition {
             delta = checked_delta(delta, splice)?;
             Ok(MappedSplice { old: splice.old.clone(), new: start..end })
         }).collect::<Result<Vec<_>, PositionError>>()?;
-        Ok(Self { extents: extents.into(), inverted: false,
+        Ok(Self { extents: extents.into(), boundaries: Arc::from([]), inverted: false,
             source_revision: step.source_revision, source_len: step.source_len, target_len: step.target_len })
     }
 
     fn inverted(&self, source_revision: Revision) -> Self {
-        Self { extents: self.extents.clone(), inverted: !self.inverted, source_revision,
+        Self { extents: self.extents.clone(), boundaries: self.boundaries.clone(), inverted: !self.inverted, source_revision,
             source_len: self.target_len, target_len: self.source_len }
     }
 
@@ -1042,6 +1045,12 @@ impl CompactSpliceTransition {
 
     fn map_ordinal(&self, offset: usize, association: Association, recovery: DeletionRecovery)
         -> Result<MappingOutcome<usize>, PositionError> {
+        let index = self.boundaries.binary_search_by_key(&offset, |&(old, new)| if self.inverted { new } else { old });
+        if let Ok(index) = index {
+            let (old, new) = self.boundaries[index];
+            let mapped = if self.inverted { old } else { new };
+            return Ok(if mapped == offset { MappingOutcome::Exact(mapped) } else { MappingOutcome::Moved(mapped) });
+        }
         let first = self.extents.partition_point(|extent| self.ranges(extent).0.start < offset);
         let preceding = first.checked_sub(1).map(|index| self.ranges(&self.extents[index]));
         if let Some((old, new)) = &preceding {
@@ -1175,9 +1184,23 @@ impl PositionMap {
         document: DocumentId, source_revision: Revision, target_revision: Revision,
         source_text: &super::FormattedDocument, target_text: &super::FormattedDocument,
         splices: Vec<Splice>,
+        boundaries: Vec<(usize, usize)>,
     ) -> Result<Self, PositionError> {
-        Self::for_text_snapshots_with_storage(document, source_revision, target_revision,
-            source_text, target_text, splices, true)
+        for &(old, new) in &boundaries {
+            if !source_text.is_logical_grapheme_boundary(old).unwrap_or(false) {
+                return Err(PositionError::InvalidUnicodeBoundary { offset: old });
+            }
+            if !target_text.is_logical_grapheme_boundary(new).unwrap_or(false) {
+                return Err(PositionError::InvalidUnicodeBoundary { offset: new });
+            }
+        }
+        debug_assert!(boundaries.windows(2).all(|pair| pair[0].0 < pair[1].0 && pair[0].1 < pair[1].1));
+        let mut map = Self::for_text_snapshots_with_storage(document, source_revision, target_revision,
+            source_text, target_text, splices, true)?;
+        let boundaries: Arc<[(usize, usize)]> = boundaries.into();
+        Arc::make_mut(&mut map.forward).compact.as_mut().unwrap().boundaries = boundaries.clone();
+        Arc::make_mut(&mut map.reverse).compact.as_mut().unwrap().boundaries = boundaries;
+        Ok(map)
     }
 
     /// Heap held by the compacted map itself, without walking document text or
@@ -1188,7 +1211,12 @@ impl PositionMap {
             + self.reverse.compact.as_ref().filter(|reverse| self.forward.compact.as_ref()
                 .is_none_or(|forward| !Arc::ptr_eq(&forward.extents, &reverse.extents)))
                 .map_or(0, |compact| compact.extents.len() * std::mem::size_of::<MappedSplice>());
-        compact_bytes + [&self.forward, &self.reverse].into_iter().map(|transition| {
+        let boundary_bytes = self.forward.compact.as_ref().map_or(0, |compact|
+            compact.boundaries.len() * std::mem::size_of::<(usize, usize)>())
+            + self.reverse.compact.as_ref().filter(|reverse| self.forward.compact.as_ref()
+                .is_none_or(|forward| !Arc::ptr_eq(&forward.boundaries, &reverse.boundaries)))
+                .map_or(0, |compact| compact.boundaries.len() * std::mem::size_of::<(usize, usize)>());
+        compact_bytes + boundary_bytes + [&self.forward, &self.reverse].into_iter().map(|transition| {
             transition.ordinal.iter().enumerate()
                 .filter(|(index, map)| !transition.ordinal[..*index].iter().any(|other| Arc::ptr_eq(other, map)))
                 .map(|(_, map)| map.pieces.capacity() * std::mem::size_of::<OrdinalPiece>() + map.boxed_bytes()).sum::<usize>()
@@ -1205,6 +1233,7 @@ impl PositionMap {
                 visitor.vector(&transition.surviving_content, 0);
                 if let Some(compact) = &transition.compact {
                     visitor.arc_once(&compact.extents, |_| {});
+                    visitor.arc_once(&compact.boundaries, |_| {});
                 }
             });
         }
@@ -1808,13 +1837,32 @@ impl CompiledTransition {
 
     fn materialized(&self) -> Result<std::borrow::Cow<'_, Self>, PositionError> {
         match &self.compact {
-            Some(compact) => Ok(std::borrow::Cow::Owned(Self::from_step(&compact.step())?)),
+            Some(compact) => {
+                let mut materialized = Self::from_step(&compact.step())?;
+                if compact.boundaries.is_empty() { return Ok(std::borrow::Cow::Owned(materialized)); }
+                let overlays = compact.boundaries.iter().map(|&(old, new)| {
+                    let (old, new) = if compact.inverted { (new, old) } else { (old, new) };
+                    OrdinalPiece { start: old, end: old, mapping: OrdinalMapping::Constant {
+                        target: new, status: if old == new { ResolvedStatus::Exact } else { ResolvedStatus::Moved },
+                    } }
+                }).collect::<Vec<_>>();
+                let mut policies = Vec::new();
+                for map in &materialized.ordinal {
+                    let mut map = CompiledOrdinalMap::clone(map);
+                    map.overlay(&overlays)?;
+                    policies.push(map);
+                }
+                materialized.ordinal = shared_policy_maps(policies);
+                Ok(std::borrow::Cow::Owned(materialized))
+            },
             None => Ok(std::borrow::Cow::Borrowed(self)),
         }
     }
 
     fn is_identity(&self) -> bool {
-        if let Some(compact) = &self.compact { return compact.extents.is_empty(); }
+        if let Some(compact) = &self.compact {
+            return compact.extents.is_empty() && compact.boundaries.iter().all(|(old, new)| old == new);
+        }
         self.ordinal.iter().all(|map| matches!(map.pieces.as_slice(),
             [OrdinalPiece { mapping: OrdinalMapping::Linear { delta: 0, status: ResolvedStatus::Exact }, .. }]))
             && match self.surviving_content.as_slice() {
@@ -2012,6 +2060,10 @@ impl CompiledOrdinalMap {
                         status: if delta == 0 { ResolvedStatus::Exact } else { ResolvedStatus::Moved } } });
             }
         }
+        self.overlay(&overlays)
+    }
+
+    fn overlay(&mut self, overlays: &[OrdinalPiece]) -> Result<(), PositionError> {
         let mut result = Vec::with_capacity(self.pieces.len() + overlays.len().saturating_mul(2));
         let mut index = 0;
         for piece in &self.pieces {

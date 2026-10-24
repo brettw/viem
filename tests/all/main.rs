@@ -238,3 +238,5 @@ mod open_line_contexts;
 mod markdown_block_edges;
 mod indent_alignment;
 mod markdown_code_exit;
+
+mod empty_paragraph_ownership;

@@ -250,7 +250,6 @@ impl super::CommandInterpreter {
             self.delete_register(Some('-'), replaced, class);
             self.visual_anchor = None;
             self.pointer_word_origin = None;
-            self.pointer_rows = false;
             self.pointer_character_origin = None;
             self.leave_visual();
         }

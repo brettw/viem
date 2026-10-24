@@ -5,6 +5,13 @@ Mouse selection gestures and Shift+navigation enter **SELECTION**: typing replac
 text, Delete/Backspace enter Insert, and plain Left/Right collapse to the
 corresponding edge. A selection started with `v`, `V`, or Ctrl-V keeps Vim Visual
 behavior when extended with Shift+navigation or a pointer gesture.
+Gutter selection is a line-selection command: it follows `V`, including the
+view's Visual or Physical Source line meaning and `selectmode=cmd`, rather than
+the mouse's native-selection policy. Its caret occupies the final grapheme of
+the bottommost selected line, or that line's empty boundary. Upward dragging
+retains the entire initial line and keeps the caret on the bottommost line.
+Tables retain complete-row selection and their row controls, with the same Vim
+selection policy and the caret at the end of the last selected row's final cell.
 
 Use `set noautoselect` to let Vim options govern entry. For example,
 `set noautoselect keymodel=startsel,stopsel selectmode=mouse,key` enables Vim

@@ -4307,6 +4307,20 @@ impl FormattedDocument {
         (start <= end).then_some(start..end)
     }
 
+    /// A paragraph body owns an insertion point even when it has no visible
+    /// contributors. Use the same boundary as typing, rather than borrowing
+    /// the next paragraph's text or hidden prefix.
+    pub(crate) fn paragraph_source_extent(&self, block: &Block) -> Option<Range<usize>> {
+        self.source_range(block.range.clone())
+    }
+
+    pub(crate) fn empty_paragraph_source_points(&self) -> impl Iterator<Item = Result<(usize, usize), super::DocumentError>> + '_ {
+        self.blocks.items().filter(|block| block.range.is_empty()).map(|block| {
+            let source = self.paragraph_source_extent(&block).ok_or(super::DocumentError::AmbiguousProjection)?;
+            Ok((block.range.start, source.start))
+        })
+    }
+
     /// Return the ordered source ranges which contribute visible content to a
     /// non-empty formatted range contained by one hard line. Hidden syntax
     /// between those ranges is deliberately excluded.

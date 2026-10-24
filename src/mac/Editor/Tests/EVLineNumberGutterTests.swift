@@ -57,12 +57,14 @@ final class EVLineNumberGutterTests: XCTestCase {
         XCTAssertTrue(view.pointerCursor(at: textPoint) === EVLineNumberGutter.selectionCursor)
         view.mouseDragged(with: try event(.leftMouseDragged, 0))
         XCTAssertEqual(surface.selectedUTF8Range(), 0..<13)
-        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 11)
         view.mouseDragged(with: try event(.leftMouseDragged, 1))
         XCTAssertEqual(surface.selectedUTF8Range(), 6..<13)
         view.mouseUp(with: try event(.leftMouseUp, 1, overText: true))
         XCTAssertFalse(view.gutterSelectionDragging)
-        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.iBeam)
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_LINE))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 11)
+        XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.arrow)
         surface.performInput { _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE)) }
         XCTAssertTrue(view.pointerCursor(at: textPoint) === NSCursor.arrow)
         surface.performInput { _ = try session.sendText("v") }
@@ -75,6 +77,39 @@ final class EVLineNumberGutterTests: XCTestCase {
         XCTAssertEqual(try backend.formattedText(), "first\nsecond\nthird\nlast\n")
         XCTAssertEqual(try session.lineNumberInfo().source_line_count, 4)
         XCTAssertEqual(view.lineNumberGutter.bands.map(\.line), [1, 2, 3, 4])
+    }
+
+    func testEmptyParagraphGutterSelectionMatchesVisualLineAndPreservesHeading() throws {
+        let source = "before\n\n\n\n\n## Heading"
+        let (backend, surface, session) = try makeSurface(source, format: .markdown)
+        defer { session.detach() }
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 330, height: 220),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentViewController = surface
+        defer { window.contentViewController = nil }
+        let view = surface.editorView
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let row = try XCTUnwrap(snapshot.rows.first { $0.text_start == 7 && $0.text_end == 7 })
+        let point = view.viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(row.paragraph_content_x) - 4,
+            y: CGFloat(row.y + row.ascent / 2)))
+        view.mouseDown(with: try pointerEvent(.leftMouseDown, at: point, view: view, window: window))
+        view.mouseUp(with: try pointerEvent(.leftMouseUp, at: point, view: view, window: window))
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_LINE))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
+        XCTAssertEqual(surface.selectedUTF8Range(), 7..<8)
+        let selected = view.selectionRectsForDrawing(in: try XCTUnwrap(surface.layoutSnapshot))
+        XCTAssertFalse(selected.isEmpty)
+        let caret = try session.caretGeometry(offset: 7, affinity: UInt32(VIEM_BOUNDARY_AFFINITY_DOWNSTREAM), in: snapshot.info)
+        XCTAssertEqual(caret.rect.y, row.y, accuracy: 0.1)
+        surface.performInput { _ = try session.sendText("d") }
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("before\n\n## Heading".utf8))
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
+        surface.setMarkdownPreview(false)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 8)
+        surface.setMarkdownPreview(true)
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 7)
     }
 
     func testGutterDragAutoscrollIsVerticalAndRetainsInitialRow() throws {
