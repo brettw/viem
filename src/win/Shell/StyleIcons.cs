@@ -23,14 +23,25 @@ internal static partial class StyleIcons
     internal static Canvas ScriptIcon(ButtonBase owner, bool raised)
     {
         var canvas = new Canvas { Width = 18, Height = 18 };
-        var text = new TextBlock { Text = "x", FontFamily = new FontFamily("Times New Roman"), FontSize = 13 * .9, FontStyle = global::Windows.UI.Text.FontStyle.Italic };
+        var text = new TextBlock { Text = "x", FontFamily = new FontFamily("Times New Roman"), FontSize = 11.7, FontStyle = global::Windows.UI.Text.FontStyle.Italic };
         var number = new TextBlock { Text = "2", FontSize = 7 };
-        foreach (var glyph in new[] { text, number })
-            glyph.SetBinding(TextBlock.ForegroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
-        Canvas.SetLeft(text, 3); Canvas.SetTop(text, 3);
-        Canvas.SetLeft(number, 10.5); Canvas.SetTop(number, raised ? 0 : 9);
+        // Tight line bounds use cap height; compensate for the smaller x-height
+        // of Times New Roman so the visible x, rather than its line box, is centered.
+        CenterIconText(text, owner, 3, 9 - 1.3);
+        CenterIconText(number, owner, 10.5, 9 + (raised ? -4.5 : 4.5));
         canvas.Children.Add(text); canvas.Children.Add(number);
         return canvas;
+    }
+
+    internal static void CenterIconText(TextBlock text, ButtonBase owner, double left, double centerY)
+    {
+        text.TextLineBounds = TextLineBounds.Tight;
+        text.IsTextScaleFactorEnabled = false;
+        text.UseLayoutRounding = false;
+        text.SetBinding(TextBlock.ForegroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        text.Measure(new(double.PositiveInfinity, double.PositiveInfinity));
+        Canvas.SetLeft(text, left);
+        Canvas.SetTop(text, centerY - text.DesiredSize.Height / 2);
     }
 
     internal static StyleIconKind Kind(StyleDefinition? style, uint fallbackNamespace = 1)

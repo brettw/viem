@@ -80,7 +80,7 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(character, ToolbarAction.Bold, "Bold", "\uE8DD");
         Add(character, ToolbarAction.Italic, "Italic", "\uE8DB");
         Add(character, ToolbarAction.Underline, "Underline", "\uE8DC");
-        Add(character, ToolbarAction.Strikethrough, "Strikethrough", "\uEDE0");
+        Add(character, ToolbarAction.Strikethrough, "Strikethrough", "");
         var script = Group(); row.Children.Add(script);
         Add(script, ToolbarAction.Superscript, "Superscript", "x²", literal: true);
         Add(script, ToolbarAction.Subscript, "Subscript", "x₂", literal: true);
@@ -121,6 +121,7 @@ internal sealed partial class FormattingToolbar : UserControl
         button.Width = 28; button.Height = 26; button.MinWidth = 0; button.MinHeight = 0; button.Padding = new(0);
         button.IsTabStop = true; button.AllowFocusOnInteraction = false;
         button.Content = action is ToolbarAction.Superscript or ToolbarAction.Subscript ? StyleIcons.ScriptIcon(button, action == ToolbarAction.Superscript)
+            : action == ToolbarAction.Strikethrough ? StrikethroughIcon(button)
             : action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
             ? StructuralIcon(button, action)
             : literal ? new TextBlock { Text = glyph, FontSize = 13 } : new FontIcon { Glyph = glyph, FontSize = 14 };
@@ -140,6 +141,18 @@ internal sealed partial class FormattingToolbar : UserControl
         ToolbarAction.Numbers => NativeAction.Numbers,
         _ => NativeAction.None
     });
+
+    private static Canvas StrikethroughIcon(ButtonBase owner)
+    {
+        var canvas = new Canvas { Width = 18, Height = 18 };
+        var text = new TextBlock { Text = "s", FontSize = 16 };
+        StyleIcons.CenterIconText(text, owner, 0, 9 - 1.5);
+        Canvas.SetLeft(text, (18 - text.DesiredSize.Width) / 2);
+        var line = new Microsoft.UI.Xaml.Shapes.Line { X1 = 3, X2 = 15, Y1 = 9, Y2 = 9, StrokeThickness = 1 };
+        line.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        canvas.Children.Add(text); canvas.Children.Add(line);
+        return canvas;
+    }
 
     private static Border BlockQuoteIcon(ButtonBase owner)
     {
@@ -188,7 +201,8 @@ internal sealed partial class FormattingToolbar : UserControl
                 else
                 {
                     var number = new TextBlock { Text = (i + 1).ToString(), FontSize = 8 };
-                    Canvas.SetTop(number, y - 6); canvas.Children.Add(number);
+                    StyleIcons.CenterIconText(number, owner, 0, y);
+                    canvas.Children.Add(number);
                 }
             }
         }

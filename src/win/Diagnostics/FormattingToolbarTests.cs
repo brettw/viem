@@ -313,7 +313,7 @@ internal static class FormattingToolbarTests
             await window.ClosePane(fixture, force: true);
         }
 
-        internal Task AppearanceAndIcons()
+        internal async Task AppearanceAndIcons()
         {
             Check(window.ToolbarToggle.Visibility == Visibility.Visible && toolbar.Visibility == Visibility.Visible, "Markdown toolbar defaults visible");
             Check(Grid.GetColumn(window.ToolbarToggle) == Grid.GetColumn(window.MenuToggle) + 1, "toolbar toggle immediately follows the menu toggle");
@@ -340,7 +340,7 @@ internal static class FormattingToolbarTests
                 "Markdown Preview paragraph selector lists only styles supported for source assignment");
             foreach (var listStyle in initialStyles.Styles.Where(s => (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) != 0 || s.Native.role == VIEM_STYLE_ROLE_LIST))
                 Check(StyleIcons.Kind(listStyle) == StyleIconKind.Paragraph, "list definitions use paragraph style icons: " + listStyle.Name);
-            return Task.CompletedTask;
+            await WindowCapture.SaveElement(toolbar, pane.Canvas.Device, FrontendSmokeTests.ReportPath + ".toolbar-icons.png");
         }
 
         internal async Task CurrentListStyle()
