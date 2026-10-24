@@ -46,6 +46,19 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.publish_buffer_commands(view);
         Ok(())
     }
+    /// This buffer's copy of the application-wide register bank.
+    pub(crate) fn registers(&self) -> &crate::command::Registers {
+        &self.buffer_commands.registers
+    }
+    /// Install a newer application register bank in the buffer and each view.
+    /// Special registers kept by the buffer or view (`%`, `#`, `:`, `/`, `=`,
+    /// `~`) and an in-progress recording are untouched.
+    pub(crate) fn adopt_registers(&mut self, registers: &crate::command::Registers) {
+        self.buffer_commands.registers.clone_from(registers);
+        for view in self.views.values_mut() {
+            view.commands.install_registers(registers);
+        }
+    }
     pub(crate) fn set_file_mark_ownership(&mut self, mask: u32) {
         for view in self.views.values_mut() {
             view.commands.set_file_mark_ownership(mask);
@@ -176,6 +189,31 @@ mod tests {
                 .unwrap();
         }
     }
+    #[test]
+    fn adopted_register_banks_reach_every_view_and_leave_buffer_registers_local() {
+        let mut first = Core::new(Document::new("alpha\nbeta\n"));
+        let source = first.add_view(MockTextMeasurementProvider::new(), 600., 500.);
+        first
+            .set_drop_register(source, crate::command::RegisterValue::characterwise("dropped"))
+            .unwrap();
+        keys(&mut first, source, "yyj\"qyy");
+        let mut second = Core::new(Document::new("gamma\n"));
+        let left = second.add_view(MockTextMeasurementProvider::new(), 600., 500.);
+        let right = second.add_view(MockTextMeasurementProvider::new(), 300., 500.);
+
+        second.adopt_registers(first.registers());
+        assert_eq!(second.registers().revision(), first.registers().revision());
+        for view in [left, right] {
+            let commands = second.command_state(view).unwrap();
+            assert_eq!(commands.register('q').unwrap().text, "beta\n");
+            assert_eq!(commands.register('0').unwrap().text, "alpha\n");
+            assert!(!commands.stored_register_names().contains(&'~'));
+        }
+        keys(&mut second, right, "\"0p");
+        assert_eq!(second.document().text(), "gamma\nalpha\n");
+        assert!(first.command_state(source).unwrap().stored_register_names().contains(&'~'));
+    }
+
     #[test]
     fn file_mark_snapshots_do_not_decode_or_materialize_huge_lines() {
         let mut core = Core::new(Document::new("x".repeat(2_000_000)));

@@ -104,9 +104,8 @@ use layout_motion::{
     align_viewport, g0, g_caret, g_dollar_for_document, gj, gk, screen_motion, viewport_line,
     HorizontalScroll, LayoutMotionError, ScreenMotion, Viewport, ViewportAlignment, ViewportLine, VisualPosition,
 };
-use registers::{
-    is_valid_register, DeletionClass, RegisterReadContext, RegisterWriteEffect, Registers,
-};
+use registers::{is_valid_register, DeletionClass, RegisterReadContext, RegisterWriteEffect};
+pub(crate) use registers::Registers;
 pub use registers::{
     RegisterKind, RegisterReadError, RegisterValue, RegisterValueError, RegisterWriteError,
 };
@@ -1409,11 +1408,12 @@ fn text_object_extent(document: &Document, object: TextObject, mut range: Range<
 /// This is a compatibility bridge while parsing and execution still live in
 /// one `CommandInterpreter`: presentation and pending grammar remain per-view,
 /// while registers, marks, histories, and repeat recipes have one
-/// authoritative owner in the core buffer.
+/// authoritative owner in the core buffer. `registers` is this buffer's copy
+/// of the application-wide bank.
 #[derive(Clone, Debug)]
 pub(crate) struct BufferCommandState {
     mappings: mappings::KeyMappings,
-    registers: Registers,
+    pub(crate) registers: Registers,
     drop_register: Option<RegisterValue>,
     pub(crate) marks: BTreeMap<char, usize>,
     pub(crate) file_mark_generations: BTreeMap<char, u64>,
@@ -1855,6 +1855,11 @@ impl CommandInterpreter {
         self.indentation = state.indentation;
         self.script = state.script.clone();
         self.vim_options.clone_from(&state.vim_options);
+    }
+
+    /// Adopt a newer application register bank written by another buffer.
+    pub(crate) fn install_registers(&mut self, registers: &Registers) {
+        self.registers.clone_from(registers);
     }
 
     pub fn mode(&self) -> Mode {

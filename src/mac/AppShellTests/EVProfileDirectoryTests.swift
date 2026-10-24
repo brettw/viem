@@ -45,6 +45,6 @@ final class EVProfileDirectoryTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: home.path))
     XCTAssertEqual(configuration.availableThemeNames, ["Midnight", "Paper"])
     XCTAssertEqual(configuration.currentThemeName, "Midnight")
-    XCTAssertFalse(configuration.smartQuotes)
+    XCTAssertTrue(configuration.smartQuotes)
   }
 }
