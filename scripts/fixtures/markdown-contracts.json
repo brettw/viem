@@ -1,4 +1,14 @@
 {
+  "preview-reflow": {
+    "visual selection and source locality": "markdown_reflow::motions_doubled_forms_and_counts_select_preview_rows_not_the_source_line",
+    "literal versus formatted owners": "markdown_reflow::mixed_selection_formats_prose_without_altering_fixed_blocks_or_blank_paragraphs",
+    "empty owner caret": "markdown_reflow::reflow_finishes_on_an_explicitly_selected_empty_row",
+    "syntax activation and inline preservation": "markdown_reflow::inline_syntax_and_line_start_punctuation_keep_their_meaning",
+    "container ownership": "markdown_reflow::existing_lazy_quote_and_list_continuations_join_without_leaving_hidden_prefixes",
+    "encoding and exact undo": "markdown_reflow::unicode_dos_endings_and_encoding_survive_rewrap_and_exact_undo",
+    "source-only history and view anchors": "markdown_reflow::source_rewrapping_is_one_undo_unit_and_leaves_registers_and_other_view_carets_alone",
+    "bounded local work": "markdown_reflow::local_source_reflow_does_not_scale_with_an_unrelated_suffix_or_flatten_snapshots"
+  },
   "front-matter": {
     "recognition and literal projection": "markdown_front_matter::leading_metadata_is_literal_yaml_code_with_hidden_delimiters",
     "nonleading and incomplete syntax": "markdown_front_matter::unclosed_nonleading_and_other_delimiters_keep_ordinary_markdown_behavior",

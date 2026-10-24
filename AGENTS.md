@@ -509,7 +509,10 @@ Unsupported commands fail without side effects.
 - Each view uses Visual or Physical Source line meaning (Physical in Code and
   Visual elsewhere, until the user chooses). It governs ordinary line motions
   and operators, Visual Line and line-oriented insertion, including counts and
-  replay. Explicit `g` motions stay visual; `gq`/`gw` count hard lines.
+  replay. Explicit `g` motions stay visual. `gq`/`gw` count hard lines in
+  Text and Code even with soft wrapping, but displayed rows in Markdown
+  Preview; explicit physical addresses and existing selections retain their
+  own domains.
 - Absolute addresses are always physical source lines: decimal Ex addresses,
   counted `G`, `gg`, `zt`, `zz` and `zb`, `N%`, and launch line numbers.
   Offsets inherit their base's domain: `23+2` is physical line 25, while `.+2`
@@ -639,9 +642,18 @@ Special register input and mark lifetime follow [registers and marks](docs/vim-r
 ### Reflow
 
 `gq` and `gw` rewrap source lines in Text and Code with an internal formatter;
-this includes Markdown with Preview off. In Markdown Preview they currently
-fail without changes. Widths use portable Unicode columns,
-independent of fonts, zoom and window size. Reflow keeps unbreakable words,
+this includes Markdown with Preview off. In Markdown Preview they select
+visible content and tidy only its underlying source wrapping, preserving the
+exact Preview text, styles, hard breaks and semantic structure. Never expand a
+partial visible selection to whole source lines or paragraphs. See the complete
+[Preview reflow contract](docs/markdown-feature-contracts.md#preview-source-reflow).
+Before implementing a request that conflicts with this source-only guarantee or
+the mode-specific selection rule, warn the user about the changed behavior and
+tradeoff. If the user chooses the change, update this requirement, the contract,
+comments and regression tests together.
+
+Widths use portable Unicode source columns, independent of fonts, zoom and window
+size, including Markdown prefixes and syntax. Reflow keeps unbreakable words,
 list markers, hanging indents and comment leaders, is one undo unit that leaves
 registers alone, preserves untouched bytes and line endings, and stays local.
 Comment and list handling is in [code formatting](docs/code-formatting.md).

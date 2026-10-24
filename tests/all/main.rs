@@ -53,6 +53,7 @@ mod fuzz_markdown_edits;
 mod fuzz_regressions;
 mod fuzz_shift_layout;
 mod hard_line_reflow;
+mod markdown_reflow;
 mod hard_line_transfers;
 mod history_model;
 mod history_restoration_retention;

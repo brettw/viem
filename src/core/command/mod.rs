@@ -657,9 +657,9 @@ enum Operator {
     Uppercase,
     /// `g?`: Rot13 encoding of ASCII letters.
     Rot13,
-    /// `gq`: hard-line reflow leaving the cursor on the last formatted line.
+    /// `gq`: reflow source, ending on the last selected Preview or formatted hard line.
     Format,
-    /// `gw`: hard-line reflow restoring the original text location.
+    /// `gw`: source reflow restoring the original text location.
     FormatKeepCursor,
 }
 
@@ -2561,6 +2561,9 @@ impl CommandInterpreter {
         if self.handles_literal_input(event) { return false; }
         if matches!(event, InputEvent::Key(Key::SelectAll)) {
             return false;
+        }
+        if document.format().is_markdown() && self.preview_format_requires_layout(event) {
+            return true;
         }
         if self.mode == Mode::CommandLine {
             return matches!(event, InputEvent::Key(Key::Enter))
@@ -8553,8 +8556,9 @@ impl CommandInterpreter {
             .map_or(self.cursor, |segment| segment.range.start);
         let register = self.requested_register.take();
         if operator.is_format() {
-            // Visual Block formats each intersected hard line in full, once,
-            // rather than reflowing a pixel-width rectangle.
+            // A block formats complete touched rows, not a pixel rectangle.
+            // Preview rows remain bounded visible fragments; literal rows expand
+            // to their hard lines regardless of soft wrapping.
             let (first, last) = resolved.rows.iter().fold((usize::MAX, 0), |(low, high), row| {
                 (low.min(row.hard_line_index), high.max(row.hard_line_index))
             });
@@ -8562,11 +8566,15 @@ impl CommandInterpreter {
                 return Ok(CommandOutput::complete());
             }
             let before = document.revision();
-            let output = self.apply_format_operator(
-                document,
-                operator == Operator::FormatKeepCursor,
-                first..last + 1,
-            )?;
+            let output = if document.format().is_markdown() {
+                let first_row = resolved.rows.iter().map(|row| row.row_index).min().unwrap();
+                let last_row = resolved.rows.iter().map(|row| row.row_index).max().unwrap();
+                self.apply_preview_format_operator(document, operator == Operator::FormatKeepCursor,
+                    context.snapshot.rows[first_row].text_range.start..context.snapshot.rows[last_row].text_range.end,
+                    Some(context.snapshot.rows[last_row].text_range.start))?
+            } else {
+                self.apply_format_operator(document, operator == Operator::FormatKeepCursor, first..last + 1)?
+            };
             if output.status != CommandStatus::Complete {
                 return Ok(output);
             }
@@ -10180,6 +10188,10 @@ impl CommandInterpreter {
         if (key == Key::Char(pending.operator.doubled_key()) && !pending.g_prefix)
             || long_case_doubled
         {
+            if pending.operator.is_format() && document.format().is_markdown() {
+                return self.apply_mode_line_operator(document, pending.operator,
+                    line_mode::LineShape::Whole, count, pending.register);
+            }
             let lines = document.hard_line_snapshot();
             let range = linewise_range(&lines, self.cursor, count);
             return self.apply_operator_with_repeat(
@@ -10507,6 +10519,10 @@ impl CommandInterpreter {
             .then(|| options::logical_column(&lines, self.cursor));
         document.validate_hard_line_snapshot(&lines)?;
         if operator.is_format() {
+            if document.format().is_markdown() {
+                return self.apply_preview_format_operator(document,
+                    operator == Operator::FormatKeepCursor, extent.range, None);
+            }
             // Reflow never reads registers and counts complete hard lines
             // without materializing the compatibility flat text.
             let covered = Self::hard_lines_covered(&lines, &extent.range);

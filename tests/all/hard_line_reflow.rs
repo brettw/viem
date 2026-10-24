@@ -440,22 +440,14 @@ second
 }
 
 #[test]
-fn unsupported_formats_return_a_non_destructive_error() {
-    for format in [
-        Format::Markdown,
-    ] {
-        let mut d = Document::from_bytes(b"aaa\nbbb\n".to_vec(), viem_core::Encoding::Utf8, format).unwrap();
-        let revision = d.revision();
-        let source = d.source_bytes();
-        let mut c = CommandInterpreter::new();
-        let status = keys(&mut c, &mut d, "gqj");
-        assert!(
-            matches!(status, CommandStatus::Error(_)),
-            "{format:?}: {status:?}"
-        );
-        assert_eq!(d.revision(), revision, "{format:?}");
-        assert_eq!(d.source_bytes(), source, "{format:?}");
-    }
+fn markdown_preview_formats_source_without_inserting_visible_breaks() {
+    let document = Document::from_bytes(b"aaa bbb ccc".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+    let mut core = Core::new(document);
+    core.set_text_width_default(7);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 500., 2000.);
+    assert!(matches!(run(&mut core, view, &chars("gqip")), CommandStatus::Complete));
+    assert_eq!(core.document().source_bytes(), b"aaa bbb\nccc");
+    assert_eq!(core.document().text(), "aaa bbb ccc");
 }
 
 #[test]

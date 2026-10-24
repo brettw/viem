@@ -375,6 +375,9 @@ pub(super) struct LineExtent {
     pub(super) text: Range<usize>,
     source: Option<Range<usize>>,
     whole: bool,
+    // An empty final row owns no character in `text`; its row identity must
+    // survive separately so source-only reflow does not move gq backward.
+    last_visual_row: Option<usize>,
 }
 impl CommandInterpreter {
     pub(super) fn mode_line_key(&self, key: Key) -> bool {
@@ -405,6 +408,7 @@ impl CommandInterpreter {
             Pending::Operator(pending) => {
                 !pending.g_prefix
                     && (key == Key::Char(pending.operator.doubled_key())
+                        || pending.operator.is_format() && key == Key::Enter
                         || matches!(
                             key,
                             Key::Char('$' | '0' | '^' | 'j' | 'k' | '+' | '-' | '_')
@@ -456,9 +460,10 @@ impl CommandInterpreter {
         document: &Document,
         shape: LineShape,
         count: usize,
+        force_visual: bool,
     ) -> Result<Result<LineExtent, LayoutMotionError>, DocumentError> {
         let count = count.max(1);
-        if self.line_mode == LineMode::PhysicalSource {
+        if self.line_mode == LineMode::PhysicalSource && !force_visual {
             let current = self.physical_line(document)?;
             let index = if shape == LineShape::Up {
                 current.index.saturating_sub(count)
@@ -502,6 +507,7 @@ impl CommandInterpreter {
             return Ok(Ok(LineExtent {
                 text: a.min(b)..a.max(b),
                 source: Some(source),
+                last_visual_row: None,
                 whole: !matches!(
                     shape,
                     LineShape::End | LineShape::Start | LineShape::StartNonblank
@@ -527,6 +533,25 @@ impl CommandInterpreter {
         };
         let mut rows = match layout_motion::command_row_span(snapshot, current, delta) {
             Ok(rows) => rows,
+            Err(LayoutMotionError::TableCellBoundary) if force_visual => {
+                // Reflow leaves all table cells fixed. It may therefore span
+                // the checked movement's intervening cells without editing a
+                // rectangular/source hull. Keep the real destination so a
+                // motion leaving the table still selects its following prose.
+                let moved = match layout_motion::move_visual_rows(snapshot, current, delta, None) {
+                    Ok(moved) => moved,
+                    Err(error) => return Ok(Err(error)),
+                };
+                let first = match layout_motion::command_row_span(snapshot, current, 0) {
+                    Ok(rows) => rows.start,
+                    Err(error) => return Ok(Err(error)),
+                };
+                let last = match layout_motion::command_row_span(snapshot, moved.position, 0) {
+                    Ok(rows) => rows.start,
+                    Err(error) => return Ok(Err(error)),
+                };
+                first.min(last)..first.max(last) + 1
+            }
             Err(error) => return Ok(Err(error)),
         };
         let end = document.projection().text_tree().byte_len();
@@ -568,8 +593,8 @@ impl CommandInterpreter {
         if whole
             && first.fragment_index == 0
             && !last.wraps_to_next
-            && end < document.text().len()
-            && document.text().as_bytes()[end] == b'\n'
+            && end < document.projection().text_tree().byte_len()
+            && document.projection().text_tree().byte_chunk_at(end).first() == Some(&b'\n')
         {
             end += 1;
         }
@@ -577,6 +602,7 @@ impl CommandInterpreter {
             text: start.min(end)..start.max(end),
             source: None,
             whole,
+            last_visual_row: whole.then_some(last.text_range.start),
         }))
     }
     pub(super) fn try_mode_line_key(
@@ -601,9 +627,10 @@ impl CommandInterpreter {
             return self.repeat_last_change(document, count).map(Some);
         }
         if let Pending::Operator(pending) = self.pending {
-            if pending.operator.is_format() {
-                // Reflow's implicit line motions and doubled forms count
-                // complete hard lines in every line mode.
+            if pending.operator.is_format() && !document.format().is_markdown() {
+                // Literal reflow retains hard-line counts even with soft wrap.
+                // Preview instead uses displayed rows, independently of source
+                // line spelling and the view's other line-mode preferences.
                 return Ok(None);
             }
             let count = match effective_operator_count(pending) {
@@ -880,7 +907,7 @@ impl CommandInterpreter {
         } else { None };
         let (result, map) = document.capture_position_maps(|document| self.apply_mode_line_extent(document,
             operator, LineShape::Whole, count, register,
-            LineExtent { text: a.min(b)..a.max(b), source: Some(source), whole: true }, 1));
+            LineExtent { text: a.min(b)..a.max(b), source: Some(source), whole: true, last_visual_row: None }, 1));
         let mut output = result?;
         if operator == Operator::Yank && target < current && output.status == CommandStatus::Complete {
             let old_cursor = self.cursor;
@@ -923,7 +950,8 @@ impl CommandInterpreter {
         register: Option<char>,
         applications: usize,
     ) -> Result<CommandOutput, DocumentError> {
-        let extent = match self.mode_extent(document, shape, count)? {
+        let extent = match self.mode_extent(document, shape, count,
+            operator.is_format() && document.format().is_markdown())? {
             Ok(extent) => extent,
             Err(error) => return Ok(layout_error(error)),
         };
@@ -947,6 +975,18 @@ impl CommandInterpreter {
         extent: LineExtent,
         applications: usize,
     ) -> Result<CommandOutput, DocumentError> {
+        if operator.is_format() && document.format().is_markdown() {
+            let output = self.apply_preview_format_operator(document,
+                operator == Operator::FormatKeepCursor, extent.text, extent.last_visual_row)?;
+            if output.document_changed && !self.replaying {
+                self.last_repeat = Some(RepeatAction::Operator {
+                    command: OperatorRepeat { operator,
+                        target: RepeatTarget::ViewLine(shape, applications), count, register },
+                    edits: None,
+                });
+            }
+            return Ok(output);
+        }
         let inherited_typing = if operator == Operator::Change && extent.source.is_none() {
             document.replacement_typing_context(extent.text.clone())?
         } else { None };
@@ -1590,6 +1630,7 @@ impl CommandInterpreter {
                     text: a.min(b)..a.max(b),
                     source: Some(low.source_range.start..high.source_range.end),
                     whole: true,
+                    last_visual_row: None,
                 },
                 first.index.abs_diff(last.index) + 1,
                 last.index < first.index,
@@ -1615,7 +1656,8 @@ impl CommandInterpreter {
         let first = &snapshot.rows[a.start.min(b.start)];
         let last = &snapshot.rows[a.start.max(b.start)];
         let mut end = last.text_range.end;
-        if first.fragment_index == 0 && !last.wraps_to_next && document.text().as_bytes().get(end) == Some(&b'\n') {
+        if first.fragment_index == 0 && !last.wraps_to_next && end < document.projection().text_tree().byte_len()
+            && document.projection().text_tree().byte_chunk_at(end).first() == Some(&b'\n') {
             end += 1;
         }
         Some((
@@ -1623,6 +1665,7 @@ impl CommandInterpreter {
                 text: first.text_range.start..end,
                 source: None,
                 whole: true,
+                last_visual_row: Some(last.text_range.start),
             },
             a.start.abs_diff(b.start) + 1,
             b.start < a.start,
@@ -1643,9 +1686,9 @@ impl CommandInterpreter {
         operator: Operator,
         applications: usize,
     ) -> Result<Option<CommandOutput>, DocumentError> {
-        if operator.is_format() {
-            // A Visual selection keeps its domain; reflow then expands the
-            // checked extent to the intersected hard lines.
+        if operator.is_format() && !document.format().is_markdown() {
+            // Literal reflow expands a Visual selection to hard lines. Preview
+            // keeps its visible selection, including a partial source line.
             return Ok(None);
         }
         let Some((extent, count, cursor_leads)) =
@@ -1886,7 +1929,7 @@ impl CommandInterpreter {
         if self.line_mode != LineMode::Visual || self.line_layout.is_none() {
             return Ok(Ok(count.max(2)));
         }
-        let extent = match self.mode_extent(document, LineShape::Whole, count.max(2))? {
+        let extent = match self.mode_extent(document, LineShape::Whole, count.max(2), false)? {
             Ok(extent) => extent,
             Err(error) => return Ok(Err(error)),
         };

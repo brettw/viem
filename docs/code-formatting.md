@@ -1,9 +1,18 @@
 # Code formatting and comments
 
 `gq` and `gw` reflow selected hard lines in Text and Code. `textwidth` defaults
-to 80 logical columns; changing it does not enable automatic wrapping. Markdown
-Preview reflow remains unsupported. Fonts and soft wrapping do not
-change reflow boundaries or widths.
+to 80 logical columns; changing it does not enable automatic wrapping. Fonts
+and soft wrapping do not change these hard-line boundaries or output widths.
+
+In Markdown Preview, `gq` and `gw` instead select displayed rows and tidy their
+underlying source without changing the Preview. `gqq` selects one displayed row,
+`gqj` selects two, and `gqip` selects the paragraph. The selected fragment is not
+expanded to complete source lines or paragraphs. `textwidth` still measures
+source columns, including Markdown prefixes and syntax, rather than screen
+pixels. Code blocks and other fixed structures remain untouched. `gq` finishes
+at the first nonblank of the original last selected Preview row; `gw` keeps its
+original visible position. See the [Preview reflow contract](markdown-feature-contracts.md#preview-source-reflow)
+for structural preservation, protected content, selection and replay rules.
 
 Code buffers additionally use Vim's `formatoptions`, `comments`, and
 `formatlistpat`. These options are shared by every view of a buffer and do not

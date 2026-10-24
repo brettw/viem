@@ -32,6 +32,10 @@ mod markdown_front_matter_edit;
 mod markdown_gfm_edit;
 #[path = "markdown_reference_edit.rs"]
 mod markdown_reference_edit;
+#[path = "markdown_reflow_transaction.rs"]
+mod markdown_reflow_transaction;
+#[path = "markdown_reflow_columns.rs"]
+mod markdown_reflow_columns;
 #[path = "markdown_table_edit.rs"]
 mod markdown_table_edit;
 #[path = "markdown_table_projection.rs"]
@@ -56,6 +60,8 @@ mod markdown_quote_edit;
 mod markdown_split;
 #[path = "markdown_edit_spelling.rs"]
 mod markdown_edit_spelling;
+#[path = "markdown_reflow.rs"]
+mod markdown_reflow;
 #[path = "markdown_typing.rs"]
 mod markdown_typing;
 #[path = "markdown_autodetect.rs"]

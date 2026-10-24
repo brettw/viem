@@ -85,6 +85,60 @@ deliberate distinctions. Before changing this behavior, warn the user about any
 conflict and its consequences as required by AGENTS.md; update the requirement,
 this contract, code comments and tests together when the policy changes.
 
+## Preview source reflow
+
+`gq` and `gw` in Preview tidy the underlying Markdown source while preserving
+exact visible text, styles, hard breaks, paragraph/container ownership, links
+and objects. Source line wrapping is the intended change; it must never change
+what the reader sees. Compare semantic structure as well as text, including
+empty paragraphs and different owner kinds with identical text.
+
+Resolve the motion in Preview before mapping its extent to source. Implicit
+line motions and doubled/count forms use displayed rows even if the view's
+other commands use Physical Source line meaning: `gqq` selects one row and
+`gqj` selects two. Text and Code retain hard-line counts even when soft-wrapped.
+Explicit physical addresses retain their source-address meaning; existing
+Visual selections retain their selected domain. Visual Block reflow covers
+complete touched displayed rows in Preview, and complete hard lines in literal
+formats. Replay resolves the command again against current content and layout.
+
+The selected visible fragment is authoritative. Two Preview rows may occupy
+part of one long source line; never round that selection outward to complete
+source lines or paragraphs. Account for the fragment's original source column
+and preserve bytes outside the selected fragment, apart from minimal required
+continuation prefixes. `gqip` is the whole-paragraph cleanup operation. Output
+width uses `textwidth` in Unicode source columns, including syntax and prefixes;
+changing the window width changes the rows selected, not that output width.
+
+Reflow eligible prose independently within paragraphs, quotes and list items.
+Preserve paragraph boundaries, editable empty paragraphs, explicit hard breaks,
+list nesting and tight/loose structure. Leave code blocks, front matter,
+HTML blocks (including preformatted HTML), headings, tables and opaque content
+fixed. Mixed selections
+format eligible prose and skip fixed structures; selections containing only
+fixed content succeed without a source edit. Never split protected inline
+syntax or activate new Markdown at a line start merely to meet `textwidth`;
+indivisible constructs may exceed it. Do not normalize unrelated delimiter,
+link, bullet or heading spellings. Preserve encoding, untouched line endings,
+and final-terminator state.
+
+`gq` finishes at the first nonblank of the original last selected displayed row;
+`gw` preserves its original visible caret and affinity. A selected empty final
+row remains the destination even though it contributes no text character.
+Invisible new source breaks never determine the Preview caret. Other views,
+marks and viewport anchors retain their visible locations. The source edit is
+one verified transaction and undo unit, leaves registers unchanged, and exact
+undo/redo restores its source and view state. Already-formatted content creates
+no history entry. Failed verification publishes no partial edits or view state.
+
+Before changing the source-only guarantee or mode-specific selection/caret
+rules, warn the user about the conflict and consequences as required by
+AGENTS.md. Update that requirement, this contract, explanatory comments and
+regression tests together when the user chooses a different policy.
+
+The representative matrix is available through
+`python3 scripts/validate.py contract --contract preview-reflow`.
+
 ## Architecture boundaries
 
 `markdown_syntax::ParseContext` makes input origin explicit. `Document` admits

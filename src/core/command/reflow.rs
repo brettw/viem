@@ -1,5 +1,5 @@
-//! `gq`/`gw` operator glue: resolve the checked extent to hard lines, run the
-//! portable formatter, then apply the command-specific cursor policy.
+//! `gq`/`gw` operator glue. Literal documents count hard lines; Preview keeps
+//! the selected visible fragment and rewrites only its Markdown source wrapping.
 use super::*;
 use crate::document::{
     reflow_edits, ReflowRequest, TextWidthSetting,
@@ -28,6 +28,80 @@ impl CommandInterpreter {
 
     pub fn reflow_language(&self) -> Option<&str> {
         self.reflow_language.as_deref()
+    }
+
+    /// Preview formatting selects visible rows even when a view otherwise uses
+    /// physical source lines. Resolve layout before the edit: source wrapping
+    /// must never choose the Preview caret from newly inserted invisible breaks.
+    pub(super) fn preview_format_requires_layout(&self, event: &InputEvent) -> bool {
+        match self.pending {
+            Pending::Operator(pending) if pending.operator.is_format() => {
+                // Counts and grammar prefixes do not yet consume geometry.
+                !matches!(event, InputEvent::Key(Key::Char('1'..='9' | 'i' | 'a' | 'f' | 'F' | 't' | 'T' | '\'' | '`' | '[' | ']' | '/' | '?')))
+                    && !matches!(event, InputEvent::Key(Key::Char('0')) if pending.motion_count.is_some())
+                    && !matches!(event, InputEvent::Key(Key::Char('g')) if !pending.g_prefix)
+            }
+            Pending::TextObject { operator, .. }
+            | Pending::OperatorFind { operator, .. }
+            | Pending::OperatorMark { operator, .. }
+            | Pending::OperatorBracket { operator, .. } => operator.operator.is_format(),
+            Pending::G { .. } if matches!(self.mode, Mode::VisualCharacter | Mode::VisualLine) =>
+                matches!(event, InputEvent::Key(Key::Char('q' | 'w'))),
+            _ if self.mode == Mode::CommandLine => matches!(event, InputEvent::Key(Key::Enter))
+                && self.command_line_state.as_ref().and_then(|state| state.operator)
+                    .is_some_and(|pending| pending.operator.is_format()),
+            Pending::None if matches!(event, InputEvent::Key(Key::Char('.'))) => match &self.last_repeat {
+                Some(RepeatAction::Operator { command, .. }) => command.operator.is_format(),
+                Some(RepeatAction::VisualOperator { command, .. }) => command.operator.is_format(),
+                Some(RepeatAction::VisualBlock(command)) => matches!(command.action,
+                    VisualBlockRepeatAction::Operator { operator, .. } if operator.is_format()),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// Source-only Preview reflow keeps the checked visible extent authoritative.
+    /// In particular, two wrapped rows in one long source line must not silently
+    /// expand to the whole paragraph. The document verifies an unchanged Preview,
+    /// so the original visible caret coordinates remain exact after publication.
+    pub(super) fn apply_preview_format_operator(
+        &mut self,
+        document: &mut Document,
+        keep_cursor: bool,
+        range: Range<usize>,
+        last_visual_row: Option<usize>,
+    ) -> Result<CommandOutput, DocumentError> {
+        document.require_modifiable()?;
+        let Some(snapshot) = self.line_layout.as_ref() else {
+            return Ok(layout_required("Preview reflow"));
+        };
+        let last = last_visual_row.unwrap_or_else(|| if range.is_empty() { range.start } else {
+            document.previous_grapheme_boundary(range.end).unwrap_or(range.start)
+        });
+        let target = if keep_cursor {
+            VisualPosition { text_offset: self.cursor, affinity: self.boundary_affinity }
+        } else {
+            match layout_motion::g_caret_for_document(document, snapshot, VisualPosition {
+                text_offset: last,
+                affinity: BoundaryAffinity::Downstream,
+            }) {
+                Ok(position) => position,
+                Err(error) => return Ok(layout_error(error)),
+            }
+        };
+        let old_cursor = (self.cursor, self.boundary_affinity);
+        let changed = document.reflow_markdown(range, self.text_width.effective(), self.indentation_options().tabstop)?;
+        self.cursor = target.text_offset;
+        self.boundary_affinity = target.affinity;
+        self.physical_cursor = None;
+        self.visual_position = Some(target);
+        self.desired_x = None;
+        Ok(CommandOutput {
+            document_changed: changed,
+            cursor_moved: old_cursor != (self.cursor, self.boundary_affinity),
+            ..CommandOutput::complete()
+        })
     }
 
     /// Hard lines intersected by a checked extent. Exclusive characterwise
