@@ -64,7 +64,7 @@ internal sealed partial class Preferences
     public bool ShowStatus => ScriptShowStatus ?? Get("appearance", "showStatusBar", true);
     public bool MarkdownAutodetect => Get("editing", "markdownAutodetect", true);
     public bool CaretHoverEffect => Get("editing", "caretHoverEffect", true);
-    public bool SmartQuotes => Get("editing", "smartQuotes", false);
+    public bool SmartQuotes => Get("editing", "smartQuotes", true);
     public bool Midnight => Theme.Background.R * .2126 + Theme.Background.G * .7152 + Theme.Background.B * .0722 < 128;
     public Theme Theme {
         get { var canvas = ReadTheme(activeTheme); var status = StatusStyles.Status;

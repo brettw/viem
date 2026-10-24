@@ -8,6 +8,9 @@ final class EVConfigurationStoreTests: XCTestCase {
     let normalized = try EVConfigurationStore.normalized(["version": 1,
       "formattingToolbar": ["future": "opaque"], "editing": ["indentation": ["softtabstop": -1]]])
     XCTAssertEqual((normalized["editing"] as? [String: Any])?["textWidth"] as? Int, 80)
+    for key in ["caretHoverEffect", "smartQuotes", "markdownAutodetect"] {
+      XCTAssertEqual((normalized["editing"] as? [String: Any])?[key] as? Bool, true, key)
+    }
     XCTAssertEqual((normalized["formattingToolbar"] as? [String: Any])?["future"] as? String, "opaque")
     XCTAssertThrowsError(try EVConfigurationStore.normalized(["version": 1,
       "recentDocuments": Array(repeating: "/tmp/a", count: 11)]))
@@ -118,7 +121,7 @@ final class EVConfigurationStoreTests: XCTestCase {
       let file = directory.appendingPathComponent("config.json")
       let before = Data(text.utf8); try before.write(to: file)
       let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-      XCTAssertNotNil(store.lastError); XCTAssertFalse(store.smartQuotes)
+      XCTAssertNotNil(store.lastError); XCTAssertTrue(store.smartQuotes)
       XCTAssertThrowsError(try store.setSmartQuotes(true))
       XCTAssertEqual(try Data(contentsOf: file), before)
     }
@@ -129,8 +132,8 @@ final class EVConfigurationStoreTests: XCTestCase {
     try FileManager.default.removeItem(at: directory)
     try Data("obstruction".utf8).write(to: directory)
     let preferences = EVEditingPreferences(configuration: store)
-    preferences.setSmartQuotes(true)
-    XCTAssertFalse(preferences.smartQuotes); XCTAssertFalse(store.smartQuotes)
+    preferences.setSmartQuotes(false)
+    XCTAssertTrue(preferences.smartQuotes); XCTAssertTrue(store.smartQuotes)
     XCTAssertEqual(try Data(contentsOf: directory), Data("obstruction".utf8))
   }
   func testInvalidExternalConfigurationChangeIsReportedWithoutPublishing() throws {

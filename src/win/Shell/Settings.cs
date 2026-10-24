@@ -119,7 +119,7 @@ internal sealed partial class SettingsWindow : Window
         Choice(page, "Other formats indentation width", ["Spaces", "Paragraph en"], whitespace["otherWhitespace"]?.GetValue<string>() == "paragraphEn" ? 1 : 0, n => Whitespace("otherWhitespace", n == 0 ? "spaces" : "paragraphEn"));
         Number(page, "Wrapped line indent (Code)", whitespace["codeWrappedLineIndent"]?.GetValue<int>() ?? 4, 0, 1024, n => Whitespace("codeWrappedLineIndent", n), 250);
         Check(page, "Show invisible characters", visible["enabled"]?.GetValue<bool>() ?? true, value => Whitespace("visibleWhitespace", new JsonObject { ["enabled"] = value }));
-        Check(page, "Align indents to previous line", whitespace["alignIndentsToPreviousLine"]?.GetValue<bool>() ?? false, value => Whitespace("alignIndentsToPreviousLine", value));
+        Check(page, "Align indents to previous line", whitespace["alignIndentsToPreviousLine"]?.GetValue<bool>() ?? true, value => Whitespace("alignIndentsToPreviousLine", value));
         Text(page, "Visible whitespace (listchars)", visible["listchars"]?.GetValue<string>() ?? "tab:>-,trail:*,extends:>,precedes:<", value => Whitespace("visibleWhitespace", new JsonObject { ["listchars"] = value }));
         var editStyle = new Button { Content = "Edit Style…", HorizontalAlignment = HorizontalAlignment.Left };
         Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(editStyle, "Edit visible whitespace style");

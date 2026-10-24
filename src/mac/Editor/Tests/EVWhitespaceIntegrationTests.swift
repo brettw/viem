@@ -24,6 +24,11 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-whitespace-native-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory)
+        // Geometry comparisons start with independent indentation explicitly;
+        // the application default enables alignment.
+        var whitespace = configuration.whitespacePresentation
+        whitespace.alignIndentsToPreviousLine = false
+        try configuration.setWhitespacePresentation(whitespace)
         if let font {
             try EVStyleTestFixtures.configure(configuration, format: type == EVDocument.codeType ? .code : .plainText, declarations: [
                 (.baseParagraph, .characterFontFamilies, .stringList([font])),

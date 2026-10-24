@@ -27,7 +27,7 @@ final class EVEditingPreferencesTests: XCTestCase {
     XCTAssertTrue(EVConfigurationStore(directory: directory).caretHoverEffect)
   }
 
-  func testSmartQuotesDefaultsOffPersistsAndNotifiesOnlyOnChanges() throws {
+  func testSmartQuotesDefaultsOnPersistsAndNotifiesOnlyOnChanges() throws {
     let suite = "viem-editing-test-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     let configDirectory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-config-test-\(UUID().uuidString)")
@@ -41,14 +41,14 @@ final class EVEditingPreferencesTests: XCTestCase {
       forName: .viemEditingPreferencesDidChange, object: nil, queue: .main
     ) { _ in changes += 1 }
     defer { center.removeObserver(observer) }
-    XCTAssertFalse(preferences.smartQuotes)
-    preferences.setSmartQuotes(true)
-    XCTAssertTrue(EVEditingPreferences(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).smartQuotes)
-    XCTAssertEqual(changes, 1)
-    preferences.setSmartQuotes(true)
-    XCTAssertEqual(changes, 1)
+    XCTAssertTrue(preferences.smartQuotes)
     preferences.setSmartQuotes(false)
     XCTAssertFalse(EVEditingPreferences(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).smartQuotes)
+    XCTAssertEqual(changes, 1)
+    preferences.setSmartQuotes(false)
+    XCTAssertEqual(changes, 1)
+    preferences.setSmartQuotes(true)
+    XCTAssertTrue(EVEditingPreferences(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).smartQuotes)
     XCTAssertEqual(changes, 2)
   }
 
@@ -72,12 +72,12 @@ final class EVEditingPreferencesTests: XCTestCase {
     let checkbox = try XCTUnwrap(
       descendants(window.contentView).first { $0.accessibilityLabel() == "Use smart quotes" }
         as? NSButton)
-    XCTAssertEqual(checkbox.state, .off)
-    checkbox.performClick(nil)
-    XCTAssertTrue(preferences.smartQuotes)
     XCTAssertEqual(checkbox.state, .on)
-    preferences.setSmartQuotes(false)
+    checkbox.performClick(nil)
+    XCTAssertFalse(preferences.smartQuotes)
     XCTAssertEqual(checkbox.state, .off)
+    preferences.setSmartQuotes(true)
+    XCTAssertEqual(checkbox.state, .on)
     XCTAssertEqual(theme.theme, .midnight)
     window.contentView?.layoutSubtreeIfNeeded()
     XCTAssertTrue(window.contentLayoutRect.contains(checkbox.convert(checkbox.bounds, to: nil)))
@@ -106,7 +106,7 @@ final class EVEditingPreferencesTests: XCTestCase {
     XCTAssertEqual(preferences.textWidth, 72)
     XCTAssertEqual(changes, 1)
     XCTAssertEqual(EVEditingPreferences(configuration: EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)).textWidth, 72)
-    XCTAssertFalse(preferences.smartQuotes)
+    XCTAssertTrue(preferences.smartQuotes)
   }
 
   func testEditingCategoryTextWidthFieldValidatesAndFollowsPreference() throws {
@@ -141,7 +141,7 @@ final class EVEditingPreferencesTests: XCTestCase {
     }
     preferences.setTextWidth(60)
     XCTAssertEqual(field.stringValue, "60")
-    XCTAssertFalse(preferences.smartQuotes)
+    XCTAssertTrue(preferences.smartQuotes)
     XCTAssertEqual(theme.theme, .midnight)
   }
 

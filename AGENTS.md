@@ -61,6 +61,16 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   refactors or when asked; also run memory measurements for changes with a
   plausible memory impact. Back deliberate memory or performance tradeoffs with
   numbers and record the decision.
+- Choose validation based on the implementation changed, not every subsystem
+  the setting can affect. Changes limited to defaults, labels, or settings
+  wiring normally need focused checks for defaults, persistence, explicit
+  overrides, and affected native controls. Do not run consistency probes,
+  full suites, fuzzing, or memory measurements solely because the setting
+  enables an existing feature. Broaden validation only when implementation
+  logic also changes, focused checks expose a problem beyond outdated default
+  assumptions, or the user requests broader coverage. State the concrete
+  reason before broadening. This exception takes precedence over the general
+  validation stages above and in the development workflow.
 - Fuzz builds and campaign results are large and kept until removed. After
   running a fuzz campaign (`scripts/fuzz-backend.py` or `fuzz/run.sh`), end
   your message with a bold line suggesting that the user consider cleaning the
@@ -472,7 +482,7 @@ Deliberate presentation differences from GitHub:
   frontends never infer it from offset and affinity.
 - Visible whitespace markers (`list`/`listchars`) appear only in Text and Code
   and change no text, geometry, search, clipboard or serialization.
-- **Align indents to previous line** is a view-local option, off by default,
+- **Align indents to previous line** is a view-local option, on by default,
   for Code in proportionally spaced fonts. Align a leading whitespace prefix
   to the corresponding logical column on the nearest preceding line with no
   greater indentation. Keep anchor queries and edits bounded, and obtain exact
@@ -631,7 +641,7 @@ Comment and list handling is in [code formatting](docs/code-formatting.md).
   is one source transaction and undo unit; cancellation leaves no trace.
   Normal, Visual and pending command grammar never expose a native input
   context. Never send partially decoded input to core.
-- Smart quotes (off by default) convert straight quotes in every committed
+- Smart quotes (on by default) convert straight quotes in every committed
   prose input path, including paste, register puts, IME and accessibility, as
   part of the same undo unit. They never touch Code, code spans or blocks,
   prompts, uncommitted IME text or quotes that syntax requires.
