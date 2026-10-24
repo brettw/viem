@@ -113,10 +113,11 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   doing I/O, waiting, or calling callbacks or providers, and never nest cache or
   registry locks. Native render resources have explicit ownership and thread
   rules, including final release from a worker after their view closes.
-- A buffer's views share source, history and registers. Each view owns its
-  cursor, selection, mode, pending command, desired x, wrapping, line meaning
-  and viewport. Closing a view cancels its work and composition and closes its
-  insertion undo group without affecting other views.
+- A buffer's views share source and history, and every buffer shares the
+  application-wide register bank. Each view owns its cursor, selection, mode,
+  pending command, desired x, wrapping, line meaning and viewport. Closing a
+  view cancels its work and composition and closes its insertion undo group
+  without affecting other views.
 
 ### Identity and stale work
 
@@ -539,6 +540,11 @@ Unsupported commands fail without side effects.
 - Legacy script state (`g:` variables, functions, commands, autocmds),
   mappings and abbreviations are per buffer and shared by its views; `w:`
   variables are per view.
+- Ordinary registers are application-wide as in Vim, but the `:`, `/`, `=`
+  and `~` registers, the search, Ex and expression histories, `.` repeat,
+  `@@`, macro recording, `:nohlsearch` and the previous substitute are per
+  buffer. Registers are not saved across restarts. See
+  [register scope](docs/vim-registers-and-marks.md#register-scope).
 - `:global` selects stable line identities before running. One invocation is
   one undo unit, and per-line failures are reported without stopping it.
 - `:s///c` stages its choices against the revision at which the invocation
@@ -600,6 +606,11 @@ identity in history, repeat and caches.
 
 Special register input and mark lifetime follow [registers and marks](docs/vim-registers-and-marks.md).
 
+- Every buffer shares one register bank. Each buffer holds a copy: a core
+  lease adopts a newer bank when it begins and, when it ends, publishes only
+  the slots it wrote, so overlapping turns in different buffers keep each
+  other's writes. Copies share slot storage; never deep-copy register text
+  per turn.
 - Registers keep semantic hard breaks, literal LF and block row separators
   distinct through append and put. Macros record normalized core events with
   their key identity; never parse displayed `<Left>` notation. Putting a macro

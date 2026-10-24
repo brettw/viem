@@ -30,6 +30,47 @@ results do not edit the document. Numbers become text; lists become lines.
 `:put =expression` and `:let @= = 'expression'` use the same evaluator.
 `getreg('=', 1)` returns the stored expression instead of evaluating it.
 
+## Register scope
+
+As in Vim, one application-wide bank holds the unnamed register `"`, the
+numbered registers `0`–`9`, the named registers `a`–`z`, the small-delete
+register `-`, the last-insert register `.` and recorded macros. A yank in one
+buffer can be put in any other, and the bank outlives the buffer that wrote
+it. `+` and `*` are the system clipboard. The bank lasts for the application
+session; unlike Vim, registers are not saved across restarts, and the
+`viminfo` option does not change that.
+
+Each buffer keeps a copy of the bank. A command turn starts from the newest
+bank and, when it ends, publishes only the registers it wrote. If commands in
+two buffers write registers at the same time, each register keeps the write
+from the command that finished last, so the numbered registers may interleave
+both deletions.
+
+`%` belongs to the buffer and `#` to the view, as in Vim.
+
+### Per-buffer differences from Vim
+
+Vim keeps the following state for the whole session. Viem keeps it per buffer,
+shared by that buffer's views, so it is unavailable in other buffers:
+
+| State | Viem behavior |
+| --- | --- |
+| `:` register | The last Ex command submitted in this buffer |
+| `/` register | The last search pattern in this buffer, also used by `n`, `N`, `g&` and `hlsearch` |
+| `=` register | The last expression evaluated in this buffer |
+| `~` register | The last text dropped into this buffer |
+| Search, Ex and expression histories | Prompt history of this buffer |
+| `.` repeat | Repeats the last change made in this buffer |
+| `@@` | Repeats the last register executed in this buffer |
+| Macro recording | `q` records only input to the buffer where it started |
+| `:nohlsearch` | Suppresses search highlighting in this buffer only |
+| Previous substitute | `&`, `g&` and `:&` repeat the last `:s` in this buffer |
+
+Mappings, abbreviations and script state are also per buffer; see
+[Vim script](vimscript.md) for their scope and for option scope.
+
+## Marks
+
 | Mark | Location |
 | --- | --- |
 | `[` / `]` | First/last affected grapheme of the latest change or yank |

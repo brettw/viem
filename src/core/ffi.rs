@@ -4306,6 +4306,9 @@ enum CoreRegistryEntry {
 
 struct CoreRegistry {
     file_marks: std::collections::BTreeMap<char, crate::coordinator::FileMarkTarget>,
+    /// Vim's application-wide register bank. Each core holds a copy, which a
+    /// lease refreshes when it begins and publishes when it ends.
+    registers: crate::command::Registers,
     next_handle: ViemCoreHandle,
     cores: HashMap<ViemCoreHandle, CoreRegistryEntry>,
 }
@@ -4314,6 +4317,7 @@ impl CoreRegistry {
     fn new() -> Self {
         Self {
             file_marks: Default::default(),
+            registers: Default::default(),
             next_handle: 1,
             cores: HashMap::new(),
         }
@@ -4335,6 +4339,8 @@ fn core_registry() -> &'static Mutex<CoreRegistry> {
 struct CoreLease {
     handle: ViemCoreHandle,
     core: Option<Core<CTextMeasurementProvider>>,
+    /// The register bank the core held when the lease began.
+    registers: crate::command::Registers,
 }
 
 impl CoreLease {
@@ -4357,6 +4363,7 @@ impl Drop for CoreLease {
             return;
         };
         let file_marks = core.file_mark_targets();
+        let registers = core.registers().clone();
         let Ok(mut registry) = core_registry().lock() else {
             return;
         };
@@ -4365,13 +4372,33 @@ impl Drop for CoreLease {
                 registry.file_marks.insert(name, target);
             }
         }
+        let replaced = publish_registers(&mut registry, &self.registers, &registers);
         if let Some(entry @ CoreRegistryEntry::Busy) = registry.cores.get_mut(&self.handle) {
             *entry = CoreRegistryEntry::Ready(core);
         }
+        drop(registry);
+        drop(replaced);
     }
 }
 
+/// Apply the register slots one core wrote since `base` to the application
+/// bank. Writes from a concurrent lease of another core keep their own slots.
+/// Returns any superseded bank, which can own large register text, so the
+/// caller can release it outside the registry lock.
+fn publish_registers(
+    registry: &mut CoreRegistry,
+    base: &crate::command::Registers,
+    registers: &crate::command::Registers,
+) -> Option<crate::command::Registers> {
+    if registers.revision() == base.revision() {
+        return None;
+    }
+    let merged = crate::command::Registers::rebase(base, registers, &registry.registers);
+    Some(std::mem::replace(&mut registry.registers, merged))
+}
+
 fn register_core(core: Core<CTextMeasurementProvider>) -> Result<ViemCoreHandle, ViemStatus> {
+    let registers = core.registers().clone();
     let mut registry = core_registry()
         .lock()
         .map_err(|_| ViemStatus::InternalError)?;
@@ -4383,9 +4410,13 @@ fn register_core(core: Core<CTextMeasurementProvider>) -> Result<ViemCoreHandle,
         return Err(ViemStatus::InternalError);
     }
     registry.next_handle = handle.checked_add(1).unwrap_or(0);
+    // A core built with register writes publishes them like a finished lease.
+    let replaced = publish_registers(&mut registry, &Default::default(), &registers);
     registry
         .cores
         .insert(handle, CoreRegistryEntry::Ready(core));
+    drop(registry);
+    drop(replaced);
     Ok(handle)
 }
 
@@ -4406,10 +4437,21 @@ fn checkout_core(handle: ViemCoreHandle) -> Result<CoreLease, ViemStatus> {
     let CoreRegistryEntry::Ready(core) = std::mem::replace(entry, CoreRegistryEntry::Busy) else {
         unreachable!("the ready entry was matched above")
     };
-    Ok(CoreLease {
+    let current = registry.registers.clone();
+    drop(registry);
+    let registers = core.registers().clone();
+    let mut lease = CoreLease {
         handle,
         core: Some(core),
-    })
+        registers,
+    };
+    // Every lease publishes its writes, so a newer application bank never
+    // discards unpublished writes in this core.
+    if current.revision() > lease.registers.revision() {
+        lease.core_mut().adopt_registers(&current);
+        lease.registers = current;
+    }
+    Ok(lease)
 }
 
 fn with_core<R>(

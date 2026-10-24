@@ -5231,3 +5231,40 @@ fn composition_replacing_selection_exports_only_overlay_selection_until_cancel()
         assert_eq!(viem_core_view_remove(core.handle, view), ViemStatus::Ok);
     }
 }
+
+fn send_characters(core: &TestCore, view: ViemViewId, characters: &str) {
+    let mut outcome = ViemCoreOutcomeV1::default();
+    for character in characters.chars() {
+        let input = key(VIEM_KEY_CHARACTER, character as u32);
+        assert_eq!(
+            unsafe { test_send_key(core.handle, view, &input, &mut outcome) },
+            ViemStatus::Ok
+        );
+    }
+}
+
+#[test]
+fn registers_are_shared_by_every_buffer_and_outlive_the_buffer_that_wrote_them() {
+    // A named register keeps this independent of concurrently running tests,
+    // whose deletions publish only the unnamed, small and numbered slots.
+    let first = create_core(b"shared line\n", ViemDocumentOptions::default());
+    let mut first_provider = Box::new(FakeProviderContext::new(first.handle));
+    let (first_view, _) = add_test_view(&first, &mut *first_provider);
+    let second = create_core(b"second\n", ViemDocumentOptions::default());
+    let mut second_provider = Box::new(FakeProviderContext::new(second.handle));
+    let (second_view, _) = add_test_view(&second, &mut *second_provider);
+
+    send_characters(&first, first_view, "\"kyy");
+    send_characters(&second, second_view, "\"kp");
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &second, document_state(&second).document_revision), b"second\nshared line\n");
+
+    assert_eq!(viem_core_view_remove(first.handle, first_view), ViemStatus::Ok);
+    drop(first);
+    let third = create_core(b"third\n", ViemDocumentOptions::default());
+    let mut third_provider = Box::new(FakeProviderContext::new(third.handle));
+    let (third_view, _) = add_test_view(&third, &mut *third_provider);
+    send_characters(&third, third_view, "\"kP");
+    assert_eq!(copy_core_bytes(viem_core_copy_source_bytes, &third, document_state(&third).document_revision), b"shared line\nthird\n");
+    assert_eq!(viem_core_view_remove(second.handle, second_view), ViemStatus::Ok);
+    assert_eq!(viem_core_view_remove(third.handle, third_view), ViemStatus::Ok);
+}

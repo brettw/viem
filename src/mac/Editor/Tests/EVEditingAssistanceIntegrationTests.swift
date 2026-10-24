@@ -43,6 +43,7 @@ final class EVEditingAssistanceIntegrationTests: XCTestCase {
     let configuration = EVConfigurationStore(directory: configDirectory, legacyDefaults: defaults)
     defer { defaults.removePersistentDomain(forName: suite) }
     let preferences = EVEditingPreferences(configuration: configuration)
+    preferences.setSmartQuotes(false)
     let backend = EVCoreDocumentBackend()
     try backend.read(source: Data(), typeName: EVDocument.plainTextType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)

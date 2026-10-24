@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 
 use super::clipboard::{ClipboardCommandContext, ClipboardTarget, ClipboardWriteRequest};
 use super::{InputEvent, Key};
@@ -328,29 +330,94 @@ impl StoredRegister {
     }
 }
 
+/// Application-unique bank revisions. Zero is reserved for the shared default
+/// bank, so a buffer that has never written a register never supersedes one
+/// that has.
+static NEXT_REVISION: AtomicU64 = AtomicU64::new(1);
+
+static DEFAULT_REGISTERS: LazyLock<Registers> = LazyLock::new(|| {
+    let mut values = BTreeMap::new();
+    values.insert('"', Arc::new(StoredRegister::text(RegisterValue::characterwise(""))));
+    Registers {
+        bank: Arc::new(RegisterBank {
+            values,
+            last_insert: None,
+        }),
+        revision: 0,
+    }
+});
+
 #[derive(Clone, Debug)]
-pub(crate) struct Registers {
-    values: BTreeMap<char, StoredRegister>,
+struct RegisterBank {
+    /// Each slot is shared separately, so copy-on-write duplicates only this
+    /// map, never register text, and a rebase can tell which slots changed.
+    values: BTreeMap<char, Arc<StoredRegister>>,
     /// Vim's last-insert register. Kept separate from writable slots so a
     /// register-targeted yank/delete can never overwrite it accidentally.
-    last_insert: Option<RegisterValue>,
+    last_insert: Option<Arc<RegisterValue>>,
+}
+
+/// Vim's application-wide register bank. Every buffer holds a copy, and the
+/// native core registry carries writes between buffers (see `rebase`).
+/// Clones share storage; each write copies at most the slot map and takes a
+/// new application-unique revision.
+#[derive(Clone, Debug)]
+pub(crate) struct Registers {
+    bank: Arc<RegisterBank>,
+    revision: u64,
 }
 
 impl Default for Registers {
     fn default() -> Self {
-        let mut values = BTreeMap::new();
-        values.insert('"', StoredRegister::text(RegisterValue::characterwise("")));
-        Self {
-            values,
-            last_insert: None,
-        }
+        DEFAULT_REGISTERS.clone()
     }
 }
 
 impl Registers {
+    /// Identity of this bank's contents. A larger revision was written later.
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Applies the slots `ours` wrote since `base` on top of `current`, the
+    /// newest application bank. When only one side wrote, that side's bank is
+    /// returned unchanged. When both did, a slot `ours` wrote takes its value,
+    /// so numbered registers can mix only when two buffers delete during
+    /// overlapping turns.
+    pub(crate) fn rebase(base: &Self, ours: &Self, current: &Self) -> Self {
+        if ours.revision == base.revision {
+            return current.clone();
+        }
+        if current.revision == base.revision {
+            return ours.clone();
+        }
+        let mut merged = current.clone();
+        let bank = merged.bank_mut();
+        for name in base.bank.values.keys().chain(ours.bank.values.keys()) {
+            let written = ours.bank.values.get(name);
+            if !same_slot(base.bank.values.get(name), written) {
+                match written {
+                    Some(value) => bank.values.insert(*name, value.clone()),
+                    None => bank.values.remove(name),
+                };
+            }
+        }
+        if !same_slot(base.bank.last_insert.as_ref(), ours.bank.last_insert.as_ref()) {
+            bank.last_insert.clone_from(&ours.bank.last_insert);
+        }
+        merged
+    }
+
+    fn bank_mut(&mut self) -> &mut RegisterBank {
+        self.revision = NEXT_REVISION
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| value.checked_add(1))
+            .expect("register revisions exhausted");
+        Arc::make_mut(&mut self.bank)
+    }
+
     pub(crate) fn names(&self) -> Vec<char> {
-        let mut names = self.values.keys().copied().collect::<Vec<_>>();
-        if self.last_insert.is_some() {
+        let mut names = self.bank.values.keys().copied().collect::<Vec<_>>();
+        if self.bank.last_insert.is_some() {
             names.push('.');
         }
         names.sort_unstable();
@@ -360,10 +427,10 @@ impl Registers {
 
     pub(crate) fn get(&self, name: char) -> Option<&RegisterValue> {
         if name == '.' {
-            return self.last_insert.as_ref();
+            return self.bank.last_insert.as_deref();
         }
         let normalized = normalize_read_name(name)?;
-        self.values.get(&normalized).map(|stored| &stored.value)
+        self.bank.values.get(&normalized).map(|stored| &stored.value)
     }
 
     pub(crate) fn read(
@@ -402,6 +469,7 @@ impl Registers {
     ) -> Result<Option<RegisterValue>, RegisterReadError> {
         if let Some(normalized) = normalize_named(name) {
             if let Some(events) = self
+                .bank
                 .values
                 .get(&normalized)
                 .and_then(|stored| stored.replay.as_deref())
@@ -436,7 +504,7 @@ impl Registers {
     }
 
     pub(crate) fn set_last_insert(&mut self, value: RegisterValue) {
-        self.last_insert = Some(value);
+        self.bank_mut().last_insert = Some(Arc::new(value));
     }
 
     pub(crate) fn yank(
@@ -449,9 +517,9 @@ impl Registers {
         }
         let (unnamed, effect) = self.write_explicit(requested, &value);
         if requested.is_none() || requested == Some('"') {
-            self.values.insert('0', StoredRegister::text(value));
+            self.store('0', StoredRegister::text(value));
         }
-        self.values.insert('"', StoredRegister::text(unnamed));
+        self.store('"', StoredRegister::text(unnamed));
         effect
     }
 
@@ -483,15 +551,15 @@ impl Registers {
             self.rotate_numbered(value.clone());
         }
         if writes_small {
-            self.values.insert('-', StoredRegister::text(value.clone()));
+            self.store('-', StoredRegister::text(value.clone()));
         }
-        self.values.insert('"', StoredRegister::text(unnamed));
+        self.store('"', StoredRegister::text(unnamed));
         effect
     }
 
     pub(crate) fn macro_events(&self, name: char) -> Option<Vec<InputEvent>> {
         let normalized = normalize_named(name)?;
-        let stored = self.values.get(&normalized)?;
+        let stored = self.bank.values.get(&normalized)?;
         stored
             .replay
             .clone()
@@ -502,8 +570,7 @@ impl Registers {
         let Some(normalized) = normalize_named(name) else {
             return;
         };
-        self.values
-            .insert(normalized, StoredRegister::macro_program(events));
+        self.store(normalized, StoredRegister::macro_program(events));
     }
 
     fn write_explicit(
@@ -516,7 +583,7 @@ impl Registers {
         };
         if name.is_ascii_uppercase() {
             let destination = name.to_ascii_lowercase();
-            let previous = self.values.get(&destination).cloned();
+            let previous = self.bank.values.get(&destination).cloned();
             let combined = previous.as_ref().map_or_else(
                 || value.clone(),
                 |existing| append_value(&existing.value, value),
@@ -531,7 +598,7 @@ impl Registers {
                     events
                 })
             });
-            self.values.insert(
+            self.store(
                 destination,
                 StoredRegister {
                     value: combined.clone(),
@@ -547,8 +614,7 @@ impl Registers {
                 },
             )
         } else if is_writable(name) {
-            self.values
-                .insert(name, StoredRegister::text(value.clone()));
+            self.store(name, StoredRegister::text(value.clone()));
             (value.clone(), RegisterWriteEffect::default())
         } else {
             // `validate_write` rejects read-only destinations before an edit
@@ -567,23 +633,36 @@ impl Registers {
         let requested = (name != '"').then_some(name);
         let (unnamed, effect) = self.write_explicit(requested, &value);
         if requested.is_none() {
-            self.values.insert('0', StoredRegister::text(value));
+            self.store('0', StoredRegister::text(value));
         }
-        self.values.insert('"', StoredRegister::text(unnamed));
+        self.store('"', StoredRegister::text(unnamed));
         effect
     }
 
     fn rotate_numbered(&mut self, value: RegisterValue) {
+        let bank = self.bank_mut();
         for number in (2_u8..=9).rev() {
             let previous = char::from(b'0' + number - 1);
             let current = char::from(b'0' + number);
-            if let Some(contents) = self.values.get(&previous).cloned() {
-                self.values.insert(current, contents);
+            if let Some(contents) = bank.values.get(&previous).cloned() {
+                bank.values.insert(current, contents);
             } else {
-                self.values.remove(&current);
+                bank.values.remove(&current);
             }
         }
-        self.values.insert('1', StoredRegister::text(value));
+        bank.values.insert('1', Arc::new(StoredRegister::text(value)));
+    }
+
+    fn store(&mut self, name: char, stored: StoredRegister) {
+        self.bank_mut().values.insert(name, Arc::new(stored));
+    }
+}
+
+/// Whether a slot still holds the exact write it had, compared by identity.
+fn same_slot<T>(before: Option<&Arc<T>>, after: Option<&Arc<T>>) -> bool {
+    match (before, after) {
+        (Some(before), Some(after)) => Arc::ptr_eq(before, after),
+        (before, after) => before.is_none() && after.is_none(),
     }
 }
 
@@ -903,11 +982,11 @@ mod tests {
     #[test]
     fn deletion_class_drives_small_and_numbered_register_policy() {
         let mut registers = Registers::default();
-        registers.values.insert(
+        registers.store(
             '-',
             StoredRegister::text(RegisterValue::characterwise("old-small")),
         );
-        registers.values.insert(
+        registers.store(
             '1',
             StoredRegister::text(RegisterValue::linewise("old-large\n")),
         );
@@ -958,15 +1037,15 @@ mod tests {
             ('3', "old-one\n", "old-two\n"),
         ] {
             let mut registers = Registers::default();
-            registers.values.insert(
+            registers.store(
                 '1',
                 StoredRegister::text(RegisterValue::linewise("old-one\n")),
             );
-            registers.values.insert(
+            registers.store(
                 '2',
                 StoredRegister::text(RegisterValue::linewise("old-two\n")),
             );
-            registers.values.insert(
+            registers.store(
                 '3',
                 StoredRegister::text(RegisterValue::linewise("old-three\n")),
             );
@@ -1117,5 +1196,70 @@ mod tests {
                 InputEvent::Key(Key::Enter),
             ])
         );
+    }
+
+    #[test]
+    fn clones_share_slots_until_written_and_each_write_takes_a_later_revision() {
+        let original = Registers::default();
+        assert_eq!(original.revision(), 0);
+        let mut copy = original.clone();
+        assert!(Arc::ptr_eq(&original.bank, &copy.bank));
+
+        copy.yank(Some('a'), RegisterValue::characterwise("large text"));
+        let first = copy.revision();
+        assert!(first > 0);
+        assert!(original.get('a').is_none(), "writes never reach other clones");
+        let shared = copy.clone();
+        copy.yank(Some('b'), RegisterValue::characterwise("other"));
+        assert!(copy.revision() > first);
+        assert!(
+            Arc::ptr_eq(&shared.bank.values[&'a'], &copy.bank.values[&'a']),
+            "copy-on-write duplicates the slot map, not register text"
+        );
+    }
+
+    #[test]
+    fn rebase_applies_only_the_slots_a_buffer_wrote_over_the_newest_bank() {
+        let mut base = Registers::default();
+        base.yank(Some('a'), RegisterValue::characterwise("old a"));
+        base.yank(Some('b'), RegisterValue::characterwise("old b"));
+        base.set_last_insert(RegisterValue::characterwise("old insert"));
+
+        let mut ours = base.clone();
+        ours.yank(Some('a'), RegisterValue::characterwise("our a"));
+        let mut current = base.clone();
+        current.yank(Some('b'), RegisterValue::characterwise("their b"));
+        current.set_last_insert(RegisterValue::characterwise("their insert"));
+        current.delete(None, RegisterValue::linewise("their line\n"), DeletionClass::Large);
+
+        let merged = Registers::rebase(&base, &ours, &current);
+        assert!(merged.revision() > ours.revision().max(current.revision()));
+        assert_eq!(merged.get('a').unwrap().text, "our a");
+        assert_eq!(merged.get('b').unwrap().text, "their b");
+        assert_eq!(merged.get('1').unwrap().text, "their line\n");
+        assert_eq!(merged.get('.').unwrap().text, "their insert");
+        assert_eq!(merged.get('"').unwrap().text, "our a", "both wrote it; ours publishes last");
+
+        let unchanged = Registers::rebase(&base, &base.clone(), &current);
+        assert_eq!(unchanged.revision(), current.revision());
+        let fast = Registers::rebase(&base, &ours, &base);
+        assert!(Arc::ptr_eq(&fast.bank, &ours.bank));
+        assert_eq!(fast.revision(), ours.revision());
+    }
+
+    #[test]
+    fn rebase_removes_numbered_slots_that_a_rotation_cleared() {
+        let mut base = Registers::default();
+        base.store('2', StoredRegister::text(RegisterValue::linewise("two\n")));
+        let mut ours = base.clone();
+        ours.delete(None, RegisterValue::linewise("one\n"), DeletionClass::Large);
+        assert!(ours.get('2').is_none());
+        let mut current = base.clone();
+        current.yank(Some('z'), RegisterValue::characterwise("z"));
+
+        let merged = Registers::rebase(&base, &ours, &current);
+        assert_eq!(merged.get('1').unwrap().text, "one\n");
+        assert!(merged.get('2').is_none());
+        assert_eq!(merged.get('z').unwrap().text, "z");
     }
 }
