@@ -325,6 +325,17 @@ Deliberate presentation differences from GitHub:
 - A caret names a visible location in a paragraph, including an empty one.
   Hidden syntax and list labels have no caret, insertion or deletion stops.
   Line ownership chooses the context at line edges; affinity chooses it inline.
+- After linewise deletion in Preview, follow the next surviving character even
+  when reflow moves it upward, preferring the next row at a shared wrap boundary.
+  A retained paragraph separator leads forward to the next paragraph, not back
+  to the preceding character; a following empty paragraph remains a caret stop.
+  Do not implicitly leave a surviving code block or quote when all selected rows
+  were inside it; lists do not impose containment. See the complete
+  [caret policy](docs/markdown-feature-contracts.md#line-deletion-caret-policy).
+  Before implementing a request that conflicts with this policy, explicitly warn
+  the user about the changed behavior and tradeoff; do not silently change the
+  policy or its regression expectations. If the user chooses the new behavior,
+  update this requirement, the contract, code comments and tests together.
 - Insertion takes its character context from caret affinity. Replacement takes
   the first selected text character's context, regardless of direction. Pending
   typing choices win over both. They are view-local until text commits, change

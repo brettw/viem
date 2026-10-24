@@ -166,6 +166,69 @@ impl FormattedDocument {
     }
 }
 
+/// A local, pre-edit witness for the surviving prefix of a protected owner.
+/// This is a command caret preference, not a change to general anchor recovery.
+pub(crate) struct LineDeletionContainment {
+    owners: Vec<ContainerIdentity>,
+}
+
+fn paragraph_at(document: &super::Document, at: usize) -> Option<Block> {
+    super::edit_boundary::paragraph_at(document, at).ok().flatten()
+}
+
+impl LineDeletionContainment {
+    pub(crate) fn capture(document: &super::Document, selected: &Range<usize>) -> Option<Self> {
+        if !document.format().is_markdown() { return None; }
+        let lines = document.hard_line_snapshot();
+        let previous = lines.previous_grapheme_boundary(selected.start)?;
+        let line = lines.line_at_offset(previous).ok()?.content_range();
+        let previous = if previous == line.end && !line.is_empty() {
+            lines.previous_grapheme_boundary(previous)?
+        } else { previous };
+        let prefix = paragraph_at(document, previous)?;
+        let first = paragraph_at(document, selected.start)?;
+        // The terminal separator belongs to the selected row, not the next
+        // paragraph. Conversely, dj selecting an outside empty paragraph must
+        // include that paragraph's owner. Do not compare a convenient source hull.
+        let last_at = if selected.is_empty() { selected.start } else {
+            lines.previous_grapheme_boundary(selected.end)?
+        };
+        let last = paragraph_at(document, last_at)?;
+        let owners: Vec<_> = first.containers.iter().rev()
+            .filter(|member| matches!(member.container.kind, ContainerKind::Quote | ContainerKind::CodeBlock))
+            .map(|member| member.container.id)
+            .filter(|id| last.containers.iter().any(|member| member.container.id == *id)
+                && prefix.containers.iter().any(|member| member.container.id == *id))
+            .collect();
+        if owners.is_empty() { return None; }
+        Some(Self { owners })
+    }
+
+    pub(crate) fn fallback(&self, document: &super::Document, following: usize) -> Option<usize> {
+        // Resolve the neighboring position in the NEW snapshot, then prove its
+        // owner survived. An old character anchor is insufficient: an empty
+        // retained code row can lose its sole separator leaf during deletion.
+        // No old ordinal or source position is carried across the edit.
+        let following = paragraph_at(document, following)?;
+        let lines = document.hard_line_snapshot();
+        // A retained-column option may place the ordinary caret inside the
+        // following paragraph. Its start still identifies the structural edge.
+        let previous = lines.previous_grapheme_boundary(following.range.start)?;
+        let line = lines.line_at_offset(previous).ok()?.content_range();
+        let previous = if previous == line.end && !line.is_empty() {
+            lines.previous_grapheme_boundary(previous)?
+        } else { previous };
+        let prefix = paragraph_at(document, previous)?;
+        // Identities, not styles, distinguish adjacent equally formatted blocks.
+        // Prefer the innermost surviving owner; deleting a whole inner code block
+        // may still leave its enclosing quote. Never manufacture an empty owner.
+        let owner = self.owners.iter().find(|id|
+            prefix.containers.iter().any(|member| member.container.id == **id))?;
+        (!following.containers.iter().any(|member| member.container.id == *owner))
+            .then_some(previous)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::document::*;

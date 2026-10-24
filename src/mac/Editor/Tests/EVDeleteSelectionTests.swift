@@ -36,6 +36,10 @@ import XCTest
             let body = lastKey == "d" ? "first\nsecond" : "first"
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
                 Data("```rust\n\(body)\n```\n\nFollowing paragraph".utf8))
+            // Line deletion follows surviving text, but must not implicitly
+            // leave retained code. This also exercises the native key path for
+            // the policy documented in markdown-feature-contracts.md.
+            XCTAssertEqual(Int(surface.viewPresentation.cursor_utf8_offset), body.utf8.count - 1)
             XCTAssertNil(surface.commandOutput)
             surface.perform(menuCommand: .undo, sender: nil)
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
@@ -57,6 +61,34 @@ import XCTest
         XCTAssertEqual(try backend.formattedText(), expectedText)
         XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
         XCTAssertNil(view.commandOutput)
+    }
+
+    func testDeletingFinalWrappedProseRowMovesToFollowingParagraph() throws {
+        let prose = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa"
+        let source = "\(prose)\n\n## Following"
+        let (backend, surface) = try surface(source, type: EVDocument.markdownType)
+        surface.view.frame = NSRect(x: 0, y: 0, width: 260, height: 600)
+        surface.viewDidLayout()
+        let rows = try XCTUnwrap(surface.layoutSnapshot).rows
+        let index = try XCTUnwrap(rows.firstIndex { $0.text_end == UInt64(prose.utf8.count) })
+        XCTAssertGreaterThan(index, 0, "fixture must wrap the paragraph")
+        let start = rows[index].text_start
+        for character in Array(repeating: "j", count: index) + ["d", "d"] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                characters: character, charactersIgnoringModifiers: character,
+                isARepeat: false, keyCode: 0))
+            surface.editorView.keyDown(with: event)
+        }
+        // The retained separator is not a reason to back up into the prose.
+        // Follow the next paragraph, while preserving its heading treatment.
+        XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, start + 1)
+        XCTAssertEqual(try backend.formattedText(), String(prose.prefix(Int(start))) + "\nFollowing")
+        XCTAssertTrue(String(decoding: try backend.serializedSource(typeName: EVDocument.markdownType),
+            as: UTF8.self).hasSuffix("\n\n## Following"))
+        XCTAssertNil(surface.commandOutput)
+        surface.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
     }
 
     func testBothPhysicalDeleteKeysRemoveAccessibilitySelectionMadeFromNormalMode() throws {

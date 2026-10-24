@@ -4485,7 +4485,7 @@ impl Document {
                 return Ok(prepared);
             }
             if let Attempt::Verified((prepared, _, _)) = Attempt::optional_or_declined(Strategy::IndependentParagraph,
-                self.prepare_independent_paragraph_reprojection(&patches), "paragraph reprojection failed")
+                self.prepare_independent_paragraph_reprojection(&patches, None), "paragraph reprojection failed")
                 .record(Strategy::IndependentParagraph)
             {
                 self.shadow_check_source_candidate(Strategy::IndependentParagraph, &prepared, &patches);
@@ -5250,7 +5250,7 @@ impl Document {
             declined => {
                 let _ = declined.record(Strategy::ListParagraph);
                 match Attempt::optional_or_declined(Strategy::IndependentParagraph,
-                    self.prepare_independent_paragraph_reprojection(source_patches),
+                    self.prepare_independent_paragraph_reprojection(source_patches, Some((edits, target_text))),
                     "paragraph reprojection failed")
                 {
                     Attempt::Verified(parts) => Some((Strategy::IndependentParagraph, parts)),
