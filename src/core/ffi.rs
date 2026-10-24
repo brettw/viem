@@ -4653,6 +4653,9 @@ fn core_status(error: CoreError) -> ViemStatus {
         CoreError::IdentifierExhausted(_) => ViemStatus::ResourceExhausted,
         CoreError::Document(error) => document_status(error),
         CoreError::ModelTransaction(error) => model_transaction_status(error),
+        CoreError::History(crate::document::HistoryError::RestorationMismatch { .. }) => {
+            ViemStatus::VerificationFailed
+        }
         CoreError::StaleStyleSheet { .. } => ViemStatus::StaleRevision,
         CoreError::StyleEditGroup(error) => match error {
             StyleEditGroupError::AlreadyActive(_) => ViemStatus::StyleEditGroupActive,

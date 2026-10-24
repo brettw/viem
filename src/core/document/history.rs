@@ -254,6 +254,20 @@ impl HistoryRestorationSnapshot {
         Self { cursor, marks }
     }
 
+    /// Every anchor must name `revision`, the state that restores it.
+    fn require_revision(&self, revision: Revision) -> Result<(), HistoryError> {
+        match std::iter::once(&self.cursor)
+            .chain(self.marks.values())
+            .find(|anchor| anchor.revision() != revision)
+        {
+            Some(anchor) => Err(HistoryError::RestorationMismatch {
+                expected: revision,
+                actual: anchor.revision(),
+            }),
+            None => Ok(()),
+        }
+    }
+
     pub fn cursor(&self) -> TextAnchor {
         self.cursor
     }
@@ -315,6 +329,9 @@ pub enum HistoryError {
     RedoBranchNotFound { requested: usize, available: usize },
     NodeNotFound(HistoryNodeId),
     ChangeNotFound(HistoryChangeNumber),
+    /// A command restoration did not belong to the revisions its undo unit
+    /// connects. Undo/redo could not apply it, so it is never recorded.
+    RestorationMismatch { expected: Revision, actual: Revision },
 }
 
 impl fmt::Display for HistoryError {
@@ -338,6 +355,10 @@ impl fmt::Display for HistoryError {
             Self::ChangeNotFound(change) => {
                 write!(formatter, "history change {change} was not found")
             }
+            Self::RestorationMismatch { expected, actual } => write!(
+                formatter,
+                "history restoration for revision {actual:?} does not match revision {expected:?}"
+            ),
         }
     }
 }
@@ -544,6 +565,19 @@ impl HistoryUnitRecord {
                 None => self.restoration = Some(restoration),
             }
         }
+    }
+
+    /// Undo restores `before` at the unit's first source revision and redo
+    /// restores `after` at its last. Reject a restoration captured at any
+    /// other revision before it can make history navigation fail.
+    fn validate_command_restoration(&self, restoration: &HistoryRestoration) -> Result<(), HistoryError> {
+        let (Some(first), Some(last)) = (self.transactions.first(), self.transactions.last()) else {
+            return Ok(());
+        };
+        if !(self.command_restoration_attached && self.restoration.is_some()) {
+            restoration.before.require_revision(first.before_revision)?;
+        }
+        restoration.after.require_revision(last.after_revision)
     }
 
     fn attach_command_restoration(&mut self, restoration: HistoryRestoration) {
@@ -1260,6 +1294,7 @@ impl<T, M> History<T, M> {
             // undo edge, so there is no restoration record left to update.
             return Ok(());
         };
+        edge.record.validate_command_restoration(&restoration)?;
         edge.record.attach_command_restoration(restoration);
         self.enforce_retention();
         Ok(())

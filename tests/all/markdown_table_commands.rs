@@ -1087,3 +1087,106 @@ fn selection_reaching_into_a_table_from_outside_selects_the_whole_table() {
     assert_eq!(core.list_selection_identity(view).unwrap().range(), tables[0].start..tables[1].end);
 }
 
+
+/// Undo every unit back to `original`, then redo every unit forward to
+/// `edited`. No step may fail, even across a cell edit that entered Insert.
+fn round_trip_history(core: &mut Editor, view: ViewId, original: &[u8], edited: &[u8]) -> Result<(), String> {
+    let mut steps = 0;
+    while core.document().source_bytes() != original {
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).map_err(|error| format!("undo {steps}: {error:?}"))?;
+        steps += 1;
+        if steps > 8 { return Err("undo did not return to the original".into()); }
+    }
+    while core.document().source_bytes() != edited {
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).map_err(|error| format!("redo: {error:?}"))?;
+        steps -= 1;
+        if steps < 0 { return Err("redo did not return to the edited state".into()); }
+    }
+    Ok(())
+}
+
+#[test]
+fn every_table_edit_that_enters_insert_undoes_and_redoes_with_following_typing() {
+    let sources = [
+        "| a | b |\n| - | - |\n| 1 | 2 |\n| 3 | 4 |\n\nend",
+        "> | a | b |\n> | - | - |\n> | 1 | 2 |",
+        "- | **a** | b |\n  | - | - |\n  | *1* | 2 |",
+    ];
+    let typed = InputEvent::Text("pq".into());
+    let mut failures = Vec::new();
+    for source in sources {
+        let rows = editor(source).0.document().projection().tables()[0].rows.len();
+        let columns = editor(source).0.document().projection().tables()[0].columns.len();
+        let mut cases: Vec<(String, Box<dyn Fn(&mut Editor, ViewId) -> Result<(), String>>)> = Vec::new();
+        for (name, anchor, active) in [
+            ("row", (1, 0), (1, columns - 1)), ("header row", (0, 0), (0, columns - 1)),
+            ("rows", (0, 0), (rows - 1, columns - 1)), ("column", (0, 1), (rows - 1, 1)), ("cell", (1, 1), (1, 1)),
+        ] {
+            for insert_first in [false, true] {
+                for input in [InputEvent::Text("x".into()), InputEvent::key('x'), InputEvent::Key(Key::Backspace), InputEvent::Key(Key::Delete)] {
+                    cases.push((format!("{name} insert={insert_first} {input:?}"), Box::new(move |core: &mut Editor, view| {
+                        if insert_first { core.handle(view, CoreEvent::Input(InputEvent::key('i'))).map_err(|e| format!("{e:?}"))?; }
+                        select(core, view, anchor, active);
+                        core.handle_with_layout(view, CoreEvent::Input(input.clone())).map(|_| ()).map_err(|e| format!("{e:?}"))
+                    })));
+                }
+            }
+            cases.push((format!("{name} explicit-register paste"), Box::new(move |core: &mut Editor, view| {
+                select(core, view, anchor, active);
+                let context = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(ClipboardTarget::Clipboard,
+                    ClipboardGeneration(1), ClipboardContent::from_register(RegisterValue::characterwise("pasted"))));
+                prefix(core, view, &context);
+                core.handle(view, CoreEvent::InputWithClipboard { input: InputEvent::key('p'), clipboard: context })
+                    .map(|_| ()).map_err(|e| format!("{e:?}"))
+            })));
+            for matrix in [false, true] {
+                cases.push((format!("{name} native paste matrix={matrix}"), Box::new(move |core: &mut Editor, view| {
+                    core.handle(view, CoreEvent::Input(InputEvent::key('i'))).map_err(|e| format!("{e:?}"))?;
+                    select(core, view, anchor, active);
+                    let context = if matrix { matrix_context("| A | B |\n| - | - |\n| x | y |", 1..2, 0..2) } else {
+                        ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(ClipboardTarget::Clipboard,
+                            ClipboardGeneration(1), ClipboardContent::from_register(RegisterValue::characterwise("pasted"))))
+                    };
+                    core.handle_with_layout(view, CoreEvent::InputWithClipboard { input: InputEvent::Key(Key::PasteClipboard), clipboard: context })
+                        .map(|_| ()).map_err(|e| format!("{e:?}"))
+                })));
+            }
+        }
+        for (name, intent) in [("insert row", 0), ("insert column", 1)] {
+            cases.push((name.to_string(), Box::new(move |core: &mut Editor, view| {
+                let table = core.document().projection().tables()[0].id;
+                let intent = if intent == 0 {
+                    viem_core::document::TableEditIntent::InsertRow { table, row: 1, after: true }
+                } else {
+                    viem_core::document::TableEditIntent::InsertColumn { table, column: 0, after: true }
+                };
+                core.handle(view, CoreEvent::TableEdit { document: core.document().id(), revision: core.document().revision(), intent })
+                    .map(|_| ()).map_err(|e| format!("{e:?}"))
+            })));
+        }
+        for action in [viem_core::TableSelectionAction::InsertRowBelow, viem_core::TableSelectionAction::InsertColumnLeft] {
+            cases.push((format!("selection {action:?}"), Box::new(move |core: &mut Editor, view| {
+                let (anchor, active) = if action == viem_core::TableSelectionAction::InsertRowBelow {
+                    ((1, 0), (1, columns - 1))
+                } else { ((0, 1), (rows - 1, 1)) };
+                select(core, view, anchor, active);
+                let expected = core.list_selection_identity(view).map_err(|e| format!("{e:?}"))?;
+                core.handle(view, CoreEvent::TableSelectionEdit { expected, action }).map(|_| ()).map_err(|e| format!("{e:?}"))
+            })));
+        }
+        for (name, case) in &cases {
+            let label = format!("{source:?} {name}");
+            let (mut core, view) = editor(source);
+            if let Err(error) = case(&mut core, view) { failures.push(format!("{label}: {error}")); continue; }
+            // Keep typing in the same Insert session, as a user does.
+            if let Err(error) = core.handle_with_layout(view, CoreEvent::Input(typed.clone())) {
+                failures.push(format!("{label}: typing {error:?}")); continue;
+            }
+            let edited = core.document().source_bytes();
+            if let Err(error) = round_trip_history(&mut core, view, source.as_bytes(), &edited) {
+                failures.push(format!("{label}: {error}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
