@@ -452,11 +452,13 @@ impl Document {
                 syntax.push_str(&if marker {
                     self.escape_markdown_source_text(source_at, segment)?
                 } else {
-                    escape_markdown_insert_in_encoding(segment, self.encoding())
+                    escape_markdown_prose_in_encoding(
+                        self.autolink_prefix(source_at)?.as_deref(), segment, self.encoding())
                 });
             } else {
                 syntax.push_str(&separator);
-                super::protect_markdown_line_start(&escape_markdown_insert_in_encoding(segment, self.encoding()), &mut syntax);
+                super::protect_markdown_line_start(
+                    &escape_markdown_prose_in_encoding(Some(""), segment, self.encoding()), &mut syntax);
             }
             start = end + 1;
         }

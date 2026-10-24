@@ -289,6 +289,58 @@ pub(super) fn autolink(text: &str, at: usize, end: usize) -> Option<(usize, Stri
     Some((at + finish, format!("mailto:{}", &tail[..finish])))
 }
 
+/// Byte ranges of `text` that belong to an extended autolink when `text`
+/// follows `prefix` on a physical line. Markdown shows a backslash escape or
+/// character reference there literally, so inserted prose must keep these
+/// characters unescaped. A URL keeps an escape anywhere before the next
+/// whitespace or `<`, including in the trailing punctuation it excludes; an
+/// email address ends with its last address character. `None` is an unscanned
+/// word before `text`, which no URL can follow.
+pub(super) fn autolink_literal_ranges(prefix: Option<&str>, text: &str) -> Vec<Range<usize>> {
+    let prefix = prefix.unwrap_or("\u{fffd}");
+    let line = format!("{prefix}{text}");
+    let mut ranges = Vec::new();
+    let mut at = 0;
+    while at < line.len() {
+        let end = line[at..].find('\n').map_or(line.len(), |offset| at + offset);
+        let Some((finish, destination)) = autolink(&line, at, end) else {
+            at += line[at..].chars().next().map_or(1, char::len_utf8);
+            continue;
+        };
+        let extent = if destination.starts_with("mailto:") {
+            finish
+        } else {
+            line[at..end].find(|c: char| c.is_whitespace() || c == '<').map_or(end, |offset| at + offset)
+        };
+        if extent > prefix.len() {
+            ranges.push(at.max(prefix.len()) - prefix.len()..extent - prefix.len());
+        }
+        at = extent;
+    }
+    ranges
+}
+
+#[cfg(test)]
+mod autolink_tests {
+    use super::autolink_literal_ranges as literal;
+
+    #[test]
+    fn literal_ranges_follow_the_raw_autolink_scan() {
+        let url = "https://example.com/a_b";
+        assert_eq!(literal(Some(""), url), [0..url.len()]);
+        assert_eq!(literal(Some("see "), &format!("{url}. Next")), [0..url.len() + 1]);
+        assert_eq!(literal(Some(""), &format!("{url}<b")), [0..url.len()]);
+        assert_eq!(literal(Some(""), "mail a_b@example.com/x y"), [5..20]);
+        assert_eq!(literal(Some(""), &format!("a\n{url}")), [2..2 + url.len()]);
+        // Continuing a URL from the line prefix, but not after a word.
+        assert_eq!(literal(Some(" https://example.com/x"), "_y z"), [0..2]);
+        assert!(literal(Some("word"), url).is_empty());
+        assert!(literal(None, url).is_empty());
+        assert_eq!(literal(Some("*"), url), [0..url.len()]);
+        assert!(literal(Some(""), "https://ex_ample.com/a_b").is_empty());
+    }
+}
+
 pub(super) fn fence_close(line: &str, delimiter: u8, length: usize) -> bool {
     let indent = line.bytes().take_while(|c| *c == b' ').count();
     if indent > 3 { return false; }

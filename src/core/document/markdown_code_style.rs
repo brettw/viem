@@ -297,7 +297,8 @@ fn prose_from_code(body: &str) -> String {
         "  \n"
     };
     body.split('\n')
-        .map(|line| {
+        .enumerate()
+        .map(|(index, line)| {
             let mut prose = String::new();
             let start = line.len() - line.trim_start_matches([' ', '\t']).len();
             let end = line.trim_end_matches([' ', '\t']).len();
@@ -308,9 +309,18 @@ fn prose_from_code(body: &str) -> String {
                     super::super::projection::markdown_fence(line)
                         .map_or(0, |(_, width)| start + width),
                 );
+            // Text inside an extended autolink stays literal; its body
+            // follows the separator and any protected indentation.
+            let mut preceding = if index > 0 { separator.trim_end_matches('\n').to_owned() } else { String::new() };
+            preceding.push_str(&"&#32;".repeat(start));
+            let literal = super::super::markdown_syntax::autolink_literal_ranges(Some(&preceding), &line[start..]);
             for (offset, character) in line.char_indices() {
                 if (offset < start || offset >= end) && matches!(character, ' ' | '\t') {
                     prose.push_str(if character == ' ' { "&#32;" } else { "&#9;" });
+                    continue;
+                }
+                if literal.iter().any(|range| range.contains(&(offset - start))) {
+                    prose.push(character);
                     continue;
                 }
                 if matches!(character, '\\' | '*' | '_' | '`' | '[' | ']' | '<' | '&')

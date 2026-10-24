@@ -20,6 +20,9 @@ impl Document {
         if edits.iter().any(|edit|self.projection().table_at(edit.range.start).is_some()) {return Ok(());}
         validate_source_patches(patches)?;
         let mut scopes = Vec::new();
+        // Existing whitespace references beside an edit, which the old
+        // projection showed as whitespace.
+        let mut frontier = Vec::new();
         let mut bands: Vec<Range<usize>> = Vec::new();
         for edit in edits {
             let text = self.projection().text_tree();
@@ -75,14 +78,10 @@ impl Document {
                 if !bytes.starts_with(&self.encoding().encode_fragment("&")?) {
                     continue;
                 }
-                scopes.push(
-                    rebase_source_boundary(span.source.start, patches, Association::AfterInsertion)?
-                        ..rebase_source_boundary(
-                            span.source.end,
-                            patches,
-                            Association::BeforeInsertion,
-                        )?,
-                );
+                let scope = rebase_source_boundary(span.source.start, patches, Association::AfterInsertion)?
+                    ..rebase_source_boundary(span.source.end, patches, Association::BeforeInsertion)?;
+                frontier.push(scope.clone());
+                scopes.push(scope);
             }
             for block in self.projection().blocks_for_region(&(start..end)) {
                 let Some(first) = self
@@ -253,6 +252,7 @@ impl Document {
             }
             let baseline = self.spelling_projection(&bytes)?;
             let mut tokens = Vec::new();
+            let mut literal = Vec::new();
             let mut at = 0;
             while at < decoded.text.len() && tokens.len() < MAX_TOKENS {
                 let tail = &decoded.text[at..];
@@ -298,13 +298,27 @@ impl Document {
                                         && baseline.blocks_for_region(&span.formatted).iter()
                                             .any(|block| block.markdown_html))
                             });
-                    if visible && !super::markdown_autodetect::protected_reference(tail)
-                        && scopes
-                            .iter()
-                            .any(|scope| scope.start <= origin + start && origin + end <= scope.end)
+                    let within = |scopes: &[Range<usize>]| scopes
+                        .iter()
+                        .any(|scope| scope.start <= origin + start && origin + end <= scope.end);
+                    // Inside an extended autolink (or code) the edit made a
+                    // frontier reference literal text, which it never asked
+                    // for. Its value restores the old whitespace; candidate
+                    // verification still decides.
+                    let shown_literally = !visible && within(&frontier) && {
+                        let spans = baseline.provenance_contained_in_source(&range);
+                        let mut shown = String::new();
+                        for span in &spans {
+                            shown.push_str(&baseline.text_tree().slice(span.formatted.clone())
+                                .map_err(DocumentError::FormattedTextStorage)?);
+                        }
+                        shown == tail[..length]
+                    };
+                    if (visible || shown_literally) && !super::markdown_autodetect::protected_reference(tail)
+                        && within(&scopes)
                     {
                         if let Ok(replacement) = self.encoding().encode_fragment(&value) {
-                            tokens.push((range, replacement));
+                            if visible { tokens.push((range, replacement)) } else { literal.push((range, replacement)) }
                         }
                     }
                     at += length;
@@ -312,29 +326,38 @@ impl Document {
                     at += tail.chars().next().unwrap().len_utf8();
                 }
             }
-            if tokens.is_empty() {
+            if tokens.is_empty() && literal.is_empty() {
                 continue;
             }
-            let mut simplified = bytes.clone();
-            for (range, replacement) in tokens.iter().rev() {
-                simplified.splice(range.clone(), replacement.iter().copied());
-            }
-            if same_projection(&baseline, &self.spelling_projection(&simplified)?) {
-                cleanup.extend(tokens.into_iter().map(|(range, replacement)| {
-                    (origin + range.start..origin + range.end, replacement)
-                }));
+            let respell = |selected: &[&(Range<usize>, Vec<u8>)]| {
+                let mut selected = selected.to_vec();
+                selected.sort_by_key(|(range, _)| range.start);
+                let mut respelled = bytes.clone();
+                for (range, replacement) in selected.into_iter().rev() {
+                    respelled.splice(range.clone(), replacement.iter().copied());
+                }
+                respelled
+            };
+            // Literal references are always respelled; the other tokens must
+            // keep the projection that results.
+            let mut accepted = literal.iter().collect::<Vec<_>>();
+            let baseline = if literal.is_empty() { baseline } else { self.spelling_projection(&respell(&accepted))? };
+            let all = accepted.iter().copied().chain(&tokens).collect::<Vec<_>>();
+            if same_projection(&baseline, &self.spelling_projection(&respell(&all))?) {
+                accepted = all;
             } else {
                 // One necessary escape must not prevent other safe tokens in
                 // this edit from returning to ordinary Markdown spelling.
-                for (range, replacement) in tokens.into_iter().rev() {
-                    let mut candidate = bytes.clone();
-                    candidate.splice(range.clone(), replacement.iter().copied());
-                    if same_projection(&baseline, &self.spelling_projection(&candidate)?) {
-                        bytes = candidate;
-                        cleanup.push((origin + range.start..origin + range.end, replacement));
+                for token in tokens.iter().rev() {
+                    accepted.push(token);
+                    if !same_projection(&baseline, &self.spelling_projection(&respell(&accepted))?) {
+                        accepted.pop();
                     }
                 }
             }
+            cleanup.extend(accepted.into_iter().map(|(range, replacement)| {
+                (origin + range.start..origin + range.end, replacement.clone())
+            }));
         }
         if cleanup.is_empty() {
             return Ok(());
