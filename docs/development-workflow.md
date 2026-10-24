@@ -11,6 +11,17 @@ Run the cheapest stage that can find a problem first. Freeze the candidate befor
 the expensive stages; if new evidence requires a change, reopen implementation
 explicitly and repeat the affected stages rather than calling a build final.
 
+Choose validation based on the implementation changed, not every subsystem a
+setting can affect. Changes limited to defaults, labels, or settings wiring
+normally need focused checks for defaults, persistence, explicit overrides, and
+affected native controls. Do not run consistency probes, full suites, fuzzing,
+or memory measurements solely because the setting enables an existing feature.
+Broaden validation only when implementation logic also changes, focused checks
+expose a problem beyond outdated default assumptions, or the user requests
+broader coverage. State the concrete reason before broadening. This exception
+takes precedence over the general stage guidance below, including the edit-loop
+and before-review recommendations.
+
 For Markdown changes, first map the [feature contracts](markdown-feature-contracts.md).
 Run small representatives of every affected contract before expanding encoding,
 ending and large-document matrices. A candidate is frozen only when the contract

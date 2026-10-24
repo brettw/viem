@@ -2,6 +2,12 @@ use super::*;
 use crate::document::{Document, Encoding, Format};
 use crate::layout::*;
 
+// These tests isolate whitespace widths and continuation margins from the
+// separate anchor-alignment feature, which the application enables by default.
+fn independent_indents() -> WhitespacePresentationOptions {
+    WhitespacePresentationOptions { align_indents_to_previous_line: false, ..Default::default() }
+}
+
 fn fixture(
     text: &str,
     format: Format,
@@ -15,7 +21,7 @@ fn fixture(
     let engine = LayoutEngine::new(MockTextMeasurementProvider::new());
     let mut view = ViewLayout::new(width, 160.0);
     view.set_wrap(true);
-    view.set_whitespace_presentation(Default::default(), format, 4)
+    view.set_whitespace_presentation(independent_indents(), format, 4)
         .unwrap();
     (document, engine, view)
 }
@@ -105,12 +111,12 @@ fn switching_code_wrap_policy_invalidates_rows_but_reuses_shaping() {
     let original_generation = view.configuration_generation();
     let calls = engine.provider().request_calls();
     assert_eq!(view.snapshot().unwrap().rows.len(), 1);
-    view.set_whitespace_presentation(Default::default(), Format::Code, 4).unwrap();
+    view.set_whitespace_presentation(independent_indents(), Format::Code, 4).unwrap();
     assert_ne!(view.configuration_generation(), original_generation);
     engine.relayout(&document, &mut view).unwrap();
     assert_eq!(view.snapshot().unwrap().rows.len(), 4);
     assert_eq!(engine.provider().request_calls(), calls);
-    view.set_whitespace_presentation(Default::default(), Format::PlainText, 4).unwrap();
+    view.set_whitespace_presentation(independent_indents(), Format::PlainText, 4).unwrap();
     engine.relayout(&document, &mut view).unwrap();
     assert_eq!(view.snapshot().unwrap().rows.len(), 1);
 }
@@ -129,13 +135,13 @@ fn wrapped_indent_defaults_and_validation_are_backward_compatible_for_saved_sett
     for indent in [0, 4, 1024] {
         let options = WhitespacePresentationOptions {
             code_wrapped_line_indent: indent,
-            ..Default::default()
+            ..independent_indents()
         };
         assert!(options.validate().is_ok());
     }
     let options = WhitespacePresentationOptions {
         code_wrapped_line_indent: 1025,
-        ..Default::default()
+        ..independent_indents()
     };
     assert!(options.validate().is_err());
 }
@@ -173,7 +179,7 @@ fn spaces_basis_uses_the_leading_fonts_measured_spaces_and_tab_stops() {
     let (document, mut engine, mut view) = fixture(text, Format::Code, 340.0);
     let options = WhitespacePresentationOptions {
         code_whitespace: WhitespaceBasis::Spaces,
-        ..Default::default()
+        ..independent_indents()
     };
     view.set_whitespace_presentation(options, Format::Code, 4)
         .unwrap();
@@ -204,7 +210,7 @@ fn unindented_lines_measure_extra_spaces_in_the_hard_line_start_style() {
     view.set_whitespace_presentation(
         WhitespacePresentationOptions {
             code_whitespace: WhitespaceBasis::Spaces,
-            ..Default::default()
+            ..independent_indents()
         },
         Format::Code,
         4,
@@ -233,7 +239,7 @@ fn zero_extra_indent_still_aligns_continuations_with_original_indentation() {
     view.set_whitespace_presentation(
         WhitespacePresentationOptions {
             code_wrapped_line_indent: 0,
-            ..Default::default()
+            ..independent_indents()
         },
         Format::Code,
         4,
@@ -271,7 +277,7 @@ fn continuation_margin_has_no_text_whitespace_markers_or_extra_caret_stops() {
     let text = "  aa bb cc dd ee ff gg hh ii jj kk ll mm nn";
     let (document, mut engine, mut view) = fixture(text, Format::Code, 120.0);
     let source = document.source_bytes();
-    let mut options = WhitespacePresentationOptions::default();
+    let mut options = independent_indents();
     options.visible_whitespace.listchars = "space:.,lead:.,tab:>-,eol:$".into();
     view.set_whitespace_presentation(options, Format::Code, 4)
         .unwrap();
@@ -333,7 +339,7 @@ fn wrapped_indent_does_not_change_other_formats_or_unwrapped_code_geometry() {
         view.set_whitespace_presentation(
             WhitespacePresentationOptions {
                 code_wrapped_line_indent: 20,
-                ..Default::default()
+                ..independent_indents()
             },
             format,
             4,
@@ -364,7 +370,7 @@ fn changing_wrapped_indent_invalidates_wrapping_and_height_but_reuses_shaping() 
     view.set_whitespace_presentation(
         WhitespacePresentationOptions {
             code_wrapped_line_indent: 8,
-            ..Default::default()
+            ..independent_indents()
         },
         Format::Code,
         4,
@@ -534,7 +540,7 @@ fn changing_wrapped_indent_or_code_policy_rejects_previous_long_line_checkpoints
         compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
     let checkpoint = result.next_long_line_checkpoint().unwrap().clone();
     let mut plain_view = view.clone();
-    plain_view.set_whitespace_presentation(Default::default(), Format::PlainText, 4).unwrap();
+    plain_view.set_whitespace_presentation(independent_indents(), Format::PlainText, 4).unwrap();
     let result = prepare_layout_job(
         &document,
         &mut plain_view,
@@ -550,7 +556,7 @@ fn changing_wrapped_indent_or_code_policy_rejects_previous_long_line_checkpoints
     view.set_whitespace_presentation(
         WhitespacePresentationOptions {
             code_wrapped_line_indent: 8,
-            ..Default::default()
+            ..independent_indents()
         },
         Format::Code,
         4,

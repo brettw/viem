@@ -421,6 +421,7 @@ internal static class FrontendSmokeTests
         byte[] styles = view.ExportStyleDefaults();
         byte[] source = doc.Source(doc.State.document_revision);
         using var other = new CoreView(doc, device, dispatcher, 700, 400);
+        other.AlignIndentsToPreviousLine(false);
         try
         {
             foreach (string family in new[] { "Segoe UI", "Consolas" })
@@ -507,8 +508,10 @@ internal static class FrontendSmokeTests
     {
         var config = Viem.Windows.Shell.Preferences.Normalize(new System.Text.Json.Nodes.JsonObject { ["version"] = 1 });
         Check(config["editing"]?["textWidth"]?.GetValue<int>() == 80, "configuration defaults come from core");
-        Check(config["editing"]?["whitespacePresentation"]?["alignIndentsToPreviousLine"]?.GetValue<bool>() == false,
-            "indent alignment defaults off in the portable settings schema");
+        Check(config["editing"]?["whitespacePresentation"]?["alignIndentsToPreviousLine"]?.GetValue<bool>() == true,
+            "indent alignment defaults on in the portable settings schema");
+        foreach (string key in new[] { "caretHoverEffect", "smartQuotes", "markdownAutodetect" })
+            Check(config["editing"]?[key]?.GetValue<bool>() == true, key + " defaults on");
         var integralConfig = Viem.Windows.Shell.Preferences.Normalize(System.Text.Json.Nodes.JsonNode.Parse("{\"version\":1,\"editing\":{\"textWidth\":72.0}}")!.AsObject());
         Check(integralConfig["editing"]?["textWidth"]?.GetValue<uint>() == 72, "integral JSON values normalize for native integer readers");
         var invalidRecent = new System.Text.Json.Nodes.JsonObject { ["version"] = 1,

@@ -117,7 +117,7 @@ public struct EVWhitespacePresentationOptions: Codable, Equatable, Sendable {
   public var codeWhitespace = EVWhitespaceWidth.paragraphEn
   public var otherWhitespace = EVWhitespaceWidth.spaces
   public var codeWrappedLineIndent = 4
-  public var alignIndentsToPreviousLine = false
+  public var alignIndentsToPreviousLine = true
   public var visibleWhitespace = EVVisibleWhitespaceOptions()
   public init() {}
 

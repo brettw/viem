@@ -28,7 +28,7 @@ fn proportional_columns_align_in_wrapped_and_unwrapped_code() {
         close(x(snapshot,text.find('a').unwrap()),x(snapshot,text.find("result").unwrap()));
         assert_eq!(doc.source_bytes(),text.as_bytes());
         let aligned = x(snapshot,text.find('c').unwrap());
-        view.set_whitespace_presentation(Default::default(),Format::Code,4).unwrap();
+        view.set_whitespace_presentation(WhitespacePresentationOptions { align_indents_to_previous_line: false, ..Default::default() },Format::Code,4).unwrap();
         engine.relayout(&doc,&mut view).unwrap();
         assert!((x(view.snapshot().unwrap(),text.find('c').unwrap())-aligned).abs()>1.);
     }
@@ -45,7 +45,7 @@ fn native_font_trait_and_code_family_gate_alignment() {
         view.set_whitespace_presentation(options,format,4).unwrap();
         engine.relayout(&doc,&mut view).unwrap();
         let on=view.snapshot().unwrap().rows.clone();
-        view.set_whitespace_presentation(Default::default(),format,4).unwrap();
+        view.set_whitespace_presentation(WhitespacePresentationOptions { align_indents_to_previous_line: false, ..Default::default() },format,4).unwrap();
         engine.relayout(&doc,&mut view).unwrap();
         let off=&view.snapshot().unwrap().rows;
         assert_eq!(on.iter().map(|r|r.width).collect::<Vec<_>>(),off.iter().map(|r|r.width).collect::<Vec<_>>());

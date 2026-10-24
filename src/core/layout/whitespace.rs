@@ -53,7 +53,7 @@ impl Default for WhitespacePresentationOptions {
             code_whitespace: WhitespaceBasis::ParagraphEn,
             other_whitespace: WhitespaceBasis::Spaces,
             code_wrapped_line_indent: 4,
-            align_indents_to_previous_line: false,
+            align_indents_to_previous_line: true,
             visible_whitespace: Default::default(),
         }
     }

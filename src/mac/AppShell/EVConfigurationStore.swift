@@ -108,7 +108,7 @@ public final class EVConfigurationStore {
   }
   public var markdownAutodetect: Bool { (root["editing"] as? [String: Any])?["markdownAutodetect"] as? Bool ?? true }
   public var caretHoverEffect: Bool { (root["editing"] as? [String: Any])?["caretHoverEffect"] as? Bool ?? true }
-  public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? false }
+  public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? true }
   public var markdownFormattedView: Bool {
     (root["editing"] as? [String: Any])?["markdownFormattedView"] as? Bool ?? true
   }

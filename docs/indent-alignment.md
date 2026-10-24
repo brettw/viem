@@ -1,7 +1,7 @@
 # Align indents to previous line
 
 The View menu offers **Align indents to previous line** after **Show invisible
-characters**. It defaults off and applies only in Code with a proportionally
+characters**. It defaults on and applies only in Code with a proportionally
 spaced font. The native provider reports the resolved font's fixed-pitch trait;
 font names and a few measured sample characters are not reliable substitutes.
 The setting belongs to the view. It changes presentation without changing
