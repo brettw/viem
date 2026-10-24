@@ -980,6 +980,9 @@ impl CommandInterpreter {
             return Ok(CommandOutput::complete());
         }
         let before = document.revision();
+        let deletion_containment = (operator == Operator::Delete && extent.whole)
+            .then(|| crate::document::LineDeletionContainment::capture(document, &extent.text))
+            .flatten();
         let mut physical_change_at = None;
         let mut retained_indent = String::new();
         let mut output = if let Some(mut source) = extent.source {
@@ -1176,6 +1179,7 @@ impl CommandInterpreter {
                 ..CommandOutput::complete()
             }
         };
+        let deletion_boundary = self.cursor;
         if operator == Operator::Change {
             output.merge(self.enter_insert(document, InsertPlacement::Before, 1));
             self.typing_style.inherited = inherited_typing;
@@ -1207,6 +1211,9 @@ impl CommandInterpreter {
                 }
             }
         }
+        if operator == Operator::Delete && extent.whole && output.document_changed {
+            self.finish_line_deletion_caret(document, deletion_containment, deletion_boundary);
+        }
         if !self.replaying && operator != Operator::Yank {
             let command = OperatorRepeat {
                 operator,
@@ -1228,6 +1235,42 @@ impl CommandInterpreter {
         self.visual_position = None;
         self.desired_x = None;
         Ok(output)
+    }
+
+    pub(super) fn finish_line_deletion_caret(
+        &mut self,
+        document: &Document,
+        containment: Option<crate::document::LineDeletionContainment>,
+        deletion_boundary: usize,
+    ) {
+        if !document.format().is_markdown() { return; }
+        // Follow the next surviving character, even if reflow moves it upward.
+        // At a shared wrap boundary prefer the next row, never a stale upstream
+        // caret. Do NOT preserve a screen-row index by skipping surviving text.
+        // A surviving code/quote owner is the sole containment exception. Keep
+        // change, joins, characterwise edits and Ex navigation out of this policy.
+        // See docs/markdown-feature-contracts.md, "Line deletion caret policy".
+        // A wrapped paragraph suffix leaves its hard separator intact. Normal
+        // cursor normalization backs off that separator to the previous glyph;
+        // preserve the pre-normalization boundary so we can instead follow the
+        // next paragraph. An empty paragraph is itself an editable stop and
+        // must not be skipped. Apply code/quote containment only AFTER this.
+        let lines = document.hard_line_snapshot();
+        if let Ok(line) = lines.line_at_offset(deletion_boundary) {
+            if !line.content_range().is_empty() && deletion_boundary == line.content_range().end {
+                if let Some(separator) = line.separator_range() {
+                    self.cursor = separator.end;
+                    self.physical_cursor = None;
+                }
+            }
+        }
+        if let Some(previous) = containment.and_then(|policy| policy.fallback(document, self.cursor)) {
+            self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), previous);
+            self.physical_cursor = None;
+        }
+        self.boundary_affinity = BoundaryAffinity::Downstream;
+        self.visual_position = None;
+        self.desired_x = None;
     }
 }
 

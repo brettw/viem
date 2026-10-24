@@ -81,6 +81,10 @@ fn code_tail_deletion_preserves_encodings_source_and_join_policy() {
                 );
                 let reopened = fixture.open(expected);
                 assert_eq!(core.document().text(), reopened.text());
+                // Encoding and line endings must not change caret containment:
+                // deleting only code rows stays at the surviving code tail.
+                let code_end = core.document().projection().blocks()[0].range.end;
+                assert_eq!(core.command_state(view).unwrap().cursor(), code_end - 1);
                 core.handle(view, CoreEvent::Input(InputEvent::key('u')))
                     .unwrap();
                 assert_eq!(core.document().source_bytes(), fixture.bytes(source));
@@ -169,6 +173,12 @@ fn deleting_bottom_code_rows_keeps_following_paragraph_outside() {
                 if !actual.is_some_and(|block| block.style == original_owner.style && block.code_language == original_owner.code_language
                     && &core.document().text()[block.range.clone()] == expected) {
                     failures.push(format!("retained code changed: {form} {body:?} width={width} {command}: expected {expected:?}, got {actual:?}; source={:?}", String::from_utf8_lossy(&after)));
+                }
+                // Include wrapped rows and empty retained code owners. Source
+                // correctness alone misses a caret that silently leaves code.
+                let caret = core.command_state(view).unwrap().cursor();
+                if !actual.is_some_and(|block| block.range.start <= caret && caret <= block.range.end) {
+                    failures.push(format!("caret left retained code: {form} {body:?} width={width} {command}: {caret}, {actual:?}"));
                 }
             }
             core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();

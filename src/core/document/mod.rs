@@ -36,6 +36,7 @@ mod replacement_context;
 pub(crate) use replacement_context::ReplacementTypingContext;
 mod lists;
 mod containers;
+pub(crate) use containers::LineDeletionContainment;
 pub use containers::{ContainerIdentity, ContainerKind, ContainerAttributes, ContainerMembership, ContainerNode, ContainerStructure};
 mod markdown_blocks;
 mod markdown_tables;

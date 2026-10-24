@@ -6,15 +6,40 @@ pub(super) enum ListParagraphReprojection {
     TextMismatch,
 }
 
+/// Source diffing can describe the same visible result with different deleted
+/// characters. For example, deleting the nonblank tail of "\nlast" code can
+/// look like replacing the entire owner with an empty one. Preserve the caller's
+/// semantic edit when the bounded parse proves exactly that result; otherwise
+/// surviving empty rows lose their block/container identities and caret policy.
+fn matching_requested_edits(
+    expected: Option<(&[TextEdit], &FormattedTextTree)>,
+    old: &Range<usize>,
+    old_len: usize,
+    regional: &FormattedDocument,
+) -> Result<Option<Vec<TextEdit>>, DocumentError> {
+    let Some((edits, target)) = expected else { return Ok(None); };
+    if !edits.iter().all(|edit| old.start <= edit.range.start && edit.range.end <= old.end) {
+        return Ok(None);
+    }
+    let Some(end) = target.byte_len().checked_sub(old_len - old.end) else { return Ok(None); };
+    if end < old.start || regional.text_tree().byte_len() != end - old.start
+        || target.slice(old.start..end).map_err(DocumentError::FormattedTextStorage)?
+            != regional.text_tree().slice(0..regional.text_tree().byte_len()).map_err(DocumentError::FormattedTextStorage)? {
+        return Ok(None);
+    }
+    Ok(Some(edits.to_vec()))
+}
+
 impl Document {
     pub(super) fn prepare_independent_paragraph_reprojection(
         &self,
         patches: &[SourcePatch],
+        expected: Option<(&[TextEdit], &FormattedTextTree)>,
     ) -> Result<Option<(PreparedModelTransaction, Range<usize>, Range<usize>)>, ModelTransactionError> {
-        if let Ok(Some(prepared)) = self.prepare_paragraph_reprojection(patches, false) {
+        if let Ok(Some(prepared)) = self.prepare_paragraph_reprojection(patches, false, expected) {
             return Ok(Some(prepared));
         }
-        self.prepare_paragraph_reprojection(patches, true)
+        self.prepare_paragraph_reprojection(patches, true, expected)
     }
 
     fn independent_markdown_paragraph(&self, block: &super::super::Block) -> bool {
@@ -117,6 +142,7 @@ impl Document {
         &self,
         patches: &[SourcePatch],
         guarded: bool,
+        expected: Option<(&[TextEdit], &FormattedTextTree)>,
     ) -> Result<Option<(PreparedModelTransaction, Range<usize>, Range<usize>)>, ModelTransactionError> {
         if !self.format().is_markdown() || patches.is_empty()
             || !guarded && self.format() != Format::Markdown {
@@ -307,6 +333,8 @@ impl Document {
             .into_iter().map(|edit| TextEdit::new(
                 edit.range.start + block_range.start..edit.range.end + block_range.start,
                 edit.replacement)).collect::<Vec<_>>();
+        let edits = matching_requested_edits(expected, &block_range,
+            self.projection().text_tree().byte_len(), &regional)?.unwrap_or(edits);
         let persistent = edits.iter().map(|edit| (edit.range.clone(), edit.replacement.as_str())).collect::<Vec<_>>();
         let (target_text, text_work) = self.projection().text_tree()
             .splice_prevalidated_batch_with_stats(&persistent).map_err(DocumentError::FormattedTextStorage)?;
@@ -549,6 +577,8 @@ impl Document {
             .into_iter().map(|edit| TextEdit::new(
                 edit.range.start + block_range.start..edit.range.end + block_range.start,
                 edit.replacement)).collect::<Vec<_>>();
+        let edits = matching_requested_edits(Some((expected_edits, target_text)), &block_range,
+            self.projection().text_tree().byte_len(), &regional)?.unwrap_or(edits);
         let persistent = edits.iter().map(|edit| (edit.range.clone(), edit.replacement.as_str())).collect::<Vec<_>>();
         let (target_text, text_work) = self.projection().text_tree()
             .splice_prevalidated_batch_with_stats(&persistent).map_err(DocumentError::FormattedTextStorage)?;

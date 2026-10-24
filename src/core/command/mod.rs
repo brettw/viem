@@ -10546,6 +10546,9 @@ impl CommandInterpreter {
                 })
             }
             Operator::Delete | Operator::Change => {
+                let deletion_containment = (operator == Operator::Delete && extent.kind == MotionKind::Linewise)
+                    .then(|| crate::document::LineDeletionContainment::capture(document, &extent.range))
+                    .flatten();
                 let value = register_value(document, &lines, &extent, register);
                 let inherited_typing = if operator == Operator::Change {
                     document.replacement_typing_context(extent.range.clone())?
@@ -10594,6 +10597,7 @@ impl CommandInterpreter {
                 }
                 self.delete_register(register, value, deletion_class);
                 self.cursor = changed_cursor.unwrap_or_else(|| edit_range.start.min(document.projection().text_tree().byte_len()));
+                let deletion_boundary = self.cursor;
                 let mut output = CommandOutput {
                     document_changed: true,
                     cursor_moved: true,
@@ -10626,6 +10630,9 @@ impl CommandInterpreter {
                         self.cursor = options::at_logical_column(&document.hard_line_snapshot(), self.cursor, column);
                     }
                     self.cursor = normalize_normal_cursor_document(document, &document.hard_line_snapshot(), self.cursor);
+                    if extent.kind == MotionKind::Linewise {
+                        self.finish_line_deletion_caret(document, deletion_containment, deletion_boundary);
+                    }
                 }
                 Ok(output)
             }
