@@ -4,6 +4,23 @@ use super::{Block, Document, DocumentError};
 use std::ops::Range;
 
 impl Document {
+    /// Deleting the final unterminated row also removes its preceding break.
+    /// Keep this separate from the requested rows: that supporting boundary
+    /// does not select the preceding paragraph, especially an empty owner.
+    pub(super) fn line_deletion_text_range(&self, range: Range<usize>) -> Range<usize> {
+        let lines = self.hard_line_snapshot();
+        if range.end != lines.text_length() || range.start == 0 { return range; }
+        if !range.is_empty() && lines.previous_grapheme_boundary(range.end)
+            .and_then(|at| lines.line_at_offset(at).ok())
+            .and_then(|line| line.separator_range())
+            .is_some_and(|separator| separator.end == range.end) { return range; }
+        let Some(previous) = lines.line_at_offset(range.start).ok()
+            .filter(|line| line.content_range().start == range.start)
+            .and_then(|line| line.index().checked_sub(1)).and_then(|index| lines.line(index))
+            else { return range; };
+        previous.separator_range().map_or(range.clone(), |separator| separator.start..range.end)
+    }
+
     /// The semantic paragraph owning a current formatted boundary. Internal
     /// hard breaks and soft wrapping do not split this range.
     pub fn paragraph_range_at(&self, at: usize) -> Result<Range<usize>, DocumentError> {

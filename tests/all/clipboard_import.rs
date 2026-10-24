@@ -362,9 +362,11 @@ fn linewise_rich_put_restores_deleted_empty_paragraphs_between_whitespace_separa
     use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key, RegisterKind};
     use viem_core::document::BoundaryAffinity;
     for (source, before_put, after_put) in [
-        ("a\n \n \n \nb", "a\n \n b", "a\n \n \n\nb"),
-        ("a\n\t\n \n\n\nb", "a\n\t\n b", "a\n\t\n \n\nb"),
-        ("# h\n \n \n \n- b", "# h\n \n b", "# h\n \n \n\nb"),
+        ("a\n \n \n \nb", "a\n \nb", "a\n \n\n\nb"),
+        ("a\n\t\n \n\n\nb", "a\n\t\nb", "a\n\t\n\n\nb"),
+        // The surviving list keeps its marker; P consequently uses the
+        // destination list's ordinary empty-item insertion policy.
+        ("# h\n \n \n \n- b", "# h\n \n- b", "# h\n \n- \n- b"),
     ] {
         let mut document = open(source.as_bytes(), Format::Markdown);
         let expected_text = document.text().to_owned();

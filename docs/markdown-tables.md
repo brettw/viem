@@ -302,8 +302,8 @@ the previous unspecified alignment already appeared left-aligned.
 The top-border strip is also a column selection target. Over it the pointer is
 a centered down arrow in the platform arrow's style (black with a white outline
 on macOS, white with a black outline on Windows). Pressing it selects every cell
-of that column, and dragging extends the selection by whole columns. As with
-row selection, the caret ends the selection in the drag's direction: at the end
+of that column, and dragging extends the selection by whole columns. The caret
+ends a column selection in the drag's direction: at the end
 of the last column's final cell, or at the start of the first column's header.
 
 Hovering a row to the left of the table, from the editor's left edge through
@@ -314,6 +314,8 @@ Both sides target the same row actions; prefer placing the widget beside the
 side that activated it. The header shows only Insert row below, which creates
 the first body row. The left zone is the row-selection margin: it shows the
 reversed arrow, and pressing or dragging there selects complete table rows.
+Row selection uses Vim's command selection policy and keeps the caret at the end
+of the bottommost selected row's final cell, including during upward dragging.
 
 While the selection is complete table rows, or complete columns, a widget for
 the group replaces hover widgets. It sits beside the selection's active row, or

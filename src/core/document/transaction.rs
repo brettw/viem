@@ -274,7 +274,8 @@ pub enum ModelRequest {
         revision: Revision,
         edits: Vec<TextEdit>,
     },
-    /// Explicit linewise deletion, distinct from removing all body characters.
+    /// Requested whole rows, before any supporting removal of the preceding
+    /// separator at EOF. Distinct from deleting characters or joining owners.
     DeleteLines {
         document: DocumentId,
         revision: Revision,
@@ -2106,22 +2107,23 @@ impl Document {
         range: Range<usize>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        let selected = range.clone();
+        let range = self.line_deletion_text_range(range);
         if range == (0..self.projection().text_tree().byte_len()) {
             return self.prepare_clear_document_content();
         }
         if let Some(prepared) = self.prepare_table_line_deletion(&range)? { return Ok(prepared); }
         if self.format() == Format::Markdown {
-            let support = self.markdown_structural_support(&[TextEdit::new(range.clone(), "")])?;
+            let support = self.markdown_structural_support(&[TextEdit::new(range.clone(), "")], Some(&selected))?;
             if !support.is_empty() {
                 return self.prepare_markdown_supporting_patches(support, |scratch|
-                    scratch.prepare_line_deletion(range.clone()));
+                    scratch.prepare_line_deletion(selected.clone()));
             }
         }
-        let range = { range };
         let patches = if self.format() == Format::Markdown {
             match markdown_list_structure::deletion_patches(self, &range, true)? {
                 Some(patches) => Some(patches),
-                None => self.markdown_complete_row_deletion_patches(&range)?,
+                None => self.markdown_complete_row_deletion_patches(&range, &selected)?,
             }
         } else {
             None
@@ -2228,7 +2230,7 @@ impl Document {
         }
 
         if explicit_source_patches.is_none() {
-            let support = self.markdown_structural_support(&edits)?;
+            let support = self.markdown_structural_support(&edits, None)?;
             if !support.is_empty() {
                 return self.prepare_markdown_supporting_patches(support, |doc| {
                     doc.prepare_text_edits(edits.clone())
@@ -2766,7 +2768,7 @@ impl Document {
             .iter()
             .map(FormattedPayloadEdit::text_edit)
             .collect::<Vec<_>>();
-        let support = self.markdown_structural_support(&logical_edits)?;
+        let support = self.markdown_structural_support(&logical_edits, None)?;
         if !support.is_empty() {
             return self.prepare_markdown_supporting_patches(support, |doc| {
                 doc.prepare_formatted_payload_edits(edits.clone())
@@ -3262,7 +3264,7 @@ impl Document {
             let identity = selected.iter().filter(|block| matches!(block.kind, super::BlockKind::Heading(_)))
                 .map(|block| TextEdit::new(block.range.clone(), self.text()[block.range.clone()].to_owned()))
                 .collect::<Vec<_>>();
-            let support = self.markdown_structural_support(&identity)?;
+            let support = self.markdown_structural_support(&identity, None)?;
             if !support.is_empty() {
                 return self.prepare_markdown_supporting_patches(support, |scratch|
                     scratch.prepare_markdown_paragraph_style_raw(range.clone(), style.clone()));
@@ -3464,7 +3466,7 @@ impl Document {
                 .filter(|block| matches!(block.kind, super::BlockKind::Heading(_)))
                 .map(|block| TextEdit::new(block.range.clone(), self.text()[block.range.clone()].to_owned()))
                 .collect::<Vec<_>>();
-            let support = self.markdown_structural_support(&identity)?;
+            let support = self.markdown_structural_support(&identity, None)?;
             if !support.is_empty() {
                 return self.prepare_markdown_supporting_patches(support, |scratch|
                     scratch.prepare_list_style_raw(range.clone(), style));
@@ -4615,6 +4617,25 @@ impl Document {
         } else {
             grapheme_closed_snapshot_map_splices(self.projection(), &candidate.projection, &edits)?
         };
+        // Empty semantic owners have no grapheme to retain in the source diff.
+        // Their exact typing boundaries nevertheless survive this source-only
+        // reinterpretation, in both directions and through composed history.
+        let (semantic, literal, reverse) = if self.format().is_markdown() {
+            (self.projection(), &candidate.projection, false)
+        } else {
+            (&candidate.projection, self.projection(), true)
+        };
+        let boundaries = if self.format().is_markdown() || target.is_markdown() {
+            semantic.empty_paragraph_source_points().map(|point| {
+                let (formatted, source) = point?;
+                let mapped = literal.map_source_boundary(literal.revision(), source, BoundaryAffinity::Downstream)
+                    .map_err(|_| DocumentError::AmbiguousProjection)?.formatted_offset;
+                Ok(if reverse { (mapped, formatted) } else { (formatted, mapped) })
+            }).collect::<Result<Vec<_>, DocumentError>>()?
+        } else { Vec::new() };
+        if boundaries.windows(2).any(|pair| pair[0].0 >= pair[1].0 || pair[0].1 >= pair[1].1) {
+            return Err(DocumentError::AmbiguousProjection.into());
+        }
         let map = PositionMap::for_projection_switch(
             self.id,
             self.revision(),
@@ -4622,6 +4643,7 @@ impl Document {
             self.projection(),
             &candidate.projection,
             map_splices,
+            boundaries,
         )?;
         let next_id = candidate
             .projection

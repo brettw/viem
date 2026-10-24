@@ -115,7 +115,7 @@ pub(super) fn prepare<R: ExRegisterReader + ?Sized>(
                         plan.mutation = ExMutation::Model(ModelRequest::DeleteLines {
                             document: document.id(),
                             revision: document.revision(),
-                            range: deletion,
+                            range: range.text.clone(),
                         });
                     }
                     plan.outcome.navigation = Some(ExNavigation::TextOffset(

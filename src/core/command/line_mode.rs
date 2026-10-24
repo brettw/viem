@@ -1116,9 +1116,6 @@ impl CommandInterpreter {
             self.note_affected_range(document, extent.text.clone(), false, false);
                 return Ok(CommandOutput::complete());
             }
-            if extent.whole && whole_hard_lines && operator == Operator::Delete {
-                range = linewise_edit_range(&lines, range);
-            }
             if operator == Operator::Change
                 && extent.whole
                 && whole_hard_lines

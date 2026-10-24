@@ -464,12 +464,15 @@ impl<P: TextMeasurementProvider> Core<P> {
         // A structural edit can renumber the table identity; the caret cell
         // names the edited table in the published projection.
         let reselected = selection.is_some_and(|extent| {
-            let Some(table) = self.document.projection().table_at(caret).map(|table| table.id) else {
+            let Some(table) = self.document.projection().table_at(caret) else {
                 return false;
             };
             let commands = &mut self.views.get_mut(&view).expect("prepared view").commands;
             let mut candidate = commands.clone();
-            if candidate.select_table_cells(&self.document, &TableSelectionExtent { table, ..extent }).is_err() {
+            if candidate.mode() == Mode::VisualLine && extent.columns() == (0..table.columns.len()) {
+                let range = table.rows[extent.rows().start].range.start..table.rows[extent.rows().end - 1].range.end;
+                candidate.select_pointer_row_range(&self.document, range, false);
+            } else if candidate.select_table_cells(&self.document, &TableSelectionExtent { table: table.id, ..extent }).is_err() {
                 return false;
             }
             *commands = candidate;

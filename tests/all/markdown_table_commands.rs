@@ -873,7 +873,7 @@ fn audit_replace_enter_backspace_restores_table_quote_and_code_bytes() {
 }
 
 #[test]
-fn audit_gutter_rows_clear_or_replace_cells_and_delete_paragraph_owners() {
+fn audit_gutter_rows_use_vim_deletion_and_keep_table_row_controls() {
     for (source, expected) in [("# T\n\nend", "end"), ("> q\n\nz", "z")] {
         let (mut core, view) = editor(source);
         let snapshot = core.layout(view).unwrap().snapshot().unwrap();
@@ -893,11 +893,14 @@ fn audit_gutter_rows_clear_or_replace_cells_and_delete_paragraph_owners() {
         core.handle(view, CoreEvent::SelectPointerRow { document_revision: core.document().revision(),
             layout_revision: snapshot.revision, y: row.y + row.height()/2., extend_selection: false }).unwrap();
         assert!(core.table_selection(view).unwrap().is_some());
+        assert_eq!(core.command_state(view).unwrap().mode(), viem_core::command::Mode::VisualLine);
+        assert!(!core.command_state(view).unwrap().is_native_selection());
         core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
         let table = &core.document().projection().tables()[0];
         assert_eq!(table.rows.len(), 2);
         assert!(table.rows[1].cells[1].range.is_empty());
-        assert_eq!(table.rows[1].cells[0].range.len(), usize::from(key == Key::Char('x')));
+        assert!(table.rows[1].cells[0].range.is_empty());
+        assert_eq!(core.command_state(view).unwrap().mode(), viem_core::command::Mode::Normal);
         assert!(core.document().text().ends_with("end"));
         core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
         assert_eq!(core.document().source_bytes(), source.as_bytes());

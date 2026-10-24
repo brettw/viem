@@ -376,6 +376,9 @@ impl CommandInterpreter {
         document: &mut Document,
         event: &InputEvent,
     ) -> Result<Option<CommandOutput>, DocumentError> {
+        let line_delete = InputEvent::key('d');
+        let event = if self.mode == Mode::VisualLine && self.selection_behavior == SelectionBehavior::Visual
+            && matches!(event, InputEvent::Key(Key::Backspace | Key::Delete)) { &line_delete } else { event };
         if self.literal_input_pending() || self.register_pending || self.pending != Pending::None {
             return Ok(None);
         }
@@ -512,7 +515,8 @@ impl CommandInterpreter {
                         columns: extent.columns(),
                     },
                 };
-                self.commit_table_edit(document, intent, true)?;
+                let insert = replacement.is_some() || self.is_native_selection();
+                self.commit_table_edit(document, intent, insert)?;
                 return Ok(Some(CommandOutput {
                     document_changed: true,
                     cursor_moved: true,

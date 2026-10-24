@@ -8,11 +8,19 @@ impl Document {
     pub(super) fn markdown_complete_row_deletion_patches(
         &self,
         range: &Range<usize>,
+        selected_rows: &Range<usize>,
     ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
         if range.is_empty() { return Ok(None); }
         let blocks = self.projection().blocks_for_region(range);
-        let selected = blocks.iter().filter(|block|
-            block.range.start < range.end && range.start < block.range.end).collect::<Vec<_>>();
+        let selected = blocks.iter().filter(|block| {
+            if block.range.is_empty() {
+                (selected_rows.contains(&block.range.start) || *selected_rows == block.range) && !block.thematic_break
+                    && !block.markdown_html && block.style.0 != "Code Block"
+                    && block.containers.is_empty()
+            } else {
+                block.range.start < selected_rows.end && selected_rows.start < block.range.end
+            }
+        }).collect::<Vec<_>>();
         if selected.is_empty() || selected.iter().any(|block|
             matches!(block.kind, super::super::BlockKind::ListItem { .. })
                 || self.projection().table_at(block.range.start).is_some()) {
@@ -21,6 +29,21 @@ impl Document {
         let snapshot = self.hard_line_snapshot();
         let mut patches = Vec::new();
         for block in selected {
+            if block.range.is_empty() {
+                let body = self.projection().paragraph_source_extent(block)
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let mut start = self.physical_line_source_range(body.start)?.start;
+                let end = if block.range.end < range.end {
+                    self.projection().source_range(block.range.end..block.range.end + 1)
+                        .ok_or(DocumentError::AmbiguousProjection)?.end
+                } else { body.end };
+                if range.start + 1 == block.range.start {
+                    start = self.projection().source_range(range.start..block.range.start)
+                        .ok_or(DocumentError::AmbiguousProjection)?.start;
+                }
+                patches.push(SourcePatch::primary(start..end, Vec::new()));
+                continue;
+            }
             let body = range.start.max(block.range.start)..range.end.min(block.range.end);
             let complete = body == block.range;
             if !complete && block.style.0 != "Code Block" { return Ok(None); }
@@ -48,7 +71,9 @@ impl Document {
                 || last.content_range().end != body.end && last.linewise_range().end != body.end {
                 return Ok(None);
             }
-            let source = self.projection().source_range(body.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let source = if complete { self.projection().paragraph_source_extent(block) }
+                else { self.projection().source_range(body.clone()) }
+                .ok_or(DocumentError::AmbiguousProjection)?;
             let first_source = self.physical_line_at_source(source.start)?;
             let last_source = self.physical_line_at_source(source.end.saturating_sub(1).max(source.start))?;
             let mut start = first_source.content_range.start;

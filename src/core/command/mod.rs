@@ -1468,11 +1468,9 @@ pub struct CommandInterpreter {
     desired_x: Option<f32>,
     preferred_column: Option<usize>,
     visual_anchor: Option<usize>,
-    /// Initial whole word of the current pointer gesture; rebased with the
+    /// Initial whole word or line of the current pointer gesture; rebased with the
     /// selection anchors so dragging back across it can reverse direction.
     pointer_word_origin: Option<Range<usize>>,
-    /// Semantic row ownership outlives the pointer gesture, including Copy.
-    pointer_rows: bool,
     /// Complete clicked grapheme, retained through native drag reversal and
     /// rebased through document edits using inward-associated stable anchors.
     pointer_character_origin: Option<Range<usize>>,
@@ -1695,7 +1693,6 @@ impl CommandInterpreter {
             preferred_column: None,
             visual_anchor: None,
             pointer_word_origin: None,
-            pointer_rows: false,
             pointer_character_origin: None,
             visual_to_line_end: false,
             visual_block: None,
@@ -2837,7 +2834,6 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -3026,7 +3022,6 @@ impl CommandInterpreter {
         self.mode = Mode::Normal;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -3171,7 +3166,6 @@ impl CommandInterpreter {
         }
         let character_origin = extend_selection.then(|| self.pointer_character_origin.clone()).flatten();
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.table_cells = None;
         self.table_tab_selection = false;
@@ -3252,7 +3246,6 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_to_line_end = false;
         self.visual_block = None;
@@ -3300,7 +3293,6 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -6738,7 +6730,6 @@ impl CommandInterpreter {
         self.visual_to_line_end = false;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
@@ -7768,7 +7759,6 @@ impl CommandInterpreter {
         self.visual_to_line_end = shape.to_line_end;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
@@ -7869,7 +7859,6 @@ impl CommandInterpreter {
         self.active_visual_block = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_position = None;
         self.desired_x = None;
@@ -8715,7 +8704,6 @@ impl CommandInterpreter {
         self.update_visual_marks();
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_to_line_end = false;
         self.mode = Mode::Normal;
@@ -8823,7 +8811,6 @@ impl CommandInterpreter {
         self.active_visual_block = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.boundary_affinity = BoundaryAffinity::Downstream;
         self.visual_position = None;
@@ -9000,7 +8987,6 @@ impl CommandInterpreter {
         self.visual_to_line_end = memory.to_line_end;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = Some(selection);
         self.active_visual_block = Some(persistent);
@@ -10574,9 +10560,6 @@ impl CommandInterpreter {
                     edit_range.start += prefix;
                     content[..prefix].to_owned()
                 } else { String::new() };
-                if extent.kind == MotionKind::Linewise && operator == Operator::Delete {
-                    edit_range = linewise_edit_range(&lines, edit_range);
-                }
                 if extent.kind == MotionKind::Linewise
                     && operator == Operator::Change
                     && (edit_range.end < document.projection().text_tree().byte_len()
@@ -11353,7 +11336,6 @@ impl CommandInterpreter {
         self.update_visual_marks();
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_to_line_end = false;
         if operator != Operator::Change {
@@ -11393,7 +11375,6 @@ impl CommandInterpreter {
         }
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.leave_visual();
         output.mode_changed = true;
@@ -11604,7 +11585,6 @@ impl CommandInterpreter {
         self.cursor = normalize_normal_cursor_document(document, &new_lines, cursor_target);
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.leave_visual();
         let changed = document.revision() != before_revision;
@@ -11646,7 +11626,6 @@ impl CommandInterpreter {
         self.cursor = extent.range.start;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.leave_visual();
         let before = document.revision();
@@ -14287,7 +14266,6 @@ impl CommandInterpreter {
         self.visual_to_line_end = false;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.clear_pending();
     }
@@ -14950,7 +14928,6 @@ impl CommandInterpreter {
         self.preferred_column = None;
         self.visual_anchor = None;
         self.pointer_word_origin = None;
-        self.pointer_rows = false;
         self.pointer_character_origin = None;
         self.visual_block = None;
         self.active_visual_block = None;
@@ -17005,31 +16982,6 @@ fn cursor_after_linewise_deletion(document: &Document, at: usize) -> usize {
     {
         first_nonblank_document(document, &lines, lines.previous_grapheme_boundary(at).unwrap_or(0))
     } else { at }
-}
-
-fn linewise_edit_range(lines: &HardLineSnapshot, range: Range<usize>) -> Range<usize> {
-    if range.end != lines.text_length() || range.start == 0 {
-        return range;
-    }
-    if !range.is_empty() && lines.previous_grapheme_boundary(range.end)
-        .and_then(|at| lines.line_at_offset(at).ok())
-        .and_then(|line| line.separator_range())
-        .is_some_and(|separator| separator.end == range.end) {
-        return range;
-    }
-    let first = lines
-        .line_at_offset(range.start)
-        .expect("a linewise edit starts at a valid hard-line boundary");
-    let Some(previous) = first
-        .index()
-        .checked_sub(1)
-        .and_then(|index| lines.line(index))
-    else {
-        return range;
-    };
-    previous
-        .separator_range()
-        .map_or(range.clone(), |separator| separator.start..range.end)
 }
 
 fn remove_inserted_suffix(value: &mut RegisterValue, removed: &str) {

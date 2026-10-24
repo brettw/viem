@@ -220,6 +220,7 @@ final class EVTableEditingTests: XCTestCase {
         surface.refreshPresentation()
         let selection = try session.tableSelection()
         XCTAssertEqual([selection.anchor_row, selection.active_row].sorted(), [2, 3])
+        XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_VISUAL_LINE))
         XCTAssertEqual(try session.tableContext().rows, 5)
         XCTAssertEqual(buttons(widget), ["Insert row above rows 3–4", "Delete rows 3–4", "Insert row below rows 3–4"])
         try press("Delete rows 3–4", in: widget)

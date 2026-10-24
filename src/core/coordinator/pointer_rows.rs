@@ -1,4 +1,4 @@
-//! Whole displayed-row pointer selection uses core-owned logical ranges.
+//! Gutter hit testing supplies the line domain used by Visual Line selection.
 use super::*;
 
 impl<P: TextMeasurementProvider> Core<P> {
@@ -31,7 +31,12 @@ impl<P: TextMeasurementProvider> Core<P> {
             .into());
         }
         let row = snapshot.gutter_row(y)?;
-        let mut range = if let Some(cell) = &row.table_cell {
+        let mut range = if view.commands.line_mode() == crate::command::LineMode::PhysicalSource {
+            let source = self.document.projection().source_insertion_point(row.text_range.start, true)
+                .ok_or(DocumentError::AmbiguousProjection)?;
+            let index = self.document.physical_line_index_at_source(source)?;
+            self.document.physical_line_projected_extent(index).ok_or(DocumentError::AmbiguousProjection)?
+        } else if let Some(cell) = &row.table_cell {
             // A table has several text rows at the same vertical coordinate.
             // Its gutter addresses the complete semantic row, including cells
             // whose glyphs are outside horizontal materialization.
@@ -47,7 +52,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             row.text_range.clone()
         };
         let text = self.document.projection().text_tree();
-        if range.end < text.byte_len()
+        if view.commands.line_mode() != crate::command::LineMode::PhysicalSource && range.end < text.byte_len()
             && text.slice(range.end..range.end + 1).as_deref() == Ok("\n")
         {
             range.end += 1;
@@ -75,9 +80,8 @@ mod tests {
         core.handle(view, event).unwrap();
     }
     fn selected(core: &Core<MockTextMeasurementProvider>, view: ViewId) -> std::ops::Range<usize> {
-        let state = core.command_state(view).unwrap();
-        let anchor = state.visual_anchor().unwrap();
-        anchor.min(state.cursor())..anchor.max(state.cursor())
+        core.command_state(view).unwrap().line_selection_range(core.document(),
+            core.layout(view).unwrap().snapshot()).unwrap()
     }
 
     #[test]
@@ -95,11 +99,12 @@ mod tests {
             assert_eq!(selected(&core, view), 6..19);
             row(&mut core, view, 0, true);
             assert_eq!(selected(&core, view), 0..13);
-            assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+            assert_eq!(core.command_state(view).unwrap().cursor(), 11);
             row(&mut core, view, 1, true);
             assert_eq!(selected(&core, view), 6..13);
-            assert_eq!(core.command_state(view).unwrap().cursor(), 13);
-            assert!(core.command_state(view).unwrap().is_native_selection());
+            assert_eq!(core.command_state(view).unwrap().cursor(), 11);
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::VisualLine);
+            assert!(!core.command_state(view).unwrap().is_native_selection());
             assert_eq!(core.document.source_bytes(), b"first\nsecond\nthird\nlast");
         }
     }
@@ -135,6 +140,64 @@ mod tests {
             .unwrap();
         row(&mut core, view, index, false);
         assert_eq!(selected(&core, view), expected);
+        assert!(core.table_selection(view).unwrap().is_some());
+        assert_eq!(core.command_state(view).unwrap().cursor(), expected.end - 1);
+    }
+
+    #[test]
+    fn gutter_table_rows_keep_the_final_empty_cell_caret_and_reversal() {
+        let document = Document::from_bytes(b"| a | b |\n| - | - |\n| one |  |\n| two |  |".to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
+        let mut core = Core::new(document);
+        let view = core.add_view(MockTextMeasurementProvider::new(), 400., 300.);
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        let indices = [1, 2, 0].map(|target| snapshot.rows.iter().position(|row|
+            row.table_cell.as_ref().is_some_and(|cell| cell.row == target)).unwrap());
+        let expected = core.document().projection().tables()[0].rows[1].cells[1].range.start;
+        row(&mut core, view, indices[0], false);
+        assert_eq!(core.command_state(view).unwrap().cursor(), expected);
+        row(&mut core, view, indices[1], true);
+        row(&mut core, view, indices[2], true);
+        assert_eq!(core.table_selection(view).unwrap().unwrap().rows(), 0..2);
+        assert_eq!(core.command_state(view).unwrap().cursor(), expected);
+    }
+
+    #[test]
+    fn gutter_matches_v_line_domains_and_command_selection_policy() {
+        use crate::command::LineMode;
+        for format in [Format::PlainText, Format::Code, Format::Markdown] {
+            for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+                for selectmode in ["", "mouse", "cmd"] {
+                    let document = Document::from_bytes(b"first words wrap across many rows\n\nlast".to_vec(), Encoding::Utf8, format).unwrap();
+                    let mut core = Core::new(document);
+                    let view = core.add_view(MockTextMeasurementProvider::new(), 130., 600.);
+                    core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+                    assert!(core.set_selection_option(false, selectmode));
+                    let at = core.layout(view).unwrap().snapshot().unwrap().rows[1].text_range.start;
+                    core.handle(view, CoreEvent::PlaceCursor { document_revision: core.document().revision(),
+                        text_offset: at, affinity: BoundaryAffinity::Downstream, extend_selection: false }).unwrap();
+                    core.handle(view, CoreEvent::Input(InputEvent::key('V'))).unwrap();
+                    let expected = selected(&core, view);
+                    let select = core.command_state(view).unwrap().is_select_mode();
+                    row(&mut core, view, 1, false);
+                    assert_eq!(selected(&core, view), expected, "{format:?} {line_mode:?} {selectmode}");
+                    assert_eq!(core.command_state(view).unwrap().mode(), Mode::VisualLine);
+                    assert_eq!(core.command_state(view).unwrap().is_select_mode(), select);
+                    assert!(!core.command_state(view).unwrap().is_native_selection());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gutter_final_caret_uses_graphemes_and_empty_row_boundaries() {
+        let mut core = Core::new(Document::new("a e\u{301} 👩‍💻\n\nlast"));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 600.);
+        row(&mut core, view, 0, false);
+        assert_eq!(core.command_state(view).unwrap().cursor(), "a e\u{301} ".len());
+        row(&mut core, view, 1, true);
+        let empty = "a e\u{301} 👩‍💻\n".len();
+        assert_eq!(core.command_state(view).unwrap().cursor(), empty);
+        assert_eq!(selected(&core, view), 0..empty + 1);
     }
 
     #[test]
@@ -177,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn gutter_uses_whole_rows_with_visual_and_select_mouse_policies() {
+    fn gutter_enters_visual_line_from_visual_and_select_mouse_policies() {
         for select in [false, true] {
             let mut core = Core::new(Document::new("one\ntwo\nthree"));
             let view = core.add_view(MockTextMeasurementProvider::new(), 400., 300.);
@@ -189,10 +252,11 @@ mod tests {
             }
             row(&mut core, view, 1, false);
             assert_eq!(core.list_selection_identity(view).unwrap().range(), 4..8);
-            assert_eq!(core.command_state(view).unwrap().is_select_mode(), select);
+            assert!(!core.command_state(view).unwrap().is_select_mode());
+            assert_eq!(core.command_state(view).unwrap().mode(), Mode::VisualLine);
             row(&mut core, view, 0, true);
             assert_eq!(core.list_selection_identity(view).unwrap().range(), 0..8);
-            assert_eq!(core.command_state(view).unwrap().cursor(), 0);
+            assert_eq!(core.command_state(view).unwrap().cursor(), 6);
         }
     }
 

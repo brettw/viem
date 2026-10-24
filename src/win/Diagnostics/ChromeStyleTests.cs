@@ -278,7 +278,7 @@ internal static class ChromeStyleTests
             "gutter downward drag includes its complete original row");
         view.SelectPointerRow(RowY(0), true);
         Check(view.LogicalSelection().text_start == 0 && view.LogicalSelection().text_end == originEnd
-            && view.Presentation.cursor_utf8_offset == 0, "gutter reversal includes its original end and places the caret at the active beginning");
+            && view.Presentation.cursor_utf8_offset == pointerRows[1].text_end - 1, "gutter reversal retains the original row and keeps the caret at the end of the last selected line");
         view.SelectPointerRow(RowY(1), true);
         Check(view.LogicalSelection().text_start == originStart && view.LogicalSelection().text_end == originEnd,
             "gutter returning to the initial row retains the complete row");
