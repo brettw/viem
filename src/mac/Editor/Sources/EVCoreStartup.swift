@@ -14,7 +14,7 @@ enum EVCoreStartup {
     static func initialize(core: ViemCoreHandle, file: EVStartupFile, themeNames: [String] = []) -> [String] {
         if !themeNames.isEmpty {
             let names = Array((["Default"] + themeNames).joined(separator: "\0").utf8)
-            names.withUnsafeBufferPointer { viem_set_theme_names($0.baseAddress, UInt64($0.count)) }
+            _ = names.withUnsafeBufferPointer { viem_set_theme_names($0.baseAddress, UInt64($0.count)) }
         }
         let diagnostics = Diagnostics(path: file.url.path)
         diagnostics.messages = file.diagnostics

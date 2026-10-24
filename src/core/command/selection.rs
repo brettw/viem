@@ -683,6 +683,15 @@ impl CommandInterpreter {
             _ => None,
         };
         let delete = matches!(event, InputEvent::Key(Key::Backspace | Key::Delete));
+        if delete && self.mode == Mode::VisualLine {
+            let native = self.is_native_selection();
+            self.requested_register = self.select_delete_register.take();
+            let mut output = self.apply_visual_operator(document, Operator::Delete, 1)?;
+            if native && output.status == CommandStatus::Complete {
+                output.merge(self.enter_insert(document, InsertPlacement::Before, 1));
+            }
+            return Ok(Some(output));
+        }
         if replacement.is_some() || delete {
             // Native line selection uses an exclusive character extent for
             // replacement, but its remembered selection still belongs to the

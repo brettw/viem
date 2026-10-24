@@ -240,3 +240,4 @@ mod indent_alignment;
 mod markdown_code_exit;
 
 mod empty_paragraph_ownership;
+mod markdown_code_row_deletion;

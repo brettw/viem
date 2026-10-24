@@ -22,6 +22,26 @@ import XCTest
             charactersIgnoringModifiers: characters, isARepeat: false, keyCode: keyCode))
     }
 
+    func testDeletingBlankCodeTailThroughNativeKeysKeepsFollowingParagraphOutside() throws {
+        let source = "```rust\nfirst\nsecond\n\n```\n\nFollowing paragraph"
+        for lastKey in ["d", "k", "\u{f700}"] {
+            let (backend, surface) = try surface(source, type: EVDocument.markdownType)
+            for character in ["j", "j", "d", lastKey] {
+                let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+                    modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
+                    characters: character, charactersIgnoringModifiers: character,
+                    isARepeat: false, keyCode: character == "\u{f700}" ? 126 : 0))
+                surface.editorView.keyDown(with: event)
+            }
+            let body = lastKey == "d" ? "first\nsecond" : "first"
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType),
+                Data("```rust\n\(body)\n```\n\nFollowing paragraph".utf8))
+            XCTAssertNil(surface.commandOutput)
+            surface.perform(menuCommand: .undo, sender: nil)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        }
+    }
+
     private func assertHistory(backend: EVCoreDocumentBackend, view: EVEditorSurfaceController,
                                source: String, type: String, expectedText: String) throws {
         XCTAssertEqual(try backend.formattedText(), expectedText)

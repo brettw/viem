@@ -12,24 +12,27 @@ impl Document {
     ) -> Result<Option<Vec<SourcePatch>>, DocumentError> {
         if range.is_empty() { return Ok(None); }
         let blocks = self.projection().blocks_for_region(range);
+        let snapshot = self.hard_line_snapshot();
+        let selects_empty_tail = |block: &super::super::Block| {
+            block.style.0 == "Code Block" && selected_rows.contains(&block.range.end)
+                && snapshot.line_at_offset(block.range.end).is_ok_and(|line| line.content_range().is_empty())
+        };
         let selected = blocks.iter().filter(|block| {
             if block.range.is_empty() {
                 (selected_rows.contains(&block.range.start) || *selected_rows == block.range) && !block.thematic_break
-                    && !block.markdown_html && block.style.0 != "Code Block"
-                    && block.containers.is_empty()
+                    && (block.style.0 == "Code Block" || !block.markdown_html && block.containers.is_empty())
             } else {
-                block.range.start < selected_rows.end && selected_rows.start < block.range.end
+                block.range.start < selected_rows.end && (selected_rows.start < block.range.end || selects_empty_tail(block))
             }
         }).collect::<Vec<_>>();
         if selected.is_empty() || selected.iter().any(|block|
-            matches!(block.kind, super::super::BlockKind::ListItem { .. })
+            matches!(block.kind, super::super::BlockKind::ListItem { .. }) && block.style.0 != "Code Block"
                 || self.projection().table_at(block.range.start).is_some()) {
             return Ok(None);
         }
-        let snapshot = self.hard_line_snapshot();
         let mut patches = Vec::new();
         for block in selected {
-            if block.range.is_empty() {
+            if block.range.is_empty() && block.style.0 != "Code Block" {
                 let body = self.projection().paragraph_source_extent(block)
                     .ok_or(DocumentError::AmbiguousProjection)?;
                 let mut start = self.physical_line_source_range(body.start)?.start;
@@ -65,7 +68,9 @@ impl Document {
             // tag-boundary adapter. Do not bypass either with physical rows.
             if !complete && fence.is_none() { return Ok(None); }
             let first = snapshot.line_at_offset(body.start).map_err(|_| DocumentError::AmbiguousProjection)?;
-            let last_at = snapshot.previous_grapheme_boundary(body.end).unwrap_or(body.start).max(body.start);
+            let empty_tail = selects_empty_tail(block);
+            let last_at = if empty_tail { body.end }
+                else { snapshot.previous_grapheme_boundary(body.end).unwrap_or(body.start).max(body.start) };
             let last = snapshot.line_at_offset(last_at).map_err(|_| DocumentError::AmbiguousProjection)?;
             if first.content_range().start != body.start
                 || last.content_range().end != body.end && last.linewise_range().end != body.end {
@@ -75,7 +80,11 @@ impl Document {
                 else { self.projection().source_range(body.clone()) }
                 .ok_or(DocumentError::AmbiguousProjection)?;
             let first_source = self.physical_line_at_source(source.start)?;
-            let last_source = self.physical_line_at_source(source.end.saturating_sub(1).max(source.start))?;
+            let last_source_at = if empty_tail {
+                self.projection().source_range(body.end..body.end)
+                    .ok_or(DocumentError::AmbiguousProjection)?.start
+            } else { source.end.saturating_sub(1).max(source.start) };
+            let last_source = self.physical_line_at_source(last_source_at)?;
             let mut start = first_source.content_range.start;
             let mut end = last_source.content_range.end;
             if complete {
@@ -151,6 +160,13 @@ impl Document {
         ).to_source(&input);
         let source = self.projection().source_range(block.range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
+        if block.style.0 == "Code Block" {
+            let at = input.normalized_at(source.start);
+            if let Some(owner) = super::super::projection::markdown_html_pre_owners(&input.text, &[])
+                .into_iter().find(|owner| owner.range.start <= at && at <= owner.range.end) {
+                return Ok(Some((input.source_at(owner.range.start)..input.source_at(owner.range.end), block.range.clone())));
+            }
+        }
         let Some(owner) = syntax.blocks.iter().find(|owner|
             matches!(owner.role, super::super::markdown_syntax::BlockRole::Html)
                 && owner.range.start <= source.start && source.end <= owner.range.end)

@@ -2120,6 +2120,30 @@ impl Document {
                     scratch.prepare_line_deletion(selected.clone()));
             }
         }
+        if self.format() == Format::Markdown {
+            // A partial code-tail deletion retains the outside paragraph break.
+            // Removing the preceding internal break yields the same visible
+            // text, while the code adapter keeps its own enclosing syntax.
+            let lines = self.hard_line_snapshot();
+            if let Some(code) = self.projection().blocks_for_region(&selected).into_iter().find(|block|
+                block.style.0 == "Code Block" && block.range.start < selected.start
+                    && selected.start <= block.range.end && selected.end == block.range.end + 1)
+            {
+                if super::markdown_code::fenced_source(self, &code)?.is_none() {
+                    let line = lines.line_at_offset(selected.start).map_err(|_| DocumentError::AmbiguousProjection)?;
+                    if line.content_range().start == selected.start {
+                        let previous = lines.line(line.index() - 1).ok_or(DocumentError::AmbiguousProjection)?;
+                        let separator = previous.separator_range().ok_or(DocumentError::AmbiguousProjection)?;
+                        let prepared = self.prepare_text_edits(vec![TextEdit::new(separator.start..code.range.end, "")])?;
+                        // Keep the original selection's position map and history;
+                        // only borrow the verified, body-local source patches.
+                        return self.prepare_text_edits_with_patches(
+                            vec![TextEdit::new(range, "")], Some(prepared.summary().source_patches().to_vec()),
+                        );
+                    }
+                }
+            }
+        }
         let patches = if self.format() == Format::Markdown {
             match markdown_list_structure::deletion_patches(self, &range, true)? {
                 Some(patches) => Some(patches),
