@@ -7049,6 +7049,25 @@ pub(crate) fn escape_markdown_insert_in_encoding(text: &str, encoding: super::En
     markdown_character_references(&escape_markdown_insert(text), encoding)
 }
 
+/// Escape prose that follows `prefix` on its physical line (see
+/// `autolink_literal_ranges`). Text inside an extended autolink stays
+/// literal, since an escape there would become part of the link.
+pub(crate) fn escape_markdown_prose_in_encoding(
+    prefix: Option<&str>,
+    text: &str,
+    encoding: super::Encoding,
+) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    let mut at = 0;
+    for literal in super::markdown_syntax::autolink_literal_ranges(prefix, text) {
+        escaped.push_str(&escape_markdown_insert_in_encoding(&text[at..literal.start], encoding));
+        escaped.push_str(&text[literal.clone()]);
+        at = literal.end;
+    }
+    escaped.push_str(&escape_markdown_insert_in_encoding(&text[at..], encoding));
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

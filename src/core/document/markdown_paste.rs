@@ -104,7 +104,9 @@ impl Document {
     /// constructs this destination cannot represent); callers then insert the
     /// text literally. The returned offset is the caret after the paste.
     /// Without `inline`, a single partial paragraph also stays literal, so
-    /// pending typing choices can apply to it.
+    /// pending typing choices can apply to it. So does one whose Markdown
+    /// shows exactly its source, such as a bare URL: like typed text, the
+    /// destination decides its escapes and whether a URL there is a link.
     pub(crate) fn prepare_markdown_paste(
         &self,
         range: Range<usize>,
@@ -126,7 +128,11 @@ impl Document {
             return Ok(None);
         }
         if partial {
-            let (fragment, text) = markdown_fragment(paste.source(&paste.units))?;
+            let source = paste.source(&paste.units);
+            let (fragment, text) = markdown_fragment(source)?;
+            if text == source {
+                return Ok(None);
+            }
             return Ok(self.prepare_clipboard_fragment(range.clone(), &fragment, &text)
                 .ok().flatten().map(|prepared| (prepared, range.start + text.len())));
         }
@@ -181,28 +187,29 @@ impl Document {
             && (last > 0 || !merge_head);
         let blocks = &units[usize::from(merge_head)..units.len() - usize::from(merge_tail)];
 
+        let leading = before;
+        let following = after || merge_tail;
+        let split = if blocks.is_empty() { merge_tail || paste.terminated && after } else { leading && following };
+        // Split before the head joins the first part, so pasted text never
+        // joins the following text, even transiently: a bare URL would
+        // absorb it into its link.
+        if split {
+            let prepared = scratch.prepare_paragraph_split(at)?;
+            apply(&mut scratch, prepared)?;
+        }
         if merge_head {
-            let (fragment, text) = markdown_fragment(paste.source(&units[..1]))?;
-            let Some(prepared) = scratch.prepare_clipboard_fragment(at..at, &fragment, &text)? else {
+            let Some((prepared, length)) = scratch.prepare_pasted_paragraph(at, paste.source(&units[..1]))? else {
                 return Ok(None);
             };
             apply(&mut scratch, prepared)?;
-            at += text.len();
+            at += length;
         }
-        let leading = at > destination.range.start;
-        let following = after || merge_tail;
         let mut caret = at;
         if blocks.is_empty() {
-            if merge_tail || paste.terminated && after {
-                let split = scratch.prepare_paragraph_split(at)?;
-                apply(&mut scratch, split)?;
+            if split {
                 caret = at + 1;
             }
         } else {
-            if leading && following {
-                let split = scratch.prepare_paragraph_split(at)?;
-                apply(&mut scratch, split)?;
-            }
             let markdown = paste.source(blocks);
             let expected = Document::from_bytes(markdown.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown)?;
             let start = if leading { at + 1 } else { scratch.paragraph_at(at)?.range.start };
@@ -221,12 +228,11 @@ impl Document {
             caret = if following { end + 1 } else { end };
         }
         if merge_tail {
-            let (fragment, text) = markdown_fragment(paste.source(&units[last..]))?;
-            let Some(prepared) = scratch.prepare_clipboard_fragment(caret..caret, &fragment, &text)? else {
+            let Some((prepared, length)) = scratch.prepare_pasted_paragraph(caret, paste.source(&units[last..]))? else {
                 return Ok(None);
             };
             apply(&mut scratch, prepared)?;
-            caret += text.len();
+            caret += length;
         }
         let delta = scratch.projection().text_tree().byte_len() as isize - self.projection().text_tree().byte_len() as isize;
         let new_end = (region_end as isize + delta) as usize;
@@ -247,6 +253,26 @@ impl Document {
             prepared
         };
         Ok(Some((prepared, caret)))
+    }
+
+    /// Insert one pasted paragraph's inline content at `at`, returning its
+    /// text length. Markdown that shows exactly its source is inserted as
+    /// literal text, as in a single-paragraph paste; otherwise its rich
+    /// fragment must reproduce the pasted appearance.
+    fn prepare_pasted_paragraph(
+        &self,
+        at: usize,
+        source: &str,
+    ) -> Result<Option<(PreparedModelTransaction, usize)>, ModelTransactionError> {
+        let (fragment, text) = markdown_fragment(source)?;
+        let prepared = if text == source {
+            let payload = FormattedTextPayload::new(&self.hard_line_snapshot(), &text, Vec::new())
+                .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+            Some(self.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(at..at, payload)])?)
+        } else {
+            self.prepare_clipboard_fragment(at..at, &fragment, &text)?
+        };
+        Ok(prepared.map(|prepared| (prepared, text.len())))
     }
 
     /// Put complete copied Markdown blocks above (or below) the paragraph at

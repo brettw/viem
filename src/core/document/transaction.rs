@@ -97,8 +97,8 @@ pub(crate) use replacement::RecordedReplacement;
 use super::formatted_text::{FormattedTextSpliceStats, LogicalGraphemeSnapshot};
 use super::line_endings::{detect, normalize, normalize_literal};
 use super::projection::{
-    escape_markdown_insert, escape_markdown_insert_in_encoding, project, project_band,
-    splice_line_local_projection,
+    escape_markdown_insert, escape_markdown_insert_in_encoding, escape_markdown_prose_in_encoding,
+    project, project_band, splice_line_local_projection,
 };
 use super::source_line_index::SourceHardLineSpliceStats;
 use super::transfer::{self, HardLineTransfer};
@@ -2554,7 +2554,8 @@ impl Document {
         source_at: usize,
         text: &str,
     ) -> Result<String, DocumentError> {
-        let mut escaped = escape_markdown_insert_in_encoding(text, self.encoding());
+        let mut escaped = escape_markdown_prose_in_encoding(
+            self.autolink_prefix(source_at)?.as_deref(), text, self.encoding());
         if self.format()==Format::Markdown {
             let tables = self.projection().tables();
             let cell = tables.partition_point(|table| table.source_range.start <= source_at)
@@ -2692,6 +2693,28 @@ impl Document {
             escaped = escape_interior_line_starts(&escaped);
         }
         Ok(escaped)
+    }
+
+    /// The source from the last whitespace or `<` before `source_at` on its
+    /// physical line, which decides whether an insertion there continues or
+    /// begins an extended autolink. `None` means an unbroken run longer than
+    /// the bounded scan.
+    pub(super) fn autolink_prefix(&self, source_at: usize) -> Result<Option<String>, DocumentError> {
+        const MAX_AUTOLINK_PREFIX_BYTES: usize = 2048;
+        let lines = &self.state().source_hard_lines;
+        let Some(physical) = lines.line_at_offset(source_at).and_then(|line| lines.get(line)) else {
+            return Ok(None);
+        };
+        let mut start = source_at.saturating_sub(MAX_AUTOLINK_PREFIX_BYTES).max(physical.start);
+        if matches!(self.encoding(), super::Encoding::Utf16Le | super::Encoding::Utf16Be) {
+            start += (source_at - start) % 2;
+        }
+        let bytes = self.state().source.bytes_in(start..source_at).ok_or(DocumentError::AmbiguousProjection)?;
+        let prefix = self.encoding().decode_region(&bytes, start)?.text;
+        Ok(match prefix.rfind(|c: char| c.is_whitespace() || c == '<') {
+            Some(at) => Some(prefix[at..].to_owned()),
+            None => (start == physical.start).then_some(prefix),
+        })
     }
 
     pub(super) fn prepare_formatted_payload_edits(
@@ -5802,6 +5825,22 @@ impl Document {
         let new_text = target_text
             .slice(old_line.start..new_line_end)
             .map_err(DocumentError::FormattedTextStorage)?;
+        if markdown_list {
+            // Inherited character context cannot show an extended autolink
+            // appearing, growing or ending. Its recognition depends on the
+            // whole whitespace-delimited word around the edit.
+            let old_text = self.projection().text_tree().slice(old_line.clone())
+                .map_err(DocumentError::FormattedTextStorage)?;
+            let start = edit.range.start - old_line.start;
+            let word = |text: &str, end: usize| -> bool {
+                let start = text[..start].trim_end_matches(|c: char| !c.is_whitespace()).len();
+                let end = text[end..].find(char::is_whitespace).map_or(text.len(), |at| end + at);
+                !super::markdown_syntax::autolink_literal_ranges(Some(""), &text[start..end]).is_empty()
+            };
+            if word(&old_text, start + edit.range.len()) || word(&new_text, start + edit.replacement.len()) {
+                return Ok(None);
+            }
+        }
         if markdown_code && !markdown_list && !markdown_table {
             if let Some(fence) = super::markdown_code::fenced_source(self, &block)? {
                 let opening = self.state().source.bytes_in(fence.opening.clone())
