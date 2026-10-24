@@ -5205,6 +5205,24 @@ impl<P: TextMeasurementProvider> Core<P> {
         panic!("injected input publication panic at {stage:?}");
     }
 
+    /// Run a native event that commits before it finishes publishing view and
+    /// history state. A later failure must not leave a half-applied edit or
+    /// undo, so it rolls back to a checkpoint exactly like failed input.
+    fn publish_atomically(
+        &mut self,
+        view_id: ViewId,
+        publish: impl FnOnce(&mut Self) -> Result<CoreOutcome, CoreError>,
+    ) -> Result<CoreOutcome, CoreError> {
+        let checkpoint = self.begin_input_publication();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(self)))
+            .unwrap_or(Err(CoreError::InputPanic));
+        match &result {
+            Ok(_) => self.document.commit_command_checkpoint(checkpoint.document),
+            Err(error) => self.rollback_input_publication(view_id, checkpoint, true, *error == CoreError::InputPanic),
+        }
+        result
+    }
+
     fn rollback_input_publication(
         &mut self,
         invoking: ViewId,
@@ -5482,7 +5500,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 return self.go_to_line(view_id, document, revision, line);
             }
             CoreEvent::NavigateHistory(navigation) => {
-                return self.navigate_history(view_id, navigation);
+                return self.publish_atomically(view_id, |core| core.navigate_history(view_id, navigation));
             }
             CoreEvent::SetFileFormat {
                 document,
@@ -5516,10 +5534,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                 );
             }
             CoreEvent::TableEdit { document, revision, intent } => {
-                return self.apply_table_edit(view_id, document, revision, intent);
+                return self.publish_atomically(view_id, |core| core.apply_table_edit(view_id, document, revision, intent));
             }
             CoreEvent::TableSelectionEdit { expected, action } => {
-                return self.apply_table_selection_edit(view_id, expected, action);
+                return self.publish_atomically(view_id, |core| core.apply_table_selection_edit(view_id, expected, action));
             }
             CoreEvent::IndentList { expected, unindent } => {
                 if self.list_selection_identity(view_id)? != expected { return Err(CoreError::StaleLogicalSelection); }

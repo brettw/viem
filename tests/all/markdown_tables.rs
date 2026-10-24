@@ -1251,3 +1251,31 @@ fn text_edits_reaching_exactly_a_whole_table_edge_remove_the_table() {
         }
     }
 }
+#[test]
+fn text_edits_covering_a_whole_one_cell_table_remove_it_like_any_table() {
+    // A one-cell table's text is also its cell's text. Clearing that cell
+    // left the table in place, so the edit split around it again forever.
+    for (cells, delimiter) in [("| a |", "| - |"), ("| a | b |", "| - | - |")] {
+        for (prefix, suffix, before, expected) in [
+            ("p\n\n", "", true, "z"),
+            ("p\n\n", "\n\nq", true, "z\n\nq"),
+            ("p\n\n", "\n\nq", false, "p\n\nz"),
+            ("", "\n\nq", false, "z"),
+        ] {
+            let source = format!("{prefix}{cells}\n{delimiter}{suffix}");
+            let mut document = doc(&source, Format::Markdown);
+            let table = document.projection().tables()[0].range.clone();
+            let range = if before { 0..table.end } else { table.start..document.text().len() };
+            document
+                .apply_model_request(ModelRequest::ApplyTextEdits {
+                    document: document.id(),
+                    revision: document.revision(),
+                    edits: vec![TextEdit::new(range, "z")],
+                })
+                .unwrap_or_else(|error| panic!("{source:?}: {error:?}"));
+            assert_eq!(document.source_bytes(), expected.as_bytes(), "{source:?}");
+            assert!(document.undo());
+            assert_eq!(document.source_bytes(), source.as_bytes());
+        }
+    }
+}

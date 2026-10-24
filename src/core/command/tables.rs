@@ -174,6 +174,40 @@ impl CommandInterpreter {
         true
     }
 
+    /// Commit one table edit from command input and place the caret after it.
+    /// An edit that enters Insert opens its undo unit first, as the change
+    /// operator does, so the edit and the typing that follows are one unit
+    /// whose restoration starts before the edit. Opening the unit afterward
+    /// would make typing a separate unit that restores a pre-edit state.
+    fn commit_table_edit(
+        &mut self,
+        document: &mut Document,
+        intent: TableEditIntent,
+        insert: bool,
+    ) -> Result<usize, DocumentError> {
+        let depth = document.edit_group_depth();
+        if insert {
+            document.begin_edit_group();
+        }
+        let committed = document
+            .prepare_table_edit(document.id(), document.revision(), intent)
+            .and_then(|(prepared, caret)| document.commit_model_transaction(prepared).map(|_| caret))
+            .map_err(command_document_error);
+        let caret = match committed {
+            Ok(caret) => caret,
+            Err(error) => {
+                document.restore_edit_group_depth(depth);
+                return Err(error);
+            }
+        };
+        self.finish_native_table_edit(document, caret, insert);
+        if insert {
+            // Entering Insert nests another level in the unit opened above.
+            document.restore_edit_group_depth(depth.max(1));
+        }
+        Ok(caret)
+    }
+
     pub(crate) fn finish_native_table_edit(
         &mut self,
         document: &mut Document,
@@ -319,22 +353,16 @@ impl CommandInterpreter {
         let insert = matches!(self.mode, Mode::Insert | Mode::Replace)
             || self.is_text_selection()
             || self.select_visual_once;
-        let (prepared, caret) = document
-            .prepare_table_edit(
-                document.id(),
-                document.revision(),
-                TableEditIntent::PasteCells {
-                    table,
-                    row,
-                    column,
-                    cells,
-                },
-            )
-            .map_err(command_document_error)?;
-        document
-            .commit_model_transaction(prepared)
-            .map_err(command_document_error)?;
-        self.finish_native_table_edit(document, caret, insert);
+        self.commit_table_edit(
+            document,
+            TableEditIntent::PasteCells {
+                table,
+                row,
+                column,
+                cells,
+            },
+            insert,
+        )?;
         Ok(Some(CommandOutput {
             document_changed: true,
             cursor_moved: true,
@@ -392,24 +420,18 @@ impl CommandInterpreter {
                         {
                             return Ok(Some(output));
                         }
-                        let (prepared, caret) = document
-                            .prepare_table_edit(
-                                document.id(),
-                                document.revision(),
-                                TableEditIntent::ReplaceCells {
-                                    table: extent.table,
-                                    rows: extent.rows(),
-                                    columns: extent.columns(),
-                                    text: value.text.clone(),
-                                    anchor_row: extent.anchor_row,
-                                    anchor_column: extent.anchor_column,
-                                },
-                            )
-                            .map_err(command_document_error)?;
-                        document
-                            .commit_model_transaction(prepared)
-                            .map_err(command_document_error)?;
-                        self.finish_native_table_edit(document, caret, true);
+                        self.commit_table_edit(
+                            document,
+                            TableEditIntent::ReplaceCells {
+                                table: extent.table,
+                                rows: extent.rows(),
+                                columns: extent.columns(),
+                                text: value.text.clone(),
+                                anchor_row: extent.anchor_row,
+                                anchor_column: extent.anchor_column,
+                            },
+                            true,
+                        )?;
                         return Ok(Some(CommandOutput {
                             document_changed: true,
                             cursor_moved: true,
@@ -440,27 +462,18 @@ impl CommandInterpreter {
                         self.requested_register = None;
                         return Ok(Some(CommandOutput::complete()));
                     }
-                    let (prepared, caret) = document
-                        .prepare_table_edit(
-                            document.id(),
-                            document.revision(),
-                            TableEditIntent::ClearCells {
-                                table: extent.table,
-                                rows: extent.rows(),
-                                columns: extent.columns(),
-                            },
-                        )
-                        .map_err(command_document_error)?;
-                    document
-                        .commit_model_transaction(prepared)
-                        .map_err(command_document_error)?;
+                    let insert = self.selection_return_mode == Mode::Insert;
+                    self.commit_table_edit(
+                        document,
+                        TableEditIntent::ClearCells {
+                            table: extent.table,
+                            rows: extent.rows(),
+                            columns: extent.columns(),
+                        },
+                        insert,
+                    )?;
                     // Register publication follows successful source verification.
                     self.delete_register(requested, value, DeletionClass::Large);
-                    self.finish_native_table_edit(
-                        document,
-                        caret,
-                        self.selection_return_mode == Mode::Insert,
-                    );
                     return Ok(Some(CommandOutput {
                         document_changed: true,
                         cursor_moved: true,
@@ -499,13 +512,7 @@ impl CommandInterpreter {
                         columns: extent.columns(),
                     },
                 };
-                let (prepared, caret) = document
-                    .prepare_table_edit(document.id(), document.revision(), intent)
-                    .map_err(command_document_error)?;
-                document
-                    .commit_model_transaction(prepared)
-                    .map_err(command_document_error)?;
-                self.finish_native_table_edit(document, caret, true);
+                self.commit_table_edit(document, intent, true)?;
                 return Ok(Some(CommandOutput {
                     document_changed: true,
                     cursor_moved: true,

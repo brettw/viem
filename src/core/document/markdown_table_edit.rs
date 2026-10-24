@@ -878,6 +878,27 @@ impl Document {
     /// A whole table and the text beside it are two supported changes: the
     /// table is replaced by an empty paragraph, which the text edit then joins
     /// to its neighbor. Compose their patches; the caller verifies the result.
+    /// Replace all of a table's text literally. The first row's owner prefix
+    /// (a list indent or quote marker) owns the replacement, and the physical
+    /// ending after the last row separates it from what follows or ends the
+    /// file, as it does after a replaced paragraph. Keep both spellings.
+    fn whole_table_text_patch(
+        &self,
+        table: &crate::document::MarkdownTable,
+        replacement: &str,
+    ) -> Result<SourcePatch, ModelTransactionError> {
+        let start = table.source_rows.first().map_or(table.source_range.start, |row| row.source_body.start);
+        let end = table.source_rows.last().map_or(table.source_range.end, |row| row.source_body.end);
+        Ok(SourcePatch::primary(
+            start..end,
+            self.encoding().encode_fragment(&self.table_literal_text(replacement))?,
+        ))
+    }
+
+    /// An edit covering a whole table and text beside it removes the table,
+    /// then replaces the text. Remove it explicitly: an ordinary deletion of a
+    /// one-cell table's text only clears its cell, which would leave the same
+    /// whole-table edit to split again forever.
     fn text_with_whole_table_patches(
         &self,
         edit: &TextEdit,
@@ -890,13 +911,28 @@ impl Document {
         };
         let mut scratch = self.scratch_document();
         let mut composition = super::replacement::PatchComposition::new(self.source_byte_len());
-        for edit in [TextEdit::new(table, ""), TextEdit::new(text, edit.replacement.clone())] {
-            let prepared = scratch.prepare_text_edits(vec![edit])?;
+        let owner = scratch
+            .projection()
+            .table_at(table.start)
+            .filter(|owner| owner.range == table)
+            .ok_or(DocumentError::VerificationFailed)?;
+        let mut apply = |scratch: &mut Document,
+                         prepared: PreparedModelTransaction|
+         -> Result<(), ModelTransactionError> {
             for patch in prepared.summary.source_patches.iter().rev() {
                 composition.splice(patch.range(), patch.replacement());
             }
             scratch.commit_model_transaction(prepared)?;
+            Ok(())
+        };
+        let removal = scratch.prepare_reprojected_source_patches(vec![scratch.whole_table_text_patch(owner, "")?])?;
+        apply(&mut scratch, removal)?;
+        // The text edit must not reach the removed table's position again.
+        if scratch.projection().table_at(table.start).is_some_and(|other| other.range.start == table.start) {
+            return Err(DocumentError::VerificationFailed.into());
         }
+        let replacement = scratch.prepare_text_edits(vec![TextEdit::new(text, edit.replacement.clone())])?;
+        apply(&mut scratch, replacement)?;
         Ok(composition.source_patches())
     }
     pub(super) fn table_text_patches(
@@ -931,17 +967,7 @@ impl Document {
             // A one-cell table's text range is also its only cell's range.
             // Ordinary text replacement still edits that cell; removing the
             // table is an explicit line/row or whole-document intention.
-            // The first row's owner prefix (a list indent or quote marker)
-            // also owns the replacement, and the physical ending after the
-            // last row separates it from what follows or ends the file, as
-            // it does after a replaced paragraph. Keep both spellings.
-            let start = table.source_rows.first().map_or(table.source_range.start, |row| row.source_body.start);
-            let end = table.source_rows.last().map_or(table.source_range.end, |row| row.source_body.end);
-            return Ok(Some(vec![SourcePatch::primary(
-                start..end,
-                self.encoding()
-                    .encode_fragment(&self.table_literal_text(&edit.replacement))?,
-            )]));
+            return Ok(Some(vec![self.whole_table_text_patch(table, &edit.replacement)?]));
         }
         if edit.range.start == table.range.start && edit.range.end > table.range.end {
             return self.text_with_whole_table_patches(edit, table.range.clone()).map(Some);

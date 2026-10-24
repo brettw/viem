@@ -481,17 +481,24 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .expect("prepared view")
                 .commands
                 .finish_native_table_edit(&mut self.document, caret, enter_insert);
-            if enter_insert {
-                self.edit_group_owner = Some(view);
-            }
         }
         let after = self.views[&view]
             .commands
             .capture_history_restoration(&self.document)?;
         self.document.attach_history_restoration(
             self.document.history_status().current.node,
-            HistoryRestoration::new(before, after),
+            HistoryRestoration::new(before, after.clone()),
         )?;
+        // The edit is its own undo unit. Typing after it opens the next unit,
+        // which begins at this edit's result rather than before it.
+        if enter_insert && !reselected {
+            self.edit_group_owner = Some(view);
+            self.edit_group_restoration = Some(OpenGroupRestoration {
+                generation: self.document.edit_group_generation(),
+                parent: self.document.history_status().current,
+                before: after,
+            });
+        }
         let composition_changes = self.refresh_views_after_native_change(view, &map)?;
         if let Err(error) =
             self.materialize_immediate_viewport(view, ImmediateLayoutIntent::RevealCaret)

@@ -2537,6 +2537,33 @@ fn ranges_overlap(first: &Range<usize>, second: &Range<usize>) -> bool {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn command_restorations_must_belong_to_their_undo_unit_revisions() {
+        use super::{Association, BoundaryAffinity, DeletionRecovery, HistoryError, HistoryRestoration, HistoryRestorationSnapshot};
+        let anchor = |document: &super::Document, offset| HistoryRestorationSnapshot::new(document.text_anchor(
+            document.text_point(offset).unwrap(), Association::AfterInsertion, BoundaryAffinity::Downstream,
+            DeletionRecovery::PreferFollowingThenPreceding).unwrap(), Default::default());
+        let mut document = super::Document::new("one");
+        let original = anchor(&document, 0);
+        document.insert(3, " two").unwrap();
+        let first = anchor(&document, 7);
+        let node = document.history_status().current.node;
+        // A before-state from the edited revision cannot restore its parent.
+        assert!(matches!(document.attach_history_restoration(node, HistoryRestoration::new(first.clone(), first.clone())),
+            Err(HistoryError::RestorationMismatch { .. })));
+        document.attach_history_restoration(node, HistoryRestoration::new(original.clone(), first.clone())).unwrap();
+        // The same mistake in the next unit (typing after an edit that ran
+        // before its group opened) is rejected rather than recorded.
+        document.insert(7, " three").unwrap();
+        let node = document.history_status().current.node;
+        let second = anchor(&document, 13);
+        assert!(matches!(document.attach_history_restoration(node, HistoryRestoration::new(original, second.clone())),
+            Err(HistoryError::RestorationMismatch { .. })));
+        document.attach_history_restoration(node, HistoryRestoration::new(first, second)).unwrap();
+        assert!(document.undo() && document.undo());
+        assert_eq!(document.text(), "one");
+    }
+
+    #[test]
     fn style_defaults_refresh_both_memory_ledgers_without_creating_history() {
         let mut defaults: serde_json::Value = serde_json::from_slice(
             &super::Document::new("").export_style_defaults().unwrap(),
