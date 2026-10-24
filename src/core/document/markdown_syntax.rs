@@ -32,7 +32,8 @@ fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &st
     let source = format!("{prefix}{}{}", &text[range.clone()], definitions);
     let mut result = BTreeMap::new();
     let start = context.metadata_end(&source);
-    let grammar = fence_grammar_text(&source[start..]);
+    let body = offset.max(start) - start..(offset + range.len()).max(start) - start;
+    let grammar = autolink_grammar_text(fence_grammar_text(&source[start..]), body);
     let mut events = Parser::new_ext(&grammar, Options::ENABLE_STRIKETHROUGH)
         .into_offset_iter().map(|(event, span)| (event, span.start + start..span.end + start));
     while let Some((event, mut span)) = events.next() {
@@ -339,6 +340,47 @@ mod autolink_tests {
         assert_eq!(literal(Some("*"), url), [0..url.len()]);
         assert!(literal(Some(""), "https://ex_ample.com/a_b").is_empty());
     }
+}
+
+/// GFM consumes an extended URL autolink as text while it parses inlines, so
+/// emphasis and strikethrough delimiters inside one never pair with others.
+/// Give the grammar parser an offset-preserving view of `body` with those
+/// delimiters replaced. Links, images, code and HTML already own their text,
+/// and email autolinks are recognized only after emphasis.
+fn autolink_grammar_text(grammar: std::borrow::Cow<'_, str>, body: Range<usize>) -> std::borrow::Cow<'_, str> {
+    let delimiter = |byte: &u8| matches!(byte, b'*' | b'_' | b'~');
+    let text = &grammar[body.clone()];
+    if !text.bytes().any(|byte| delimiter(&byte)) || !(text.contains("://") || text.contains("www.")) {
+        return grammar;
+    }
+    let mut urls = Vec::new();
+    let mut at = body.start;
+    while at < body.end {
+        match autolink(&grammar, at, body.end) {
+            Some((finish, destination)) if !destination.starts_with("mailto:") => {
+                if grammar.as_bytes()[at..finish].iter().any(delimiter) {
+                    urls.push(at..finish);
+                }
+                at = finish;
+            }
+            _ => at += grammar[at..].chars().next().map_or(1, char::len_utf8),
+        }
+    }
+    if urls.is_empty() {
+        return grammar;
+    }
+    let owned = Parser::new_ext(&grammar, Options::ENABLE_STRIKETHROUGH).into_offset_iter()
+        .filter(|(event, _)| matches!(event, Event::Start(Tag::Link { .. } | Tag::Image { .. })
+            | Event::Code(_) | Event::InlineHtml(_) | Event::Html(_)))
+        .map(|(_, span)| span)
+        .collect::<Vec<_>>();
+    let mut bytes = grammar.into_owned().into_bytes();
+    for url in urls.into_iter().filter(|url| !owned.iter().any(|span| span.start < url.end && url.start < span.end)) {
+        for byte in &mut bytes[url] {
+            if delimiter(byte) { *byte = b'a'; }
+        }
+    }
+    std::borrow::Cow::Owned(String::from_utf8(bytes).expect("ASCII replacement preserves UTF-8"))
 }
 
 pub(super) fn fence_close(line: &str, delimiter: u8, length: usize) -> bool {

@@ -1241,10 +1241,10 @@ impl Document {
             .flatten();
         let prepared = match request {
             ModelRequest::ApplyFragmentEdits { edits, .. } => self.prepare_fragment_edits(edits),
-            ModelRequest::SetInlineProperty { range, property, enabled, .. } => self.prepare_inline_property(range, property, enabled),
-            ModelRequest::SetStrikethrough { range, enabled, .. } => {
-                self.prepare_strikethrough(range, enabled)
-            }
+            ModelRequest::SetInlineProperty { range, property, enabled, .. } => self.prepare_preserving_autolinks(&range,
+                |document| document.prepare_inline_property(range.clone(), property, enabled)),
+            ModelRequest::SetStrikethrough { range, enabled, .. } => self.prepare_preserving_autolinks(&range,
+                |document| document.prepare_strikethrough(range.clone(), enabled)),
             ModelRequest::ReplacePhysicalSource {
                 range, replacement, ..
             } => self.prepare_physical_source(range, replacement),
@@ -1266,7 +1266,8 @@ impl Document {
                 style,
                 enabled,
                 ..
-            } => self.prepare_semantic_style(range, style, enabled),
+            } => self.prepare_preserving_autolinks(&range,
+                |document| document.prepare_semantic_style(range.clone(), style, enabled)),
             ModelRequest::IndentList {
                 range, unindent, ..
             } => self.prepare_list_indent(range, unindent),
@@ -3714,12 +3715,39 @@ impl Document {
             return self.prepare_table_semantic_style(range, style, enabled);
         }
 
+        let code = style == SemanticInlineStyle::Code && enabled;
         if self.format() == Format::Markdown && !range.is_empty()
-            && matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
+            && (code || matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis))
         {
-            let fragments = self.projection().blocks_for_region(&range).into_iter()
-                .map(|block| range.start.max(block.range.start)..range.end.min(block.range.end))
-                .filter(|fragment| !fragment.is_empty()).collect::<Vec<_>>();
+            // Emphasis cannot cross a link label's boundary, so a selection
+            // that only partly covers a link is styled on each side of it.
+            // Code cannot contain a link at all, so it is split at every
+            // link boundary it covers.
+            let links = self.projection().style_spans_for_region(&range).into_iter()
+                .filter(|span| span.application == StyleApplication::Automatic("Link".into()))
+                .collect::<Vec<_>>();
+            let mut splits = links.iter()
+                .flat_map(|span| [span.range.start, span.range.end])
+                .filter(|at| range.start < *at && *at < range.end)
+                .collect::<Vec<_>>();
+            splits.retain(|at| code || links.iter().any(|span|
+                span.range.start == *at && range.end < span.range.end
+                    || span.range.end == *at && span.range.start < range.start));
+            let bodies = if code { vec![range.clone()] } else {
+                self.projection().blocks_for_region(&range).into_iter()
+                    .map(|block| range.start.max(block.range.start)..range.end.min(block.range.end))
+                    .filter(|fragment| !fragment.is_empty())
+                    .collect()
+            };
+            let fragments = bodies.into_iter()
+                .flat_map(|fragment| {
+                    let mut bounds = vec![fragment.start];
+                    bounds.extend(splits.iter().copied().filter(|at| fragment.start < *at && *at < fragment.end));
+                    bounds.push(fragment.end);
+                    bounds.sort_unstable();
+                    bounds.windows(2).map(|pair| pair[0]..pair[1]).collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>();
             if fragments.len() > 1 || fragments.first().is_some_and(|fragment| fragment != &range) {
                 let mut scratch = self.scratch_document();
                 let mut composition = replacement::PatchComposition::new(self.source_byte_len());
@@ -3937,7 +3965,11 @@ impl Document {
                 .iter()
                 .any(|span| span.range.start < range.end && range.start < span.range.end
                 && (!matches!(style, SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis)
-                    || span.application == StyleApplication::Semantic(SemanticInlineStyle::Code)))
+                    || span.application == StyleApplication::Semantic(SemanticInlineStyle::Code))
+                // Code may style a link's text from inside its label.
+                && !(style == SemanticInlineStyle::Code
+                    && span.application == StyleApplication::Automatic("Link".into())
+                    && span.range.start <= range.start && range.end <= span.range.end))
         {
             return Err(DocumentError::OverlappingFormatting.into());
         }
@@ -3966,6 +3998,20 @@ impl Document {
                     patches.push(SourcePatch::primary(run.end..run.end, self.encoding().encode_fragment(closing)?));
                 }
                 return Ok(Some(patches));
+            }
+            if style == SemanticInlineStyle::Code {
+                // Code text is literal: escapes and references in selected
+                // prose become the characters they show.
+                let bytes = self.state().source.bytes_in(source_range.clone())
+                    .ok_or(DocumentError::AmbiguousProjection)?;
+                let authored = self.encoding().decode_region(&bytes, source_range.start)?.text;
+                if authored != selected && !authored.contains(['\n', '\r']) {
+                    let ticks = "`".repeat(selected.split(|ch| ch != '`').map(str::len).max().unwrap_or(0) + 1);
+                    let pad = if selected.starts_with('`') || selected.ends_with('`')
+                        || selected.starts_with(' ') && selected.ends_with(' ') && !selected.trim().is_empty() { " " } else { "" };
+                    return Ok(Some(vec![SourcePatch::primary(source_range,
+                        self.encoding().encode_fragment(&format!("{ticks}{pad}{selected}{pad}{ticks}"))?)]));
+                }
             }
             let marker_bytes = self
                 .state()
@@ -7391,8 +7437,13 @@ fn semantic_style_edit_was_exactly_projected(
         }
         retained
     };
-    expected = without_target(&expected);
-    let mut unmatched = without_target(after);
+    let sorted = |spans: &[StyleSpan]| {
+        let mut spans = spans.to_vec();
+        spans.sort_by_key(|span| span.range.start);
+        spans
+    };
+    expected = without_target(&sorted(&expected));
+    let mut unmatched = without_target(&sorted(after));
 
     // Named Code is the editable appearance of the semantic code marker.
     // Its assignment is created/removed by the same source delimiters.
@@ -7403,8 +7454,15 @@ fn semantic_style_edit_was_exactly_projected(
         };
         if enabled {
             expected.push(named);
+            expected = without_target(&sorted(&expected));
         } else if let Some(index) = expected.iter().position(|span| span == &named) {
             expected.remove(index);
+        }
+        if !enabled {
+            // Text that is no longer code may be a URL, which Markdown links.
+            let link = StyleApplication::Automatic("Link".into());
+            unmatched.retain(|span| span.application != link || expected.contains(span)
+                || span.range.start < range.start || range.end < span.range.end);
         }
     }
     if expected.len() != unmatched.len() {

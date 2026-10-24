@@ -6618,6 +6618,8 @@ struct MarkdownBuilder<'a> {
     in_table: bool,
     html_stack: Vec<(String, usize, StyleApplication, Option<usize>)>,
     html_raw_text: Option<String>,
+    /// GFM recognizes no extended autolink inside a link's text.
+    link_label_depth: usize,
     inline_syntax: std::collections::BTreeMap<usize, super::markdown_syntax::Inline>,
     reference_definitions: String,
     source_syntax: &'a super::markdown_syntax::Blocks,
@@ -6646,6 +6648,7 @@ impl<'a> MarkdownBuilder<'a> {
             in_table: false,
             html_stack: Vec::new(),
             html_raw_text: None,
+            link_label_depth: 0,
             inline_syntax: Default::default(),
             reference_definitions: String::new(),
             source_syntax,
@@ -6760,7 +6763,9 @@ impl<'a> MarkdownBuilder<'a> {
                         self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Link".into()) });
                     }
                     InlineKind::Link => {
+                        self.link_label_depth += 1;
                         self.parse_inline_depth(inline.inner.start, inline.inner.end, depth + 1);
+                        self.link_label_depth -= 1;
                         if output < self.output.len() {
                             self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Link".into()) });
                         }
@@ -6878,7 +6883,7 @@ impl<'a> MarkdownBuilder<'a> {
                 continue;
             }
 
-            if let Some((finish, _)) = super::markdown_syntax::autolink(self.source_text, at, end) {
+            if let Some((finish, _)) = (self.link_label_depth == 0).then(|| super::markdown_syntax::autolink(self.source_text, at, end)).flatten() {
                 let output = self.output.len();
                 self.emit_range(at, finish);
                 self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Link".into()) });

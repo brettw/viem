@@ -1408,7 +1408,10 @@ pub(super) fn clear_patches(
     } else {
         format!("{marker}{}", pad(suffix))
     };
-    let text = super::projection::escape_markdown_insert_in_encoding(&document.text()[selected.clone()], document.encoding());
+    // A URL that is no longer code is an autolink, where escapes are text.
+    let preceding = if prefix.is_empty() { document.autolink_prefix(opening.start)? } else { Some(prefix_end.clone()) };
+    let text = super::projection::escape_markdown_prose_in_encoding(
+        preceding.as_deref(), &document.text()[selected.clone()], document.encoding());
     Ok(vec![
         (opening, open),
         (source, format!("{prefix_end}{text}{suffix_start}")),

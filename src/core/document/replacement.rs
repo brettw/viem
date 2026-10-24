@@ -52,6 +52,7 @@ impl Fragment {
         }
     }
 }
+#[derive(Clone)]
 pub(super) struct PatchComposition {
     fragments: Vec<Fragment>,
     original_len: usize,

@@ -1210,12 +1210,18 @@ impl Document {
             if let Some(link) = scratch.link_snapshot_at(scratch.text_point(range.start)?)?
                 .filter(|link| range.end <= link.range.end) {
                 if link.destination == *destination && scratch.link_title(&link)? == *title { continue; }
-                // The inserted label may have inherited its destination's
-                // link. Split only that selected label out before applying
-                // the donor link; the surrounding labels retain their own
-                // destinations, titles and inline treatment.
-                let (unlinked, _) = scratch.prepare_link_edit(scratch.id(), scratch.revision(),
-                    super::super::LinkEditIntent::RemoveSelection { range: range.clone() })?;
+                // A bare URL that the inserted text began may have absorbed
+                // following words, which were never linked: remove it whole.
+                // Otherwise the inserted label may have inherited its
+                // destination's link. Split only that selected label out
+                // before applying the donor link; the surrounding labels
+                // retain their own destinations, titles and inline treatment.
+                let intent = if range.start <= link.range.start && scratch.is_bare_autolink(&link)? {
+                    super::super::LinkEditIntent::Remove { range: link.range.clone() }
+                } else {
+                    super::super::LinkEditIntent::RemoveSelection { range: range.clone() }
+                };
+                let (unlinked, _) = scratch.prepare_link_edit(scratch.id(), scratch.revision(), intent)?;
                 publish(&mut scratch, unlinked, &mut sources)?;
             }
             let text = scratch.projection().text_tree().slice(range.clone()).map_err(DocumentError::FormattedTextStorage)?;
