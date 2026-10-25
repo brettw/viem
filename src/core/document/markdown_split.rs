@@ -74,7 +74,7 @@ pub(crate) fn wrapped_inline_source(
 fn scope_style(application: &StyleApplication) -> Option<ScopeStyle> {
     match application {
         StyleApplication::Semantic(style) => Some(ScopeStyle::Semantic(*style)),
-        StyleApplication::Automatic(id) if id.0 == "Strikethrough" => Some(ScopeStyle::Strike),
+        StyleApplication::Direct(p) if p.strikethrough == Some(true) => Some(ScopeStyle::Strike),
         StyleApplication::Direct(properties) => [
             (StyleProperty::CharacterUnderline, properties.underline),
             (StyleProperty::CharacterSuperscript, properties.superscript),
@@ -917,8 +917,8 @@ fn repair_flanking_pass(
                                 scope.marker.as_bytes()[0],
                                 scope.marker.len(),
                             ) {
-                                (StyleApplication::Automatic(id), b'~', _) => {
-                                    id.0 == "Strikethrough"
+                                (StyleApplication::Direct(p), b'~', _) => {
+                                    p.strikethrough == Some(true)
                                 }
                                 (
                                     StyleApplication::Semantic(SemanticInlineStyle::Strong),

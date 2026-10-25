@@ -25,6 +25,25 @@ Add a feature matrix there when useful, selecting existing tests where possible.
 The contract stage complements the focused suites; it does not replace required
 consistency, full-suite, or native checks.
 
+## Comment authoring
+
+Style → Character → Comment wraps a selection in a visible `<!-- … -->`
+span. At a caret it immediately inserts `<!--  -->` and enters Insert mode
+between the two spaces. This insertion is undoable before any body text is typed.
+The body is literal, and continued Insert or Replace input stays
+before the closing delimiter. Creating a comment preserves surrounding paragraph,
+list, quote and table context; supporting passive inline markup may be needed to
+avoid turning a line's unselected suffix into an HTML block. Code blocks, atomic
+objects and selections containing comment delimiters cannot be wrapped.
+
+`tests/all/comment_style.rs` covers recognition, literal bodies, immediate caret
+creation,
+selection and table actions, Insert-mode entry, exact history, encoding and
+ending preservation, and bounded work beside an unrelated suffix. Existing HTML
+editing regressions cover editing already-authored comments. Native character
+menu tests exercise capability, dispatch, immediate delimiters, caret placement
+and reopened styles.
+
 ## Shared fixtures and diagnostics
 
 `tests/all/markdown_test_support.rs` supplies encoded fixtures, reopen/history

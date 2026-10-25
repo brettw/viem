@@ -316,7 +316,7 @@ impl Document {
         let delimiter_edge = self.projection().style_spans_touching(&(at..at)).into_iter().any(|span|
             (span.range.start == at || span.range.end == at)
                 && (matches!(span.application, StyleApplication::Semantic(SemanticInlineStyle::Strong | SemanticInlineStyle::Emphasis))
-                    || matches!(span.application, StyleApplication::Automatic(ref style) if style.0 == "Strikethrough")));
+                    || matches!(span.application, StyleApplication::Direct(ref properties) if properties.strikethrough == Some(true))));
         let inline_html = self.format() == Format::Markdown
             && (matches!(block.kind, super::super::BlockKind::Heading(_))
                 || block.markdown_html

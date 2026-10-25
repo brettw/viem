@@ -26,6 +26,8 @@ public enum EVCoreFrontendError: LocalizedError, Equatable {
                 "This character cannot be represented in the document's encoding."
             case UInt32(VIEM_STATUS_UNSUPPORTED_OPERATION):
                 "This operation is not supported for the current format or selection."
+            case UInt32(VIEM_STATUS_UNFINISHED_COMMENT):
+                "Can’t create a comment inside an unfinished comment, please fix the source."
             case UInt32(VIEM_STATUS_POLICY_REQUIRED):
                 "This change needs a format or encoding policy before it can be applied."
             default:

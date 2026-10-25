@@ -6789,7 +6789,7 @@ impl<'a> MarkdownBuilder<'a> {
                         match inline.kind {
                             InlineKind::Emphasis => self.push_semantic_style(output, SemanticInlineStyle::Emphasis),
                             InlineKind::Strong => self.push_semantic_style(output, SemanticInlineStyle::Strong),
-                            _ => self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Strikethrough".into()) }),
+                            _ => self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() }) }),
                         }
                     }
                     InlineKind::Html if markdown_inline_break_length(&self.source_text[inline.range.clone()]).is_some() => {

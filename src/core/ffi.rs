@@ -342,6 +342,7 @@ pub enum ViemStatus {
     InvalidStyleEditGroup = 39,
     /// A live style edit group exists but belongs to another attached view.
     StyleEditGroupWrongOwner = 40,
+    UnfinishedComment = 41,
     InternalError = 254,
     Panic = 255,
 }
@@ -2768,6 +2769,7 @@ fn document_status(error: DocumentError) -> ViemStatus {
         | DocumentError::HardLineTransferProjectionMismatch => ViemStatus::VerificationFailed,
         DocumentError::LineEndingConversionWouldReinterpretContent
         | DocumentError::UnrepresentableFormattedCharacter { .. } => ViemStatus::PolicyRequired,
+        DocumentError::UnfinishedComment => ViemStatus::UnfinishedComment,
         DocumentError::NotModifiable | DocumentError::UnsupportedFormatting | DocumentError::UnsupportedTableEdit(_) | DocumentError::OpaqueDecodingConflict { .. } => {
             ViemStatus::UnsupportedOperation
         }
@@ -6129,7 +6131,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
                     metadata.origin,
                     is_base,
                     None,
-                    ) | if format.is_markdown() && style.id.0 == "Code"
+                    ) | if format.is_markdown() && matches!(style.id.0.as_str(), "Code" | "Comment")
                 {
                     VIEM_STYLE_CAPABILITY_ASSIGN
                 } else {
@@ -13748,7 +13750,7 @@ pub struct ViemSelectedStylesInfoV1 {
 }
 
 /// Copy selected display style IDs, including Markdown's content-derived
-/// Link, Comment, Markdown reference and Strikethrough appearances. Authored
+/// Link, Comment and Markdown reference appearances. Authored
 /// assignment queries remain separate from these inspector identities.
 /// # Safety
 /// Output regions must be aligned, writable, and mutually disjoint.

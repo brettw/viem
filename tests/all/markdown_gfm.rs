@@ -20,9 +20,8 @@ fn gfm_inline_recognition_and_literal_references() {
         assert_eq!(doc.source_bytes(), source.as_bytes());
     }
     let doc = open("![alt](image.png) <!-- comment --> ~~old~~");
-    for name in ["Comment", "Strikethrough"] {
-        assert!(doc.projection().style_spans().iter().any(|span| span.application == StyleApplication::Automatic(name.into())), "{name}");
-    }
+    assert!(doc.projection().style_spans().iter().any(|span| span.application == StyleApplication::Automatic("Comment".into())));
+    assert!(doc.projection().style_spans().iter().any(|span| matches!(&span.application, StyleApplication::Direct(p) if p.strikethrough == Some(true))));
     assert!(open("***both***").projection().style_spans().iter().any(|s| s.application == StyleApplication::Semantic(SemanticInlineStyle::Strong)));
 }
 

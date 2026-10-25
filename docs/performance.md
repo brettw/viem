@@ -28,6 +28,16 @@ with that snapshot, including in history, so editing paths use tree queries,
 materialized it. Work statistics count each new compatibility copy of records
 and text, so locality tests can assert that an edit made none.
 
+Strikethrough uses the same sparse direct-property spans as underline, so its
+appearance no longer depends on an editable named style. An isolated arm64
+release allocator comparison (2026-10-24, Rust 1.98.1) measured 2,080,000 bytes
+of property payloads for 10,000 spans, versus 130,000 bytes for their former
+style-name strings: 208 versus 13 bytes per span, excluding identical range
+storage and allocator overhead. The additional 1.86 MiB per 10,000 spans is an
+accepted cost of sharing the direct-formatting representation; it scales with
+strikethrough ranges, not ordinary characters. Standard, supplemental and
+rich-paste memory checks remained within their existing ceilings.
+
 When contributor source starts are monotonic, source-boundary queries use source
 extent aggregates on the existing formatted-order tree. Reordered contributors
 retain a separate source-keyed index. Regional splices shift the shared-tree

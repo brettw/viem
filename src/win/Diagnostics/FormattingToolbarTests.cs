@@ -369,8 +369,9 @@ internal static class FormattingToolbarTests
                 "toolbar groups use ordinary gaps and place script immediately before code and link");
             Check(toolbar.InsertImage.Parent == toolbarRow.Children[tableIndex - 1]
                 && toolbar.Buttons[ToolbarAction.Indent].Parent == toolbarRow.Children[tableIndex + 1]
-                && toolbarRow.Children[tableIndex + 2] == toolbar.Paragraph && toolbarRow.Children[tableIndex + 3] == toolbar.Character,
-                "table precedes indent and the two style selectors trail the command buttons");
+                && toolbarRow.Children[tableIndex + 2] == toolbar.Paragraph && toolbarRow.Children.Last() == toolbar.Paragraph
+                && toolbarRow.Children.OfType<DropDownButton>().SequenceEqual(new[] { toolbar.Paragraph }),
+                "table precedes indent and the paragraph selector trails the command buttons");
             toolbar.UpdateLayout();
             double standardGap = Gap(codeLink, (FrameworkElement)toolbar.InsertImage.Parent);
             Check(Math.Abs(standardGap - 8) < 1 && toolbarRow.Children.OfType<FrameworkElement>().Zip(toolbarRow.Children.OfType<FrameworkElement>().Skip(1))
@@ -426,11 +427,11 @@ internal static class FormattingToolbarTests
             var items = ((MenuFlyout)toolbar.Paragraph.Flyout).Items.ToArray();
             var sheet = view.Styles(view.SelectedNamedStyles().Identity);
             view.Command("w");
-            Check(Title(toolbar.Character) == "Code", "toolbar tracks the Code character assignment");
+            Check(State(toolbar, ToolbarAction.CharacterCode) == true, "toolbar tracks the Code character assignment");
             Check(items.SequenceEqual(((MenuFlyout)toolbar.Paragraph.Flyout).Items) && ReferenceEquals(sheet, view.Styles(view.SelectedNamedStyles().Identity)),
                 "cursor movement retains native menu items and the exact stylesheet snapshot");
             view.SelectAll();
-            Check(Title(toolbar.Paragraph) == "Mixed" && Title(toolbar.Character) == "Mixed", "toolbar selectors show mixed assignments");
+            Check(Title(toolbar.Paragraph) == "Mixed", "toolbar selectors show mixed assignments");
             await Choose(toolbar.Paragraph, "Heading2");
             Check(Title(toolbar.Paragraph) == "Heading 2" && pane.LastError == null, "toolbar selector invokes the shared heading action");
             byte[] changed = document.Source(document.State.document_revision);
@@ -491,7 +492,7 @@ internal static class FormattingToolbarTests
                 $"mode={view.Presentation.mode}, formatting={view.HasFormattingSelection}, bold={toolbar.Buttons[ToolbarAction.Bold].IsEnabled}, paragraph={toolbar.Paragraph.IsEnabled}, error={pane.LastError}");
             view.Key(VIEM_KEY_ESCAPE);
             view.Command(":");
-            Check(!toolbar.Paragraph.IsEnabled && !toolbar.Character.IsEnabled && pane.LastError == null, "command prompt disables formatting without stale selection errors");
+            Check(!toolbar.Paragraph.IsEnabled && pane.LastError == null, "command prompt disables formatting without stale selection errors");
             view.Key(VIEM_KEY_ESCAPE);
             return Task.CompletedTask;
         }
@@ -515,12 +516,10 @@ internal static class FormattingToolbarTests
             toolbar.UpdateLayout();
             double unindentX = toolbar.Buttons[ToolbarAction.Unindent].TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
             double paragraphX = toolbar.Paragraph.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
-            double characterX = toolbar.Character.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
             Check(unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth <= toolbar.Viewport.ActualWidth
-                && paragraphX < toolbar.Viewport.ActualWidth && paragraphX + toolbar.Paragraph.ActualWidth > toolbar.Viewport.ActualWidth
-                && characterX >= toolbar.Viewport.ActualWidth,
-                "shrinking the toolbar clips Paragraph then Character while every earlier command remains visible",
-                $"unindentRight={unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth}, paragraphX={paragraphX}, characterX={characterX}, viewport={toolbar.Viewport.ActualWidth}");
+                && paragraphX < toolbar.Viewport.ActualWidth && paragraphX + toolbar.Paragraph.ActualWidth > toolbar.Viewport.ActualWidth,
+                "shrinking the toolbar clips Paragraph while every earlier command remains visible",
+                $"unindentRight={unindentX + toolbar.Buttons[ToolbarAction.Unindent].ActualWidth}, paragraphX={paragraphX}, viewport={toolbar.Viewport.ActualWidth}");
             Resize(540, 450);
             await InputRoutingTests.Settle();
             toolbar.UpdateLayout();
@@ -542,12 +541,12 @@ internal static class FormattingToolbarTests
                 .All(pair => Gap(pair.First, pair.Second) >= standardGap - 1),
                 "narrow toolbar layout never lets later controls overlap earlier groups");
             double rowX = toolbarRow.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X;
-            toolbar.Character.Focus(FocusState.Programmatic);
-            toolbar.Character.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
+            toolbar.Paragraph.Focus(FocusState.Programmatic);
+            toolbar.Paragraph.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
             await InputRoutingTests.Settle();
             toolbar.UpdateLayout();
             Check(Math.Abs(toolbarRow.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X - rowX) < .01
-                && toolbar.Character.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X >= toolbar.Viewport.ActualWidth
+                && toolbar.Paragraph.TransformToVisual(toolbar.Viewport).TransformPoint(new()).X >= toolbar.Viewport.ActualWidth
                 && Math.Abs(toolbar.FormattedView.TransformToVisual(toolbar).TransformPoint(new()).X - toggleX) < 1,
                 "focus and bring-into-view requests cannot scroll the toolbar or displace its fixed toggle");
             Check(toolbar.FormattedView.Focus(FocusState.Programmatic), "the formatted-view toggle remains keyboard reachable beside clipped controls");
@@ -668,7 +667,7 @@ internal static class FormattingToolbarTests
                 + $"styles={string.Join(", ", literalSheet.Styles.Where(style => style.Id is "Paragraph" or "Code Block" or "Code").Select(style => $"{style.Namespace}:{style.Id} declared={style.Declares(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH)} effective={style.Value(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH).enum_value}"))}, "
                 + $"mode={codeView.Presentation.mode}, cursor={codeView.Presentation.cursor_utf8_offset}, error={codePane.LastError}");
             Check(toolbar.Buttons[ToolbarAction.CharacterCode].Visibility == Visibility.Visible
-                && !toolbar.Buttons[ToolbarAction.CharacterCode].IsEnabled && !toolbar.Character.IsEnabled,
+                && !toolbar.Buttons[ToolbarAction.CharacterCode].IsEnabled,
                 "literal code retains its character toolbar controls and disables unsupported assignments: " + format);
             ulong literalRevision = codePane.Document.State.document_revision;
             toolbar.Execute(ToolbarAction.Strikethrough);

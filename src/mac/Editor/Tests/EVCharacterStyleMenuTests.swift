@@ -175,4 +175,57 @@ import XCTest
         }
     }
 
+    func testCommentMenuWrapsSelectionAndReopensWithExactUndo() throws {
+        let source = "before word after"
+        let (backend, view, session) = try surface(source, type: EVDocument.markdownType)
+        _ = try selectedStyle(NSRange(location: 7, length: 4), view: view, session: session)
+        try choose("Comment", in: view)
+        XCTAssertEqual(try backend.formattedText(), "before <!-- word --> after")
+        let saved = try backend.serializedSource(typeName: EVDocument.markdownType)
+        try assertReopenedStyle(saved, type: EVDocument.markdownType,
+            range: NSRange(location: 12, length: 4), id: "Comment")
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+        view.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        view.perform(menuCommand: .redo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), saved)
+    }
+
+    func testCommentMenuAtCaretImmediatelyInsertsDelimiters() throws {
+        let (backend, view, session) = try surface("", type: EVDocument.markdownType)
+        try choose("Comment", in: view)
+        XCTAssertTrue(backend.persistenceState.isDirty)
+        XCTAssertEqual(try backend.formattedText(), "<!--  -->")
+        XCTAssertEqual(try session.listSelection().text_start, 5)
+        XCTAssertEqual(view.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+        for text in ["he", "llo"] {
+            view.editorView.insertText(text, replacementRange: NSRange(location: NSNotFound, length: 0))
+            XCTAssertNil(view.commandOutput)
+        }
+        XCTAssertEqual(try backend.formattedText(), "<!-- hello -->")
+        XCTAssertEqual(try session.listSelection().text_start, 10)
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+        view.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.formattedText(), "<!--  -->")
+        view.perform(menuCommand: .undo, sender: nil)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data())
+    }
+
+    func testUnfinishedCommentMenuErrorExplainsHowToRecover() throws {
+        for source in ["<!-- hello --", "before <!-- hello -- after", "before <!-- hello --\\> after", "<span><!-- hello --</span>tail"] {
+            let (backend, view, session) = try surface(source, type: EVDocument.markdownType)
+            let formatted = try backend.formattedText()
+            _ = try selectedStyle((formatted as NSString).range(of: "hello"), view: view, session: session)
+            let catalogue = try XCTUnwrap(view.currentStyleMenuCatalogue())
+            let item = NSMenuItem(title: "Comment", action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)), keyEquivalent: "")
+            item.representedObject = EVStyleMenuAction(kind: .assign, role: .character, stableID: "Comment",
+                documentID: catalogue.documentID, documentRevision: catalogue.documentRevision,
+                styleSheetRevision: catalogue.styleSheetRevision)
+            view.editorView.performEditorStyleMenuAction(item)
+            XCTAssertTrue(view.commandOutput?.contains("Can’t create a comment inside an unfinished comment, please fix the source.") == true,
+                view.commandOutput ?? "Missing error")
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+        }
+    }
+
 }

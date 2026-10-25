@@ -1,3 +1,4 @@
+use viem_core::document::CharacterProperties;
 use viem_core::command::composition::{CompositionEvent, CompositionTarget, CompositionUpdate};
 use viem_core::command::{CommandInterpreter, CommandStatus, InputEvent, Key};
 use viem_core::document::{FontSlant, SemanticInlineStyle, StyleApplication};
@@ -73,7 +74,7 @@ fn inline_completion_waits_then_formats_and_exits() {
             d.projection()
                 .style_spans()
                 .iter()
-                .any(|s| s.application == StyleApplication::Automatic("Strikethrough".into())),
+                .any(|s| s.application == StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() })),
             strike
         );
         assert_eq!(reopened(&d).text(), "word");

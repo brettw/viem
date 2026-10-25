@@ -20,7 +20,6 @@ internal sealed partial class FormattingToolbar : UserControl
     private EditorPane? pane;
     private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
-    internal readonly DropDownButton Character = Selector("Character style");
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
     internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
     internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
@@ -70,7 +69,7 @@ internal sealed partial class FormattingToolbar : UserControl
         chrome.SetBinding(Border.BackgroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = this, Path = new PropertyPath("Background") });
         Content = chrome;
         AutomationProperties.SetName(this, "Formatting toolbar");
-        foreach (var selector in new[] { Paragraph, Character })
+        foreach (var selector in new[] { Paragraph })
         {
             var menu = (MenuFlyout)selector.Flyout;
             menu.Opening += (_, _) => tracking++;
@@ -104,7 +103,7 @@ internal sealed partial class FormattingToolbar : UserControl
         var indent = Group(); row.Children.Add(indent);
         Add(indent, ToolbarAction.Indent, "Indent", "\uE8F4", toggle: false);
         Add(indent, ToolbarAction.Unindent, "Unindent", "\uE8F3", toggle: false);
-        row.Children.Add(Paragraph); row.Children.Add(Character);
+        row.Children.Add(Paragraph);
         InsertTable.Content = TableIcon(InsertTable);
         AutomationProperties.SetName(InsertTable, "Insert Table"); ToolTipService.SetToolTip(InsertTable, "Insert Table");
     }
@@ -265,7 +264,7 @@ internal sealed partial class FormattingToolbar : UserControl
             sheet = view.Styles(selected.Identity);
             choices = CoreView.StyleChoices(sheet, selected, view.Document.IsReadOnly);
             if (!available) choices = choices.Select(c => c with { Enabled = false }).ToArray();
-            if (tracking == 0) { RefreshSelector(Paragraph, 1); RefreshSelector(Character, 2); }
+            if (tracking == 0) { RefreshSelector(Paragraph, 1); }
             foreach (var (action, semantic) in new[] { (ToolbarAction.Bold, VIEM_SEMANTIC_STYLE_STRONG), (ToolbarAction.Italic, VIEM_SEMANTIC_STYLE_EMPHASIS) })
             {
                 var state = available ? view.SemanticStyle(semantic) : default;
@@ -396,7 +395,7 @@ internal sealed partial class FormattingToolbar : UserControl
     internal bool DismissPopups()
     {
         tablePicker.Close();
-        ((MenuFlyout)Paragraph.Flyout).Hide(); ((MenuFlyout)Character.Flyout).Hide();
+        ((MenuFlyout)Paragraph.Flyout).Hide();
         return tracking > 0;
     }
 

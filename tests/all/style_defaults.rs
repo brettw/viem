@@ -71,7 +71,7 @@ fn theme_replacement_restores_markdown_defaults_and_automatic_styles() {
         let customized = br#"{"version":1,"character_styles":[{"id":"Link","name":"Link","properties":{"underline":false}}]}"#;
         for defaults in [customized.as_slice(), br#"{"version":1}"#.as_slice(), customized.as_slice(), br#"{"version":1}"#.as_slice()] {
             document.replace_style_defaults(defaults).unwrap();
-            for id in ["Link", "Comment", "Markdown reference", "Strikethrough"] {
+            for id in ["Link", "Comment", "Markdown reference"] {
                 let actual = document.projection().style_sheet().character_style(&id.into()).unwrap();
                 if id == "Link" && defaults == customized {
                     assert_eq!(actual.properties.underline, Some(false));
@@ -487,5 +487,33 @@ fn clearing_all_builtin_deltas_inherits_parent_and_survives_settings_reopen() {
         let mut reopened = open("# Title\n\nText", Format::Markdown);
         reopened.initialize_style_defaults(&settings).unwrap();
         assert_inherits_parent(&reopened, &id, character);
+    }
+}
+
+#[test]
+fn strikethrough_is_direct_and_retires_saved_style_definitions() {
+    use viem_core::layout::DocumentLayoutStyles;
+    let saved = br#"{"version":1,"character_styles":[
+        {"id":"Strikethrough","name":"Strikethrough","properties":{"strikethrough":false}},
+        {"id":"Child","name":"Child","based_on":"Strikethrough","properties":{"bold":true}}
+    ]}"#;
+    for source in ["# ~~[word](next.md)~~", r#"# <del><a href="next.md">word</a></del>"#] {
+        let mut document = open(source, Format::Markdown);
+        let before = DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap();
+        assert!(before.strikethrough && before.underline);
+        assert!(document.projection().style_sheet().character_style(&"Strikethrough".into()).is_none());
+        // A stale saved definition cannot suppress the source-authored effect.
+        assert!(document.initialize_style_defaults(saved).unwrap().is_empty());
+        for _ in 0..2 {
+            let sheet = document.projection().style_sheet();
+            assert!(sheet.character_style(&"Strikethrough".into()).is_none());
+            let child = sheet.character_style(&"Child".into()).unwrap();
+            assert_eq!(child.based_on, None);
+            assert_eq!(child.properties.bold, Some(true));
+            assert_eq!(DocumentLayoutStyles::character_at(document.projection(), 0, false).unwrap(), before);
+            assert_eq!(document.source_bytes(), source.as_bytes());
+            let exported = document.export_style_defaults().unwrap();
+            document.replace_style_defaults(&exported).unwrap();
+        }
     }
 }

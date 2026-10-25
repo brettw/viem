@@ -251,9 +251,12 @@ impl Document {
         let mut affinity = affinity;
         let mut exit_source = exit.map(|point| point.offset());
         for inserted in input.graphemes(true) {
+            let comment_target = named.filter(|style| style.0 == "Comment")
+                .and_then(|_| scratch.comment_replace_target(target));
+            let replacement_target = comment_target.unwrap_or(target);
             let lines = scratch.hard_line_snapshot();
             let end = lines
-                .grapheme_range_at(target)
+                .grapheme_range_at(replacement_target)
                 .filter(|range| {
                     lines
                         .line_at_offset(range.start)
@@ -262,11 +265,11 @@ impl Document {
                         .as_ref()
                         != Some(range)
                 })
-                .map_or(target, |range| range.end);
-            let original = if end > target {
+                .map_or(replacement_target, |range| range.end);
+            let original = if end > replacement_target {
                 Some(
                     lines
-                        .slice_utf8(target..end)
+                        .slice_utf8(replacement_target..end)
                         .map_err(DocumentError::FormattedTextStorage)?,
                 )
             } else {
@@ -275,8 +278,12 @@ impl Document {
             let payload = FormattedTextPayload::new(&lines, inserted, vec![])
                 .expect("journaled Replace excludes semantic hard breaks");
             let edit =
-                FormattedPayloadEdit::new(target..end, payload).with_boundary_affinity(affinity);
-            let (prepared, after_cursor, closed) = if link_disabled {
+                FormattedPayloadEdit::new(replacement_target..end, payload).with_boundary_affinity(affinity);
+            let (prepared, after_cursor, closed) = if comment_target.is_some() {
+                if !values.is_empty() { return Err(DocumentError::UnsupportedFormatting.into()); }
+                let (prepared, caret) = scratch.prepare_comment_replacement(target, edit)?;
+                (prepared, caret, None)
+            } else if link_disabled {
                 let (prepared, caret, _) = scratch.prepare_insertion_without_link(edit, named, values, None)?;
                 (prepared, caret, None)
             } else if self.format() == Format::Markdown && (autodetect || literal) {

@@ -502,7 +502,7 @@ impl Document {
         if style.is_internal_in(crate::document::StyleNamespace::Character)
             || (!style.0.is_empty() && sheet.character_style(style).is_none())
             || !self.format().is_markdown()
-            || !(style.0 == "Code" || style.0.is_empty())
+            || !matches!(style.0.as_str(), "Code" | "Comment" | "")
         {
             return Err(DocumentError::UnsupportedFormatting);
         }
@@ -692,7 +692,7 @@ impl Document {
                     })
             })
         }) && p.strikethrough.is_none_or(|enabled| {
-            enabled == has(StyleApplication::Automatic("Strikethrough".into()))
+            enabled == has(StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() }))
         })
     }
 
@@ -712,7 +712,7 @@ impl Document {
         enabled: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         let application = style.map_or_else(
-            || StyleApplication::Automatic("Strikethrough".into()),
+            || StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() }),
             StyleApplication::Semantic,
         );
         let removal = |content: &Range<usize>| match style {
@@ -1061,6 +1061,12 @@ impl Document {
             self.validate_typing_named_style(style)?;
         }
         self.validate_typing_payload(&edit)?;
+        if named.is_some_and(|style| style.0 == "Comment") {
+            // Comment bodies are literal; do not silently discard an explicit
+            // inline formatting choice that their source cannot represent.
+            if !values.is_empty() { return Err(DocumentError::UnsupportedFormatting.into()); }
+            return self.prepare_comment_typing(edit);
+        }
         let properties = self.validate_typing_properties(values)?;
         if self.format() == Format::Markdown && (named.is_some() || !values.is_empty()) {
             let sample = if edit.range.start == self.text().len() && edit.range.start > 0 {

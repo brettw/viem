@@ -70,8 +70,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertTrue(toolbar.insertImage.superview === row.arrangedSubviews[tableIndex - 1])
     XCTAssertTrue(toolbar.commandButtons[.increaseIndent]?.superview === row.arrangedSubviews[tableIndex + 1])
     XCTAssertTrue(toolbar.paragraphStyle === row.arrangedSubviews[tableIndex + 2])
-    XCTAssertTrue(toolbar.characterStyle === row.arrangedSubviews[tableIndex + 3])
-    XCTAssertTrue(row.arrangedSubviews.last === toolbar.characterStyle)
+    XCTAssertTrue(row.arrangedSubviews.last === toolbar.paragraphStyle)
     toolbar.layoutSubtreeIfNeeded()
     let standardGap = row.arrangedSubviews[codeIndex + 1].frame.minX - codeLink.frame.maxX
     XCTAssertEqual(standardGap, row.spacing, accuracy: 0.01)
@@ -80,7 +79,7 @@ final class EVFormattingToolbarTests: XCTestCase {
         standardGap, accuracy: 0.01)
     }
     XCTAssertTrue(toolbar.paragraphStyle.itemArray.allSatisfy { $0.image != nil })
-    XCTAssertTrue(toolbar.characterStyle.itemArray.allSatisfy { $0.image != nil })
+    XCTAssertEqual(row.arrangedSubviews.compactMap { $0 as? NSPopUpButton }, [toolbar.paragraphStyle])
   }
 
   func testPreviewParagraphSelectorShowsOnlySupportedAssignmentsAndKeepsCatalogue() throws {
@@ -228,11 +227,10 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Base Paragraph")
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 14, length: 4))
     toolbar.refresh()
-    XCTAssertEqual(toolbar.characterStyle.titleOfSelectedItem, "Code")
+    XCTAssertEqual(toolbar.characterCode.state, .on)
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 18))
     toolbar.refresh()
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Mixed")
-    XCTAssertEqual(toolbar.characterStyle.titleOfSelectedItem, "Mixed")
     try choose("Heading2", from: toolbar.paragraphStyle, toolbar: toolbar)
     XCTAssertNil(surface.commandOutput)
     XCTAssertEqual(toolbar.paragraphStyle.titleOfSelectedItem, "Heading 2")
@@ -259,11 +257,9 @@ final class EVFormattingToolbarTests: XCTestCase {
       toolbar.toggleCharacterCode(toolbar.characterCode)
       XCTAssertNil(surface.commandOutput)
       XCTAssertEqual(toolbar.characterCode.state, .on)
-      XCTAssertEqual(toolbar.characterStyle.titleOfSelectedItem, "Code")
       toolbar.toggleCharacterCode(toolbar.characterCode)
       XCTAssertNil(surface.commandOutput)
       XCTAssertEqual(toolbar.characterCode.state, .off)
-      XCTAssertEqual(toolbar.characterStyle.titleOfSelectedItem, "Default Paragraph")
       XCTAssertFalse(toolbar.codeBlock.isHidden)
     }
   }
@@ -556,8 +552,6 @@ final class EVFormattingToolbarTests: XCTestCase {
       XCTAssertEqual(surface.formattingToolbar.characterCode.state, .on)
       XCTAssertFalse(surface.formattingToolbar.characterCode.isHidden)
       XCTAssertFalse(surface.formattingToolbar.characterCode.isEnabled)
-      XCTAssertFalse(surface.formattingToolbar.characterStyle.isEnabled)
-      XCTAssertEqual(surface.formattingToolbar.characterStyle.titleOfSelectedItem, "Code")
       surface.formattingToolbar.toggleCharacterCode(surface.formattingToolbar.characterCode)
       XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
       XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
@@ -565,7 +559,6 @@ final class EVFormattingToolbarTests: XCTestCase {
       surface.formattingToolbar.refresh()
       XCTAssertEqual(surface.formattingToolbar.characterCode.state, .on)
       XCTAssertTrue(surface.formattingToolbar.characterCode.isEnabled)
-      XCTAssertTrue(surface.formattingToolbar.characterStyle.isEnabled)
 
       let (_, code) = try self.surface("```\nliteral\n```", type: type)
       let codeText = try code.backend.formattedText() as NSString
@@ -576,7 +569,6 @@ final class EVFormattingToolbarTests: XCTestCase {
       }
       XCTAssertFalse(code.formattingToolbar.characterCode.isHidden)
       XCTAssertFalse(code.formattingToolbar.characterCode.isEnabled)
-      XCTAssertFalse(code.formattingToolbar.characterStyle.isEnabled)
       code.formattingToolbar.toggleCharacterCode(code.formattingToolbar.characterCode)
       XCTAssertEqual(code.viewPresentation.mode, UInt32(VIEM_MODE_NORMAL))
     }
@@ -624,7 +616,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     window.contentView?.superview?.layoutSubtreeIfNeeded()
     let button = toolbar.formattedView
     XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
-    let lastFrame = toolbar.characterStyle.convert(toolbar.characterStyle.bounds, to: toolbar)
+    let lastFrame = toolbar.paragraphStyle.convert(toolbar.paragraphStyle.bounds, to: toolbar)
     XCTAssertGreaterThan(button.frame.minX - lastFrame.maxX, 12)
     if let directory = ProcessInfo.processInfo.environment["VIEM_TOOLBAR_SCREENSHOT_DIR"] {
       window.setContentSize(NSSize(width: 920, height: 300))
@@ -647,11 +639,9 @@ final class EVFormattingToolbarTests: XCTestCase {
     let indent = try XCTUnwrap(toolbar.commandButtons[.decreaseIndent])
     let indentFrame = indent.convert(indent.bounds, to: viewport)
     let paragraphFrame = toolbar.paragraphStyle.convert(toolbar.paragraphStyle.bounds, to: viewport)
-    let characterFrame = toolbar.characterStyle.convert(toolbar.characterStyle.bounds, to: viewport)
     XCTAssertGreaterThanOrEqual(indentFrame.minX, viewport.bounds.minX)
     XCTAssertLessThanOrEqual(indentFrame.maxX, viewport.bounds.maxX)
     XCTAssertGreaterThan(paragraphFrame.maxX, viewport.bounds.maxX)
-    XCTAssertGreaterThan(characterFrame.minX, viewport.bounds.maxX)
     XCTAssertEqual(button.frame.maxX, toolbar.bounds.maxX - 10, accuracy: 1)
     XCTAssertGreaterThanOrEqual(button.frame.minX - viewport.frame.maxX, 12)
     window.setContentSize(NSSize(width: 480, height: 300))
@@ -662,7 +652,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertFalse(toolbar.subviews.contains { $0 is NSScrollView })
     let rowOrigin = row.frame.origin
     let viewportOrigin = viewport.bounds.origin
-    toolbar.characterStyle.scrollToVisible(toolbar.characterStyle.bounds)
+    toolbar.paragraphStyle.scrollToVisible(toolbar.paragraphStyle.bounds)
     window.contentView?.superview?.layoutSubtreeIfNeeded()
     XCTAssertEqual(row.frame.origin, rowOrigin)
     XCTAssertEqual(viewport.bounds.origin, viewportOrigin)

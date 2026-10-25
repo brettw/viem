@@ -1,3 +1,4 @@
+use viem_core::document::CharacterProperties;
 use viem_core::command::{CommandStatus, InputEvent, Key};
 use viem_core::document::{BoundaryAffinity, Document, Encoding, Format};
 use viem_core::layout::MockTextMeasurementProvider;
@@ -866,7 +867,7 @@ fn native_selection_replacement_preserves_single_tilde_strikethrough() {
                 .style_spans()
                 .iter()
                 .any(|span| span.range.contains(&start)
-                    && span.application == StyleApplication::Automatic("Strikethrough".into())));
+                    && span.application == StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() })));
             verify_history(&mut core, view, source);
         }
     }

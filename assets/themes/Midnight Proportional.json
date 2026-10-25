@@ -2745,30 +2745,6 @@
             "underline" : null,
             "weight" : null
           }
-        },
-        {
-          "based_on" : null,
-          "id" : "Strikethrough",
-          "name" : "Strikethrough",
-          "properties" : {
-            "background" : null,
-            "bold" : null,
-            "direction" : null,
-            "font_axes" : null,
-            "font_face" : null,
-            "font_families" : null,
-            "foreground" : null,
-            "language" : null,
-            "letter_spacing" : null,
-            "open_type_features" : null,
-            "size" : null,
-            "slant" : null,
-            "strikethrough" : true,
-            "subscript" : null,
-            "superscript" : null,
-            "underline" : null,
-            "weight" : null
-          }
         }
       ],
       "version" : 1

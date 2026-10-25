@@ -448,6 +448,7 @@ pub enum DocumentError {
     },
     HardLineTransferProjectionMismatch,
     UnsupportedFormatting,
+    UnfinishedComment,
     UnsupportedTableEdit(&'static str),
     OverlappingFormatting,
     /// A reverse projection selected only part of an opaque malformed source
@@ -545,6 +546,9 @@ impl fmt::Display for DocumentError {
             Self::UnsupportedFormatting => {
                 formatter.write_str("the source format cannot represent that formatting edit")
             }
+            Self::UnfinishedComment => formatter.write_str(
+                "Can’t create a comment inside an unfinished comment, please fix the source.",
+            ),
             Self::OverlappingFormatting => formatter.write_str(
                 "this initial Markdown adapter cannot safely represent overlapping inline styles",
             ),

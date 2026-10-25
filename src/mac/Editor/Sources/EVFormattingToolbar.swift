@@ -19,7 +19,6 @@ extension EVEditorSurfaceController: EVFormattingToolbarProviding {
 final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private weak var surface: EVEditorSurfaceController?
   let paragraphStyle = NSPopUpButton()
-  let characterStyle = NSPopUpButton()
   private(set) var commandButtons: [EVMenuCommand: NSButton] = [:]
   let characterCode = NSButton()
   let codeBlock = NSButton()
@@ -40,7 +39,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   private var catalogue: EVStyleMenuCatalogue?
   private var styleSnapshot: EVStyleSheetSnapshot?
   private var paragraphEntries: [String] = []
-  private var characterEntries: [String] = []
   private var trackingMenus = Set<ObjectIdentifier>()
 
   init(surface: EVEditorSurfaceController) {
@@ -51,8 +49,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     row.alignment = .centerY
     row.spacing = 8
     row.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
-    for (popup, label, role) in [(paragraphStyle, "Paragraph style", EVStyleMenuRole.paragraph),
-                                (characterStyle, "Character style", EVStyleMenuRole.character)] {
+    for (popup, label, role) in [(paragraphStyle, "Paragraph style", EVStyleMenuRole.paragraph)] {
       popup.controlSize = .small
       popup.font = .systemFont(ofSize: 12)
       popup.widthAnchor.constraint(equalToConstant: 148).isActive = true
@@ -105,7 +102,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     add(.increaseIndent, title: "Indent", symbol: "increase.indent", to: indentGroup, toggle: false)
     add(.decreaseIndent, title: "Unindent", symbol: "decrease.indent", to: indentGroup, toggle: false)
     row.addArrangedSubview(paragraphStyle)
-    row.addArrangedSubview(characterStyle)
     configure(insertTable, title: "Insert Table", toggle: false)
     insertTable.image = Self.tableImage()
     insertTable.openPicker = { [weak self] event in self?.openTablePicker(event: event) }
@@ -238,7 +234,6 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     if trackingMenus.isEmpty {
       catalogue = next
       refresh(paragraphStyle, role: .paragraph)
-      refresh(characterStyle, role: .character)
     }
     for (command, button) in commandButtons {
       let presentation: EVMenuItemPresentation
@@ -280,7 +275,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     // Keep AppKit menu objects across cursor moves. Only catalogue membership
     // changes require rebuilding; action identities always follow the snapshot.
     let keys = (selected == nil ? ["mixed"] : []) + entries.map { "style:" + $0.stableID }
-    let previous = role == .paragraph ? paragraphEntries : characterEntries
+    let previous = paragraphEntries
     if keys != previous {
       popup.removeAllItems()
       if selected == nil {
@@ -289,7 +284,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
         popup.lastItem?.image = EVStyleIcons.typeImage(role == .paragraph ? .paragraph : .character)
       }
       for entry in entries { popup.menu?.addItem(NSMenuItem(title: entry.displayName, action: nil, keyEquivalent: "")) }
-      if role == .paragraph { paragraphEntries = keys } else { characterEntries = keys }
+      paragraphEntries = keys
     }
     for (index, entry) in entries.enumerated() {
       guard let item = popup.item(at: index + (selected == nil ? 1 : 0)) else { continue }

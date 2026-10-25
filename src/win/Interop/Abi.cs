@@ -22,6 +22,7 @@ internal static unsafe class Abi
             VIEM_STATUS_AMBIGUOUS_PROJECTION => "This edit is not supported for the selected content structure.",
             VIEM_STATUS_UNREPRESENTABLE_CHARACTER => "The document's encoding cannot represent this character.",
             VIEM_STATUS_UNSUPPORTED_OPERATION => "This operation is not supported for the current format or selection.",
+            VIEM_STATUS_UNFINISHED_COMMENT => "Can’t create a comment inside an unfinished comment, please fix the source.",
             VIEM_STATUS_STYLE_READ_ONLY => "This style is read-only.",
             VIEM_STATUS_STALE_REVISION => "The document changed. Please repeat the action.",
             _ => $"{operation} failed (core status {status})."

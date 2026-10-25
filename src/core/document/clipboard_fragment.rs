@@ -1171,7 +1171,7 @@ impl Document {
                 (Some(SemanticInlineStyle::Emphasis), properties.slant == Some(super::super::FontSlant::Italic)),
                 (None, properties.strikethrough == Some(true)),
             ] {
-                let application = style.map_or_else(|| StyleApplication::Automatic("Strikethrough".into()), StyleApplication::Semantic);
+                let application = style.map_or_else(|| StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() }), StyleApplication::Semantic);
                 if enabled || scratch.projection().style_spans_for_region(&range).iter()
                     .any(|span| span.application == application) {
                     let request = if let Some(style) = style {

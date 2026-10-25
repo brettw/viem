@@ -590,7 +590,7 @@ impl TransformationPipelineSnapshot {
             }
             PipelineEditIntent::AssignCharacterStyle { style }
                 if self.configuration.format.is_markdown()
-                    && matches!(style.0.as_str(), "Code" | "") =>
+                    && matches!(style.0.as_str(), "Code" | "Comment" | "") =>
             {
                 StageEditDisposition::Translated
             }

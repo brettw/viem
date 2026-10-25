@@ -136,6 +136,8 @@ _Static_assert(VIEM_STATUS_INVALID_UTF8_BOUNDARY == 36u,
     "invalid UTF-8 boundary status");
 _Static_assert(VIEM_STATUS_INVALID_UTF16_BOUNDARY == 37u,
     "invalid UTF-16 boundary status");
+_Static_assert(VIEM_STATUS_UNFINISHED_COMMENT == 41u,
+    "unfinished-comment status must remain 41");
 _Static_assert(VIEM_STATUS_STYLE_EDIT_GROUP_ACTIVE == 38u,
     "active style edit group status");
 _Static_assert(VIEM_STATUS_INVALID_STYLE_EDIT_GROUP == 39u,

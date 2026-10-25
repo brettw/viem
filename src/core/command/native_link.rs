@@ -1,4 +1,4 @@
-//! Controller publication after a verified native link edit.
+//! Controller publication after verified native inline edits.
 use super::*;
 
 impl CommandInterpreter {
@@ -24,6 +24,15 @@ impl CommandInterpreter {
                 _ => Mode::Normal,
             }
         };
+        self.finish_native_inline_edit(document, caret, target_mode)
+    }
+
+    pub(crate) fn finish_native_comment_edit(&mut self, document: &mut Document, caret: usize) {
+        self.finish_native_inline_edit(document, caret, Mode::Insert);
+        self.install_typing_style(Some("Comment".into()), Vec::new());
+    }
+
+    fn finish_native_inline_edit(&mut self, document: &mut Document, caret: usize, target_mode: Mode) -> bool {
         self.retire_typing_context();
         self.table_cells = None;
         self.table_tab_selection = false;

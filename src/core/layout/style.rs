@@ -320,7 +320,7 @@ impl DocumentLayoutStyles {
             spans.retain(|span| {
                 !matches!(
                     &span.application,
-                    StyleApplication::Automatic(id) if id.0 != "Strikethrough"
+                    StyleApplication::Automatic(_)
                 )
             });
         }

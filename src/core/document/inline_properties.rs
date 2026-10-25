@@ -382,6 +382,9 @@ impl Document {
             let mut inner = Vec::new();
             for span in self.projection().style_spans_for_region(&range) {
                 let delimiters = match &span.application {
+                    StyleApplication::Direct(p) if p.strikethrough == Some(true) => self
+                        .inline_scope_delimiters(&span.range, &["del", "s", "strike"])
+                        .ok(),
                     StyleApplication::Direct(p) => [
                         StyleProperty::CharacterUnderline,
                         StyleProperty::CharacterSuperscript,
@@ -424,9 +427,6 @@ impl Document {
                     }
                     StyleApplication::Named(id) if id.0 == "Code" => self
                         .inline_scope_delimiters(&span.range, &["code", "kbd", "samp", "tt"])
-                        .ok(),
-                    StyleApplication::Automatic(id) if id.0 == "Strikethrough" => self
-                        .inline_scope_delimiters(&span.range, &["del", "s", "strike"])
                         .ok(),
                     StyleApplication::Automatic(id) if id.0 == "Link" => {
                         self.inline_scope_delimiters(&span.range, &["a"]).ok()

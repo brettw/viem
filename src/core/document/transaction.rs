@@ -66,6 +66,8 @@ mod markdown_reflow;
 mod markdown_typing;
 #[path = "markdown_autodetect.rs"]
 mod markdown_autodetect;
+#[path = "comment_style.rs"]
+mod comment_style;
 #[path = "named_character.rs"]
 mod named_character;
 #[path = "paragraph_insertion.rs"]
@@ -1899,6 +1901,10 @@ impl Document {
 
         if self.format().is_markdown() {
             if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
+                if style.0 == "Comment" {
+                    self.validate_style_text_range(*range)?;
+                    return self.prepare_comment_choice(range.start().offset()..range.end().offset());
+                }
                 if style.0 == "Code" || style.0.is_empty() {
                     self.validate_style_text_range(*range)?;
                     return self.prepare_markdown_named_character(

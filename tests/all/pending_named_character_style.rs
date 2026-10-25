@@ -318,7 +318,7 @@ fn normal_caret_style_queries_use_the_current_character_while_insert_honors_upst
         for (syntax, visible, bold, italic, strike, named) in [
             ("**bold**", "bold", true, false, false, None),
             ("*italic*", "italic", false, true, false, None),
-            ("~~strike~~", "strike", false, false, true, Some("Strikethrough")),
+            ("~~strike~~", "strike", false, false, true, None),
             ("`code`", "code", false, false, false, Some("Code")),
             ("[link](target.md)", "link", false, false, false, Some("Link")),
         ] {

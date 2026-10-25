@@ -232,6 +232,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
         self.validate_typing_named_style(&style)?;
+        if style.0 == "Comment" { return self.prepare_comment_choice(range); }
         if range.is_empty() {
             return Ok(self.no_op_prepared());
         }

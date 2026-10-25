@@ -1500,7 +1500,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                 selection.range(),
                 affinity,
                 commands.typing_link_disabled(),
-                commands.typing_properties().iter().any(|(property, value)| *property == StyleProperty::CharacterStrikethrough && *value == crate::document::StylePropertyValue::Boolean(false)),
                 selection.kind() == LogicalSelectionKind::None && commands.typing_named_style().is_some_and(|id| id.0.is_empty()),
             )
         };
@@ -4669,7 +4668,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             _ => None,
         };
-        let mut preflight = match quote_at_end {
+        let empty_comment = match &request {
+            ModelRequest::AssignNamedStyle { range, namespace: StyleNamespace::Character, style, .. }
+                if range.is_empty() && style.0 == "Comment" =>
+                Some(self.document.prepare_empty_comment(range.start).map_err(command_model_transaction_error)?),
+            _ => None,
+        };
+        let comment_caret = empty_comment.as_ref().map(|(_, caret)| *caret);
+        let mut preflight = match empty_comment.map(|(prepared, _)| prepared).or(quote_at_end) {
             Some(prepared) => prepared,
             None => self.document.prepare_model_request(request.clone())
                 .map_err(command_model_transaction_error)?,
@@ -4726,6 +4732,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                 commands.follow_format_line_mode(self.document.format());
                 if let Some(view) = self.views.get_mut(&id) { view.fresh_projection = true; }
             }
+            if id == view_id {
+                if let Some(caret) = comment_caret {
+                    commands.finish_native_comment_edit(&mut self.document, caret);
+                }
+            }
             self.views
                 .get_mut(&id)
                 .expect("prepared view remains attached during serial dispatch")
@@ -4740,10 +4751,23 @@ impl<P: TextMeasurementProvider> Core<P> {
         let history_after = self.document.history_status().current;
         self.document.attach_history_restoration(
             history_after.node,
-            HistoryRestoration::new(before_restoration, after_restoration),
+            HistoryRestoration::new(before_restoration, after_restoration.clone()),
         )?;
+        if comment_caret.is_some() {
+            self.edit_group_owner = Some(view_id);
+            self.edit_group_restoration = Some(OpenGroupRestoration {
+                generation: self.document.edit_group_generation(),
+                parent: history_after,
+                before: after_restoration,
+            });
+        }
 
         let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map)?;
+        if comment_caret.is_some() {
+            if let Err(error) = self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret) {
+                self.record_presentation_error(view_id, error);
+            }
+        }
         let warnings = committed.summary().conversion_warnings();
         let command = if warnings.is_empty() {
             None
@@ -5620,6 +5644,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 )?;
                 if namespace == StyleNamespace::Character
                     && expected.range().is_empty()
+                    && style.0 != "Comment"
                 {
                     self.document.validate_typing_named_style_at(self.views[&view_id].commands.cursor(),
                         if self.views[&view_id].commands.mode() == Mode::Normal { BoundaryAffinity::Downstream }

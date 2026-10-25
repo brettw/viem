@@ -382,9 +382,33 @@ internal static class StyleInspectorBehaviorTests
         finally {
             codeInspector.Close();
         }
+        CommentAssignment(pane);
         await MarkdownCharacterFollowing(pane, preferences);
         await MarkdownCodeFollowing(pane, preferences);
     }
+    private static void CommentAssignment(EditorPane pane)
+    {
+        using var document = new CoreDocument("word"u8.ToArray(), "comment.md", VIEM_FORMAT_MARKDOWN);
+        using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
+        var key = new StyleKey(2, "Comment");
+        Check(CoreView.StyleChoices(view.Styles(), view.SelectedNamedStyles(), false).Any(c => c.Key == key && c.Enabled),
+            "Comment is assignable in the Markdown Character menu");
+        view.SelectAll();
+        view.ChooseStyle(key, view.SelectedNamedStyles().Identity);
+        Check(document.FormattedText() == "<!-- word -->", "Comment wraps selected text with visible delimiters");
+        view.Key(VIEM_KEY_ESCAPE); view.Command("u");
+        Check(document.FormattedText() == "word", "undo restores text before Comment assignment");
+        Move(view, 0);
+        view.ChooseStyle(key, view.SelectedNamedStyles().Identity);
+        Check(document.FormattedText() == "<!--  -->word", "caret Comment choice immediately inserts its delimiters");
+        view.Text("hi"); view.Text("!");
+        Check(document.FormattedText() == "<!-- hi! -->word", "pending Comment typing continues inside one span");
+        view.Key(VIEM_KEY_ESCAPE); view.Command("u");
+        Check(document.FormattedText() == "<!--  -->word", "undo restores the empty comment before typing");
+        view.Command("u");
+        Check(document.FormattedText() == "word", "undo removes the inserted comment");
+    }
+
     private static async Task MarkdownCharacterFollowing(EditorPane pane, Preferences preferences)
     {
         byte[] source = "plain [link](other.md) ~~strike~~ `code` <!--comment-->\n\n[label][ref]\n\n[ref]: other.md"u8.ToArray();
@@ -396,7 +420,7 @@ internal static class StyleInspectorBehaviorTests
             var inspector = new StyleWindow(view, preferences);
             try
             {
-                foreach (var (text, style) in new[] { ("link", "Link"), ("strike", "Strikethrough"), ("code", "Code"),
+                foreach (var (text, style) in new[] { ("link", "Link"), ("code", "Code"),
                     ("comment", "Comment"), ("label", "Markdown reference") })
                 {
                     int index = document.FormattedText().IndexOf(text, StringComparison.Ordinal) + 1;
@@ -452,7 +476,7 @@ internal static class StyleInspectorBehaviorTests
                 Move(view, (ulong)document.FormattedText().IndexOf("strike", StringComparison.Ordinal) + 1);
                 view.Command("i");
                 inspector.Retarget(view);
-                Check(Selected(inspector).Key == new StyleKey(2, "Strikethrough"), "the inspector opens the strike treatment before a pending clear");
+                Check((Selected(inspector).Native.flags & VIEM_STYLE_DEFINITION_BASE_PARAGRAPH) != 0, "strikethrough retains the underlying paragraph style in the inspector");
                 caret = view.Presentation.cursor_utf8_offset;
                 view.ToggleStrikethrough();
                 inspector.SettleCaretFollowForTesting();

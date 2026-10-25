@@ -15,7 +15,7 @@ impl Document {
         if range.is_empty() {
             return Ok(self.no_op_prepared());
         }
-        let application = StyleApplication::Automatic("Strikethrough".into());
+        let application = StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() });
         let spans = self.projection().style_spans_for_region(&range);
         let mut boundaries = BTreeSet::from([range.start, range.end]);
         for span in spans.iter().filter(|span| span.application == application) {

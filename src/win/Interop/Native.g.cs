@@ -1429,6 +1429,7 @@ internal static unsafe partial class Native
     public const uint VIEM_STATUS_STYLE_EDIT_GROUP_ACTIVE = 38u;
     public const uint VIEM_STATUS_INVALID_STYLE_EDIT_GROUP = 39u;
     public const uint VIEM_STATUS_STYLE_EDIT_GROUP_WRONG_OWNER = 40u;
+    public const uint VIEM_STATUS_UNFINISHED_COMMENT = 41u;
     public const uint VIEM_STATUS_INTERNAL_ERROR = 254u;
     public const uint VIEM_STATUS_PANIC = 255u;
     public const uint VIEM_PANE_FRAME_STATUS_DRAGGABLE = 1u;

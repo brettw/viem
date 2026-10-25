@@ -273,7 +273,9 @@ projections. Every editable pipeline guarantees:
   it is not a stored definition. Character styles inherit the current paragraph
   appearance rather than reapplying Base Paragraph (over a heading, for
   example). At most one named character style applies at a point; direct
-  properties overlap freely and never modify the named style.
+  properties overlap freely and never modify the named style. Strikethrough is
+  a direct text property, not a named character style. The formatting toolbar
+  offers a paragraph style selector and inline formatting buttons.
 - Deleting a style atomically moves its content and children to Base Paragraph
   or Default Paragraph (not to its parent), or is rejected.
 - Document formatting writes only what Markdown can represent. Displaying
@@ -299,8 +301,11 @@ Deliberate presentation differences from GitHub:
   pairs are ordinary Markdown.
 - Reference links and definitions keep their brackets and use the
   `Markdown reference` style (`#A673D1`).
-- HTML comments stay visible with the `Comment` style, and surplus blank lines
-  remain editable empty paragraphs.
+- HTML comments stay visible with the `Comment` style. Choosing Comment in the
+  Character menu wraps selected visible text in a comment; at a caret it
+  immediately inserts `<!--  -->` and enters Insert mode between the two spaces.
+  Comment bodies remain literal, and their delimiters stay visible. Surplus blank
+  lines remain editable empty paragraphs.
 - Images are atomic inline objects; image-only paragraphs use the Image
   paragraph style.
 - Embedded HTML is passive semantic formatting: Markdown inside HTML blocks
@@ -351,7 +356,8 @@ Deliberate presentation differences from GitHub:
   the first selected text character's context, regardless of direction. Pending
   typing choices win over both. They are view-local until text commits, change
   no source, dirty state or history, never create empty source scopes, and are
-  retired by movement.
+  retired by movement. Comment creation is a source-edit action: unlike a pending
+  typing choice, its empty delimiters are inserted immediately.
 - New syntax uses `**`/`*` emphasis, ATX `#` headings and `- ` or decimal list
   markers; existing alternative spellings are preserved. Prefer literal
   characters when their meaning is unchanged, escape only where needed, and let

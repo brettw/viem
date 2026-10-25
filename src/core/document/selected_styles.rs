@@ -32,7 +32,7 @@ impl FormattedDocument {
         range: Range<usize>,
         affinity: BoundaryAffinity,
     ) -> SelectedNamedStyles {
-        self.selected_style_assignments(range, affinity, false, false, false, false)
+        self.selected_style_assignments(range, affinity, false, false, false)
     }
 
     /// The style inspector also names content-derived Markdown appearances.
@@ -42,10 +42,9 @@ impl FormattedDocument {
         range: Range<usize>,
         affinity: BoundaryAffinity,
         suppress_link: bool,
-        suppress_strike: bool,
         suppress_authored: bool,
     ) -> SelectedNamedStyles {
-        self.selected_style_assignments(range, affinity, true, suppress_link, suppress_strike, suppress_authored)
+        self.selected_style_assignments(range, affinity, true, suppress_link, suppress_authored)
     }
 
     fn selected_style_assignments(
@@ -54,7 +53,6 @@ impl FormattedDocument {
         affinity: BoundaryAffinity,
         display: bool,
         suppress_link: bool,
-        suppress_strike: bool,
         suppress_authored: bool,
     ) -> SelectedNamedStyles {
         let length = self.text_tree().byte_len();
@@ -102,7 +100,7 @@ impl FormattedDocument {
                 StyleApplication::Named(_)
                     | StyleApplication::Semantic(super::SemanticInlineStyle::Code)
             )) && !(display && matches!(&span.application, StyleApplication::Automatic(id)
-                if matches!(id.0.as_str(), "Link" | "Comment" | "Markdown reference" | "Strikethrough") && !(suppress_link && id.0 == "Link") && !(suppress_strike && id.0 == "Strikethrough"))) {
+                if matches!(id.0.as_str(), "Link" | "Comment" | "Markdown reference") && !(suppress_link && id.0 == "Link"))) {
                 continue;
             }
             let lower = span.range.start.max(start);

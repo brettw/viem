@@ -710,7 +710,7 @@ impl Document {
                     let bold = has(StyleApplication::Semantic(SemanticInlineStyle::Strong));
                     let italic = has(StyleApplication::Semantic(SemanticInlineStyle::Emphasis));
                     let code = has(StyleApplication::Semantic(SemanticInlineStyle::Code));
-                    let strike = has(StyleApplication::Automatic("Strikethrough".into()));
+                    let strike = has(StyleApplication::direct(CharacterProperties { strikethrough: Some(true), ..Default::default() }));
                     let same = match last {
                         '*' | '_' => {
                             !code

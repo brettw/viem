@@ -420,6 +420,15 @@ impl StyleSheet {
         }
         let mut blocks = parse_block_defaults(block_entries, self, &mut diagnostics);
         let mut characters = parse_character_defaults(character_entries, &mut diagnostics);
+        // Strikethrough used to be a generated Markdown character style.
+        // Retire saved copies too; its children inherit the paragraph directly,
+        // just as they do when a named character style is deleted.
+        characters.remove(&StyleId("Strikethrough".into()));
+        for entry in characters.values_mut() {
+            if entry.style.based_on.as_ref().is_some_and(|id| id.0 == "Strikethrough") {
+                entry.style.based_on = None;
+            }
+        }
         // The target supplies its format's baseline. Loading adds all valid
         // saved definitions without manufacturing unrelated rich styles.
         let baseline = self.clone();
