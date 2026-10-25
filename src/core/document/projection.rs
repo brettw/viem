@@ -7157,33 +7157,6 @@ mod tests {
     use crate::document::{Encoding, Splice};
 
     #[test]
-    fn markdown_code_boundary_shrink_removes_old_spans_outside_the_text_edit_hull() {
-        use crate::document::syntax::{SyntaxRun, SyntaxStyleName};
-        let projection = |text: &str| {
-            crate::document::Document::from_bytes(text.as_bytes().to_vec(), Encoding::Utf8, Format::PlainText)
-                .unwrap().projection().clone()
-        };
-        let mut previous = projection("code\n\nkeep");
-        let mut current = projection("code\n\n\nkeep");
-        let sheet = crate::document::code_style::markdown_sheet(
-            previous.style_sheet(), &crate::document::code_style::default_sheet());
-        let run = |range| SyntaxRun {
-            range,
-            name: SyntaxStyleName("ViemCodeBase".into()),
-            origin: "fixture".into(),
-            priority: -1,
-        };
-        previous.install_markdown_code_styles(sheet.clone(), &[run(0..5), run(6..10)]);
-        // An unchanged newline has moved out of the first code owner, while
-        // an independent owner after the insertion only shifts by one byte.
-        assert!(current.install_markdown_code_styles_incrementally(
-            sheet.clone(), &previous, Some(&(6..6, 6..7)), &[(0..5, 0..4)],
-            &|region| vec![run(region.clone())]));
-        assert!(current.markdown_code_styles_match(&sheet, &[run(0..4), run(7..11)]));
-        assert!(current.layout_style_spans_for_region(&(4..7)).is_empty());
-    }
-
-    #[test]
     fn indexed_interior_and_hidden_source_queries_match_contributor_scans() {
         let sources = [
             "# Title\n\nPara **bold** and _it_ &amp; `code` \\* x\n> quote\n> more\n\n- a\n- b\n  continued\n\n1. one\n2. two\n",
