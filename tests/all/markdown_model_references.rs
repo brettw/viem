@@ -156,10 +156,10 @@ fn invalidating_a_definition_preserves_unselected_reference_label_bytes() {
                 edits: vec![TextEdit::new(at..at, "x")],
             })
             .unwrap();
-        // The only consumed original bytes may be an image's reference suffix;
-        // all literal label protection is insertion beside existing bytes.
+        // The surviving use becomes inline by replacing only its reference
+        // suffix; every label byte stays in place.
         for patch in committed.summary().source_patches() {
-            assert!(patch.range().is_empty() || &source[patch.range()] == b"[ref]");
+            assert!(patch.range().is_empty() || matches!(&source[patch.range()], b"[ref]" | b"][ref]"));
         }
         assert_eq!(doc.text(), expected);
         reopened(&doc);
@@ -187,7 +187,7 @@ fn multiline_reference_definitions_keep_their_grammar_paragraph_boundaries() {
         ("   [foo]: \n      /url  \n           'the title'  \n", "[foo]: /url 'the title'", 1),
         ("[\nfoo\n]: /url\nbar\n", "[ foo ]: /url\nbar", 2),
         ("[foo]: /url\n\"title\" ok\n", "[foo]: /url\n\"title\" ok", 2),
-        ("[foo]: /url\n===\n[foo]\n", "[foo]: /url\n=== [foo]", 2),
+        ("[foo]: /url\n===\n[foo]\n", "[foo]: /url\n=== foo", 2),
     ] {
         let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         assert_eq!(document.text(), expected, "{source:?}");

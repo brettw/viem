@@ -99,16 +99,21 @@ final class EVSettingsKeyboardNavigationTests: XCTestCase {
     sidebar.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
     XCTAssertEqual(configuration.viewMargins.top, 37)
     let width = try field("Text width (columns)", in: window)
+    let autoselect = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
+      .first { $0.accessibilityLabel() == "Use native selection for mouse and Shift-arrow keys" })
     let tabstop = try field("Indentation tabstop", in: window)
     let shiftwidth = try field("Indentation shiftwidth", in: window)
-    XCTAssertTrue(width.nextKeyView === tabstop)
+    XCTAssertTrue(width.nextKeyView === autoselect)
+    XCTAssertTrue(autoselect.nextKeyView === tabstop)
     XCTAssertTrue(tabstop.nextKeyView === shiftwidth)
     XCTAssertTrue(window.makeFirstResponder(width))
     let widthEditor = try XCTUnwrap(width.currentEditor() as? NSTextView)
     widthEditor.selectAll(nil)
     widthEditor.insertText("96", replacementRange: widthEditor.selectedRange())
     widthEditor.insertTab(nil)
-    XCTAssertTrue(tabstop.currentEditor() === window.firstResponder)
+    // Checkboxes take focus only when keyboard navigation is enabled in System Settings.
+    if autoselect.canBecomeKeyView { XCTAssertTrue(window.firstResponder === autoselect) }
+    else { XCTAssertTrue(tabstop.currentEditor() === window.firstResponder) }
     XCTAssertEqual(configuration.textWidth, 96)
     settings.showViewCategoryForTesting()
     let newTop = try field("View top margin", in: window)

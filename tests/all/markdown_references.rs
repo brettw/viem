@@ -424,6 +424,26 @@ fn deleting_rendered_reference_and_definition_preserves_other_content() {
 }
 
 #[test]
+fn replacing_through_a_whole_label_removes_the_use_and_keeps_edge_spaces() {
+    for (range, replacement, text, expected) in [
+        // Deleting the label alone leaves a protected leading space.
+        (9..10, "", "[a]: url\n b", "[a]: url\n\n&#32;b"),
+        // Text replacing from before the use belongs to that earlier content;
+        // the label is not edited and promoted to a full reference.
+        (8..10, "x", "[a]: urlx b", "[a]: urlx b"),
+        (1..10, "x", "[x b", "[x b"),
+    ] {
+        let source = "[a]: url\n\n[a] b";
+        let mut doc = open(source);
+        doc.replace(range, replacement).unwrap();
+        assert_eq!(doc.text(), text);
+        assert_eq!(doc.source_bytes(), expected.as_bytes());
+        assert_eq!(open(expected).text(), text);
+        assert!(doc.undo()); assert_eq!(doc.source_bytes(), source.as_bytes());
+    }
+}
+
+#[test]
 fn removing_reference_retains_formatting_without_reactivating_autolinks() {
     let mut doc = open("[**https://example.com**][ref]\n\n[ref]: target");
     apply(&mut doc, ReferenceRequest::Remove { offset: 0 });

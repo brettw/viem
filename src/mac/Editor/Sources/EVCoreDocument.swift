@@ -624,6 +624,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             configurationWarning = ([configurationWarning].compactMap { $0 } + [warning]).joined(separator: "\n")
         }
         EVStartupPerformance.mark("core.styles.loaded")
+        try configureOptional("selection settings") { try EVSelectionPreferences.seed(self) }
         let startupDiagnostics = EVCoreStartup.initialize(core: core, file: configuration.startupFile, themeNames: configuration.availableThemeNames)
         try configureOptional("selection settings") { try EVSelectionPreferences.attach(self) }
         if !startupDiagnostics.isEmpty {

@@ -310,7 +310,9 @@ fn breaking_multiline_reference_definition_retains_visible_content() {
     let mut doc =
         Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
     edit(&mut doc, 9..9, "x");
-    assert_eq!(doc.text(), "[Foo bar]x: <my url> 'title'\n[Foo bar]");
+    // The surviving use keeps its visible label as an inline link.
+    assert_eq!(doc.text(), "[Foo bar]x: <my url> 'title'\nFoo bar");
+    assert!(doc.source_bytes().ends_with(b"\n[Foo bar](<my url> \"title\")\n"));
 }
 
 #[test]

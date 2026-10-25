@@ -57,7 +57,6 @@ fn inline_links_follow_raw_html_autolink_reference_and_line_ending_precedence() 
         for source in [
             "[a <b x=\"](c)\">",
             "[link](<foo\nbar>)",
-            "[a[ref]](url)\n\n[ref]: inner",
         ] {
             let doc = document(source, format);
             assert!(
@@ -68,6 +67,14 @@ fn inline_links_follow_raw_html_autolink_reference_and_line_ending_precedence() 
                 "{source:?} {format:?}"
             );
         }
+        // A link cannot contain a link: the inner reference wins and the
+        // outer brackets stay literal.
+        let doc = document("[a[ref]](url)\n\n[ref]: inner", format);
+        assert_eq!(doc.text(), "[aref](url)\n[ref]: inner");
+        assert_eq!(destination(&doc, "ref"), Some("inner".into()));
+        assert!(doc.projection().style_spans().iter()
+            .filter(|span| span.application == StyleApplication::Automatic("Link".into()))
+            .all(|span| span.range == (2..5)));
         let source = "[foo<https://example.com/?search=](uri)>";
         let doc = document(source, format);
         assert_eq!(

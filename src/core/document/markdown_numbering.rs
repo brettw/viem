@@ -29,7 +29,9 @@ pub(super) fn scope(request: &ModelRequest) -> Option<NumberingScope> {
         }
         | ModelRequest::IndentList { range, .. }
         | ModelRequest::DeleteLines { range, .. } => range.clone(),
-        ModelRequest::ContinueList { at, .. } | ModelRequest::OpenLine { at, .. } => *at..*at,
+        ModelRequest::ContinueList { at, .. }
+        | ModelRequest::OpenLine { at, .. }
+        | ModelRequest::IndentListParagraph { at, .. } => *at..*at,
         _ => return None,
     };
     Some(NumberingScope {

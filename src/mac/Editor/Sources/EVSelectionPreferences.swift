@@ -1,5 +1,6 @@
 import CViemCore
 import Foundation
+import ViemAppShell
 
 /// Native and Vim selection options are application-wide. Core documents retain their
 /// own interpreters, so the host distributes validated values without sending
@@ -12,7 +13,50 @@ enum EVSelectionPreferences {
     }
     private static var documents: [WeakDocument] = []
     private static var values: [URL: [UInt32: String]] = [:]
+    /// The Settings default last distributed per profile. Unrelated
+    /// configuration writes leave `:set autoselect` overrides in place.
+    private static var configuredAutoselect: [URL: Bool] = [:]
+    private static var configurationObserver: NSObjectProtocol?
     private static let options = [UInt32(VIEM_EX_OPTION_KEYMODEL), UInt32(VIEM_EX_OPTION_SELECTMODE), UInt32(VIEM_EX_OPTION_AUTOSELECT)]
+
+    /// Applies the Settings default before startup.viem can override it.
+    static func seed(_ document: EVCoreDocumentBackend) throws {
+        observeConfiguration()
+        let key = document.configuration.directory.standardizedFileURL
+        let enabled = configuredAutoselect[key] ?? document.configuration.autoselect
+        configuredAutoselect[key] = enabled
+        try set(enabled ? "1" : "0", option: UInt32(VIEM_EX_OPTION_AUTOSELECT), on: document)
+    }
+
+    /// A changed Settings default replaces the live value in every document of
+    /// its profile, including one chosen with `:set` or startup.viem.
+    static func configure(autoselect enabled: Bool, directory: URL) {
+        let key = directory.standardizedFileURL
+        // Profiles without a seeded document read the configuration when one opens.
+        guard let previous = configuredAutoselect[key], previous != enabled else { return }
+        configuredAutoselect[key] = enabled
+        let option = UInt32(VIEM_EX_OPTION_AUTOSELECT)
+        let value = enabled ? "1" : "0"
+        guard values[key] != nil, values[key]?[option] != value else { return }
+        values[key]?[option] = value
+        documents.removeAll { $0.value == nil }
+        for target in documents.compactMap(\.value) where target.configuration.directory.standardizedFileURL == key {
+            // A closing core must not keep the remaining documents stale.
+            try? set(value, option: option, on: target)
+        }
+    }
+
+    private static func observeConfiguration() {
+        guard configurationObserver == nil else { return }
+        configurationObserver = NotificationCenter.default.addObserver(
+            forName: .viemConfigurationDidChange, object: nil, queue: .main
+        ) { notification in
+            MainActor.assumeIsolated {
+                guard let configuration = notification.object as? EVConfigurationStore else { return }
+                configure(autoselect: configuration.autoselect, directory: configuration.directory)
+            }
+        }
+    }
 
     static func attach(_ document: EVCoreDocumentBackend) throws {
         documents.removeAll { $0.value == nil }

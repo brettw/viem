@@ -23,6 +23,12 @@ These options apply across existing and future documents in the running profile.
 Changing them does not reclassify active selections or interrupt pending commands.
 Put `set` commands in `startup.viem` to retain them across launches.
 
+Settings > Editing > Selection stores the `autoselect` default as
+`editing.autoselect` in `config.json`. Each new document receives it before
+`startup.viem` runs, so startup commands and `:set autoselect` still override it
+until the app exits. Changing the setting replaces the live value in every open
+document of the profile; other settings writes leave a `:set` value in place.
+
 Menu word, sentence, paragraph, line and visual-row selection, and Find/Replace/
 Next/Previous Search use shared semantic actions and availability queries.
 They bypass user mappings, refuse pending command operands or active IME input,

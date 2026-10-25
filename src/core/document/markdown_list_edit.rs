@@ -52,6 +52,17 @@ impl Document {
     ) -> Result<(crate::document::Block, crate::document::encoding::DecodedText, String), ModelTransactionError> {
         let block = edit_boundary::paragraph_at(self, at)?
             .ok_or(DocumentError::AmbiguousProjection)?;
+        self.markdown_list_continuation_at_depth(at, &block, block.quote_depth)
+    }
+
+    /// The owning item's continuation prefix for a paragraph at `quote_depth`,
+    /// which may differ from that of the paragraph at `at`.
+    pub(super) fn markdown_list_continuation_at_depth(
+        &self,
+        at: usize,
+        block: &crate::document::Block,
+        quote_depth: usize,
+    ) -> Result<(crate::document::Block, crate::document::encoding::DecodedText, String), ModelTransactionError> {
         let blocks = self.projection().list_indentation_blocks();
         let index = blocks.index_touching_point(at).ok_or(DocumentError::AmbiguousProjection)?;
         let level = block.list_level().ok_or(DocumentError::UnsupportedFormatting)?;
@@ -101,10 +112,10 @@ impl Document {
         // Later paragraphs can enter or leave quotes inside this item.
         // Keep the item's indentation while matching the current quote owner,
         // rather than inheriting the first paragraph's inner quote scopes.
-        if block.quote_depth > owner.quote_depth {
-            continuation.push_str(&"> ".repeat(block.quote_depth - owner.quote_depth));
+        if quote_depth > owner.quote_depth {
+            continuation.push_str(&"> ".repeat(quote_depth - owner.quote_depth));
         } else {
-            for _ in block.quote_depth..owner.quote_depth {
+            for _ in quote_depth..owner.quote_depth {
                 let quote = continuation.rfind('>').ok_or(DocumentError::AmbiguousProjection)?;
                 continuation.truncate(quote);
             }
@@ -568,7 +579,7 @@ impl Document {
     /// An empty paragraph spelled only by blank lines after a list's last
     /// item: exiting an item leaves it, and the parser still assigns it to
     /// that item. It is an independent paragraph, not an item continuation.
-    fn is_trailing_blank_list_paragraph(&self, block: &crate::document::Block) -> Result<bool, DocumentError> {
+    pub(super) fn is_trailing_blank_list_paragraph(&self, block: &crate::document::Block) -> Result<bool, DocumentError> {
         if !block.range.is_empty() || block.kind != BlockKind::Paragraph {
             return Ok(false);
         }

@@ -911,7 +911,29 @@ impl Document {
     }
 }
 
+/// A replacement that covers a use's whole label removes the use. Text it
+/// inserts from before the use belongs to that preceding content.
+fn deletes_reference_use(edit: &TextEdit, reference: &InlineReference) -> bool {
+    !reference.range.is_empty()
+        && edit.range.start <= reference.range.start && reference.range.end <= edit.range.end
+        && (edit.replacement.is_empty() || edit.range.start < reference.range.start)
+}
+
 impl Document {
+    /// Remove the delimiters of wholly deleted uses before boundary repairs,
+    /// so that spaces left at a paragraph edge are protected like those left
+    /// by any other deleted inline owner.
+    pub(super) fn remove_deleted_reference_uses(&self, edits: &[TextEdit], patches: &mut Vec<SourcePatch>) {
+        let mut handled = std::collections::HashSet::new();
+        for edit in edits {
+            for reference in self.projection().inline_references_for_region(&edit.range) {
+                if deletes_reference_use(edit, &reference) && handled.insert(reference.source.start) {
+                    remove_uncovered_delimiters(&reference, patches);
+                }
+            }
+        }
+    }
+
     /// A shortcut's label is also its lookup key. Preserve that key when visible
     /// typing changes the label by authoring an explicit reference suffix.
     pub(super) fn repair_reference_label_edits(&self, edits: &[TextEdit], patches: &mut Vec<SourcePatch>) -> Result<(), ModelTransactionError> {
@@ -919,24 +941,8 @@ impl Document {
         for edit in edits {
             for reference in self.projection().inline_references_for_region(&edit.range) {
                 if !handled.insert(reference.source.start) { continue; }
-                if edit.replacement.is_empty() && !reference.range.is_empty()
-                    && edit.range.start <= reference.range.start && reference.range.end <= edit.range.end {
-                    // Remove only uncovered delimiters; an existing source patch
-                    // may already include one edge while crossing another owner.
-                    for delimiter in [reference.source.start..reference.label_source.start, reference.label_source.end..reference.source.end] {
-                        let mut remaining = vec![delimiter];
-                        for patch in patches.iter() {
-                            remaining = remaining.into_iter().flat_map(|range| {
-                                let covered = patch.range();
-                                if covered.end <= range.start || range.end <= covered.start { return vec![range]; }
-                                let mut pieces = Vec::new();
-                                if range.start < covered.start { pieces.push(range.start..covered.start); }
-                                if covered.end < range.end { pieces.push(covered.end..range.end); }
-                                pieces
-                            }).collect();
-                        }
-                        patches.extend(remaining.into_iter().filter(|range| !range.is_empty()).map(|range| SourcePatch::primary(range, Vec::new())));
-                    }
+                if deletes_reference_use(edit, &reference) {
+                    remove_uncovered_delimiters(&reference, patches);
                     continue;
                 }
                 let label_touched = patches.iter().any(|p| p.range().start >= reference.label_source.start
@@ -952,6 +958,25 @@ impl Document {
             }
         }
         Ok(())
+    }
+}
+
+/// Remove only uncovered delimiters; an existing source patch may already
+/// include one edge while crossing another owner.
+fn remove_uncovered_delimiters(reference: &InlineReference, patches: &mut Vec<SourcePatch>) {
+    for delimiter in [reference.source.start..reference.label_source.start, reference.label_source.end..reference.source.end] {
+        let mut remaining = vec![delimiter];
+        for patch in patches.iter() {
+            remaining = remaining.into_iter().flat_map(|range| {
+                let covered = patch.range();
+                if covered.end <= range.start || range.end <= covered.start { return vec![range]; }
+                let mut pieces = Vec::new();
+                if range.start < covered.start { pieces.push(range.start..covered.start); }
+                if covered.end < range.end { pieces.push(covered.end..range.end); }
+                pieces
+            }).collect();
+        }
+        patches.extend(remaining.into_iter().filter(|range| !range.is_empty()).map(|range| SourcePatch::primary(range, Vec::new())));
     }
 }
 

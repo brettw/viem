@@ -31,6 +31,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private weak var markdownAutodetectCheckbox: NSButton?
   private weak var caretHoverCheckbox: NSButton?
   private weak var smartQuotesCheckbox: NSButton?
+  private weak var autoselectCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
   private var indentationCheckboxes: [String: NSButton] = [:]
   private var indentationFields: [String: NSTextField] = [:]
@@ -294,6 +295,16 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       let widthGroup = section("Reflow", views: [widthRow, widthExplanation])
       stack.addArrangedSubview(widthGroup)
       widthGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
+      let autoselect = NSButton(checkboxWithTitle: "Use native selection for mouse and Shift-arrow keys", target: self, action: #selector(changeAutoselect(_:)))
+      autoselect.state = editingPreferences.autoselect ? .on : .off
+      autoselect.setAccessibilityLabel("Use native selection for mouse and Shift-arrow keys")
+      autoselectCheckbox = autoselect
+      let autoselectExplanation = NSTextField(wrappingLabelWithString: "Typing replaces the selection, and Delete enters Insert mode. When off, these selections use Vim Visual mode. :set autoselect overrides this until Viem quits.")
+      autoselectExplanation.textColor = .secondaryLabelColor
+      autoselectExplanation.font = .systemFont(ofSize: 12)
+      let selectionGroup = section("Selection", views: [autoselect, autoselectExplanation])
+      stack.addArrangedSubview(selectionGroup)
+      selectionGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
       buildIndentationSettings(in: stack)
       refreshEditingPreferences()
       return
@@ -454,6 +465,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     markdownAutodetectCheckbox?.state = editingPreferences.markdownAutodetect ? .on : .off
     caretHoverCheckbox?.state = editingPreferences.caretHoverEffect ? .on : .off
     smartQuotesCheckbox?.state = editingPreferences.smartQuotes ? .on : .off
+    autoselectCheckbox?.state = editingPreferences.autoselect ? .on : .off
     textWidthField.stringValue = String(editingPreferences.textWidth)
     let options = editingPreferences.indentation
     let switches = ["autoindent": options.autoindent, "expandtab": options.expandtab, "smarttab": options.smarttab,
@@ -696,6 +708,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     sender.state = editingPreferences.smartQuotes ? .on : .off
     persistenceDiagnostic.stringValue = editingPreferences.lastError ?? ""
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
+  }
+  @objc private func changeAutoselect(_ sender: NSButton) {
+    editingPreferences.setAutoselect(sender.state == .on)
+    refreshEditingPreferences()
   }
   @objc private func changeColor(_ sender: NSColorWell) {
     var theme = store.theme

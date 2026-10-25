@@ -18,6 +18,8 @@ mod edit_translation;
 mod input_context;
 #[path = "list_indent.rs"]
 mod list_indent;
+#[path = "list_paragraph_indent.rs"]
+mod list_paragraph_indent;
 #[path = "markdown_block_styles.rs"]
 mod markdown_block_styles;
 #[path = "markdown_code_style.rs"]
@@ -321,6 +323,14 @@ pub enum ModelRequest {
         range: Range<usize>,
         unindent: bool,
     },
+    /// Move the paragraph starting at `at` into the list before it, or lift
+    /// a continuation paragraph out of every list.
+    IndentListParagraph {
+        document: DocumentId,
+        revision: Revision,
+        at: usize,
+        unindent: bool,
+    },
     SetParagraphStyle {
         document: DocumentId,
         revision: Revision,
@@ -429,6 +439,7 @@ impl ModelRequest {
             | Self::SetListStyle { document, .. }
             | Self::SetBlockQuote { document, .. }
             | Self::IndentList { document, .. }
+            | Self::IndentListParagraph { document, .. }
             | Self::SetParagraphStyle { document, .. }
             | Self::AssignNamedStyle { document, .. }
             | Self::ContinueList { document, .. }
@@ -458,6 +469,7 @@ impl ModelRequest {
             | Self::SetListStyle { revision, .. }
             | Self::SetBlockQuote { revision, .. }
             | Self::IndentList { revision, .. }
+            | Self::IndentListParagraph { revision, .. }
             | Self::SetParagraphStyle { revision, .. }
             | Self::AssignNamedStyle { revision, .. }
             | Self::ContinueList { revision, .. }
@@ -1282,6 +1294,9 @@ impl Document {
             ModelRequest::IndentList {
                 range, unindent, ..
             } => self.prepare_list_indent(range, unindent),
+            ModelRequest::IndentListParagraph { at, unindent, .. } => {
+                self.prepare_list_paragraph_indent(at, unindent)
+            }
             ModelRequest::SetListStyle { range, style, .. } => {
                 self.prepare_list_style(range, style)
             }

@@ -103,6 +103,9 @@ internal sealed partial class SettingsWindow : Window
         Check(page, "Automatically format typed Markdown", preferences.MarkdownAutodetect, value => preferences.Set("editing", "markdownAutodetect", value));
         page.Children.Add(new TextBlock { Text = "In Markdown Preview, completed Markdown spans and block prefixes become formatting. Use Ctrl-Q before a character to keep it literal.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
         Number(page, "Text width (columns for gq / gw)", preferences.TextWidth, 1, uint.MaxValue, n => preferences.Set("editing", "textWidth", n), 250);
+        page.Children.Add(new TextBlock { Text = "Selection", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        Check(page, "Use native selection for mouse and Shift+arrow keys", preferences.Autoselect, value => preferences.Set("editing", "autoselect", value));
+        page.Children.Add(new TextBlock { Text = "Typing replaces the selection, and Backspace or Delete enters Insert mode. When off, these selections use Vim Visual mode. :set autoselect overrides this until Viem exits.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
         var editing = preferences.Editing;
         var indentation = editing["indentation"] as JsonObject ?? new JsonObject();
         void Indent(string key, JsonNode? value) => preferences.Set("editing", "indentation", new JsonObject { [key] = value });

@@ -369,7 +369,11 @@ Deliberate presentation differences from GitHub:
   and preformatted text use literal endings.
 - Enter or Backspace on an empty list item removes one level of list treatment
   and immediately updates the caret's indentation. Option-Enter/Alt-Enter
-  creates a paragraph within the item.
+  creates a paragraph within the item. Tab at the start of a paragraph that
+  follows a list joins the item owning the list's last block, spelled as
+  Option-Enter there would. Shift-Tab at the start of a continuation paragraph
+  lifts it out of every list, splitting the list before a following top-level
+  item; when deeper content of that list follows, it unindents the owning item.
   In an ordinary Markdown code block, Enter at the end of two consecutive
   blank lines replaces those lines with a paragraph after the code block,
   retaining any surrounding list or quote. A single blank line stays in code;

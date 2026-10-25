@@ -107,7 +107,9 @@ within a list item. The same action is available in Style > Paragraph. Enter
 starts the next item; Shift-Enter adds a line break within the paragraph.
 Enter or Backspace on an empty final item exits the list and immediately
 returns the caret to the paragraph's unindented start. Nested items leave one
-list level at a time.
+list level at a time. Tab at the start of a paragraph just after a list moves
+it into the last item, as Option-Enter would have; Shift-Tab at the start of
+such a paragraph moves it back out of the list.
 
 - This is a loose list.
 

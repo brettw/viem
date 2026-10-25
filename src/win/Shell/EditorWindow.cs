@@ -144,6 +144,7 @@ internal sealed partial class EditorWindow : Window
         titleBar.Background = Menu.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
         if (formattingToolbar != null) formattingToolbar.Background = titleBar.Background;
         SynchronizeFormattingToolbar();
+        GlobalSelectionOptions.Configure(preferences.DirectoryPath, preferences.Autoselect);
         updatingPreferences = false;
         RefreshRecentMenu();
     }
@@ -161,6 +162,7 @@ internal sealed partial class EditorWindow : Window
             string[] diagnostics = [];
             doc.ConfigureForEditing("theme styles", () => diagnostics = preferences.AttachThemeDocument(doc));
             if (diagnostics.Length > 0) styleDefaultsWarnings[doc] = string.Join(Environment.NewLine, diagnostics);
+            doc.ConfigureForEditing("selection settings", () => GlobalSelectionOptions.Seed(doc, preferences.DirectoryPath, preferences.Autoselect));
             if (preferences.StartupCommands.Length > 0) doc.ConfigureForEditing("startup.viem", () => doc.InitializeStartup(preferences.StartupCommands));
             doc.ConfigureForEditing("selection settings", () => GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath));
             if (path != null) {

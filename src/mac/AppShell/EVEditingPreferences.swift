@@ -20,6 +20,7 @@ public final class EVEditingPreferences {
   public private(set) var markdownAutodetect: Bool
   public private(set) var caretHoverEffect: Bool
   public private(set) var smartQuotes: Bool
+  public private(set) var autoselect: Bool
   /// Application default `textwidth` in columns for `gq`/`gw` reflow.
   public private(set) var textWidth: UInt32
   public private(set) var indentation: EVIndentationOptions
@@ -32,6 +33,7 @@ public final class EVEditingPreferences {
     markdownAutodetect = configuration.markdownAutodetect
     caretHoverEffect = configuration.caretHoverEffect
     smartQuotes = configuration.smartQuotes
+    autoselect = configuration.autoselect
     textWidth = configuration.textWidth
     indentation = configuration.indentation
     whitespacePresentation = configuration.whitespacePresentation
@@ -52,11 +54,12 @@ public final class EVEditingPreferences {
 
   public func reloadFromConfiguration() {
     do { try configuration.reloadFromDisk() } catch { return }
-    let changed = caretHoverEffect != configuration.caretHoverEffect || markdownAutodetect != configuration.markdownAutodetect || smartQuotes != configuration.smartQuotes || textWidth != configuration.textWidth
+    let changed = caretHoverEffect != configuration.caretHoverEffect || markdownAutodetect != configuration.markdownAutodetect || smartQuotes != configuration.smartQuotes || autoselect != configuration.autoselect || textWidth != configuration.textWidth
       || indentation != configuration.indentation || whitespacePresentation != configuration.whitespacePresentation
     markdownAutodetect = configuration.markdownAutodetect
     caretHoverEffect = configuration.caretHoverEffect
     smartQuotes = configuration.smartQuotes
+    autoselect = configuration.autoselect
     textWidth = configuration.textWidth
     indentation = configuration.indentation
     whitespacePresentation = configuration.whitespacePresentation
@@ -110,6 +113,12 @@ public final class EVEditingPreferences {
   public func setSmartQuotes(_ enabled: Bool) {
     guard enabled != smartQuotes else { return }
     do { try configuration.setSmartQuotes(enabled) } catch { return }
+    reloadFromConfiguration()
+  }
+
+  public func setAutoselect(_ enabled: Bool) {
+    guard enabled != autoselect else { return }
+    do { try configuration.setAutoselect(enabled) } catch { return }
     reloadFromConfiguration()
   }
 }

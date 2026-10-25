@@ -4106,7 +4106,13 @@ impl CommandInterpreter {
         key: Key,
     ) -> Result<Option<ModelRequest>, DocumentError> {
         if matches!(key, Key::Tab | Key::BackTab) && self.mode == Mode::Insert {
-            return document.list_item_indent_key_request(self.cursor, key == Key::BackTab);
+            let unindent = key == Key::BackTab;
+            // At a paragraph's first position the key moves that paragraph
+            // into or out of a list rather than moving its owning item.
+            if let Some(request) = document.list_paragraph_indent_key_request(self.cursor, unindent)? {
+                return Ok(Some(request));
+            }
+            return document.list_item_indent_key_request(self.cursor, unindent);
         }
         if key == Key::AltEnter {
             if !self.can_insert_list_paragraph(document) { return Err(DocumentError::UnsupportedFormatting); }
@@ -4232,7 +4238,8 @@ impl CommandInterpreter {
         key: Key,
         request: ModelRequest,
     ) -> Result<Option<PreparedModelTransaction>, DocumentError> {
-        let list_indent = matches!(&request, ModelRequest::IndentList { .. });
+        let list_indent = matches!(&request,
+            ModelRequest::IndentList { .. } | ModelRequest::IndentListParagraph { .. });
         let unsupported_is_no_op =
             list_indent && matches!(key, Key::Tab | Key::BackTab | Key::Backspace);
         match document.prepare_model_request(request) {

@@ -328,6 +328,30 @@ fn verify_character_styles(
         boundaries.insert(span.range.start);
         boundaries.insert(span.range.end);
     }
+    verify_character_style_boundaries(before, after, boundaries.into_iter()
+        .filter(|at| *at < before.text().len()))
+}
+
+/// Character styles within one region of text that a source edit retained.
+pub(super) fn verify_character_styles_in(
+    before: &FormattedDocument,
+    after: &FormattedDocument,
+    region: &Range<usize>,
+) -> Result<(), DocumentError> {
+    let mut boundaries = BTreeSet::from([region.start]);
+    for span in before.style_spans_for_region(region).iter().chain(&after.style_spans_for_region(region)) {
+        boundaries.insert(span.range.start.max(region.start));
+        boundaries.insert(span.range.end);
+    }
+    verify_character_style_boundaries(before, after, boundaries.into_iter()
+        .filter(|at| *at < region.end))
+}
+
+fn verify_character_style_boundaries(
+    before: &FormattedDocument,
+    after: &FormattedDocument,
+    boundaries: impl Iterator<Item = usize>,
+) -> Result<(), DocumentError> {
     let state = |projection: &FormattedDocument, at: usize| {
         let mut direct = CharacterProperties::default();
         let mut named = None;
@@ -353,10 +377,7 @@ fn verify_character_styles(
         }
         (direct, named, semantic)
     };
-    for at in boundaries
-        .into_iter()
-        .filter(|at| *at < before.text().len())
-    {
+    for at in boundaries {
         if state(before, at) != state(after, at) {
             return Err(DocumentError::VerificationFailed);
         }

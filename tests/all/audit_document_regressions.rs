@@ -96,7 +96,9 @@ fn verification_header_cell_change() { verification_rich_case("| abc |\n| --- |"
 #[test]
 fn verification_reference_and_indented_code_transfers() {
     for (source, prefix, expected) in [
-        ("[ref]\n\n[ref]: /url", "G", "[ref]\n[ref]: /url\n[ref]: /url"),
+        // The copied definition is an inactive duplicate; the use still
+        // resolves and shows its label.
+        ("[ref]\n\n[ref]: /url", "G", "ref\n[ref]: /url\n[ref]: /url"),
         ("    a\n\n    b", "", "a\na\n\nb"),
     ] {
         let (mut core, view) = open(source, Format::Markdown);

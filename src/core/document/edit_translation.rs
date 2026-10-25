@@ -513,6 +513,7 @@ impl Document {
         patches: &mut Vec<SourcePatch>,
     ) -> Result<(), ModelTransactionError> {
         if self.format() == Format::Markdown {
+            self.remove_deleted_reference_uses(edits, patches);
             if self.preserve_edited_reference_content(edits, patches)? {
                 markdown_block_styles::preserve_deleted_boundary_spaces(self, edits, patches)?;
                 markdown_block_styles::preserve_edited_paragraph_boundaries(self, edits, patches)?;
