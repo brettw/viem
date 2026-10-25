@@ -730,6 +730,10 @@ text, excludes editor furniture, and needs no network resources.
   [launchers and the blocking editor](docs/blocking-editor.md).
 - At startup only the first file opens; later files load on navigation. A
   nonexistent file opens named, clean and empty without being created.
+  Directory arguments are left out of the argument list. After the files
+  open, the first directory shows the `:e {directory}` file chooser, whose
+  selection replaces a blank window or otherwise opens in a new window; later
+  directories are ignored. Blocking edits still reject directories.
 - Save As adopts the new path only after the write succeeds. No format switch
   or native action renames or deletes the original. Reject symlink and
   case-only aliases that would overwrite the original. Failed writes keep the

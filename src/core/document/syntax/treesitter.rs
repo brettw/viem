@@ -5,7 +5,7 @@
 use super::{Coverage, SyntaxInputIdentity, SyntaxInputSnapshot, SyntaxRun, SyntaxStyleName};
 use regex_automata::dfa::{dense, Automaton};
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -337,7 +337,9 @@ enum Predicate {
     },
     Membership {
         capture: u32,
-        values: Vec<String>,
+        /// Hashed so a lookup costs the capture's length, not the length
+        /// times the list size; builtin lists are tested on every identifier.
+        values: HashSet<Vec<u8>>,
         positive: bool,
     },
     Contains {
@@ -624,7 +626,7 @@ fn compile_query(
                         capture: capture(args.first())?,
                         values: args[1..]
                             .iter()
-                            .map(|arg| string(Some(arg)))
+                            .map(|arg| string(Some(arg)).map(String::into_bytes))
                             .collect::<Result<_, _>>()?,
                         positive: op == "any-of?",
                     });
@@ -1632,8 +1634,8 @@ fn predicates_match(
             } => {
                 let mut yes = true;
                 for text in capture_text(found, *capture, input, control)? {
-                    control.charge_predicate(text.len().saturating_mul(values.len()).max(1))?;
-                    yes &= values.iter().any(|v| v.as_bytes() == text) == *positive;
+                    control.charge_predicate(text.len().max(1))?;
+                    yes &= values.contains(&text) == *positive;
                 }
                 yes
             }

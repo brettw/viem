@@ -1301,3 +1301,34 @@ fn combined_offset_queries_keep_offscreen_captures_that_reach_the_viewport() {
     assert_eq!(output.injections.len(), 1);
     assert_eq!(output.injections[0].ranges, vec![7..17, visible..visible + 10]);
 }
+
+#[test]
+fn any_of_matches_members_and_charges_only_the_capture_length() {
+    // Bundled builtin lists run on every identifier; their cost must not scale
+    // with the list size.
+    let values = (0..200).map(|i| format!("\"v{i}\"")).collect::<Vec<_>>().join(" ");
+    let package = custom(
+        &format!(
+            "((identifier) @member (#any-of? @member {values}))\n\
+             ((identifier) @other (#not-any-of? @other {values}))"
+        ),
+        QueryProfile::Upstream,
+    );
+    let mut session = TreeSitterSession::new(package).unwrap();
+    let text = "int v7; int v199; int w7;";
+    let (snapshot, _) = parsed(&mut session, input(text, 1), &[]);
+    let identifiers = ["v7", "v199", "w7"].iter().map(|id| id.len()).sum::<usize>();
+    let budget = TreeSitterBudget {
+        max_predicate_steps: 2 * identifiers,
+        ..generous()
+    };
+    let output = highlight(&snapshot, 0..text.len(), &budget, &AtomicBool::new(false));
+    assert_eq!(output.coverage, Coverage::Exact, "{:?}", output.diagnostic);
+    assert_eq!(output.work.predicate_steps, 2 * identifiers);
+    let styles = output
+        .runs
+        .iter()
+        .map(|run| (&text[run.range.clone()], run.name.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(styles, [("v7", "Member"), ("v199", "Member"), ("w7", "Other")]);
+}

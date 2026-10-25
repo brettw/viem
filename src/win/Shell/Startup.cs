@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using Microsoft.UI.Windowing;
+using Viem.Windows.Core;
 using Viem.Windows.Editor;
 using Viem.Windows.Interop;
 using static Viem.Windows.Interop.Native;
@@ -122,9 +123,19 @@ internal sealed partial class EditorWindow
         var args = ParseArguments(request.Arguments);
         if (args.Error != null) throw new InvalidOperationException(args.Error);
         if (request.Arguments.Length == 0) return;
-        string[] paths = args.Filenames.Select(p => ResolvePath(p, request.Directory)).ToArray();
+        // Directories open the `:e {directory}` picker after the files are
+        // installed. Only the first directory is used; the rest are ignored.
+        string[] resolved = args.Filenames.Select(p => ResolvePath(p, request.Directory)).ToArray();
+        string? directory = resolved.FirstOrDefault(Directory.Exists);
+        string[] paths = resolved.Where(p => !Directory.Exists(p)).ToArray();
+        if (paths.Length == 0 && directory != null)
+        {
+            ActivateLaunchWindow();
+            await PickLaunchDirectoryFile(directory);
+            return;
+        }
         bool represented = paths.Length > 0 && App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document.FilePath is string file && FileIdentity.Same(file, paths[0]));
-        bool blank = Panes.Count == 0 || (Panes.Count == 1 && ActivePane is { Document: var current } && current.FilePath == null && current.State.source_byte_count == 0 && !current.IsDirty && (current.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0);
+        bool blank = Panes.Count == 0 || (Panes.Count == 1 && ActivePane is { Document: var current } && IsPristine(current));
         if (paths.Length > 0 && !represented && !blank)
         {
             if (File.Exists(paths[0])) _ = await File.ReadAllBytesAsync(paths[0]);
@@ -153,8 +164,20 @@ internal sealed partial class EditorWindow
             var owner = App.Instance.Windows.First(w => w.Panes.Contains(first));
             owner.ActivateLaunchWindow();
             owner.FocusPane(first);
+            if (directory != null) await owner.PickLaunchDirectoryFile(directory);
         }
     }
+    /// The selection replaces a pristine placeholder; otherwise it opens in a
+    /// new window so the files opened from the same command line stay visible.
+    private async Task PickLaunchDirectoryFile(string directory)
+    {
+        var pane = ActivePane;
+        bool replace = pane == null || IsPristine(pane.Document);
+        try { await OpenPath(directory, targetPane: pane, newWindow: !replace); }
+        catch (OperationCanceledException) { }
+    }
+    private static bool IsPristine(CoreDocument document) => document.FilePath == null && document.State.source_byte_count == 0 && !document.IsDirty
+        && (document.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0;
     private sealed record LaunchArguments(string[] Filenames, int? SplitCount, ulong? InitialLine, bool VerticalSplits, string? Error);
     private static unsafe LaunchArguments ParseArguments(string[] args)
     {

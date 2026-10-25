@@ -91,8 +91,17 @@ impl SyntaxService {
                 self.delta.note_replaced(changed_extent(&previous, &result.runs).unwrap_or(result.range.clone()));
             }
         }
-        self.cache
-            .retain(|old| !overlaps(&old.range, &result.range) && old.input == result.input);
+        // A failure replaces no runs, so it leaves other regions' coverage in
+        // place, and coverage leaves other requests' failures in place.
+        // Otherwise a failed whole-document request and the visible requests
+        // inside it would evict each other and be requested again forever.
+        let missing = result.coverage == Coverage::Missing;
+        self.cache.retain(|old| old.input == result.input
+            && if missing || old.coverage == Coverage::Missing {
+                old.range != result.range
+            } else {
+                !overlaps(&old.range, &result.range)
+            });
         changed
     }
 
@@ -101,7 +110,9 @@ impl SyntaxService {
             self.cache.pop_front();
         }
         let cache_bytes = self.cache.iter().map(SyntaxResult::bytes).sum::<usize>();
-        let protected = self.cache.iter().map(|old| old.range.clone()).collect::<Vec<_>>();
+        // A failure displays no runs of its own, so it protects none.
+        let protected = self.cache.iter().filter(|old| old.coverage != Coverage::Missing)
+            .map(|old| old.range.clone()).collect::<Vec<_>>();
         let budget = MAX_CACHED_RUN_BYTES.saturating_sub(cache_bytes);
         if let Some(removed) = self.runs.evict_front(budget, &protected) {
             self.delta.note_replaced(removed);

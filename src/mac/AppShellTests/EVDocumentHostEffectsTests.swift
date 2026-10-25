@@ -649,6 +649,38 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         XCTAssertTrue(backend.persistenceState.isDirty)
     }
 
+    func testLaunchDirectoryReplacesPristinePlaceholderOrOpensNewWindow() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for pristine in [true, false] {
+            let selected = try registeredDocument(at: directory.appendingPathComponent("\(pristine).txt"))
+            defer { selected.close() }
+            let backend = Backend(data: Data((pristine ? "" : "named").utf8), dirty: false, revision: pristine ? 0 : 73)
+            backend.persistenceState.sourceByteCount = UInt64(backend.serializedData.count)
+            let (original, controller) = makeController(
+                backend: backend, fileURL: pristine ? URL?.none : directory.appendingPathComponent("named.txt"))
+            controller.showWindow(nil)
+            defer { controller.openFilePanelPresenter = nil; controller.close() }
+            var presented = 0
+            controller.openFilePanelPresenter = { panel, window, choose in
+                presented += 1
+                XCTAssertEqual(panel.directoryURL?.standardizedFileURL, directory.standardizedFileURL)
+                XCTAssertTrue(window === controller.window)
+                choose(selected.fileURL)
+            }
+            controller.chooseFile(inLaunchDirectory: directory)
+            XCTAssertEqual(presented, 1)
+            XCTAssertEqual(controller.paneCount, 1)
+            if pristine {
+                XCTAssertTrue(controller.activeDocument === selected)
+            } else {
+                XCTAssertTrue(controller.activeDocument === original)
+                XCTAssertEqual(selected.windowControllers.count, 1)
+                XCTAssertTrue(selected.windowControllers.first?.window?.isVisible ?? false)
+            }
+        }
+    }
+
     func testDirectorySelectionRejectsChangedTargetAndClosedWindow() throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

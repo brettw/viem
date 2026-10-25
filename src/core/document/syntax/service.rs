@@ -566,10 +566,17 @@ impl SyntaxService {
     pub(crate) fn covers(&self, input: &SyntaxInputSnapshot, range: Range<usize>) -> bool {
         Self::request_range(input, range).is_some_and(|range| self.has_coverage(input.identity(), &range))
     }
+    /// A terminal failure settles only its own request. A smaller region may
+    /// still fit the budget that the failed one exceeded, so it never stands in
+    /// for coverage of its subranges.
     fn has_coverage(&self, input: SyntaxInputIdentity, range: &Range<usize>) -> bool {
         self.cache.iter().any(|r| r.input == input
             && r.configuration == self.configuration
-            && r.range.start <= range.start && r.range.end >= range.end)
+            && if r.coverage == Coverage::Missing {
+                r.range == *range
+            } else {
+                r.range.start <= range.start && r.range.end >= range.end
+            })
     }
     /// Request only missing visible coverage and return a detached wait handle.
     /// Exact empty captures and terminal failure both count as ready: neither
@@ -1065,5 +1072,64 @@ mod tests {
             assert!(!slot.running);
         }
         assert!(pool().idle.lock().unwrap().len() <= MAX_IDLE_PROVIDER_SESSIONS);
+    }
+
+    #[test]
+    fn failed_large_request_does_not_cover_smaller_regions() {
+        let _registry = super::super::treesitter::package_registry_test_guard();
+        // Like a whole-document query over its predicate budget: large regions
+        // fail terminally while visible-sized regions succeed.
+        struct Bounded(Arc<std::sync::atomic::AtomicUsize>);
+        impl SyntaxProvider for Bounded {
+            fn analyze(&mut self, r: &SyntaxRequest, _: &AtomicBool) -> SyntaxResult {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                if r.range.len() > 1000 {
+                    return SyntaxResult::missing(r, "over budget");
+                }
+                SyntaxResult {
+                    input: r.input.identity(),
+                    configuration: r.configuration.clone(),
+                    range: r.range.clone(),
+                    runs: vec![SyntaxRun {
+                        range: r.range.start..r.range.start + 1,
+                        name: crate::document::syntax::SyntaxStyleName("Keyword".into()),
+                        origin: "test".into(),
+                        priority: 0,
+                    }],
+                    coverage: Coverage::Exact,
+                    diagnostics: Vec::new(),
+                    continuation: false,
+                }
+            }
+        }
+        let analyzed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut service = SyntaxService::with_factory({
+            let analyzed = analyzed.clone();
+            Arc::new(move || Box::new(Bounded(analyzed.clone())))
+        });
+        let snapshot = input(1);
+        let whole = 0..snapshot.byte_len();
+        let finish = |service: &mut SyntaxService, range: std::ops::Range<usize>| {
+            service.request(snapshot.clone(), range);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !service.poll(snapshot.identity()) {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        };
+        finish(&mut service, 0..100);
+        finish(&mut service, whole.clone());
+        assert_eq!(analyzed.load(Ordering::SeqCst), 2);
+        // Neither the visible coverage nor the settled failure is requested
+        // again, so they cannot evict each other in a loop.
+        assert!(service.covers(&snapshot, 0..100));
+        assert!(service.covers(&snapshot, whole.clone()));
+        assert!(!service.covers(&snapshot, 1500..1600));
+        finish(&mut service, 1500..1600);
+        assert_eq!(analyzed.load(Ordering::SeqCst), 3);
+        assert!(service.covers(&snapshot, 0..100));
+        assert!(service.covers(&snapshot, whole));
+        let starts = service.runs(snapshot.identity()).iter().map(|run| run.range.start).collect::<Vec<_>>();
+        assert_eq!(starts, [0, 1500]);
     }
 }

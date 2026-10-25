@@ -167,6 +167,7 @@ final class EVApplicationDelegate: NSObject,
     var activateForCommandLineLaunch: (@escaping @MainActor () -> Void) -> Void = {
         EVApplication.activateForCommandLineLaunch(onFailure: $0)
     }
+    var chooseLaunchFile: (EVDocumentWindowController, URL) -> Void = { $0.chooseFile(inLaunchDirectory: $1) }
     var recordRecentDocument: (URL) -> Void
 
     init(configuration: EVConfigurationStore? = nil, launchArguments: EVLaunchArguments = EVLaunchArguments(),
@@ -374,7 +375,29 @@ final class EVApplicationDelegate: NSObject,
             isProcessingLaunch = false
             processNextLaunch()
         }
-        guard !arguments.isEmpty else {
+        var urls = arguments.filenames.map {
+            URL(fileURLWithPath: $0, relativeTo: workingDirectory).absoluteURL
+        }
+        // Directories open the `:e {directory}` chooser after the files are
+        // installed. Only the first directory is used; the rest are ignored.
+        // Blocking edits still require a file and report the directory.
+        var chooserDirectory: URL?
+        if blockingToken == nil {
+            urls.removeAll { url in
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                      isDirectory.boolValue else { return false }
+                if chooserDirectory == nil { chooserDirectory = url }
+                return true
+            }
+        }
+        func chooseDirectoryFile(in window: NSWindow?) {
+            guard let chooserDirectory,
+                  let controller = window?.windowController as? EVDocumentWindowController
+            else { return }
+            chooseLaunchFile(controller, chooserDirectory)
+        }
+        guard !arguments.isEmpty, !(urls.isEmpty && chooserDirectory != nil) else {
             if let blockingToken { EVBlockingEditSessions.shared.fail(blockingToken) }
             let window: NSWindow?
             if hasNoOpenWindows {
@@ -388,11 +411,9 @@ final class EVApplicationDelegate: NSObject,
                 if window?.isMiniaturized == true { window?.deminiaturize(nil) }
                 window?.makeKeyAndOrderFront(nil)
             }
+            chooseDirectoryFile(in: window)
             finish(in: window)
             return
-        }
-        let urls = arguments.filenames.map {
-            URL(fileURLWithPath: $0, relativeTo: workingDirectory).absoluteURL
         }
         var preparedFirstDocument: EVDocument?
         if let first = urls.first, EVDocumentIdentity.existingDocument(at: first) == nil {
@@ -444,7 +465,9 @@ final class EVApplicationDelegate: NSObject,
                 }
             }
             switch result {
-            case let .success(window): finish(in: window)
+            case let .success(window):
+                chooseDirectoryFile(in: window)
+                finish(in: window)
             case let .failure(error):
                 if blockingToken == nil { NSApplication.shared.presentError(error) }
                 else { FileHandle.standardError.write(Data("Viem: \(error.localizedDescription)\n".utf8)) }

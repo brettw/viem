@@ -392,6 +392,21 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
 @MainActor
 extension EVDocumentWindowController {
+  /// A command-line directory presents the same chooser as `:e {directory}`.
+  /// The selection replaces a pristine placeholder; otherwise it opens in a
+  /// new window so the files opened from the same command line stay visible.
+  public func chooseFile(inLaunchDirectory directory: URL) {
+    guard !isClosed, let document = activeDocument else { return }
+    let state = document.editorBackend.persistenceState
+    let kind: EVDocumentHostRequest.Kind = Self.isPristineUntitled(document) ? .edit : .editNewWindow
+    perform(documentHostRequests: [EVDocumentHostRequest(
+      kind: kind, documentID: state.documentID, documentRevision: state.documentRevision,
+      path: directory.path)]) { [weak self] result in
+      guard case let .failure(error) = result, (error as? CocoaError)?.code != .userCancelled else { return }
+      self?.editorSurface.showDocumentMessage(error.localizedDescription)
+    }
+  }
+
   /// Startup and forwarded command lines install the same argument list.
   /// Already represented files keep their windows and panes; only new files
   /// occupy this initially hidden window. Later arguments stay lazy unless
