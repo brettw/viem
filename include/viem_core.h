@@ -3074,6 +3074,12 @@ ViemStatus viem_core_view_edit_link(ViemCoreHandle core, ViemViewId view,
                                    uint64_t link_end, ViemUtf8Slice text,
                                    ViemUtf8Slice destination,
                                    ViemCoreOutcomeV1 *outcome);
+/* Reference actions use bounded UTF-8 JSON with action and offset; edits also
+ * carry their named fields. Validates the complete expected selection identity.
+ * Link context additionally exports nullable reference settings and uses. */
+ViemStatus viem_core_view_reference_action(ViemCoreHandle core, ViemViewId view,
+    const ViemLogicalSelectionIdentityV1 *expected, ViemUtf8Slice request,
+    ViemCoreOutcomeV1 *outcome);
 /* Image popup has the link-context schema with "image" instead of "link".
  * The range is one atomic U+FFFC object in Markdown Preview.
  * Image entries also contain nullable width/height pixel sizes.
@@ -3096,6 +3102,9 @@ ViemStatus viem_core_view_select_image(ViemCoreHandle core, ViemViewId view,
                                       uint64_t text_offset, ViemCoreOutcomeV1 *outcome);
 /* Explicit heading picker: {headings:[{text,destination,level,offset}],truncated}.
  * Exact revision, two-pass UTF-8 JSON. Enumerated only on user request. */
+ViemStatus viem_core_copy_reference_choices(ViemCoreHandle core, uint64_t document_id,
+                                       uint64_t revision, uint8_t *output,
+                                       uint64_t capacity, uint64_t *required);
 ViemStatus viem_core_copy_link_headings(ViemCoreHandle core, uint64_t document_id,
                                        uint64_t revision, uint8_t *output,
                                        uint64_t capacity, uint64_t *required);

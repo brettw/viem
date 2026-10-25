@@ -60,3 +60,6 @@ Unicode data provenance and regeneration live with the
 [mac_references](mac_references) contains the editor's visual references.
 [Word style.png](<Word style.png>) is a composition/density reference for the
 style inspector, not a feature or implementation specification.
+
+[Markdown reference controls](markdown-references.md) describes occurrence and
+shared-definition editing, navigation, and the initial validation scope.

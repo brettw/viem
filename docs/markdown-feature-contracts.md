@@ -179,3 +179,13 @@ fully decodes BOM metadata and verifies the projected text and break structure
 before preparing publication. Ordinary text enters the text-edit path, where a
 leading U+FEFF remains content. Clipboard-specific style verification remains at
 the clipboard boundary. Neither path bypasses atomic publication or exact undo.
+
+## Reference labels
+
+Resolved reference uses hide their brackets and definition identifier, render
+inline label formatting, and retain explicit source and label ownership.
+Definitions remain visible. Editing shortcut or collapsed labels promotes the
+use to a full reference to retain its destination. Removing a definition through
+ordinary editing preserves surviving visible uses as inline links. Toolbar
+insertion preserves selected formatting and adds any new shared definition in
+one transaction. See [reference controls](markdown-references.md).

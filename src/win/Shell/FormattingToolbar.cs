@@ -24,6 +24,7 @@ internal sealed partial class FormattingToolbar : UserControl
     internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
     internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
     internal readonly ToggleButton InsertImage = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uEB9F", FontSize = 14 } };
+    internal readonly ToggleButton InsertReference = new() { Width = 32, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = "[d]" };
     internal readonly ToggleButton InsertLink = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uE71B", FontSize = 14 } };
     private readonly TablePicker tablePicker;
     private ViemLogicalSelectionIdentityV1? pickerSelection;
@@ -88,6 +89,9 @@ internal sealed partial class FormattingToolbar : UserControl
         AutomationProperties.SetName(InsertLink, "Link"); ToolTipService.SetToolTip(InsertLink, "Link (" + KeyPolicy.FormattingShortcut(NativeAction.Link) + ")");
         InsertLink.Click += (_, _) => ExecuteLink();
         codeLink.Children.Add(InsertLink);
+        AutomationProperties.SetName(InsertReference, "Reference"); ToolTipService.SetToolTip(InsertReference, "Reference");
+        InsertReference.Click += (_, _) => pane?.ShowInsertReference();
+        codeLink.Children.Add(InsertReference);
         var block = Group(); row.Children.Add(block);
         Add(block, ToolbarAction.Bullets, "Bulleted List", "\uE8FD");
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
@@ -244,6 +248,7 @@ internal sealed partial class FormattingToolbar : UserControl
             InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertImage.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertLink.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
+            InsertReference.Visibility = InsertLink.Visibility;
             var imageContext = markdown && available ? view.ImageContext() : null;
             bool imageActive = imageContext?.Image is { } image
                 && (!view.HasSelection && view.Presentation.mode == VIEM_MODE_NORMAL
@@ -251,9 +256,12 @@ internal sealed partial class FormattingToolbar : UserControl
             InsertImage.IsChecked = imageActive;
             InsertImage.IsEnabled = imageContext?.CanInsert == true && !imageActive && !view.Composing && !view.Document.IsReadOnly;
             var linkContext = markdown && available ? view.LinkContext() : null;
-            InsertLink.IsChecked = linkContext?.Linked == true;
-            InsertLink.IsEnabled = linkContext is { } link && (link.Linked
-                ? view.HasSelection ? link.CanRemoveSelection : link.CanExitLink : link.CanInsert)
+            InsertReference.IsChecked = linkContext?.Reference != null;
+            InsertReference.IsEnabled = linkContext is { } referenceLink && (referenceLink.Reference?.Editable ?? (referenceLink.Link == null && referenceLink.CanInsert))
+                && !view.Composing && !view.Document.IsReadOnly;
+            InsertLink.IsChecked = linkContext?.Linked == true || linkContext?.Reference != null;
+            InsertLink.IsEnabled = linkContext is { } link && (link.Reference?.Editable == true || (link.Linked
+                ? view.HasSelection ? link.CanRemoveSelection : link.CanExitLink : link.CanInsert))
                 && !view.Composing && !view.Document.IsReadOnly;
             // Rectangular selections and prompts have no formatting identity.
             // Disable their actions without asking selection-dependent APIs.
@@ -359,6 +367,7 @@ internal sealed partial class FormattingToolbar : UserControl
         Refresh();
         if (!InsertLink.IsEnabled || InsertLink.Visibility != Visibility.Visible) return;
         var context = view.LinkContext();
+        if (context.Reference != null && pane is { } referencePane) { referencePane.ShowInsertLink(); return; }
         if (view.HasSelection && context.Linked && context.CanRemoveSelection) Run(() => view.ToggleLink(context));
         else if (!view.HasSelection && context.Linked) Run(() => view.ToggleLink(context));
         else if (pane is { } target) { target.Run(() => target.ShowInsertLink(insertOnly: true)); return; }

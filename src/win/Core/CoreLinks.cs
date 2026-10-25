@@ -6,7 +6,12 @@ using static Viem.Windows.Interop.Abi;
 namespace Viem.Windows.Core;
 
 internal sealed record MarkdownLink(ulong Start, ulong End, string Text, string Destination, bool Editable);
-internal sealed record LinkContext(ViemLogicalSelectionIdentityV1 Selection, bool CanInsert, bool Linked, bool CanRemoveSelection, bool CanExitLink, string Text, MarkdownLink? Link);
+internal sealed record ReferenceChoice(string Name, string Destination, ulong Offset);
+internal sealed record ReferenceUse(string Text, ulong Offset, bool Image);
+internal sealed record ReferenceContext(ulong Start, ulong End, string Name, string Text, string Destination, string Title,
+    bool Definition, ulong? DefinitionOffset, bool Inactive, int Links, int Images, bool Complete, bool Editable,
+    ReferenceChoice[] Choices, ReferenceUse[] Uses);
+internal sealed record LinkContext(ViemLogicalSelectionIdentityV1 Selection, bool CanInsert, bool Linked, bool CanRemoveSelection, bool CanExitLink, string Text, MarkdownLink? Link, ReferenceContext? Reference = null);
 
 internal sealed unsafe partial class CoreView
 {
@@ -32,7 +37,9 @@ internal sealed unsafe partial class CoreView
             value.GetProperty("editable").GetBoolean());
         return new(selection, root.GetProperty("canInsert").GetBoolean(), root.GetProperty("linked").GetBoolean(),
             root.GetProperty("canRemoveSelection").GetBoolean(), root.GetProperty("canExitLink").GetBoolean(),
-            root.GetProperty("text").GetString() ?? "", link);
+            root.GetProperty("text").GetString() ?? "", link,
+            root.TryGetProperty("reference", out var reference) && reference.ValueKind != JsonValueKind.Null
+                ? reference.Deserialize<ReferenceContext>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) : null);
     }
     public void ValidateLinkContext(LinkContext expected)
     {
@@ -62,6 +69,25 @@ internal sealed unsafe partial class CoreView
             return viem_core_view_edit_link(Document.Handle, Id, &selection, remove ? 2u : !insertOnly && expected.Link != null ? 1u : 0u,
                 expected.Link?.Start ?? 0, expected.Link?.End ?? 0, label, target, outcome);
         });
+    }
+    public void ReferenceAction(LinkContext context, string action, Dictionary<string, object>? fields = null)
+    {
+        ValidateLinkContext(context);
+        if (context.Reference == null && action != "insert") throw new InvalidOperationException("Select a reference first.");
+        fields ??= new(); fields["action"] = action; fields["offset"] = context.Reference?.Start ?? context.Selection.text_start;
+        if (action == "insert") fields["end"] = context.Selection.text_end;
+        using var arena = new NativeArena(); var request = arena.Utf8(JsonSerializer.Serialize(fields));
+        Apply(outcome => {
+            var selection = context.Selection;
+            return viem_core_view_reference_action(Document.Handle, Id, &selection, request, outcome);
+        });
+    }
+    public ReferenceChoice[] ReferenceChoices(LinkContext context)
+    {
+        ValidateLinkContext(context);
+        return JsonSerializer.Deserialize<ReferenceChoice[]>(Copy((p, n, r) =>
+            viem_core_copy_reference_choices(Document.Handle, context.Selection.document_id, context.Selection.document_revision, p, n, r)),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
     }
     public void GoToLinkFragment(string fragment)
     {

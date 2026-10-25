@@ -1,5 +1,6 @@
 import AppKit
 import CViemCore
+import ViemAppShell
 
 enum EVInlineContentKind { case link, image }
 
@@ -13,15 +14,26 @@ struct EVInlineContentContext: Decodable {
         let width: UInt32?
         let height: UInt32?
     }
+    struct Reference: Decodable {
+        struct Choice: Decodable { let name: String; let destination: String; let offset: UInt64 }
+        struct Use: Decodable { let text: String; let offset: UInt64; let image: Bool }
+        let start: UInt64; let end: UInt64; let name: String; let text: String
+        let destination: String; let title: String; let definition: Bool
+        let definitionOffset: UInt64?; let inactive: Bool; let links: Int; let images: Int
+        let complete: Bool; let editable: Bool; let choices: [Choice]; let uses: [Use]
+        var usage: String { "Used by \(links) link\(links == 1 ? "" : "s") and \(images) image\(images == 1 ? "" : "s")" }
+    }
+    let reference: Reference?
     let canInsert: Bool
     let item: Item?
     let text: String
     let linked: Bool
     let canExitLink: Bool
     let canRemoveSelection: Bool
-    private enum CodingKeys: String, CodingKey { case canInsert, link, image, text, linked, canExitLink, canRemoveSelection }
+    private enum CodingKeys: String, CodingKey { case canInsert, link, image, text, linked, canExitLink, canRemoveSelection, reference }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        reference = try values.decodeIfPresent(Reference.self, forKey: .reference)
         canInsert = try values.decode(Bool.self, forKey: .canInsert)
         item = try values.decodeIfPresent(Item.self, forKey: .link)
             ?? values.decodeIfPresent(Item.self, forKey: .image)
@@ -38,6 +50,7 @@ struct EVInlineContentContext: Decodable {
 
     private init(canInsert: Bool, item: Item?, text: String, linked: Bool,
                  canExitLink: Bool, canRemoveSelection: Bool) {
+        self.reference = nil
         self.canInsert = canInsert; self.item = item; self.text = text
         self.linked = linked; self.canExitLink = canExitLink
         self.canRemoveSelection = canRemoveSelection
@@ -112,5 +125,24 @@ extension EVCoreViewSession {
         }
         finishStyleEdit(outcome)
         return outcome
+    }
+}
+
+extension EVCoreViewSession {
+    func referenceAction(_ action: String, context: EVInlineContentContext, expected: ViemLogicalSelectionIdentityV1,
+                         fields: [String: Any] = [:]) throws {
+        guard context.reference != nil || action == "insert" else { throw EVDocumentHostError.unsupportedRequest }
+        var request = fields
+        request["action"] = action; request["offset"] = context.reference?.start ?? expected.text_start
+        if action == "insert" { request["end"] = expected.text_end }
+        let bytes = Array(try JSONSerialization.data(withJSONObject: request))
+        var selection = expected
+        var outcome = ViemCoreOutcomeV1(); outcome.struct_size = UInt32(MemoryLayout<ViemCoreOutcomeV1>.size)
+        let status = bytes.withUnsafeBufferPointer { buffer in
+            viem_core_view_reference_action(document.core, viewID, &selection,
+                ViemUtf8Slice(data: buffer.baseAddress, length: UInt64(buffer.count)), &outcome)
+        }
+        guard status == 0 else { throw EVCoreFrontendError.core(operation: "Change reference", status: status) }
+        finishStyleEdit(outcome)
     }
 }

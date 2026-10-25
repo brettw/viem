@@ -37,7 +37,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         let Some(offset) = found else {
             return Ok(None);
         };
-        let outcome = self.handle(
+        let origin = self.views[&view].commands.cursor();
+        let mut outcome = self.handle(
             view,
             CoreEvent::PlaceCursor {
                 document_revision: revision,
@@ -46,49 +47,58 @@ impl<P: TextMeasurementProvider> Core<P> {
                 extend_selection: false,
             },
         )?;
+        self.views.get_mut(&view).unwrap().commands.record_native_jump(&self.document, origin);
         if Document::link_fragment_source_line(fragment).is_some() {
-            let centered = (|| -> Result<(), CoreError> {
-                // A newly materialized region can refine its absolute row heights.
-                // Re-evaluate the placement locally, with a finite retry budget.
-                for _ in 0..3 {
-                    let target = &self.views[&view];
-                    let snapshot = target.layout.snapshot().ok_or(LayoutError::NoRows)?;
-                    let position = target.commands.visual_position().unwrap_or(
-                        crate::command::layout_motion::VisualPosition {
-                            text_offset: offset,
-                            affinity: BoundaryAffinity::Downstream,
-                        },
-                    );
-                    let geometry = snapshot
-                        .logical_endpoint_geometry(position.text_offset, position.affinity)
-                        .or_else(|_| {
-                            snapshot.logical_endpoint_geometry(
-                                position.text_offset,
-                                if position.affinity == BoundaryAffinity::Downstream {
-                                    BoundaryAffinity::Upstream
-                                } else {
-                                    BoundaryAffinity::Downstream
-                                },
-                            )
-                        })?;
-                    let row = &snapshot.rows[geometry.row_index];
-                    let top = snapshot.centered_row_viewport_top(row, target.layout.height());
-                    let left = target.layout.viewport_left();
-                    let before = target.layout.viewport_top();
-                    self.materialize_requested_viewport(view, left, top)?;
-                    if (self.views[&view].layout.viewport_top() - before).abs() < 0.01 {
-                        break;
-                    }
-                }
-                Ok(())
-            })();
-            // Cursor placement has succeeded. A failed disposable refinement
-            // must still publish that valid navigation to native views.
-            if let Err(error) = centered {
-                self.record_presentation_error(view, error);
-            }
+            outcome.layout_changed |= self.center_navigation_caret(view, offset);
         }
         Ok(Some(outcome))
+    }
+
+    /// Explicit navigation centers the caret row within the shared scroll extent.
+    /// Disposable geometry failures retain the already completed cursor jump.
+    fn center_navigation_caret(&mut self, view: ViewId, offset: usize) -> bool {
+        let original_top = self.views[&view].layout.viewport_top();
+        let centered = (|| -> Result<(), CoreError> {
+            // A newly materialized region can refine its absolute row heights.
+            // Re-evaluate the placement locally, with a finite retry budget.
+            for _ in 0..3 {
+                let target = &self.views[&view];
+                let snapshot = target.layout.snapshot().ok_or(LayoutError::NoRows)?;
+                let position = target.commands.visual_position().unwrap_or(
+                    crate::command::layout_motion::VisualPosition {
+                        text_offset: offset,
+                        affinity: BoundaryAffinity::Downstream,
+                    },
+                );
+                let geometry = snapshot
+                    .logical_endpoint_geometry(position.text_offset, position.affinity)
+                    .or_else(|_| {
+                        snapshot.logical_endpoint_geometry(
+                            position.text_offset,
+                            if position.affinity == BoundaryAffinity::Downstream {
+                                BoundaryAffinity::Upstream
+                            } else {
+                                BoundaryAffinity::Downstream
+                            },
+                        )
+                    })?;
+                let row = &snapshot.rows[geometry.row_index];
+                let top = snapshot.centered_row_viewport_top(row, target.layout.height());
+                let left = target.layout.viewport_left();
+                let before = target.layout.viewport_top();
+                self.materialize_requested_viewport(view, left, top)?;
+                if (self.views[&view].layout.viewport_top() - before).abs() < 0.01 {
+                    break;
+                }
+            }
+            Ok(())
+        })();
+        // Cursor placement has succeeded. A failed disposable refinement
+        // must still publish that valid navigation to native views.
+        if let Err(error) = centered {
+            self.record_presentation_error(view, error);
+        }
+        self.views[&view].layout.viewport_top() != original_top
     }
 
     pub fn exit_link_typing(
@@ -304,5 +314,106 @@ mod tests {
         assert_eq!(layout.snapshot().unwrap().revision, layout_revision);
         assert_eq!(core.document.source_bytes(), source.as_bytes());
         assert!(!core.document.history_status().is_dirty);
+    }
+}
+
+impl<P: TextMeasurementProvider> Core<P> {
+    pub fn edit_reference(
+        &mut self,
+        view: ViewId,
+        expected: LogicalSelectionIdentity,
+        intent: crate::document::ReferenceRequest,
+    ) -> Result<CoreOutcome, CoreError> {
+        if self.list_selection_identity(view)? != expected {
+            return Err(CoreError::StaleLogicalSelection);
+        }
+        let selected = expected.range();
+        if !matches!(expected.kind(), LogicalSelectionKind::None | LogicalSelectionKind::Character | LogicalSelectionKind::Line) {
+            return Err(CoreError::StaleLogicalSelection);
+        }
+        if let crate::document::ReferenceRequest::Insert { offset, end, .. } = &intent {
+            if selected != (*offset..*end) { return Err(CoreError::StaleLogicalSelection); }
+        } else {
+            let reference = self.document.reference_context_at(self.document.text_point(intent.offset())?)?
+                .ok_or(DocumentError::UnsupportedFormatting)?;
+            if selected.start < reference.start || selected.end > reference.end { return Err(CoreError::StaleLogicalSelection); }
+        }
+        if matches!(&intent, crate::document::ReferenceRequest::GoToDefinition {..} | crate::document::ReferenceRequest::GoToUse {..}) {
+            let offset = self.document.reference_jump_target(&intent)?;
+            let origin = self.views[&view].commands.cursor();
+            let mut outcome = self.handle(view, CoreEvent::PlaceCursor {
+                document_revision: self.document.revision(), text_offset: offset,
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            })?;
+            self.views.get_mut(&view).unwrap().commands.record_native_jump(&self.document, origin);
+            if matches!(&intent, crate::document::ReferenceRequest::GoToDefinition {..}) {
+                outcome.layout_changed |= self.center_navigation_caret(view, offset);
+            }
+            return Ok(outcome);
+        }
+        let (preflight, caret) = self
+            .document
+            .prepare_reference_edit(expected.document(), expected.revision(), &intent)
+            .map_err(command_model_transaction_error)?;
+        if preflight.is_no_op() {
+            return Ok(CoreOutcome {
+                command: None,
+                document_changed: false,
+                position_map: None,
+                layout_changed: false,
+                composition_changes: Vec::new(),
+            });
+        }
+        let map = preflight.text_position_map().clone();
+        let before = self.views[&view]
+            .commands
+            .capture_history_restoration(&self.document)?;
+        let mapped =
+            self.prepare_mapped_commands(&map, CommandInterpreter::capture_position_anchors)?;
+        self.finalize_open_edit_group(view)?;
+        let prepared = self
+            .document
+            .rebind_prepared_after_group_close(preflight)
+            .map_err(command_model_transaction_error)?;
+        self.document
+            .commit_model_transaction(prepared)
+            .map_err(command_model_transaction_error)?;
+        for (id, commands) in mapped {
+            self.views.get_mut(&id).expect("prepared view").commands = commands;
+        }
+        let resumes_typing = self
+            .views
+            .get_mut(&view)
+            .expect("prepared view")
+            .commands
+            .finish_native_link_edit(&mut self.document, caret);
+        let after = self.views[&view]
+            .commands
+            .capture_history_restoration(&self.document)?;
+        self.document.attach_history_restoration(
+            self.document.history_status().current.node,
+            HistoryRestoration::new(before, after.clone()),
+        )?;
+        if resumes_typing {
+            self.edit_group_owner = Some(view);
+            self.edit_group_restoration = Some(OpenGroupRestoration {
+                generation: self.document.edit_group_generation(),
+                parent: self.document.history_status().current,
+                before: after,
+            });
+        }
+        let composition_changes = self.refresh_views_after_native_change(view, &map)?;
+        if let Err(error) =
+            self.materialize_immediate_viewport(view, ImmediateLayoutIntent::RevealCaret)
+        {
+            self.record_presentation_error(view, error);
+        }
+        Ok(CoreOutcome {
+            command: None,
+            document_changed: true,
+            position_map: Some(map),
+            layout_changed: true,
+            composition_changes,
+        })
     }
 }

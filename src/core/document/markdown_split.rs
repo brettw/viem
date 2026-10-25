@@ -597,6 +597,16 @@ fn link_scopes(document: &Document, line: &Range<usize>) -> Result<Vec<Scope>, D
     let normalized = normalize(&decoded, document.file_format());
     let mapper = super::super::rich_text::Builder::new(&normalized, document.revision());
     let mut scopes = Vec::new();
+    for reference in projection.inline_references_for_region(&line) {
+        let opening = reference.source.start..reference.label_source.start;
+        let closing = reference.label_source.end..reference.source.end;
+        scopes.push(Scope {
+            formatted: reference.range,
+            marker: document.encoding().decode_region(&document.state().source.bytes_in(opening.clone()).ok_or(DocumentError::AmbiguousProjection)?, opening.start)?.text,
+            closing_marker: document.encoding().decode_region(&document.state().source.bytes_in(closing.clone()).ok_or(DocumentError::AmbiguousProjection)?, closing.start)?.text,
+            opening, closing,
+        });
+    }
     for link in super::super::links::markdown_links_in(&normalized.text, 0..normalized.text.len()) {
         let label = mapper.source_range(link.label.clone());
         let Some(span) = spans.iter().find(|span| {

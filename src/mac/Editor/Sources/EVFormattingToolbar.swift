@@ -26,6 +26,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let formattedView = NSButton()
   let insertTable = EVInsertTableButton()
   let insertLink = NSButton()
+  let insertReference = NSButton()
   let insertImage = NSButton()
   private(set) var tablePicker: EVTablePickerController?
   private var pickerSelection: ViemLogicalSelectionIdentityV1?
@@ -85,6 +86,12 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     insertLink.toolTip = shortcutToolTip("Link", command: .insertLink)
     insertLink.action = #selector(openLinkEditor(_:))
     codeLinkGroup.addArrangedSubview(insertLink)
+    configure(insertReference, title: "Reference", toggle: true)
+    insertReference.title = "[d]"
+    insertReference.imagePosition = .noImage
+    insertReference.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+    insertReference.action = #selector(openReferenceEditor(_:))
+    codeLinkGroup.addArrangedSubview(insertReference)
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
     add(.numberedList, title: "Numbered List", symbol: "list.number", to: blockGroup)
     configure(blockQuote, title: "Block Quote", toggle: true)
@@ -131,7 +138,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     button.refusesFirstResponder = true
     button.toolTip = title
     button.setAccessibilityLabel(title)
-    button.widthAnchor.constraint(equalToConstant: 27).isActive = true
+    button.widthAnchor.constraint(equalToConstant: button === insertReference ? 35 : 27).isActive = true
     button.heightAnchor.constraint(equalToConstant: 26).isActive = true
     button.target = self
   }
@@ -212,6 +219,10 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     let link = surface.linkPopover.toolbarPresentation
     insertLink.state = link.state
     insertLink.isEnabled = markdown && link.isEnabled
+    setHidden(!markdown, for: insertReference)
+    let reference = surface.linkPopover.referenceToolbarPresentation
+    insertReference.state = reference.state
+    insertReference.isEnabled = markdown && reference.isEnabled
     setHidden(!markdown, for: insertImage)
     let image = surface.imagePopover.toolbarPresentation
     insertImage.state = image.state
@@ -347,6 +358,10 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   }
 
   @objc func openImageEditor(_ sender: NSButton) { surface?.imagePopover.performToolbarAction(); refresh() }
+  @objc func openReferenceEditor(_ sender: Any?) {
+    surface?.linkPopover.openReferenceEditor()
+  }
+
   @objc func openLinkEditor(_ sender: NSButton) { surface?.linkPopover.performToolbarAction(); refresh() }
 
   @objc func toggleCharacterCode(_ sender: NSButton) { toggleStyle(role: .character, id: "Code", fallback: "", sender: sender) }

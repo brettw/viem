@@ -5,7 +5,7 @@ use std::{collections::BTreeMap, ops::Range};
 
 #[derive(Clone, Debug)]
 pub(super) enum InlineKind {
-    Emphasis, Strong, Strike, Reference, Autolink, Html, Link,
+    Emphasis, Strong, Strike, Reference { name: String, destination: String, title: String }, Autolink, Html, Link,
     Image { destination: String, text: String, title: String, inline: bool },
 }
 #[derive(Clone, Debug)]
@@ -71,7 +71,16 @@ fn parse_inlines(text: &str, range: Range<usize>, definitions: &str, prefix: &st
                     inner: start + 1..range.start + label_end - offset, kind: InlineKind::Link });
                 continue;
             },
-            Event::Start(Tag::Link { .. }) => (InlineKind::Reference, 0),
+            Event::Start(Tag::Link { link_type, id, dest_url, title, .. }) => {
+                if link_type == LinkType::Collapsed && source[span.end..].starts_with("[]") { span.end += 2; }
+                let Some(label_end) = super::links::markdown_label_end(&source, span.start, span.end) else { continue; };
+                let start = range.start + span.start - offset;
+                let end = range.start + span.end - offset;
+                result.insert(start, Inline { range: start..end,
+                    inner: start + 1..range.start + label_end - offset,
+                    kind: InlineKind::Reference { name: id.into_string(), destination: dest_url.into_string(), title: title.into_string() } });
+                continue;
+            },
             Event::InlineHtml(_) => (InlineKind::Html, 0),
             _ => continue,
         };

@@ -480,6 +480,7 @@ impl Document {
                 if span.application != StyleApplication::Automatic("Markdown reference".into()) {
                     continue;
                 }
+                if self.projection().inline_references_for_region(&span.range).iter().any(|r| r.range == span.range) { continue; }
                 if let Some(source) = self.projection().source_range(span.range.clone()) {
                     if self.text()[span.range.clone()].trim_start().starts_with('[')
                         && self.text()[span.range].contains("]:") {

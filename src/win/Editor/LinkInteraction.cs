@@ -29,7 +29,16 @@ internal sealed partial class EditorPane
     private Button? linkApply;
     private LinkContext? shownLink, dismissedLink;
     private bool editingLink;
+    private StackPanel? referenceControls;
+    private ComboBox? referenceName;
+    private TextBox? referenceTitle;
+    private TextBlock? referenceInfo;
+    private Button? referenceMore, referenceShared, referenceDefinition;
+    private bool referenceMenuOpen;
+    private string referenceEditMode = "editUse";
     private bool insertingLink;
+    private bool insertingReference;
+    private ReferenceChoice[] referenceChoices = [];
     private Rect linkAnchor;
     internal bool LinkPopupVisible => linkPopup?.Visibility == Visibility.Visible;
     internal bool LinkEditorVisible => LinkPopupVisible && editingLink;
@@ -61,6 +70,8 @@ internal sealed partial class EditorPane
         Action("Edit link", "\uE70F", () => BeginLinkEditor(animate: true));
         var remove = Action("Remove link", "", RemoveShownLink);
         remove.Content = UnlinkIcon(remove);
+        referenceMore = Action("Reference actions", "\uE712", ShowReferenceMenu);
+        referenceMore.Visibility = Visibility.Collapsed;
         linkText = new TextBox { Header = "Text", MinWidth = 0, IsSpellCheckEnabled = false, IsTextPredictionEnabled = false };
         linkDestination = new LinkDestinationComboBox { Header = "Destination", PlaceholderText = "https://…, file.md, or #heading", MinWidth = 0,
             IsEditable = true, IsTextSearchEnabled = false, HorizontalAlignment = HorizontalAlignment.Stretch,
@@ -69,7 +80,25 @@ internal sealed partial class EditorPane
         linkError = new TextBlock { TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed, MaxWidth = 320, FontSize = 12 };
         AutomationProperties.SetLiveSetting(linkError, AutomationLiveSetting.Polite);
         linkEditor = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
-        linkEditor.Children.Add(linkText); linkEditor.Children.Add(linkDestination); linkEditor.Children.Add(linkError);
+        linkEditor.Children.Add(linkText); linkEditor.Children.Add(linkDestination);
+        referenceControls = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
+        referenceName = new ComboBox { Header = "Reference", IsEditable = true, IsTextSearchEnabled = false, HorizontalAlignment = HorizontalAlignment.Stretch };
+        referenceTitle = new TextBox { Header = "Shared title" };
+        referenceName.RegisterPropertyChangedCallback(ComboBox.TextProperty, (_, _) => UpdateReferenceDraft());
+        referenceName.TextSubmitted += (_, e) => { referenceName.Text = e.Text; UpdateReferenceDraft(); e.Handled = true; };
+        referenceName.SelectionChanged += (_, _) => {
+            if (insertingReference && referenceName.SelectedItem is string name) { referenceName.Text = name; UpdateReferenceDraft(); }
+        };
+        referenceInfo = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var editShared = referenceShared = new Button { Content = "Edit shared definition…" };
+        editShared.Click += (_, _) => { referenceEditMode = shownLink?.Reference?.DefinitionOffset == null ? "createDefinition" : "editDefinition"; ConfigureReferenceEditor(); PositionLinkPopup(); };
+        referenceControls.Children.Add(referenceInfo); referenceControls.Children.Add(referenceName);
+        referenceDefinition = new Button { Content = "Go to definition" };
+        referenceDefinition.Click += (_, _) => Run(() => ReferenceAction("goToDefinition", editDefinition: true));
+        var referenceActions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        referenceActions.Children.Add(editShared); referenceActions.Children.Add(referenceDefinition);
+        referenceControls.Children.Add(referenceTitle); referenceControls.Children.Add(referenceActions);
+        linkEditor.Children.Add(referenceControls); linkEditor.Children.Add(linkError);
         var controls = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = "Cancel", MinWidth = 60 };
         linkApply = new Button { Content = "Apply", MinWidth = 60 };
@@ -77,11 +106,11 @@ internal sealed partial class EditorPane
         linkApply.Click += (_, _) => ApplyLinkEditor();
         controls.Children.Add(cancel); controls.Children.Add(linkApply); linkEditor.Children.Add(controls);
         linkDestination.RegisterPropertyChangedCallback(ComboBox.TextProperty, (_, _) => {
-            linkApply.IsEnabled = linkDestination.Text.Trim().Length > 0;
+            linkApply.IsEnabled = shownLink?.Reference != null || linkDestination.Text.Trim().Length > 0;
             linkError.Visibility = Visibility.Collapsed;
         });
         linkDestination.DropDownOpened += (_, _) => {
-            if (View is not { } view || shownLink is not { } context) return;
+            if (View is not { } view || shownLink is not { } context || context.Reference != null) return;
             try {
                 var choices = view.LinkHeadings(context);
                 // WinUI expects an inspectable collection. A strongly typed
@@ -127,14 +156,30 @@ internal sealed partial class EditorPane
         Enqueue(() => { PresentInsertLink(insertOnly); return Task.CompletedTask; });
     }
 
-    private void PresentInsertLink(bool insertOnly)
+    internal void ShowInsertReference()
+    {
+        CaptureCommittedText();
+        Enqueue(() => {
+            if (CanUseFormattingCommands && View is { } view) {
+                var context = view.LinkContext();
+                if (context.Reference != null) PresentInsertLink(false);
+                else if (context.Link == null && context.CanInsert) {
+                    referenceChoices = view.ReferenceChoices(context);
+                    PresentInsertLink(true, reference: true);
+                }
+            }
+            return Task.CompletedTask;
+        });
+    }
+
+    private void PresentInsertLink(bool insertOnly, bool reference = false)
     {
         DismissImagePopup(suppress: false);
         if (!CanUseFormattingCommands || View is not { } view) return;
         var context = view.LinkContext();
         if (insertOnly ? !context.CanInsert : !context.CanInsert && context.Link?.Editable != true)
         { SetMessage("Links can be inserted within a single paragraph of Markdown prose."); return; }
-        insertingLink = insertOnly;
+        insertingLink = insertOnly; insertingReference = reference;
         shownLink = context; dismissedLink = null;
         linkAnchor = caretRect;
         if (linkAnchor.Height <= 0) return;
@@ -149,12 +194,14 @@ internal sealed partial class EditorPane
         if (!insertingLink && context.Link is { Editable: false }) return;
         EnsureLinkPopup();
         editingLink = true;
+        referenceEditMode = context.Reference?.Definition == true ? "editDefinition" : "editUse";
         linkDestination!.IsDropDownOpen = false;
         linkDestination.SelectedItem = null;
         linkDestination.ItemsSource = null;
         linkText!.Text = insertingLink ? context.Text : context.Link?.Text ?? context.Text;
         linkDestination.Text = insertingLink ? "" : context.Link?.Destination ?? "";
         linkApply!.IsEnabled = linkDestination.Text.Trim().Length > 0;
+        ConfigureReferenceEditor();
         linkError!.Text = ""; linkError.Visibility = Visibility.Collapsed;
         linkActions!.Visibility = Visibility.Collapsed; linkEditor!.Visibility = Visibility.Visible;
         linkPopup!.Visibility = Visibility.Visible;
@@ -175,7 +222,7 @@ internal sealed partial class EditorPane
         FocusPopupField(linkPopup,
             () => LinkEditorVisible && ReferenceEquals(shownLink, context) && ReferenceEquals(View, view),
             () => {
-                if (linkText.Text.Length == 0) {
+                if (context.Reference != null && referenceEditMode == "editUse" || linkText.Text.Length == 0) {
                     bool accepted = linkText.Focus(FocusState.Programmatic);
                     TracePopupFieldFocus("Link text", accepted);
                     linkText.SelectAll();
@@ -191,6 +238,19 @@ internal sealed partial class EditorPane
         if (!editingLink || shownLink is not { } context || View is not { } view) return;
         try
         {
+            if (insertingReference) {
+                view.ReferenceAction(context, "insert", new() { ["text"] = linkText!.Text, ["name"] = referenceName!.Text,
+                    ["destination"] = linkDestination!.Text, ["title"] = referenceTitle!.Text });
+                DismissLinkPopup(suppress: false); FocusEditor(); Refresh(); return;
+            }
+            if (!insertingLink && context.Reference != null) {
+                var fields = referenceEditMode is "editDefinition" or "createDefinition"
+                    ? new Dictionary<string, object> { ["destination"] = linkDestination!.Text, ["title"] = referenceTitle!.Text }
+                    : referenceEditMode == "rename" ? new Dictionary<string, object> { ["name"] = referenceName!.Text }
+                    : new Dictionary<string, object> { ["text"] = linkText!.Text, ["name"] = referenceName!.Text };
+                view.ReferenceAction(context, referenceEditMode, fields);
+                DismissLinkPopup(suppress: false); FocusEditor(); Refresh(); return;
+            }
             string target = linkDestination!.Text.Trim();
             if (target.Length == 0) throw new InvalidOperationException("Enter a destination for the link.");
             // Validate supported schemes before creating a link; relative paths
@@ -249,7 +309,10 @@ internal sealed partial class EditorPane
         { DismissLinkPopup(suppress: false); return; }
         EnsureLinkPopup(); shownLink = context; insertingLink = false;
         var label = (TextBlock)linkDestinationButton!.Content;
-        label.Text = context.Link.Text.Length == 0 ? "empty" : context.Link.Text;
+        label.Text = context.Reference is { } reference ? $"{reference.Name} → {reference.Destination}"
+            : context.Link.Text.Length == 0 ? "empty" : context.Link.Text;
+        linkDestinationButton!.IsEnabled = context.Reference == null || context.Reference.DefinitionOffset != null;
+        referenceMore!.Visibility = context.Reference != null ? Visibility.Visible : Visibility.Collapsed;
         label.FontStyle = context.Link.Text.Length == 0 ? global::Windows.UI.Text.FontStyle.Italic : global::Windows.UI.Text.FontStyle.Normal;
         AutomationProperties.SetName(linkDestinationButton, "Open " + context.Link.Destination);
         ToolTipService.SetToolTip(linkDestinationButton, context.Link.Destination);
@@ -284,7 +347,7 @@ internal sealed partial class EditorPane
 
     private bool HasLinkInteractionFocus()
     {
-        if (LinkEditorVisible && linkDestination?.IsDropDownOpen == true) return true;
+        if (referenceMenuOpen || LinkEditorVisible && (linkDestination?.IsDropDownOpen == true || referenceName?.IsDropDownOpen == true)) return true;
         if (XamlRoot == null) return false;
         if (HasPendingPopupFocus(linkPopup)) return true;
         for (var element = FocusManager.GetFocusedElement(XamlRoot) as DependencyObject; element != null; element = VisualTreeHelper.GetParent(element))
@@ -342,7 +405,9 @@ internal sealed partial class EditorPane
     private void RemoveShownLink()
     {
         if (View is not { } view || shownLink is not { Link: { Editable: true } } context) return;
-        view.EditLink(context, "", "", remove: true);
+        if (context.Reference is { Definition: true }) return;
+        if (context.Reference != null) view.ReferenceAction(context, "remove");
+        else view.EditLink(context, "", "", remove: true);
         DismissLinkPopup(suppress: false); FocusEditor(); Refresh();
     }
     private async Task OpenShownLink()
@@ -355,4 +420,76 @@ internal sealed partial class EditorPane
         else if (target.Kind == LinkDestinationKind.Document) await window.OpenLinkedDocument(this, target);
         else if (!await Launcher.LaunchUriAsync(new Uri(target.Value))) throw new InvalidOperationException("The web browser could not open this link.");
     }
+    private void UpdateReferenceDraft()
+    {
+        if (!insertingReference || referenceName == null) return;
+        var name = string.Join(" ", referenceName.Text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        var choice = referenceChoices.FirstOrDefault(c => string.Equals(string.Join(" ", c.Name.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)), name, StringComparison.OrdinalIgnoreCase));
+        linkDestination!.IsEnabled = choice == null; referenceTitle!.IsEnabled = choice == null;
+        if (choice != null) linkDestination.Text = choice.Destination;
+        referenceInfo!.Text = choice == null ? "A new definition will be added at the document end. It may also activate matching references." : "Use the existing shared definition.";
+    }
+
+    private void ConfigureReferenceEditor()
+    {
+        referenceShared!.Visibility = referenceDefinition!.Visibility = insertingReference ? Visibility.Collapsed : Visibility.Visible;
+        if (insertingReference) {
+            referenceControls!.Visibility = Visibility.Visible;
+            linkText!.IsEnabled = referenceName!.IsEnabled = true;
+            referenceName.ItemsSource = referenceChoices.Select(c => c.Name).ToArray();
+            referenceName.Text = ""; referenceTitle!.Text = "";
+            linkApply!.Content = "Insert reference";
+            UpdateReferenceDraft(); return;
+        }
+        var reference = insertingLink ? null : shownLink?.Reference;
+        referenceControls!.Visibility = reference != null ? Visibility.Visible : Visibility.Collapsed;
+        linkText!.IsEnabled = reference == null || referenceEditMode == "editUse";
+        linkDestination!.IsEnabled = reference == null || referenceEditMode is "editDefinition" or "createDefinition";
+        linkApply!.Content = "Apply";
+        if (reference == null) return;
+        referenceDefinition!.IsEnabled = reference.DefinitionOffset != null && reference.Editable;
+        referenceShared!.Content = reference.DefinitionOffset == null ? "Create definition…" : "Edit shared definition…";
+        referenceName!.ItemsSource = reference.Choices.Select(c => c.Name).ToArray();
+        referenceName.Text = reference.Name; referenceName.IsEnabled = referenceEditMode is "editUse" or "rename";
+        referenceTitle!.Text = reference.Title; referenceTitle.IsEnabled = referenceEditMode is "editDefinition" or "createDefinition";
+        referenceInfo!.Text = reference.DefinitionOffset == null ? "Missing definition. Creating it at the document end can also activate other matching references." : reference.Inactive ? "Inactive definition—an earlier definition is used."
+            : $"Used by {reference.Links} links and {reference.Images} images" + (reference.Complete ? "" : " (list incomplete; editing unavailable)");
+        linkApply.IsEnabled = reference.Editable;
+        linkApply.Content = referenceEditMode == "createDefinition" ? "Create definition" : referenceEditMode == "editDefinition" ? reference.Inactive ? "Update inactive definition" : $"Update {reference.Links + reference.Images} uses"
+            : referenceEditMode == "rename" ? "Rename everywhere" : "Apply";
+    }
+    private void ReferenceAction(string action, Dictionary<string, object>? fields = null, bool editDefinition = false)
+    {
+        if (View is not { } view || shownLink is not { } context) return;
+        view.ReferenceAction(context, action, fields);
+        DismissLinkPopup(suppress: false); FocusEditor(); Refresh();
+        if (editDefinition) PresentInsertLink(insertOnly: false);
+    }
+    private void ShowReferenceMenu()
+    {
+        if (shownLink?.Reference is not { } reference) return;
+        var menu = new MenuFlyout();
+        void Add(string title, Action action, bool enabled = true) {
+            var item = new MenuFlyoutItem { Text = title, IsEnabled = enabled };
+            item.Click += (_, _) => Run(action); menu.Items.Add(item);
+        }
+        Add("Go to definition", () => ReferenceAction("goToDefinition"), reference.DefinitionOffset != null);
+        var uses = new MenuFlyoutSubItem { Text = $"Find uses ({reference.Links + reference.Images})", IsEnabled = reference.Uses.Length > 0 };
+        foreach (var use in reference.Uses) {
+            var item = new MenuFlyoutItem { Text = (use.Image ? "Image: " : "") + use.Text };
+            item.Click += (_, _) => Run(() => ReferenceAction("goToUse", new() { ["target"] = use.Offset }));
+            uses.Items.Add(item);
+        }
+        if (reference.Uses.Length == 1) Add("Go to use", () => ReferenceAction("goToUse", new() { ["target"] = reference.Uses[0].Offset }));
+        else menu.Items.Add(uses);
+        Add(reference.DefinitionOffset == null ? "Create definition…" : "Edit shared definition…", () => { BeginLinkEditor(false); referenceEditMode = shownLink?.Reference?.DefinitionOffset == null ? "createDefinition" : "editDefinition"; ConfigureReferenceEditor(); PositionLinkPopup(); }, reference.Editable);
+        Add("Rename reference everywhere…", () => { BeginLinkEditor(false); referenceEditMode = "rename"; ConfigureReferenceEditor(); PositionLinkPopup(); }, reference.Editable && !reference.Inactive && reference.DefinitionOffset != null);
+        if (reference.Definition) Add(reference.Inactive || reference.Links + reference.Images == 0 ? "Delete definition" : "Convert uses to inline and delete definition",
+            () => ReferenceAction("deleteDefinition"), reference.Editable);
+        else Add("Convert to inline link", () => ReferenceAction("convertInline"), reference.Editable && reference.DefinitionOffset != null);
+        referenceMenuOpen = true;
+        menu.Closed += (_, _) => { referenceMenuOpen = false; DispatcherQueue.TryEnqueue(DismissLinkPopupIfFocusLeft); };
+        menu.ShowAt(referenceMore!);
+    }
+
 }

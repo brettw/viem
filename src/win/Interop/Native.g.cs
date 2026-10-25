@@ -2404,11 +2404,15 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_edit_link(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, uint @action, ulong @link_start, ulong @link_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, ViemCoreOutcomeV1* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_reference_action(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, ViemUtf8Slice @request, ViemCoreOutcomeV1* @outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_image_context(ulong @core, ulong @view, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_edit_image(ulong @core, ulong @view, ViemLogicalSelectionIdentityV1* @expected, uint @action, ulong @image_start, ulong @image_end, ViemUtf8Slice @text, ViemUtf8Slice @destination, uint @width, uint @height, ViemCoreOutcomeV1* @outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_select_image(ulong @core, ulong @view, ulong @document_id, ulong @revision, ulong @text_offset, ViemCoreOutcomeV1* @outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_copy_reference_choices(ulong @core, ulong @document_id, ulong @revision, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_link_headings(ulong @core, ulong @document_id, ulong @revision, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

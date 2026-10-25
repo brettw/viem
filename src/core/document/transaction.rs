@@ -101,6 +101,7 @@ pub use candidate::{
 use candidate::{Attempt, CandidateStrategy as Strategy};
 pub use fragments::{FragmentEdit, ReplacementFragment};
 pub(crate) use replacement::RecordedReplacement;
+pub(super) use replacement::PatchComposition;
 
 use super::formatted_text::{FormattedTextSpliceStats, LogicalGraphemeSnapshot};
 use super::line_endings::{detect, normalize, normalize_literal};
@@ -1165,6 +1166,7 @@ impl Document {
             configuration: self.configuration.clone(),
             configuration_state: None,
             view_format_prefetch: Default::default(),
+            reference_cache: Default::default(),
         }
     }
 
@@ -2318,6 +2320,7 @@ impl Document {
             self.repair_markdown_reference_dependents(&edits, &mut source_patches)?;
             self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
         }
+        self.repair_reference_label_edits(&edits, &mut source_patches)?;
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;

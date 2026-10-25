@@ -56,6 +56,8 @@ mod line_endings;
 mod images;
 pub use images::{ImageSnapshot, ImageEditIntent};
 mod links;
+mod references;
+pub use references::{ReferenceContext, ReferenceRequest};
 pub use links::{LinkSnapshot, LinkEditIntent, LinkHeading, LinkHeadingList};
 mod persistence;
 mod pipeline;
@@ -124,7 +126,7 @@ pub use position::{
     SourcePoint, SourceRange, Splice, TextAnchor, TextRange, UnresolvableAnchor,
 };
 pub use projection::{
-    Block, BlockDirectFormatting, BlockKind, CodeBlockKind, CodeClipboardRepresentation, Format, FormattedDocument, InlineImage, FormattedPayloadError, FormattedTextPayload,
+    Block, BlockDirectFormatting, BlockKind, CodeBlockKind, CodeClipboardRepresentation, Format, FormattedDocument, InlineImage, InlineReference, FormattedPayloadError, FormattedTextPayload,
     HardLineInfo, HardLineQueryError, HardLineSnapshot, ListStyle, ProjectedSourceBoundary,
     ProvenanceSpan, SourceBoundaryRelation, SourceToTextError, StyleSpan,
 };
@@ -756,6 +758,7 @@ pub struct Document {
     configuration_state: Option<DocumentState>,
     /// Disposable background preparation of the next Preview switch.
     view_format_prefetch: view_format_prefetch::ViewFormatPrefetch,
+    reference_cache: references::ReferenceCache,
 }
 
 impl Default for Document {
@@ -900,6 +903,7 @@ impl Document {
             configuration: None,
             configuration_state: None,
             view_format_prefetch: Default::default(),
+            reference_cache: Default::default(),
         }
     }
 
@@ -1054,6 +1058,7 @@ impl Document {
             configuration: None,
             configuration_state: None,
             view_format_prefetch: Default::default(),
+            reference_cache: Default::default(),
         })
     }
 

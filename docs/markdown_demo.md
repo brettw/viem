@@ -341,7 +341,7 @@ Tables also retain the inset of their enclosing list or quotation:
 
 ## Unsupported GitHub features
 
-The following examples intentionally demonstrate features that Viem does not implement. Remote-image placeholders and literal reference links above are deliberate presentation choices; local Markdown images preview without network access.
+The following examples intentionally demonstrate features that Viem does not implement. Remote-image placeholders and visible reference definitions above are deliberate presentation choices; local Markdown images preview without network access.
 
 ### Task-list checkboxes
 
@@ -374,3 +374,13 @@ graph LR
 ### Other GitHub features
 
 Emoji shortcodes such as :smile: stay literal. Repository mentions such as @example, issue references such as #123, and a generated table of contents are not implemented. Heading links such as [Literal code](#literal-code) navigate within this document and can be chosen from the link destination combobox.
+
+
+## Reference controls
+
+Place the caret in [this guide][reference-guide], [reference-guide][], or
+[reference-guide] to edit one use, edit the shared definition, or jump to it.
+Open target navigates to this section. The popup also recognizes
+[an unresolved reference][missing-guide].
+
+[reference-guide]: #reference-controls "Reference controls demonstration"

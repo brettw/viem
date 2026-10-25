@@ -329,6 +329,27 @@ impl RangedItem for InlineImage {
     }
 }
 
+/// Source ownership of a rendered reference label. Syntax stays in the source;
+/// this indexed metadata never creates a logical caret stop for its brackets.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InlineReference {
+    pub range: Range<usize>,
+    pub(super) source: Range<usize>,
+    pub(super) label_source: Range<usize>,
+    pub name: String,
+    pub destination: String,
+    pub title: String,
+}
+impl RangedItem for InlineReference {
+    fn range(&self) -> &Range<usize> { &self.range }
+    fn owned_heap_bytes(&self) -> usize { self.name.capacity() + self.destination.capacity() + self.title.capacity() }
+    fn with_range(&self, range: Range<usize>) -> Self { Self { range, ..self.clone() } }
+    fn with_transform(&self, range: Range<usize>, auxiliary_shift: i128, _: Option<u64>) -> Option<Self> {
+        Some(Self { range, source: shift_range_i128(&self.source, auxiliary_shift)?,
+            label_source: shift_range_i128(&self.label_source, auxiliary_shift)?, ..self.clone() })
+    }
+}
+
 /// Markdown code blocks resolve syntax names through the Code definitions
 /// merged into the layout sheet under their display names.
 fn markdown_code_style_names(sheet: &StyleSheet) -> std::collections::BTreeMap<&str, &StyleId> {
@@ -1540,6 +1561,7 @@ pub struct FormattedDocument {
     hard_lines: OrderedRangeStore<HardLine>,
     styles: IntervalRangeStore<StyleSpan>,
     inline_images: IntervalRangeStore<InlineImage>,
+    inline_references: IntervalRangeStore<InlineReference>,
     /// Contributors and their source-keyed boundary index. Rich projections
     /// store one-to-one scalar text as runs that queries expand exactly.
     provenance: ProvenanceIndex,
@@ -1564,6 +1586,7 @@ impl PartialEq for FormattedDocument {
             && self.blocks == other.blocks
             && self.hard_lines == other.hard_lines
             && self.inline_images == other.inline_images
+            && self.inline_references == other.inline_references
             && self.styles == other.styles
             && self.provenance == other.provenance
             && self.literal_encoding == other.literal_encoding
@@ -1601,10 +1624,20 @@ impl LogicalGraphemeSnapshot for FormattedDocument {
 }
 
 impl FormattedDocument {
+    pub(crate) fn inline_reference_items(&self) -> impl Iterator<Item = InlineReference> + '_ {
+        self.inline_references.items()
+    }
+    pub fn inline_references_for_region(&self, range: &Range<usize>) -> Vec<InlineReference> {
+        self.inline_references.query_touching(range)
+    }
     pub(super) fn install_inline_images(&mut self, images: Vec<InlineImage>) {
         self.inline_images = IntervalRangeStore::new(images);
     }
     /// Indexed region query; does not scan or materialize unrelated images.
+    pub(crate) fn inline_image_items(&self) -> impl Iterator<Item = InlineImage> + '_ {
+        self.inline_images.items()
+    }
+
     pub fn inline_images_for_region(&self, range: &Range<usize>) -> Vec<InlineImage> {
         self.inline_images.query_overlapping(range)
     }
@@ -1699,6 +1732,8 @@ impl FormattedDocument {
         let mut projection=Self::from_parts(self.revision,text,blocks,styles,provenance,diagnostics,self.style_sheet.as_ref().clone(),source.start,source.end);
         projection.inline_images=IntervalRangeStore::new(self.inline_images.query_overlapping(&range).into_iter()
             .map(|image| image.with_transform(shift_range_i128(&image.range,-(range.start as i128))?,source_delta,None)).collect::<Option<Vec<_>>>()?);
+        projection.inline_references=IntervalRangeStore::new(self.inline_references.query_overlapping(&range).into_iter()
+            .map(|item| item.with_transform(shift_range_i128(&item.range,-(range.start as i128))?,source_delta,None)).collect::<Option<Vec<_>>>()?);
         let lines=self.hard_lines.query_touching(&range).into_iter().filter(|line|range.start<=line.range.start && line.range.end<=range.end)
             .map(|line|shift_range_i128(&line.range,-(range.start as i128))).collect::<Option<Vec<_>>>()?;
         projection.install_hard_line_partition(lines);
@@ -1833,6 +1868,7 @@ impl FormattedDocument {
         if let Some(lines) = &self.table_lines { lines.visit_retained_memory(visitor); }
         self.tables.visit_retained_memory(visitor);
         self.inline_images.visit_retained_memory(visitor);
+        self.inline_references.visit_retained_memory(visitor);
         self.styles.visit_retained_memory(visitor);
         if trace { eprintln!("  styles {}", visitor.retained_bytes() - before); before = visitor.retained_bytes(); }
         self.provenance.visit_retained_memory(visitor);
@@ -1967,6 +2003,7 @@ impl FormattedDocument {
             hard_lines: OrderedRangeStore::new(hard_lines),
             styles: IntervalRangeStore::new(styles),
             inline_images: IntervalRangeStore::new(Vec::new()),
+            inline_references: IntervalRangeStore::new(Vec::new()),
             provenance,
             literal_encoding: None,
             source_ordered,
@@ -2651,6 +2688,7 @@ impl FormattedDocument {
         self.install_table_ids(u64::MAX,Some(previous))?;
         self.install_unchanged_hard_line_ids(previous)?;
         self.inline_images.reuse_equal_chunks(&previous.inline_images);
+        self.inline_references.reuse_equal_chunks(&previous.inline_references);
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(())
     }
@@ -2752,6 +2790,7 @@ impl FormattedDocument {
         let next_id=self.install_table_ids(next_id,Some(previous))?;
         let next_id = self.reconcile_hard_line_ids(previous, edits, next_id)?;
         self.inline_images.reuse_equal_chunks(&previous.inline_images);
+        self.inline_references.reuse_equal_chunks(&previous.inline_references);
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(next_id)
     }
@@ -2880,6 +2919,7 @@ impl FormattedDocument {
             let next_id = self.install_table_ids(next_id, Some(previous))?;
             self.rebuild_table_presentation_lines();
             self.inline_images.reuse_equal_chunks(&previous.inline_images);
+        self.inline_references.reuse_equal_chunks(&previous.inline_references);
         self.styles.reuse_equal_chunks(&previous.styles);
             return Ok(next_id);
         }
@@ -2924,6 +2964,7 @@ impl FormattedDocument {
         let next_id = self.install_table_ids(next_id, Some(previous))?;
         self.rebuild_table_presentation_lines();
         self.inline_images.reuse_equal_chunks(&previous.inline_images);
+        self.inline_references.reuse_equal_chunks(&previous.inline_references);
         self.styles.reuse_equal_chunks(&previous.styles);
         Ok(next_id)
     }
@@ -5331,6 +5372,14 @@ pub(crate) fn splice_line_local_projection(
         old_formatted.end, new_formatted_end, Some((old_source.end, new_source.end)), None, &mut range_stats)
         .ok_or(BlockIdentityError::InvalidProjection)?;
 
+    let reference_indices = contained_interval_indices(&previous.inline_references, &old_formatted)?;
+    let regional_references = regional.inline_references.items().map(|item| {
+        Ok(InlineReference { range: shift_region_range(&item.range, old_formatted.start)?, ..item })
+    }).collect::<Result<Vec<_>, BlockIdentityError>>()?;
+    let inline_references = previous.inline_references.splice_transformed(reference_indices, regional_references,
+        old_formatted.end, new_formatted_end, Some((old_source.end, new_source.end)), None, &mut range_stats)
+        .ok_or(BlockIdentityError::InvalidProjection)?;
+
     // Stored contributors: runs stay within a hard line, so a hard-line
     // region contains every run it touches and splices whole items.
     let runs = &previous.provenance.runs;
@@ -5609,6 +5658,7 @@ pub(crate) fn splice_line_local_projection(
         hard_lines,
         styles,
         inline_images,
+        inline_references,
         provenance,
         literal_encoding: regional.literal_encoding,
         source_ordered: true,
@@ -6542,6 +6592,7 @@ fn project_markdown_lines(
         source_content_end,
     );
     projection.inline_images = IntervalRangeStore::new(builder.inline_images);
+    projection.inline_references = IntervalRangeStore::new(builder.inline_references);
     let mut start = 0;
     let mut lines = Vec::with_capacity(hard_breaks.len() + 1);
     for at in hard_breaks {
@@ -6646,6 +6697,7 @@ struct MarkdownBuilder<'a> {
     blocks: Vec<Block>,
     styles: Vec<StyleSpan>,
     inline_images: Vec<InlineImage>,
+    inline_references: Vec<InlineReference>,
     provenance: provenance_runs::RunBuilder,
     decoding_diagnostics: Vec<DecodingDiagnostic>,
     encoding: super::Encoding,
@@ -6675,6 +6727,7 @@ impl<'a> MarkdownBuilder<'a> {
             blocks: Vec::new(),
             styles: Vec::new(),
             inline_images: Vec::new(),
+            inline_references: Vec::new(),
             provenance: Default::default(),
             decoding_diagnostics: Vec::new(),
             encoding: input.encoding,
@@ -6768,9 +6821,18 @@ impl<'a> MarkdownBuilder<'a> {
                             source, inline: is_inline,
                             width: None, height: None, html: false });
                     }
-                    InlineKind::Reference => {
-                        self.emit_range(at, inline.range.end);
-                        self.styles.push(StyleSpan { range: output..self.output.len(), application: StyleApplication::Automatic("Markdown reference".into()) });
+                    InlineKind::Reference { name, destination, title } => {
+                        let source = self.unit_at(at).unwrap().source.start..self.unit_at(inline.range.end - 1).unwrap().source.end;
+                        let label_source = self.unit_at(inline.inner.start).unwrap().source.start..self.unit_at(inline.inner.end - 1).unwrap().source.end;
+                        self.link_label_depth += 1;
+                        self.parse_inline_depth(inline.inner.start, inline.inner.end, depth + 1);
+                        self.link_label_depth -= 1;
+                        let range = output..self.output.len();
+                        if !range.is_empty() {
+                            self.styles.push(StyleSpan { range: range.clone(), application: StyleApplication::Automatic("Link".into()) });
+                            self.styles.push(StyleSpan { range: range.clone(), application: StyleApplication::Automatic("Markdown reference".into()) });
+                        }
+                        self.inline_references.push(InlineReference { range, source, label_source, name, destination, title });
                     }
                     InlineKind::Autolink => {
                         self.emit_range(inline.inner.start, inline.inner.end);

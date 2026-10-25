@@ -71,6 +71,7 @@ mod line_numbers;
 mod line_ending_open_policy;
 mod link_edit_verification;
 mod links;
+mod markdown_references;
 mod list_continuation_backspace;
 mod list_indentation;
 mod manual_completion;

@@ -297,47 +297,16 @@ impl Document {
             })
         };
         let mut support = Vec::new();
-        for span in self.projection().style_spans().iter().filter(|span| {
-            span.application == StyleApplication::Automatic("Markdown reference".into())
-        }) {
-            let Some(source) = self.projection().source_range(span.range.clone()) else {
-                continue;
+        for reference in self.projection().inline_reference_items() {
+            if !untouched(&reference.source) { continue; }
+            let bytes = self.state().source.bytes_in(reference.source.clone()).ok_or(DocumentError::AmbiguousProjection)?;
+            let spelling = self.encoding().decode_region(&bytes, reference.source.start)?.text;
+            if reference_fragment(&spelling, definitions).reference { continue; }
+            let title = if reference.title.is_empty() { String::new() } else {
+                format!(" \"{}\"", reference.title.replace('&', "&amp;").replace('"', "&quot;").replace('\\', "\\\\"))
             };
-            if !untouched(&source) {
-                continue;
-            }
-            let bytes = self
-                .state()
-                .source
-                .bytes_in(source.clone())
-                .ok_or(DocumentError::AmbiguousProjection)?;
-            let spelling = self.encoding().decode_region(&bytes, source.start)?.text;
-            if !reference_fragment(&spelling, old_definitions).reference {
-                continue;
-            }
-            let current = reference_fragment(&spelling, definitions);
-            if current.reference {
-                continue;
-            }
-            let visible = self
-                .projection()
-                .text_tree()
-                .slice(span.range.clone())
-                .map_err(DocumentError::FormattedTextStorage)?;
-            if current.rendered != visible || current.html {
-                // Insert protection beside the original punctuation. Never
-                // re-encode the surrounding label or its malformed bytes.
-                let decoded = self.encoding().decode_region(&bytes, source.start)?;
-                for scalar in decoded.scalar_spans() {
-                    let text = &decoded.text[scalar.decoded];
-                    if scalar.diagnostic.is_none() && escape_markdown_insert(text) != text {
-                        support.push(SourcePatch::primary(
-                            scalar.source.start..scalar.source.start,
-                            self.encoding().encode_fragment("\\")?,
-                        ));
-                    }
-                }
-            }
+            support.push(SourcePatch::primary(reference.label_source.end..reference.source.end,
+                self.encoding().encode_fragment(&format!("](<{}>{title})", super::super::links::escape_destination(&reference.destination)))?));
         }
         for image in self
             .projection()

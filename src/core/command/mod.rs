@@ -15598,6 +15598,10 @@ impl CommandInterpreter {
         output
     }
 
+    pub(crate) fn record_native_jump(&mut self, document: &Document, origin: usize) {
+        if origin != self.cursor { self.record_jump(document, origin, self.cursor); }
+    }
+
     fn record_jump(&mut self, document: &Document, from: usize, to: usize) {
         if self.global_replay_depth > 0 { return; }
         self.marks.insert('\'', from);

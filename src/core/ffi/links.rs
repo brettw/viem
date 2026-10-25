@@ -6,6 +6,35 @@ use crate::document::{LinkEditIntent, StyleApplication};
 /// # Safety
 /// Output and required-length storage must be valid, aligned and disjoint.
 #[no_mangle]
+pub unsafe extern "C" fn viem_core_copy_reference_choices(
+    handle: ViemCoreHandle,
+    document: u64,
+    revision: u64,
+    output: *mut u8,
+    capacity: u64,
+    required: *mut u64,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[
+            typed_pointer_region(output, capacity)?,
+            typed_pointer_region(required, 1)?,
+        ])?;
+        let bytes = with_core(handle, |core| {
+            if core.document().id().0 != document {
+                return Err(ViemStatus::InvalidArgument);
+            }
+            validate_revision(core.document(), revision)?;
+            let headings = core.document().reference_choices().map_err(document_status)?;
+            serde_json::to_vec(&headings).map_err(|_| ViemStatus::CoreFailure)
+        })?;
+        unsafe { copy_clipboard_json_bytes(&bytes, output, capacity, required) }
+    })
+}
+
+/// Explicit destination-picker enumeration, bound to the captured document.
+/// # Safety
+/// Output and required-length storage must be valid, aligned and disjoint.
+#[no_mangle]
 pub unsafe extern "C" fn viem_core_copy_link_headings(
     handle: ViemCoreHandle,
     document: u64,
@@ -108,6 +137,13 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
                 None if range.is_empty() => document.empty_link_at(cursor).map_err(document_status)?,
                 link => link,
             };
+            let reference = if link.is_none() {
+                document.reference_context_at(document.text_point(sample).map_err(document_status)?)
+                    .map_err(document_status)?.filter(|r| range.is_empty() || range.start >= r.start && range.end <= r.end)
+            } else { None };
+            let reference_link = reference.as_ref().map(|r| serde_json::json!({
+                "start":r.start,"end":r.end,"text":r.text,"destination":r.destination,"editable":r.editable
+            }));
             let linear = matches!(
                 selection.kind(),
                 LogicalSelectionKind::None
@@ -132,7 +168,8 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
                 "linked": linked && (!range.is_empty() || !commands.typing_link_disabled()),
                 "canExitLink": range.is_empty() && !commands.typing_link_disabled() && document.can_exit_link_typing(cursor, affinity),
                 "canRemoveSelection": linear && document.can_remove_link_selection(range),
-                "link": link.map(|link| serde_json::json!({"start":link.range.start,"end":link.range.end,"text":link.text,"destination":link.destination,"editable":link.editable && !document.is_read_only()}))
+                "link": link.map(|link| serde_json::json!({"start":link.range.start,"end":link.range.end,"text":link.text,"destination":link.destination,"editable":link.editable && !document.is_read_only()})).or(reference_link),
+                "reference": reference
             })).map_err(|_| ViemStatus::CoreFailure)
         })?;
         unsafe {
@@ -275,6 +312,35 @@ pub unsafe extern "C" fn viem_core_view_navigate_link_fragment(
             output.write(result.0);
             found.write(u8::from(result.1));
         }
+        Ok(())
+    })
+}
+
+/// Perform a reference action against an exact captured selection. Request is a
+/// bounded UTF-8 JSON ReferenceRequest. No effect is performed on stale input.
+/// # Safety
+/// All pointer regions must be valid, aligned and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_view_reference_action(
+    handle: ViemCoreHandle, view: ViemViewId,
+    expected: *const ViemLogicalSelectionIdentityV1, request: ViemUtf8Slice,
+    output: *mut ViemCoreOutcomeV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(expected,1)?,
+            typed_pointer_region(request.data,request.length)?, typed_pointer_region(output,1)?])?;
+        if request.length > 64 * 1024 { return Err(ViemStatus::InvalidArgument); }
+        let request: crate::document::ReferenceRequest = serde_json::from_slice(unsafe { input_bytes(request.data,request.length)? })
+            .map_err(|_| ViemStatus::InvalidArgument)?;
+        let expected = unsafe { expected.read() };
+        unsafe { clear_outcome(output)?; }
+        let result = with_core_mut(handle, |core| {
+            let selection = core.list_selection_identity(ViewId(view)).map_err(core_status)?;
+            validate_logical_selection_identity(expected, logical_selection_identity_to_ffi(&selection)?)?;
+            let outcome = core.edit_reference(ViewId(view),selection,request).map_err(core_status)?;
+            summarize_core_outcome(core,ViewId(view),Some(&outcome))
+        })?;
+        unsafe { output.write(result); }
         Ok(())
     })
 }

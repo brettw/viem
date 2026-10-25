@@ -299,8 +299,9 @@ Deliberate presentation differences from GitHub:
   language picker. It never controls editor settings, isn't a selectable
   language, and can't be created from Preview. Unclosed or non-leading `---`
   pairs are ordinary Markdown.
-- Reference links and definitions keep their brackets and use the
-  `Markdown reference` style (`#A673D1`).
+- Reference links show their formatted visible label, like inline links, using
+  the `Markdown reference` style (`#A673D1`). Definitions retain their visible
+  source notation so they can be navigated to and edited.
 - HTML comments stay visible with the `Comment` style. Choosing Comment in the
   Character menu wraps selected visible text in a comment; at a caret it
   immediately inserts `<!--  -->` and enters Insert mode between the two spaces.

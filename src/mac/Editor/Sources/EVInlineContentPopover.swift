@@ -25,6 +25,17 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     let reloadButton = NSButton()
     let removeButton = NSButton()
     let textField = NSTextField()
+    let referenceField = NSComboBox()
+    let referenceTitleField = NSTextField()
+    private let referenceControls = NSStackView()
+    let referenceDefinitionButton = NSButton()
+    private let referenceSharedButton = NSButton()
+    private let referenceInfo = NSTextField(wrappingLabelWithString: "")
+    private let referenceMenuButton = NSButton()
+    private var referenceEditMode = "editUse"
+    private var referenceDraft = false
+    private var referenceChoices: [EVInlineContentContext.Reference.Choice] = []
+    private var referenceMenuTracking = false
     let destinationField: NSTextField
     let chooseImageButton = NSButton()
     let imageSizeControls = EVImageSizeControls()
@@ -104,6 +115,8 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         // Draw the requested struck chain rather than relying on OS symbol availability.
         if kind == .link { removeButton.image = Self.unlinkImage() }
         for button in [copyButton, editButton, reloadButton, removeButton] { summary.addSubview(button) }
+        configure(referenceMenuButton, title: "Reference actions", symbol: "ellipsis", action: #selector(referenceMenu))
+        summary.addSubview(referenceMenuButton)
         // Native two-column form: regular labels, intrinsic control heights,
         // and a footer immediately below the fields. Validation has no empty slot.
         form.orientation = .vertical
@@ -163,6 +176,35 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         errorLabel.maximumNumberOfLines = 2
         errorLabel.widthAnchor.constraint(equalToConstant: 360).isActive = true
         errorLabel.isHidden = true
+        referenceControls.orientation = .vertical
+        referenceControls.alignment = .leading
+        referenceControls.spacing = 8
+        referenceControls.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        referenceField.delegate = self
+        referenceField.isEditable = true; referenceField.usesDataSource = false
+        referenceField.setAccessibilityLabel("Reference name")
+        referenceTitleField.setAccessibilityLabel("Shared reference title")
+        referenceInfo.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        referenceInfo.maximumNumberOfLines = 3
+        referenceControls.addArrangedSubview(referenceInfo)
+        let referenceGrid = NSGridView(views: [
+            [NSTextField(labelWithString: "Reference:"), referenceField],
+            [NSTextField(labelWithString: "Title:"), referenceTitleField]
+        ])
+        referenceGrid.column(at: 1).xPlacement = .fill
+        referenceGrid.widthAnchor.constraint(equalToConstant: 360).isActive = true
+        referenceControls.addArrangedSubview(referenceGrid)
+        referenceSharedButton.title = "Edit shared definition…"
+        referenceSharedButton.target = self; referenceSharedButton.action = #selector(editSharedReference)
+        referenceDefinitionButton.title = "Go to definition"
+        referenceDefinitionButton.target = self
+        referenceDefinitionButton.action = #selector(goToReferenceEditor)
+        let referenceActions = NSStackView(views: [referenceSharedButton, referenceDefinitionButton])
+        referenceActions.orientation = .horizontal
+        referenceActions.spacing = 8
+        referenceControls.addArrangedSubview(referenceActions)
+        referenceControls.isHidden = true
+        form.addArrangedSubview(referenceControls)
         form.addArrangedSubview(errorLabel)
         let buttons = NSStackView(views: [cancelButton, applyButton])
         buttons.orientation = .horizontal
@@ -231,6 +273,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
               !session.hasActiveComposition, let selection = try? session.listSelection(),
               let context = try? readContext(session: session, selection: selection) else { return .disabled }
         if kind == .link {
+            if let reference = context.reference { return EVMenuItemPresentation(isEnabled: reference.editable, state: .on) }
             return EVMenuItemPresentation(isEnabled: context.linked
                 ? (selection.text_start == selection.text_end ? context.canExitLink : context.canRemoveSelection)
                 : context.canInsert, state: context.linked ? .on : .off)
@@ -240,6 +283,25 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
                 || (selection.text_start == image.start && selection.text_end == image.end)
         } ?? false
         return EVMenuItemPresentation(isEnabled: !active && context.canInsert, state: active ? .on : .off)
+    }
+
+    var referenceToolbarPresentation: EVMenuItemPresentation {
+        guard let surface, surface.commandLine?.prompt == nil, let session = surface.session,
+              !session.hasActiveComposition, let selection = try? session.listSelection(),
+              let context = try? readContext(session: session, selection: selection) else { return .disabled }
+        return EVMenuItemPresentation(isEnabled: context.reference?.editable ?? (context.item == nil && context.canInsert),
+            state: context.reference == nil ? .off : .on)
+    }
+
+    func openReferenceEditor() {
+        guard referenceToolbarPresentation.isEnabled, let session = surface?.session else { return }
+        do {
+            let selection = try session.listSelection()
+            let current = try readContext(session: session, selection: selection)
+            if current.reference != nil { openEditor(); return }
+            referenceChoices = try session.referenceChoices(expected: selection)
+            openEditor(inserting: true, reference: true)
+        } catch { surface?.report(error) }
     }
 
     var editorPresentation: EVMenuItemPresentation {
@@ -256,6 +318,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         do {
             let selection = try session.listSelection()
             let context = try readContext(session: session, selection: selection)
+            if kind == .link, context.reference != nil { openEditor(); return }
             if kind == .link, context.linked {
                 close()
                 surface.performInput {
@@ -291,18 +354,21 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
               (!surface.hasSelection || (kind == .image && selection.text_start == link.start && selection.text_end == link.end)),
               let rect = anchorRect(for: link) else { close(); return }
         context = next; expected = selection; anchor = rect
-        let label = kind == .link ? link.text : EVImageFileLocation.display(link.destination)
+        let label = next.reference.map { "\($0.name) → \($0.destination)" }
+            ?? (kind == .link ? link.text : EVImageFileLocation.display(link.destination))
         let empty = label.isEmpty
         destinationButton.attributedTitle = NSAttributedString(string: empty ? "empty" : label, attributes: [
             .font: empty ? NSFontManager.shared.convert(NSFont.systemFont(ofSize: 12), toHaveTrait: .italicFontMask) : NSFont.systemFont(ofSize: 12)
         ])
+        destinationButton.isEnabled = next.reference == nil || next.reference?.definitionOffset != nil
+        copyButton.isEnabled = destinationButton.isEnabled
         destinationButton.toolTip = kind == .image ? EVImageFileLocation.display(link.destination) : link.destination
         editButton.isEnabled = link.editable
-        removeButton.isEnabled = link.editable
+        removeButton.isEnabled = link.editable && next.reference?.definition != true
         show(editing: false)
     }
 
-    func openEditor(inserting: Bool = false) {
+    func openEditor(inserting: Bool = false, reference: Bool = false) {
         guard let surface, surface.commandLine?.prompt == nil, surface.acceptCompletionForNativeInput(), let session = surface.session,
               !session.hasActiveComposition else { return }
         do {
@@ -312,6 +378,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
             guard inserting ? next.canInsert : (next.item?.editable == true || next.canInsert),
                   let rect = anchorRect(for: next.item) else { return }
             context = next; expected = selection; suppressed = nil; anchor = rect
+            referenceDraft = reference
             beginEditing()
         } catch { surface.report(error) }
     }
@@ -323,6 +390,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         if let combo = destinationField as? NSComboBox, combo.indexOfSelectedItem >= 0 {
             combo.deselectItem(at: combo.indexOfSelectedItem)
         }
+        referenceEditMode = context.reference?.definition == true ? "editDefinition" : "editUse"
         textField.stringValue = context.item?.text ?? context.text
         setDestination(context.item?.destination ?? "")
         applyButton.title = kind == .image && context.item == nil ? "Insert" : "Apply"
@@ -330,12 +398,13 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
             imageSizeControls.reset(width: context.item?.width, height: context.item?.height)
             probedImageLocation = nil
         }
+        configureReferenceEditor()
         setValidationMessage("")
         updateValidation()
         show(editing: true)
         requestImageDimensions()
         panel.makeKeyAndOrderFront(nil)
-        panel.makeFirstResponder(textField.stringValue.isEmpty ? textField : destinationField)
+        panel.makeFirstResponder(context.reference != nil && referenceEditMode == "editUse" || textField.stringValue.isEmpty ? textField : destinationField)
     }
 
     private func show(editing: Bool) {
@@ -412,7 +481,9 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         let showsReload = kind == .image && surface.backend.sourceFormat == .markdown
         reloadButton.isHidden = !showsReload
         reloadButton.isEnabled = context?.item.map { surface.session?.provider.canReloadImage($0.destination) == true } ?? false
-        let actions = showsReload ? [copyButton, editButton, reloadButton, removeButton] : [copyButton, editButton, removeButton]
+        referenceMenuButton.isHidden = context?.reference == nil
+        var actions = showsReload ? [copyButton, editButton, reloadButton, removeButton] : [copyButton, editButton, removeButton]
+        if context?.reference != nil { actions.append(referenceMenuButton) }
         let labelWidth = min(263, ceil(destinationButton.attributedTitle.size().width) + 12)
         let compactWidth = 15 + labelWidth + CGFloat(actions.count) * 32
         let size = isEditing ? NSSize(width: formSize.width + 28, height: formSize.height + 26)
@@ -437,7 +508,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     private func installDismissal() {
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
             guard let self, self.isOpen else { return event }
-            if self.imageFilePicker != nil { return event }
+            if self.imageFilePicker != nil || self.referenceMenuTracking { return event }
             if event.type == .keyDown, event.keyCode == 53 {
                 // Let the native combobox dismiss its list before Escape
                 // dismisses the authoring form and its retained draft.
@@ -458,6 +529,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
             observers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    if self.referenceMenuTracking { return }
                     if self.imageFilePicker != nil, name != NSWindow.willCloseNotification { return }
                     self.close()
                 }
@@ -468,7 +540,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     func close(restoreFocus: Bool = false, suppress: Bool = false) {
         guard isOpen else { return }
         if suppress { suppressed = expected }
-        isOpen = false; isEditing = false
+        isOpen = false; isEditing = false; referenceDraft = false
         let picker = imageFilePicker
         imageFilePicker = nil
         chooseImageButton.isEnabled = true
@@ -559,9 +631,29 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         if let imageFilePanelPresenter { imageFilePanelPresenter(panel, window, completed) }
         else { panel.beginSheetModal(for: window) { response in completed(response == .OK ? panel.url : nil) } }
     }
-    @objc func remove() { commit(action: 2) }
+    @objc func remove() {
+        if context?.reference != nil { commitReference("remove"); return }
+        commit(action: 2)
+    }
     @objc func apply() {
+        if referenceDraft {
+            commitReference("insert", fields: ["text": textField.stringValue, "name": referenceField.stringValue,
+                "destination": draftDestination, "title": referenceTitleField.stringValue])
+            return
+        }
         guard applyButton.isEnabled else { return }
+        if context?.reference != nil {
+            let fields: [String: Any]
+            if referenceEditMode == "editDefinition" || referenceEditMode == "createDefinition" {
+                fields = ["destination": draftDestination, "title": referenceTitleField.stringValue]
+            } else if referenceEditMode == "rename" {
+                fields = ["name": referenceField.stringValue]
+            } else {
+                fields = ["text": textField.stringValue, "name": referenceField.stringValue]
+            }
+            commitReference(referenceEditMode, fields: fields)
+            return
+        }
         commit(action: context?.item == nil ? 0 : 1)
     }
     private func commit(action: UInt32) {
@@ -590,6 +682,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
     }
     @objc func cancel() { close(restoreFocus: true, suppress: true) }
     func controlTextDidChange(_ obj: Notification) {
+        if referenceDraft, obj.object as? NSComboBox === referenceField { updateReferenceDraft() }
         setValidationMessage(""); updateValidation(); requestImageDimensions()
     }
 
@@ -618,6 +711,7 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
     }
     func comboBoxWillPopUp(_ notification: Notification) {
+        if notification.object as? NSComboBox === referenceField { selectingDestination = true; return }
         guard let combo = notification.object as? NSComboBox, let session = surface?.session, let expected else { return }
         selectingDestination = true
         pendingDestination = nil
@@ -636,6 +730,13 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         restoreDestinationAfterTracking()
     }
     func comboBoxSelectionDidChange(_ notification: Notification) {
+        if notification.object as? NSComboBox === referenceField {
+            if referenceDraft, referenceChoices.indices.contains(referenceField.indexOfSelectedItem) {
+                referenceField.stringValue = referenceChoices[referenceField.indexOfSelectedItem].name
+                updateReferenceDraft(); updateValidation()
+            }
+            return
+        }
         guard let combo = notification.object as? NSComboBox, headingChoices.indices.contains(combo.indexOfSelectedItem) else { return }
         let heading = headingChoices[combo.indexOfSelectedItem]
         pendingDestination = (combo.indexOfSelectedItem, heading.text.isEmpty ? "empty" : heading.text, heading.destination)
@@ -675,7 +776,131 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         if isEditing { position() }
     }
     private func updateValidation() {
+        if referenceDraft {
+            applyButton.isEnabled = !textField.stringValue.isEmpty && !referenceField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !draftDestination.isEmpty
+            return
+        }
+        if context?.reference != nil { applyButton.isEnabled = context?.reference?.editable == true; return }
         applyButton.isEnabled = !destinationField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && (kind != .image || imageSizeControls.isValid)
     }
+    private func updateReferenceDraft() {
+        let name = referenceField.stringValue.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        let choice = referenceChoices.first { $0.name.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").caseInsensitiveCompare(name) == .orderedSame }
+        destinationField.isEnabled = choice == nil
+        referenceTitleField.isEnabled = choice == nil
+        if let choice { setDestination(choice.destination) }
+        referenceInfo.stringValue = choice == nil
+            ? "A new definition will be added at the document end. It may also activate matching references."
+            : "Use the existing shared definition."
+    }
+
+    private func configureReferenceEditor() {
+        referenceSharedButton.isHidden = referenceDraft
+        referenceDefinitionButton.isHidden = referenceDraft
+        if referenceDraft {
+            referenceControls.isHidden = false
+            textField.isEnabled = true
+            referenceField.isEnabled = true
+            referenceField.removeAllItems()
+            referenceField.addItems(withObjectValues: referenceChoices.map(\.name))
+            referenceField.stringValue = ""
+            referenceTitleField.stringValue = ""
+            applyButton.title = "Insert reference"
+            updateReferenceDraft()
+            return
+        }
+        let reference = context?.reference
+        referenceControls.isHidden = reference == nil
+        textField.isEnabled = reference == nil || referenceEditMode == "editUse"
+        destinationField.isEnabled = reference == nil || referenceEditMode == "editDefinition" || referenceEditMode == "createDefinition"
+        guard let reference else { return }
+        referenceDefinitionButton.isEnabled = reference.definitionOffset != nil && reference.editable
+        referenceSharedButton.title = reference.definitionOffset == nil ? "Create definition…" : "Edit shared definition…"
+        referenceField.removeAllItems()
+        referenceField.addItems(withObjectValues: reference.choices.map(\.name))
+        referenceField.stringValue = reference.name
+        referenceTitleField.stringValue = reference.title
+        referenceField.isEnabled = referenceEditMode == "editUse" || referenceEditMode == "rename"
+        referenceTitleField.isEnabled = referenceEditMode == "editDefinition" || referenceEditMode == "createDefinition"
+        referenceInfo.stringValue = reference.definitionOffset == nil
+            ? "Missing definition. Creating it at the document end can also activate other matching references."
+            : reference.inactive
+            ? "Inactive definition—an earlier definition is used."
+            : reference.usage + (reference.complete ? "" : " (list incomplete; editing unavailable)")
+        applyButton.title = referenceEditMode == "createDefinition" ? "Create definition" : referenceEditMode == "editDefinition"
+            ? (reference.inactive ? "Update inactive definition" : "Update \(reference.links + reference.images) uses")
+            : referenceEditMode == "rename" ? "Rename everywhere" : "Apply"
+    }
+    @objc func editSharedReference() {
+        guard let reference = context?.reference else { return }
+        if !isEditing { beginEditing() }
+        referenceEditMode = reference.definitionOffset == nil ? "createDefinition" : "editDefinition"
+        configureReferenceEditor()
+        setDestination(reference.destination)
+        position()
+        panel.makeFirstResponder(destinationField)
+    }
+    @objc private func renameReference() {
+        beginEditing(); referenceEditMode = "rename"; configureReferenceEditor(); position()
+        panel.makeFirstResponder(referenceField)
+    }
+    @objc func goToReference() { commitReference("goToDefinition") }
+    @objc func goToReferenceEditor() { commitReference("goToDefinition", editDefinition: true) }
+    @objc private func convertReference() { commitReference("convertInline") }
+    @objc private func deleteReferenceDefinition() { commitReference("deleteDefinition") }
+    @objc private func goToReferenceUse(_ sender: NSMenuItem) {
+        guard let offset = sender.representedObject as? UInt64 else { return }
+        commitReference("goToUse", fields: ["target": offset])
+    }
+    @objc private func referenceMenu() {
+        guard let reference = context?.reference else { return }
+        let menu = NSMenu(); menu.autoenablesItems = false
+        func item(_ title: String, _ action: Selector, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; item.isEnabled = enabled; menu.addItem(item)
+        }
+        item("Go to definition", #selector(goToReference), enabled: reference.definitionOffset != nil)
+        let uses = NSMenuItem(title: "Find uses (\(reference.links + reference.images))", action: nil, keyEquivalent: "")
+        let list = NSMenu()
+        for use in reference.uses {
+            let label = "\(use.image ? "Image: " : "")\(use.text.prefix(60))"
+            let entry = NSMenuItem(title: label, action: #selector(goToReferenceUse(_:)), keyEquivalent: "")
+            entry.target = self; entry.representedObject = use.offset; list.addItem(entry)
+        }
+        if reference.uses.count == 1, let use = reference.uses.first {
+            uses.action = #selector(goToReferenceUse(_:)); uses.target = self; uses.representedObject = use.offset
+        } else { uses.submenu = list }
+        uses.isEnabled = !reference.uses.isEmpty; menu.addItem(uses)
+        menu.addItem(.separator())
+        item(reference.definitionOffset == nil ? "Create definition…" : "Edit shared definition…", #selector(editSharedReference), enabled: reference.editable)
+        item("Rename reference everywhere…", #selector(renameReference), enabled: reference.editable && !reference.inactive && reference.definitionOffset != nil)
+        if reference.definition {
+            item(reference.links + reference.images == 0 || reference.inactive ? "Delete definition" : "Convert uses to inline and delete definition",
+                 #selector(deleteReferenceDefinition), enabled: reference.editable)
+        } else { item("Convert to inline link", #selector(convertReference), enabled: reference.editable && reference.definitionOffset != nil) }
+        referenceMenuTracking = true
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: referenceMenuButton.bounds.maxY), in: referenceMenuButton)
+        referenceMenuTracking = false
+    }
+    private func commitReference(_ action: String, fields: [String: Any] = [:], editDefinition: Bool = false) {
+        guard let surface, let session = surface.session, let context, let expected else { return }
+        applying = true
+        var succeeded = false
+        surface.performInput {
+            do {
+                try session.referenceAction(action, context: context, expected: expected, fields: fields)
+                succeeded = true
+            } catch { setValidationMessage(error.localizedDescription); throw error }
+        }
+        applying = false
+        if succeeded {
+            cachedSelection = nil; cachedContext = nil
+            close(restoreFocus: true)
+            refresh()
+            if editDefinition { openEditor() }
+        }
+    }
+
 }

@@ -54,9 +54,12 @@ separately in [BUGS.md](BUGS.md).
   local previews show their location with a broken-image indicator and can be
   refreshed after the local resource changes without fetching remote images.
 - **Reference links:** full, collapsed and defined shortcut links and reference
-  definitions keep their literal brackets in Preview, styled with the light-purple
-  **Markdown reference** character style. Definition edits invalidate dependent
-  image metadata as well as reference styling.
+  definitions use the light-purple
+  **Markdown reference** character style. Uses show formatted labels; definitions
+  retain visible source notation. Definition edits invalidate dependent
+  image metadata as well as reference styling. Non-image reference popups edit
+  occurrences and shared definitions, navigate to definitions/uses, rename and
+  convert references; see [reference controls](docs/markdown-references.md).
 - **Composed containers:** headings in lists, quotes inside lists, nested quote
   depth, and Code Block/heading presentation inside quotes. Quotes, code blocks,
   lists, and list items have explicit owners; contained paragraphs retain
@@ -136,10 +139,8 @@ Markdown caret, deletion, replacement, formatting and layout audits.
    until explicitly reloaded or their document resource identity changes.
    Native decoders support local raster formats; SVG previews,
    animated playback and resizing handles
-   remain unsupported. Reference links and definitions remain visible source
-   notation with Markdown reference styling. Inline formatting inside a
-   reference link's label also stays literal: `[*foo* bar][ref]` shows its
-   asterisks, while GitHub renders the emphasis.
+   remain unsupported. Reference definitions remain visible source notation
+   with Markdown reference styling; resolved uses render their formatted labels.
 5. **Comments.** GitHub hides comments; Viem deliberately displays and styles
    them so they remain directly editable.
 6. **Surplus blank separators.** Viem deliberately retains editable empty
@@ -216,7 +217,8 @@ Native typography and controls need not reproduce GitHub's CSS pixel for pixel.
 
 Link authoring is limited to a single paragraph outside code and passive HTML.
 Passive HTML anchors expose their destination but retain read-only editing
-controls; reference-link presentation remains literal. Email launching is
+controls. Reference uses render formatted labels and have dedicated toolbar
+controls for insertion and editing. Email launching is
 unsupported. Link and image controls are implemented on both native frontends; Windows
 runtime validation remains outstanding on a Windows host.
 

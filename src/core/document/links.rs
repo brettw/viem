@@ -399,13 +399,13 @@ pub struct LinkSnapshot {
     pub destination: String,
     pub editable: bool,
     pub(super) source: Range<usize>,
-    label_source: Range<usize>,
+    pub(super) label_source: Range<usize>,
     pub(super) destination_source: Option<Range<usize>>,
 }
 
 const MAX_LINK_QUERY_BYTES: usize = 64 * 1024;
 
-fn plain_label(source: &str) -> String {
+pub(super) fn plain_label(source: &str) -> String {
     use pulldown_cmark::Event;
     let mut result = String::new();
     for event in
@@ -620,7 +620,14 @@ impl Document {
     }
 
     pub fn link_at(&self, point: TextPoint) -> Result<Option<String>, DocumentError> {
-        Ok(self.link_snapshot_at(point)?.map(|link| link.destination))
+        // Reference destinations are already resolved in this exact projection.
+        if point.document() == self.id() && point.revision() == self.revision() {
+            self.text_point(point.offset())?;
+            if let Some(reference) = self.projection().inline_references_for_region(&(point.offset()..point.offset())).into_iter()
+                .find(|reference| reference.range.contains(&point.offset())) { return Ok(Some(reference.destination)); }
+        }
+        if let Some(link) = self.link_snapshot_at(point)? { return Ok(Some(link.destination)); }
+        Ok(self.reference_context_at(point)?.filter(|reference| reference.definition_offset.is_some()).map(|reference| reference.destination))
     }
 
     /// Read only the bounded source owner selected by the link query. Titles
@@ -1478,29 +1485,7 @@ impl Document {
                 );
             } else {
                 let label = self.encoding().decode_region(&label_bytes, 0)?.text;
-                let mut protected = label.clone();
-                let code: Vec<_> = pulldown_cmark::Parser::new(&label)
-                    .into_offset_iter()
-                    .filter_map(|(event, range)| {
-                        matches!(event, pulldown_cmark::Event::Code(_)).then_some(range)
-                    })
-                    .collect();
-                let mut links = Vec::new();
-                let mut consumed = 0;
-                for (at, _) in label.char_indices() {
-                    if at < consumed || code.iter().any(|range| range.contains(&at)) {
-                        continue;
-                    }
-                    if let Some((end, _)) =
-                        super::markdown_syntax::autolink(&label, at, label.len())
-                    {
-                        links.push(at..end);
-                        consumed = end;
-                    }
-                }
-                for range in links.iter().rev() {
-                    protected.replace_range(range.clone(), &escape_label(&label[range.clone()]));
-                }
+                let protected = protect_unlinked_label(&label);
                 replacement.extend(self.encoding().encode_fragment(&protected)?);
             }
         } else {
@@ -1566,6 +1551,14 @@ impl Document {
     /// Run the existing semantic replacement policy on a bounded inline
     /// fragment. The wrapper keeps label punctuation in inline context and
     /// supplies a stable owner while the first character's styles are retained.
+    pub(super) fn reference_label_replacement(&self, range: Range<usize>, text: &str) -> Result<Vec<u8>, ModelTransactionError> {
+        let reference = self.projection().inline_references_for_region(&range).into_iter().find(|r| r.range == range)
+            .ok_or(DocumentError::UnsupportedFormatting)?;
+        let link = LinkSnapshot { range, text: String::new(), destination: reference.destination,
+            source: reference.source, label_source: reference.label_source, destination_source: None, editable: true };
+        self.replacement_link_label(&link, text)
+    }
+
     fn replacement_link_label(
         &self,
         link: &LinkSnapshot,
@@ -1841,4 +1834,32 @@ fn unique_heading_slug(label: &str, slugs: &mut std::collections::HashMap<String
     }
     slugs.insert(slug.clone(), 0);
     slug
+}
+
+/// Preserve label formatting while preventing bare URLs from relinking on removal.
+pub(super) fn protect_unlinked_label(label: &str) -> String {
+    let mut protected = label.to_owned();
+    let code: Vec<_> = pulldown_cmark::Parser::new(&label)
+        .into_offset_iter()
+        .filter_map(|(event, range)| {
+            matches!(event, pulldown_cmark::Event::Code(_)).then_some(range)
+        })
+        .collect();
+    let mut links = Vec::new();
+    let mut consumed = 0;
+    for (at, _) in label.char_indices() {
+        if at < consumed || code.iter().any(|range| range.contains(&at)) {
+            continue;
+        }
+        if let Some((end, _)) =
+            super::markdown_syntax::autolink(&label, at, label.len())
+        {
+            links.push(at..end);
+            consumed = end;
+        }
+    }
+    for range in links.iter().rev() {
+        protected.replace_range(range.clone(), &escape_label(&label[range.clone()]));
+    }
+    protected
 }

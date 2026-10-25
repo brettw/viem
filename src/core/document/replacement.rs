@@ -53,18 +53,18 @@ impl Fragment {
     }
 }
 #[derive(Clone)]
-pub(super) struct PatchComposition {
+pub(in crate::document) struct PatchComposition {
     fragments: Vec<Fragment>,
     original_len: usize,
 }
 impl PatchComposition {
-    pub(super) fn new(len: usize) -> Self {
+    pub(in crate::document) fn new(len: usize) -> Self {
         Self {
             fragments: vec![Fragment::Original(0..len)],
             original_len: len,
         }
     }
-    pub(super) fn splice(&mut self, range: Range<usize>, bytes: &[u8]) {
+    pub(in crate::document) fn splice(&mut self, range: Range<usize>, bytes: &[u8]) {
         let mut next = Vec::new();
         let mut offset = 0;
         let mut inserted = false;
@@ -97,7 +97,7 @@ impl PatchComposition {
         }
         self.fragments = next;
     }
-    pub(super) fn patches(self) -> Vec<(Range<usize>, Vec<u8>)> {
+    pub(in crate::document) fn patches(self) -> Vec<(Range<usize>, Vec<u8>)> {
         let mut result = Vec::new();
         let mut original = 0;
         let mut added = Vec::new();
@@ -151,7 +151,7 @@ impl PatchComposition {
     }
 
     /// Emit the composed minimal source changes.
-    pub(super) fn source_patches(self) -> Vec<SourcePatch> {
+    pub(in crate::document) fn source_patches(self) -> Vec<SourcePatch> {
         self.patches()
             .into_iter()
             .map(|(range, bytes)| SourcePatch::primary(range, bytes))

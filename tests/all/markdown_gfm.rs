@@ -2,14 +2,14 @@ use viem_core::document::{BlockKind, Document, Encoding, Format, StyleApplicatio
 fn open(source: &str) -> Document { Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap() }
 
 #[test]
-fn gfm_inline_recognition_and_literal_references() {
+fn gfm_inline_recognition_and_reference_labels() {
     for (source, expected) in [
         ("foo_bar_baz", "foo_bar_baz"),
         ("a * b * c", "a * b * c"),
         ("***both*** **strong *nested***", "both strong nested"),
         ("~~old~~ and ~also~", "old and also"),
         ("![*alt*](picture.png)", "\u{fffc}"),
-        ("[label][ref]\n\n[ref]: https://example.com", "[label][ref]\n[ref]: https://example.com"),
+        ("[label][ref]\n\n[ref]: https://example.com", "label\n[ref]: https://example.com"),
         ("<https://example.com> <me@example.com>", "https://example.com me@example.com"),
         ("&amp; &copy; &#0; &#x80; &NotEqualTilde;", "& © � € ≂̸"),
         ("`&amp; ~~code~~`", "&amp; ~~code~~"),

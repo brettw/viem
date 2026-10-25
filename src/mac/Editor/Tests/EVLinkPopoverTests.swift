@@ -48,6 +48,88 @@ final class EVLinkPopoverTests: XCTestCase {
         }
     }
 
+    func testReferenceToolbarInsertsAndReflectsCaret() throws {
+        let (backend, surface, window) = try editor("word", type: EVDocument.markdownType)
+        defer { surface.linkPopover.close(); window.close() }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 4))
+        surface.formattingToolbar.refresh()
+        XCTAssertTrue(surface.formattingToolbar.insertReference.isEnabled)
+        XCTAssertEqual(surface.formattingToolbar.insertReference.state, .off)
+        surface.formattingToolbar.openReferenceEditor(nil)
+        let popup = surface.linkPopover
+        XCTAssertTrue(popup.isEditing)
+        XCTAssertEqual(popup.textField.stringValue, "word")
+        popup.referenceField.stringValue = "guide"
+        popup.destinationField.stringValue = "target"
+        popup.apply()
+        XCTAssertFalse(popup.isEditing)
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("[word][guide]\n\n[guide]: <target>".utf8))
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
+        surface.formattingToolbar.refresh()
+        XCTAssertEqual(surface.formattingToolbar.insertReference.state, .on)
+        XCTAssertTrue(surface.formattingToolbar.insertReference.isEnabled)
+        surface.formattingToolbar.openReferenceEditor(nil)
+        XCTAssertEqual(popup.referenceField.stringValue, "guide")
+        XCTAssertEqual(popup.textField.stringValue, "word")
+    }
+
+    func testReferencePopupEditsOccurrenceAndSharedDefinitionSeparately() throws {
+        let source = "[ref] [other][ref] ![alt][ref]\n\n[ref]: old \"Title\""
+        let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+        defer { surface.linkPopover.close(); window.close() }
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
+        let session = try XCTUnwrap(surface.session)
+        let context = try session.inlineContentContext(.link)
+        XCTAssertEqual(context.reference?.links, 2)
+        XCTAssertEqual(context.reference?.images, 1)
+        surface.linkPopover.openEditor()
+        XCTAssertTrue(surface.linkPopover.isEditing)
+        XCTAssertFalse(surface.linkPopover.destinationField.isEnabled)
+        surface.linkPopover.textField.stringValue = "Guide"
+        surface.linkPopover.apply()
+        XCTAssertTrue(try backend.formattedText().hasPrefix("Guide other"))
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 1, length: 0))
+        surface.linkPopover.openEditor()
+        surface.linkPopover.editSharedReference()
+        XCTAssertTrue(surface.linkPopover.destinationField.isEnabled)
+        XCTAssertFalse(surface.linkPopover.textField.isEnabled)
+        surface.linkPopover.destinationField.stringValue = "#heading"
+        surface.linkPopover.apply()
+        let updated = try session.inlineContentContext(.link)
+        XCTAssertEqual(updated.reference?.destination, "#heading")
+    }
+
+    func testReferenceGoToDefinitionOpensEditorOnlyFromEditForm() throws {
+        let source = "See [ref]\n\n" + String(repeating: "Paragraph\n\n", count: 20)
+            + "[ref]: target \"Title\"\n\n" + String(repeating: "After\n\n", count: 20)
+        for fromEditor in [false, true] {
+            let (backend, surface, window) = try editor(source, type: EVDocument.markdownType)
+            defer { surface.linkPopover.close(); window.close() }
+            let session = try XCTUnwrap(surface.session)
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 5, length: 0))
+            let popup = surface.linkPopover
+            if fromEditor {
+                popup.openEditor()
+                XCTAssertTrue(popup.referenceDefinitionButton.isEnabled)
+                popup.textField.stringValue = "Unapplied draft"
+                popup.referenceDefinitionButton.performClick(nil)
+            } else {
+                popup.refresh()
+                popup.goToReference()
+            }
+            let current = try session.inlineContentContext(.link)
+            XCTAssertEqual(current.reference?.definition, true)
+            XCTAssertEqual(popup.isEditing, fromEditor)
+            XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(source.utf8))
+            XCTAssertFalse(surface.canUndo)
+            if fromEditor {
+                XCTAssertTrue(popup.destinationField.isEnabled)
+                XCTAssertEqual(popup.destinationField.stringValue, "target")
+                XCTAssertEqual(popup.referenceTitleField.stringValue, "Title")
+            }
+        }
+    }
+
     private func trackHeadingPicker(_ combo: NSComboBox, keys: [(UInt16, String)]) throws {
         let window = try XCTUnwrap(combo.window)
         _ = try XCTUnwrap(window.screen, "Native dropdown tracking requires WindowServer access; run the test host outside the execution sandbox")
