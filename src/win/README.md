@@ -153,6 +153,10 @@ fullscreen bounds do not replace the saved normal frame.
   it again without changing the saved Show menu bar setting. AltGr remains text input.
 - F8 opens or raises the style inspector outside literal-next input. Font
   pickers list sorted families and installed/bundled variants such as Light or Bold.
+  Clicking an inherited control checks its override and activates the clicked
+  control: color swatches open the picker, dropdowns open their choices, and
+  measurement fields focus with their full text selected. Toggles and alignment
+  buttons perform their normal action after declaring the inherited value.
 - The formatting toolbar provides Bold, Italic, and Strikethrough for Markdown;
   fonts, colors, and paragraph properties remain
   available in the independent theme style inspector. Its title identifies the
@@ -274,8 +278,8 @@ custom variable axes and OpenType features are not applied to that output.
 Known gaps relative to macOS: there is no full UI Automation TextPattern or
 Narrator text editing, no printing, and no equivalent of macOS Services,
 Dictionary, spelling and grammar panels, app dictation or Versions. The style
-inspector lacks OpenType feature discovery, full paragraph preview and
-click-through activation of inherited controls. Per-span explicit bidi
+inspector lacks OpenType feature discovery and full paragraph preview. Per-span
+explicit bidi
 overrides are preserved but not rendered; Unicode bidi and paragraph direction
 work. IME protocol tests don't establish compatibility with every installed
 IME or speech service. Update this list and the native tests when these ship.

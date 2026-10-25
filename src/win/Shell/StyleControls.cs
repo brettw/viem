@@ -21,7 +21,8 @@ internal sealed partial class StyleWindow
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 12 };
         target.Children.Add(row); return row;
     }
-    private StackPanel Property(Panel row, string label, uint property, FrameworkElement editor, bool caption = true, bool reserveCaption = false)
+    private StackPanel Property(Panel row, string label, uint property, FrameworkElement editor, bool caption = true, bool reserveCaption = false,
+        Action<Control>? activate = null)
     {
         var group = new StackPanel { Spacing = 3 };
         if (caption || reserveCaption) {
@@ -34,7 +35,7 @@ internal sealed partial class StyleWindow
         editor.VerticalAlignment = VerticalAlignment.Center;
         AutomationProperties.SetName(enabled, "Declare " + label); AutomationProperties.SetName(editor, label);
         ToolTipService.SetToolTip(enabled, "Override inherited");
-        body.Children.Add(enabled); body.Children.Add(editor); group.Children.Add(body); row.Children.Add(group);
+        body.Children.Add(enabled); body.Children.Add(InheritedActivation(editor, property, activate)); group.Children.Add(body); row.Children.Add(group);
         refreshFields.Add(() => {
             bool editable = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS);
             enabled.IsChecked = ShowsValue(property); enabled.IsEnabled = editable && !RequiresExplicitValues;
@@ -46,6 +47,53 @@ internal sealed partial class StyleWindow
                 else EditLinkedProperty(VIEM_STYLE_EDIT_CLEAR_DECLARATION, property, default); });
         };
         return group;
+    }
+    private FrameworkElement InheritedActivation(FrameworkElement editor, uint property, Action<Control>? activate)
+    {
+        if (editor is Panel panel) {
+            for (int i = 0; i < panel.Children.Count; i++) {
+                if (panel.Children[i] is not FrameworkElement child) continue;
+                panel.Children.RemoveAt(i);
+                panel.Children.Insert(i, InheritedActivation(child, property, activate));
+            }
+            return panel;
+        }
+        if (editor is not Control control) return editor;
+        // Disabled native controls do not receive clicks. Cover each individual
+        // control, so compound properties still activate the part that was hit.
+        var host = new Grid { VerticalAlignment = editor.VerticalAlignment };
+        var activation = new Border { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
+        host.Children.Add(editor); host.Children.Add(activation);
+        refreshFields.Add(() => activation.Visibility = selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS)
+            && !ShowsValue(property) ? Visibility.Visible : Visibility.Collapsed);
+        activation.Tapped += (_, args) => {
+            args.Handled = true;
+            if (loading || closed || !selected.Has(VIEM_STYLE_CAPABILITY_EDIT_DECLARATIONS) || ShowsValue(property)) return;
+            var key = selected.Key;
+            if (!Try(() => DeclareEffective(property)) || selected.Key != key || !control.IsEnabled) return;
+            control.Focus(FocusState.Pointer);
+            switch (control) {
+                case ComboBox combo: combo.IsDropDownOpen = true; break;
+                case NumberBox number:
+                    number.ApplyTemplate();
+                    SelectEditorText(number);
+                    break;
+                case TextBox text: text.SelectAll(); break;
+                case Button { Flyout: { } flyout } button: flyout.ShowAt(button); break;
+                default: activate?.Invoke(control); break;
+            }
+        };
+        return host;
+    }
+    private static void SelectEditorText(DependencyObject root)
+    {
+        if (root is TextBox input) {
+            input.Focus(FocusState.Pointer);
+            input.SelectAll();
+            return;
+        }
+        for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+            SelectEditorText(VisualTreeHelper.GetChild(root, i));
     }
     private static void SetEnabled(FrameworkElement element, bool enabled)
     {
@@ -122,10 +170,12 @@ internal sealed partial class StyleWindow
             VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT => "Superscript", VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT => "Subscript", _ => label
         };
         ToolTipService.SetToolTip(button, name);
-        Property(row, name, property, button, caption: false, reserveCaption: true);
-        refreshFields.Add(() => button.IsChecked = ShowsValue(property) && selected.Value(property).enum_value != 0);
-        button.Click += (_, _) => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
+        void Apply() => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, property,
             CoreView.Enum(property == VIEM_STYLE_PROPERTY_CHARACTER_SLANT ? VIEM_STYLE_VALUE_FONT_SLANT : VIEM_STYLE_VALUE_BOOLEAN, button.IsChecked == true ? 1u : 0u)));
+        Property(row, name, property, button, caption: false, reserveCaption: true,
+            activate: _ => { button.IsChecked = button.IsChecked != true; Apply(); });
+        refreshFields.Add(() => button.IsChecked = ShowsValue(property) && selected.Value(property).enum_value != 0);
+        button.Click += (_, _) => Apply();
     }
     private void SetColor(uint property, global::Windows.UI.Color color, ViemStyleEditGroupV1? group = null)
     {
@@ -155,13 +205,17 @@ internal sealed partial class StyleWindow
         var top = new Grid(); top.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
         paragraph.Children.Add(top);
         var alignment = Inline(); var buttons = new List<ToggleButton>();
+        var alignmentValues = new Dictionary<Control, uint>();
+        void Align(uint value) => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, CoreView.Enum(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, value)));
         foreach (var (label, glyph, value) in new[] { ("Align start", "\uE8E4", 1u), ("Align center", "\uE8E3", 3u), ("Align end", "\uE8E2", 2u) }) {
             var button = new ToggleButton { Content = new FontIcon { Glyph = glyph, FontSize = 16 }, Width = 36, MinWidth = 0, Padding = new(0) };
             AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label); alignment.Children.Add(button); buttons.Add(button);
-            button.Click += (_, _) => Try(() => EditStyle(selected, VIEM_STYLE_EDIT_SET_DECLARATION, VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, CoreView.Enum(VIEM_STYLE_VALUE_PARAGRAPH_ALIGNMENT, value)));
+            alignmentValues.Add(button, value);
+            button.Click += (_, _) => Align(value);
             refreshFields.Add(() => button.IsChecked = ShowsValue(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT) && selected.Value(VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT).enum_value == value);
         }
-        var alignmentGroup = Property(top, "Alignment", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, alignment, caption: false, reserveCaption: true);
+        var alignmentGroup = Property(top, "Alignment", VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT, alignment, caption: false, reserveCaption: true,
+            activate: control => Align(alignmentValues[control]));
         var tableAlignmentNote = new TextBlock { Text = "Alignment comes from the table column", FontSize = 11, Opacity = .65, VerticalAlignment = VerticalAlignment.Center, Visibility = Visibility.Collapsed };
         top.Children.Add(tableAlignmentNote);
         refreshFields.Add(() => {

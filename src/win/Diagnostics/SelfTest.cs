@@ -93,6 +93,7 @@ internal sealed partial class EditorWindow
             new("InspectorWindow", () => StyleAndSettingsTests.Run(pane, this, preferences)),
             new("InspectorRetargeting", () => StyleAndSettingsTests.DocumentSwitchingChecks(preferences)),
             new("StyleFontSizes", () => StyleFontSizeTests.Run(pane, preferences)),
+            new("StyleInheritedActivation", () => StyleInspectorBehaviorTests.InheritedActivation(pane, preferences)),
             new("SelectionFind", () => SelectionFindTests.Run(preferences)),
             new("DocumentModeMenu", () => DocumentModeMenuTests.Run(preferences)),
             ListInteractionTests.Group(preferences),

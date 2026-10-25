@@ -15,7 +15,7 @@ using static Viem.Windows.Interop.Abi;
 
 namespace Viem.Windows.Diagnostics;
 
-internal static class StyleInspectorBehaviorTests
+internal static partial class StyleInspectorBehaviorTests
 {
     private static void Check(bool condition, string message)
     {
