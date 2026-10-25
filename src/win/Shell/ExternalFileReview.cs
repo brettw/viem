@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.UI.Xaml.Controls;
 using Viem.Windows.Core;
+using Viem.Windows.Editor;
 using static Viem.Windows.Interop.Abi;
 using static Viem.Windows.Interop.Native;
 
@@ -13,6 +14,10 @@ internal sealed partial class EditorWindow
     // and cancellation token; neither watchers nor hash workers touch the core.
     private static readonly Dictionary<CoreDocument, ExternalFileState> externalFiles = [];
     private static readonly HashSet<CoreDocument> missingFileBaselines = [];
+    // One application-wide queue, with one flag per open buffer rather than
+    // one entry per filesystem event. Only this worker presents file reviews.
+    private static bool externalFileReviewsRunning;
+    private static Task externalFileReviewWork = Task.CompletedTask;
     private int openDialogs;
 
     private sealed class ExternalFileState : IDisposable
@@ -22,9 +27,8 @@ internal sealed partial class EditorWindow
         internal FileChangeMonitor? Monitor;
         internal string Path = "";
         internal byte[] Baseline = [];
-        internal bool Pending, Running, Disposed, BaselineMissing;
+        internal bool Pending, Disposed, BaselineMissing;
         internal int Writes;
-        internal Task Work = Task.CompletedTask;
         private ulong review;
 
         internal unsafe ExternalFileState(CoreDocument document)
@@ -52,6 +56,7 @@ internal sealed partial class EditorWindow
         public void Dispose()
         {
             Disposed = true;
+            Pending = false;
             Lifetime.Cancel(); Monitor?.Dispose();
             Check(viem_external_file_review_destroy(review), "Close file review");
             review = 0;
@@ -82,9 +87,12 @@ internal sealed partial class EditorWindow
     private void RequestExternalFileChecks()
     {
         if (closed) return;
-        foreach (var document in Panes.Select(p => p.Document).Distinct().ToArray())
+        // Activation and dialog completion collect all windows before the
+        // worker presents anything, including documents in background windows.
+        foreach (var window in App.Instance.Windows.Where(w => !w.closed).ToArray())
+        foreach (var document in window.Panes.Select(p => p.Document).Distinct().ToArray())
         {
-            TrackExternalFile(document);
+            window.TrackExternalFile(document);
             if (externalFiles.TryGetValue(document, out var state)) RequestExternalCheck(state);
         }
     }
@@ -93,7 +101,8 @@ internal sealed partial class EditorWindow
     {
         if (state.Disposed) return;
         state.Pending = true;
-        if (!state.Running && state.Writes == 0) state.Work = CheckExternalFile(state);
+        if (!externalFileReviewsRunning && App.Instance.Windows.Any(w => w.CanReviewExternalFile))
+            externalFileReviewWork = ReviewExternalFiles();
     }
 
     private bool CanReviewExternalFile => !closed && openDialogs == 0 && root.XamlRoot != null &&
@@ -128,62 +137,144 @@ internal sealed partial class EditorWindow
         }
     }
 
-    private static async Task CheckExternalFile(ExternalFileState state)
+    private sealed record PendingFileReview(ExternalFileState State, string Path, byte[] Baseline,
+        bool BaselineMissing, FileObservation Observation)
     {
-        state.Running = true;
+        internal bool Current => !State.Disposed && State.Writes == 0 && State.Path == Path &&
+            ReferenceEquals(State.Baseline, Baseline) && State.BaselineMissing == BaselineMissing;
+    }
+
+    private sealed record PresentedFileReview(PendingFileReview Pending, EditorWindow Window,
+        EditorPane Pane, ulong Revision);
+
+    internal sealed record ExternalFileReviewDialog(IReadOnlyList<CoreDocument> Documents,
+        string Title, string Text, string Primary, string Close);
+
+    private static async Task ReviewExternalFiles()
+    {
+        externalFileReviewsRunning = true;
         try
         {
-            while (state.Pending && !state.Disposed && state.Writes == 0)
+            // A one-shot collection window joins separate watcher callbacks.
+            // It is not polling, and continuous notifications cannot extend it.
+            await Task.Delay(75);
+            while (App.Instance.Windows.FirstOrDefault(w => w.CanReviewExternalFile) is { } host)
             {
-                state.Pending = false;
-                string path = state.Path; byte[] baseline = state.Baseline;
-                bool Current() => !state.Disposed && state.Writes == 0 && state.Path == path && ReferenceEquals(state.Baseline, baseline);
-                var observation = await Task.Run(() => ObserveFile(path, state.Lifetime.Token));
-                if (!Current()) continue;
-                if (state.BaselineMissing ? observation.Missing : observation.Digest is { } digest && digest.AsSpan().SequenceEqual(baseline))
-                { state.ClearAcknowledged(); continue; }
-                var window = App.Instance.Windows.FirstOrDefault(w => w.CanReviewExternalFile && w.Panes.Any(p => p.Document == state.Document));
-                if (window == null) continue; // Activation requests a fresh observation.
-                var pane = window.Panes.First(p => p.Document == state.Document);
-                bool canReload = observation.Digest != null;
-                if (!state.Begin(observation.Token, canReload)) continue;
-                bool acknowledged = false;
-                var expected = state.Document.State;
+                var observed = new List<PendingFileReview>();
+                var checkedFiles = new HashSet<ExternalFileState>();
+                // Read at most once per buffer in a collection pass. New files
+                // arriving during I/O join this batch; repeats stay queued.
+                while (externalFiles.Values.FirstOrDefault(s => s.Pending && s.Writes == 0 && !checkedFiles.Contains(s)) is { } state)
+                {
+                    checkedFiles.Add(state);
+                    state.Pending = false;
+                    string path = state.Path; byte[] baseline = state.Baseline;
+                    bool missing = state.BaselineMissing;
+                    try
+                    {
+                        var observation = await Task.Run(() => ObserveFile(path, state.Lifetime.Token));
+                        var candidate = new PendingFileReview(state, path, baseline, missing, observation);
+                        if (!candidate.Current) continue;
+                        if (missing ? observation.Missing : observation.Digest is { } digest && digest.AsSpan().SequenceEqual(baseline))
+                        { state.ClearAcknowledged(); continue; }
+                        observed.Add(candidate);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception error) { host.ActivePane?.Report(error); }
+                }
+                if (checkedFiles.Count == 0) break;
+                if (!host.CanReviewExternalFile)
+                {
+                    foreach (var candidate in observed.Where(c => c.Current)) candidate.State.Pending = true;
+                    continue;
+                }
+
+                var batch = new List<PresentedFileReview>();
                 try
                 {
+                    foreach (var candidate in observed.Where(c => c.Current))
+                    {
+                        var document = candidate.State.Document;
+                        var owner = host.Panes.Any(p => p.Document == document) ? host :
+                            App.Instance.Windows.FirstOrDefault(w => !w.closed && w.Panes.Any(p => p.Document == document));
+                        if (owner == null || !candidate.State.Begin(candidate.Observation.Token, candidate.Observation.Digest != null)) continue;
+                        batch.Add(new(candidate, owner, owner.Panes.First(p => p.Document == document), document.State.document_revision));
+                    }
+                    if (batch.Count == 0) continue;
+                    var dialog = DescribeExternalFileReview(batch);
                     ContentDialogResult result;
 #if DEBUG
-                    if (window.ExternalFileReviewDecisionForTesting is { } decide) result = await decide(state.Document, canReload);
+                    if (host.ExternalFileBatchDecisionForTesting is { } decideBatch) result = await decideBatch(dialog);
                     else
 #endif
-                    result = await window.Dialog("File changed on disk", $"{state.Document.Name} {observation.Message}" +
-                        (canReload && state.Document.IsDirty ? " Reloading will discard your unsaved edits in all views." : ""),
-                        canReload ? "Reload" : "", "Keep My Version", defaultButton: ContentDialogButton.Close);
-                    if (!Current()) continue;
-                    if (result != ContentDialogResult.Primary || !canReload) { acknowledged = true; continue; }
-                    if (state.Document.State.document_revision != expected.document_revision)
-                    { state.Pending = true; continue; }
-                    // Reload only the exact bytes the user reviewed. A later disk
-                    // or buffer change requires a new choice, never stale consent.
-                    byte[] bytes = await Task.Run(() => File.ReadAllBytesAsync(path, state.Lifetime.Token));
-                    byte[] hash = await Task.Run(() => SHA256.HashData(bytes));
-                    if (!Current()) continue;
-                    if (state.Document.State.document_revision != expected.document_revision || !hash.AsSpan().SequenceEqual(observation.Digest))
-                    { state.Pending = true; continue; }
-                    if (!window.CanReviewExternalFile || !window.Panes.Contains(pane) || pane.Document != state.Document)
-                    { state.Pending = true; continue; }
-                    await window.Reload(pane, true, bytes);
-                    acknowledged = true;
+                    result = await host.Dialog(dialog.Title, dialog.Text, dialog.Primary, dialog.Close, defaultButton: ContentDialogButton.Close);
+                    // The list is now fixed. Events received since presentation
+                    // only set Pending and cannot inherit this decision.
+                    foreach (var entry in batch) await ApplyExternalFileDecision(host, entry, result);
                 }
-                finally { state.Finish(observation.Token, acknowledged); }
+                finally
+                {
+                    foreach (var entry in batch)
+                        entry.Pending.State.Finish(entry.Pending.Observation.Token, false);
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            App.Instance.Windows.FirstOrDefault(w => w.CanReviewExternalFile)?.ActivePane?.Report(error);
+        }
+        finally { externalFileReviewsRunning = false; }
+    }
+
+    private static ExternalFileReviewDialog DescribeExternalFileReview(List<PresentedFileReview> batch)
+    {
+        bool multiple = batch.Count > 1;
+        bool canReload = batch.Any(e => e.Pending.Observation.Digest != null);
+        string text = string.Join("\n\n", batch.Select(e =>
+            $"{(multiple ? e.Pending.Path : e.Pending.State.Document.Name)} {e.Pending.Observation.Message}" +
+            (e.Pending.Observation.Digest != null && e.Pending.State.Document.IsDirty
+                ? " Reloading will discard your unsaved edits in all views." : "")));
+        if (multiple && canReload && batch.Any(e => e.Pending.Observation.Digest == null))
+            text += "\n\nReload all reloads the available files. Deleted or unreadable files keep their current buffers.";
+        string suffix = multiple ? " all" : "";
+        return new(batch.Select(e => e.Pending.State.Document).ToArray(),
+            multiple ? "Files changed on disk" : "File changed on disk", text,
+            canReload ? "Reload" + suffix : "", "Keep My Version" + suffix);
+    }
+
+    private static async Task ApplyExternalFileDecision(EditorWindow host, PresentedFileReview entry, ContentDialogResult result)
+    {
+        var candidate = entry.Pending;
+        var state = candidate.State;
+        var observation = candidate.Observation;
+        bool acknowledged = false;
+        try
+        {
+            if (!candidate.Current) return;
+            if (result != ContentDialogResult.Primary || observation.Digest == null) { acknowledged = true; return; }
+            if (state.Document.State.document_revision != entry.Revision) { state.Pending = true; return; }
+            // Consent applies only to the exact disk and buffer revisions in
+            // this batch. One stale file must not prevent the others reloading.
+            byte[] bytes = await Task.Run(() => File.ReadAllBytesAsync(candidate.Path, state.Lifetime.Token));
+            byte[] hash = await Task.Run(() => SHA256.HashData(bytes));
+            if (!candidate.Current) return;
+            if (state.Document.State.document_revision != entry.Revision || !hash.AsSpan().SequenceEqual(observation.Digest))
+            { state.Pending = true; return; }
+            if (!host.CanReviewExternalFile || entry.Window.closed || !entry.Window.Panes.Contains(entry.Pane) || entry.Pane.Document != state.Document)
+            { state.Pending = true; return; }
+            await entry.Window.Reload(entry.Pane, true, bytes);
+            if (entry.Pane.Document != state.Document)
+            {
+                // Reload replaces the shared document and disposes its old
+                // queue entry. Its new monitor checks against the installed
+                // bytes, suppressing duplicates without hiding later writes.
+                state.Pending = false;
+                acknowledged = true;
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception error)
-        {
-            App.Instance.Windows.FirstOrDefault(w => w.CanReviewExternalFile && w.Panes.Any(p => p.Document == state.Document))?.ActivePane?.Report(error);
-        }
-        finally { state.Running = false; }
+        catch (Exception error) { entry.Pane.Report(error); }
+        finally { state.Finish(observation.Token, acknowledged); }
     }
 
     private sealed class ExternalFileWrite(EditorWindow window, CoreDocument document) : IDisposable
@@ -213,11 +304,10 @@ internal sealed partial class EditorWindow
     private async Task CheckExternalChanges()
     {
         RequestExternalFileChecks();
-        foreach (var document in Panes.Select(p => p.Document).Distinct().ToArray())
-            if (externalFiles.TryGetValue(document, out var state)) await state.Work;
+        await externalFileReviewWork;
     }
 #if DEBUG
-    internal Func<CoreDocument, bool, Task<ContentDialogResult>>? ExternalFileReviewDecisionForTesting { get; set; }
+    internal Func<ExternalFileReviewDialog, Task<ContentDialogResult>>? ExternalFileBatchDecisionForTesting { get; set; }
     internal bool? ExternalFileActiveForTesting { get; set; }
     internal void ActivateExternalFileChecksForTesting() => RequestExternalFileChecks();
     internal Task CheckExternalChangesForTesting() => CheckExternalChanges();

@@ -736,6 +736,9 @@ text, excludes editor furniture, and needs no network resources.
   only that change. Every save path checks for external changes and asks
   Cancel or Save Anyway. Reload installs verified
   bytes atomically and keeps each view's position.
+  Windows batches pending files in one application-wide review; changes arriving
+  during presentation wait for the next review. See the
+  [Windows file-change queue](src/win/README.md#external-file-changes).
 - After editing goes idle, recovery writes the complete source and
   interpretation metadata to an exclusive per-document slot, off the UI thread
   and by atomic replacement; it never autosaves over the original. Existing

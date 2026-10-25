@@ -7,7 +7,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Diagnostics;
 
-internal static class ExternalFileChangeTests
+internal static partial class ExternalFileChangeTests
 {
     // The old UI poll waited at least 50 dispatcher ticks (two seconds).
     // These waits exercise native file notifications without invoking checktime.
@@ -60,6 +60,11 @@ internal static class ExternalFileChangeTests
             await DeletionAndRecreation(preferences, windows, directory);
             await StaleReload(preferences, windows, directory);
             await RetargetedPaneReload(preferences, windows, directory);
+            await BatchedActivation(preferences, windows, directory);
+            await ChangesDuringReview(preferences, windows, directory, changeFirstAgain: true);
+            await ChangesDuringReview(preferences, windows, directory, changeFirstAgain: false);
+            await ChangesDuringReview(preferences, windows, directory, changeFirstAgain: true, keepFirst: true);
+            await MixedBatchReload(preferences, windows, directory);
         }
         finally
         {
@@ -78,7 +83,9 @@ internal static class ExternalFileChangeTests
         var document = window.ActivePane!.Document;
         int reviews = 0;
         var reviewed = Signal();
-        window.ExternalFileReviewDecisionForTesting = (candidate, canReload) => {
+        window.ExternalFileBatchDecisionForTesting = review => {
+            var candidate = review.Documents.Single();
+            bool canReload = review.Primary.Length != 0;
             Check(candidate == document && canReload, "an existing changed file offers Reload for its current document");
             reviews++; reviewed.TrySetResult(); return Task.FromResult(ContentDialogResult.None);
         };
@@ -115,12 +122,12 @@ internal static class ExternalFileChangeTests
         var window = await OpenFile(preferences, windows, path);
         int reviews = 0;
         var reviewed = Signal();
-        window.ExternalFileReviewDecisionForTesting = (_, _) => {
+        window.ExternalFileBatchDecisionForTesting = _ => {
             reviews++; reviewed.TrySetResult(); return Task.FromResult(ContentDialogResult.None);
         };
         var other = Open(preferences, windows);
         await other.ActivePane!.Ready;
-        window.ExternalFileActiveForTesting = false;
+        window.ExternalFileActiveForTesting = other.ExternalFileActiveForTesting = false;
         File.WriteAllBytes(path, "Changed while away"u8.ToArray());
         await window.CheckExternalChangesForTesting().WaitAsync(CompletionTimeout);
         Check(reviews == 0 && window.ActivePane!.Document.FormattedText() == "Original",
@@ -148,7 +155,8 @@ internal static class ExternalFileChangeTests
         second.ExternalFileActiveForTesting = false;
         int reviews = 0;
         var reviewed = Signal();
-        first.ExternalFileReviewDecisionForTesting = second.ExternalFileReviewDecisionForTesting = (candidate, _) => {
+        first.ExternalFileBatchDecisionForTesting = second.ExternalFileBatchDecisionForTesting = review => {
+            var candidate = review.Documents.Single();
             Check(candidate == document, "external reviews retain a shared document identity across windows");
             reviews++; reviewed.TrySetResult(); return Task.FromResult(ContentDialogResult.None);
         };
@@ -182,7 +190,7 @@ internal static class ExternalFileChangeTests
         var window = await OpenFile(preferences, windows, path);
         var pane = window.ActivePane!;
         int reviews = 0;
-        window.ExternalFileReviewDecisionForTesting = (_, _) => {
+        window.ExternalFileBatchDecisionForTesting = _ => {
             reviews++; return Task.FromResult(ContentDialogResult.None);
         };
         Edit(pane);
@@ -204,7 +212,8 @@ internal static class ExternalFileChangeTests
         var original = window.ActivePane!.Document;
         var reviewed = Signal();
         var availability = new List<bool>();
-        window.ExternalFileReviewDecisionForTesting = (_, canReload) => {
+        window.ExternalFileBatchDecisionForTesting = review => {
+            bool canReload = review.Primary.Length != 0;
             availability.Add(canReload); reviewed.TrySetResult();
             return Task.FromResult(canReload ? ContentDialogResult.Primary : ContentDialogResult.None);
         };
@@ -233,7 +242,8 @@ internal static class ExternalFileChangeTests
         int reviews = 0;
         bool reloadAvailable = false;
         var reviewed = Signal();
-        window.ExternalFileReviewDecisionForTesting = (_, canReload) => {
+        window.ExternalFileBatchDecisionForTesting = review => {
+            bool canReload = review.Primary.Length != 0;
             reviews++; reloadAvailable = canReload; reviewed.TrySetResult();
             return Task.FromResult(ContentDialogResult.None);
         };
@@ -259,7 +269,8 @@ internal static class ExternalFileChangeTests
         var pane = window.ActivePane!;
         var document = pane.Document;
         reviews = 0; reloadAvailable = false; reviewed = Signal();
-        window.ExternalFileReviewDecisionForTesting = (_, canReload) => {
+        window.ExternalFileBatchDecisionForTesting = review => {
+            bool canReload = review.Primary.Length != 0;
             reviews++; reloadAvailable = canReload; reviewed.TrySetResult();
             return Task.FromResult(ContentDialogResult.None);
         };
@@ -288,7 +299,7 @@ internal static class ExternalFileChangeTests
         var reviewing = Signal();
         var decision = new TaskCompletionSource<ContentDialogResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         int reviews = 0;
-        window.ExternalFileReviewDecisionForTesting = (_, _) => {
+        window.ExternalFileBatchDecisionForTesting = _ => {
             reviews++; reviewing.TrySetResult();
             return reviews == 1 ? decision.Task : Task.FromResult(ContentDialogResult.None);
         };
@@ -324,8 +335,12 @@ internal static class ExternalFileChangeTests
         second.ExternalFileActiveForTesting = false;
         var reviewing = Signal();
         var decision = new TaskCompletionSource<ContentDialogResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        first.ExternalFileReviewDecisionForTesting = (_, _) => { reviewing.TrySetResult(); return decision.Task; };
-        second.ExternalFileReviewDecisionForTesting = (_, _) => Task.FromResult(ContentDialogResult.None);
+        int reviews = 0;
+        first.ExternalFileBatchDecisionForTesting = _ => {
+            reviewing.TrySetResult();
+            return ++reviews == 1 ? decision.Task : Task.FromResult(ContentDialogResult.None);
+        };
+        second.ExternalFileBatchDecisionForTesting = _ => Task.FromResult(ContentDialogResult.None);
         try
         {
             File.WriteAllBytes(originalPath, "External original contents"u8.ToArray());

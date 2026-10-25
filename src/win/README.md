@@ -280,6 +280,23 @@ overrides are preserved but not rendered; Unicode bidi and paragraph direction
 work. IME protocol tests don't establish compatibility with every installed
 IME or speech service. Update this list and the native tests when these ship.
 
+### External file changes
+
+Windows queues filesystem notifications per shared buffer and presents one
+file-change review at a time across the application. Returning to the app checks
+all open windows. A single changed file uses the ordinary dialog; multiple files
+are listed by full path with **Reload all** and **Keep My Version all** buttons.
+The list is fixed when presentation starts. Later changes wait for the next
+dialog, and repeated events for one buffer share a single pending flag.
+
+Keep acknowledges only the listed disk states and retains the save baselines.
+Reload verifies each file and buffer again before replacing it in every shared
+view. A stale member needs fresh consent without preventing other members from
+reloading. Deleted or unreadable files retain their buffers, as the dialog
+explains. Successful reload retires that buffer's pending flag; the replacement
+monitor compares against the installed bytes so duplicate events do not prompt
+again and genuinely later disk changes still get reviewed.
+
 ## Code boundaries and validation
 
 - `Interop`: generated blittable C ABI structures, callbacks and explicit memory
