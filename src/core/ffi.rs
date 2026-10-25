@@ -14072,6 +14072,21 @@ pub unsafe extern "C" fn viem_core_redetect_code_language(handle:ViemCoreHandle,
 }
 
 /// # Safety
+/// filename is a readable UTF-8 slice for this call. `handle` has no views
+/// yet and replaces the reloaded `previous`, in whose format it was created.
+/// Detection is bounded.
+#[no_mangle]
+pub unsafe extern "C" fn viem_core_initialize_reloaded_code_detection(handle:ViemCoreHandle, filename:*const u8, length:u64, previous:ViemCoreHandle)->ViemStatus {
+    ffi_boundary(|| {
+        if handle==previous || length>16*1024 {return Err(ViemStatus::InvalidArgument);}
+        let name=str::from_utf8(unsafe{input_bytes(filename,length)?}).map_err(|_|ViemStatus::InvalidUtf8)?;
+        if name.contains('\0') {return Err(ViemStatus::InvalidArgument);}
+        let policy=with_core(previous,|core|Ok(core.code_language_policy()))?;
+        with_core_mut(handle,|core|core.initialize_reloaded_code_detection(name,policy).map_err(|_|ViemStatus::InvalidArgument))
+    })
+}
+
+/// # Safety
 /// changed points to one writable byte. Does no provider work and never waits.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_poll_syntax(handle:ViemCoreHandle,changed:*mut u8)->ViemStatus {

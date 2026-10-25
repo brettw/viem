@@ -51,6 +51,14 @@ pub(super) struct PreparedCodeSyntax {
     pub(super) service: SyntaxService,
 }
 
+/// A buffer's language selection and whether its mode is automatic, as the
+/// language menu shows them. Reloads copy it whole into the replacement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CodeLanguagePolicy {
+    selection: LanguageSelection,
+    automatic_mode: bool,
+}
+
 pub(super) struct CoreSyntax {
     pub(super) service: SyntaxService,
     pub(super) prepared_code: Option<PreparedCodeSyntax>,
@@ -169,6 +177,26 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.syntax.automatic_mode = selection == LanguageSelection::Automatic;
         self.syntax.selection = selection;
         self.refresh_code_detection();
+    }
+    /// The buffer's language choice, which survives reading its file again.
+    pub fn code_language_policy(&self) -> CodeLanguagePolicy {
+        CodeLanguagePolicy { selection: self.syntax.selection.clone(), automatic_mode: self.syntax.automatic_mode }
+    }
+    /// `initialize_code_detection` for the replacement of a reloaded buffer,
+    /// created in that buffer's format. Its language choice carries over. Text
+    /// that wasn't chosen by hand becomes Code when the new source declares a
+    /// language, as opening it would; every other format stays.
+    pub fn initialize_reloaded_code_detection(
+        &mut self,
+        filename: &str,
+        policy: CodeLanguagePolicy,
+    ) -> Result<(), crate::document::StyleDefaultsError> {
+        self.initialize_code_detection(filename, policy.automatic_mode)?;
+        if policy.selection != self.syntax.selection {
+            self.set_code_language(policy.selection);
+        }
+        self.syntax.automatic_mode = policy.automatic_mode;
+        Ok(())
     }
     fn refresh_code_detection(&mut self) {
         self.syntax.automatic_detection = Some(self.detect_code_language(&LanguageSelection::Automatic));

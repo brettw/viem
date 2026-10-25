@@ -982,6 +982,7 @@ fn allocate_style_edit_group_id() -> Option<StyleEditGroupId> {
 
 /// Serial composition root for one buffer and its attached views.
 mod syntax;
+pub use syntax::CodeLanguagePolicy;
 mod markdown_code;
 mod document_mode;
 pub use document_mode::{DocumentMode, DocumentModeState};

@@ -148,9 +148,10 @@ internal sealed partial class EditorWindow : Window
         updatingPreferences = false;
         RefreshRecentMenu();
     }
-    private CoreDocument NewDocument(byte[]? source = null, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0)
+    private CoreDocument NewDocument(byte[]? source = null, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0,
+        CoreDocument? reloading = null)
     {
-        var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat, preferences.MarkdownFormattedView);
+        var doc = new CoreDocument(source ?? [], path, format, encoding, fileFormat, preferences.MarkdownFormattedView, reloading);
         return ConfigureNewDocument(doc, source ?? [], path);
     }
     private CoreDocument ConfigureNewDocument(CoreDocument doc, byte[] source, string? path, bool missingOnDisk = false)
@@ -754,7 +755,7 @@ internal sealed partial class EditorWindow : Window
         if (!force && old.IsDirty && await Dialog("Revert to saved file?", "Unsaved changes will be discarded.", "Revert", "Cancel") != ContentDialogResult.Primary) throw new OperationCanceledException();
         byte[] bytes = reviewedBytes ?? await File.ReadAllBytesAsync(path);
         if (old.Handle == 0 || old.FilePath != path || old.State.document_revision != expected.document_revision) return;
-        var replacement = NewDocument(bytes, path, expected.format);
+        var replacement = NewDocument(bytes, path, expected.format, reloading: old);
         var prepared = new List<(EditorWindow Window, EditorPane Pane, CoreView? View)>();
         try
         {

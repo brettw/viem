@@ -309,24 +309,8 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertFalse(surface.canUndo)
     }
 
-    /// The interpretation an open chooses; file baselines deliberately differ.
-    private struct Opening: Equatable {
-        let format: EVSourceFormat
-        let language: String?
-        let fileType: String?
-        let source: Data
-        let isDirty: Bool
-    }
-
-    private func opening(_ document: EVDocument, file: StaticString = #filePath, line: UInt = #line) throws -> Opening {
-        let backend = try XCTUnwrap(document.editorBackend as? EVCoreDocumentBackend, file: file, line: line)
-        let mode: EVDocumentModeState = try EVDocumentModeJSON.read {
-            viem_core_copy_document_mode_json(backend.core, $0, $1, $2)
-        }
-        return Opening(format: backend.sourceFormat, language: mode.language ?? mode.detectedLanguage,
-                       fileType: document.fileType,
-                       source: try backend.serializedSource(typeName: EVDocument.typeName(for: backend.sourceFormat)),
-                       isDirty: backend.persistenceState.isDirty)
+    private func mode(_ backend: EVCoreDocumentBackend) throws -> EVDocumentModeState {
+        try EVDocumentModeJSON.read { viem_core_copy_document_mode_json(backend.core, $0, $1, $2) }
     }
 
     /// Every new-file path builds its backend from the registry, as in the app.
@@ -354,58 +338,70 @@ final class EVCodeOpeningTests: XCTestCase {
         return document
     }
 
-    /// `:e <path>` or `:split <path>` from a Markdown buffer, whose type must
-    /// not leak into the new file.
-    private func openFromPane(_ url: URL, kind: EVDocumentHostRequest.Kind) async throws -> EVDocument {
-        let backend = EVFrontendRegistry.makeDocumentBackend()
-        let current = EVDocument(editorBackend: backend)
-        try current.read(from: Data("# Current\n".utf8), ofType: EVDocument.markdownType)
-        current.fileURL = url.deletingLastPathComponent().appendingPathComponent("current-\(UUID().uuidString).md")
-        current.fileType = EVDocument.markdownType
-        let window = EVDocumentWindowController(document: current, editorSurface: backend.makeEditorSurface())
-        current.addWindowController(window)
-        // A window controller doesn't retain its document, and nothing else holds this one.
-        addTeardownBlock { @MainActor in withExtendedLifetime(current) { window.close() } }
+    /// A window showing `url` read from disk, with an optional mode chosen in it.
+    private func openWindow(_ url: URL, choosing choice: EVDocumentModeChoice?) throws
+        -> (EVDocument, EVCoreDocumentBackend, EVDocumentWindowController) {
+        let backend = try XCTUnwrap(EVFrontendRegistry.makeDocumentBackend() as? EVCoreDocumentBackend)
+        let document = EVDocument(editorBackend: backend)
+        document.recordRecentDocument = { _ in }
+        try document.read(from: url, ofType: EVDocument.plainTextType)
+        document.fileURL = url
+        let window = EVDocumentWindowController(document: document, editorSurface: backend.makeEditorSurface())
+        document.addWindowController(window)
+        addTeardownBlock { @MainActor in withExtendedLifetime(document) { window.close() } }
+        if let choice {
+            let session = try XCTUnwrap((window.editorSurface as? EVEditorSurfaceController)?.session)
+            try session.setDocumentMode(choice, expected: try mode(backend))
+        }
+        return (document, backend, window)
+    }
+
+    /// A bare Ex request such as `:e`.
+    private func perform(_ kind: EVDocumentHostRequest.Kind, in window: EVDocumentWindowController,
+                         backend: EVCoreDocumentBackend) async throws {
         let state = backend.persistenceState
         let result = await withCheckedContinuation { continuation in
             window.perform(documentHostRequests: [.init(kind: kind, documentID: state.documentID,
-                documentRevision: state.documentRevision, path: url.path)]) { continuation.resume(returning: $0) }
+                documentRevision: state.documentRevision)]) { continuation.resume(returning: $0) }
         }
         _ = try result.get()
-        // Closing the window also closes the pane documents it no longer shows.
-        return try XCTUnwrap(EVDocumentIdentity.existingDocument(at: url))
     }
 
-    func testMissingFilesOpenLikeEmptyFilesThroughEveryNewFilePath() async throws {
+    private func file(_ name: String, in directory: URL, text: String) throws -> URL {
+        let url = directory.appendingPathComponent("\(UUID().uuidString)/\(name)")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
+        return url
+    }
+
+    /// Both reload paths; the core tests cover the rest of the policy.
+    func testReloadKeepsTheBuffersChoiceAndPicksUpADeclaredLanguage() async throws {
         let directory = try installRegistryBackends()
-        let expected: [String: (EVSourceFormat, String?)] = [
-            "main.rs": (.code, "rust"), "new.cc": (.code, "cpp"), "Makefile": (.code, "make"),
-            "page.html": (.code, "html"), "notes.md": (.markdown, nil),
+        let cases: [(String, EVDocumentModeChoice?, String, EVSourceFormat, String?, Bool)] = [
+            // A chosen language, and a chosen format that reopening would undo.
+            ("notes.txt", .code("python"), "x = 1\n", .code, "python", false),
+            ("notes.md", .plainText, "x = 1\n", .plainText, nil, false),
+            // Detected Text becomes Code once its file declares a language.
+            ("script", nil, "#!/usr/bin/env python3\n", .code, nil, true),
         ]
-        for name in ["main.rs", "new.cc", "Makefile", "page.html", "notes.md", "notes.txt", "README"] {
-            let present = directory.appendingPathComponent("present-\(UUID().uuidString)/\(name)")
-            try FileManager.default.createDirectory(at: present.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try Data().write(to: present)
-            let reference = try opening(try launch(present))
-            if let (format, language) = expected[name] {
-                XCTAssertEqual(reference.format, format, name)
-                if let language { XCTAssertEqual(reference.language, language, name) }
-            }
-            var missing: [(String, EVDocument)] = []
-            func target() throws -> URL {
-                let url = directory.appendingPathComponent("missing-\(UUID().uuidString)/\(name)")
-                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                return url
-            }
-            missing.append(("launch", try launch(try target())))
-            missing.append((":e", try await openFromPane(try target(), kind: .edit)))
-            missing.append((":split", try await openFromPane(try target(), kind: .split)))
-            for (path, document) in missing {
-                XCTAssertEqual(try opening(document), reference, "\(path) \(name)")
-                let url = try XCTUnwrap(document.fileURL)
-                XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "\(path) \(name)")
-                XCTAssertEqual(document.fileBaseline, EVFileFingerprint(digest: nil, device: nil, inode: nil),
-                               "\(path) \(name) records a missing-file baseline")
+        for (name, choice, reloaded, format, language, automatic) in cases {
+            let url = try file(name, in: directory, text: "plain words\n")
+            let (document, backend, window) = try openWindow(url, choosing: choice)
+            for reload in [":e", "an external change"] {
+                let label = "\(name) after \(reload)"
+                let source = Data((reloaded + "# \(reload)\n").utf8)
+                try source.write(to: url)
+                if reload == ":e" {
+                    try await perform(.edit, in: window, backend: backend)
+                } else {
+                    try document.installExternalFileSnapshot(EVExternalFileSnapshot.read(url), from: url)
+                }
+                let state = try mode(backend)
+                XCTAssertEqual(backend.sourceFormat, format, label)
+                XCTAssertEqual(state.language, language, label)
+                XCTAssertEqual(state.automatic, automatic, label)
+                XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.typeName(for: format)), source, label)
+                XCTAssertFalse(backend.persistenceState.isDirty, label)
             }
         }
     }

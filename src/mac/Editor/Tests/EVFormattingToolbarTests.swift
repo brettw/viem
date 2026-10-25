@@ -58,7 +58,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     XCTAssertGreaterThan(abs(scriptNumberCenters[0] - scriptNumberCenters[1]), 0.25,
       "Superscript and subscript must visibly place their numerals at different heights")
     let codeLink = try XCTUnwrap(toolbar.characterCode.superview as? NSStackView)
-    XCTAssertEqual(codeLink.arrangedSubviews.compactMap { ($0 as? NSButton)?.title }, ["Code (Character)", "Link"])
+    XCTAssertEqual(codeLink.arrangedSubviews.compactMap { ($0 as? NSButton)?.title }, ["Code (Character)", "Link", "[d]"])
     let characterIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: character))
     let scriptIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: scripts))
     let codeIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: codeLink))

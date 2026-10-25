@@ -213,7 +213,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     /// callbacks until its fully configured core is transferred to the owner.
     private init(preparing source: Data, typeName: String, filename: String,
                  allowAutomaticCode: Bool, recoveryInterpretation: EVRecoverySnapshot?,
-                 configuration: EVConfigurationStore) throws {
+                 reloading previous: ViemCoreHandle, configuration: EVConfigurationStore) throws {
         self.configuration = configuration
         self.source = source
         self.typeName = typeName
@@ -221,7 +221,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         documentImages.setDocumentURL(filename.isEmpty ? nil : URL(fileURLWithPath: filename))
         self.allowAutomaticCode = allowAutomaticCode
         self.recoveryInterpretation = recoveryInterpretation
-        try createCore(publishDiagnostics: false)
+        try createCore(publishDiagnostics: false, reloading: previous)
     }
 
     deinit {
@@ -260,11 +260,14 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         let (filename, allowAutomaticCode) = switch origin {
         case .untitled: ("", false)
         case let .file(path, automaticCode): (path, automaticCode)
+        case let .reload(path): (path, false)
         }
+        var reloading: ViemCoreHandle = 0
+        if case .reload = origin { reloading = core }
         let replacement = try EVCoreDocumentBackend(
             preparing: source, typeName: typeName, filename: filename,
             allowAutomaticCode: allowAutomaticCode, recoveryInterpretation: recoveryInterpretation,
-            configuration: configuration
+            reloading: reloading, configuration: configuration
         )
         let liveSurfaces = surfaces.compactMap(\.value)
         let replacementSessions = try liveSurfaces.map {
@@ -552,7 +555,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         }
     }
 
-    private func createCore(publishDiagnostics: Bool = true) throws {
+    /// `previous` is the core a reload replaces, which supplies the language
+    /// choice and whether detected Text may become Code.
+    private func createCore(publishDiagnostics: Bool = true, reloading previous: ViemCoreHandle = 0) throws {
         EVStartupPerformance.mark("core.begin.\(typeName)")
         configurationWarning = configuration.lastError
         if !isStylePreview {
@@ -602,7 +607,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         try configureOptional("language detection") {
             let filename = Array(openingFilename.utf8)
             try checked(filename.withUnsafeBufferPointer {
-                viem_core_initialize_code_detection(core, $0.baseAddress, UInt64($0.count), allowAutomaticCode ? 1 : 0)
+                previous == 0
+                    ? viem_core_initialize_code_detection(core, $0.baseAddress, UInt64($0.count), allowAutomaticCode ? 1 : 0)
+                    : viem_core_initialize_reloaded_code_detection(core, $0.baseAddress, UInt64($0.count), previous)
             }, operation: "Detect code language")
         }
         _ = try documentState()

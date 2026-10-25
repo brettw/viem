@@ -463,6 +463,9 @@ public enum EVSourceOrigin: Equatable, Sendable {
   case untitled
   /// `automaticCode` lets a recognized filename or marker open Text as Code.
   case file(path: String, automaticCode: Bool)
+  /// The buffer's own file read again. The read's type keeps the buffer's
+  /// format, and the backend keeps its language choice.
+  case reload(path: String)
 }
 
 /// One source-backed document/buffer. Multiple surfaces may share it.

@@ -2392,6 +2392,8 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_initialize_code_detection(ulong @core, byte* @filename, ulong @length, byte @allow_auto_code);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_initialize_reloaded_code_detection(ulong @core, byte* @filename, ulong @length, ulong @previous);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_configure_syntax(ulong @core, byte* @vim_directory, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_set_code_filename_associations_json(ulong @core, byte* @json, ulong @length);

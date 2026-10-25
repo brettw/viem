@@ -33,6 +33,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
         var persistenceState = EVDocumentPersistenceState(sourceByteCount: 0)
         var sourceFormat: EVSourceFormat = .plainText
         var readCalls: [(Data, String)] = []
+        var readOrigins: [EVSourceOrigin] = []
         var serializationTypes: [String] = []
         var serializedData = Data()
         var saveSnapshots: [EVDocumentSaveSnapshot] = []
@@ -48,8 +49,9 @@ final class EVDocumentLifecycleTests: XCTestCase {
             return Surface()
         }
 
-        func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws {
+        func read(source: Data, typeName: String, origin: EVSourceOrigin) throws {
             readCalls.append((source, typeName))
+            readOrigins.append(origin)
             sourceFormat = EVDocument.sourceFormat(forTypeName: typeName) ?? .plainText
         }
 
@@ -389,6 +391,52 @@ final class EVDocumentLifecycleTests: XCTestCase {
         let missing = FileManager.default.temporaryDirectory.appendingPathComponent("viem-missing-read-\(UUID().uuidString).txt")
         XCTAssertThrowsError(try document.read(from: missing, ofType: EVDocument.plainTextType))
         XCTAssertTrue(recent.isEmpty)
+    }
+
+    /// Launch, `:e` and `:split` open a nonexistent path through
+    /// `openMissingFile`. The backend gets exactly what an empty file there
+    /// gets, so the format and language match; only the baseline and recent
+    /// files differ.
+    func testMissingFileReadsLikeAnEmptyFileAndDiffersOnlyInBaseline() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("viem-missing-like-empty-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        for name in ["main.rs", "new.cc", "Makefile", "page.html", "notes.md", "notes.txt", "README"] {
+            let empty = directory.appendingPathComponent("empty/\(name)")
+            let absent = directory.appendingPathComponent("missing/\(name)")
+            try FileManager.default.createDirectory(at: empty.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: empty)
+            var recent: [URL] = []
+            let (emptyBackend, missingBackend) = (Backend(), Backend())
+            let emptyDocument = EVDocument(editorBackend: emptyBackend)
+            emptyDocument.recordRecentDocument = { recent.append($0) }
+            try emptyDocument.read(from: empty, ofType: EVDocument.plainTextType)
+            let missingDocument = EVDocument(editorBackend: missingBackend)
+            missingDocument.recordRecentDocument = { recent.append($0) }
+            try missingDocument.openMissingFile(at: absent)
+
+            XCTAssertEqual(missingBackend.readCalls.map(\.0), [Data()], name)
+            XCTAssertEqual(missingBackend.readCalls.map(\.1), emptyBackend.readCalls.map(\.1), name)
+            guard case let .file(path, automaticCode)? = emptyBackend.readOrigins.last else {
+                XCTFail("\(name): \(emptyBackend.readOrigins)"); continue
+            }
+            XCTAssertEqual(path, EVDocumentIdentity.canonicalURL(empty).path, name)
+            XCTAssertEqual(missingBackend.readOrigins,
+                           [.file(path: EVDocumentIdentity.canonicalURL(absent).path, automaticCode: automaticCode)], name)
+            XCTAssertEqual(missingDocument.fileURL, EVDocumentIdentity.canonicalURL(absent), name)
+            XCTAssertEqual(missingDocument.fileType, EVDocument.typeName(for: missingBackend.sourceFormat), name)
+            XCTAssertEqual(missingDocument.fileBaseline, EVFileFingerprint(digest: nil, device: nil, inode: nil), name)
+            XCTAssertNotNil(emptyDocument.fileBaseline?.digest, name)
+            XCTAssertEqual(recent, [EVDocumentIdentity.canonicalURL(empty)], "\(name): a missing file joins recents when written")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: absent.path), name)
+            if name == "new.cc" {
+                // Text that may become Code is how the core detects C++.
+                XCTAssertEqual(missingBackend.readCalls.first?.1, EVDocument.plainTextType)
+                XCTAssertTrue(automaticCode)
+            }
+            emptyDocument.close()
+            missingDocument.close()
+        }
     }
 
     func testBackendChangeNotificationMarksNativeDocumentEdited() {

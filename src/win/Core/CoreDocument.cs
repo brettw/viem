@@ -57,7 +57,10 @@ internal sealed unsafe partial class CoreDocument : IDisposable
     }
     public bool IsDirty => (State.flags & VIEM_DOCUMENT_STATE_IS_DIRTY) != 0;
     public bool IsReadOnly => (State.flags & VIEM_DOCUMENT_STATE_READ_ONLY) != 0;
-    public CoreDocument(byte[] source, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0, bool markdownFormattedView = true)
+    /// <param name="reloading">The document a reload replaces, created here in its format. It supplies
+    /// the language choice and whether detected Text may become Code.</param>
+    public CoreDocument(byte[] source, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0, bool markdownFormattedView = true,
+        CoreDocument? reloading = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.create");
         if (viem_core_abi_version() != VIEM_CORE_ABI_VERSION) throw new InvalidOperationException("Rebuild Viem and its Rust library together: the ABI versions differ.");
@@ -79,7 +82,9 @@ internal sealed unsafe partial class CoreDocument : IDisposable
             });
             byte[] filename = Encoding.UTF8.GetBytes(path ?? "");
             ConfigureForEditing("language detection", () => {
-                fixed (byte* p = filename) Check(viem_core_initialize_code_detection(Handle, p, (ulong)filename.Length, (byte)(format == null && path != null ? 1 : 0)), "Detect code language");
+                fixed (byte* p = filename) Check(reloading == null
+                    ? viem_core_initialize_code_detection(Handle, p, (ulong)filename.Length, (byte)(format == null && path != null ? 1 : 0))
+                    : viem_core_initialize_reloaded_code_detection(Handle, p, (ulong)filename.Length, reloading.Handle), "Detect code language");
             });
         }
         catch { Dispose(); throw; }

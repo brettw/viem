@@ -853,3 +853,63 @@ fn detected_batch_language_highlights_bundled_commands_without_changing_source()
     assert_eq!(core.document().source_bytes(), source.as_bytes());
     assert!(!core.document().is_dirty());
 }
+
+#[test]
+fn reload_replacement_keeps_the_buffers_language_choice_and_promotes_only_detected_text() {
+    use viem_core::document::syntax::detection::LanguageSelection;
+    use viem_core::DocumentMode;
+    let create = |source: &str, format: Format| {
+        let document = Document::from_bytes_with_file_format(
+            source.as_bytes().to_vec(), Encoding::Utf8, format, FileFormat::Unix,
+        ).unwrap();
+        Core::<MockTextMeasurementProvider>::new(document)
+    };
+    // Explicit languages stay; an automatic one redetects from the new source.
+    for (filename, selection, expected) in [
+        ("notes.txt", LanguageSelection::Language("python".into()), Some("python")),
+        ("main.rs", LanguageSelection::None, None),
+        ("main.rs", LanguageSelection::Automatic, Some("rust")),
+    ] {
+        let mut original = create("fn main() {}\n", Format::Code);
+        original.initialize_code_detection(filename, false).unwrap();
+        original.set_code_language(selection.clone());
+        let mut replacement = create("fn main() { let changed = 1; }\n", Format::Code);
+        let revision = replacement.document().revision();
+        replacement.initialize_reloaded_code_detection(filename, original.code_language_policy()).unwrap();
+        assert_eq!(replacement.code_language_policy(), original.code_language_policy(), "{selection:?}");
+        assert_eq!(replacement.code_language_detection().unwrap().language.as_deref(), expected, "{selection:?}");
+        assert_eq!(replacement.document().revision(), revision, "a language choice is not a source edit");
+        assert!(!replacement.document().is_dirty());
+    }
+
+    // Detected Text picks up a language its new source declares, as opening
+    // would. Text chosen by hand stays Text and keeps the menu's choice.
+    let source = "#!/usr/bin/env python3\nprint(1)\n";
+    for chosen in [false, true] {
+        let mut original = create("plain words\n", Format::PlainText);
+        original.initialize_code_detection("notes", true).unwrap();
+        assert_eq!(original.document().format(), Format::PlainText);
+        if chosen {
+            let view = original.add_view(MockTextMeasurementProvider::new(), 900., 600.);
+            original.handle(view, CoreEvent::SetDocumentMode {
+                document: original.document().id(), revision: original.document().revision(),
+                mode: DocumentMode::PlainText,
+            }).unwrap();
+        }
+        let mut replacement = create(source, Format::PlainText);
+        replacement.initialize_reloaded_code_detection("notes", original.code_language_policy()).unwrap();
+        let format = if chosen { Format::PlainText } else { Format::Code };
+        assert_eq!(replacement.document().format(), format, "chosen {chosen}");
+        assert_eq!(replacement.document_mode_state().automatic, !chosen, "chosen {chosen}");
+        assert_eq!(replacement.code_language_detection().unwrap().language.as_deref(), Some("python"));
+        assert_eq!(replacement.document().source_bytes(), source.as_bytes());
+        assert!(!replacement.document().is_dirty());
+    }
+
+    // Like opening, the replacement's views attach only afterwards.
+    let policy = create("x\n", Format::PlainText).code_language_policy();
+    let mut replacement = create(source, Format::PlainText);
+    replacement.add_view(MockTextMeasurementProvider::new(), 900., 600.);
+    assert!(replacement.initialize_reloaded_code_detection("notes", policy).is_err());
+    assert_eq!(replacement.document().format(), Format::PlainText);
+}

@@ -270,18 +270,17 @@ public final class EVDocument: NSDocument {
             // retires only the selected stale file after our backup commits.
             retiring = candidates[index].canDelete ? [candidates[index]] : []
         case nil, .readOnly, .editAndDeleteRecovery:
-            var openingType = Self.defaultOpeningType(for: target, nativeType: typeName,
-                markdownFormattedView: editorBackend.prefersMarkdownFormattedView)
+            let openingType: String
+            let origin: EVSourceOrigin
             if let currentURL = fileURL, EVDocumentIdentity.sameFile(currentURL, target) {
-                // Reopening keeps the current Markdown Preview choice.
-                switch editorBackend.sourceFormat {
-                case .markdown: openingType = Self.markdownType
-                case .code where openingType == Self.markdownType: openingType = Self.codeType
-                default: break
-                }
+                openingType = Self.reopeningType(for: editorBackend.sourceFormat)
+                origin = .reload(path: target.path)
+            } else {
+                openingType = Self.defaultOpeningType(for: target, nativeType: typeName,
+                    markdownFormattedView: editorBackend.prefersMarkdownFormattedView)
+                origin = .file(path: target.path, automaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
             }
-            try editorBackend.read(source: original.get().bytes, typeName: openingType,
-                origin: .file(path: target.path, automaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText))
+            try editorBackend.read(source: original.get().bytes, typeName: openingType, origin: origin)
             recovered = false
             retiring = decision == .editAndDeleteRecovery ? candidates : []
         case .cancel: return
@@ -311,14 +310,8 @@ public final class EVDocument: NSDocument {
 
     func installExternalFileSnapshot(_ snapshot: EVExternalFileSnapshot, from url: URL) throws {
         let readOnly = isReadOnly
-        let format = editorBackend.sourceFormat
-        let openingType: String
-        switch format {
-        case .code: openingType = Self.codeType
-        default: openingType = Self.typeName(for: format)
-        }
-        try editorBackend.read(source: snapshot.data, typeName: openingType,
-            origin: .file(path: EVDocumentIdentity.canonicalURL(url).path, automaticCode: false))
+        try editorBackend.read(source: snapshot.data, typeName: Self.reopeningType(for: editorBackend.sourceFormat),
+            origin: .reload(path: EVDocumentIdentity.canonicalURL(url).path))
         if readOnly { try setReadOnly(true) }
         wasRecovered = false
         fileModificationDate = snapshot.modificationDate
@@ -553,6 +546,12 @@ public final class EVDocument: NSDocument {
                 throw EVDocumentSerializationError.destinationAliasesOriginal
             }
         }
+    }
+
+    /// Reading a buffer's own file again (`:e`, an external change) keeps its
+    /// format, whether the user chose it or opening detected it.
+    static func reopeningType(for format: EVSourceFormat) -> String {
+        format == .code ? codeType : typeName(for: format)
     }
 
     public static func typeName(for format: EVSourceFormat) -> String {

@@ -738,8 +738,11 @@ text, excludes editor furniture, and needs no network resources.
   poll on a timer. Each changed disk state gets at most one review per buffer,
   shown only while the app is in the foreground, and Keep Buffer acknowledges
   only that change. Every save path checks for external changes and asks
-  Cancel or Save Anyway. Reload installs verified
-  bytes atomically and keeps each view's position.
+  Cancel or Save Anyway. Reload (`:e`, Revert or an external change)
+  installs verified bytes atomically and keeps each view's position and the
+  buffer's format and language choice. An automatic language redetects, and
+  detected Text becomes Code when the new source declares a language; Text
+  chosen by hand stays Text. Splits show the same buffer and never reload.
   Windows batches pending files in one application-wide review; changes arriving
   during presentation wait for the next review. See the
   [Windows file-change queue](src/win/README.md#external-file-changes).

@@ -206,6 +206,15 @@ fn code_configuration_abi_rejects_invalid_and_oversized_data_atomically() {
             viem_core_redetect_code_language(core.0, b"x\0.py".as_ptr(), 5),
             ViemStatus::InvalidArgument
         );
+        // A reload's replacement needs a different, live previous core.
+        assert_eq!(
+            viem_core_initialize_reloaded_code_detection(core.0, ptr::null(), 0, core.0),
+            ViemStatus::InvalidArgument
+        );
+        assert_eq!(
+            viem_core_initialize_reloaded_code_detection(core.0, ptr::null(), 0, 0),
+            ViemStatus::InvalidHandle
+        );
         assert_eq!(
             viem_core_poll_syntax(core.0, ptr::null_mut()),
             ViemStatus::NullPointer

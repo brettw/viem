@@ -24,7 +24,7 @@ pub use command::composition::{
 };
 pub use command::layout_motion::{LayoutDemand, LayoutDemandEdge};
 pub use coordinator::{
-    LineNumberRegion, DocumentMode, DocumentModeState, CompletionPopupAnchor, CompositionCancelReason, Core, CoreError, CoreEvent, CoreIdentifierKind, CoreOutcome,
+    LineNumberRegion, CodeLanguagePolicy, DocumentMode, DocumentModeState, CompletionPopupAnchor, CompositionCancelReason, Core, CoreError, CoreEvent, CoreIdentifierKind, CoreOutcome,
     LogicalSelectionIdentity, LogicalSelectionKind, SemanticStylePresentation, SemanticStyleState,
     StyleEditGroup, StyleEditGroupError, StyleEditGroupId, TableSelectionAction, ViewCompositionChange,
     ViewCompositionOutcome, ViewId, ViewRemovalOutcome, ViewRestoration, ViewportState,

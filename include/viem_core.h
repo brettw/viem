@@ -3053,6 +3053,10 @@ ViemStatus viem_core_view_set_document_mode_with_effects(ViemCoreHandle core, Vi
 ViemStatus viem_core_copy_document_mode_json(ViemCoreHandle core, uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_copy_code_languages_json(uint8_t *output, uint64_t capacity, uint64_t *required);
 ViemStatus viem_core_initialize_code_detection(ViemCoreHandle core, const uint8_t *filename, uint64_t length, uint8_t allow_auto_code);
+/* Instead of the call above, for a core created in a reloaded buffer's format
+   to replace it: keep the previous core's language choice, and turn Text it
+   didn't choose by hand into Code when the new source declares a language. */
+ViemStatus viem_core_initialize_reloaded_code_detection(ViemCoreHandle core, const uint8_t *filename, uint64_t length, ViemCoreHandle previous);
 ViemStatus viem_core_configure_syntax(ViemCoreHandle core, const uint8_t *vim_directory, uint64_t length);
 ViemStatus viem_core_set_code_filename_associations_json(ViemCoreHandle core, const uint8_t *json, uint64_t length);
 /* selection: Automatic=0, None=1, Language=2. Only Language takes a nonempty name. */
