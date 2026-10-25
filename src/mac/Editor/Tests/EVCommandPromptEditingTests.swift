@@ -16,7 +16,7 @@ import XCTest
     }
     private func makeSurface() throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("document".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("document".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         let container = NSViewController()

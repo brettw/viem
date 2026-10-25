@@ -425,7 +425,7 @@ final class EVApplicationDelegate: NSObject,
             finish(in: document.windowControllers.first?.window)
             return
         }
-        controller.argumentDocumentOpener = { [weak self] url, _, completion in
+        controller.argumentDocumentOpener = { [weak self] url, completion in
             guard let self else { completion(nil, CocoaError(.userCancelled)); return }
             do { completion(try self.loadLaunchDocument(at: url), nil) }
             catch { completion(nil, error) }
@@ -465,16 +465,10 @@ final class EVApplicationDelegate: NSObject,
         let document = documentFactory()
         EVStartupPerformance.mark("document.backend.created")
         document.recordRecentDocument = recordRecentDocument
-        let type = Self.documentType(for: url)
         if FileManager.default.fileExists(atPath: url.path) {
-            try document.read(from: url, ofType: type)
+            try document.read(from: url, ofType: Self.documentType(for: url))
         } else {
-            try document.read(
-                from: Data(),
-                ofType: EVDocument.defaultOpeningType(for: url, nativeType: type,
-                    markdownFormattedView: document.editorBackend.prefersMarkdownFormattedView)
-            )
-            document.configureRecovery(for: url)
+            try document.openMissingFile(at: url)
         }
         EVStartupPerformance.mark("document.read.finished")
         document.fileURL = url

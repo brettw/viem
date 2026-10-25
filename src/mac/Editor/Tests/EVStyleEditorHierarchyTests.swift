@@ -41,7 +41,7 @@ final class EVStyleEditorHierarchyTests: XCTestCase {
             (heading, .characterSize, .float(24)),
         ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("# Heading\n\nText".utf8), typeName: "public.markdown")
+        try backend.readUntitled(source: Data("# Heading\n\nText".utf8), typeName: "public.markdown")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()

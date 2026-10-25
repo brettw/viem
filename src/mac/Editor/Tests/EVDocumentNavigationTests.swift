@@ -7,7 +7,7 @@ import XCTest
 @MainActor final class EVDocumentNavigationTests: XCTestCase {
     private func makeSurface(_ text: String, width: CGFloat = 600, typeName: String = "public.plain-text") throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(text.utf8), typeName: typeName)
+        try backend.readUntitled(source: Data(text.utf8), typeName: typeName)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         window.contentViewController = surface

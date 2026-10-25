@@ -9,7 +9,7 @@ final class EVTextInputClientTests: XCTestCase {
     func testEscapeDiscardsAccentPickerStateWithoutMarkedText() throws {
         for route in 0..<3 {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+            try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
@@ -47,7 +47,7 @@ final class EVTextInputClientTests: XCTestCase {
         for command in ["i", "R", ":draft", "/draft", "?draft"] {
             for directAction in [true, false] {
                 let backend = EVCoreDocumentBackend()
-                try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+                try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
                 let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
                 surface.loadViewIfNeeded()
                 let session = try XCTUnwrap(surface.session)
@@ -81,7 +81,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testAccentReplacementCancellationRetainsOriginalLetterAndUndoGroup() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -115,7 +115,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testActiveCompositionRoutesEditingKeysThroughAppKitInterpretation() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -151,7 +151,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testInsertTextHonorsExplicitUTF16ReplacementAsOneUndoUnit() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("left😀right".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("left😀right".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -168,7 +168,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testEmptyInsertTextDeletesExplicitReplacementRange() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("abc".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("abc".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -183,7 +183,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testInsertTextRetargetsAnActiveCompositionWhenRangeIsExplicit() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("abcd".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("abcd".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -204,7 +204,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testSelectedRangeUsesMarkedTextRelativeSelection() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("A😀B".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("A😀B".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -227,7 +227,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testDocumentCompositionUsesProjectedLayoutGeometryAndAccessibility() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(
+        try backend.readUntitled(
             source: Data("left middle right".utf8),
             typeName: "public.plain-text"
         )
@@ -293,7 +293,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testMalformedUTF16RangesAreRejectedWithoutMutationOrTraps() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("A😀B".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("A😀B".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let client: NSTextInputClient = surface.editorView
@@ -321,7 +321,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testDirectCoreCancellationImmediatelyClearsNativeMarkedState() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("abc".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("abc".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -357,7 +357,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testRejectedExplicitReplacementKeepsNativeAndCoreMarkedStateAligned() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data([0xE9]), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data([0xE9]), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -378,7 +378,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testInsertModeCompositionUpdatesCommitsAndCancelsThroughCore() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -420,7 +420,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testReplaceModeCompositionUsesCoreAndHonorsExplicitReplacement() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("abcd".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("abcd".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -461,7 +461,7 @@ final class EVTextInputClientTests: XCTestCase {
     func testNormalAndEveryVisualModeRejectNativeCompositionAndAccentReplacement() throws {
         for command in ["", "v", "V", "block", "d", "r", "f", "ctrl-o"] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data("base\nnext".utf8), typeName: "public.plain-text")
+            try backend.readUntitled(source: Data("base\nnext".utf8), typeName: "public.plain-text")
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
@@ -502,7 +502,7 @@ final class EVTextInputClientTests: XCTestCase {
     func testRepeatedCommandKeysBypassNativeTextInterpretation() throws {
         for command in ["", "v", "V", "block"] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data("abcdef\nghijkl".utf8), typeName: "public.plain-text")
+            try backend.readUntitled(source: Data("abcdef\nghijkl".utf8), typeName: "public.plain-text")
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
@@ -527,7 +527,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testInputContextTracksTextEntryAndDiscardsUnmarkedCandidatesOnModeExit() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let view = RecordingEditorView(surface: surface)
@@ -560,7 +560,7 @@ final class EVTextInputClientTests: XCTestCase {
     func testStatusLineKeepsNativeInterpretationAndAccentReplacement() throws {
         for command in [":", "/", "?", "v:"] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+            try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
@@ -586,7 +586,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testUnicodeCommandOperandsStillReachCoreWithoutNativeComposition() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("aéz".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("aéz".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let view = RecordingEditorView(surface: surface)
@@ -602,7 +602,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testExCommandLineCompositionIsLocalUntilCommitAndRendersMarkedSelection() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("document".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("document".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.editorView.frame = NSRect(x: 0, y: 0, width: 420, height: 220)
@@ -665,7 +665,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testSearchCommandLineCompositionCommitsViaCommandInputAndCancelsLocally() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("café document".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("café document".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -713,7 +713,7 @@ final class EVTextInputClientTests: XCTestCase {
     @MainActor
     func testStaleCommandLineDraftCannotOverwriteNewerCoreInput() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("document".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("document".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -743,7 +743,7 @@ final class EVTextInputClientTests: XCTestCase {
     func testMouseDragStartsAndMouseUpStopsSelectionAutoscroll() throws {
         let backend = EVCoreDocumentBackend()
         let text = (0..<400).map { "line \($0)" }.joined(separator: "\n")
-        try backend.read(source: Data(text.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(text.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 220, height: 120)

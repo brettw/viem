@@ -24,7 +24,7 @@ final class EVDocumentExportTests: XCTestCase {
         var source = Data("# Original\r\n".utf8)
         var acknowledgementCount = 0
         func makeEditorSurface() -> any EVEditorSurface { Surface() }
-        func read(source: Data, typeName: String) throws { self.source = source }
+        func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws { self.source = source }
         func serializedSource(typeName: String) throws -> Data { source }
         func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot {
             .init(data: source, documentID: 4, documentRevision: 12)

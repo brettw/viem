@@ -107,7 +107,7 @@ final class EVStyleColorWellTests: XCTestCase {
         let typeName = requestedTypeName ?? EVDocument.markdownType
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: typeName)
+        try backend.readUntitled(source: Data(source.utf8), typeName: typeName)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()

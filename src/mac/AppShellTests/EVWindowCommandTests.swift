@@ -97,7 +97,7 @@ final class EVWindowCommandTests: XCTestCase {
       surfaces.append(surface)
       return surface
     }
-    func read(source _: Data, typeName _: String) throws {}
+    func read(source _: Data, typeName _: String, origin _: EVSourceOrigin) throws {}
     func serializedSource(typeName _: String) throws -> Data { Data() }
     func nativeSaveSnapshot(typeName _: String) throws -> EVDocumentSaveSnapshot {
       EVDocumentSaveSnapshot(data: Data(), documentID: 0, documentRevision: 0)

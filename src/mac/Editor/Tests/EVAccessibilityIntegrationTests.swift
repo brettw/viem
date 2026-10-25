@@ -227,7 +227,7 @@ final class EVAccessibilityIntegrationTests: XCTestCase {
             (.baseParagraph, .characterWeight, .unsigned(400)),
         ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(text.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(text.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(origin: .zero, size: size)

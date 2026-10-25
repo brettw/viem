@@ -31,7 +31,7 @@ final class EVFileDropTests: XCTestCase {
     private func makeSurface(_ text: String = "Current document") throws
         -> (EVCoreDocumentBackend, EVEditorSurfaceController, Host) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(text.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(text.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let host = Host()

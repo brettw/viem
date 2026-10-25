@@ -48,7 +48,7 @@ final class EVDocumentLifecycleTests: XCTestCase {
             return Surface()
         }
 
-        func read(source: Data, typeName: String) throws {
+        func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws {
             readCalls.append((source, typeName))
             sourceFormat = EVDocument.sourceFormat(forTypeName: typeName) ?? .plainText
         }

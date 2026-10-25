@@ -17,7 +17,7 @@ final class EVMarkdownViewPreferenceTests: XCTestCase {
         throws -> EVEditorSurfaceController {
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data("# Heading\n\n**Words**".utf8), typeName: type ?? EVDocument.codeType,
-            filename: "notes.md", allowAutomaticCode: false)
+            origin: .file(path: "notes.md", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         return surface

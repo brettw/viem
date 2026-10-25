@@ -25,7 +25,7 @@ final class EVTableEditingTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         try backend.read(source: Data(text.utf8), typeName: code ? EVDocument.codeType : EVDocument.markdownType,
-            filename: "notes.md", allowAutomaticCode: false)
+            origin: .file(path: "notes.md", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded(); surface.view.frame = NSRect(x: 0, y: 0, width: 700, height: 400); surface.viewDidLayout()
         return (backend, surface, try XCTUnwrap(surface.session))

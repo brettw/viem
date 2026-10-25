@@ -13,7 +13,7 @@ final class EVListParagraphTests: XCTestCase {
         try Data(startup.utf8).write(to: directory.appendingPathComponent("startup.viem"))
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
-        try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type ?? EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)

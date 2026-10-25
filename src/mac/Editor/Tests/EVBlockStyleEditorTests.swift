@@ -64,7 +64,7 @@ final class EVBlockStyleEditorTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("> First paragraph\n>\n> Second paragraph\n>\n> > Nested quote".utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data("> First paragraph\n>\n> Second paragraph\n>\n> > Nested quote".utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()

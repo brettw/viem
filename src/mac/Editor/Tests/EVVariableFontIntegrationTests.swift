@@ -77,7 +77,7 @@ final class EVVariableFontIntegrationTests: XCTestCase {
             try styles.edit(key: .baseParagraph, expected: styles.snapshot().identity, mutation: mutation)
         }
         let backend = EVCoreDocumentBackend(configuration: config)
-        try backend.read(source: Data("Variable aegklrWim".utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data("Variable aegklrWim".utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         _ = try XCTUnwrap(surface.session).resize(width: 700, height: 180)

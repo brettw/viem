@@ -12,7 +12,7 @@ final class EVExternalFileReviewTests: XCTestCase {
     var data = Data()
     var failReads = false
     func makeEditorSurface() -> any EVEditorSurface { Surface() }
-    func read(source: Data, typeName: String) throws {
+    func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws {
       if failReads { throw CocoaError(.fileReadCorruptFile) }
       sourceFormat = EVDocument.sourceFormat(forTypeName: typeName) ?? .plainText
       data = source

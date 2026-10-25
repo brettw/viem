@@ -24,7 +24,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
         var readError: Error?
         var recoverySnapshotError: Error?
         func makeEditorSurface() -> any EVEditorSurface { Surface() }
-        func read(source: Data, typeName: String) throws {
+        func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws {
             if let readError { throw readError }
             data = source; sourceFormat = EVDocument.sourceFormat(forTypeName: typeName) ?? .plainText
         }

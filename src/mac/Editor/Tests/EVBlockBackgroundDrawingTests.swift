@@ -179,7 +179,7 @@ final class EVBlockBackgroundDrawingTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-background-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
-        try backend.read(source: Data(source.utf8), typeName: requestedType ?? EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: requestedType ?? EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 500, height: 400)

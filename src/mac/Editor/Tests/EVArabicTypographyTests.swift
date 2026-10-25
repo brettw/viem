@@ -72,7 +72,7 @@ final class EVArabicTypographyTests: XCTestCase {
   @MainActor
   private func makeSurface(_ text: String, width: CGFloat) throws -> EVEditorSurfaceController {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(text.utf8), typeName: "public.plain-text")
+    try backend.readUntitled(source: Data(text.utf8), typeName: "public.plain-text")
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     surface.view.frame = NSRect(x: 0, y: 0, width: width, height: 650)

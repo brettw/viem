@@ -9,7 +9,7 @@ final class EVZoomIntegrationTests: XCTestCase {
     func testMenuStopsSaturateAtTwentyFiveAndFiveHundredPercentWithoutEditing() throws {
         let backend = EVCoreDocumentBackend()
         let source = Data("Words for zooming".utf8)
-        try backend.read(source: source, typeName: "public.plain-text")
+        try backend.readUntitled(source: source, typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -46,7 +46,7 @@ final class EVZoomIntegrationTests: XCTestCase {
     func testCommandZoomKeysAndMenuResponderWorkInNormalAndInsertWithoutText() throws {
         let backend = EVCoreDocumentBackend()
         let source = Data("Words".utf8)
-        try backend.read(source: source, typeName: "public.plain-text")
+        try backend.readUntitled(source: source, typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)

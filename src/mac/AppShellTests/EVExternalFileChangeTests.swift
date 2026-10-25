@@ -22,7 +22,7 @@ final class EVExternalFileChangeTests: XCTestCase {
     var data = Data()
     var beforeSaveSnapshot: (() -> Void)?
     func makeEditorSurface() -> any EVEditorSurface { Surface() }
-    func read(source: Data, typeName: String) throws { data = source }
+    func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws { data = source }
     func serializedSource(typeName: String) throws -> Data { data }
     func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot {
       beforeSaveSnapshot?()

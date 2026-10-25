@@ -10,7 +10,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   func testParagraphShortcutValidationRetainsCurrentStyleCheckmark() throws {
     let backend = EVCoreDocumentBackend()
     let source = Data("## Title\n\nBody".utf8)
-    try backend.read(source: source, typeName: EVDocument.markdownType)
+    try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
@@ -40,7 +40,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   func testListIndentMenuValidatesAndDispatchesFromTheMiddleOfAnItem() throws {
     let source = "1. One\n2. **Second**"
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+    try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
@@ -90,7 +90,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
       (EVDocument.markdownType, "Paragraph", "## Paragraph"),
     ] {
       let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: type)
+      try backend.readUntitled(source: Data(source.utf8), typeName: type)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       surface.loadViewIfNeeded()
       let catalogue = try XCTUnwrap(surface.currentStyleMenuCatalogue())
@@ -117,7 +117,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   @MainActor
   func testLiveCoreCatalogueExposesOnlyBasePlainTextStylesAndDisablesAssignment() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("plain text".utf8), typeName: "public.plain-text")
+    try backend.readUntitled(source: Data("plain text".utf8), typeName: "public.plain-text")
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
 
@@ -144,7 +144,7 @@ final class EVStyleMenuBridgeTests: XCTestCase {
   @MainActor
   func testAssignmentPayloadCannotBypassDisabledAdapterCapability() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("plain text".utf8), typeName: "public.plain-text")
+    try backend.readUntitled(source: Data("plain text".utf8), typeName: "public.plain-text")
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let before = try backend.nativeSaveSnapshot(typeName: "public.plain-text")

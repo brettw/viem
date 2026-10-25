@@ -33,7 +33,7 @@ import XCTest
         placement: EVDocumentWindowPlacement(loadFrame: { nil }))
       blank.addWindowController(window)
       documents.append(blank)
-      window.argumentDocumentOpener = { [weak self] url, _, completion in
+      window.argumentDocumentOpener = { [weak self] url, completion in
         guard let self else { return }
         do { completion(try self.open(url), nil) } catch { completion(nil, error) }
       }
@@ -141,10 +141,10 @@ import XCTest
     defer { f.close() }
     try await f.launch()
     let original = f.document
-    f.window.argumentDocumentOpener = { _, _, completion in completion(nil, CocoaError(.fileReadNoPermission)) }
+    f.window.argumentDocumentOpener = { _, completion in completion(nil, CocoaError(.fileReadNoPermission)) }
     assertFailed(await f.navigate())
     XCTAssertTrue(f.document === original)
-    f.window.argumentDocumentOpener = { url, _, completion in
+    f.window.argumentDocumentOpener = { url, completion in
       do {
         let opened = try f.open(url)
         try f.modify("intervening ")
@@ -153,7 +153,7 @@ import XCTest
     }
     assertError(await f.navigate(force: true), EVDocumentHostError.staleRequest)
     XCTAssertTrue(f.document === original)
-    f.window.argumentDocumentOpener = { url, _, completion in
+    f.window.argumentDocumentOpener = { url, completion in
       do { completion(try f.open(url), nil) } catch { completion(nil, error) }
     }
     _ = try await f.navigate(force: true).get()

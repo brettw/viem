@@ -9,7 +9,7 @@ final class EVMultilineRenderingTests: XCTestCase {
     @MainActor
     func testNativeDocumentWindowLaysOutEveryInitialHardLine() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(
+        try backend.readUntitled(
             source: Data("FIRST ROW\nSECOND ROW\nTHIRD ROW".utf8),
             typeName: "public.plain-text"
         )
@@ -45,7 +45,7 @@ final class EVMultilineRenderingTests: XCTestCase {
     @MainActor
     func testLayerBackedDocumentWindowCachePaintsEveryInitialHardLine() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(
+        try backend.readUntitled(
             source: Data(
                 [
                     "ALPHA ROW HAS VISIBLE INK",
@@ -140,7 +140,7 @@ final class EVMultilineRenderingTests: XCTestCase {
     @MainActor
     func testLiveRefreshAfterEveryEditKeepsAllPositionedRowsCurrent() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 700, height: 420)
@@ -173,7 +173,7 @@ final class EVMultilineRenderingTests: XCTestCase {
     @MainActor
     func testIncrementalEnterProducesTwoPositionedRows() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 700, height: 420)
@@ -204,7 +204,7 @@ final class EVMultilineRenderingTests: XCTestCase {
     @MainActor
     func testIncrementalEnterPaintsGlyphPixelsOnBothPositionedRows() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 700, height: 420)

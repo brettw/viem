@@ -20,7 +20,7 @@ final class EVDocumentModeMenuTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: profile) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: profile))
         try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.plainTextType,
-                         filename: filename, allowAutomaticCode: type == nil)
+                         origin: .file(path: filename, automaticCode: type == nil))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         return surface

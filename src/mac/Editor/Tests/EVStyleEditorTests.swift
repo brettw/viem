@@ -10,12 +10,12 @@ final class EVStyleEditorTests: XCTestCase {
     @MainActor
     func testCoordinatorReusesOneModelessWindowAndRetargetsByStableIdentity() throws {
         let firstBackend = EVCoreDocumentBackend()
-        try firstBackend.read(source: Data("first".utf8), typeName: "public.plain-text")
+        try firstBackend.readUntitled(source: Data("first".utf8), typeName: "public.plain-text")
         let firstSurface = try XCTUnwrap(firstBackend.makeEditorSurface() as? EVEditorSurfaceController)
         firstSurface.loadViewIfNeeded()
 
         let secondBackend = EVCoreDocumentBackend()
-        try secondBackend.read(source: Data("# second".utf8), typeName: "public.markdown")
+        try secondBackend.readUntitled(source: Data("# second".utf8), typeName: "public.markdown")
         let secondSurface = try XCTUnwrap(secondBackend.makeEditorSurface() as? EVEditorSurfaceController)
         secondSurface.loadViewIfNeeded()
 
@@ -49,7 +49,7 @@ final class EVStyleEditorTests: XCTestCase {
         let configuration = try styleConfiguration()
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let source = Data("# Heading\nbody".utf8)
-        try backend.read(source: source, typeName: "public.markdown")
+        try backend.readUntitled(source: source, typeName: "public.markdown")
         let first = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         first.loadViewIfNeeded()
@@ -163,7 +163,7 @@ final class EVStyleEditorTests: XCTestCase {
     ) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVStyleEditorViewController) {
         let configuration = try styleConfiguration()
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: "public.markdown")
+        try backend.readUntitled(source: Data(source.utf8), typeName: "public.markdown")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()

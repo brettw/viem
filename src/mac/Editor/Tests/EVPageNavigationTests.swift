@@ -54,7 +54,7 @@ import XCTest
         let configuration = EVConfigurationStore(directory: FileManager.default.temporaryDirectory
             .appendingPathComponent("viem-page-\(UUID().uuidString)"), legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         view.loadViewIfNeeded()
         view.view.frame = NSRect(x: 0, y: 0, width: width, height: height)

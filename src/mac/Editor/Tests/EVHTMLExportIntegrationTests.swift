@@ -15,7 +15,7 @@ final class EVHTMLExportIntegrationTests: XCTestCase {
             (.baseParagraph, .characterWeight, .unsigned(400)),
         ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: type, filename: filename, allowAutomaticCode: false)
+        try backend.read(source: Data(source.utf8), typeName: type, origin: .file(path: filename, automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         return surface

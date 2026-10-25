@@ -117,7 +117,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
 
     func testRichPasteCurvesProseQuotesAndPreservesCodeQuotesInTheSameFragment() throws {
         let donor = EVCoreDocumentBackend()
-        try donor.read(source: Data("**\"prose\"** `\"code\"`".utf8), typeName: EVDocument.markdownType)
+        try donor.readUntitled(source: Data("**\"prose\"** `\"code\"`".utf8), typeName: EVDocument.markdownType)
         let text = try donor.formattedText()
         let pasteboard = Pasteboard()
         pasteboard.text = text
@@ -177,7 +177,7 @@ final class EVSmartQuoteIngressTests: XCTestCase {
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         try configuration.setSmartQuotes(true)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.editorView.editingPreferences = EVEditingPreferences(configuration: configuration)

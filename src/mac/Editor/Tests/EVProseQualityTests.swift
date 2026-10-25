@@ -16,7 +16,7 @@ final class EVProseQualityTests: XCTestCase {
       var phase = "open"
       check("\(type), \(phase)") {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -71,7 +71,7 @@ final class EVProseQualityTests: XCTestCase {
     for source in ["", "Word", "**Word**", "First line\ncontinued prose"] {
       check(source) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let session = try EVCoreViewSession(document: backend, width: 200, height: 120)
         let original = try backend.formattedText()
         try session.sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: 105)

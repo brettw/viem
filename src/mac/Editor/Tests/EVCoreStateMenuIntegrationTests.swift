@@ -160,7 +160,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     @MainActor
     func testLineEndingRadioActionIsAtomicUndoableAndShared() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("one\r\ntwo\r\n".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("one\r\ntwo\r\n".utf8), typeName: "public.plain-text")
         let first = try makeSurface(backend)
         let second = try makeSurface(backend)
 
@@ -188,7 +188,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     func testEncodingMenuConversionsAreCheckedSharedAndExactlyUndoable() throws {
         let source = "café\r\nnext"
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.plainTextType)
         let first = try makeSurface(backend)
         let second = try makeSurface(backend)
         let choices: [(EVMenuCommand, UInt32)] = [
@@ -236,7 +236,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         let backend = EVCoreDocumentBackend()
         // In unix mode the CR is literal content. Converting to classic-Mac
         // would reinterpret it as another logical line boundary and is rejected.
-        try backend.read(source: Data("one\rtwo\nthree".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("one\rtwo\nthree".utf8), typeName: "public.plain-text")
         let (surface, session) = try makeSurface(backend)
         let before = try backend.documentState()
         let bytes = try backend.serializedSource(typeName: "public.plain-text")
@@ -344,7 +344,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
     @MainActor
     func testZoomIsExactViewLocalLayoutStateAndActualSizeRestoresOne() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(
+        try backend.readUntitled(
             source: Data("A proportional sentence that wraps differently under magnification.".utf8),
             typeName: "public.plain-text"
         )
@@ -829,7 +829,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         _ text: String
     ) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(text.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(text.utf8), typeName: "public.plain-text")
         let pair = try makeSurface(backend)
         return (backend, pair.surface, pair.session)
     }
@@ -839,7 +839,7 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
         _ source: String
     ) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let pair = try makeSurface(backend)
         return (backend, pair.surface, pair.session)
     }

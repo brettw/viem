@@ -38,7 +38,7 @@ final class EVWindowInputTests: XCTestCase {
     func testHeightUnitUsesBaseParagraphSpacingRatherThanMixedFontsAndIncludesZoom() throws {
         for typeName in [EVDocument.plainTextType, EVDocument.markdownType] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data("# Large title\n\nBody".utf8), typeName: typeName)
+            try backend.readUntitled(source: Data("# Large title\n\nBody".utf8), typeName: typeName)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
@@ -67,7 +67,7 @@ final class EVWindowInputTests: XCTestCase {
             }
         }
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("code".utf8), typeName: EVDocument.codeType)
+        try backend.readUntitled(source: Data("code".utf8), typeName: EVDocument.codeType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)

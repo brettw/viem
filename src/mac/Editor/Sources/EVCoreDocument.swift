@@ -241,10 +241,6 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         return surface
     }
 
-    public func read(source: Data, typeName: String) throws {
-        try read(source: source, typeName: typeName, filename: "", allowAutomaticCode: false)
-    }
-
     public func updateFilename(_ filename: String) {
         guard openingFilename != filename else { return }
         openingFilename = filename
@@ -260,9 +256,13 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         pollSyntax()
     }
 
-    public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
+    public func read(source: Data, typeName: String, origin: EVSourceOrigin) throws {
+        let (filename, allowAutomaticCode) = switch origin {
+        case .untitled: ("", false)
+        case let .file(path, automaticCode): (path, automaticCode)
+        }
         let replacement = try EVCoreDocumentBackend(
-            preparing: source, typeName: typeName, filename: filename ?? "",
+            preparing: source, typeName: typeName, filename: filename,
             allowAutomaticCode: allowAutomaticCode, recoveryInterpretation: recoveryInterpretation,
             configuration: configuration
         )
@@ -306,7 +306,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     public func restoreRecovery(_ snapshot: EVRecoverySnapshot) throws {
         recoveryInterpretation = snapshot
         defer { recoveryInterpretation = nil }
-        try read(source: snapshot.source, typeName: Self.openingType(for: snapshot.format))
+        // The snapshot's format is explicit; the current name keeps its language.
+        try read(source: snapshot.source, typeName: Self.openingType(for: snapshot.format),
+                 origin: openingFilename.isEmpty ? .untitled : .file(path: openingFilename, automaticCode: false))
         let state = try documentState()
         try checked(viem_core_mark_recovered(core, state.document_id, state.document_revision), operation: "Restore unsaved recovery state")
         _ = try documentState()

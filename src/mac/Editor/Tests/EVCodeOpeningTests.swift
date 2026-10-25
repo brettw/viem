@@ -39,7 +39,7 @@ final class EVCodeOpeningTests: XCTestCase {
         let backend: any EVDocumentBackend = concrete
         let source = Data("fn main() {\n    let answer = 42;\n}\n".utf8)
         try backend.read(source: source, typeName: EVDocument.plainTextType,
-                         filename: "main.rs", allowAutomaticCode: true)
+                         origin: .file(path: "main.rs", automaticCode: true))
         XCTAssertEqual(backend.sourceFormat, .code)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
@@ -203,13 +203,13 @@ final class EVCodeOpeningTests: XCTestCase {
             ("notes", "# vim: set filetype=rust:\nfn x() {}"),
         ] {
             let bytes = Data(text.utf8)
-            try backend.read(source: bytes, typeName: EVDocument.plainTextType, filename: filename, allowAutomaticCode: true)
+            try backend.read(source: bytes, typeName: EVDocument.plainTextType, origin: .file(path: filename, automaticCode: true))
             XCTAssertEqual(backend.sourceFormat, .code, filename)
             XCTAssertEqual(try backend.formattedText(), text, filename)
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), bytes, filename)
             XCTAssertFalse(backend.persistenceState.isDirty, filename)
         }
-        try backend.read(source: Data("ordinary notes".utf8), typeName: EVDocument.plainTextType, filename: "notes.txt", allowAutomaticCode: true)
+        try backend.read(source: Data("ordinary notes".utf8), typeName: EVDocument.plainTextType, origin: .file(path: "notes.txt", automaticCode: true))
         XCTAssertEqual(backend.sourceFormat, .plainText)
     }
 
@@ -222,13 +222,13 @@ final class EVCodeOpeningTests: XCTestCase {
             (EVDocument.htmlType, true, .code),
             (EVDocument.codeType, false, .code),
         ] {
-            try backend.read(source: Data(text.utf8), typeName: type, filename: "file.rs", allowAutomaticCode: automatic)
+            try backend.read(source: Data(text.utf8), typeName: type, origin: .file(path: "file.rs", automaticCode: automatic))
             XCTAssertEqual(backend.sourceFormat, expected)
         }
-        try backend.read(source: Data("unclassified".utf8), typeName: EVDocument.codeType)
+        try backend.readUntitled(source: Data("unclassified".utf8), typeName: EVDocument.codeType)
         XCTAssertEqual(backend.sourceFormat, .code)
         let recovery = try backend.recoverySnapshot()
-        try backend.read(source: Data(), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(), typeName: EVDocument.plainTextType)
         try backend.restoreRecovery(recovery)
         XCTAssertEqual(backend.sourceFormat, .code)
         XCTAssertEqual(try backend.formattedText(), "unclassified")
@@ -242,19 +242,19 @@ final class EVCodeOpeningTests: XCTestCase {
         ])
         for filename in ["Buildfile", "example.custom"] {
             let bytes = Data("# literal <b>text</b>".utf8)
-            try backend.read(source: bytes, typeName: EVDocument.plainTextType, filename: filename, allowAutomaticCode: true)
+            try backend.read(source: bytes, typeName: EVDocument.plainTextType, origin: .file(path: filename, automaticCode: true))
             XCTAssertEqual(backend.sourceFormat, .code)
             XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.plainTextType), bytes)
             XCTAssertFalse(backend.persistenceState.isDirty)
         }
         try backend.configuration.setCodeFilenameAssociations([])
-        try backend.read(source: Data("plain".utf8), typeName: EVDocument.plainTextType, filename: "example.custom", allowAutomaticCode: true)
+        try backend.read(source: Data("plain".utf8), typeName: EVDocument.plainTextType, origin: .file(path: "example.custom", automaticCode: true))
         XCTAssertEqual(backend.sourceFormat, .plainText)
     }
 
     func testDiagnosticsRefreshWithoutAChangedPresentation() async throws {
         let backend = backend(bundleResourceURL: URL(fileURLWithPath: "/missing/viem-diagnostic-only"))
-        try backend.read(source: Data("unrecognized language".utf8), typeName: EVDocument.codeType)
+        try backend.readUntitled(source: Data("unrecognized language".utf8), typeName: EVDocument.codeType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let language = Array("viem_diagnostic_only".utf8)
@@ -289,7 +289,7 @@ final class EVCodeOpeningTests: XCTestCase {
     func testCodeDisablesDocumentFormattingAndRetainsGlobalStyleEditing() throws {
         let backend = backend()
         let text = "# Heading\n<b>literal &amp;</b>\n"
-        try backend.read(source: Data(text.utf8), typeName: EVDocument.codeType)
+        try backend.readUntitled(source: Data(text.utf8), typeName: EVDocument.codeType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let before = try backend.recoverySnapshot()
@@ -307,5 +307,118 @@ final class EVCodeOpeningTests: XCTestCase {
         XCTAssertTrue(styles.canEditStyles)
         XCTAssertTrue(styles.entries.allSatisfy { $0.actionKind != .assign })
         XCTAssertFalse(surface.canUndo)
+    }
+
+    /// The interpretation an open chooses; file baselines deliberately differ.
+    private struct Opening: Equatable {
+        let format: EVSourceFormat
+        let language: String?
+        let fileType: String?
+        let source: Data
+        let isDirty: Bool
+    }
+
+    private func opening(_ document: EVDocument, file: StaticString = #filePath, line: UInt = #line) throws -> Opening {
+        let backend = try XCTUnwrap(document.editorBackend as? EVCoreDocumentBackend, file: file, line: line)
+        let mode: EVDocumentModeState = try EVDocumentModeJSON.read {
+            viem_core_copy_document_mode_json(backend.core, $0, $1, $2)
+        }
+        return Opening(format: backend.sourceFormat, language: mode.language ?? mode.detectedLanguage,
+                       fileType: document.fileType,
+                       source: try backend.serializedSource(typeName: EVDocument.typeName(for: backend.sourceFormat)),
+                       isDirty: backend.persistenceState.isDirty)
+    }
+
+    /// Every new-file path builds its backend from the registry, as in the app.
+    private func installRegistryBackends() throws -> URL {
+        EVEditorComposition.install()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-new-file-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let configuration = EVConfigurationStore(directory: directory.appendingPathComponent("profile"),
+            legacyDefaults: nil, bundleResourceURL: Bundle.main.resourceURL)
+        EVFrontendRegistry.install { EVCoreDocumentBackend(configuration: configuration) }
+        addTeardownBlock { @MainActor in
+            EVFrontendRegistry.install { EVCoreDocumentBackend() }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        return directory
+    }
+
+    /// `viem <path>` from a terminal.
+    private func launch(_ url: URL) throws -> EVDocument {
+        let delegate = EVApplicationDelegate(launchArguments: EVLaunchArguments(filenames: [url.path]))
+        delegate.recordRecentDocument = { _ in }
+        XCTAssertTrue(delegate.openLaunchArguments())
+        let document = try XCTUnwrap(EVDocumentIdentity.existingDocument(at: url))
+        addTeardownBlock { @MainActor in document.close() }
+        return document
+    }
+
+    /// `:e <path>` or `:split <path>` from a Markdown buffer, whose type must
+    /// not leak into the new file.
+    private func openFromPane(_ url: URL, kind: EVDocumentHostRequest.Kind) async throws -> EVDocument {
+        let backend = EVFrontendRegistry.makeDocumentBackend()
+        let current = EVDocument(editorBackend: backend)
+        try current.read(from: Data("# Current\n".utf8), ofType: EVDocument.markdownType)
+        current.fileURL = url.deletingLastPathComponent().appendingPathComponent("current-\(UUID().uuidString).md")
+        current.fileType = EVDocument.markdownType
+        let window = EVDocumentWindowController(document: current, editorSurface: backend.makeEditorSurface())
+        current.addWindowController(window)
+        // A window controller doesn't retain its document, and nothing else holds this one.
+        addTeardownBlock { @MainActor in withExtendedLifetime(current) { window.close() } }
+        let state = backend.persistenceState
+        let result = await withCheckedContinuation { continuation in
+            window.perform(documentHostRequests: [.init(kind: kind, documentID: state.documentID,
+                documentRevision: state.documentRevision, path: url.path)]) { continuation.resume(returning: $0) }
+        }
+        _ = try result.get()
+        // Closing the window also closes the pane documents it no longer shows.
+        return try XCTUnwrap(EVDocumentIdentity.existingDocument(at: url))
+    }
+
+    func testMissingFilesOpenLikeEmptyFilesThroughEveryNewFilePath() async throws {
+        let directory = try installRegistryBackends()
+        let expected: [String: (EVSourceFormat, String?)] = [
+            "main.rs": (.code, "rust"), "new.cc": (.code, "cpp"), "Makefile": (.code, "make"),
+            "page.html": (.code, "html"), "notes.md": (.markdown, nil),
+        ]
+        for name in ["main.rs", "new.cc", "Makefile", "page.html", "notes.md", "notes.txt", "README"] {
+            let present = directory.appendingPathComponent("present-\(UUID().uuidString)/\(name)")
+            try FileManager.default.createDirectory(at: present.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: present)
+            let reference = try opening(try launch(present))
+            if let (format, language) = expected[name] {
+                XCTAssertEqual(reference.format, format, name)
+                if let language { XCTAssertEqual(reference.language, language, name) }
+            }
+            var missing: [(String, EVDocument)] = []
+            func target() throws -> URL {
+                let url = directory.appendingPathComponent("missing-\(UUID().uuidString)/\(name)")
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                return url
+            }
+            missing.append(("launch", try launch(try target())))
+            missing.append((":e", try await openFromPane(try target(), kind: .edit)))
+            missing.append((":split", try await openFromPane(try target(), kind: .split)))
+            for (path, document) in missing {
+                XCTAssertEqual(try opening(document), reference, "\(path) \(name)")
+                let url = try XCTUnwrap(document.fileURL)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "\(path) \(name)")
+                XCTAssertEqual(document.fileBaseline, EVFileFingerprint(digest: nil, device: nil, inode: nil),
+                               "\(path) \(name) records a missing-file baseline")
+            }
+        }
+    }
+
+    func testTypingInLaunchedMissingFileGetsSyntaxPaint() async throws {
+        let directory = try installRegistryBackends()
+        let document = try launch(directory.appendingPathComponent("main.rs"))
+        let backend = try XCTUnwrap(document.editorBackend as? EVCoreDocumentBackend)
+        let controller = try XCTUnwrap(document.windowControllers.first as? EVDocumentWindowController)
+        let surface = try XCTUnwrap(controller.editorSurface as? EVEditorSurfaceController)
+        let session = try XCTUnwrap(surface.session)
+        _ = try session.sendTestKeys("ifn main() {}")
+        _ = try session.sendKey(kind: UInt32(VIEM_KEY_ESCAPE))
+        try await assertRustKeywordIsHighlighted(backend: backend, surface: surface)
     }
 }

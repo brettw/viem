@@ -9,7 +9,7 @@ import XCTest
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-completion-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory.appendingPathComponent("configuration")))
-        try backend.read(source: Data("document".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("document".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false

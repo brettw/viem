@@ -117,7 +117,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         let source = "before\n\n```rust\nfn main() {}\n```\n\nafter"
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 850, height: 350)
@@ -173,7 +173,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         let source = Data("before\n\n```rust\nfn main() {}\n```\n\nafter".utf8)
-        try backend.read(source: source, typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
+        try backend.read(source: source, typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -206,7 +206,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
         let source = Data("---\nname: viem\n---\n\nbody".utf8)
-        try backend.read(source: source, typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 850, height: 350)
@@ -277,7 +277,7 @@ final class EVCodeBlockLanguageTests: XCTestCase {
         // Short words fill the first row into the selector instead of moving
         // an indivisible code token onto the next wrapped row.
         let source = "```rust\n// " + String(repeating: "x ", count: 100) + "\n```"
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let view = surface.editorView

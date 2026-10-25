@@ -9,7 +9,7 @@ import XCTest
 
     private func surface(_ source: String, type: String, pasteboard: NSPasteboard) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.pasteboard = EVAppKitPasteboardAccess(pasteboard)
         surface.loadViewIfNeeded()

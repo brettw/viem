@@ -134,7 +134,7 @@ final class EVScrollWheelTests: XCTestCase {
         size: NSSize
     ) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(source.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(
             backend.makeEditorSurface() as? EVEditorSurfaceController
         )

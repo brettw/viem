@@ -12,7 +12,7 @@ final class EVBaseParagraphStyleEditorTests: XCTestCase {
         ] {
             let configuration = try isolatedConfiguration()
             let backend = EVCoreDocumentBackend(configuration: configuration)
-            try backend.read(source: Data(source.utf8), typeName: type)
+            try backend.readUntitled(source: Data(source.utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             defer { withExtendedLifetime(surface) {} }
             surface.loadViewIfNeeded()

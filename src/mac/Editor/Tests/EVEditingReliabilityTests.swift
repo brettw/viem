@@ -9,7 +9,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     func testIndentedMarkdownCodeEnterAndTypingRoundTrip() throws {
         let source = "    code\n\nTail"
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         XCTAssertEqual(surface.formattedText, "code\nTail")
@@ -23,7 +23,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         XCTAssertEqual(surface.formattedText, "code\nmore\nTail")
         let saved = try backend.serializedSource(typeName: EVDocument.markdownType)
         let reopened = EVCoreDocumentBackend()
-        try reopened.read(source: saved, typeName: EVDocument.markdownType)
+        try reopened.readUntitled(source: saved, typeName: EVDocument.markdownType)
         let reopenedSurface = try XCTUnwrap(reopened.makeEditorSurface() as? EVEditorSurfaceController)
         reopenedSurface.loadViewIfNeeded()
         XCTAssertEqual(reopenedSurface.formattedText, surface.formattedText)
@@ -35,7 +35,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     func testMarkdownFormattingMenusUseEffectiveStateAndPreserveSourceOnUndo() throws {
         for (type, source) in [(EVDocument.markdownType, "**Words**")] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data(source.utf8), typeName: type)
+            try backend.readUntitled(source: Data(source.utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             try backend.acknowledgeNativeSave(backend.nativeSaveSnapshot(typeName: type))
@@ -68,7 +68,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             (EVDocument.codeType, "**first** line\nsecond line"),
         ] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data(source.utf8), typeName: type)
+            try backend.readUntitled(source: Data(source.utf8), typeName: type)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
@@ -95,7 +95,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     func testFontInvalidationRefreshesHitTestingWithoutReplayingText() throws {
         let backend = EVCoreDocumentBackend()
         let original = "WWW iii ffi café e\u{301} 👩🏽‍💻\nsecond line\n"
-        try backend.read(source: Data(original.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(original.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -124,7 +124,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     @MainActor
     func testMetricRecoveryInLargeDocumentKeepsVisibleExportBounded() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(String(repeating: "Local text and emoji 👩🏽‍💻\n", count: 20_000).utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(String(repeating: "Local text and emoji 👩🏽‍💻\n", count: 20_000).utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -141,7 +141,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     func testBlankCanvasHitTestsDocumentEdgesWithoutGuessingUnmaterializedContent() throws {
         for text in ["", "short document"] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data(text.utf8), typeName: EVDocument.plainTextType)
+            try backend.readUntitled(source: Data(text.utf8), typeName: EVDocument.plainTextType)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             let session = try XCTUnwrap(surface.session)
@@ -152,7 +152,7 @@ final class EVEditingReliabilityTests: XCTestCase {
             XCTAssertEqual(above.text_offset, 0)
         }
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(String(repeating: "more text\n", count: 20_000).utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(String(repeating: "more text\n", count: 20_000).utf8), typeName: EVDocument.plainTextType)
         let session = try EVCoreViewSession(document: backend, width: 300, height: 100)
         let layout = try session.layoutExport()
         XCTAssertThrowsError(try session.hitTest(CGPoint(x: 0, y: 1_000_000), in: layout.info))
@@ -164,7 +164,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-editing-view-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
+        try backend.read(source: Data(source.utf8), typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         XCTAssertEqual(surface.formattingToolbar.formattedView.state, .off)
@@ -191,7 +191,7 @@ final class EVEditingReliabilityTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-editing-view-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 420, height: 180)
@@ -238,7 +238,7 @@ final class EVEditingReliabilityTests: XCTestCase {
     func testNativePrintableKeysMoveAndEditVisualBlockUsingLayout() throws {
         let original = "WWW iii ffi\nsecond row\nthird row"
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(original.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(original.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)

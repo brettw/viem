@@ -151,9 +151,9 @@ struct EVPrelayoutBenchmark {
             EVConfigurationStore(directory: directory, legacyDefaults: nil, bundleResourceURL: resources))
         let opened = CFAbsoluteTimeGetCurrent()
         if let filename {
-            try backend.read(source: Data(source.utf8), typeName: typeName, filename: filename, allowAutomaticCode: true)
+            try backend.read(source: Data(source.utf8), typeName: typeName, origin: .file(path: filename, automaticCode: true))
         } else {
-            try backend.read(source: Data(source.utf8), typeName: typeName)
+            try backend.readUntitled(source: Data(source.utf8), typeName: typeName)
         }
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

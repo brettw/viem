@@ -11,7 +11,7 @@ import XCTest
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-word-completion-\(UUID())")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = EVTestFocusWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)

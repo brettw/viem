@@ -76,7 +76,7 @@ final class EVDocumentReplacementTests: XCTestCase {
         backend.persistenceStateDidChange = { _ in persistenceNotifications += 1 }
 
         try backend.read(source: Data("# New".utf8), typeName: EVDocument.markdownType,
-                         filename: "invalid\0filename.md", allowAutomaticCode: false)
+                         origin: .file(path: "invalid\0filename.md", automaticCode: false))
 
         XCTAssertNotEqual(backend.core, oldCore)
         XCTAssertNotEqual(backend.currentDocumentState.document_id, oldDocument)
@@ -131,7 +131,7 @@ final class EVDocumentReplacementTests: XCTestCase {
             try EVCoreViewSession(document: document, width: .infinity, height: 100, margins: margins)
         }
 
-        XCTAssertThrowsError(try backend.read(source: Data("replacement".utf8),
+        XCTAssertThrowsError(try backend.readUntitled(source: Data("replacement".utf8),
                                              typeName: EVDocument.plainTextType)) { error in
             guard case let EVCoreFrontendError.core(operation, _) = error else {
                 return XCTFail("Unexpected error: \(error)")
@@ -160,12 +160,12 @@ final class EVDocumentReplacementTests: XCTestCase {
 
     func testReplacementPreservesEachSourceViewsLineMode() throws {
         let (backend, surfaces) = try makeDocumentWithTwoViews()
-        try backend.read(source: Data("first\nsecond".utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
+        try backend.read(source: Data("first\nsecond".utf8), typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
         let sessions = try surfaces.map { try XCTUnwrap($0.session) }
         try sessions[0].setLineMode(.physicalSource)
         try sessions[1].setLineMode(.visual)
 
-        try backend.read(source: Data("first\nchanged".utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
+        try backend.read(source: Data("first\nchanged".utf8), typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
 
         let first = try XCTUnwrap(surfaces[0].session)
         let second = try XCTUnwrap(surfaces[1].session)
@@ -180,7 +180,7 @@ final class EVDocumentReplacementTests: XCTestCase {
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: Data("original".utf8), typeName: EVDocument.plainTextType,
-                         filename: "original.txt", allowAutomaticCode: false)
+                         origin: .file(path: "original.txt", automaticCode: false))
         let surfaces = try (0..<2).map { _ in
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()

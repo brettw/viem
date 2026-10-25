@@ -7,7 +7,7 @@ import XCTest
 @MainActor final class EVParagraphEditingKeyTests: XCTestCase {
     private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         view.loadViewIfNeeded()
         view.view.frame = NSRect(x: 0, y: 0, width: 600, height: 400)
@@ -27,7 +27,7 @@ import XCTest
         let saved = try backend.serializedSource(typeName: type)
         let text = try backend.formattedText()
         let reopened = EVCoreDocumentBackend()
-        try reopened.read(source: saved, typeName: type)
+        try reopened.readUntitled(source: saved, typeName: type)
         XCTAssertEqual(try reopened.formattedText(), text)
         XCTAssertNotNil(view.formattedPointInfo(atUTF8Offset: Int(view.viewPresentation.cursor_utf8_offset)))
         XCTAssertNil(view.commandOutput)

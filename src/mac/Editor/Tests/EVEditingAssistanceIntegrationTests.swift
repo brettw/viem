@@ -12,7 +12,7 @@ final class EVEditingAssistanceIntegrationTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     let preferences = EVEditingPreferences(configuration: EVConfigurationStore(directory: directory))
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(), typeName: EVDocument.markdownType)
+    try backend.readUntitled(source: Data(), typeName: EVDocument.markdownType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)
@@ -45,7 +45,7 @@ final class EVEditingAssistanceIntegrationTests: XCTestCase {
     let preferences = EVEditingPreferences(configuration: configuration)
     preferences.setSmartQuotes(false)
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(), typeName: EVDocument.plainTextType)
+    try backend.readUntitled(source: Data(), typeName: EVDocument.plainTextType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let session = try XCTUnwrap(surface.session)

@@ -28,7 +28,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     XCTAssertEqual(try Data(contentsOf: config.directory.appendingPathComponent("config.json")), initialConfig)
     try config.createTheme(named: "My writing")
     let reopened = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: config.directory))
-    try reopened.read(source: Data("Text".utf8), typeName: EVDocument.markdownType)
+    try reopened.readUntitled(source: Data("Text".utf8), typeName: EVDocument.markdownType)
     XCTAssertEqual(try reopened.styleSheetSnapshot().definition(for: .baseParagraph)?.properties[.characterSize]?.effective, .float(29))
   }
 
@@ -40,7 +40,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
     let reloaded = EVConfigurationStore(directory: config.directory)
     let backend = EVCoreDocumentBackend(configuration: reloaded)
     let source = Data("Text".utf8)
-    try backend.read(source: source, typeName: EVDocument.markdownType)
+    try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
     XCTAssertNotNil(backend.configurationWarning)
     XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)
     XCTAssertEqual(try Data(contentsOf: file), invalid)
@@ -49,7 +49,7 @@ final class EVDefaultStyleIntegrationTests: XCTestCase {
   func testDefaultImportRejectsAnAlreadyOpenedViewWithoutMutation() throws {
     let config = try configuration()
     let backend = EVCoreDocumentBackend(configuration: config)
-    try backend.read(source: Data("Text".utf8), typeName: EVDocument.plainTextType)
+    try backend.readUntitled(source: Data("Text".utf8), typeName: EVDocument.plainTextType)
     let surface = backend.makeEditorSurface()
     let bytes = Data(#"{"version":1}"#.utf8)
     let revision = try backend.documentState().document_revision

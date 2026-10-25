@@ -17,7 +17,7 @@ struct EVDocumentFormatIntegrationTests {
 
         for (source, formatted, encodingLabel) in fixtures {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: source, typeName: "public.plain-text")
+            try backend.readUntitled(source: source, typeName: "public.plain-text")
 
             #expect(try backend.formattedText() == formatted)
             #expect(try backend.serializedSource(typeName: "public.plain-text") == source)
@@ -32,7 +32,7 @@ struct EVDocumentFormatIntegrationTests {
         let source = Data("# café\r\nThis is **bold**.\r\n".utf8)
         let backend = EVCoreDocumentBackend()
 
-        try backend.read(source: source, typeName: "net.daringfireball.markdown")
+        try backend.readUntitled(source: source, typeName: "net.daringfireball.markdown")
 
         #expect(try backend.formattedText() == "café\nThis is bold.")
         #expect(try backend.serializedSource(typeName: "net.daringfireball.markdown") == source)
@@ -46,7 +46,7 @@ struct EVDocumentFormatIntegrationTests {
         let source = Data([0xEF, 0xBB, 0xBF, 0xFF])
         let backend = EVCoreDocumentBackend()
 
-        try backend.read(source: source, typeName: "public.plain-text")
+        try backend.readUntitled(source: source, typeName: "public.plain-text")
 
         #expect(backend.encodingLabel == "UTF-8")
         #expect(
@@ -77,7 +77,7 @@ struct EVDocumentFormatIntegrationTests {
 
         for (source, sourceType, requestedType, sourceFormat, requestedFormat) in fixtures {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: source, typeName: sourceType)
+            try backend.readUntitled(source: source, typeName: sourceType)
             let revision = backend.currentDocumentState.document_revision
             let expectedError = EVDocumentSerializationError.unsupportedSerializationFormat(
                 current: sourceFormat,

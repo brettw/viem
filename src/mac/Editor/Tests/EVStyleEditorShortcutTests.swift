@@ -11,7 +11,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("text".utf8), typeName: EVDocument.codeType, filename: "notes.md", allowAutomaticCode: false)
+        try backend.read(source: Data("text".utf8), typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)
@@ -45,7 +45,7 @@ final class EVStyleEditorShortcutTests: XCTestCase {
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         let source = Data("# Title `code` tail\n\nBody".utf8)
-        try backend.read(source: source, typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let controller = EVDocumentWindowController(document: EVDocument(), editorSurface: surface)

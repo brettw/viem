@@ -40,7 +40,7 @@ final class EVLinksTests: XCTestCase {
     func testHeadingLinkNavigatesCurrentDocumentWithoutChangingSourceAndRejectsStaleTarget() throws {
         let source = "[Jump](#second-heading)\n\n# First heading\n\n# Second heading\n\nbody"
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 800, height: 350)
@@ -73,7 +73,7 @@ final class EVLinksTests: XCTestCase {
     func testLineLinkUsesPhysicalSourceLineAndCenters() throws {
         let source = "[Jump](#L83)\n\n" + (1...80).map { "**line \($0)**" }.joined(separator: "\n\n")
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 800, height: 350)
@@ -107,7 +107,7 @@ final class EVLinksTests: XCTestCase {
 
     func testContextMenuOpensCurrentLinkAndRejectsStaleMenuWithoutMovingSelection() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("before [label](https://example.com/a?x=1&y=2) after".utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data("before [label](https://example.com/a?x=1&y=2) after".utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 800, height: 350)
@@ -139,7 +139,7 @@ final class EVLinksTests: XCTestCase {
 
     func testPointerMenuOnlyAddsLinkForPaintedAnchorContent() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("[label](https://example.com) tail".utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data("[label](https://example.com) tail".utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 300)

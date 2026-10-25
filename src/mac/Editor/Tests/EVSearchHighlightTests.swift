@@ -17,7 +17,7 @@ final class EVSearchHighlightTests: XCTestCase {
         try Data((settings + "\n").utf8).write(to: directory.appendingPathComponent("startup.viem"))
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.plainTextType)
         return (backend, try makeSurface(backend))
     }
 

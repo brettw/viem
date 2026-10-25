@@ -159,7 +159,7 @@ final class EVCaretHoverTests: XCTestCase {
     }
     private func makeSurface(_ source: String) throws -> (EVEditorSurfaceController, EVTestFocusWindow) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-hover-\(UUID().uuidString)")

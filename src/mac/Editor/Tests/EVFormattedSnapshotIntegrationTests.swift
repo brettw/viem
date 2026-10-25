@@ -7,7 +7,7 @@ import XCTest
 final class EVFormattedSnapshotIntegrationTests: XCTestCase {
     func testTextInputAndAccessibilityUseAggregateCountsCachedSlicesAndOnDemandRanges() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("A😀B".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("A😀B".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadView()
         let view = surface.editorView
@@ -34,7 +34,7 @@ final class EVFormattedSnapshotIntegrationTests: XCTestCase {
 
     func testBoundedSnapshotRangeMappingAndPointInfoStayIdentityBound() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(
+        try backend.readUntitled(
             source: Data("A😀e\u{301}\nB".utf8),
             typeName: "public.plain-text"
         )
@@ -82,7 +82,7 @@ final class EVFormattedSnapshotIntegrationTests: XCTestCase {
     func testMillionShortLineRefreshResizeScrollAndEditReadOnlyBoundedProjectionWindows() throws {
         let backend = EVCoreDocumentBackend()
         let lineCount = 1_000_000
-        try backend.read(
+        try backend.readUntitled(
             source: Data(String(repeating: "x\n", count: lineCount).utf8),
             typeName: "public.plain-text"
         )

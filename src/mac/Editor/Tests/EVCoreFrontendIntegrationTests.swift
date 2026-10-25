@@ -9,7 +9,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
     func testEditingLayoutRenderingAndNativeHistoryRoundTrip() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("world".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("world".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -49,7 +49,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
     func testPointerHitTestAndShiftExtensionRemainCoreOwned() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("alpha beta".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("alpha beta".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -73,7 +73,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
     func testIMECommitIsAtomicAndCancelLeavesSourceUntouched() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
@@ -103,7 +103,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
     func testRetainedEditorViewBecomesInertAfterSurfaceControllerRelease() async throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("transient window".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("transient window".utf8), typeName: "public.plain-text")
 
         var surface: EVEditorSurfaceController? = try XCTUnwrap(
             backend.makeEditorSurface() as? EVEditorSurfaceController
@@ -145,7 +145,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
     func testDocumentPaddingUsesCoreViewportAfterNativeScrollbarGutters() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("one line".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("one line".utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
 
@@ -166,7 +166,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     func testKeyboardViewportOriginIsReflectedByViewCoordinates() throws {
         let source = (0..<120).map { "line \($0)" }.joined(separator: "\n")
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(source.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 130)
@@ -191,7 +191,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     func testHorizontalViewportOriginRoundTripsThroughCore() throws {
         let backend = EVCoreDocumentBackend()
         let source = String(repeating: "proportional text ", count: 80)
-        try backend.read(source: Data(source.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(source.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 260, height: 160)
@@ -212,7 +212,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     func testIdentityBoundVerticalViewportUpdatesBoundedRegionalCoverage() throws {
         let backend = EVCoreDocumentBackend()
         let source = (0..<2_000).map { "regional line \($0)" }.joined(separator: "\n")
-        try backend.read(source: Data(source.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(source.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 120)
@@ -248,7 +248,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
     func testSharedDocumentChangeRefreshesEverySurfaceExactlyOnce() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("world".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("world".utf8), typeName: "public.plain-text")
         let first = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         first.loadViewIfNeeded()
@@ -274,7 +274,7 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
     @MainActor
     func testSharedCommitClearsInvalidatedSiblingMarkedText() throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data("base".utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data("base".utf8), typeName: "public.plain-text")
         let writer = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let composing = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         writer.loadViewIfNeeded()

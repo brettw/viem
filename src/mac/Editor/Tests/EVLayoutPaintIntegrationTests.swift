@@ -10,7 +10,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   @MainActor
   func testScriptDecorationsFollowTheirOwnBaselineInAMixedRow() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("<ins><del>A<sup>S</sup><sub>B</sub></del></ins>".utf8), typeName: EVDocument.markdownType)
+    try backend.readUntitled(source: Data("<ins><del>A<sup>S</sup><sub>B</sub></del></ins>".utf8), typeName: EVDocument.markdownType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 160)
@@ -168,7 +168,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   @MainActor
   func testCaretInkLookupRemainsViewportBoundedInLargeDocument() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(String(repeating: "fifty riffraff\n", count: 20_000).utf8),
+    try backend.readUntitled(source: Data(String(repeating: "fifty riffraff\n", count: 20_000).utf8),
                      typeName: EVDocument.plainTextType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
@@ -201,7 +201,7 @@ final class EVLayoutPaintIntegrationTests: XCTestCase {
   @MainActor
   private func makeSurface(text: String) throws -> EVEditorSurfaceController {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(text.utf8), typeName: "public.plain-text")
+    try backend.readUntitled(source: Data(text.utf8), typeName: "public.plain-text")
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     surface.view.frame = NSRect(x: 0, y: 0, width: 320, height: 160)

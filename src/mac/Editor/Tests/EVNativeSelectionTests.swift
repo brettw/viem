@@ -16,7 +16,7 @@ final class EVNativeSelectionTests: XCTestCase {
     private func fixture(_ text: String = "one two\nlast", configuration: EVConfigurationStore? = nil) throws
         -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession, NSWindow) {
         let backend = EVCoreDocumentBackend(configuration: configuration ?? self.configuration())
-        try backend.read(source: Data(text.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(text.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 240),
                               styleMask: [.titled], backing: .buffered, defer: false)

@@ -29,7 +29,7 @@ final class EVImageTests: XCTestCase {
         let backend = EVCoreDocumentBackend()
         let documentURL = directory.appendingPathComponent("document.md")
         try backend.read(source: Data("![](image.png)\n\n![](second.png)".utf8), typeName: EVDocument.markdownType,
-                         filename: documentURL.path, allowAutomaticCode: false)
+                         origin: .file(path: documentURL.path, automaticCode: false))
         let document = EVDocument(editorBackend: backend)
         document.fileURL = documentURL
         document.makeWindowControllers()
@@ -86,7 +86,7 @@ final class EVImageTests: XCTestCase {
 
     private func editor(_ source: String, type: String, configuration: EVConfigurationStore? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, NSWindow) {
         let backend = configuration.map { EVCoreDocumentBackend(configuration: $0) } ?? EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 650, height: 500)

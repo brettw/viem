@@ -244,7 +244,7 @@ final class EVPointerSelectionTests: XCTestCase {
     EVCoreDocumentBackend, EVEditorSurfaceController, NSWindow
   ) {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data(source.utf8), typeName: format ?? EVDocument.plainTextType)
+    try backend.readUntitled(source: Data(source.utf8), typeName: format ?? EVDocument.plainTextType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     let window = NSWindow(

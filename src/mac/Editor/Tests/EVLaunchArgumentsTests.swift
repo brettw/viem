@@ -87,7 +87,7 @@ final class EVLaunchArgumentsTests: XCTestCase {
         let source = "first\n  βeta\nlast"
         for (line, expected) in [(UInt64(2), UInt64(8)), (0, 0), (999, 14), (UInt64.max, 14)] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data(source.utf8), typeName: EVDocument.plainTextType)
+            try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.plainTextType)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             surface.goToLine(line)
@@ -102,7 +102,7 @@ final class EVLaunchArgumentsTests: XCTestCase {
     func testInitialLineCancelsExistingInputWithoutChangingSource() throws {
         for pendingInput in ["d", "2d", "v", "vg", "v:", "iTyped ", "3iTyped ", "RTyped ", "iLiteral "] {
             let backend = EVCoreDocumentBackend()
-            try backend.read(source: Data("first\nsecond\nthird".utf8), typeName: EVDocument.plainTextType)
+            try backend.readUntitled(source: Data("first\nsecond\nthird".utf8), typeName: EVDocument.plainTextType)
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
             surface.goToLine(1)

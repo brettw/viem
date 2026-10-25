@@ -16,7 +16,7 @@ final class EVBackgroundLayoutTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-prelayout-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
-        try backend.read(source: Data((override ?? source).utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data((override ?? source).utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)

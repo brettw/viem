@@ -107,7 +107,7 @@ final class EVCodeEditingStabilityTests: XCTestCase {
         let source = Data((0..<4_096).map { "fn item_\($0)() { let value = \($0); }\(comment)\n" }.joined().utf8)
         let backend = EVCoreDocumentBackend(configuration: configuration)
         try backend.read(source: source, typeName: EVDocument.codeType,
-                         filename: highlighting ? "editing.rs" : "editing.unknown-code-syntax", allowAutomaticCode: false)
+                         origin: .file(path: highlighting ? "editing.rs" : "editing.unknown-code-syntax", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 680, height: 240)

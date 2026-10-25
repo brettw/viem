@@ -72,7 +72,7 @@ final class EVCompactStyleControlsTests: XCTestCase {
             (EVStyleTestFixtures.character("Code"), .characterSize, nil),
         ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data("Text".utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data("Text".utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let editor = EVStyleEditorViewController()

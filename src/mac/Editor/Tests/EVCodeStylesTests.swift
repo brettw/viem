@@ -77,7 +77,7 @@ final class EVCodeStylesTests: XCTestCase {
         let configuration = configuration()
         let first = EVCoreDocumentBackend(configuration: configuration)
         let second = EVCoreDocumentBackend(configuration: configuration)
-        for backend in [first, second] { try backend.read(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
+        for backend in [first, second] { try backend.readUntitled(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
         let surfaces = try [first, second].map { backend in
             let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
             surface.loadViewIfNeeded()
@@ -115,7 +115,7 @@ final class EVCodeStylesTests: XCTestCase {
         let configuration = configuration()
         let session = try EVCodeStyleSession(configuration: configuration)
         let backends = [EVCoreDocumentBackend(configuration: configuration), EVCoreDocumentBackend(configuration: configuration)]
-        for backend in backends { try backend.read(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
+        for backend in backends { try backend.readUntitled(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
         try session.edit(key: .baseParagraph, expected: session.snapshot().identity, mutation: .setDeclaration(.characterSize, .float(18)))
         let initial = try session.snapshot()
         let before = try backends.map { try $0.recoverySnapshot() }
@@ -170,7 +170,7 @@ final class EVCodeStylesTests: XCTestCase {
         let session = try EVCodeStyleSession(configuration: configuration)
         let backends = [EVCoreDocumentBackend(configuration: configuration),
                         EVCoreDocumentBackend(configuration: configuration)]
-        for backend in backends { try backend.read(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
+        for backend in backends { try backend.readUntitled(source: Data("const x = 1;".utf8), typeName: EVDocument.codeType) }
         try session.edit(key: .baseParagraph, expected: session.snapshot().identity,
                          mutation: .setDeclaration(.characterSize, .float(18)))
         let revision = try session.snapshot().identity.styleSheetRevision

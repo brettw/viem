@@ -11,7 +11,7 @@ final class EVCodeStyleMenuTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
         try backend.read(source: Data("fn main() { let count = 42; }\n".utf8),
-                         typeName: EVDocument.codeType, filename: "main.rs", allowAutomaticCode: false)
+                         typeName: EVDocument.codeType, origin: .file(path: "main.rs", automaticCode: false))
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         return surface

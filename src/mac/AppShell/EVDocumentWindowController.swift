@@ -53,7 +53,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
     window: window!, configuration: configuration)
 
   /// Injectable I/O boundary for launch and argument-list opens.
-  var argumentDocumentOpener: ((URL, String?, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
+  var argumentDocumentOpener: ((URL, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
 
   /// Tests can complete a configured panel without starting AppKit's modal loop.
   var openFilePanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)?
@@ -538,7 +538,7 @@ extension EVDocumentWindowController {
       if index == 0 && hasPreparedFirstDocument {
         installed(original, nil)
       } else if list.urls.indices.contains(index) {
-        loadArgumentDocument(list.urls[index], fallback: nil, completion: installed)
+        loadArgumentDocument(list.urls[index], completion: installed)
       } else if index == 0 {
         installed(original, nil)
       } else {
@@ -561,10 +561,10 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func loadArgumentDocument(
-    _ url: URL, fallback: String?, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
+    _ url: URL, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
   ) {
-    if let argumentDocumentOpener { argumentDocumentOpener(url, fallback, completion) }
-    else { openPaneDocument(url, fallback: fallback, completion: completion) }
+    if let argumentDocumentOpener { argumentDocumentOpener(url, completion) }
+    else { openPaneDocument(url, completion: completion) }
   }
 
   fileprivate func canReplace(
@@ -605,7 +605,7 @@ extension EVDocumentWindowController {
           if let line = navigation.line { pane.editorSurface.goToLine(line == 0 ? UInt64.max : line) }
           completion(.success(nil)); return
         }
-        loadArgumentDocument(url, fallback: nil) { opened, error in
+        loadArgumentDocument(url) { opened, error in
           guard let opened else { completion(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return }
           guard self.canReplace(pane, document: document, expected: expected) else {
             self.closeIfUnrepresented(opened)
@@ -980,7 +980,7 @@ extension EVDocumentWindowController {
         return
       }
       let sourcePane = openingPane
-      openPaneDocument(destination, fallback: document.fileType) { opened, error in
+      openPaneDocument(destination) { opened, error in
         guard let opened else { completion(.failure(error ?? EVDocumentHostError.unsupportedRequest)); return }
         guard self.canReplace(sourcePane, document: document, expected: persistence) else {
           self.closeIfUnrepresented(opened)
@@ -1315,7 +1315,7 @@ extension EVDocumentWindowController {
       completion(.failure(EVDocumentHostError.invalidPath(path)))
       return
     }
-    openPaneDocument(url, fallback: source.fileType) { [weak self] opened, error in
+    openPaneDocument(url) { [weak self] opened, error in
       if let opened {
         guard let self else { completion(.failure(EVDocumentHostError.staleRequest)); return }
         do {
@@ -1334,22 +1334,14 @@ extension EVDocumentWindowController {
   }
 
   fileprivate func openPaneDocument(
-    _ url: URL, fallback: String?, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
+    _ url: URL, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
   ) {
     if !FileManager.default.fileExists(atPath: url.path),
       EVDocumentIdentity.existingDocument(at: url) == nil
     {
       do {
         let document = EVDocument()
-        let type = documentType(for: url, fallback: fallback)
-        try document.read(
-          from: Data(),
-          ofType: EVDocument.defaultOpeningType(for: url, nativeType: type,
-            markdownFormattedView: document.editorBackend.prefersMarkdownFormattedView)
-        )
-        document.fileURL = EVDocumentIdentity.canonicalURL(url)
-        document.fileType = type
-        document.configureRecovery(for: EVDocumentIdentity.canonicalURL(url))
+        try document.openMissingFile(at: url)
         NSDocumentController.shared.addDocument(document)
         completion(document, nil)
       } catch { completion(nil, error) }
@@ -1385,7 +1377,7 @@ extension EVDocumentWindowController {
       return
     }
     let state = document.editorBackend.persistenceState
-    openPaneDocument(url, fallback: document.fileType) { [weak self] opened, error in
+    openPaneDocument(url) { [weak self] opened, error in
       if let opened, let self {
         guard self.canReplace(pane, document: document, expected: state) else {
           self.closeIfUnrepresented(opened)

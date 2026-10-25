@@ -36,7 +36,7 @@ final class EVRecoveryCoreTests: XCTestCase {
   func testReloadPreservesEachViewPositionAndClampsAfterTruncation() throws {
     let backend = EVCoreDocumentBackend()
     let source = Data(String(repeating: "a fairly long line of content\n", count: 120).utf8)
-    try backend.read(source: source, typeName: EVDocument.plainTextType)
+    try backend.readUntitled(source: source, typeName: EVDocument.plainTextType)
     let first = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     first.loadViewIfNeeded(); second.loadViewIfNeeded()
@@ -53,7 +53,7 @@ final class EVRecoveryCoreTests: XCTestCase {
       return state
     }
     let before = try [captured(first), captured(second)]
-    try backend.read(source: source, typeName: EVDocument.plainTextType)
+    try backend.readUntitled(source: source, typeName: EVDocument.plainTextType)
     for (surface, expected) in zip([first, second], before) {
       let after = try captured(surface)
       XCTAssertEqual(after.cursor_line, expected.cursor_line)
@@ -61,7 +61,7 @@ final class EVRecoveryCoreTests: XCTestCase {
       XCTAssertEqual(after.viewport_line, expected.viewport_line)
       XCTAssertEqual(after.row_fraction, expected.row_fraction, accuracy: 0.001)
     }
-    try backend.read(source: Data(), typeName: EVDocument.plainTextType)
+    try backend.readUntitled(source: Data(), typeName: EVDocument.plainTextType)
     for surface in [first, second] {
       let after = try captured(surface)
       XCTAssertEqual(after.cursor_line, 0); XCTAssertEqual(after.cursor_column, 0)
@@ -71,7 +71,7 @@ final class EVRecoveryCoreTests: XCTestCase {
 
   func testReadOnlyIsBufferPolicyWithoutChangingSourceOrRevision() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("text".utf8), typeName: EVDocument.plainTextType)
+    try backend.readUntitled(source: Data("text".utf8), typeName: EVDocument.plainTextType)
     let before = try backend.recoverySnapshot()
     try backend.setReadOnly(true)
     XCTAssertTrue(backend.persistenceState.isReadOnly)
@@ -83,7 +83,7 @@ final class EVRecoveryCoreTests: XCTestCase {
 
   func testReadOnlyWritePublishesE45AndReturnsToNormalMode() throws {
     let backend = EVCoreDocumentBackend()
-    try backend.read(source: Data("original".utf8), typeName: EVDocument.plainTextType)
+    try backend.readUntitled(source: Data("original".utf8), typeName: EVDocument.plainTextType)
     try backend.setReadOnly(true)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()

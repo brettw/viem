@@ -261,7 +261,7 @@ final class EVPresentationCacheIntegrationTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(text.utf8), typeName: type)
+        try backend.readUntitled(source: Data(text.utf8), typeName: type)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 520, height: 260)

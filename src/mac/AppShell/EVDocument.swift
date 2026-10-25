@@ -219,61 +219,89 @@ public final class EVDocument: NSDocument {
         }
     }
 
+    /// What an original target held when it opened. A missing target opens
+    /// like an empty file; only its file baseline and recent-file entry differ.
+    private enum OriginalContents {
+        case file(Data)
+        case missing
+
+        var bytes: Data {
+            if case let .file(data) = self { data } else { Data() }
+        }
+        var isMissing: Bool {
+            if case .missing = self { true } else { false }
+        }
+    }
+
     public override nonisolated func read(from url: URL, ofType typeName: String) throws {
         let target = EVDocumentIdentity.canonicalURL(url)
-        let original = Result { try Data(contentsOf: target) }
-        try onMainActor {
-            let ownURLs = Set(self.retiredRecoveryStores.map(\.url) + (self.recoveryStore.map { [$0.url] } ?? []))
-            let candidates = EVRecoveryStore.candidates(for: target).filter { !ownURLs.contains($0.url) }
-            let decision: EVRecoveryOpenDecision? = candidates.isEmpty ? nil
-                : self.recoveryDecisionHandler?(candidates) ?? self.askRecoveryDecision(candidates, target: target)
-            if case .cancel = decision { throw CocoaError(.userCancelled) }
-            if decision == .editAndDeleteRecovery, !candidates.allSatisfy(\.canDelete) {
-                throw EVRecoveryError.cannotDeleteRecovery
-            }
-            let recovered: Bool
-            let retiring: [EVRecoveryCandidate]
-            switch decision {
-            case let .recover(index):
-                guard candidates.indices.contains(index), let snapshot = candidates[index].snapshot else { throw EVRecoveryError.noAvailableSlot }
-                try self.editorBackend.restoreRecovery(snapshot)
-                recovered = true
-                // Other snapshots may contain different unsaved work. Recovery
-                // retires only the selected stale file after our backup commits.
-                retiring = candidates[index].canDelete ? [candidates[index]] : []
-            case nil, .readOnly, .editAndDeleteRecovery:
-                var openingType = Self.defaultOpeningType(for: target, nativeType: typeName,
-                    markdownFormattedView: self.editorBackend.prefersMarkdownFormattedView)
-                if let currentURL = self.fileURL, EVDocumentIdentity.sameFile(currentURL, target) {
-                    // Reopening keeps the current Markdown Preview choice.
-                    switch self.editorBackend.sourceFormat {
-                    case .markdown: openingType = Self.markdownType
-                    case .code where openingType == Self.markdownType: openingType = Self.codeType
-                    default: break
-                    }
-                }
-                try self.editorBackend.read(source: original.get(), typeName: openingType,
-                    filename: target.path, allowAutomaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText)
-                recovered = false
-                retiring = decision == .editAndDeleteRecovery ? candidates : []
-            case .cancel: return
-            }
-            EVStartupPerformance.mark("document.backend.read")
-            try self.setReadOnly(decision == .readOnly)
-            self.wasRecovered = recovered
-            if let original = try? original.get() { self.recordFileBaseline(original, at: target) }
-            else { self.recordMissingFileBaseline(at: target) }
-            self.recoveryTimer?.cancel()
-            self.recoveryGeneration &+= 1
-            self.recoveryRequestedTarget = target
-            EVStartupPerformance.mark("document.baseline.recorded")
-            self.beginRecovery(for: target, retiring: retiring)
-            EVStartupPerformance.mark("document.recovery.claimed")
-            self.synchronizeEditedState(self.editorBackend.persistenceState)
-            if self.wasRecovered { self.updateChangeCount(.changeDone) }
-            self.recordRecentDocument(target)
-            EVStartupPerformance.mark("document.recent.recorded")
+        let original = Result { OriginalContents.file(try Data(contentsOf: target)) }
+        try onMainActor { try self.readOriginal(original, at: target, ofType: typeName) }
+    }
+
+    /// Opens a nonexistent target named, clean and empty without creating it.
+    /// No bytes carry a native type, so the path alone chooses the format and
+    /// language, exactly as for an empty file there.
+    func openMissingFile(at url: URL) throws {
+        let target = EVDocumentIdentity.canonicalURL(url)
+        try readOriginal(.success(.missing), at: target, ofType: Self.plainTextType)
+        fileURL = target
+        fileType = Self.typeName(for: editorBackend.sourceFormat)
+    }
+
+    private func readOriginal(_ original: Result<OriginalContents, Error>, at target: URL,
+                              ofType typeName: String) throws {
+        let ownURLs = Set(retiredRecoveryStores.map(\.url) + (recoveryStore.map { [$0.url] } ?? []))
+        let candidates = EVRecoveryStore.candidates(for: target).filter { !ownURLs.contains($0.url) }
+        let decision: EVRecoveryOpenDecision? = candidates.isEmpty ? nil
+            : recoveryDecisionHandler?(candidates) ?? askRecoveryDecision(candidates, target: target)
+        if case .cancel = decision { throw CocoaError(.userCancelled) }
+        if decision == .editAndDeleteRecovery, !candidates.allSatisfy(\.canDelete) {
+            throw EVRecoveryError.cannotDeleteRecovery
         }
+        let recovered: Bool
+        let retiring: [EVRecoveryCandidate]
+        switch decision {
+        case let .recover(index):
+            guard candidates.indices.contains(index), let snapshot = candidates[index].snapshot else { throw EVRecoveryError.noAvailableSlot }
+            try editorBackend.restoreRecovery(snapshot)
+            recovered = true
+            // Other snapshots may contain different unsaved work. Recovery
+            // retires only the selected stale file after our backup commits.
+            retiring = candidates[index].canDelete ? [candidates[index]] : []
+        case nil, .readOnly, .editAndDeleteRecovery:
+            var openingType = Self.defaultOpeningType(for: target, nativeType: typeName,
+                markdownFormattedView: editorBackend.prefersMarkdownFormattedView)
+            if let currentURL = fileURL, EVDocumentIdentity.sameFile(currentURL, target) {
+                // Reopening keeps the current Markdown Preview choice.
+                switch editorBackend.sourceFormat {
+                case .markdown: openingType = Self.markdownType
+                case .code where openingType == Self.markdownType: openingType = Self.codeType
+                default: break
+                }
+            }
+            try editorBackend.read(source: original.get().bytes, typeName: openingType,
+                origin: .file(path: target.path, automaticCode: Self.sourceFormat(forTypeName: openingType) == .plainText))
+            recovered = false
+            retiring = decision == .editAndDeleteRecovery ? candidates : []
+        case .cancel: return
+        }
+        EVStartupPerformance.mark("document.backend.read")
+        try setReadOnly(decision == .readOnly)
+        wasRecovered = recovered
+        if case let .success(.file(data)) = original { recordFileBaseline(data, at: target) }
+        else { recordMissingFileBaseline(at: target) }
+        recoveryTimer?.cancel()
+        recoveryGeneration &+= 1
+        recoveryRequestedTarget = target
+        EVStartupPerformance.mark("document.baseline.recorded")
+        beginRecovery(for: target, retiring: retiring)
+        EVStartupPerformance.mark("document.recovery.claimed")
+        synchronizeEditedState(editorBackend.persistenceState)
+        if wasRecovered { updateChangeCount(.changeDone) }
+        // A target that doesn't exist yet joins recent files when first written.
+        if (try? original.get())?.isMissing != true { recordRecentDocument(target) }
+        EVStartupPerformance.mark("document.recent.recorded")
     }
 
     public func setReadOnly(_ value: Bool) throws {
@@ -290,7 +318,7 @@ public final class EVDocument: NSDocument {
         default: openingType = Self.typeName(for: format)
         }
         try editorBackend.read(source: snapshot.data, typeName: openingType,
-            filename: EVDocumentIdentity.canonicalURL(url).path, allowAutomaticCode: false)
+            origin: .file(path: EVDocumentIdentity.canonicalURL(url).path, automaticCode: false))
         if readOnly { try setReadOnly(true) }
         wasRecovered = false
         fileModificationDate = snapshot.modificationDate
@@ -567,7 +595,7 @@ public final class EVDocument: NSDocument {
 
     public override nonisolated func read(from data: Data, ofType typeName: String) throws {
         try onMainActor {
-            try self.editorBackend.read(source: data, typeName: Self.readableType(for: typeName))
+            try self.editorBackend.readUntitled(source: data, typeName: Self.readableType(for: typeName))
             self.fileBaseline = nil
             self.fileBaselineURL = nil
             self.fileBaselineGeneration &+= 1

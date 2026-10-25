@@ -15,7 +15,7 @@ final class EVListDecorationIntegrationTests: XCTestCase {
             (EVStyleTestFixtures.block("NumberedList1"), .characterSize, .float(14)),
         ])
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.editorView.frame = NSRect(x: 0, y: 0, width: 500, height: 240)

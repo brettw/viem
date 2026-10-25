@@ -42,7 +42,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         try saveMarkdownSize(21, configuration: configuration)
         let defaults = try Data(contentsOf: settings)
         let source = try markdownDemo()
-        try backend.read(source: source, typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
         XCTAssertNil(backend.configurationWarning)
         XCTAssertNil(surface.commandOutput)
         XCTAssertNotNil(surface.session)
@@ -104,7 +104,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
             "Paragraph \(index): " + String(repeating: "one two three four five ", count: 45) + "\n\n"
         }.joined().utf8)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: source, typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
 
         // Compare native surface preparation with one direct attachment at its
         // final size and margins. The surface must not add another shaping pass.
@@ -267,7 +267,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         let configuration = EVConfigurationStore(directory: directory)
         let preferences = EVViewPreferences(configuration: configuration)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(Array(repeating: "HHHHMMMM", count: 100).joined(separator: "\n").utf8),
+        try backend.readUntitled(source: Data(Array(repeating: "HHHHMMMM", count: 100).joined(separator: "\n").utf8),
             typeName: typeName ?? EVDocument.plainTextType)
         let surface = EVEditorSurfaceController(backend: backend, viewPreferences: preferences)
         surface.view = EVEditorView(surface: surface, scrollbarStyleProvider: { style })
@@ -287,7 +287,7 @@ final class EVViewMarginIntegrationTests: XCTestCase {
         var surfaces: [EVEditorSurfaceController] = []
         for _ in 0..<2 {
             let backend = EVCoreDocumentBackend(configuration: configuration)
-            try backend.read(source: Data("A paragraph with words to wrap in this view.".utf8), typeName: EVDocument.markdownType)
+            try backend.readUntitled(source: Data("A paragraph with words to wrap in this view.".utf8), typeName: EVDocument.markdownType)
             let surface = EVEditorSurfaceController(backend: backend, viewPreferences: preferences)
             surface.loadViewIfNeeded()
             surface.view.frame = NSRect(x: 0, y: 0, width: 500, height: 300)

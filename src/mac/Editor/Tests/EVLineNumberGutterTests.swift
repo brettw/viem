@@ -25,7 +25,7 @@ final class EVLineNumberGutterTests: XCTestCase {
             (EVStyleTestFixtures.block("Builtin line number"), .blockBorderRightWidth, .float(1)),
         ] + declarations)
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(source.utf8), typeName: format == .plainText ? EVDocument.plainTextType : EVDocument.markdownType)
+        try backend.readUntitled(source: Data(source.utf8), typeName: format == .plainText ? EVDocument.plainTextType : EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 330, height: 220)

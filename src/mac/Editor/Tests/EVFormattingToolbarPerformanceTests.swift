@@ -10,7 +10,7 @@ final class EVFormattingToolbarPerformanceTests: XCTestCase {
     let markdown = "# Heading\n\n- First item\n- Second item\n\n" + String(repeating: "A paragraph with **bold** and `code` text.\n\n", count: 4000)
     for (format, source) in [(EVDocument.markdownType, markdown)] {
       let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: format)
+      try backend.readUntitled(source: Data(source.utf8), typeName: format)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       surface.loadViewIfNeeded()
       surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 350)

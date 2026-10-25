@@ -23,7 +23,7 @@ final class EVDocumentCloseReviewTests: XCTestCase {
         var bytes = Data("Unsaved words".utf8)
         var acknowledgements = 0
         func makeEditorSurface() -> any EVEditorSurface { Surface() }
-        func read(source: Data, typeName: String) throws { bytes = source }
+        func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws { bytes = source }
         func serializedSource(typeName: String) throws -> Data { bytes }
         func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot {
             EVDocumentSaveSnapshot(data: bytes, documentID: 1, documentRevision: 1)

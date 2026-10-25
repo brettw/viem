@@ -9,7 +9,7 @@ import XCTest
 @MainActor final class EVCharacterStyleMenuTests: XCTestCase {
     private func surface(_ source: String, type: String, configuration: EVConfigurationStore? = nil) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let backend = EVCoreDocumentBackend(configuration: configuration ?? EVConfigurationStore())
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         view.loadViewIfNeeded()
         view.view.frame = NSRect(x: 0, y: 0, width: 520, height: 240)
@@ -45,7 +45,7 @@ import XCTest
 
     private func assertReopenedStyle(_ saved: Data, type: String, range: NSRange, id: String?) throws {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: saved, typeName: type)
+        try backend.readUntitled(source: saved, typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         view.loadViewIfNeeded()
         let session = try XCTUnwrap(view.session)

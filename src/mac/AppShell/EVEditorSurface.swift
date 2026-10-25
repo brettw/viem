@@ -457,6 +457,14 @@ extension EVEditorSurface {
   public func handleStatusMessageKey(_ event: NSEvent) {}
 }
 
+/// Where read source came from. A file's path chooses its Code language at
+/// creation; renaming later redetects the language but never the format.
+public enum EVSourceOrigin: Equatable, Sendable {
+  case untitled
+  /// `automaticCode` lets a recognized filename or marker open Text as Code.
+  case file(path: String, automaticCode: Bool)
+}
+
 /// One source-backed document/buffer. Multiple surfaces may share it.
 @MainActor
 public protocol EVDocumentBackend: AnyObject {
@@ -467,8 +475,7 @@ public protocol EVDocumentBackend: AnyObject {
   var prefersMarkdownFormattedView: Bool { get }
 
   func makeEditorSurface() -> any EVEditorSurface
-  func read(source: Data, typeName: String) throws
-  func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws
+  func read(source: Data, typeName: String, origin: EVSourceOrigin) throws
   func updateFilename(_ filename: String)
   func serializedSource(typeName: String) throws -> Data
   func nativeSaveSnapshot(typeName: String) throws -> EVDocumentSaveSnapshot
@@ -482,8 +489,8 @@ public protocol EVDocumentBackend: AnyObject {
 extension EVDocumentBackend {
   public var prefersMarkdownFormattedView: Bool { true }
   public func updateFilename(_ filename: String) {}
-  public func read(source: Data, typeName: String, filename: String?, allowAutomaticCode: Bool) throws {
-    try read(source: source, typeName: typeName)
+  public func readUntitled(source: Data, typeName: String) throws {
+    try read(source: source, typeName: typeName, origin: .untitled)
   }
   public func nativeSaveSnapshot(typeName: String, sourceByteRange: Range<UInt64>) throws -> EVDocumentSaveSnapshot { throw EVDocumentHostError.preparedWriteUnavailable }
   public func recoverySnapshot() throws -> EVRecoverySnapshot {
@@ -524,7 +531,7 @@ private final class EVUnavailableDocumentBackend: EVDocumentBackend {
     EVUnavailableEditorSurface()
   }
 
-  func read(source: Data, typeName: String) throws {
+  func read(source: Data, typeName: String, origin _: EVSourceOrigin) throws {
     guard source.isEmpty else {
       throw EVAppShellError.frontendNotInstalled
     }

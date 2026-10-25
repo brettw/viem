@@ -92,7 +92,7 @@ final class EVCodeScrollingTests: XCTestCase {
         let backend = EVCoreDocumentBackend(configuration:
             EVConfigurationStore(directory: directory, legacyDefaults: nil, bundleResourceURL: resources))
         try backend.read(source: source, typeName: EVDocument.plainTextType,
-                         filename: filename, allowAutomaticCode: true)
+                         origin: .file(path: filename, automaticCode: true))
         XCTAssertEqual(backend.sourceFormat, .code)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

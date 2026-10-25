@@ -60,7 +60,7 @@ final class EVStyleEditorTrackingTests: XCTestCase {
 
     private func markdownSurface() throws -> EVEditorSurfaceController {
         let backend = EVCoreDocumentBackend(configuration: configuration())
-        try backend.read(source: Data("# Title `code` tail\n\nBody".utf8), typeName: EVDocument.markdownType)
+        try backend.readUntitled(source: Data("# Title `code` tail\n\nBody".utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         prepare(surface)
         XCTAssertEqual(try backend.formattedText(), "Title code tail\nBody")

@@ -7,7 +7,7 @@ import XCTest
 @MainActor final class EVDeleteSelectionTests: XCTestCase {
     private func surface(_ source: String, type: String) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(source.utf8), typeName: type)
+        try backend.readUntitled(source: Data(source.utf8), typeName: type)
         let view = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         view.loadViewIfNeeded()
         view.view.frame = NSRect(x: 0, y: 0, width: 600, height: 240)

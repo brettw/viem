@@ -21,7 +21,7 @@ final class EVPendingTypingStyleTests: XCTestCase {
       for (characters, key, code, modifiers, command) in shortcuts {
         let source = Data("word".utf8)
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: source, typeName: type)
+        try backend.readUntitled(source: source, typeName: type)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         let window = EVTestFocusWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                               styleMask: [.titled], backing: .buffered, defer: false)
@@ -66,7 +66,7 @@ final class EVPendingTypingStyleTests: XCTestCase {
     for pending in ["operator", "literal", "prompt", "composition"] {
       let backend = EVCoreDocumentBackend()
       let source = Data("word".utf8)
-      try backend.read(source: source, typeName: EVDocument.markdownType)
+      try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                             styleMask: [.titled], backing: .buffered, defer: false)
@@ -117,7 +117,7 @@ final class EVPendingTypingStyleTests: XCTestCase {
       (EVDocument.codeType, "word", false, .characterCode),
     ] {
       let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: type)
+      try backend.readUntitled(source: Data(source.utf8), typeName: type)
       try backend.setReadOnly(readOnly)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
@@ -144,7 +144,7 @@ final class EVPendingTypingStyleTests: XCTestCase {
   func testFormattingMenuCannotFallThroughANativeFieldInAnotherWindow() throws {
     let backend = EVCoreDocumentBackend()
     let source = Data("word".utf8)
-    try backend.read(source: source, typeName: EVDocument.markdownType)
+    try backend.readUntitled(source: source, typeName: EVDocument.markdownType)
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     let documentWindow = EVTestFocusWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                                          styleMask: [.titled], backing: .buffered, defer: false)
@@ -178,7 +178,7 @@ final class EVPendingTypingStyleTests: XCTestCase {
       (EVDocument.markdownType, "word"),
     ] {
       let backend = EVCoreDocumentBackend()
-      try backend.read(source: Data(source.utf8), typeName: type)
+      try backend.readUntitled(source: Data(source.utf8), typeName: type)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       surface.loadViewIfNeeded()
       let session = try XCTUnwrap(surface.session)

@@ -18,7 +18,7 @@ final class EVStartupCommandTests: XCTestCase {
     private func surface(_ configuration: EVConfigurationStore, text: String = "alpha beta\nnext") throws
         -> (EVCoreDocumentBackend, EVEditorSurfaceController) {
         let backend = EVCoreDocumentBackend(configuration: configuration)
-        try backend.read(source: Data(text.utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data(text.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 600, height: 300)

@@ -11,7 +11,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
     try backend.read(source: Data(source.utf8), typeName: type ?? EVDocument.markdownType,
-      filename: "notes.md", allowAutomaticCode: false)
+      origin: .file(path: "notes.md", automaticCode: false))
     let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
     surface.loadViewIfNeeded()
     surface.view.frame = NSRect(x: 0, y: 0, width: 900, height: 300)

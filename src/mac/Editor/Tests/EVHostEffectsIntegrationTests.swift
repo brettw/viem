@@ -425,7 +425,7 @@ final class EVHostEffectsIntegrationTests: XCTestCase {
         _ text: String
     ) throws -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
         let backend = EVCoreDocumentBackend()
-        try backend.read(source: Data(text.utf8), typeName: "public.plain-text")
+        try backend.readUntitled(source: Data(text.utf8), typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         surface.view.frame = NSRect(x: 0, y: 0, width: 520, height: 260)

@@ -10,7 +10,7 @@ final class EVWhitespaceViewportTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-whitespace-viewport-\(UUID().uuidString)")
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
         let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory))
-        try backend.read(source: Data((String(repeating: "word ", count: 100) + " ").utf8), typeName: EVDocument.plainTextType)
+        try backend.readUntitled(source: Data((String(repeating: "word ", count: 100) + " ").utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()
         let session = try XCTUnwrap(surface.session)
