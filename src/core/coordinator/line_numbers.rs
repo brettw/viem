@@ -493,8 +493,8 @@ mod tests {
     }
 
     #[test]
-    fn million_line_gutter_queries_reuse_local_layout_without_decoding_or_shaping() {
-        let mut core = Core::new(Document::new("small row\n".repeat(1_000_000)));
+    fn large_document_gutter_queries_reuse_local_layout_without_decoding_or_shaping() {
+        let mut core = Core::new(Document::new("small row\n".repeat(100_000)));
         let view = core.add_view(MockTextMeasurementProvider::new(), 180., 100.);
         core.set_number(view, true).unwrap();
         let requests = core.views[&view].engine.provider().request_calls();

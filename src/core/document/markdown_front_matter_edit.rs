@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn checking_unclosed_metadata_reads_only_changed_rows() {
-        let source = format!("---\n\n{}", "Unrelated prose\n\n".repeat(100_000));
+        let source = format!("---\n\n{}", "Unrelated prose\n\n".repeat(5_000));
         let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();
         let at = source.len() - "prose\n\n".len();
         let mut patches = vec![SourcePatch::primary(at..at + 5, b"words".to_vec())];

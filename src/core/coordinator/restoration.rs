@@ -149,14 +149,14 @@ mod tests {
     }
 
     #[test]
-    fn distant_replacement_recovery_keeps_million_line_documents_unflattened() {
-        let source = "line\n".repeat(1_000_000);
+    fn distant_replacement_recovery_keeps_large_documents_unflattened() {
+        let source = "line\n".repeat(100_000);
         let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::PlainText).unwrap();
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 100.0);
         let state = ViewRestoration {
-            cursor: (900_000, 2), cursor_affinity: BoundaryAffinity::Downstream,
-            viewport: (800_000, 0), row_fraction: 0.25, left: 0.0,
+            cursor: (90_000, 2), cursor_affinity: BoundaryAffinity::Downstream,
+            viewport: (80_000, 0), row_fraction: 0.25, left: 0.0,
         };
         restore(&mut core, view, state);
         let captured = core.capture_view_restoration(view).unwrap();

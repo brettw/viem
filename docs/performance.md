@@ -170,8 +170,10 @@ profiles live beside the [Vim](../src/core/document/syntax/vim/PROFILE.md) and
 [Tree-sitter](../src/core/document/syntax/treesitter/PROFILE.md) implementations.
 
 The complete Code pipeline also has a blocked-worker/bounded-interaction gate
-in the normal Rust suite, including million-line and 100 MiB mixed-encoding
-fixtures. To collect its timings, run it alone in release mode:
+in the normal Rust suite, with 100,000-line and 256 KiB mixed-encoding
+fixtures; its assertions do not depend on size. Setting the report variable
+switches to million-line and 100 MiB mixed-encoding fixtures and collects
+timings; run it alone in release mode:
 
 ```sh
 VIEM_CODE_PIPELINE_REPORT=target/code-pipeline-benchmark.json cargo test --release --offline --lib pinned_code_pipeline_performance -- --nocapture --test-threads=1

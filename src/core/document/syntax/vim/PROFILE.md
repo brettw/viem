@@ -235,8 +235,10 @@ service's ownership and memory policy.
 ## Reproducible performance diagnostic
 
 The work, memory, fresh-result and cached-repaint assertions run in the normal
-Rust suite at every fixture size. To also collect timing and machine metadata,
-run the gate alone in release mode:
+Rust suite at the 10,000- and 100,000-line and 4 MiB hostile fixtures, which
+already exceed every local ceiling. To also run the million-line and 100 MiB
+fixtures and collect timing and machine metadata, run the gate alone in release
+mode:
 
     VIEM_VIM_BENCHMARK_REPORT=target/vim-benchmark.json cargo test --release --offline --lib pinned_vim_provider_performance -- --nocapture --test-threads=1
 

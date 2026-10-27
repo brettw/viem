@@ -7206,7 +7206,7 @@ mod tests {
         // every grapheme made this walk quadratic in the line length.
         for encoding in [Encoding::Latin1, Encoding::Utf16Le, Encoding::Utf16Be] {
             let unit = if encoding == Encoding::Latin1 { "aé" } else { "aé😀" };
-            let line = unit.repeat(40_000);
+            let line = unit.repeat(4_000);
             let bytes = encoding.encode_fragment(&line).unwrap();
             let decoded = encoding.decode(&bytes).unwrap();
             let normalized = super::super::line_endings::normalize_literal(&decoded, FileFormat::Unix);

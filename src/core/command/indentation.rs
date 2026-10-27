@@ -987,15 +987,15 @@ mod tests {
     }
 
     #[test]
-    fn million_lines_indent_and_comment_enter_do_not_flatten() {
-        let mut bytes = b"  // prose\n".repeat(1_000_000);
+    fn large_document_indent_and_comment_enter_do_not_flatten() {
+        let mut bytes = b"  // prose\n".repeat(100_000);
         bytes.extend_from_slice(b"tail");
         let mut d = Document::from_bytes(bytes, Encoding::Utf8, Format::Code).unwrap();
         d.replace(0..0, " ").unwrap();
         let mut c = CommandInterpreter::new();
         c.reflow_options.format_options = Some("qjro".into());
         c.set_reflow_language(Some("cpp".into()));
-        c.set_cursor(&d, 5_500_006);
+        c.set_cursor(&d, 550_006);
         for event in [
             InputEvent::key('A'),
             InputEvent::Key(Key::Enter),

@@ -17992,7 +17992,7 @@ mod tests {
     #[test]
     fn insert_delete_motions_keep_large_literal_snapshots_unmaterialized() {
         for format in [Format::PlainText, Format::Code] {
-            let prefix = "unchanged line\n".repeat(20_000);
+            let prefix = "unchanged line\n".repeat(2_000);
             let mut document = Document::from_bytes(format!("{prefix}word !!  ").into_bytes(), Encoding::Utf8, format).unwrap();
             let mut commands = CommandInterpreter::new();
             assert!(commands.set_cursor(&document, prefix.len()));

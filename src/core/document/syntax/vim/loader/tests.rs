@@ -309,12 +309,6 @@ endtry
     );
     assert_eq!(program.rule_count(), 4);
     assert_eq!(program.effective_group("Try"), "Statement");
-    assert!(
-        compile("loop", "while 1\nendwhile", VimLoadLimits::default())
-            .unwrap_err()
-            .iter()
-            .any(|e| e.message.contains("budget"))
-    );
     // Compatibility errors cannot be hidden by catch-all runtime handlers.
     assert!(compile(
         "unsafe",

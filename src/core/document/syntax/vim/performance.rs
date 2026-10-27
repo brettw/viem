@@ -1,5 +1,7 @@
 //! Bounded regression gate with optional timing output. Work ceilings apply
 //! unchanged in ordinary and release tests, including provisional fallback.
+//! Ordinary runs stop at sizes that already exceed every local ceiling; the
+//! timing report adds the million-line and 100 MiB fixtures.
 use super::*;
 use crate::document::FormattedTextTree;
 use serde_json::{json, Value};
@@ -122,13 +124,14 @@ fn pinned_vim_provider_performance() {
         retained_bytes: RETAINED,
         ..Default::default()
     };
+    let report = std::env::var_os("VIEM_VIM_BENCHMARK_REPORT");
     let mut rows = Vec::new();
     for (name, rules, unit, marker) in fixtures {
         let compile_start = Instant::now();
         let program =
             VimProgram::compile(&format!("{name}.vim"), rules, VimLoadLimits::default()).unwrap();
         let compile_ms = compile_start.elapsed().as_secs_f64() * 1000.0;
-        for lines in [10_000, 100_000, 1_000_000] {
+        for &lines in if report.is_some() { &[10_000, 100_000, 1_000_000][..] } else { &[10_000, 100_000] } {
             let units = lines / 4;
             let mut current = input(
                 FormattedTextTree::try_from_text(unit.repeat(units)).unwrap(),
@@ -307,7 +310,7 @@ fn pinned_vim_provider_performance() {
         }
     }
     // A hostile failed pattern demonstrates measured finite fallback and its
-    // memoized repaint. The same budget applies at both large input sizes.
+    // memoized repaint. The same budget applies at every input size.
     let hostile = VimProgram::compile(
         "hostile.vim",
         "syn match Expensive /a\\+$/",
@@ -316,7 +319,7 @@ fn pinned_vim_provider_performance() {
     .unwrap();
     let mut fallback_times = Vec::new();
     let mut fallback_slices = Vec::new();
-    for bytes in [4 * 1024 * 1024, 100 * 1024 * 1024] {
+    for &bytes in if report.is_some() { &[4 * 1024 * 1024, 100 * 1024 * 1024][..] } else { &[4 * 1024 * 1024] } {
         let current = input(
             FormattedTextTree::try_from_text("a".repeat(bytes) + "!").unwrap(),
             1,
@@ -346,7 +349,7 @@ fn pinned_vim_provider_performance() {
             assert_eq!(cached.stats.cache_hits, 1);
         }
     }
-    let Ok(path) = std::env::var("VIEM_VIM_BENCHMARK_REPORT") else {
+    let Some(path) = report else {
         return;
     };
     let report = json!({"fixture_revision":1,"runtime_fixture_version":"MacVim 9.1.1887; unmodified conf.vim and dosini.vim",

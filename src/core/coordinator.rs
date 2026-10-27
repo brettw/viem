@@ -11126,7 +11126,8 @@ mod tests {
 
     #[test]
     fn giant_word_composition_streams_geometry_and_invalidates_overlay_caches() {
-        let word_bytes = 2_000_000;
+        // Several long-line slices, and far more clusters than the sparse bound.
+        let word_bytes = 4 * MAX_LONG_LINE_LAYOUT_SLICE_BYTES;
         let source = format!(
             "{}**bold** tail\n\nfollowing",
             "a".repeat(word_bytes)

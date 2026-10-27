@@ -1196,10 +1196,11 @@ mod tests {
         use crate::document::{Encoding, Format};
         use crate::{Core, CoreEvent};
 
-        let bytes = 2 * 1024 * 1024;
+        // Above the full-prelayout size and the long-line slice size.
+        let bytes = 256 * 1024;
         let ordinary = "   ordinary words on a logical line with enough text to wrap\n";
         for (text, wrap, focus, sparse) in [
-            (ordinary.repeat(40_000), true, ordinary.len() * 20_000 + 15, false),
+            (ordinary.repeat(4_000), true, ordinary.len() * 2_000 + 15, false),
             ("a".repeat(bytes), true, bytes / 2, true),
             (format!("{}tail", " ".repeat(bytes)), false, 12, true),
         ] {

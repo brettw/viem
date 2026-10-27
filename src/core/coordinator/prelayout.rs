@@ -246,7 +246,7 @@ mod tests {
     use crate::document::Format;
 
     fn fixture() -> (Core<MockTextMeasurementProvider>, ViewId) {
-        let text = (0..10_000).map(|i| format!("Paragraph {i}: **office** and words that wrap into visual rows.\n\n")).collect::<String>();
+        let text = (0..5_000).map(|i| format!("Paragraph {i}: **office** and words that wrap into visual rows.\n\n")).collect::<String>();
         let document = Document::from_bytes_detect_encoding(text.into_bytes(), Format::Markdown).unwrap();
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 160.0);
@@ -600,7 +600,8 @@ mod tests {
     #[test]
     fn first_large_prose_view_shapes_only_the_exact_initial_screen() {
         let paragraph = "many words in a long paragraph that wraps across the viewport. ".repeat(20);
-        let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(10_000).into_bytes(), Format::Markdown).unwrap();
+        let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(200).into_bytes(), Format::Markdown).unwrap();
+        assert!(document.source_byte_len() > FULL_PRELAYOUT_SOURCE_BYTES);
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 400.0);
         let first = core.layout(view).unwrap().snapshot().unwrap();

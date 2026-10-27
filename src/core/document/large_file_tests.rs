@@ -16,7 +16,7 @@ fn assert_local(work: ProjectionWorkStatistics, max_bytes: usize) {
 
 #[test]
 fn late_wysiwyg_continuation_moves_and_sorts_are_local_and_preserve_owners() {
-    let prefix = "untouched **paragraph**\n\n".repeat(20_000);
+    let prefix = "untouched **paragraph**\n\n".repeat(4_000);
     let at = prefix.len();
     for moving in [false, true] {
         let original = format!("{prefix}**zebra**\napple\nretained\nlast\n\ntail");

@@ -8140,7 +8140,7 @@ mod scratch_history_tests {
 
     #[test]
     fn scratch_planning_shares_live_trees_without_reaccounting_the_document() {
-        let source = "plain **bold** tail\n\n".repeat(10_000);
+        let source = "plain **bold** tail\n\n".repeat(1_000);
         let document = Document::from_bytes(
             source.as_bytes().to_vec(),
             super::super::Encoding::Utf8,

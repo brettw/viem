@@ -21,7 +21,7 @@ fn event(commands: &mut CommandInterpreter, document: &mut Document, event: Inpu
 
 #[test]
 fn ordinary_code_edits_do_not_flatten_at_start_middle_or_end() {
-    let bytes = b"first word\n  second word\nlast word\n".repeat(10_000);
+    let bytes = b"first word\n  second word\nlast word\n".repeat(1_000);
     for at in [0, bytes.len() / 2, bytes.len() - 3] {
         let mut document =
             Document::from_bytes(bytes.clone(), Encoding::Utf8, Format::Code).unwrap();
@@ -136,10 +136,10 @@ fn ex_join_and_delete_keep_code_snapshots_unflattened() {
 #[test]
 fn sentence_and_pair_commands_counts_registers_and_repeat_keep_snapshots_unflattened() {
     for command in [")", "2)", "(", "%", "y%", "d%", "d)", "2d)", "c%"] {
-        let prefix = "unrelated line\n".repeat(10_000);
+        let prefix = "unrelated line\n".repeat(1_000);
         let text = format!(
             "{prefix}(one [two]). Next. Last.\n{}",
-            "unrelated line\n".repeat(10_000)
+            "unrelated line\n".repeat(1_000)
         );
         let mut document =
             Document::from_bytes(text.into_bytes(), Encoding::Utf8, Format::Code).unwrap();
@@ -176,11 +176,11 @@ fn sentence_and_pair_commands_counts_registers_and_repeat_keep_snapshots_unflatt
 #[test]
 fn local_case_commands_keep_snapshots_unflattened_and_restore_exact_source() {
     for command in ["~", "3~", "gUl", "gU)", "guu", "g~~"] {
-        let prefix = "unrelated line\n".repeat(10_000);
+        let prefix = "unrelated line\n".repeat(1_000);
         let mut document = Document::from_bytes(
             format!(
                 "{prefix}aßİe\u{301}. Next sentence.\n{}",
-                "unrelated line\n".repeat(10_000)
+                "unrelated line\n".repeat(1_000)
             )
             .into_bytes(),
             Encoding::Utf8,

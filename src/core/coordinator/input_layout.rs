@@ -803,7 +803,7 @@ mod tests {
     #[test]
     fn wrapped_page_refill_estimates_hard_lines_from_visual_row_density() {
         let paragraph = "Words in a paragraph that occupies several wrapped visual rows. ".repeat(12);
-        let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(10_000).into_bytes(), Format::Markdown).unwrap();
+        let document = Document::from_bytes_detect_encoding(format!("{paragraph}\n\n").repeat(400).into_bytes(), Format::Markdown).unwrap();
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 300.0, 1_000.0);
         let mut checked = false;

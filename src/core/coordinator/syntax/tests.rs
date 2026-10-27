@@ -266,7 +266,7 @@ fn event(core: &mut Core<MockTextMeasurementProvider>, view: ViewId, key: Key) {
     );
 }
 
-fn exercise(bytes: Vec<u8>, encoding: Encoding, syntax: bool) -> serde_json::Value {
+fn exercise(bytes: Vec<u8>, encoding: Encoding, syntax: bool, iterations: usize) -> serde_json::Value {
     let size = bytes.len();
     let began = Instant::now();
     let mut document =
@@ -300,7 +300,7 @@ fn exercise(bytes: Vec<u8>, encoding: Encoding, syntax: bool) -> serde_json::Val
     let first_display = began.elapsed().as_secs_f64() * 1000.;
     let mut inputs = Vec::new();
     let mut scrolls = Vec::new();
-    for iteration in 0..20 {
+    for iteration in 0..iterations {
         let start = Instant::now();
         event(&mut core, first, Key::Char('i'));
         let typed = core
@@ -352,18 +352,6 @@ fn percentiles(mut values: Vec<f64>) -> serde_json::Value {
     values.sort_by(f64::total_cmp);
     let at = |p: usize| values[(values.len() - 1) * p / 100];
     serde_json::json!({"samples":values.len(),"p50_ms":at(50),"p95_ms":at(95),"p99_ms":at(99),"maximum_ms":values.last()})
-}
-
-#[test]
-fn blocked_providers_do_not_block_literal_display_input_or_two_view_scroll() {
-    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
-    let suspended = Suspension::all_workers();
-    exercise(
-        b"let x = 1;\r\nlet y = 2;\n".repeat(5000),
-        Encoding::Utf8,
-        true,
-    );
-    assert_eq!(suspended.calls.load(Ordering::SeqCst), WORKER_COUNT);
 }
 
 #[test]
@@ -483,9 +471,14 @@ fn platform_provider_factory_runs_on_workers_and_publishes_through_the_shared_co
 fn pinned_code_pipeline_performance() {
     let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
     let suspended = Suspension::all_workers();
+    // The assertions are size-independent; only the timing report needs the
+    // million-line and 100 MiB fixtures and repeated samples. Two iterations
+    // cover both wrap states and scroll directions.
+    let report = std::env::var_os("VIEM_CODE_PIPELINE_REPORT");
+    let (lines, iterations) = if report.is_some() { (1_000_000, 20) } else { (100_000, 2) };
     let mut rows = Vec::new();
     for syntax in [false, true] {
-        rows.push(exercise(b"x\n".repeat(1_000_000), Encoding::Utf8, syntax));
+        rows.push(exercise(b"x\n".repeat(lines), Encoding::Utf8, syntax, iterations));
         for encoding in [Encoding::Utf8, Encoding::Utf16Le, Encoding::Latin1] {
             let cycle = (0..32)
                 .map(|i| {
@@ -507,7 +500,7 @@ fn pinned_code_pipeline_performance() {
                     .collect(),
                 _ => cycle.into_bytes(),
             };
-            let target = 100 * 1024 * 1024;
+            let target = if report.is_some() { 100 * 1024 } else { 256 } * 1024;
             let mut bytes = encoded.repeat(target / encoded.len());
             while bytes.len() < target {
                 bytes.push(b' ');
@@ -515,11 +508,11 @@ fn pinned_code_pipeline_performance() {
                     bytes.push(0);
                 }
             }
-            rows.push(exercise(bytes, encoding, syntax));
+            rows.push(exercise(bytes, encoding, syntax, iterations));
         }
     }
     assert_eq!(suspended.calls.load(Ordering::SeqCst), WORKER_COUNT);
-    let Ok(path) = std::env::var("VIEM_CODE_PIPELINE_REPORT") else {
+    let Some(path) = report else {
         return;
     };
     let command = |name: &str, args: &[&str]| {
