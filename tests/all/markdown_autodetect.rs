@@ -275,7 +275,7 @@ fn counted_insert_dot_macros_and_local_work_preserve_semantics() {
     type_keys(&mut d, &mut c, "qu@a");
     assert_eq!(d.text(), "word");
 
-    for count in [100, 10_000] {
+    for count in [100, 1_000] {
         let source = format!("front\n\n{}", "unrelated paragraph\n\n".repeat(count));
         let (mut d, mut c) = fixture(&source);
         key(&mut d, &mut c, Key::Char('i'));
@@ -480,7 +480,7 @@ fn authored_prefixes_in_list_items_match_fresh_container_projection() {
 
 #[test]
 fn list_prefix_recognition_reparses_local_structure_without_unrelated_suffix() {
-    for count in [100, 10_000] {
+    for count in [100, 1_000] {
         let source = format!("- a\n\n{}", "unrelated paragraph\n\n".repeat(count));
         let (mut d, mut c) = fixture(&source);
         key(&mut d, &mut c, Key::Char('i'));

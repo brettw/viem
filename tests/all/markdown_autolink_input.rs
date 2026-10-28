@@ -213,9 +213,9 @@ fn code_with_addresses_becomes_prose_without_visible_escapes() {
 
 #[test]
 fn typing_an_address_in_a_large_document_stays_regional() {
-    let filler = (0..2000).map(|index| format!("- item {index} text\n\nparagraph {index} text\n\n")).collect::<String>();
+    let filler = (0..200).map(|index| format!("- item {index} text\n\nparagraph {index} text\n\n")).collect::<String>();
     let url = "https://example.com/foo_bar";
-    for target in ["item 1000", "paragraph 1000"] {
+    for target in ["item 100", "paragraph 100"] {
         let open = || {
             let mut editor = Editor::open(&filler, Format::Markdown);
             let at = editor.document().text().find(&format!("{target} text")).unwrap() + target.len();

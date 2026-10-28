@@ -172,8 +172,23 @@ fn check(source: &str, format: Format, at: usize, action: &str) -> Result<(), St
     Ok(())
 }
 
+// The sweep is split by action so its parts run in parallel.
 #[test]
-fn wysiwyg_insertions_deletions_and_line_opening_accept_every_legal_caret() {
+fn wysiwyg_insertions_accept_every_legal_caret() {
+    sweep_every_legal_caret("wysiwyg-insertions", &["x", "*", "`", " ", "x\ny"]);
+}
+
+#[test]
+fn wysiwyg_breaks_and_deletions_accept_every_legal_caret() {
+    sweep_every_legal_caret("wysiwyg-deletions", &["Enter", "Backspace", "Delete"]);
+}
+
+#[test]
+fn wysiwyg_line_opening_accepts_every_legal_caret() {
+    sweep_every_legal_caret("wysiwyg-line-opening", &["o", "O"]);
+}
+
+fn sweep_every_legal_caret(name: &str, actions: &[&str]) {
     let mut failures = Vec::new();
     let mut checked = 0;
     for source in SOURCES.iter().copied() {
@@ -184,18 +199,7 @@ fn wysiwyg_insertions_deletions_and_line_opening_accept_every_legal_caret() {
             if doc.text_point(at).is_err() {
                 continue;
             }
-            for action in [
-                "x",
-                "*",
-                "`",
-                " ",
-                "x\ny",
-                "Enter",
-                "Backspace",
-                "Delete",
-                "o",
-                "O",
-            ] {
+            for &action in actions {
                 checked += 1;
                 if let Err(error) = check(source, Format::Markdown, at, action) {
                     failures.push(format!("{action:?} at {at}: {error} | {source:?}"));
@@ -203,7 +207,7 @@ fn wysiwyg_insertions_deletions_and_line_opening_accept_every_legal_caret() {
             }
         }
     }
-    report("wysiwyg", checked, &failures);
+    report(name, checked, &failures);
     assert!(
         failures.is_empty(),
         "{checked} cases; {} failures\n{}",

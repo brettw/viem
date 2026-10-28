@@ -461,13 +461,14 @@ fn code_pastes_rich_clipboard_as_literal_plain_text_without_syntax_assignments()
 }
 
 #[test]
-fn million_line_code_newline_edits_keep_projection_work_regional_in_utf8_and_utf16_crlf() {
+fn large_code_newline_edits_keep_projection_work_regional_in_utf8_and_utf16_crlf() {
     for (encoding, file_format, ending) in [
         (Encoding::Utf8, FileFormat::Unix, "\n"),
         (Encoding::Utf16Le, FileFormat::Dos, "\r\n"),
     ] {
         let mut prior_work = None;
-        for lines in [10_000, 1_000_000] {
+        // Ten times the lines: linear node visits would exceed the 2048 allowance.
+        for lines in [10_000, 100_000] {
             let source = format!("x{ending}").repeat(lines);
             let mut document = Document::from_bytes_with_file_format(
                 encoded(&source, encoding),

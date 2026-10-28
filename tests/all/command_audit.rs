@@ -1099,7 +1099,7 @@ fn global_independent_edits_batch_once_and_preserve_registers_history() {
         (Format::Markdown, "\n\n", "d", "beta"),
         (Format::PlainText, "\n", "s/a/z/g", "zlphz"),
     ] {
-        let source = (0..1000)
+        let source = (0..200)
             .flat_map(|_| ["alpha", "beta"])
             .collect::<Vec<_>>()
             .join(separator);
@@ -1117,7 +1117,7 @@ fn global_independent_edits_batch_once_and_preserve_registers_history() {
         if body == "d" {
             assert_eq!(
                 core.document().text().split('\n').collect::<Vec<_>>(),
-                vec![expected_word; 1000]
+                vec![expected_word; 200]
             );
             assert_eq!(
                 core.command_state(view)

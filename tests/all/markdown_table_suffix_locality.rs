@@ -3,6 +3,9 @@
 use viem_core::{Document, Encoding, Format};
 use viem_core::document::measure_document_work;
 
+/// Twice the copied-node bound and far beyond every byte bound below.
+const SUFFIX_TABLES: usize = 1024;
+
 fn source(tables: usize) -> String {
     let mut source = "Editable paragraph.\n\n".to_owned();
     for _ in 0..tables {
@@ -36,7 +39,7 @@ fn same_table_positions(document: &Document, reopened: &Document) {
 fn prose_edits_shift_table_suffix_with_bounded_work_and_exact_history() {
     for format in [Format::Markdown] {
         for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
-            let source = source(4096);
+            let source = source(SUFFIX_TABLES);
             let encode = |text: &str| match encoding {
                 Encoding::Utf8 => text.as_bytes().to_vec(),
                 Encoding::Utf16Le => text.encode_utf16().flat_map(u16::to_le_bytes).collect(),
@@ -75,7 +78,7 @@ fn prose_edits_shift_table_suffix_with_bounded_work_and_exact_history() {
 
 #[test]
 fn table_cell_edits_retain_distant_table_ids_and_reopen_positions() {
-    let original = source(4096).into_bytes();
+    let original = source(SUFFIX_TABLES).into_bytes();
     let mut document = Document::from_bytes(original.clone(), Encoding::Utf8, Format::Markdown).unwrap();
     let first = &document.projection().tables()[0];
     let at = first.rows[1].cells[0].range.start + 1;
@@ -120,7 +123,7 @@ fn encode_fixture(text: &str, encoding: Encoding) -> Vec<u8> {
 #[test]
 fn list_paragraph_split_keeps_dense_table_suffix_regional_and_identical() {
     use viem_core::document::{BoundaryAffinity, FileFormat, ModelRequest};
-    let tables = "| first | second |\n| --- | --- |\n| alpha | beta |\n\n".repeat(4096);
+    let tables = "| first | second |\n| --- | --- |\n| alpha | beta |\n\n".repeat(SUFFIX_TABLES);
     for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
         let original = encode_fixture(&format!("- first\n- second\n\n{tables}").replace('\n', "\r\n"), encoding);
         let expected = encode_fixture(&format!("- fi\n\n  rst\n- second\n\n{tables}").replace('\n', "\r\n"), encoding);
@@ -272,7 +275,7 @@ fn whitespace_rich_paste_keeps_encoded_table_suffix_and_history_exact() {
     let mut measurements = Vec::new();
     for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
         let mut works = Vec::new();
-        for table_count in [4, 4096] {
+        for table_count in [4, SUFFIX_TABLES] {
             let tables = "| first | second |\r\n| --- | --- |\r\n| alpha | beta |\r\n\r\n".repeat(table_count);
             let original = encode_fixture(&format!("target\r\n\r\n{tables}"), encoding);
             let work = cold_whitespace_paste(original.clone(), encoding, 0, &encode_fixture("&#32;", encoding), &original, &clipboard);
@@ -305,7 +308,7 @@ fn whitespace_rich_paste_into_list_continuation_stays_regional_with_growing_tabl
         assert_eq!(at, 6);
         let authored = prefix.source_bytes();
         let mut works = Vec::new();
-        for table_count in [4, 4096] {
+        for table_count in [4, SUFFIX_TABLES] {
             let tables = "| first | second |\r\n| --- | --- |\r\n| alpha | beta |\r\n\r\n".repeat(table_count);
             let mut original = authored.clone();
             original.extend_from_slice(&encode_fixture(&format!("\r\n\r\n{tables}"), encoding));
@@ -327,7 +330,7 @@ fn empty_paragraph_put_and_enter_keep_whitespace_boundary_work_regional() {
     for encoding in [Encoding::Utf8, Encoding::Utf16Le] {
         for put in [true, false] {
             let mut works = Vec::new();
-            for table_count in [4, 4096] {
+            for table_count in [4, SUFFIX_TABLES] {
                 let suffix = format!("b\n\nafter\n\n{}", "| first | second |\n| --- | --- |\n| alpha | beta |\n\n".repeat(table_count));
                 let original = encode_fixture(&format!("before\n\na\n \n \n \n{suffix}").replace('\n', "\r\n"), encoding);
                 let blank = if put { "\n" } else { " \n" };

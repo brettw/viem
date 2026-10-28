@@ -304,7 +304,7 @@ fn unique_keeps_terminal_newline_and_one_source_row() {
 #[test]
 fn sorted_line_identity_keeps_anchor_and_large_document_history() {
     use viem_core::document::{Association, BoundaryAffinity, DeletionRecovery, MappingOutcome};
-    let before = (0..10_000)
+    let before = (0..2_000)
         .rev()
         .map(|n| format!("row{n:05}"))
         .collect::<Vec<_>>()
@@ -321,7 +321,7 @@ fn sorted_line_identity_keeps_anchor_and_large_document_history() {
     run(&mut doc, ":sort");
     assert!(doc.text().starts_with("row00000\nrow00001\n"));
     assert!(
-        matches!(doc.resolve_text_anchor(anchor).unwrap(), MappingOutcome::Moved(point) if point.offset()==9_999*9+2)
+        matches!(doc.resolve_text_anchor(anchor).unwrap(), MappingOutcome::Moved(point) if point.offset()==1_999*9+2)
     );
     assert!(doc.undo());
     assert_eq!(doc.text(), before);

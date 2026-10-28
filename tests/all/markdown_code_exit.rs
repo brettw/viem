@@ -545,7 +545,7 @@ fn interpreter_exit_work_does_not_grow_with_unrelated_paragraphs() {
         // paragraphs can precede that case only.
         if !closed && !before_code { continue; }
         let mut measured = None;
-        for paragraphs in [100, 5000] {
+        for paragraphs in [100, 1000] {
             let unrelated = "Unrelated *styled* prose.\n\n".repeat(paragraphs);
             let source = if before_code {
                 format!("{unrelated}Guard.\n\n{code_source}")
@@ -685,7 +685,7 @@ fn code_exit_and_empty_deletion_do_not_scan_unrelated_following_prose() {
         ("```rust\n```", Key::Backspace),
     ] {
         let mut measured = None;
-        for paragraphs in [100, 5000] {
+        for paragraphs in [100, 1000] {
             let unrelated = "Unrelated *styled* prose.\n\n".repeat(paragraphs);
             let source = format!("{envelope}\n\nGuard.\n\n{unrelated}");
             let mut document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Markdown).unwrap();

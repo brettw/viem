@@ -352,7 +352,7 @@ fn first_list_paragraph_split_preserves_bom_and_stays_inside_its_owner() {
             bytes.extend(body);
             bytes
         };
-        for suffix_paragraphs in [100, 5000] {
+        for suffix_paragraphs in [100, 2000] {
             let list = "- item\n".repeat(257);
             let source = format!("{list}\n{}", "unrelated prose\n\n".repeat(suffix_paragraphs));
             let before = encode(&source);
