@@ -89,7 +89,9 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   incremental-versus-fresh results, encodings and mixed line endings, exact
   undo/redo, every command entry path, failure rollback, reentrant providers,
   and cancellation and stale publication. Keep the architecture dependency
-  checks.
+  checks. Each test asserts the behavior its name states, with the smallest
+  fixture beyond the limits it depends on
+  ([test design](docs/development-workflow.md#test-design)).
 
 ## Core architecture
 
@@ -500,13 +502,14 @@ Deliberate presentation differences from GitHub:
   greater indentation. Keep anchor queries and edits bounded, and obtain exact
   offscreen anchor prefixes through cancellable native shaping; see
   [indent alignment](docs/indent-alignment.md).
-- New layout work needs cache-invalidation and large-document tests: a million
-  short lines, 100 MiB of mixed-encoding text, multi-megabyte single lines
-  wrapped and unwrapped, mixed fonts, bidi and emoji, two views of different
-  widths, and rapid resizing followed by editing. Assert work counts, cache and
-  queue bounds and stale rejection. Don't raise fixture ceilings to hide
-  regressions; timing is not a structural bound and a mock shaper is not
-  evidence of native latency. See [performance](docs/performance.md).
+- New layout work needs cache-invalidation and large-document tests: short
+  lines, mixed-encoding text and single lines beyond the cache, slice and
+  prelayout limits, wrapped and unwrapped, mixed fonts, bidi and emoji, two
+  views of different widths, and rapid resizing followed by editing. Assert
+  work counts, cache and queue bounds and stale rejection. Million-line and
+  100 MiB scale belongs in the opt-in benchmarks. Don't raise fixture ceilings
+  to hide regressions; timing is not a structural bound and a mock shaper is
+  not evidence of native latency. See [performance](docs/performance.md).
 
 ## Vim behavior
 

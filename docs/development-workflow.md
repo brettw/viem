@@ -95,6 +95,32 @@ first semantic difference (text, block, style span or hard break). It is a bug
 in that strategy's proof, not in the test: fix the proof or make the strategy
 decline that case.
 
+## Test design
+
+A test asserts the behavior its name states. Assertions about unrelated
+properties make it fail for unrelated changes, and a name joined by several
+"and"s usually means it should be several tests.
+
+- Size a large-document fixture just beyond the limits the behavior depends
+  on and a few times larger than the bounds it asserts: the 100 KiB
+  full-prelayout size, the 64 KiB long-line slice, the 4,096-line
+  comment-context slice, the 2,048-line regional layout cache. Work counters,
+  materialization flags and absolute bounds do not need a million lines or
+  100 MiB, and fixtures that size make parallel tests contend for memory.
+  To show that work does not grow with a document, compare the same operation
+  at two sizes about ten times apart.
+- Fixtures of at most 1 MiB also get shadow verification of every edit;
+  larger ones skip it.
+- Million-line and 100 MiB scale belongs in the opt-in benchmark reports (see
+  [performance](performance.md)), which switch to full sizes when their report
+  variable is set.
+- Test a budget with a small explicit limit or an operation that charges its
+  whole cost at once, not by exhausting a production default.
+- The slowest test sets a suite's wall time. Split an exhaustive sweep by
+  behavior so its parts run in parallel.
+- Every test in a binary shares the two syntax workers. Tests that suspend
+  them hold `package_registry_test_guard()`, so keep that work short.
+
 ## Candidate strategies and tracing
 
 Text edits try bounded strategies before complete reprojection. Each attempt
