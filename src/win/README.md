@@ -176,8 +176,21 @@ fullscreen bounds do not replace the saved normal frame.
   directory unless that would traverse the root or cross drives; narrow panes
   trim paths from the left while keeping the mode column a fixed width. Right-click
   the filename to copy its full path or its path relative to the working directory.
-- Format sits between Edit and Style, with checked Plain text, Markdown Preview,
-  and Code document types, then Word wrap after a divider.
+- Insert sits between Edit and Format and exposes the formatting toolbar’s content
+  actions. Its leading Heading submenu assigns Heading 1 through 6 using the
+  paragraph selector's style catalogue. Table opens the same interactive size grid
+  as the toolbar. Task List
+  follows Bulleted List and Numbered List in the toolbar and menus and shares
+  their selection, toggle, and continuation behavior. New tasks are unchecked.
+  Task checkboxes use the paragraph’s native cap height,
+  align to its baseline, and can be clicked to toggle their source marker.
+- Format follows Insert, with checked Plain text, Markdown Preview,
+  and Code document types, then Theme, Edit Styles, and Reload Style Sheet between
+  dividers before Word wrap and Align indents to previous line. Indent alignment
+  appears unchecked while unavailable and retains its view setting. Reload reads
+  the current theme file and applies its
+  validated styles to open views. The former Style menu and its Paragraph and
+  Character flyouts are removed; formatting shortcuts remain available.
   Choosing Code retains the current automatic or explicit language choice.
   File > Code language sits immediately before Text Encoding and lists Auto,
   an Obscure languages flyout, a divider, and the primary languages. Each language
@@ -237,10 +250,8 @@ use the same JSON schema as macOS; unknown nested keys survive updates and
 invalid settings are not overwritten. Recovery uses separate owned swap files,
 never autosaves over the original source, and retains crash leftovers for review.
 
-The main Settings window has no Code category. From a Code view, F8 or Style > Edit Styles… opens the shared Code stylesheet in the ordinary modeless
-style inspector. The Style > Paragraph and Character menus also open the
-selected Code definition for editing, including names from accepted syntax
-highlighting; they do not apply manual formatting to Code text.
+The main Settings window has no Code category. From a Code view, F8 or Format > Edit Styles… opens the shared Code stylesheet in the ordinary modeless
+style inspector, including names from accepted syntax highlighting.
 Settings > Editing > Edit Style opens or reuses that inspector with Code and
 Visible whitespace selected. Its character controls, Undo/Redo and Restore
 Defaults edit the global whitespace presentation settings in `config.json`,

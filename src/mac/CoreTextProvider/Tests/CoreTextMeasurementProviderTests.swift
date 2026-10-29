@@ -9,6 +9,17 @@ import Testing
 
 @Suite("Core Text measurement provider")
 struct CoreTextMeasurementProviderTests {
+  @Test("Native cap height follows the selected font and point size")
+  func nativeCapHeight() throws {
+    let provider = CoreTextMeasurementProvider()
+    for size in [CGFloat(12), 24, 36] {
+      let shaped = try shape(provider: provider, text: "H", globalStart: 0, fontFamily: "Helvetica", fontSize: Float(size))
+      let cluster = try #require(shaped.clusters.first)
+      let expected = CTFontGetCapHeight(CTFontCreateWithName("Helvetica" as CFString, size, nil))
+      #expect(abs(CGFloat(cluster.metrics.cap_height) - expected) < 0.01)
+    }
+  }
+
   @Test("Script baseline offsets move glyph ink and contribute exact row metrics")
   func scriptBaselineOffsets() throws {
     let provider = CoreTextMeasurementProvider()

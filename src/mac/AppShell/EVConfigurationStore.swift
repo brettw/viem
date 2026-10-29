@@ -106,6 +106,21 @@ public final class EVConfigurationStore {
     let value = try JSONSerialization.jsonObject(with: JSONEncoder().encode(margins))
     try update(section: "view", values: ["margins": value])
   }
+  /// The last explicitly chosen zoom is the default for new views; existing
+  /// views keep their own scale, so saving it must not broadcast a settings change.
+  public var zoomScale: Float {
+    ((root["view"] as? [String: Any])?["zoomScale"] as? NSNumber)?.floatValue ?? 1
+  }
+  public func setZoomScale(_ scale: Float) throws {
+    guard scale.isFinite else { throw invalid("Zoom must be between 25% and 500%") }
+    try update(notify: false) { candidate in
+      var view = candidate["view"] as? [String: Any] ?? [:]
+      guard (view["zoomScale"] as? NSNumber)?.floatValue != scale else { return false }
+      view["zoomScale"] = scale
+      candidate["view"] = view
+      return true
+    }
+  }
   public var markdownAutodetect: Bool { (root["editing"] as? [String: Any])?["markdownAutodetect"] as? Bool ?? true }
   public var caretHoverEffect: Bool { (root["editing"] as? [String: Any])?["caretHoverEffect"] as? Bool ?? true }
   public var smartQuotes: Bool { (root["editing"] as? [String: Any])?["smartQuotes"] as? Bool ?? true }

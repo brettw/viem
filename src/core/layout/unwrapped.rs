@@ -831,6 +831,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 let mut fragments = Vec::new();
                 let mut runs: Vec<DirectionRun> = Vec::new();
                 let mut metrics = TextMetrics {
+                    cap_height: 0.0,
                     ascent: 0.0,
                     descent: 0.0,
                     leading: 0.0,
@@ -903,6 +904,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                                 leading_indent_width += f64::from(cluster.advance);
                             }
                         }
+                        metrics.cap_height = metrics.cap_height.max(cluster.metrics.cap_height);
                         metrics.ascent = metrics.ascent.max(cluster.metrics.ascent);
                         metrics.descent = metrics.descent.max(cluster.metrics.descent);
                         metrics.leading = metrics.leading.max(cluster.metrics.leading);

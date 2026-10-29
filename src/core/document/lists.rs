@@ -83,6 +83,19 @@ impl Block {
 }
 
 impl FormattedDocument {
+    /// Resolve an item's first leaf from the persistent navigation index.
+    /// Continuation paragraphs never require enumerating their surrounding list.
+    pub(super) fn list_item_first_block(&self, block: &Block) -> Option<Block> {
+        let level = block.list_level()?;
+        let blocks = self.list_indentation_blocks();
+        let index = blocks.index_touching_point(block.range.start)?;
+        let key = u16::from(level) + 1;
+        let owner = blocks.find_navigation(0..index + 1, true, |summary|
+            summary.minimum < key || summary.minimum_start <= key)?;
+        blocks.get(owner).filter(|owner| owner.list_item_owner() == block.list_item_owner()
+            && matches!(owner.kind, BlockKind::ListItem { item_start: true, .. }))
+    }
+
     /// The label is a short prefix even when its paragraph spans megabytes.
     pub(crate) fn list_marker_range_for_block(&self, block: &super::Block) -> Option<Range<usize>> {
         let BlockKind::ListItem {

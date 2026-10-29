@@ -209,6 +209,7 @@ fn response_storage(request: &ViemShapeRequestV1) -> Option<FakeResponseStorage>
     shaping_text.push_str(&context_after);
     let graphemes: Vec<_> = shaping_text.grapheme_indices(true).collect();
     let metrics = ViemTextMetricsV1 {
+        cap_height: 0.0,
         ascent: 10.0,
         descent: 3.0,
         leading: 1.0,
@@ -406,6 +407,7 @@ unsafe extern "C" fn fake_shape_batch(
             },
             visual_order_count: storage.visual_order.len() as u64,
             default_metrics: ViemTextMetricsV1 {
+                cap_height: 0.0,
                 ascent: 10.0,
                 descent: 3.0,
                 leading: 1.0,
@@ -480,6 +482,7 @@ unsafe extern "C" fn malformed_shape_batch(
             clusters: ptr::null(),
             cluster_count: 1,
             default_metrics: ViemTextMetricsV1 {
+                cap_height: 0.0,
                 ascent: 10.0,
                 descent: 3.0,
                 leading: 1.0,

@@ -156,6 +156,7 @@ pub(super) fn markdown_document(document: &FormattedDocument) -> String {
             output.push_str("> ");
         }
         output.push_str(&open);
+        if let Some(checked) = block.task_checkbox { output.push_str(if checked { "[x] " } else { "[ ] " }); }
         // Container syntax (especially >) does not make its first visible
         // text safe from Markdown's paragraph/list marker grammar.
         output.line_prefix = MarkdownLinePrefix::Empty;

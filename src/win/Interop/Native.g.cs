@@ -268,6 +268,7 @@ internal unsafe struct ViemEffectBatchInfoV1
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemTextMetricsV1
 {
+    public float @cap_height;
     public float @ascent;
     public float @descent;
     public float @leading;
@@ -790,6 +791,7 @@ internal unsafe struct ViemPositionedClusterV1
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemLayoutDecorationV1
 {
+    public ulong @paragraph_id;
     public uint @struct_size;
     public uint @flags;
     public ulong @row_index;
@@ -1864,6 +1866,8 @@ internal static unsafe partial class Native
     public const uint VIEM_LAYOUT_DECORATION_BLOCK_BORDER = (1u << 3);
     public const uint VIEM_LAYOUT_DECORATION_CODE_LANGUAGE = (1u << 4);
     public const uint VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED = (1u << 5);
+    public const uint VIEM_LAYOUT_DECORATION_CHECKBOX = (1u << 6);
+    public const uint VIEM_LAYOUT_DECORATION_CHECKED = (1u << 7);
     public static readonly uint VIEM_LAYOUT_DECORATION_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationV1));
     public static readonly uint VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationsInfoV1));
     public static readonly uint VIEM_POSITIONED_CARET_V1_SIZE = ((uint)sizeof(ViemPositionedCaretV1));
@@ -1962,6 +1966,7 @@ internal static unsafe partial class Native
     public const uint VIEM_LIST_STYLE_NONE = 0u;
     public const uint VIEM_LIST_STYLE_BULLET = 1u;
     public const uint VIEM_LIST_STYLE_NUMBERED = 2u;
+    public const uint VIEM_LIST_STYLE_TASK = 3u;
     public static readonly uint VIEM_SET_LIST_STYLE_V1_SIZE = ((uint)sizeof(ViemSetListStyleV1));
     public static readonly uint VIEM_SET_BLOCK_QUOTE_V1_SIZE = ((uint)sizeof(ViemSetBlockQuoteV1));
     public const uint VIEM_LIST_CAN_INDENT = 1u;
@@ -2015,6 +2020,8 @@ internal static unsafe partial class Native
     public const uint VIEM_SELECTED_STYLE_HAS_NON_QUOTE = (1u << 6);
     public const uint VIEM_SELECTED_STYLE_HAS_TABLE = (1u << 7);
     public const uint VIEM_SELECTED_STYLE_HAS_CODE_BLOCK = (1u << 8);
+    public const uint VIEM_SELECTED_STYLE_HAS_TASKS = (1u << 9);
+    public const uint VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST = (1u << 10);
     public const uint VIEM_THEME_PRESET_MIDNIGHT = 0u;
     public const uint VIEM_THEME_PRESET_PAPER = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_HTML = 1u;
@@ -2459,4 +2466,6 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_take_startup_effects(ulong @core, ulong @view, ViemCoreOutcomeV1* @out_outcome, ulong* @out_effects);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_set_theme_names(byte* @names, ulong @length);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_toggle_checkbox(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ulong @paragraph_id, ViemCoreOutcomeV1* @out_outcome);
 }

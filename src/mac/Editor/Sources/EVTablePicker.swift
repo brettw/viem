@@ -37,6 +37,16 @@ private final class EVTablePickerPanel: NSPanel {
 
 @MainActor
 private final class EVTablePickerGrid: NSView {
+    var menuPointerEvent: ((NSEvent) -> Void)?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeAlways, .mouseMoved], owner: self))
+    }
+    override func mouseDown(with event: NSEvent) { menuPointerEvent?(event) }
+    override func mouseDragged(with event: NSEvent) { menuPointerEvent?(event) }
+    override func mouseUp(with event: NSEvent) { menuPointerEvent?(event) }
+    override func mouseMoved(with event: NSEvent) { menuPointerEvent?(event) }
     var state = EVTablePickerState() { didSet { needsDisplay = true } }
     static let cell: CGFloat = 21
     override var isFlipped: Bool { true }
@@ -57,12 +67,38 @@ private final class EVTablePickerGrid: NSView {
     }
 }
 
+@MainActor
+private final class EVTablePickerContent: NSView {
+    // NSMenu can send tracking events to the item view directly instead of
+    // performing the window's usual hit test into its scroll/grid children.
+    var menuPointerEvent: ((NSEvent) -> Void)?
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { menuPointerEvent != nil }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeAlways, .mouseMoved], owner: self))
+    }
+    override func mouseDown(with event: NSEvent) { menuPointerEvent?(event) }
+    override func mouseDragged(with event: NSEvent) { menuPointerEvent?(event) }
+    override func mouseUp(with event: NSEvent) { menuPointerEvent?(event) }
+    override func mouseMoved(with event: NSEvent) { menuPointerEvent?(event) }
+    var attachmentChanged: ((Bool) -> Void)?
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachmentChanged?(window != nil)
+    }
+}
+
 /// A fixed-origin popup with a scrollable growing grid. One local monitor handles
 /// toolbar-to-grid dragging and cell dragging without transferring mouse capture.
 @MainActor
 final class EVTablePickerController {
     private let panel = EVTablePickerPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
     private let grid = EVTablePickerGrid()
+    private let content = EVTablePickerContent()
+    private weak var hostingMenu: NSMenu?
+    private var embeddedInMenu = false
+    private var hostWindow: NSWindow? { embeddedInMenu ? content.window : panel }
     private let scroll = NSScrollView()
     private let title = NSTextField(labelWithString: "Insert Table")
     private let detail = NSTextField(labelWithString: "Choose columns and body rows; a header is added")
@@ -80,6 +116,7 @@ final class EVTablePickerController {
     private weak var editor: NSView?
     private var accept: ((Int, Int) -> Void)?
     var didClose: (() -> Void)?
+    var didOpen: (() -> Void)?
     private(set) var isOpen = false
     var state: EVTablePickerState { grid.state }
 
@@ -88,7 +125,7 @@ final class EVTablePickerController {
         panel.acceptsMouseMovedEvents = true
         panel.hasShadow = true; panel.backgroundColor = .windowBackgroundColor
         panel.level = .popUpMenu
-        let content = NSView(); content.wantsLayer = true; content.layer?.cornerRadius = 8; panel.contentView = content
+        content.wantsLayer = true; content.layer?.cornerRadius = 8; panel.contentView = content
         title.font = .systemFont(ofSize: 14, weight: .semibold)
         detail.font = .systemFont(ofSize: 10); detail.textColor = .secondaryLabelColor
         detail.lineBreakMode = .byWordWrapping; detail.maximumNumberOfLines = 2
@@ -103,9 +140,52 @@ final class EVTablePickerController {
         grid.setAccessibilityHelp("Use arrow keys to choose columns and body rows. Press Return to insert or Escape to cancel.")
     }
 
+    /// Reuse the toolbar's exact labels, scroll view, growing grid, and pointer
+    /// handling inside a native submenu. Its viewport stays fixed while tracking;
+    /// AppKit does not support changing custom menu item dimensions mid-track.
+    func menuView(in menu: NSMenu, editor: NSView, accept: @escaping (Int, Int) -> Void) -> NSView {
+        close()
+        embeddedInMenu = true
+        hostingMenu = menu
+        self.editor = editor
+        originWindow = editor.window
+        self.accept = accept
+        panel.contentView = nil
+        grid.state = EVTablePickerState()
+        available = NSSize(width: 234, height: 278)
+        updateGeometry()
+        grid.menuPointerEvent = { [weak self] event in
+            _ = self?.handle(event)
+        }
+        content.menuPointerEvent = { [weak self] event in
+            _ = self?.handle(event)
+        }
+        content.attachmentChanged = { [weak self] attached in
+            guard let self else { return }
+            if attached { self.beginMenuTracking() } else { self.close() }
+        }
+        return content
+    }
+
+    private func beginMenuTracking() {
+        guard !isOpen else { return }
+        isOpen = true
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .leftMouseDragged, .mouseMoved, .scrollWheel]) { [weak self] event in
+            guard let self, self.isOpen else { return event }
+            return self.handle(event) ? nil : event
+        }
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoscroll() }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .eventTracking)
+        didOpen?()
+    }
+
     func open(from button: NSView, editor: NSView, event: NSEvent?, accept: @escaping (Int, Int) -> Void) {
         if isOpen { close(); return }
         guard let window = button.window else { return }
+        embeddedInMenu = false
         self.editor = editor; originWindow = window; self.accept = accept
         grid.state = EVTablePickerState()
         if event == nil { grid.state.move(columns: 0, rows: 0) }
@@ -145,11 +225,21 @@ final class EVTablePickerController {
         if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }; activationObserver = nil
         if let windowObserver { NotificationCenter.default.removeObserver(windowObserver) }; windowObserver = nil
         timer?.invalidate(); timer = nil
-        originWindow?.removeChildWindow(panel); panel.orderOut(nil)
+        if embeddedInMenu {
+            if accepting { hostingMenu?.cancelTracking() }
+        } else {
+            originWindow?.removeChildWindow(panel); panel.orderOut(nil)
+        }
         grid.state = EVTablePickerState(); dragging = false; toolbarPress = false; lastPointer = nil
-        if let editor { originWindow?.makeKey(); originWindow?.makeFirstResponder(editor) }
+        if !embeddedInMenu, let editor { originWindow?.makeKey(); originWindow?.makeFirstResponder(editor) }
         didClose?()
-        if accepting && chosen.hasSelection { completion?(chosen.selectedColumns, chosen.selectedRows) }
+        if accepting && chosen.hasSelection {
+            if embeddedInMenu {
+                // Complete after AppKit unwinds menu tracking, just as a normal
+                // native menu action would. The captured selection is revalidated.
+                DispatchQueue.main.async { completion?(chosen.selectedColumns, chosen.selectedRows) }
+            } else { completion?(chosen.selectedColumns, chosen.selectedRows) }
+        }
     }
 
     func handle(_ event: NSEvent) -> Bool {
@@ -168,17 +258,26 @@ final class EVTablePickerController {
         // AppKit may omit the window object from captured/cross-window events;
         // its originating window number still identifies the coordinate space.
         let eventWindow = event.window ?? (event.windowNumber == originWindow?.windowNumber ? originWindow : nil)
-            ?? (event.windowNumber == panel.windowNumber ? panel : nil)
+            ?? (event.windowNumber == hostWindow?.windowNumber ? hostWindow : nil)
         let screenPoint = eventWindow?.convertPoint(toScreen: event.locationInWindow) ?? NSEvent.mouseLocation
         if event.type == .scrollWheel { return false }
         if event.type == .leftMouseDown {
-            guard panel.frame.contains(screenPoint) else { close(); return false }
+            guard let hostWindow, hostWindow.convertToScreen(content.convert(content.bounds, to: nil)).contains(screenPoint)
+            else { close(); return false }
             let point = gridPoint(screenPoint)
             guard scrollScreenRect.contains(screenPoint), point.x >= 0, point.y >= 0 else { return true }
             toolbarPress = false; dragging = true; pressPoint = screenPoint; lastPointer = screenPoint
             pointAt(screenPoint, growing: true); return true
         }
         if event.type == .leftMouseDragged {
+            // A native menu can be opened with a held mouse press. AppKit
+            // transfers that drag into the custom view without a mouseDown.
+            if embeddedInMenu && !dragging && scrollScreenRect.contains(screenPoint) {
+                dragging = true
+                toolbarPress = false
+                pressPoint = screenPoint
+            }
+            if embeddedInMenu && !dragging { return false }
             if toolbarPress && !dragging, let pressPoint,
                hypot(screenPoint.x - pressPoint.x, screenPoint.y - pressPoint.y) >= 4 { dragging = true }
             if dragging { lastPointer = screenPoint; pointAt(screenPoint, growing: true) }
@@ -196,8 +295,11 @@ final class EVTablePickerController {
         return false
     }
 
-    var scrollScreenRect: NSRect { panel.convertToScreen(scroll.convert(scroll.bounds, to: nil)) }
-    private func gridPoint(_ screen: NSPoint) -> NSPoint { grid.convert(panel.convertPoint(fromScreen: screen), from: nil) }
+    var scrollScreenRect: NSRect { hostWindow?.convertToScreen(scroll.convert(scroll.bounds, to: nil)) ?? .zero }
+    private func gridPoint(_ screen: NSPoint) -> NSPoint {
+        guard let hostWindow else { return .zero }
+        return grid.convert(hostWindow.convertPoint(fromScreen: screen), from: nil)
+    }
     private func pointAt(_ screen: NSPoint, growing: Bool) {
         let viewport = scrollScreenRect
         let point = gridPoint(screen)
@@ -210,7 +312,8 @@ final class EVTablePickerController {
                           height: CGFloat(grid.state.rows) * EVTablePickerGrid.cell)
         let width = min(available.width, max(234, size.width + 24))
         let height = min(available.height, size.height + 68)
-        panel.setFrame(NSRect(x: topLeft.x, y: topLeft.y - height, width: width, height: height), display: true)
+        if embeddedInMenu { content.frame = NSRect(x: 0, y: 0, width: width, height: height) }
+        else { panel.setFrame(NSRect(x: topLeft.x, y: topLeft.y - height, width: width, height: height), display: true) }
         title.frame = NSRect(x: 12, y: height - 29, width: width - 24, height: 20)
         detail.frame = NSRect(x: 12, y: height - 54, width: width - 24, height: 24)
         scroll.frame = NSRect(x: 12, y: 12, width: width - 24, height: max(20, height - 68))

@@ -911,7 +911,20 @@ impl Document {
             .bytes_in(source_line.start..body_source)
             .ok_or(DocumentError::AmbiguousProjection)?;
         let decoded = self.encoding().decode_region(&bytes, source_line.start)?;
-        let prefix = sibling_prefix(&decoded.text, !first_paragraph.range.is_empty(), ordered, ordinal.saturating_add(1))?;
+        let mut prefix = sibling_prefix(&decoded.text, !first_paragraph.range.is_empty(), ordered, ordinal.saturating_add(1))?;
+        let mut new_first_task = None;
+        if first_paragraph.task_checkbox.is_some() {
+            if at == first_paragraph.range.start && !first_paragraph.range.is_empty() {
+                // Opening before a task creates the unchecked empty side.
+                // Its retained body keeps the authored checked spelling.
+                let (start, original, marker) = self.checkbox_source_prefix(first_paragraph)?;
+                prefix.push_str(&original[marker..marker + 3]);
+                prefix.push(' ');
+                let state = start + self.encoding().encode_fragment(&original[..marker + 1])?.len();
+                let space = self.encoding().encode_fragment(" ")?;
+                new_first_task = Some(SourcePatch::primary(state..state + space.len(), space));
+            } else { prefix.push_str("[ ] "); }
+        }
         let replacement = self.encoding().encode_fragment(&format!(
             "{}{prefix}",
             self.file_format().spelling()
@@ -974,6 +987,7 @@ impl Document {
             }
         }
         let mut patches = vec![SourcePatch::primary(range, replacement)];
+        if let Some(patch) = new_first_task { patches.push(patch); }
         if materializes_empty_body {
             let (_, _, continuation) = self.markdown_list_continuation_context(at)?;
             let body_at = patches[0].range.start;

@@ -502,6 +502,7 @@ impl Document {
             || old_local.block_records().len() != run.len()
             || old_local.block_records().iter().zip(&run).any(|(local, block)|
                 local.kind != block.kind || local.style != block.style
+                || local.task_checkbox != block.task_checkbox || local.checkbox_insertable != block.checkbox_insertable
                 || local.list_loose != block.list_loose || local.quote_depth != block.quote_depth
                 || local.containers.len() != block.containers.len()
                 || local.containers.iter().zip(block.containers.iter()).any(|(a, b)|

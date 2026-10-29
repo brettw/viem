@@ -38,7 +38,7 @@ internal static class MenuAccessKeyTests
             "Theme" => Label(item) is "Default" or "New theme…" or "Theme Settings…",
             "Code language" => Label(item).StartsWith("Auto (", StringComparison.Ordinal) || item is MenuFlyoutSubItem,
             "Obscure languages" => false,
-            _ => item.Tag is not (StyleKey or CodeSyntaxStyle)
+            _ => item.Tag is not StyleKey
         };
         Check(commands.Where(Fixed).All(item => item.AccessKey.Length != 0),
             $"{title} fixed menu commands have access keys");

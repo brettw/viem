@@ -308,6 +308,16 @@ pub(super) fn preserve_deleted_source_prefixes(
                     // A numbered-looking continuation can be literal prose.
                     // Its digits and punctuation survive deletion of the fold.
                     prefix += hidden_marker.unwrap_or(indent);
+                    if hidden_marker.is_some() {
+                        if let Some(task) = super::super::markdown_blocks::task_prefix_length(&decoded.text[prefix..]) {
+                            let start = decoded.source_boundary(prefix).ok_or(DocumentError::AmbiguousProjection)?;
+                            let end = decoded.source_boundary(prefix + task).ok_or(DocumentError::AmbiguousProjection)?;
+                            if !document.projection().provenance_contained_in_source(&(start..end))
+                                .iter().any(|span| !span.formatted.is_empty()) {
+                                prefix += task;
+                            }
+                        }
+                    }
                 }
                 if prefix > 0 {
                     let end = line.start

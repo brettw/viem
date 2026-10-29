@@ -29,6 +29,13 @@ internal static class DocumentModeMenuTests
             var plain = (ToggleMenuFlyoutItem)menu.Items[0];
             var markdown = (ToggleMenuFlyoutItem)menu.Items[1];
             var codeMode = (ToggleMenuFlyoutItem)menu.Items[2];
+            var wrap = menu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Word wrap");
+            var alignIndents = menu.Items.OfType<ToggleMenuFlyoutItem>().Single(item => item.Text == "Align indents to previous line");
+            Check(menu.Items.IndexOf(alignIndents) == menu.Items.IndexOf(wrap) + 1
+                && !window.Menu.Items.Single(item => item.Title == "View").Items.OfType<ToggleMenuFlyoutItem>()
+                    .Any(item => item.Text == alignIndents.Text),
+                "Format places indent alignment immediately below Word wrap and removes it from View");
+            view.AlignIndentsToPreviousLine(true);
             var code = file.Items.OfType<MenuFlyoutSubItem>().Single(i => i.Text == "Code language");
             var auto = (ToggleMenuFlyoutItem)code.Items[0];
             var obscure = (MenuFlyoutSubItem)code.Items[1];
@@ -79,14 +86,20 @@ internal static class DocumentModeMenuTests
             await Close(); await Open();
             Check(!plain.IsChecked && !markdown.IsChecked && auto.IsChecked && auto.Text == "Auto (Rust)"
                 && codeMode.IsChecked && ((FontIcon)code.Icon).Glyph == "\uE73E", "initial Code Auto checks and Rust detection label");
+            Check(alignIndents.IsEnabled && alignIndents.IsChecked,
+                "Code displays an enabled check for active indent alignment");
             await Choose(plain);
             Check(document.State.format == VIEM_FORMAT_PLAIN_TEXT && plain.IsChecked && !auto.IsChecked
                 && !codeMode.IsChecked && ((FontIcon)code.Icon).Glyph == "", "Plain text menu action overrides a code filename");
+            Check(!alignIndents.IsEnabled && !alignIndents.IsChecked,
+                "Plain text displays disabled indent alignment without a check");
             await Close();
             view.SetDocumentMode(VIEM_DOCUMENT_MODE_CODE, "python", DocumentModes.Read(document));
             await Open();
             Check(python.IsChecked && !plain.IsChecked && !auto.IsChecked && auto.Text == "Auto (Rust)",
                 "forced Python keeps the independently detected Rust label");
+            Check(alignIndents.IsEnabled && alignIndents.IsChecked,
+                "returning to Code restores the preserved indent-alignment check");
             await OpenObscure();
             var obscureItems = obscure.Items.Cast<ToggleMenuFlyoutItem>().ToArray();
             Check(obscureItems.Select(i => i.Text).SequenceEqual(DocumentModes.Languages.Where(l => !l.Primary).Select(l => l.Name))
@@ -103,11 +116,15 @@ internal static class DocumentModeMenuTests
             await Choose(markdown);
             Check(markdown.IsChecked && document.State.format == VIEM_FORMAT_MARKDOWN,
                 "Markdown Preview choice selects formatted Markdown");
+            Check(!alignIndents.IsEnabled && !alignIndents.IsChecked,
+                "Markdown Preview displays disabled indent alignment without a check");
             await Choose(codeMode);
             Check(codeMode.IsChecked && !markdown.IsChecked && document.State.format == VIEM_FORMAT_CODE
                 && DocumentModes.Read(document).Language == obscureLanguage.Id && obscureChoice.IsChecked
                 && ((FontIcon)code.Icon).Glyph == "\uE73E",
                 "Code document type restores Code while retaining the chosen language");
+            Check(alignIndents.IsEnabled && alignIndents.IsChecked,
+                "leaving Preview retains the view's enabled indent-alignment setting");
             Check(!document.IsDirty && source.AsSpan().SequenceEqual(document.Source(document.State.document_revision)),
                 "mode changes retain exact source bytes and clean state");
             await Close();

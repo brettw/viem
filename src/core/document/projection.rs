@@ -67,6 +67,7 @@ pub enum BlockKind {
 pub enum ListStyle {
     Bullet,
     Numbered,
+    Task,
 }
 
 #[derive(Clone, Debug)]
@@ -113,6 +114,10 @@ impl CodeBlockKind {
 
 #[derive(Clone, Debug)]
 pub struct BlockAttributes {
+    /// GFM task marker on the first paragraph of an item; hidden source syntax.
+    pub task_checkbox: Option<bool>,
+    /// Parser-owned prose eligibility, independent of assigned style names.
+    pub(crate) checkbox_insertable: bool,
     /// Adapter support retained by the parser, including semantic item starts.
     pub(super) list_editing: ListEditing,
     pub kind: BlockKind,
@@ -159,13 +164,13 @@ impl Block {
             BlockKind::ListItem { item_start, .. } => ListEditing { item_start, indent: true, unindent: true },
             _ => ListEditing::default(),
         };
-        Self { id, range, attributes: Arc::new(BlockAttributes { kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_kind: CodeBlockKind::Ordinary, code_language: None, code_language_label: false }) }
+        Self { id, range, attributes: Arc::new(BlockAttributes { task_checkbox: None, checkbox_insertable: false, kind, style, direct_formatting, list_editing, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_kind: CodeBlockKind::Ordinary, code_language: None, code_language_label: false }) }
     }
 
     pub fn paragraph(id: u64, range: Range<usize>) -> Self {
         static DEFAULT: OnceLock<Arc<BlockAttributes>> = OnceLock::new();
         Self { id, range, attributes: DEFAULT.get_or_init(|| Arc::new(BlockAttributes {
-            kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_kind: CodeBlockKind::Ordinary, code_language: None, code_language_label: false,
+            task_checkbox: None, checkbox_insertable: false, kind: BlockKind::Paragraph, style: "Paragraph".into(), direct_formatting: None, quote_depth: 0, containers: Arc::from([]), list_loose: false, thematic_break: false, markdown_html: false, code_kind: CodeBlockKind::Ordinary, code_language: None, code_language_label: false,
             list_editing: ListEditing::default(),
         })).clone() }
     }
@@ -230,7 +235,7 @@ impl PartialEq for BlockAttributes {
                 a.starts_here == b.starts_here && a.ends_here == b.ends_here
                     && a.container.kind == b.container.kind && a.container.style == b.container.style
                     && a.container.direct_formatting == b.container.direct_formatting
-            }) && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.code_kind == other.code_kind && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
+            }) && self.task_checkbox == other.task_checkbox && self.checkbox_insertable == other.checkbox_insertable && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.code_kind == other.code_kind && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
 
@@ -3391,6 +3396,8 @@ impl FormattedDocument {
             field!("quote_depth", a.quote_depth, b.quote_depth);
             field!("list_loose", a.list_loose, b.list_loose);
             field!("list_editing", a.list_editing, b.list_editing);
+            field!("task_checkbox", a.task_checkbox, b.task_checkbox);
+            field!("checkbox_insertable", a.checkbox_insertable, b.checkbox_insertable);
             field!("thematic_break", a.thematic_break, b.thematic_break);
             field!("markdown_html", a.markdown_html, b.markdown_html);
             field!("code_kind", a.code_kind, b.code_kind);
@@ -6045,7 +6052,12 @@ fn project_markdown(
         .last()
         .filter(|ending| ending.normalized.end == normalized.text.len())
     {
-        if cooked
+        // An empty task still contains nonblank marker syntax in the flow
+        // parser. Once that syntax is hidden, its terminal caret belongs
+        // before the final line ending, just like an empty ordinary item.
+        let empty_task = projected.blocks.get(projected.blocks.len().saturating_sub(1))
+            .is_some_and(|block| block.range.is_empty() && block.task_checkbox.is_some());
+        if empty_task || cooked
             .last_unit()
             .map_or(true, |unit| unit.source.end <= ending.source.start)
         {
@@ -6463,6 +6475,16 @@ fn project_markdown_lines(
         // Quote markers after a list prefix belong to the container too.
         if quoted && heading.is_none() { content_start += super::markdown_quotes::prefix(&normalized.text[content_start..content_end]); }
         kind = presented_kind(kind);
+        let task = syntax.tasks.get(syntax.tasks.partition_point(|(range, _)| range.end <= at))
+            .filter(|(range, _)| range.start <= source_end && at <= range.start)
+            .filter(|_| matches!(kind, BlockKind::ListItem { item_start: true, .. }));
+        if let Some((marker, _)) = task {
+            content_start = normalized_at(marker.end).min(content_end);
+            while content_start < content_end
+                && matches!(normalized.text.as_bytes()[content_start], b' ' | b'\t') {
+                content_start += 1;
+            }
+        }
         let definition = syntax.definitions.get(syntax.definitions.partition_point(|range| range.end <= at)).is_some_and(|range| range.start <= source_end && at < range.end);
         if definition {
             let start = builder.output.len();
@@ -6524,7 +6546,12 @@ fn project_markdown_lines(
             let content_at = builder.unit_at(content_start).map_or_else(
                 || block_syntax.map_or_else(|| final_row.unwrap_or(source_content_end), |syntax| syntax.content.start),
                 |unit| unit.source.start);
-            let at = if heading.is_some() || quoted { content_at } else {
+            let at = if task.is_some() && content_start == content_end {
+                // Flow can retain the marker's terminal ending while its
+                // parser paragraph starts after that ending. The empty task
+                // caret still belongs to the marker's physical source row.
+                quote.map_or(content_at, |row| row.range.end)
+            } else if heading.is_some() || quoted || task.is_some() { content_at } else {
                 context.map_or_else(|| quote.map_or(content_at, |quote| quote.content_start), |context| context.content_start)
             };
             builder.push_provenance(ProvenanceSpan {
@@ -6541,6 +6568,8 @@ fn project_markdown_lines(
         }};
         let loose = matches!(kind, BlockKind::ListItem { .. }) && list.is_some_and(|container| container.loose);
         let mut block = Block::new(0, output_start..output_end, kind, style, None);
+        block.task_checkbox = task.map(|(_, checked)| *checked);
+        block.checkbox_insertable = heading.is_none() && !thematic_break && !definition;
         block.list_loose = loose;
         block.quote_depth = quote_depth;
         block.thematic_break = thematic_break;

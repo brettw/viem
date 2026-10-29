@@ -345,7 +345,7 @@ internal static class FormattingToolbarTests
 
         internal async Task CurrentListStyle()
         {
-            foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers })
+            foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers, ToolbarAction.Tasks })
             {
                 view.Command("j0");
                 await Click(toolbar, action);

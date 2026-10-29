@@ -441,7 +441,7 @@ impl Document {
             })
         };
         let source_text = self.encoding().decode(&source_bytes)?.text;
-        let inline_source_bytes = if is_rich && !captured.text().contains('\n') {
+        let inline_source_bytes = if is_rich {
             selected_source(self, &range, false).unwrap_or_else(|_| {
                 incomplete_source = true;
                 Vec::new()
@@ -1399,11 +1399,27 @@ fn selected_markdown_source(
     let decoded = document.encoding().decode_region(&bytes(band.clone())?, band.start)?;
     let input = super::super::line_endings::normalize(&decoded, document.file_format());
     let builder = super::super::rich_text::Builder::new(&input, Revision(0));
+    let mut task_prefix = None;
     if blocks {
         let syntax = super::super::markdown_syntax::Blocks::parse(
             &super::super::markdown_syntax::grammar_text(&input),
             super::super::markdown_syntax::ParseContext::source_region(input.source_at(0), document.projection().source_content_start()),
         ).to_source(&input);
+        if document.projection().blocks_for_region(&(range.start..range.start)).iter()
+            .any(|block| block.task_checkbox.is_some()
+                && block.range.start <= range.start && range.start < block.range.end)
+        {
+            // Task syntax lies before the visible source hull, just like its
+            // list marker. Preserve both in a block fragment, including the
+            // authored checked spelling and surrounding quote/list prefixes.
+            if let Some((marker, _)) = syntax.tasks.iter().rev().find(|(marker, _)| marker.end <= hull.start) {
+                let start = input.normalized_at(marker.start);
+                let line_start = input.text[..start].rfind('\n').map_or(0, |at| at + 1);
+                let mut end = input.normalized_at(marker.end);
+                while matches!(input.text.as_bytes().get(end), Some(b' ' | b'\t')) { end += 1; }
+                task_prefix = Some(builder.source_range(line_start..end));
+            }
+        }
         if let Some(owner) = document.projection().blocks_for_region(range).iter()
             .find(|block| block.range == *range && matches!(block.kind, super::super::BlockKind::Heading(_))) {
             if let Some(heading) = syntax.blocks.iter().find(|heading|
@@ -1424,7 +1440,7 @@ fn selected_markdown_source(
             .map(|unit| unit.normalized.start)
     };
     let start = normalized(hull.start).ok_or(DocumentError::AmbiguousProjection)?;
-    let mut prefixes = Vec::new();
+    let mut prefixes: Vec<_> = task_prefix.into_iter().collect();
     let mut suffixes = Vec::new();
     // Markdown semantic spans identify their authored delimiter runs. Copy
     // those runs at a cut edge, retaining underscore/star/backtick spelling.

@@ -60,6 +60,10 @@ pub(super) fn joining_patches(
     let body = &decoded.text[containers..];
     let mut prefix = containers
         + super::super::projection::markdown_block_prefix(body, 0, body.len()).0;
+    if last.task_checkbox.is_some() {
+        prefix += super::super::markdown_blocks::task_prefix_length(&decoded.text[prefix..])
+            .ok_or(DocumentError::AmbiguousProjection)?;
+    }
     if last.range.is_empty() || matches!(
         last.kind,
         super::super::BlockKind::ListItem {
@@ -958,7 +962,7 @@ fn paragraph_insertion_patches(
             .projection()
             .source_insertion_point(
                 at,
-                affinity != Some(BoundaryAffinity::Upstream),
+                at == block.range.start || affinity != Some(BoundaryAffinity::Upstream),
             )
             .ok_or(DocumentError::AmbiguousProjection)?
     };

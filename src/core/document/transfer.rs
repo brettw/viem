@@ -24,6 +24,7 @@ pub(crate) struct PlannedSourcePatch {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LineSignature {
+    task_checkbox: Option<bool>,
     kind: super::BlockKind,
     quote_depth: usize,
     code_language: Option<String>,
@@ -818,6 +819,7 @@ pub(super) fn projection_signatures(
                 _ => block.style.clone(),
             };
             Ok(LineSignature {
+                task_checkbox: block.task_checkbox,
                 // List numbering, nesting and generated ancestor containers
                 // follow the destination. The explicit leaf marker, custom
                 // declarations, paragraph treatment and inline styles travel

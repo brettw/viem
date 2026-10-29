@@ -19,6 +19,8 @@ internal sealed unsafe partial class CoreView : IDisposable
     public event Action<HostEffects>? Effects;
     public event Action? Changed;
     public event Action? FormattingContextChanged;
+    // Hosts subscribe after restoring the initial or replacement view's scale.
+    public event Action<float>? ZoomChanged;
     public event Action? Disposed;
     public string ClipboardText { get; set; } = "";
     public string ClipboardFragment { get; set; } = "";
@@ -216,7 +218,11 @@ internal sealed unsafe partial class CoreView : IDisposable
     public float DefaultLineHeight { get { float height = 0; Check(viem_core_view_default_line_height(Document.Handle, Id, &height), "Read default line height"); return height; } }
     public void LineMode(uint value) => Apply(o => viem_core_view_set_line_mode(Document.Handle, Id, value, o));
     public void GoToLine(ulong value) => Apply(o => { var s = Document.State; return viem_core_view_go_to_line(Document.Handle, Id, s.document_id, s.document_revision, value, o); });
-    public void Zoom(float scale) => Apply(o => viem_core_view_set_scale(Document.Handle, Id, scale, o));
+    public void Zoom(float scale)
+    {
+        Apply(o => viem_core_view_set_scale(Document.Handle, Id, scale, o));
+        ZoomChanged?.Invoke(scale);
+    }
     public void StepZoom(bool increase) { float target = 1; Check(viem_core_adjacent_zoom_scale(Viewport.scale, increase ? 1u : 0u, &target), "Zoom"); Zoom(target); }
     public void Padding(float top, float left, float bottom, float right) { Check(viem_core_view_set_padding(Document.Handle, Id, top, left, bottom, right), "Set margins"); Refresh(); }
     public void MarkdownAutodetect(bool enabled) => Check(viem_core_view_set_markdown_autodetect(Document.Handle, Id, enabled ? 1u : 0u), "Markdown typing");

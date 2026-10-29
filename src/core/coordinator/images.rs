@@ -185,7 +185,7 @@ mod resource_tests {
                     let height = if image.destination == "100.png" || image.destination == "Word style.png" { self.changed_height } else { 160. };
                     let cluster = shaped.clusters.iter_mut().find(|cluster| cluster.text_range == image.text_range).unwrap();
                     cluster.advance = 300.;
-                    cluster.metrics = TextMetrics { ascent: height, descent: 0., leading: 0. };
+                    cluster.metrics = TextMetrics { cap_height: 0.0, ascent: height, descent: 0., leading: 0. };
                     cluster.typographic_bounds = ShapedBounds { x: 0., y: -height, width: 300., height };
                     cluster.ink_bounds = cluster.typographic_bounds;
                     for stop in &mut cluster.caret_stops {

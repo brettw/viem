@@ -82,6 +82,19 @@ internal sealed partial class Preferences
     private static byte[] Json(JsonNode? value, JsonNode fallback) => JsonSerializer.SerializeToUtf8Bytes(value ?? fallback, FrontendJsonContext.Default.JsonNode);
     public JsonObject Editing => root["editing"] is JsonObject value ? (JsonObject)value.DeepClone() : new();
     public float Margin(string edge) { try { return Math.Clamp(root["view"]?["margins"]?[edge]?.GetValue<float>() ?? 10, 0, 1000); } catch { return 10; } }
+    public float ZoomScale => Get("view", "zoomScale", 1f);
+    public void SetZoomScale(float scale)
+    {
+        if (!float.IsFinite(scale) || scale < .25f || scale > 5f)
+            throw new InvalidDataException("Editor zoom must be between 25% and 500%.");
+        // This is the next view's initial zoom. Existing views retain their
+        // independent magnification, and repeated/saturated actions do not
+        // rewrite the configuration file.
+        Update(candidate => {
+            if (candidate["view"] is not JsonObject) candidate["view"] = new JsonObject();
+            candidate["view"]!["zoomScale"] = scale;
+        }, notify: false, skipUnchanged: true);
+    }
     public string[] Recent => root["recentDocuments"] is JsonArray a ? a.Select(v => v?.GetValue<string>() ?? "").Where(v => v.Length > 0).Take(10).ToArray() : [];
     public void Set(string section, string key, JsonNode? value)
     {
@@ -134,18 +147,20 @@ internal sealed partial class Preferences
         }, recentOnly: true);
     }
     public void ClearRecent() => Update(candidate => candidate["recentDocuments"] = new JsonArray(), recentOnly: true);
-    private void Update(Action<JsonObject> edit, bool notify = true, bool recentOnly = false)
+    private void Update(Action<JsonObject> edit, bool notify = true, bool recentOnly = false, bool skipUnchanged = false)
     {
         if (!writable) throw new InvalidOperationException(Error);
         string path = Path.Combine(DirectoryPath, "config.json");
         var candidate = File.Exists(path) ? Read(path) : (JsonObject)root.DeepClone();
+        var previous = skipUnchanged ? candidate.DeepClone() : null;
         edit(candidate);
         // Ignore retired values of any JSON type, including externally merged
         // profiles, and remove the key only as part of a successful write.
         (candidate["code"] as JsonObject)?.Remove("vimSyntaxDirectory");
         candidate = (JsonObject)JsonNode.Parse(candidate.ToJsonString())!;
         candidate = Normalize(candidate);
-        AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(candidate, FrontendJsonContext.Indented.JsonObject));
+        if (!skipUnchanged || !JsonNode.DeepEquals(previous, candidate))
+            AtomicWrite(path, JsonSerializer.SerializeToUtf8Bytes(candidate, FrontendJsonContext.Indented.JsonObject));
         // Opening a file changes the recent menu, not theme, margins, or layout.
         // Still publish external settings edits merged from disk on this write.
         bool settingsChanged = !recentOnly || root.Select(p => p.Key).Union(candidate.Select(p => p.Key))

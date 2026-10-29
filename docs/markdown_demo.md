@@ -87,6 +87,30 @@ Setext heading level two
 2. The second item
 3. The third item
 
+Task List is available beside Bulleted List and Numbered List. New tasks are
+unchecked; imported numbered tasks retain their numbering.
+
+Bulleted tasks can be nested and mixed with ordinary bullets:
+
+- [ ] Prepare the release notes
+  - [x] Collect the highlights
+  - [ ] Add screenshots
+    - [X] Capture the light theme
+    - [ ] Capture the dark theme
+- [x] Review the spelling
+- An ordinary bullet without a checkbox
+
+Numbered tasks can also be nested and mixed with ordinary numbered items:
+
+1. [X] Plan the release
+2. [ ] Prepare the release
+   1. [x] Run the tests
+   2. [ ] Update the documentation
+      1. [ ] Review the examples
+      2. [x] Check the links
+3. An ordinary numbered item without a checkbox
+4. [ ] Publish the release
+
 A separate numbered list can begin at a different number:
 
 7. A list may start at a number other than one.
@@ -103,8 +127,8 @@ number stays visible as continuation text:
   5. Its sibling continues the run.
 
 In Preview, use Option-Enter on macOS or Alt-Enter on Windows to add a paragraph
-within a list item. The same action is available in Style > Paragraph. Enter
-starts the next item; Shift-Enter adds a line break within the paragraph.
+within a list item. Enter starts the next item; Shift-Enter adds a line break
+within the paragraph.
 Enter or Backspace on an empty final item exits the list and immediately
 returns the caret to the paragraph's unindented start. Nested items leave one
 list level at a time. Tab at the start of a paragraph just after a list moves
@@ -344,11 +368,6 @@ Tables also retain the inset of their enclosing list or quotation:
 ## Unsupported GitHub features
 
 The following examples intentionally demonstrate features that Viem does not implement. Remote-image placeholders and visible reference definitions above are deliberate presentation choices; local Markdown images preview without network access.
-
-### Task-list checkboxes
-
-- [ ] An unchecked task remains ordinary list text.
-- [x] A checked task does not become an interactive checkbox.
 
 ### Footnotes and alerts
 

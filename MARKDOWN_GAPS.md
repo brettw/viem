@@ -103,6 +103,9 @@ separately in [BUGS.md](BUGS.md).
   paragraphs retain their ownership on reopen. The action requires a collapsed
   caret; code bodies, table cells, and passive HTML blocks retain their own editing
   rules. Native Windows validation remains pending on a Windows host.
+- **GFM task lists:** `[ ]`, `[x]`, and `[X]` at the start of bulleted or numbered
+  items render as clickable checkboxes. Task List is a third list style; new
+  items use `- [ ] `, while existing imported ordered task source is retained.
 - **GFM pipe tables:** header/body structure, alignment, optional pipes,
   short and excess rows, inline formatting and explicit cell breaks. Preview
   uses content-sized cells. Native insertion, row/column actions and
@@ -129,8 +132,6 @@ Markdown caret, deletion, replacement, formatting and layout audits.
 
 ## P2 — deliberate presentation choices and deferred features
 
-2. **Task-list checkboxes.** `[ ]` and `[x]` stay literal bullet-item text;
-   there are no checkbox controls.
 4. **Image/reference presentation.** Remote images never load: Viem shows their
    URLs in boxes. Missing, unsupported or invalid local files use placeholders.
    Local previews are limited to 10 MB (10,000,000 bytes) and 5000 source pixels

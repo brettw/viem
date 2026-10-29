@@ -74,6 +74,7 @@ mod links;
 mod markdown_references;
 mod list_continuation_backspace;
 mod list_indentation;
+mod checkbox_surface;
 mod manual_completion;
 mod manual_completion_anchor;
 mod manual_completion_lifecycle;
@@ -247,3 +248,6 @@ mod markdown_code_row_deletion;
 mod markdown_deletion_caret;
 
 mod comment_style;
+
+mod markdown_tasks;
+mod markdown_task_structure;

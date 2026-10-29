@@ -71,6 +71,7 @@ internal static class StyleDefaultsLoadingTests
                 "theme style changes apply to open documents without source or revision changes"
                 + $" (revision {revision}->{document.State.document_revision}, dirty={document.IsDirty}, source={document.Source(document.State.document_revision).SequenceEqual(changed)},"
                 + $" weight={view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value}, error={preferences.Error}, theme={preferences.SelectedTheme}@{preferences.SelectedThemePath}, saved weight={JsonNode.Parse(preferences.ThemeStyleDefaults(VIEM_FORMAT_MARKDOWN))!["block_styles"]!.AsArray().Single(entry => entry!["id"]!.GetValue<string>() == "Paragraph")!["character"]!["weight"]}, format={document.State.format}, diagnostics={document.ConfigurationDiagnostics})");
+            ReloadThemeStyles(preferences, view, revision, changed);
             view.Undo();
             Check(document.Source(document.State.document_revision).SequenceEqual(source) && !document.IsDirty,
                 "theme changes preserve the existing source undo record and saved baseline");
@@ -81,6 +82,31 @@ internal static class StyleDefaultsLoadingTests
             App.Instance.Windows.Remove(window);
             CoreThemes.ReplaceCodeStyles(ownerPreferences.ThemeStyleDefaults(VIEM_FORMAT_CODE));
         }
+    }
+
+    private static void ReloadThemeStyles(Preferences preferences, CoreView view, ulong revision, byte[] source)
+    {
+        string path = preferences.SelectedThemePath!;
+        var external = Read(path);
+        external["styles"]!["markdown"]!["block_styles"]!.AsArray()
+            .Single(entry => entry!["id"]!.GetValue<string>() == "Paragraph")!["character"]!["weight"] = 620;
+        Write(path, external);
+        byte[] saved = File.ReadAllBytes(path);
+        preferences.ReloadCurrentTheme();
+        Check(view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 620
+            && view.Document.State.document_revision == revision && view.Document.Source(revision).SequenceEqual(source)
+            && File.ReadAllBytes(path).SequenceEqual(saved),
+            "Reload Style Sheet applies external styles without rewriting the theme or changing document source");
+        try {
+            File.WriteAllText(path, "{ invalid theme");
+            bool rejected = false;
+            try { preferences.ReloadCurrentTheme(); } catch { rejected = true; }
+            Check(rejected && preferences.SelectedThemePath == path
+                && view.Styles().Styles.Single(style => style.Id == "Paragraph").Value(VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT).enum_value == 620
+                && view.Document.State.document_revision == revision && view.Document.Source(revision).SequenceEqual(source),
+                "an invalid stylesheet reload preserves the current styles, selection, and document");
+        }
+        finally { File.WriteAllBytes(path, saved); }
     }
 
     private static byte[] BundledThemeInstallation(Preferences preferences, string directory)

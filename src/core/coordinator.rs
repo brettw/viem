@@ -398,6 +398,12 @@ pub enum CoreEvent {
     InsertListParagraph {
         expected: LogicalSelectionIdentity,
     },
+    ToggleCheckbox {
+        document: DocumentId,
+        revision: Revision,
+        at: usize,
+        block_id: u64,
+    },
     IndentList {
         expected: LogicalSelectionIdentity,
         unindent: bool,
@@ -1047,6 +1053,7 @@ struct InputPublicationCheckpoint {
     views: BTreeMap<ViewId, InputViewCheckpoint>,
     edit_group_owner: Option<ViewId>,
     edit_group_restoration: Option<OpenGroupRestoration>,
+    style_edit_group: Option<OpenStyleEditGroup>,
     replay_undo_floor: Option<usize>,
     queued_replay: Option<ReplayPlan>,
 }
@@ -1448,6 +1455,16 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(self.document.is_modifiable() && !self.document.is_read_only() && view.composition.is_none() && view.commands.can_insert_list_paragraph(&self.document)
             && self.list_selection_identity(view_id).is_ok_and(|selection|
                 selection.kind() == LogicalSelectionKind::None && selection.range().is_empty()))
+    }
+
+    /// Structural toolbar/menu query: no layout, source parsing or trial edit.
+    pub fn can_set_task_list(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        if view.composition.is_some() || !self.document.is_modifiable() {
+            return Ok(false);
+        }
+        Ok(self.list_selection_identity(view_id).is_ok_and(|selection|
+            self.document.can_set_task_list(selection.range())))
     }
 
     pub fn list_selection_identity(
@@ -5211,6 +5228,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .collect(),
             edit_group_owner: self.edit_group_owner,
             edit_group_restoration: self.edit_group_restoration.clone(),
+            style_edit_group: self.style_edit_group.clone(),
             replay_undo_floor: self.replay_undo_floor,
             queued_replay: self.queued_replay.clone(),
         }
@@ -5263,6 +5281,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.buffer_commands = checkpoint.buffer_commands;
         self.edit_group_owner = checkpoint.edit_group_owner;
         self.edit_group_restoration = checkpoint.edit_group_restoration;
+        self.style_edit_group = checkpoint.style_edit_group;
         self.replay_undo_floor = checkpoint.replay_undo_floor;
         self.queued_replay = checkpoint.queued_replay;
         for (id, saved) in checkpoint.views {
@@ -5315,7 +5334,14 @@ impl<P: TextMeasurementProvider> Core<P> {
         } else { None };
         let autocmd_generation = self.autocmd_input_generation;
         let mode_before = self.views.get(&view_id).filter(|view| !view.commands.has_staged_script_action()).map(|view| view.commands.mode());
-        let mut outcome = match self.handle_without_search_presentation(view_id, event) {
+        // List actions can fail while resolving hidden source syntax. Their
+        // checkpoint must precede retiring completion and closing style groups.
+        let result = if matches!(&event, CoreEvent::SetListStyle { .. } | CoreEvent::ToggleCheckbox { .. }) {
+            self.publish_atomically(view_id, |core| core.handle_without_search_presentation(view_id, event))
+        } else {
+            self.handle_without_search_presentation(view_id, event)
+        };
+        let mut outcome = match result {
             Err(CoreError::Document(DocumentError::NotModifiable)
                 | CoreError::ModelTransaction(ModelTransactionError::Document(DocumentError::NotModifiable))) => CoreOutcome {
                 command: Some(CommandOutput::not_modifiable()),
@@ -5393,6 +5419,16 @@ impl<P: TextMeasurementProvider> Core<P> {
             if !self.can_insert_list_paragraph(view_id)? {
                 return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
             }
+        }
+        if let CoreEvent::SetListStyle { expected, style } = &event {
+            if self.list_selection_identity(view_id)? != *expected { return Err(CoreError::StaleLogicalSelection); }
+            self.document.require_modifiable()?;
+            if *style == Some(crate::document::ListStyle::Task) && !self.can_set_task_list(view_id)? {
+                return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
+            }
+        }
+        if matches!(&event, CoreEvent::ToggleCheckbox { .. }) && self.views[&view_id].composition.is_some() {
+            return Err(CoreError::Document(DocumentError::UnsupportedFormatting));
         }
         self.retire_stale_completion(view_id)?;
         if self.views[&view_id].completion.is_some() {
@@ -5560,6 +5596,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             CoreEvent::TableEdit { document, revision, intent } => {
                 return self.publish_atomically(view_id, |core| core.apply_table_edit(view_id, document, revision, intent));
+            }
+            CoreEvent::ToggleCheckbox { document, revision, at, block_id } => {
+                return self.apply_native_model_request(view_id,
+                    ModelRequest::ToggleCheckbox { document, revision, at, block_id });
             }
             CoreEvent::TableSelectionEdit { expected, action } => {
                 return self.publish_atomically(view_id, |core| core.apply_table_selection_edit(view_id, expected, action));
@@ -6777,6 +6817,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             | CoreEvent::SetListStyle { .. }
             | CoreEvent::SetBlockQuote { .. }
             | CoreEvent::TableEdit { .. }
+            | CoreEvent::ToggleCheckbox { .. }
             | CoreEvent::TableSelectionEdit { .. }
             | CoreEvent::IndentList { .. }
             | CoreEvent::SetParagraphStyle { .. }

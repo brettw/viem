@@ -47,7 +47,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
     private readonly Dictionary<nint, GlyphFontMetadata> fontMetadata = new();
     // Font classification follows the same resolved default style as shaping,
     // independent of syntax runs or fallback faces in the requested text.
-    private readonly Dictionary<MarkerFont, bool> defaultFontTraits = new();
+    private readonly Dictionary<MarkerFont, (bool IsMonospaced, float CapHeight)> defaultFontTraits = new();
     private ulong inkGeneration;
     internal int CachedGlyphBounds => inkBounds.Count;
     public ulong Generation => frozenGeneration ?? (ulong)Volatile.Read(ref shared.Generation);
@@ -361,6 +361,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             metrics.ascent = Math.Max(metrics.ascent, shaped.default_metrics.ascent);
             metrics.descent = Math.Max(metrics.descent, shaped.default_metrics.descent);
             metrics.leading = Math.Max(metrics.leading, shaped.default_metrics.leading);
+            metrics.cap_height = Math.Max(metrics.cap_height, shaped.default_metrics.cap_height);
             for (ulong c = 0; c < shaped.cluster_count; c++)
             {
                 var cluster = shaped.clusters[c];
@@ -462,10 +463,11 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
         using var clusterCpu = IsWorker ? default : Diagnostics.InputPerformance.Measure("shape.clusters");
         var line = layout.LineMetrics[0];
         var defaultMarkerFont = MarkerFont.From(request.default_style, request.scale);
-        bool defaultMonospaced = DefaultFontIsMonospaced(request.default_style, request.scale,
+        var defaultTraits = DefaultFontTraits(request.default_style, request.scale,
             defaultMarkerFont, format, request.style_run_count == 0 && (text.Length == 0 || text.All(c => c == ' ')) ? capture : null);
         var defaultMetrics = new ViemTextMetricsV1 {
-            ascent = Math.Max(0, line.Baseline), descent = Math.Max(0, line.Height - line.Baseline), leading = 0
+            ascent = Math.Max(0, line.Baseline), descent = Math.Max(0, line.Height - line.Baseline), leading = 0,
+            cap_height = defaultTraits.CapHeight * request.default_style.size * request.scale
         };
         var clusters = new List<ViemShapedClusterV1>();
         var images = new Dictionary<ulong, (ulong End, string Destination)>();
@@ -524,7 +526,7 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             cluster.text_start = (ulong)globalStart;
             cluster.text_end = checked((ulong)(contextStart + byteEnd));
             cluster.advance = Math.Max(0, advance);
-            cluster.metrics = new() { ascent = Math.Max(0, ascent + baselineOffset), descent = Math.Max(0, descent - baselineOffset), leading = leading };
+            cluster.metrics = new() { ascent = Math.Max(0, ascent + baselineOffset), descent = Math.Max(0, descent - baselineOffset), leading = leading, cap_height = parts.Count == 0 ? defaultMetrics.cap_height : parts.Max(p => p.Metadata.CapHeight * p.Size) };
             cluster.typographic_bounds = new() { y = -ascent - baselineOffset, width = cluster.advance, height = Math.Max(0, ascent + descent) };
             cluster.ink_bounds = cluster.typographic_bounds;
             foreach (var part in parts)
@@ -595,18 +597,18 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             struct_size = (uint)sizeof(ViemShapeResponseV1), document_id = request.document_id, document_revision = request.document_revision,
             measurement_environment_id = request.measurement_environment_id, metrics_generation = request.metrics_generation,
             text_start = request.text_start, text_end = request.text_end, default_metrics = defaultMetrics,
-            default_font_is_monospaced = defaultMonospaced ? 1u : 0u,
+            default_font_is_monospaced = defaultTraits.IsMonospaced ? 1u : 0u,
             clusters = nativeGeometry, cluster_count = (ulong)clusters.Count,
             visual_order = arena.Copy<ulong>(order), visual_order_count = (ulong)order.Length
         };
     }
 
-    private bool DefaultFontIsMonospaced(ViemResolvedTextStyleV1 style, float scale,
+    private (bool IsMonospaced, float CapHeight) DefaultFontTraits(ViemResolvedTextStyleV1 style, float scale,
         MarkerFont key, CanvasTextFormat format, GlyphCapture? whitespaceCapture)
     {
-        if (defaultFontTraits.TryGetValue(key, out bool known)) return known;
-        bool monospaced;
-        if (whitespaceCapture?.FirstFont is { } existing) monospaced = existing.IsMonospaced;
+        if (defaultFontTraits.TryGetValue(key, out var known)) return known;
+        GlyphFontMetadata resolved;
+        if (whitespaceCapture?.FirstFont is { } existing) resolved = existing;
         else
         {
             // A space probe resolves the actual default-style face even if the
@@ -619,11 +621,12 @@ internal sealed unsafe partial class DirectWriteProvider : IDisposable
             var capture = new GlyphCapture(GetFontMetadata);
             if (variable) DirectWriteGlyphCapture.Draw(probe, capture);
             else probe.DrawToTextRenderer(capture, Vector2.Zero);
-            monospaced = capture.FirstFont?.IsMonospaced
+            resolved = capture.FirstFont
                 ?? throw new InvalidOperationException("DirectWrite returned no default font for a space.");
         }
-        if (defaultFontTraits.Count < 32) defaultFontTraits[key] = monospaced;
-        return monospaced;
+        var traits = (resolved.IsMonospaced, resolved.CapHeight);
+        if (defaultFontTraits.Count < 32) defaultFontTraits[key] = traits;
+        return traits;
     }
 
     internal static ulong[] VisualOrder(IReadOnlyList<uint> levels)
@@ -842,6 +845,7 @@ internal sealed unsafe class GlyphFontMetadata
     public string? Family { get; }
     public bool ColorGlyph { get; }
     public bool IsMonospaced { get; }
+    public float CapHeight { get; }
     public float Ascent { get; }
     public float Descent { get; }
     public float LineGap { get; }
@@ -851,7 +855,7 @@ internal sealed unsafe class GlyphFontMetadata
         var names = font.FamilyNames.Values.ToArray();
         Family = names.FirstOrDefault();
         ColorGlyph = names.Any(n => n.Contains("Emoji", StringComparison.OrdinalIgnoreCase));
-        Ascent = font.Ascent; Descent = font.Descent; LineGap = font.LineGap;
+        Ascent = font.Ascent; Descent = font.Descent; LineGap = font.LineGap; CapHeight = font.CapHeight;
         IsMonospaced = font.IsMonospaced;
     }
 }

@@ -117,16 +117,17 @@ internal sealed class TablePicker
         popup.Closed += (_, _) => { timer.Stop(); ReleaseCapture(); accept = null; State = new(); restoreFocus(); Closed?.Invoke(); };
     }
     internal Action<PointerRoutedEventArgs?>? Start;
-    internal void Open(PointerRoutedEventArgs? e, Action<uint, uint> accept)
+    internal void Open(PointerRoutedEventArgs? e, Action<uint, uint> accept, FrameworkElement? anchor = null)
     {
         if (popup.IsOpen) { Close(); return; }
         this.accept = accept; State = new(); cells.Clear(); grid.Children.Clear();
         if (e == null) State.Move(0, 0);
-        popup.XamlRoot = button.XamlRoot;
-        var at = button.TransformToVisual(null).TransformPoint(new(0, button.ActualHeight + 4));
-        var size = button.XamlRoot.Size;
+        anchor ??= button;
+        popup.XamlRoot = anchor.XamlRoot;
+        var at = anchor.TransformToVisual(null).TransformPoint(new(0, anchor.ActualHeight + 4));
+        var size = anchor.XamlRoot.Size;
         at.X = Math.Clamp(at.X, 4, Math.Max(4, size.Width - 240));
-        if (at.Y + 278 > size.Height) at.Y = Math.Max(4, at.Y - button.ActualHeight - 282);
+        if (at.Y + 278 > size.Height) at.Y = Math.Max(4, at.Y - anchor.ActualHeight - 282);
         popup.HorizontalOffset = at.X; popup.VerticalOffset = at.Y;
         availableWidth = Math.Max(100, size.Width - at.X - 4); availableHeight = Math.Max(100, size.Height - at.Y - 4);
         toolbarPress = e != null; dragging = false;

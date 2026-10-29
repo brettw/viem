@@ -214,6 +214,8 @@ pub struct ShapeRequest<'a> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextMetrics {
+    /// Native font cap height, already scaled into layout units.
+    pub cap_height: f32,
     pub ascent: f32,
     pub descent: f32,
     pub leading: f32,
@@ -302,7 +304,9 @@ impl TextMetrics {
     }
 
     pub(crate) fn is_valid(&self) -> bool {
-        self.ascent.is_finite()
+        self.cap_height.is_finite()
+            && self.cap_height >= 0.0
+            && self.ascent.is_finite()
             && self.ascent >= 0.0
             && self.descent.is_finite()
             && self.descent >= 0.0

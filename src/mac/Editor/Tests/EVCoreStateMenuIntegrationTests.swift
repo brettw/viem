@@ -343,7 +343,9 @@ final class EVCoreStateMenuIntegrationTests: XCTestCase {
 
     @MainActor
     func testZoomIsExactViewLocalLayoutStateAndActualSizeRestoresOne() throws {
-        let backend = EVCoreDocumentBackend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-view-zoom-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
         try backend.readUntitled(
             source: Data("A proportional sentence that wraps differently under magnification.".utf8),
             typeName: "public.plain-text"

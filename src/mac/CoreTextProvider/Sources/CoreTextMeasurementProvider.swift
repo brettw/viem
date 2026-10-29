@@ -1237,12 +1237,14 @@ private struct Metrics {
   let ascent: CGFloat
   let descent: CGFloat
   let leading: CGFloat
+  let capHeight: CGFloat
 
   var ffi: ViemTextMetricsV1 {
     var result = ViemTextMetricsV1()
     result.ascent = Float(ascent)
     result.descent = Float(descent)
     result.leading = Float(leading)
+    result.cap_height = Float(capHeight)
     return result
   }
 }
@@ -1251,7 +1253,8 @@ private func fontMetrics(_ font: CTFont) -> Metrics {
   Metrics(
     ascent: CTFontGetAscent(font),
     descent: CTFontGetDescent(font),
-    leading: max(CTFontGetLeading(font), 0)
+    leading: max(CTFontGetLeading(font), 0),
+    capHeight: CTFontGetCapHeight(font)
   )
 }
 
@@ -1473,18 +1476,19 @@ private func makeCluster(
 
   // The distinct fonts of the cluster's glyphs, or the style's font when it
   // has none.
-  var clusterMetrics = Metrics(ascent: 0, descent: 0, leading: 0)
+  var clusterMetrics = Metrics(ascent: 0, descent: 0, leading: 0, capHeight: 0)
   for font in clusterFonts {
     let candidate = font.metrics
     clusterMetrics = Metrics(
       ascent: max(clusterMetrics.ascent, candidate.ascent),
       descent: max(clusterMetrics.descent, candidate.descent),
-      leading: max(clusterMetrics.leading, candidate.leading)
+      leading: max(clusterMetrics.leading, candidate.leading),
+      capHeight: max(clusterMetrics.capHeight, candidate.capHeight)
     )
   }
 
   let fontMetrics = clusterMetrics
-  clusterMetrics = Metrics(ascent: max(0, fontMetrics.ascent + style.baselineOffset), descent: max(0, fontMetrics.descent - style.baselineOffset), leading: fontMetrics.leading)
+  clusterMetrics = Metrics(ascent: max(0, fontMetrics.ascent + style.baselineOffset), descent: max(0, fontMetrics.descent - style.baselineOffset), leading: fontMetrics.leading, capHeight: fontMetrics.capHeight)
 
   var inkRect = CGRect.null
   for record in records {

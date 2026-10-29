@@ -6,8 +6,14 @@ import XCTest
 
 @MainActor
 final class EVZoomIntegrationTests: XCTestCase {
+    private func configuration() -> EVConfigurationStore {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-zoom-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        return EVConfigurationStore(directory: directory, legacyDefaults: nil)
+    }
+
     func testMenuStopsSaturateAtTwentyFiveAndFiveHundredPercentWithoutEditing() throws {
-        let backend = EVCoreDocumentBackend()
+        let backend = EVCoreDocumentBackend(configuration: configuration())
         let source = Data("Words for zooming".utf8)
         try backend.readUntitled(source: source, typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -44,7 +50,7 @@ final class EVZoomIntegrationTests: XCTestCase {
     }
 
     func testCommandZoomKeysAndMenuResponderWorkInNormalAndInsertWithoutText() throws {
-        let backend = EVCoreDocumentBackend()
+        let backend = EVCoreDocumentBackend(configuration: configuration())
         let source = Data("Words".utf8)
         try backend.readUntitled(source: source, typeName: "public.plain-text")
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
@@ -77,5 +83,57 @@ final class EVZoomIntegrationTests: XCTestCase {
         }
         XCTAssertEqual(try backend.serializedSource(typeName: "public.plain-text"), source)
         withExtendedLifetime(controller) {}
+    }
+
+    func testChosenZoomSurvivesRestartAndReplacementPreservesEachLiveView() throws {
+        let config = configuration()
+        let backend = EVCoreDocumentBackend(configuration: config)
+        try backend.readUntitled(source: Data("Words".utf8), typeName: EVDocument.plainTextType)
+        let first = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        first.loadViewIfNeeded()
+        first.perform(menuCommand: .zoomIn, sender: nil)
+        XCTAssertEqual(config.zoomScale, 1.1)
+        let second = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        second.loadViewIfNeeded()
+        XCTAssertEqual(second.zoomScale, 1.1)
+        second.perform(menuCommand: .zoomIn, sender: nil)
+        XCTAssertEqual(config.zoomScale, 1.25)
+        XCTAssertEqual(first.zoomScale, 1.1)
+
+        // Reloading a buffer copies each live view; neither copy changes the saved default.
+        try backend.readUntitled(source: Data("Replacement".utf8), typeName: EVDocument.plainTextType)
+        XCTAssertEqual(first.zoomScale, 1.1)
+        XCTAssertEqual(second.zoomScale, 1.25)
+        let reopened = EVConfigurationStore(directory: config.directory, legacyDefaults: nil)
+        XCTAssertEqual(reopened.zoomScale, 1.25)
+        let restarted = EVCoreDocumentBackend(configuration: reopened)
+        let restored = try XCTUnwrap(restarted.makeEditorSurface() as? EVEditorSurfaceController)
+        restored.loadViewIfNeeded()
+        XCTAssertEqual(restored.zoomScale, 1.25)
+        restored.perform(menuCommand: .actualSize, sender: nil)
+        XCTAssertEqual(EVConfigurationStore(directory: config.directory, legacyDefaults: nil).zoomScale, 1)
+        try reopened.setZoomScale(2)
+        let generation = restored.viewportState.configuration_generation
+        restored.perform(menuCommand: .actualSize, sender: nil)
+        XCTAssertEqual(EVConfigurationStore(directory: config.directory, legacyDefaults: nil).zoomScale, 1,
+            "An explicit Actual Size choice updates the default even in a view already at 100%")
+        XCTAssertEqual(restored.viewportState.configuration_generation, generation)
+        XCTAssertEqual(first.zoomScale, 1.1)
+        XCTAssertEqual(second.zoomScale, 1.25)
+    }
+
+    func testSaveFailureKeepsSuccessfulLocalZoomAndReportsIt() throws {
+        let config = configuration()
+        try config.setZoomScale(1)
+        let backend = EVCoreDocumentBackend(configuration: config)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let invalid = Data("invalid external settings".utf8)
+        let file = config.directory.appendingPathComponent("config.json")
+        try invalid.write(to: file)
+        surface.perform(menuCommand: .zoomIn, sender: nil)
+        XCTAssertEqual(surface.zoomScale, 1.1)
+        XCTAssertFalse(try XCTUnwrap(surface.statusBarState.commandOutput).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: file), invalid)
     }
 }

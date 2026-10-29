@@ -455,6 +455,7 @@ pub(super) struct CodeSyntax {
 }
 #[derive(Default)]
 pub(super) struct Blocks {
+    pub tasks: Vec<(Range<usize>, bool)>,
     pub front_matter: Option<super::markdown_front_matter::FrontMatter>,
     pub paragraphs: Vec<Range<usize>>,
     pub soft_breaks: Vec<Range<usize>>,
@@ -480,7 +481,7 @@ impl Blocks {
         result.front_matter = context.permits_metadata().then(|| super::markdown_front_matter::recognize(text)).flatten();
         let parse_start = result.front_matter.as_ref().map_or(0, |front| front.range.end);
         let grammar = fence_grammar_text(&text[parse_start..]);
-        let parser = Parser::new_ext(&grammar, Options::ENABLE_TABLES);
+        let parser = Parser::new_ext(&grammar, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS);
         let mut tables = super::markdown_tables::TableParser::default();
         result.definitions = definitions(text, context).1;
         if let Some(front) = &result.front_matter {
@@ -498,6 +499,7 @@ impl Blocks {
             if matches!(event, Event::InlineHtml(_)) { result.inline_html.push(range.clone()); }
             match &event {
                 Event::Start(Tag::Paragraph) => result.paragraphs.push(range.clone()),
+                Event::TaskListMarker(checked) => result.tasks.push((range.clone(), *checked)),
                 Event::SoftBreak => result.soft_breaks.push(range.clone()),
                 Event::HardBreak => result.hard_breaks.push(range.clone()),
                 Event::Code(_) => result.inline_code.push(range.clone()),
@@ -616,6 +618,7 @@ impl Blocks {
             front.range = at(front.range.start)..at(front.range.end);
             front.body = at(front.body.start)..at(front.body.end);
         }
+        for (range, _) in &mut self.tasks { *range = at(range.start)..at(range.end); }
         self.tables = self.tables.into_iter().map(|table| table.to_source(input)).collect();
         for block in &mut self.blocks { block.range = at(block.range.start)..at(block.range.end); block.content = at(block.content.start)..at(block.content.end); }
         for owner in &mut self.owners { owner.range = at(owner.range.start)..at(owner.range.end); }

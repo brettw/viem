@@ -337,6 +337,7 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
             XCTAssertTrue(preferences.setWhitespacePresentation(options))
             XCTAssertEqual(geometry(try XCTUnwrap(surface.layoutSnapshot)), geometry(before), type)
             XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled, type == EVDocument.codeType)
+            XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, type == EVDocument.codeType ? .on : .off)
             XCTAssertEqual(try backend.serializedSource(typeName: type), Data(source.utf8))
         }
         let (_, markdown, _) = try fixture(source, type: EVDocument.markdownType)
@@ -355,6 +356,7 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, .on)
         surface.setMarkdownPreview(true)
         XCTAssertFalse(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled)
+        XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, .off)
         surface.setMarkdownPreview(false)
         XCTAssertTrue(surface.presentation(for: .alignIndentsToPreviousLine).isEnabled)
         XCTAssertEqual(surface.presentation(for: .alignIndentsToPreviousLine).state, .on)

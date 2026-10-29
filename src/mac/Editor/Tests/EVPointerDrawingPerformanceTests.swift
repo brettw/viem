@@ -180,7 +180,9 @@ final class EVPointerDrawingPerformanceTests: XCTestCase {
     }
 
     private func makeSurface(_ source: String) throws -> (EVEditorSurfaceController, NSWindow) {
-        let backend = EVCoreDocumentBackend()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("viem-pointer-drawing-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let backend = EVCoreDocumentBackend(configuration: EVConfigurationStore(directory: directory, legacyDefaults: nil))
         try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.plainTextType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

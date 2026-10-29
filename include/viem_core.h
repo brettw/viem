@@ -691,6 +691,7 @@ typedef struct ViemEffectBatchInfoV1 {
   ((uint32_t)sizeof(ViemEffectBatchInfoV1))
 
 typedef struct ViemTextMetricsV1 {
+  float cap_height;
   float ascent;
   float descent;
   float leading;
@@ -1489,9 +1490,12 @@ typedef struct ViemPositionedClusterV1 {
 #define VIEM_LAYOUT_DECORATION_CODE_LANGUAGE (1u << 4)
 /* Fixed language label: no picker interaction or dropdown indicator. */
 #define VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED (1u << 5)
+#define VIEM_LAYOUT_DECORATION_CHECKBOX (1u << 6)
+#define VIEM_LAYOUT_DECORATION_CHECKED (1u << 7)
 /* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
 typedef struct ViemLayoutDecorationV1 {
+  uint64_t paragraph_id;
   uint32_t struct_size;
   uint32_t flags;
   uint64_t row_index;
@@ -2002,6 +2006,7 @@ typedef struct ViemSetEncodingV1 {
 #define VIEM_LIST_STYLE_NONE 0u
 #define VIEM_LIST_STYLE_BULLET 1u
 #define VIEM_LIST_STYLE_NUMBERED 2u
+#define VIEM_LIST_STYLE_TASK 3u
 typedef struct ViemSetListStyleV1 {
   uint32_t struct_size;
   uint32_t style;
@@ -2914,6 +2919,9 @@ ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
 #define VIEM_SELECTED_STYLE_HAS_NON_QUOTE (1u << 6)
 #define VIEM_SELECTED_STYLE_HAS_TABLE (1u << 7)
 #define VIEM_SELECTED_STYLE_HAS_CODE_BLOCK (1u << 8)
+#define VIEM_SELECTED_STYLE_HAS_TASKS (1u << 9)
+/* Indexed task-list eligibility for the current selection and editing state. */
+#define VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST (1u << 10)
 typedef struct ViemSelectedStylesInfoV1 {
   uint32_t struct_size;
   uint32_t flags;
@@ -3192,6 +3200,11 @@ ViemStatus viem_core_view_take_startup_effects(ViemCoreHandle core, ViemViewId v
 /* Replace the theme names `:colorscheme` matches, ignoring case: UTF-8
    names separated by NUL bytes. Call at startup and when themes change. */
 ViemStatus viem_set_theme_names(const uint8_t *names, uint64_t length);
+
+/* The paragraph must have a checkbox in this exact current layout snapshot. */
+ViemStatus viem_core_view_toggle_checkbox(ViemCoreHandle core, ViemViewId view,
+    const ViemLayoutSnapshotIdentityV1 *expected, uint64_t paragraph_id,
+    ViemCoreOutcomeV1 *out_outcome);
 
 #ifdef __cplusplus
 }

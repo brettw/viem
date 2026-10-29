@@ -41,6 +41,8 @@ pub use code_blocks::*;
 pub use links::*;
 mod images;
 pub use images::*;
+mod checkboxes;
+pub use checkboxes::*;
 mod quotes;
 pub use quotes::*;
 mod substitute_confirmation;
@@ -853,6 +855,7 @@ pub const VIEM_EFFECT_BATCH_INFO_V1_SIZE: u32 = size_of::<ViemEffectBatchInfoV1>
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViemTextMetricsV1 {
+    pub cap_height: f32,
     pub ascent: f32,
     pub descent: f32,
     pub leading: f32,
@@ -1838,6 +1841,7 @@ pub const VIEM_POSITIONED_CLUSTER_V1_SIZE: u32 = size_of::<ViemPositionedCluster
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViemLayoutDecorationV1 {
+    pub paragraph_id: u64,
     pub struct_size: u32,
     pub flags: u32,
     pub row_index: u64,
@@ -1853,6 +1857,8 @@ pub struct ViemLayoutDecorationV1 {
     pub paint: ViemTextPaintV1,
 }
 pub const VIEM_LAYOUT_DECORATION_V1_SIZE: u32 = size_of::<ViemLayoutDecorationV1>() as u32;
+pub const VIEM_LAYOUT_DECORATION_CHECKBOX: u32 = 1 << 6;
+pub const VIEM_LAYOUT_DECORATION_CHECKED: u32 = 1 << 7;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER: u32 = 1 << 1;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND: u32 = 1 << 2;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BORDER: u32 = 1 << 3;
@@ -2259,6 +2265,9 @@ pub const VIEM_SET_ENCODING_V1_SIZE: u32 = size_of::<ViemSetEncodingV1>() as u32
 pub const VIEM_LIST_STYLE_NONE: u32 = 0;
 pub const VIEM_LIST_STYLE_BULLET: u32 = 1;
 pub const VIEM_LIST_STYLE_NUMBERED: u32 = 2;
+pub const VIEM_LIST_STYLE_TASK: u32 = 3;
+pub const VIEM_SELECTED_STYLE_HAS_TASKS: u32 = 1 << 9;
+pub const VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST: u32 = 1 << 10;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3194,6 +3203,7 @@ unsafe fn provider_utf8(
 
 fn text_metrics_from_ffi(metrics: ViemTextMetricsV1) -> TextMetrics {
     TextMetrics {
+        cap_height: metrics.cap_height,
         ascent: metrics.ascent,
         descent: metrics.descent,
         leading: metrics.leading,
@@ -8560,6 +8570,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                 bytes.reserve(length);
                 for (row_index, item) in snapshot.decorations_in_paint_order() {
                         values.push(ViemLayoutDecorationV1 {
+                            paragraph_id: match item.owner { Some(crate::layout::DecorationOwner::Paragraph(id)) => id, _ => 0 },
                             struct_size: VIEM_LAYOUT_DECORATION_V1_SIZE,
                             flags: (if item.render_run.is_some() {
                                 VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN
@@ -8567,6 +8578,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                                 0
                             }) | match item.kind {
                                 crate::layout::DecorationKind::BlockQuoteBorder | crate::layout::DecorationKind::ThematicBreak => VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER,
+                                crate::layout::DecorationKind::Checkbox { checked } => VIEM_LAYOUT_DECORATION_CHECKBOX | if checked { VIEM_LAYOUT_DECORATION_CHECKED } else { 0 },
                                 crate::layout::DecorationKind::BlockBackground => VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND,
                                 crate::layout::DecorationKind::BlockBorder => VIEM_LAYOUT_DECORATION_BLOCK_BORDER,
                                 crate::layout::DecorationKind::CodeLanguage { picker_disabled } => VIEM_LAYOUT_DECORATION_CODE_LANGUAGE
@@ -10214,6 +10226,7 @@ pub unsafe extern "C" fn viem_core_view_set_list_style(
             VIEM_LIST_STYLE_NONE => None,
             VIEM_LIST_STYLE_BULLET => Some(crate::document::ListStyle::Bullet),
             VIEM_LIST_STYLE_NUMBERED => Some(crate::document::ListStyle::Numbered),
+            VIEM_LIST_STYLE_TASK => Some(crate::document::ListStyle::Task),
             _ => return Err(ViemStatus::InvalidArgument),
         };
         unsafe { clear_outcome(out_outcome)? };
@@ -11909,6 +11922,7 @@ mod tests {
         storage.responses.reserve(count);
         for (index, (request, response)) in requests.iter().zip(responses).enumerate() {
             let metrics = ViemTextMetricsV1 {
+                cap_height: 0.0,
                 ascent: 10.0,
                 descent: 3.0,
                 leading: 1.0,
@@ -13791,7 +13805,9 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
                     | (u32::from(selected.has_quotes) << 5)
                     | (u32::from(selected.has_non_quote) << 6)
                     | (u32::from(selected.has_table) << 7)
-                    | (u32::from(selected.has_code_block) << 8),
+                    | (u32::from(selected.has_code_block) << 8)
+                    | if selected.has_tasks { VIEM_SELECTED_STYLE_HAS_TASKS } else { 0 }
+                    | if core.can_set_task_list(ViewId(view)).map_err(core_status)? { VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST } else { 0 },
                 document_id: core.document().id().0,
                 document_revision: expected_revision,
                 style_sheet_revision: core.document().projection().style_sheet().revision.0,

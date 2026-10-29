@@ -68,6 +68,9 @@ fields receive portable defaults; unknown fields and explicit sparse style
 values survive. Recent-document lists have at most ten absolute paths on both
 platforms. Native code owns profile discovery, migration, file identity and
 atomic I/O. Invalid files remain untouched; normalization alone never saves.
+`view.zoomScale` defaults to 1 and accepts the core zoom range (0.25–5).
+Explicit native zoom changes save this default for new views and future launches;
+restoring or copying a live view never saves it or rescales other open views.
 
 `viem_effect_batch_read` returns one descriptor of immutable arrays owned by the
 batch. Copy needed data before releasing the handle; never release concurrently
@@ -79,6 +82,19 @@ message effects. Presentation exports include recording register, bounded UTF-8
 pending-command text and active count.
 
 ## Native text decoration geometry
+
+`ViemTextMetricsV1.cap_height` carries the native font's scaled cap height.
+Task-list checkbox decorations use a square with its bottom at the first row's
+baseline and its height equal to that metric. `paragraph_id` identifies the
+owning paragraph only within the supplied snapshot; checkbox toggles reject
+stale document, view, layout, configuration and provider identities.
+
+The cap-height field grows the ABI metrics record from 12 to 16 bytes. Keeping
+the native metric avoids estimating it from ascent or point size. The 2026-10-27
+standard, supplemental and rich-paste memory runs passed the existing limits;
+the 4 MiB Markdown/two-view fixture retained 126.52 MiB of requested Rust heap
+with a 240.49 MiB peak (mock shaping, without native UI). This bounded metric
+cost is accepted; no memory limits were raised.
 
 Both frontends draw filled rectangles one layout unit thick across the cluster's
 full typographic width, using its resolved foreground. Let `baseline` be the row

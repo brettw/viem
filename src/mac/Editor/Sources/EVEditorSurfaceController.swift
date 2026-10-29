@@ -232,12 +232,11 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func prepareReplacementSession(for replacement: EVCoreDocumentBackend) throws -> EVCoreViewSession {
-        let prepared = try prepareSession(for: replacement)
-        if let session {
-            let viewport = try session.viewportState()
+        let viewport = try session?.viewportState()
+        let prepared = try prepareSession(for: replacement, initialScale: viewport?.scale)
+        if let session, let viewport {
             _ = try prepared.setWrap(viewport.flags & UInt32(VIEM_VIEWPORT_STATE_WRAP) != 0)
             try prepared.setNumber(session.number())
-            _ = try prepared.setScale(CGFloat(viewport.scale))
             if replacement.sourceFormat == backend.sourceFormat {
                 try prepared.setLineMode(session.lineMode())
             }
@@ -246,14 +245,22 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         return prepared
     }
 
-    private func prepareSession(for document: EVCoreDocumentBackend) throws -> EVCoreViewSession {
+    private func prepareSession(for document: EVCoreDocumentBackend, initialScale: Float? = nil) throws -> EVCoreViewSession {
         EVStartupPerformance.mark("surface.session.begin")
         defer { EVStartupPerformance.mark("surface.session.end") }
         let size = isViewLoaded ? view.bounds.size : NSSize(width: 920, height: 655)
         let viewportSize = isViewLoaded ? editorView.layoutViewportSize : EVEditorView.layoutViewportSize(for: size)
         // Initial padding belongs in the first layout request. Applying it
         // afterward discards measured heights and reshapes the opening viewport.
-        return try makeCoreViewSession(document, viewportSize, viewPreferences.margins)
+        let prepared = try makeCoreViewSession(document, viewportSize, viewPreferences.margins)
+        do {
+            let scale = initialScale ?? document.configuration.zoomScale
+            if scale != 1 { _ = try prepared.setScale(CGFloat(scale)) }
+            return prepared
+        } catch {
+            prepared.detach()
+            throw error
+        }
     }
 
     func installPreparedSession(_ attachedSession: EVCoreViewSession) {
@@ -965,12 +972,14 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             setZoom(adjacentTo: zoomScale, increasing: false, session: session)
         case .actualSize:
             setZoom(1, session: session)
-        case .bulletedList, .numberedList, .removeList:
+        case .bulletedList, .numberedList, .taskList, .removeList:
+            guard menuCommand != .taskList || presentation(for: menuCommand).isEnabled else { return }
             let remove = menuCommand == .removeList || presentation(for: menuCommand).state == .on
             performInput {
                 let selection = try session.listSelection()
                 let style: UInt32 = remove ? UInt32(VIEM_LIST_STYLE_NONE)
-                    : menuCommand == .bulletedList ? UInt32(VIEM_LIST_STYLE_BULLET) : UInt32(VIEM_LIST_STYLE_NUMBERED)
+                    : menuCommand == .bulletedList ? UInt32(VIEM_LIST_STYLE_BULLET)
+                    : menuCommand == .taskList ? UInt32(VIEM_LIST_STYLE_TASK) : UInt32(VIEM_LIST_STYLE_NUMBERED)
                 _ = try session.setListStyle(style, expected: selection)
             }
         case .increaseIndent, .decreaseIndent:
@@ -988,6 +997,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             formattingToolbar.toggleCharacterCode(formattingToolbar.characterCode)
         case .insertLink:
             linkPopover.openEditor()
+        case .insertReference:
+            guard presentation(for: .insertReference).isEnabled else { return }
+            linkPopover.openReferenceEditor()
+        case .insertImage:
+            guard presentation(for: .insertImage).isEnabled else { return }
+            imagePopover.performToolbarAction()
+        case .insertTable:
+            formattingToolbar.openTablePicker()
+        case .blockQuote:
+            formattingToolbar.toggleBlockQuote(formattingToolbar.blockQuote)
+        case .codeBlock:
+            formattingToolbar.toggleCodeBlock(formattingToolbar.codeBlock)
         case .bold:
             toggleSemanticStyle(UInt32(VIEM_SEMANTIC_STYLE_STRONG), session: session)
         case .italic:
@@ -1040,7 +1061,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: session != nil && backend.sourceFormat != .plainText)
         case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
             headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
-        case .bulletedList, .numberedList, .removeList:
+        case .bulletedList, .numberedList, .taskList, .removeList:
             listStylePresentation(menuCommand)
         case .increaseIndent, .decreaseIndent:
             listIndentPresentation(unindent: menuCommand == .decreaseIndent)
@@ -1102,7 +1123,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
                                   state: layoutSnapshot?.whitespace.enabled == true ? .on : .off)
         case .alignIndentsToPreviousLine:
             EVMenuItemPresentation(isEnabled: backend.sourceFormat == .code,
-                                  state: layoutSnapshot?.whitespace.alignIndentsToPreviousLine == true ? .on : .off)
+                                  state: backend.sourceFormat == .code && layoutSnapshot?.whitespace.alignIndentsToPreviousLine == true ? .on : .off)
         case .useSelectionForFind:
             EVMenuItemPresentation(
                 isEnabled: selectedUTF8Ranges().contains(where: { !$0.isEmpty })
@@ -1123,6 +1144,16 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             characterCodePresentation()
         case .insertLink:
             backend.sourceFormat.isMarkdown ? linkPopover.editorPresentation : .disabled
+        case .insertReference:
+            backend.sourceFormat.isMarkdown ? linkPopover.referenceToolbarPresentation : .disabled
+        case .insertImage:
+            backend.sourceFormat.isMarkdown ? imagePopover.toolbarPresentation : .disabled
+        case .insertTable:
+            EVMenuItemPresentation(isEnabled: backend.sourceFormat.isMarkdown && ((try? session?.tableContext().flags) ?? 0) & 1 != 0)
+        case .blockQuote:
+            blockQuotePresentation()
+        case .codeBlock:
+            codeBlockPresentation()
         case .bold:
             semanticStyleMenuPresentation(
                 UInt32(VIEM_SEMANTIC_STYLE_STRONG),
@@ -1423,10 +1454,18 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     private func setZoom(_ scale: Float, session: EVCoreViewSession) {
-        guard scale.isFinite, scale > 0, abs(scale - zoomScale) > 0.0001 else { return }
-        editorView.performZoomGeometryUpdate {
-            self.performInput { _ = try session.setScale(CGFloat(scale)) }
+        guard scale.isFinite, scale > 0 else { return }
+        let changesGeometry = abs(scale - zoomScale) > 0.0001
+        let apply = {
+            self.performInput {
+                if changesGeometry { _ = try session.setScale(CGFloat(scale)) }
+                // Persist explicit choices even at the current scale: another
+                // view may have changed the default, or a previous save failed.
+                try self.backend.configuration.setZoomScale(scale)
+            }
         }
+        if changesGeometry { editorView.performZoomGeometryUpdate(apply) }
+        else { apply() }
     }
 
     private func inlinePropertyMenuPresentation(_ command: EVMenuCommand, session: EVCoreViewSession?) -> EVMenuItemPresentation {

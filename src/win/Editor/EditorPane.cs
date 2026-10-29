@@ -58,7 +58,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private readonly DispatcherTimer mapping = new() { Interval = TimeSpan.FromSeconds(1) };
     private bool disposed, refreshing, scrollUpdating, inputUpdating, textCaptureQueued, composing, compositionRejected, dragging, wordSelectionDragging, caretVisible = true;
     private bool refreshPending;
-    private bool gutterSelectionDragging, pointerOverText, pointerOverGutter;
+    private bool gutterSelectionDragging, pointerOverText, pointerOverGutter, pointerOverCheckbox;
     private readonly InputCursor textArrowCursor = InputSystemCursor.Create(InputSystemCursorShape.Arrow);
     private readonly InputCursor textInsertionCursor = InputSystemCursor.Create(InputSystemCursorShape.IBeam);
     private InputCursor? gutterCursor;
@@ -69,6 +69,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         ProtectedCursor = gutterSelectionDragging ? gutterCursor ??= GutterCursor.Create()
             : tableColumnGesture != null ? columnCursor ??= GutterCursor.CreateColumnSelection()
             : pressedPointer != null ? textInsertionCursor
+            : pointerOverCheckbox ? textArrowCursor
             : pointerOverGutter ? gutterCursor ??= GutterCursor.Create()
             : pointerOverColumnStrip ? columnCursor ??= GutterCursor.CreateColumnSelection()
             : pointerOverText && (presentation.mode == VIEM_MODE_INSERT || CoreView.IsTextSelectionMode(presentation.mode)) ? textInsertionCursor : textArrowCursor;
@@ -85,7 +86,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         pointerOverText = point.X >= 0 && point.X < Canvas.ActualWidth && point.Y >= 0 && point.Y < Canvas.ActualHeight;
         pointerOverGutter = point.X >= -GutterWidth && point.X < 0 && point.Y >= 0 && point.Y < Canvas.ActualHeight;
         pointerOverColumnStrip = false;
-        if (pointerOverText) {
+        pointerOverCheckbox = pointerOverText && CheckboxAt(point) != null;
+        if (pointerOverText && !pointerOverCheckbox) {
             try { pointerOverGutter = IsRowSelectionPoint(point); pointerOverColumnStrip = !pointerOverGutter && TableColumnStripCell(point) != null; }
             catch (CoreException) { pointerOverGutter = false; } // Stale hover geometry cannot start an edit.
         }
@@ -167,7 +169,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Canvas.PointerPressed += OnPointerPressed;
         Canvas.PointerMoved += OnPointerMoved;
         Canvas.PointerEntered += (_, e) => { UpdatePointerRegion(e.GetCurrentPoint(Canvas).Position); MoveCodeBlockLanguageHover(e.GetCurrentPoint(Canvas).Position); };
-        Canvas.PointerExited += (_, _) => { pointerOverText = pointerOverGutter = pointerOverColumnStrip = false; UpdatePointerCursor(); MoveCodeBlockLanguageHover(null); caretHoverLocation = null; SetCaretHover(null); };
+        Canvas.PointerExited += (_, _) => { pointerOverText = pointerOverGutter = pointerOverColumnStrip = pointerOverCheckbox = false; UpdatePointerCursor(); MoveCodeBlockLanguageHover(null); caretHoverLocation = null; SetCaretHover(null); };
         Canvas.PointerReleased += (_, e) => {
             if (pressedPointer != e.Pointer.PointerId) return;
             EndPointerSelection(Canvas, e);
@@ -250,8 +252,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (View != null) { ResetImagePreviews(); View.Provider.ResetDevice(Canvas.Device); View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); return; }
         var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
         using (Diagnostics.StartupPerformance.Measure("editor.createView")) View = new(Document, Canvas.Device, DispatcherQueue, (float)Canvas.ActualWidth, (float)Canvas.ActualHeight, padding);
+        if (preferences.ZoomScale != 1) View.Zoom(preferences.ZoomScale);
         View.SetHostRegister(35, AlternatePath ?? "");
-        View.Changed += Refresh; View.Effects += ApplyEffects;
+        View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom;
         bool applyStartup = !preferences.StartupApplicationOptionsApplied;
         preferences.StartupApplicationOptionsApplied = true;
         Run(() => View.TakeStartupEffects(applyStartup));
@@ -287,14 +290,19 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissCodeBlockLanguageMenu();
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); ResetImagePreviews();
         Document.Changed -= DocumentChanged;
-        if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.Dispose(); }
+        if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.ZoomChanged -= RememberZoom; View.Dispose(); }
         Document = document; View = prepared; View.SetHostRegister(35, AlternatePath ?? "");
         Document.Changed += DocumentChanged;
-        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; Run(() => View.TakeStartupEffects(false)); }
+        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom; Run(() => View.TakeStartupEffects(false)); }
         mapping.Stop(); compositionRejected = composing; composing = false; ClearInput();
         snapshot = null; InvalidateDrawingCache(); Refresh();
     }
     private void DocumentChanged() { if (View != null) Run(() => { View.Refresh(); }); }
+    private void RememberZoom(float scale)
+    {
+        try { preferences.SetZoomScale(scale); }
+        catch (Exception error) { SetMessage("Unable to save editor zoom: " + error.Message); }
+    }
     private void PreferencesChanged() { ApplyTheme(); if (View != null) Run(ApplyPreferences); UpdateCaretHover(); }
     private void ApplyPreferences()
     {
@@ -497,6 +505,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
+        if (ToggleCheckboxAt(e.GetCurrentPoint(Canvas).Position)) { e.Handled = true; return; }
         if (ShowCodeBlockLanguageMenu(e.GetCurrentPoint(Canvas).Position)) { e.Handled = true; return; }
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         caretHoverLocation = null; SetCaretHover(null);
@@ -536,7 +545,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             var location = e.GetCurrentPoint(Canvas).Position;
             TableHover(location); UpdatePointerRegion(location);
             MoveCodeBlockLanguageHover(location);
-            if (pointerOverGutter || pointerOverColumnStrip) { caretHoverLocation = null; SetCaretHover(null); }
+            if (pointerOverGutter || pointerOverColumnStrip || pointerOverCheckbox) { caretHoverLocation = null; SetCaretHover(null); }
             else MoveCaretHover(location);
             return;
         }
@@ -777,6 +786,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (tableSelection.active == 0) foreach (var rectangle in snapshot.Selection) drawing.FillRectangle(OffsetRect(rectangle.rect, viewport), theme.Selection);
         DrawTableSelection(drawing, theme.Selection);
         drawing.DrawImage(cachedText, scrollOffset);
+        DrawCheckboxes(drawing);
         DrawInlineImages(drawing);
         if (CaretHoverRectangle is Rect hover && window.IsWindowActive) {
             var color = theme.Caret; color.A = (byte)Math.Round(color.A * .2);
@@ -840,6 +850,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         ResetImagePreviews();
         preferences.Changed -= PreferencesChanged; Document.Changed -= DocumentChanged; ClipboardFormats.ContentChanged -= ClipboardChanged;
+        if (View != null) View.ZoomChanged -= RememberZoom;
         if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 18362)) scrollbarSettings.AutoHideScrollBarsChanged -= ScrollBarPreferenceChanged;
         InvalidateDrawingCache();
         pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;

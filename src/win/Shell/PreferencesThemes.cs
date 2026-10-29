@@ -222,6 +222,11 @@ internal sealed partial class Preferences
         var candidate = file == null ? DefaultTheme() : ReadThemeFile(file.Path);
         PublishTheme(candidate, file?.Name, () => Update(root => SetThemeSelection(root, file?.Name, file?.Path), notify: false), file?.Path);
     }
+    public void ReloadCurrentTheme()
+    {
+        var candidate = SelectedThemePath is { } path ? ReadThemeFile(path) : DefaultTheme();
+        PublishTheme(candidate, SelectedTheme, () => { }, SelectedThemePath);
+    }
     public void CreateTheme(string name)
     {
         CoreThemes.ValidateName(name);

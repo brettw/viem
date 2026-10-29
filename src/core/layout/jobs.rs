@@ -1718,6 +1718,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, request)| {
                     let metrics = TextMetrics {
+                        cap_height: 0.0,
                         ascent: 10.0,
                         descent: 3.0,
                         leading: 1.0,

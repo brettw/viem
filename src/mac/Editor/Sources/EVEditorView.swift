@@ -2128,6 +2128,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         if gutterSelectionDragging { return EVLineNumberGutter.selectionCursor }
         if tables.isSelectingColumns { return EVTableInteraction.columnSelectionCursor }
         if caretHoverPointerPressed { return .iBeam }
+        if let snapshot = surface?.layoutSnapshot, checkbox(at: point, in: snapshot) != nil { return .arrow }
         if isRowSelectionPoint(point) { return EVLineNumberGutter.selectionCursor }
         if tables.columnSelectionCell(at: point) != nil { return EVTableInteraction.columnSelectionCursor }
         if textViewportRect.contains(point),
@@ -2164,6 +2165,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
         if lineNumberGutterWidth > 0 {
             addCursorRect(NSRect(x: 0, y: 0, width: lineNumberGutterWidth, height: textViewportRect.height), cursor: EVLineNumberGutter.selectionCursor)
+        }
+        if let snapshot = surface?.layoutSnapshot {
+            for item in snapshot.decorations where item.flags & UInt32(VIEM_LAYOUT_DECORATION_CHECKBOX) != 0 {
+                let rect = viewRect(item.typographic_bounds).intersection(textViewportRect)
+                if !rect.isEmpty { addCursorRect(rect, cursor: .arrow) }
+            }
         }
         // Margin widths vary with each displayed row. The tracking area's
         // cursorUpdate/mouseMoved callbacks classify the exact current point.
@@ -2355,7 +2362,31 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         }
     }
 
+    private func checkbox(at point: NSPoint, in snapshot: EVLayoutExport) -> ViemLayoutDecorationV1? {
+        snapshot.decorations.first(where: {
+            $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CHECKBOX) != 0
+                && viewRect($0.typographic_bounds).contains(point)
+        })
+    }
+
+    private func toggleCheckbox(for event: NSEvent) -> Bool {
+        guard !event.modifierFlags.contains(.control), let surface,
+              surface.refreshGeometryBeforeInteraction(), let snapshot = surface.layoutSnapshot else { return false }
+        let point = convert(event.locationInWindow, from: nil)
+        guard let item = checkbox(at: point, in: snapshot) else { return false }
+        // Overlay offsets are presentation-only. A checkbox click must not
+        // commit completion and then try to edit through its obsolete geometry.
+        guard !compositionActive, surface.completion?.isActive != true,
+              let session = surface.session else { return true }
+        window?.makeFirstResponder(self)
+        surface.performInput {
+            _ = try session.toggleCheckbox(paragraphID: item.paragraph_id, expected: snapshot.info.identity)
+        }
+        return true
+    }
+
     override func mouseDown(with event: NSEvent) {
+        if toggleCheckbox(for: event) { return }
         if showCodeBlockLanguageMenu(for: event) { return }
         setCaretHoverRect(nil)
         surface?.dismissCommandOutput()
@@ -3622,6 +3653,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         for item in listMarkersForDrawing(in: snapshot, dirtyRect: dirtyRect) {
             if item.flags & UInt32(VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER | VIEM_LAYOUT_DECORATION_CODE_LANGUAGE) != 0 { continue }
             guard let row = row(for: item.row_index, in: snapshot.rows) else { continue }
+            if item.flags & UInt32(VIEM_LAYOUT_DECORATION_CHECKBOX) != 0 {
+                EVCheckboxDrawing.draw(in: viewRect(item.typographic_bounds),
+                    checked: item.flags & UInt32(VIEM_LAYOUT_DECORATION_CHECKED) != 0,
+                    enabled: true,
+                    view: self, context: context)
+                continue
+            }
             let foreground = nativeForeground(item.paint)
             if item.paint.flags & UInt32(VIEM_TEXT_PAINT_HAS_BACKGROUND) != 0 {
                 nativeColor(item.paint.background).setFill()

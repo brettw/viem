@@ -9,6 +9,8 @@ struct EVSelectedNamedStyles {
   let characterMixed: Bool
   let hasBullets: Bool
   let hasNumbering: Bool
+  let hasTasks: Bool
+  let canSetTaskList: Bool
   let hasNonList: Bool
   let hasQuotes: Bool
   let hasNonQuote: Bool
@@ -20,10 +22,13 @@ struct EVSelectedNamedStyles {
   }
 
   var bulletState: NSControl.StateValue {
-    hasBullets ? (hasNumbering || hasNonList ? .mixed : .on) : .off
+    hasBullets ? (hasNumbering || hasTasks || hasNonList ? .mixed : .on) : .off
   }
   var numberedState: NSControl.StateValue {
-    hasNumbering ? (hasBullets || hasNonList ? .mixed : .on) : .off
+    hasNumbering ? (hasBullets || hasTasks || hasNonList ? .mixed : .on) : .off
+  }
+  var taskState: NSControl.StateValue {
+    hasTasks ? (hasBullets || hasNumbering || hasNonList ? .mixed : .on) : .off
   }
 }
 
@@ -58,6 +63,8 @@ extension EVCoreViewSession {
       characterMixed: info.flags & UInt32(VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0,
       hasBullets: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_BULLETS) != 0,
       hasNumbering: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NUMBERING) != 0,
+      hasTasks: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_TASKS) != 0,
+      canSetTaskList: info.flags & UInt32(VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST) != 0,
       hasNonList: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NON_LIST) != 0,
       hasQuotes: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_QUOTES) != 0,
       hasNonQuote: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NON_QUOTE) != 0,

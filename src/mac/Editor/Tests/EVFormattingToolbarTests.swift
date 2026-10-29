@@ -57,6 +57,8 @@ final class EVFormattingToolbarTests: XCTestCase {
     }
     XCTAssertGreaterThan(abs(scriptNumberCenters[0] - scriptNumberCenters[1]), 0.25,
       "Superscript and subscript must visibly place their numerals at different heights")
+    let block = try XCTUnwrap(toolbar.commandButtons[.bulletedList]?.superview as? NSStackView)
+    XCTAssertEqual(block.arrangedSubviews.prefix(3).compactMap { ($0 as? NSButton)?.title }, ["Bulleted List", "Numbered List", "Task List"])
     let codeLink = try XCTUnwrap(toolbar.characterCode.superview as? NSStackView)
     XCTAssertEqual(codeLink.arrangedSubviews.compactMap { ($0 as? NSButton)?.title }, ["Code (Character)", "Link", "[d]"])
     let characterIndex = try XCTUnwrap(row.arrangedSubviews.firstIndex(of: character))
@@ -398,7 +400,7 @@ final class EVFormattingToolbarTests: XCTestCase {
     surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 5))
     toolbar.refresh()
     XCTAssertEqual(Set(toolbar.commandButtons.keys), Set([
-      .bold, .italic, .underline, .strikethrough, .superscript, .subscript, .bulletedList, .numberedList, .increaseIndent, .decreaseIndent
+      .bold, .italic, .underline, .strikethrough, .superscript, .subscript, .bulletedList, .numberedList, .taskList, .increaseIndent, .decreaseIndent
     ]))
     XCTAssertFalse(try XCTUnwrap(toolbar.commandButtons[.strikethrough]).isHidden)
     let bold = try XCTUnwrap(toolbar.commandButtons[.bold])

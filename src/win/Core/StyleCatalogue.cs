@@ -15,8 +15,13 @@ internal sealed record SelectedStyles(ViemStyleSheetIdentityV1 Identity, uint Fl
     public bool CharacterMixed => (Flags & VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0;
     public uint ListState(uint kind)
     {
-        uint own = kind == VIEM_LIST_STYLE_BULLET ? VIEM_SELECTED_STYLE_HAS_BULLETS : VIEM_SELECTED_STYLE_HAS_NUMBERING;
-        uint other = kind == VIEM_LIST_STYLE_BULLET ? VIEM_SELECTED_STYLE_HAS_NUMBERING : VIEM_SELECTED_STYLE_HAS_BULLETS;
+        uint own = kind switch {
+            VIEM_LIST_STYLE_BULLET => VIEM_SELECTED_STYLE_HAS_BULLETS,
+            VIEM_LIST_STYLE_NUMBERED => VIEM_SELECTED_STYLE_HAS_NUMBERING,
+            VIEM_LIST_STYLE_TASK => VIEM_SELECTED_STYLE_HAS_TASKS,
+            _ => 0
+        };
+        uint other = (VIEM_SELECTED_STYLE_HAS_BULLETS | VIEM_SELECTED_STYLE_HAS_NUMBERING | VIEM_SELECTED_STYLE_HAS_TASKS) & ~own;
         return (Flags & own) == 0 ? VIEM_SEMANTIC_STYLE_STATE_OFF
             : (Flags & (other | VIEM_SELECTED_STYLE_HAS_NON_LIST)) != 0 ? VIEM_SEMANTIC_STYLE_STATE_MIXED : VIEM_SEMANTIC_STYLE_STATE_ON;
     }

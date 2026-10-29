@@ -100,7 +100,8 @@ impl Document {
                 wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
                     || self.format().is_markdown() && !wants_code && !wants_list
                         && block.style.0 == "Code Block"
-                    || (wants_plain || wants_code && block.style.0 != "Code Block")
+                    || (wants_plain || wants_code && block.style.0 != "Code Block"
+                        && !list_continuation(block))
                         && structural_body(block)
             }
         });
@@ -122,6 +123,7 @@ impl Document {
                 (wants_plain || wants_code || block.style.0 == "Code Block")
                     && structural_body(block)
                     && !(wants_code && block.style.0 == "Code Block")
+                    && !(wants_code && list_continuation(block))
                     || wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
             };
             let Some(first) = blocks.iter().position(|block| incompatible(&block)) else {
@@ -340,6 +342,10 @@ fn structural_body(block: &super::super::Block) -> bool {
         block.kind,
         super::super::BlockKind::ListItem { .. } | super::super::BlockKind::Heading(_)
     ) || block.style.0 == "Code Block"
+}
+
+fn list_continuation(block: &super::super::Block) -> bool {
+    matches!(block.kind, super::super::BlockKind::ListItem { item_start: false, .. })
 }
 
 fn publish(

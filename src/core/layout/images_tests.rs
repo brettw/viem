@@ -26,7 +26,7 @@ impl TextMeasurementProvider for Images {
                     else if image.destination == "tall.png" { (100.,500.) }
                     else { (self.resource_width,self.resource_width / 2.) };
                 cluster.advance = width * request.scale;
-                cluster.metrics = TextMetrics { ascent: height * request.scale, descent: 0., leading: 0. };
+                cluster.metrics = TextMetrics { cap_height: 0.0, ascent: height * request.scale, descent: 0., leading: 0. };
                 cluster.typographic_bounds = ShapedBounds { x:0.,y:-cluster.metrics.ascent,width:cluster.advance,height:cluster.metrics.ascent };
                 cluster.ink_bounds = cluster.typographic_bounds;
                 for stop in &mut cluster.caret_stops {

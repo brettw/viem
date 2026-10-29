@@ -510,7 +510,7 @@ fn inherit_table_owner_context(projection: &mut FormattedDocument, old: &[Block]
     if count == 0 || old_count == 0 || count != old_count && (count < 2 || old_count < 2) {
         return false;
     }
-    let context = |block: &Block| (block.kind.clone(), block.quote_depth, block.list_loose, block.list_editing,
+    let context = |block: &Block| (block.kind.clone(), block.quote_depth, block.list_loose, block.list_editing, block.task_checkbox, block.checkbox_insertable,
         block.containers.iter().map(|member| (member.container.id, member.starts_here, member.ends_here))
             .collect::<Vec<_>>());
     let interior = old.get(1..old_count.saturating_sub(1)).unwrap_or_default();
@@ -535,6 +535,8 @@ fn inherit_table_owner_context(projection: &mut FormattedDocument, old: &[Block]
         block.quote_depth = source.quote_depth;
         block.list_loose = source.list_loose;
         block.list_editing = source.list_editing;
+        block.task_checkbox = source.task_checkbox;
+        block.checkbox_insertable = source.checkbox_insertable;
         block.containers = source.containers.clone();
     }
     projection.try_install_paragraph_partition(blocks).is_ok()

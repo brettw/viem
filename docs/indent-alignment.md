@@ -1,8 +1,10 @@
 # Align indents to previous line
 
-The View menu offers **Align indents to previous line** after **Show invisible
-characters**. It defaults on and applies only in Code with a proportionally
-spaced font. The native provider reports the resolved font's fixed-pitch trait;
+The Format menu offers **Align indents to previous line** immediately after
+**Word wrap**. The item is enabled only in Code and appears unchecked whenever
+it is disabled, retaining the view's setting for when Code is shown again.
+It defaults on and applies only in Code with a proportionally spaced font.
+The native provider reports the resolved font's fixed-pitch trait;
 font names and a few measured sample characters are not reliable substitutes.
 The setting belongs to the view. It changes presentation without changing
 source, logical columns, selections, registers, dirty state or undo history.

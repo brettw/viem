@@ -304,6 +304,22 @@ fn application_config_preserves_unknowns_and_sparse_styles_with_shared_defaults(
     assert!(normalize(br#"{"version":1,"recentDocuments":["C:\\Users\\a.txt","/tmp/a"]}"#).is_ok());
 }
 #[test]
+fn application_config_zoom_defaults_and_explicit_scales_follow_layout_limits() {
+    use viem_core::application_config::normalize;
+    assert_eq!(normalize(br#"{"version":1}"#).unwrap()["view"]["zoomScale"], 1.0);
+    for scale in [0.25, 1.0, 1.03, 5.0] {
+        let input = serde_json::json!({"version":1,"view":{"zoomScale":scale,"future":42}});
+        let value = normalize(&serde_json::to_vec(&input).unwrap()).unwrap();
+        assert_eq!(value["view"]["zoomScale"], scale);
+        assert_eq!(value["view"]["future"], 42);
+        assert!(viem_core::layout::valid_zoom_scale(scale as f32));
+    }
+    for scale in ["0", "-1", "0.249999999", "5.000000001", "null", "true", "\"1.25\"", "[]"] {
+        let input = format!(r#"{{"version":1,"view":{{"zoomScale":{scale}}}}}"#);
+        assert!(normalize(input.as_bytes()).is_err(), "{input}");
+    }
+}
+#[test]
 fn parent_candidates_exclude_descendants_and_incompatible_roles() {
     use viem_core::document::{Encoding, Format, StyleId, StyleNamespace};
     let mut document =

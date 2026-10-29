@@ -11,7 +11,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
-internal enum ToolbarAction { Bold, Italic, Underline, Strikethrough, Superscript, Subscript, CharacterCode, Bullets, Numbers, BlockQuote, CodeBlock, Indent, Unindent }
+internal enum ToolbarAction { Bold, Italic, Underline, Strikethrough, Superscript, Subscript, CharacterCode, Bullets, Numbers, Tasks, BlockQuote, CodeBlock, Indent, Unindent }
 
 /// <summary>Native controls over the active core view's selection and transactions.</summary>
 internal sealed partial class FormattingToolbar : UserControl
@@ -95,6 +95,8 @@ internal sealed partial class FormattingToolbar : UserControl
         var block = Group(); row.Children.Add(block);
         Add(block, ToolbarAction.Bullets, "Bulleted List", "\uE8FD");
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
+        Add(block, ToolbarAction.Tasks, "Task List", "");
+        block.Children.Add(new Border { Style = (Style)Resources["FormattingToolbarDivider"] });
         Add(block, ToolbarAction.BlockQuote, "Block Quote", "");
         Add(block, ToolbarAction.CodeBlock, "Code Block", "{ }", literal: true);
         AutomationProperties.SetName(InsertImage, "Insert image"); ToolTipService.SetToolTip(InsertImage, "Insert image");
@@ -125,7 +127,7 @@ internal sealed partial class FormattingToolbar : UserControl
         button.IsTabStop = true; button.AllowFocusOnInteraction = false;
         button.Content = action is ToolbarAction.Superscript or ToolbarAction.Subscript ? StyleIcons.ScriptIcon(button, action == ToolbarAction.Superscript)
             : action == ToolbarAction.Strikethrough ? StrikethroughIcon(button)
-            : action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Indent or ToolbarAction.Unindent
+            : action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Tasks or ToolbarAction.Indent or ToolbarAction.Unindent
             ? StructuralIcon(button, action)
             : literal ? new TextBlock { Text = glyph, FontSize = 13 } : new FontIcon { Glyph = glyph, FontSize = 14 };
         AutomationProperties.SetName(button, label);
@@ -195,12 +197,17 @@ internal sealed partial class FormattingToolbar : UserControl
         var canvas = new Canvas { Width = 18, Height = 16 };
         var geometry = new GeometryGroup();
         void Line(double x, double y, double endX, double endY) => geometry.Children.Add(new LineGeometry { StartPoint = new(x, y), EndPoint = new(endX, endY) });
-        if (action is ToolbarAction.Bullets or ToolbarAction.Numbers)
+        if (action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Tasks)
         {
             for (int i = 0; i < 2; i++)
             {
                 double y = 4 + i * 8; Line(7, y, 18, y);
                 if (action == ToolbarAction.Bullets) geometry.Children.Add(new EllipseGeometry { Center = new(2, y), RadiusX = 1, RadiusY = 1 });
+                else if (action == ToolbarAction.Tasks)
+                {
+                    geometry.Children.Add(new RectangleGeometry { Rect = new(0, y - 2, 4, 4) });
+                    if (i == 0) { Line(.75, y, 1.75, y + 1); Line(1.75, y + 1, 3.25, y - 1); }
+                }
                 else
                 {
                     var number = new TextBlock { Text = (i + 1).ToString(), FontSize = 8 };
@@ -220,14 +227,14 @@ internal sealed partial class FormattingToolbar : UserControl
         canvas.Children.Add(path); return canvas;
     }
 
-    internal void Synchronize(EditorPane? active, bool visible)
+    internal void Synchronize(EditorPane? active, bool visible, bool refresh = true)
     {
         if (pane != active) { tablePicker.Close(); sheet = null; selected = null; choices = []; }
         pane = active;
         // Reserve the visible toolbar row while the initial view attaches, so
         // its first layout uses the final editor height.
         Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        if (Visibility == Visibility.Visible) Refresh();
+        if (refresh && Visibility == Visibility.Visible) Refresh();
     }
 
     internal void Refresh() => Refresh(includeHidden: false);
@@ -287,13 +294,15 @@ internal sealed partial class FormattingToolbar : UserControl
             RefreshCode(ToolbarAction.CodeBlock, new(1, "Code Block"), new(1, "Paragraph"));
             Set(ToolbarAction.Bullets, selected.ListState(VIEM_LIST_STYLE_BULLET), available);
             Set(ToolbarAction.Numbers, selected.ListState(VIEM_LIST_STYLE_NUMBERED), available);
+            Set(ToolbarAction.Tasks, selected.ListState(VIEM_LIST_STYLE_TASK),
+                available && (selected.Flags & VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST) != 0);
             uint indent = available ? view.ListCapabilities() : 0;
             Set(ToolbarAction.Indent, 0, (indent & VIEM_LIST_CAN_INDENT) != 0);
             Set(ToolbarAction.Unindent, 0, (indent & VIEM_LIST_CAN_UNINDENT) != 0);
             Set(ToolbarAction.BlockQuote, selected.QuoteState, available && !selected.HasTable && !selected.HasCodeBlock);
             if (selected.HasTable) {
                 Paragraph.IsEnabled = false;
-                foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers, ToolbarAction.Indent, ToolbarAction.Unindent }) Buttons[action].IsEnabled = false;
+                foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers, ToolbarAction.Tasks, ToolbarAction.Indent, ToolbarAction.Unindent }) Buttons[action].IsEnabled = false;
                 Buttons[ToolbarAction.CodeBlock].Visibility = Visibility.Collapsed;
             }
         }
@@ -361,10 +370,27 @@ internal sealed partial class FormattingToolbar : UserControl
     }
 
     private void Run(Action action) { pane?.Run(action); Refresh(); }
+    internal void RefreshActions() => Refresh(includeHidden: true);
+    internal bool ActionAvailable(ToolbarAction action)
+        => Buttons[action].IsEnabled && Buttons[action].Visibility == Visibility.Visible;
+    internal bool ActionSelected(ToolbarAction action)
+        => Buttons[action] is ToggleButton { IsChecked: true };
+
+    internal void OpenTablePicker(FrameworkElement anchor)
+    {
+        if (View is not { } view) return;
+        var context = view.TableContext();
+        if ((context.flags & 1) == 0) return;
+        pickerSelection = context.selection;
+        tablePicker.Open(null, (columns, rows) => {
+            if (View == view) Run(() => view.InsertTable(columns, rows, context.selection));
+        }, anchor);
+    }
+
     internal void ExecuteLink()
     {
         if (View is not { } view) return;
-        Refresh();
+        Refresh(includeHidden: true);
         if (!InsertLink.IsEnabled || InsertLink.Visibility != Visibility.Visible) return;
         var context = view.LinkContext();
         if (context.Reference != null && pane is { } referencePane) { referencePane.ShowInsertLink(); return; }
@@ -392,6 +418,7 @@ internal sealed partial class FormattingToolbar : UserControl
                 case ToolbarAction.CodeBlock: Code(new(1, "Code Block"), new(1, "Paragraph")); break;
                 case ToolbarAction.Bullets: List(VIEM_LIST_STYLE_BULLET); break;
                 case ToolbarAction.Numbers: List(VIEM_LIST_STYLE_NUMBERED); break;
+                case ToolbarAction.Tasks: List(VIEM_LIST_STYLE_TASK); break;
                 case ToolbarAction.Indent: view.IndentList(false); break;
                 case ToolbarAction.Unindent: view.IndentList(true); break;
             }

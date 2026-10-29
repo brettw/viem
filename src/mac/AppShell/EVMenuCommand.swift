@@ -52,6 +52,11 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case `subscript`
     case characterCode
     case insertLink
+    case insertReference
+    case insertImage
+    case insertTable
+    case blockQuote
+    case codeBlock
     case defaultParagraphStyle = 320
     case characterStyles
     case baseParagraphStyle
@@ -62,6 +67,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case insertListParagraph
     case bulletedList = 344
     case numberedList
+    case taskList
     case removeList
     case reloadStyleSheet
     case heading0 = 370
@@ -174,7 +180,7 @@ public struct EVFormattingShortcut {
     func performEditorFormattingCommand(_ sender: Any?)
 }
 
-/// The two style roles exposed by the native Style menu. Stable style IDs,
+/// The two style roles exposed by native style controls. Stable style IDs,
 /// rather than menu positions, identify the selected definition.
 public enum EVStyleMenuRole: UInt32, CaseIterable, Sendable {
     case character = 1
@@ -288,6 +294,12 @@ public final class EVStyleMenuAction: NSObject, @unchecked Sendable {
 @MainActor
 public protocol EVStyleMenuProviding: AnyObject {
     func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue?
+}
+
+/// The native Insert menu hosts the same table picker view as the toolbar.
+@MainActor
+public protocol EVInsertMenuProviding: AnyObject {
+    func makeInsertTableMenuView(in menu: NSMenu) -> NSView?
 }
 
 /// Style actions stay on AppKit's responder chain just like the other editor

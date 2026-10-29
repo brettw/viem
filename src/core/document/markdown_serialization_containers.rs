@@ -134,6 +134,7 @@ fn markdown(
         let opening = prefix(path, numbers, true);
         let continuation = prefix(path, numbers, false);
         output.push_str(&opening);
+        if let Some(checked) = block.task_checkbox { output.push_str(if checked { "[x] " } else { "[ ] " }); }
         output.line_prefix = MarkdownLinePrefix::Empty;
         if path
             .iter()

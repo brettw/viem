@@ -430,6 +430,12 @@ fn render_projection(
                     }
                 }
                 let mut css = super::html_styles::block_css(&box_properties(&container.style));
+                if block.task_checkbox.is_some() && container.kind == ContainerKind::ListItem
+                    && path.iter().rev().find(|owner| owner.kind == ContainerKind::ListItem)
+                        .is_some_and(|owner| owner.id == container.id)
+                {
+                    css.push_str("list-style-type:none; ");
+                }
                 if let ContainerKind::List { ordered } = container.kind {
                     let level = list_ancestors.min(3) as u8;
                     list_ancestors += 1;
@@ -502,6 +508,12 @@ fn render_projection(
             if !paragraph.thematic_break {
                 if code {
                     output.push_str("<code>");
+                }
+                if let Some(checked) = block.task_checkbox {
+                    output.push_str(&format!(
+                        "<input type=\"checkbox\" disabled{} style=\"width:1cap;height:1cap;margin:0 .5ch 0 0;vertical-align:baseline\"> ",
+                        if checked { " checked" } else { "" },
+                    ));
                 }
                 if paragraph.text_range.is_empty() {
                     output.push_str("<br>");

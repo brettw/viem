@@ -29,6 +29,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let insertReference = NSButton()
   let insertImage = NSButton()
   private(set) var tablePicker: EVTablePickerController?
+  private(set) var menuTablePicker: EVTablePickerController?
   private var pickerSelection: ViemLogicalSelectionIdentityV1?
   private let controlsViewport = NSView()
   private let row = NSStackView()
@@ -94,6 +95,14 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     codeLinkGroup.addArrangedSubview(insertReference)
     add(.bulletedList, title: "Bulleted List", symbol: "list.bullet", to: blockGroup)
     add(.numberedList, title: "Numbered List", symbol: "list.number", to: blockGroup)
+    add(.taskList, title: "Task List", symbol: "checklist", to: blockGroup)
+    let listSeparator = NSBox()
+    listSeparator.boxType = .separator
+    listSeparator.widthAnchor.constraint(equalToConstant: 1).isActive = true
+    listSeparator.heightAnchor.constraint(equalToConstant: 18).isActive = true
+    if let taskList = commandButtons[.taskList] { blockGroup.setCustomSpacing(8, after: taskList) }
+    blockGroup.addArrangedSubview(listSeparator)
+    blockGroup.setCustomSpacing(8, after: listSeparator)
     configure(blockQuote, title: "Block Quote", toggle: true)
     blockQuote.image = Self.blockQuoteImage()
     blockQuote.action = #selector(toggleBlockQuote(_:))
@@ -206,6 +215,19 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     }
   }
 
+  func makeTableMenuView(in menu: NSMenu) -> NSView? {
+    guard let surface, let session = surface.session,
+          let context = try? session.tableContext(), context.flags & 1 != 0 else { return nil }
+    menuTablePicker?.close()
+    let picker = EVTablePickerController()
+    menuTablePicker = picker
+    return picker.menuView(in: menu, editor: surface.editorView) { [weak self, weak surface, weak session] columns, rows in
+      guard let self, let surface, let session, surface.session === session else { return }
+      surface.performInput { _ = try session.insertTable(columns: columns, bodyRows: rows, expected: context.selection) }
+      self.finishAction()
+    }
+  }
+
   func refresh() {
     guard let surface else { return }
     let markdown = surface.backend.sourceFormat == .markdown
@@ -249,6 +271,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     for (command, button) in commandButtons {
       let presentation: EVMenuItemPresentation
       switch command {
+      case .bulletedList, .numberedList, .taskList:
+        presentation = surface.listStylePresentation(command, selected: selected)
       case .increaseIndent, .decreaseIndent:
         let flag = UInt32(command == .increaseIndent ? VIEM_LIST_CAN_INDENT : VIEM_LIST_CAN_UNINDENT)
         presentation = EVMenuItemPresentation(isEnabled: indent & flag != 0)
@@ -263,7 +287,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     blockQuote.isEnabled = selected?.hasCodeBlock == false && next?.entries.contains { $0.role == .paragraph && $0.stableID == "Block quote" && $0.presentation.isEnabled } == true
     if selected?.hasTable == true {
       paragraphStyle.isEnabled = false
-      for action in [EVMenuCommand.bulletedList, .numberedList, .increaseIndent, .decreaseIndent] { commandButtons[action]?.isEnabled = false }
+      for action in [EVMenuCommand.bulletedList, .numberedList, .taskList, .increaseIndent, .decreaseIndent] { commandButtons[action]?.isEnabled = false }
       setHidden(true, for: codeBlock)
       blockQuote.isEnabled = false
     }

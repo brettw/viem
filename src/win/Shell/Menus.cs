@@ -20,12 +20,11 @@ internal sealed partial class EditorWindow
     private bool styleMenuRefreshQueued;
     private bool inputTargetRefreshQueued;
     private MenuFlyoutSubItem recentMenu = null!;
-    private MenuFlyoutSubItem paragraphMenu = null!, characterMenu = null!, themeMenu = null!;
+    private MenuFlyoutSubItem headingMenu = null!, themeMenu = null!;
     private MenuFlyoutItem undoItem = null!, redoItem = null!;
     private ToggleMenuFlyoutItem wrapItem = null!;
     private CoreView? View => ActivePane?.View;
     private bool Rich => View != null && CoreDocument.IsMarkdown(ActivePane!.Document.State.format);
-    private bool CanFormatBlocks => ActivePane?.CanUseFormattingCommands == true && !View!.SelectedNamedStyles().HasTable;
     private MenuFlyoutItem Item(string text, string accessKey, Func<Task> action, string shortcut = "", Func<bool>? enabled = null, bool inputTarget = false)
     {
         var item = new MenuFlyoutItem { Text = text, AccessKey = accessKey, KeyboardAcceleratorTextOverride = shortcut };
@@ -43,6 +42,14 @@ internal sealed partial class EditorWindow
         if (validateOnLoad) item.Loaded += (_, _) => ValidateMenus();
         item.Click += (_, _) => Safe(() => { action(item.IsChecked); ActivePane?.FocusEditor(); return Task.CompletedTask; });
         if (state != null) checks.Add((item, state));
+        return item;
+    }
+    private ToggleMenuFlyoutItem ListMenuItem(string text, string accessKey, ToolbarAction action, string shortcut = "")
+    {
+        var item = Toggle(text, accessKey, _ => ExecuteFormattingAction(action),
+            () => InsertPresentation()?.ActionSelected(action) == true);
+        item.KeyboardAcceleratorTextOverride = shortcut;
+        validation.Add((item, () => FormattingActionAvailable(action)));
         return item;
     }
     private MenuBarItem Top(string title, string accessKey, params MenuFlyoutItemBase[] items)
@@ -100,23 +107,53 @@ internal sealed partial class EditorWindow
                 ActionItem("Use Selection for Find", "U", () => View?.UseSelectionForFind(), enabled: HasFindSelection),
                 ActionItem("Jump to Selection", "J", () => View?.RevealSelection(), enabled: () => View?.HasSelection == true)),
             Sub("Transformations", "N", ActionItem("Make Uppercase", "U", () => View?.SelectionCommand("U"), enabled: () => View?.HasSelection == true), ActionItem("Make Lowercase", "L", () => View?.SelectionCommand("u"), enabled: () => View?.HasSelection == true), ActionItem("Toggle Case", "T", () => View?.SelectionCommand("~"), enabled: () => View?.HasSelection == true)));
+        headingMenu = Sub("Heading", "H");
+        validation.Add((headingMenu, () => Rich && headingMenu.Items.Any(item => item.IsEnabled)));
+        MenuBarItem? insertMenu = null;
+        insertMenu = Top("Insert", "I",
+            headingMenu,
+            ActionItem("Code", "C", () => ExecuteFormattingAction(ToolbarAction.CharacterCode), enabled: () => FormattingActionAvailable(ToolbarAction.CharacterCode)),
+            Item("Link", "L", () => { ActiveFormattingToolbar()?.ExecuteLink(); return Task.CompletedTask; }, enabled: () => {
+                var toolbar = InsertPresentation();
+                return toolbar?.InsertLink.IsEnabled == true;
+            }),
+            Item("Reference", "R", () => { ActivePane?.ShowInsertReference(); return Task.CompletedTask; }, enabled: () => {
+                var toolbar = InsertPresentation();
+                return toolbar?.InsertReference.IsEnabled == true;
+            }), Separator(),
+            ListMenuItem("Bulleted List", "B", ToolbarAction.Bullets, KeyPolicy.FormattingShortcut(NativeAction.Bullets)),
+            ListMenuItem("Numbered List", "N", ToolbarAction.Numbers, KeyPolicy.FormattingShortcut(NativeAction.Numbers)),
+            ListMenuItem("Task List", "A", ToolbarAction.Tasks),
+            Separator(),
+            ActionItem("Blockquote", "Q", () => ExecuteFormattingAction(ToolbarAction.BlockQuote), enabled: () => FormattingActionAvailable(ToolbarAction.BlockQuote)),
+            ActionItem("Code Block", "O", () => ExecuteFormattingAction(ToolbarAction.CodeBlock), enabled: () => FormattingActionAvailable(ToolbarAction.CodeBlock)),
+            Item("Image", "M", () => { if (ActivePane is { } pane) pane.Run(pane.ShowInsertImage); return Task.CompletedTask; }, enabled: () => {
+                var toolbar = InsertPresentation();
+                return toolbar?.InsertImage.IsEnabled == true;
+            }),
+            Item("Table", "T", () => {
+                // Open after the native menu dismisses, keeping the same grid,
+                // drag sizing, limits and insertion identity as the toolbar.
+                var pane = ActivePane;
+                DispatcherQueue.TryEnqueue(() => { if (ActivePane == pane && insertMenu != null) ActiveFormattingToolbar()?.OpenTablePicker(insertMenu); });
+                return Task.CompletedTask;
+            }, enabled: () => Rich && View is { } view && (view.TableContext().flags & 1) != 0));
         wrapItem = Toggle("Word wrap", "W", b => View?.Wrap(b));
-        Top("Format", "O", plainMode, markdownMode, codeMode, Separator(), wrapItem);
-        paragraphMenu = Sub("Paragraph", "P", ActionItem("Bulleted List", "B", () => ExecuteFormattingAction(ToolbarAction.Bullets), KeyPolicy.FormattingShortcut(NativeAction.Bullets), enabled: () => CanFormatBlocks), ActionItem("Numbered List", "N", () => ExecuteFormattingAction(ToolbarAction.Numbers), KeyPolicy.FormattingShortcut(NativeAction.Numbers), enabled: () => CanFormatBlocks), ActionItem("Remove List", "R", () => View?.SetList(VIEM_LIST_STYLE_NONE), enabled: () => CanFormatBlocks),
-            ActionItem("Indent", "I", () => View?.IndentList(false), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_INDENT) != 0), ActionItem("Unindent", "U", () => View?.IndentList(true), enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_UNINDENT) != 0),
-            ActionItem("Insert Paragraph in List Item", "P", () => View?.InsertListParagraph(), "Alt+Enter", enabled: () => CanFormatBlocks && View is { } view && (view.ListCapabilities() & VIEM_LIST_CAN_INSERT_PARAGRAPH) != 0, inputTarget: true), Separator());
-        characterMenu = Sub("Character", "C");
-        validation.Add((paragraphMenu, () => Rich || View?.UsesGlobalStyles == true));
-        validation.Add((characterMenu, () => Rich || View?.UsesGlobalStyles == true));
+        bool CanAlignIndents() => View?.Document.State.format == VIEM_FORMAT_CODE;
+        var alignIndentsItem = Toggle("Align indents to previous line", "A", b => View?.AlignIndentsToPreviousLine(b),
+            () => CanAlignIndents() && ActivePane?.AlignIndentsToPreviousLine == true);
+        validation.Add((alignIndentsItem, CanAlignIndents));
         themeMenu = Sub("Theme", "T"); themeMenu.Loaded += (_, _) => RefreshThemeMenu();
         RefreshThemeMenu();
-        Top("Style", "S", themeMenu, Separator(), paragraphMenu, characterMenu, Separator(), StyleEditorItem());
+        Top("Format", "O", plainMode, markdownMode, codeMode, Separator(), themeMenu, StyleEditorItem(),
+            ActionItem("Reload Style Sheet", "R", () => {
+                preferences.ReloadCurrentTheme();
+                ActivePane?.SetMessage("Reloaded theme " + preferences.ThemeDisplayName);
+            }), Separator(), wrapItem, alignIndentsItem);
         var lineNumbersItem = Toggle("Show line numbers", "N", b => View?.Number(b), () => View?.NumberEnabled == true);
         validation.Add((lineNumbersItem, () => View != null));
-        var alignIndentsItem = Toggle("Align indents to previous line", "P", b => View?.AlignIndentsToPreviousLine(b), () => ActivePane?.AlignIndentsToPreviousLine == true);
-        validation.Add((alignIndentsItem, () => View?.Document.State.format == VIEM_FORMAT_CODE));
         Top("View", "V", Toggle("Show Status Bar", "S", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", "B", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(),
-            Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), lineNumbersItem, Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true), alignIndentsItem,
+            Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), lineNumbersItem, Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),
             Separator(), ActionItem("Zoom In", "Z", () => View?.StepZoom(true), "Ctrl+="), ActionItem("Zoom Out", "O", () => View?.StepZoom(false), "Ctrl+-"), ActionItem("Actual Size", "A", () => View?.Zoom(1)),
             Separator(), ActionItem("Full Screen", "U", () => AppWindow.SetPresenter(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? AppWindowPresenterKind.Overlapped : AppWindowPresenterKind.FullScreen)));
         Top("Window", "W", ActionItem("Split Vertically", "V", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document, vertical: true); }), ActionItem("Split View", "S", () => { if (ActivePane != null) SplitPane(ActivePane, ActivePane.Document); }), ActionItem("New Empty Pane", "E", () => { RequireSplitRoom(); SplitPane(ActivePane!, NewDocument()); }),
@@ -187,6 +224,10 @@ internal sealed partial class EditorWindow
         RefreshInputTargetMenus();
         if (!menusDirty) return;
         menusDirty = false;
+        // The Insert menu reuses one exact toolbar presentation per validation
+        // pass instead of querying every formatting capability for every row.
+        insertValidationPrepared = false;
+        insertValidationToolbar = null;
         using var measurement = Diagnostics.InputPerformance.Measure("menus");
         RefreshStyleMenus();
         RefreshDocumentModeMenu();
@@ -207,53 +248,48 @@ internal sealed partial class EditorWindow
     }
     private void RefreshStyleMenus()
     {
-        if (View == null || paragraphMenu == null) return;
+        if (View == null || headingMenu == null) return;
         // Keep tracked native rows and their original action identities intact.
         // Syntax publication or another active view can change the catalogue;
         // rebuild it after unload, before the next submenu opens.
-        if (paragraphMenu.Items.Concat(characterMenu.Items).Any(item => item.IsLoaded && (item.Tag is StyleKey or CodeSyntaxStyle))) {
+        if (headingMenu.Items.Any(item => item.IsLoaded && item.Tag is StyleKey)) {
             menusDirty = true;
             return;
         }
         var selected = View.SelectedNamedStyles();
         var snapshot = View.Styles(selected.Identity);
-        if (View.UsesGlobalStyles) { RefreshCodeStyleMenus(View, selected, snapshot); TrackStyleMenuRows(); return; }
-        var entries = CoreView.StyleChoices(snapshot, selected, View.Document.IsReadOnly);
-        foreach (var menu in new[] { paragraphMenu, characterMenu })
+        var choices = CoreView.StyleChoices(snapshot, selected, View.Document.IsReadOnly)
+            .Where(choice => CoreView.HeadingLevel(choice.Key) is >= 1 and <= 6)
+            .OrderBy(choice => CoreView.HeadingLevel(choice.Key)).ToArray();
+        var old = headingMenu.Items.OfType<ToggleMenuFlyoutItem>().ToArray();
+        if (!old.Select(item => (StyleKey)item.Tag).SequenceEqual(choices.Select(choice => choice.Key)))
         {
-            foreach (var syntax in menu.Items.OfType<ToggleMenuFlyoutItem>().Where(item => item.Tag is CodeSyntaxStyle).ToArray())
-                menu.Items.Remove(syntax);
-            uint space = menu == paragraphMenu ? 1u : 2u;
-            var choices = entries.Where(e => e.Key.Namespace == space).ToArray();
-            var old = menu.Items.OfType<ToggleMenuFlyoutItem>().Where(i => i.Tag is StyleKey).ToArray();
-            if (!old.Select(i => (StyleKey)i.Tag).SequenceEqual(choices.Select(c => c.Key)))
+            headingMenu.Items.Clear();
+            foreach (var choice in choices)
             {
-                foreach (var item in old) menu.Items.Remove(item);
-                foreach (var choice in choices)
-                {
-                    var item = new ToggleMenuFlyoutItem { Tag = choice.Key };
-                    item.Click += (_, _) => Safe(() => {
-                        if (item.CommandParameter is CodeStyleAction code) { OpenCodeStyle(code); return Task.CompletedTask; }
-                        if (item.CommandParameter is Viem.Windows.Interop.ViemStyleSheetIdentityV1 identity)
-                            View?.ChooseStyle((StyleKey)item.Tag, identity);
-                        RestoreEditorFocusAfterControl(); return Task.CompletedTask;
-                    });
-                    menu.Items.Add(item);
-                }
+                var item = new ToggleMenuFlyoutItem { Tag = choice.Key };
+                item.Click += (_, _) => Safe(() => {
+                    if (item.CommandParameter is Viem.Windows.Interop.ViemStyleSheetIdentityV1 identity)
+                        View?.ChooseStyle((StyleKey)item.Tag, identity);
+                    RestoreEditorFocusAfterControl(); return Task.CompletedTask;
+                });
+                headingMenu.Items.Add(item);
             }
-            var items = menu.Items.OfType<ToggleMenuFlyoutItem>().Where(i => i.Tag is StyleKey).ToArray();
-            for (int i = 0; i < choices.Length; i++)
-            {
-                items[i].Text = choices[i].Name; items[i].IsEnabled = View.HasFormattingSelection && choices[i].Enabled;
-                items[i].IsChecked = choices[i].Selected; items[i].CommandParameter = snapshot.Identity;
-                items[i].KeyboardAcceleratorTextOverride = CoreView.HeadingLevel(choices[i].Key) is { } level && level < 6 ? $"Ctrl+{level}" : "";
-            }
+        }
+        var items = headingMenu.Items.Cast<ToggleMenuFlyoutItem>().ToArray();
+        for (int i = 0; i < choices.Length; i++)
+        {
+            uint level = CoreView.HeadingLevel(choices[i].Key)!.Value;
+            items[i].Text = choices[i].Name; items[i].AccessKey = level.ToString();
+            items[i].IsEnabled = Rich && View.HasFormattingSelection && choices[i].Enabled;
+            items[i].IsChecked = Rich && choices[i].Selected; items[i].CommandParameter = snapshot.Identity;
+            items[i].KeyboardAcceleratorTextOverride = level < 6 ? $"Ctrl+{level}" : "";
         }
         TrackStyleMenuRows();
     }
     private void TrackStyleMenuRows()
     {
-        foreach (var item in paragraphMenu.Items.Concat(characterMenu.Items).Where(item => item.Tag is StyleKey or CodeSyntaxStyle)) {
+        foreach (var item in headingMenu.Items.Where(item => item.Tag is StyleKey)) {
             item.Unloaded -= StyleMenuRowUnloaded;
             item.Unloaded += StyleMenuRowUnloaded;
         }

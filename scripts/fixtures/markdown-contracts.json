@@ -23,5 +23,21 @@
     "whole, partial and cross-owner clipboard": "markdown_front_matter_clipboard::",
     "navigation and source switching": "link_authoring::front_matter_does_not_change_heading_fragments_between_preview_and_literal_markdown",
     "bounded local work": "markdown_front_matter_boundaries::small_edits_after_an_unclosed_leading_rule_keep_source_work_local"
+  },
+  "task-lists": {
+    "recognition and literal boundaries": "markdown_tasks::recognizes_only_gfm_task_markers_and_preserves_source",
+    "authoring and continuation ownership": "markdown_tasks::inserts_into_paragraphs_and_existing_items_without_changing_text",
+    "list types, source families and continuation": "markdown_task_structure::",
+    "encoding and exact history": "markdown_tasks::toggle_changes_only_marker_state_and_history_restores_exact_bytes",
+    "empty owner exit": "markdown_tasks::enter_on_empty_task_exits_without_exposing_the_marker",
+    "bounded capabilities": "markdown_tasks::checkbox_capability_does_not_scan_source_or_large_lists",
+    "incremental projection": "markdown_tasks::editing_task_text_matches_fresh_projection",
+    "geometry and native intention": "checkbox_surface::",
+    "committed typing and literal-next": "markdown_tasks::typed_task_markers_share_insertion_history_and_literal_next_is_preserved",
+    "clipboard and donor source identity": "markdown_tasks::clipboard_keeps_selected_task_items_and_leaves_donor_source_intact",
+    "source copy and move": "markdown_tasks::copying_and_moving_task_items_preserves_checked_state_and_exact_history",
+    "Preview switching and body anchors": "markdown_tasks::preview_switching_preserves_task_source_and_body_anchor",
+    "bounded insertion and toggling": "markdown_tasks::checkbox_edits_keep_unrelated_paragraphs_and_list_items_out_of_reprojection",
+    "HTML export state": "markdown_tasks::html_export_preserves_task_states_without_changing_source"
   }
 }

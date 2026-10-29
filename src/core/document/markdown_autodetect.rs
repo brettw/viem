@@ -609,6 +609,12 @@ impl Document {
                 marker.is_some_and(|m| (1..=6).contains(&m.len()) && m.bytes().all(|b| b == b'#'));
             let bullet = matches!(marker, Some("-" | "*" | "+"));
             let quote = marker == Some(">");
+            let task = matches!(marker, Some("[ ]" | "[x]" | "[X]"))
+                && self.can_set_task_list(start..start)
+                && self.checkbox_at(start, BoundaryAffinity::Downstream).is_none()
+                && super::super::edit_boundary::paragraph_at(self, start)?.is_some_and(|block|
+                    block.range.start == start
+                        && matches!(block.kind, super::super::BlockKind::ListItem { item_start: true, .. }));
             let ordered = marker.is_some_and(|m| {
                 let digits = m
                     .strip_suffix('.')
@@ -642,7 +648,7 @@ impl Document {
                     }
                 }
             }
-            if heading || bullet || quote || ordered || rule {
+            if heading || bullet || quote || ordered || rule || task {
                 if let Some(patch) = self.markdown_literal_syntax(start..caret)? {
                     return Ok(Some(Recognition {
                         patches: vec![patch],

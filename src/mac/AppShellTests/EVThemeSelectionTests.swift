@@ -20,7 +20,7 @@ final class EVThemeSelectionTests: XCTestCase {
     return EVConfigurationStore(directory: directory)
   }
 
-  func testStyleThemeMenuUsesCatalogueOrderAndSelectsAndCreatesThemes() throws {
+  func testFormatThemeMenuUsesCatalogueOrderAndSelectsAndCreatesThemes() throws {
     let configuration = configuration()
     let store = EVThemeStore(configuration: configuration)
     try configuration.createTheme(named: "Zebra")
@@ -28,8 +28,7 @@ final class EVThemeSelectionTests: XCTestCase {
     let owner = Owner()
     let builder = EVMenuBuilder(owner: owner, themeStore: store)
     let main = builder.buildMainMenu(for: .shared)
-    let styles = try XCTUnwrap(main.item(withTitle: "Style")?.submenu)
-    XCTAssertEqual(styles.items.first?.title, "Theme")
+    let styles = try XCTUnwrap(main.item(withTitle: "Format")?.submenu)
     let themes = try XCTUnwrap(styles.item(withTitle: "Theme")?.submenu)
     XCTAssertEqual(themes.items.map { $0.isSeparatorItem ? "-" : $0.title }, ["amber", "Midnight", "Paper", "Zebra", "-", "Default", "New Theme…", "Theme Settings…"])
     let fallback = try XCTUnwrap(themes.item(withTitle: "Default"))
@@ -102,7 +101,7 @@ final class EVThemeSelectionTests: XCTestCase {
     let owner = Owner()
     let store = EVThemeStore(configuration: configuration)
     let builder = EVMenuBuilder(owner: owner, themeStore: store)
-    let menu = try XCTUnwrap(builder.buildMainMenu(for: .shared).item(withTitle: "Style")?.submenu?.item(withTitle: "Theme")?.submenu)
+    let menu = try XCTUnwrap(builder.buildMainMenu(for: .shared).item(withTitle: "Format")?.submenu?.item(withTitle: "Theme")?.submenu)
     let controller = EVSettingsWindowController(store: store)
     defer { controller.close() }
     let popup = try XCTUnwrap(descendants(XCTUnwrap(controller.window?.contentView)).compactMap { $0 as? NSPopUpButton }.first { $0.accessibilityLabel() == "Theme" })
@@ -191,7 +190,7 @@ final class EVThemeSelectionTests: XCTestCase {
     let owner = Owner()
     let builder = EVMenuBuilder(owner: owner, themeStore: EVThemeStore(configuration: configuration))
     let main = builder.buildMainMenu(for: .shared)
-    let menu = try XCTUnwrap(main.item(withTitle: "Style")?.submenu?.item(withTitle: "Theme")?.submenu)
+    let menu = try XCTUnwrap(main.item(withTitle: "Format")?.submenu?.item(withTitle: "Theme")?.submenu)
     try FileManager.default.removeItem(at: XCTUnwrap(configuration.selectedThemeURL))
     builder.menuNeedsUpdate(menu)
     XCTAssertNil(configuration.currentThemeName)

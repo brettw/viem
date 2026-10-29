@@ -1,7 +1,7 @@
 //! Native quote assignment changes only physical quote prefixes. The quoted
 //! body keeps its existing heading/list/code and inline syntax.
 use super::{
-    Document, DocumentError, ModelTransactionError, PreparedModelTransaction, SourcePatch, TextEdit,
+    structural_style, Document, DocumentError, ModelTransactionError, PreparedModelTransaction, SourcePatch, TextEdit,
 };
 use crate::document::{BlockKind, BoundaryAffinity, Format};
 use std::collections::{BTreeMap, BTreeSet};
@@ -246,6 +246,21 @@ impl Document {
         quote: bool,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if quote && self.format().is_markdown() {
+            // A nested item's quote is inserted inside its list marker. Its
+            // first leaf becomes a quote, so a formerly hidden task marker
+            // would become literal text. Outer quotes around top-level items
+            // keep their task ownership and their authored marker spelling.
+            let patches = structural_style::selected_blocks(self, &range).iter()
+                .filter(|block| block.task_checkbox.is_some() && block.quote_depth == 0
+                    && matches!(block.kind, BlockKind::ListItem { level: 1.., .. }))
+                .map(|block| self.remove_checkbox_source_patches(block))
+                .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect::<Vec<_>>();
+            if !patches.is_empty() {
+                return self.prepare_markdown_supporting_patches(patches, |document|
+                    document.prepare_markdown_quote_style(range.clone(), quote));
+            }
+        }
         let blocks = self.projection().blocks_for_region(&range);
         let mut lines = BTreeSet::new();
         let mut quote_depths = BTreeMap::new();

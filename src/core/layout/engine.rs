@@ -387,6 +387,7 @@ pub struct PositionedCluster {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecorationKind {
+    Checkbox { checked: bool },
     Text,
     BlockQuoteBorder,
     ThematicBreak,
@@ -6002,7 +6003,9 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             return Ok(());
         };
         // The trailing measured space is the gutter gap, never document text.
-        let text = format!("{marker} ");
+        // A capital plus a space obtains the paragraph font's native cap height
+        // and gutter gap through the same bounded furniture shaping cache.
+        let text = if paragraph.task_checkbox.is_some() { "H ".to_owned() } else { format!("{marker} ") };
         let mut style = override_style
             .unwrap_or(&paragraph.default_shaping_style)
             .clone();
@@ -6049,6 +6052,28 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         for cluster in &mut row.clusters {
             cluster.typographic_bounds.y += delta;
             cluster.ink_bounds.y += delta;
+        }
+        if let Some(checked) = paragraph.task_checkbox {
+            let cap_height = shaped.default_metrics.cap_height;
+            // Some fonts omit the cap-height metric. Their shaped capital is
+            // still authoritative geometry, unlike an em/ascent percentage.
+            let size = if cap_height > 0.0 { cap_height } else {
+                shaped.clusters.iter().find(|cluster| cluster.text_range.start == 0)
+                    .map_or(0.0, |cluster| cluster.ink_bounds.height)
+            };
+            let gap: f32 = shaped.clusters.iter().filter(|cluster| cluster.text_range.start >= 1)
+                .map(|cluster| cluster.advance).sum();
+            let x = if right_to_left { row.paragraph_content_x + row.paragraph_content_width + gap }
+                else { row.paragraph_content_x - gap - size };
+            let bounds = LayoutRect { x, y: row.baseline - size, width: size, height: size };
+            row.decorations.push(PositionedDecoration {
+                kind: DecorationKind::Checkbox { checked },
+                owner: Some(DecorationOwner::Paragraph(paragraph.block_id)),
+                text: String::new(), x, advance: size,
+                typographic_bounds: bounds, ink_bounds: bounds, render_run: None,
+                paint: paragraph.marker_paint.clone(), font_size: style.size * scale,
+            });
+            return Ok(());
         }
         let mut x = if right_to_left {
             row.paragraph_content_x + row.paragraph_content_width + (width - marker_width)
@@ -6694,12 +6719,14 @@ fn flatten_line_fragments_for_slice(
 ) -> Result<(Vec<ShapedCluster>, TextMetrics), LayoutComputationError> {
     let mut clusters = Vec::new();
     let mut empty_metrics = TextMetrics {
+        cap_height: 0.0,
         ascent: 0.0,
         descent: 0.0,
         leading: 0.0,
     };
     for fragment in fragments {
         control.checkpoint()?;
+        empty_metrics.cap_height = empty_metrics.cap_height.max(fragment.default_metrics.cap_height);
         empty_metrics.ascent = empty_metrics.ascent.max(fragment.default_metrics.ascent);
         empty_metrics.descent = empty_metrics.descent.max(fragment.default_metrics.descent);
         empty_metrics.leading = empty_metrics.leading.max(fragment.default_metrics.leading);
@@ -6955,6 +6982,7 @@ fn resolve_line_paragraph(
             text_range: line.clone(),
             list_marker_range: None,
             list_marker_decoration: None,
+            task_checkbox: None,
             quote_border: false,
             quote_depth: 0,
             thematic_break: false,

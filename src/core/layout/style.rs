@@ -120,6 +120,8 @@ pub struct ParagraphLayoutStyle {
     pub list_marker_range: Option<Range<usize>>,
     /// Noneditable WYSIWYG label, measured separately from formatted text.
     pub list_marker_decoration: Option<String>,
+    /// Task-list control rendered instead of the ordinary item label.
+    pub task_checkbox: Option<bool>,
     /// Noneditable left border for the shared HTML/Markdown quote treatment.
     pub quote_border: bool,
     pub quote_depth: usize,
@@ -620,6 +622,7 @@ impl DocumentLayoutStyles {
                 block_id: block.id,
                 text_range: block.range.clone(),
                 list_marker_range,
+                task_checkbox: block.task_checkbox,
                 quote_border,
                 quote_depth: block.quote_depth.max(usize::from(quote_border)),
                 thematic_break: block.thematic_break,

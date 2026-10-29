@@ -43,6 +43,7 @@ internal sealed partial class EditorWindow
             }),
             new("InputRouting", () => InputRoutingTests.Run(initial)),
             new("Zoom", () => InputRoutingTests.RunZoom(initial)),
+            new("ZoomPersistence", () => ZoomPersistenceTests.Run(profile)),
             new("PointerSelection", () => {
                 initial.View!.Wrap(true);
                 return SelectionInputTests.RunPointerPlacement(initial);
@@ -120,6 +121,7 @@ internal sealed partial class EditorWindow
                 return Task.CompletedTask;
             }),
             new("TableInteraction", () => TableInteractionTests.Run(preferences)),
+            new("CheckboxInteraction", () => CheckboxInteractionTests.Run(preferences)),
             LinkInteractionTests.Group(preferences),
             new("ImageInteraction", () => ImageInteractionTests.Run(preferences)),
             new("ImageLocationPicker", () => ImageInteractionTests.LocationPicker(preferences)),

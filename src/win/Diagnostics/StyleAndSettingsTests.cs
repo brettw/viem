@@ -78,7 +78,7 @@ internal static class StyleAndSettingsTests
         Check(!styles.VisitParent.IsEnabled && !styles.VisitNext.IsEnabled, "base paragraph has no relationship navigation targets");
         window.Activate(); pane.FocusEditor(); await SelfTestRunner.Until(() => GetForegroundWindow() == window.Hwnd);
         Check(GetForegroundWindow() == window.Hwnd, "editor can be raised above the modeless style inspector");
-        var menu = window.Menu.Items.Single(m => m.Title == "Style");
+        var menu = window.Menu.Items.Single(m => m.Title == "Format");
         new MenuBarItemAutomationPeer(menu).Expand(); await InputRoutingTests.Settle();
         var item = menu.Items.OfType<MenuFlyoutItem>().Single(i => i.Text == "Edit Styles…");
         new MenuFlyoutItemAutomationPeer(item).Invoke(); await SelfTestRunner.Until(() => GetForegroundWindow() == hwnd);

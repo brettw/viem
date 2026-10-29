@@ -15,6 +15,7 @@ impl FormattedDocument {
             character_mixed: false,
             has_bullets: false,
             has_numbering: false,
+            has_tasks: false,
             has_non_list: true,
             has_quotes: false,
             has_non_quote: true,

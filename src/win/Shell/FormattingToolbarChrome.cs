@@ -87,6 +87,29 @@ internal sealed partial class EditorWindow
         if (visible) EnsureFormattingToolbar();
         formattingToolbar?.Synchronize(ActivePane, visible);
     }
+    private FormattingToolbar? ActiveFormattingToolbar()
+    {
+        if (ActivePane is not { } pane || !Rich) return null;
+        var toolbar = EnsureFormattingToolbar();
+        toolbar.Synchronize(pane, preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN), refresh: false);
+        toolbar.RefreshActions();
+        return toolbar;
+    }
+
+    private FormattingToolbar? insertValidationToolbar;
+    private bool insertValidationPrepared;
+    private FormattingToolbar? InsertPresentation()
+    {
+        if (!insertValidationPrepared)
+        {
+            insertValidationPrepared = true;
+            insertValidationToolbar = ActiveFormattingToolbar();
+        }
+        return insertValidationToolbar;
+    }
+    private bool FormattingActionAvailable(ToolbarAction action)
+        => InsertPresentation()?.ActionAvailable(action) == true;
+
     internal void ExecuteFormattingAction(ToolbarAction action)
     {
         if (ActivePane is not { CanUseFormattingCommands: true } pane) return;

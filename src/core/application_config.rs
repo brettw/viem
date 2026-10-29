@@ -5,14 +5,14 @@ use crate::{
         syntax::detection::{validate_filename_associations, FilenameAssociation},
         IndentationOptions,
     },
-    layout::WhitespacePresentationOptions,
+    layout::{WhitespacePresentationOptions, ZOOM_STOPS},
 };
 use serde_json::{json, Value};
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn defaults() -> Value {
     json!({"version":1,
-        "view":{"margins":{"top":10,"left":10,"bottom":10,"right":10}},
+        "view":{"zoomScale":1.0,"margins":{"top":10,"left":10,"bottom":10,"right":10}},
         "editing":{"autoselect":true,"caretHoverEffect":true,"markdownAutodetect":true,"smartQuotes":true,
             "markdownFormattedView":true,"textWidth":80,
             "indentation":IndentationOptions::default(),"whitespacePresentation":WhitespacePresentationOptions::default()},
@@ -89,6 +89,15 @@ pub fn normalize(bytes: &[u8]) -> Result<Value, String> {
                 return Err(format!("{key} must be Boolean"));
             }
         }
+    }
+    if let Some(scale) = value["view"].get("zoomScale") {
+        number(
+            scale,
+            "zoomScale (0.25–5)",
+            ZOOM_STOPS[0] as f64,
+            ZOOM_STOPS[ZOOM_STOPS.len() - 1] as f64,
+            false,
+        )?;
     }
     if let Some(margins) = value["view"].get("margins") {
         if !margins.is_object() {

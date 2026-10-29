@@ -18,6 +18,7 @@ pub struct SelectedNamedStyles {
     /// and nesting depth. A selection may contain more than one kind.
     pub has_bullets: bool,
     pub has_numbering: bool,
+    pub has_tasks: bool,
     pub has_non_list: bool,
     pub has_quotes: bool,
     pub has_non_quote: bool,
@@ -120,6 +121,7 @@ impl FormattedDocument {
         let mut active_automatic = BTreeMap::new();
         let mut has_bullets = false;
         let mut has_numbering = false;
+        let mut has_tasks = false;
         let mut has_non_list = false;
         let mut has_code_block = false;
         let mut has_quotes = false;
@@ -168,9 +170,11 @@ impl FormattedDocument {
                 || block.containers.iter().any(|member| member.container.kind == super::ContainerKind::CodeBlock));
             if block.is_some_and(|block| block.quote_depth > 0) { has_quotes = true; }
             else { has_non_quote = true; }
-            match block.map(|block| &block.kind) {
-                Some(super::BlockKind::ListItem { ordered: false, .. }) => has_bullets = true,
-                Some(super::BlockKind::ListItem { ordered: true, .. }) => has_numbering = true,
+            let list_owner = block.and_then(|block| self.list_item_first_block(block));
+            match list_owner.as_ref().or(block).map(|block| (block.task_checkbox, &block.kind)) {
+                Some((Some(_), _)) => has_tasks = true,
+                Some((_, super::BlockKind::ListItem { ordered: false, .. })) => has_bullets = true,
+                Some((_, super::BlockKind::ListItem { ordered: true, .. })) => has_numbering = true,
                 _ => has_non_list = true,
             }
             let character = active_characters
@@ -200,6 +204,7 @@ impl FormattedDocument {
             has_table: self.range_intersects_table(&range),
             has_bullets,
             has_numbering,
+            has_tasks,
             has_non_list,
             paragraph_mixed: paragraphs.len() > 1,
             character_mixed: characters.len() > 1,

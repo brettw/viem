@@ -116,6 +116,7 @@ impl MockTextMeasurementProvider {
     fn metrics(style: &ResolvedTextStyle, scale: f32) -> TextMetrics {
         let em = style.size * scale;
         TextMetrics {
+            cap_height: em * 0.7,
             ascent: (em * 0.78 + style.baseline_offset * scale).max(0.0),
             descent: (em * 0.22 - style.baseline_offset * scale).max(0.0),
             leading: em * 0.12,
@@ -429,7 +430,7 @@ impl MockTextMeasurementProvider {
                 Self::bounds(advance, &metrics, style, request.scale);
             if request.inline_images.iter().any(|image| image.text_range == (global_start..global_end)) {
                 advance = 300. * request.scale;
-                metrics = TextMetrics { ascent: 64. * request.scale, descent: 0., leading: 0. };
+                metrics = TextMetrics { cap_height: 0.0, ascent: 64. * request.scale, descent: 0., leading: 0. };
                 typographic_bounds = ShapedBounds { x: 0., y: -metrics.ascent,
                     width: advance, height: metrics.ascent };
                 ink_bounds = typographic_bounds;

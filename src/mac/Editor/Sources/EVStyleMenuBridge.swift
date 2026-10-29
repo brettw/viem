@@ -4,12 +4,30 @@ import ViemAppShell
 
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
-  func listStylePresentation(_ command: EVMenuCommand) -> EVMenuItemPresentation {
-    guard backend.sourceFormat.isMarkdown,
-      let selected = try? session?.selectedNamedStyles(), !selected.hasTable else { return .disabled }
-    return EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0,
+  func listStylePresentation(_ command: EVMenuCommand, selected existing: EVSelectedNamedStyles? = nil) -> EVMenuItemPresentation {
+    guard backend.sourceFormat.isMarkdown, editorView.formattingInputAvailable,
+      let selected = existing ?? (try? session?.selectedNamedStyles()), !selected.hasTable else { return .disabled }
+    return EVMenuItemPresentation(isEnabled: command == .taskList ? selected.canSetTaskList
+        : documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0,
       state: command == .bulletedList ? selected.bulletState
-        : command == .numberedList ? selected.numberedState : .off)
+        : command == .numberedList ? selected.numberedState
+        : command == .taskList ? selected.taskState : .off)
+  }
+
+  func blockQuotePresentation() -> EVMenuItemPresentation {
+    guard backend.sourceFormat.isMarkdown, let selected = try? session?.selectedNamedStyles(),
+          !selected.hasTable, !selected.hasCodeBlock,
+          let entry = currentStyleMenuCatalogue()?.entries.first(where: { $0.role == .paragraph && $0.stableID == "Block quote" })
+    else { return .disabled }
+    return EVMenuItemPresentation(isEnabled: entry.presentation.isEnabled, state: selected.quoteState)
+  }
+
+  func codeBlockPresentation() -> EVMenuItemPresentation {
+    guard backend.sourceFormat.isMarkdown, let catalogue = currentStyleMenuCatalogue(),
+          let selected = try? session?.selectedNamedStyles(), !selected.hasTable else { return .disabled }
+    let active = catalogue.entries.contains { $0.role == .paragraph && $0.stableID == "Code Block" && $0.presentation.state == .on }
+    let entry = catalogue.entries.first { $0.role == .paragraph && $0.stableID == (active ? "Paragraph" : "Code Block") }
+    return EVMenuItemPresentation(isEnabled: entry?.presentation.isEnabled == true, state: active ? .on : .off)
   }
 
   func characterCodePresentation() -> EVMenuItemPresentation {

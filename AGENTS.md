@@ -304,13 +304,20 @@ Deliberate presentation differences from GitHub:
 - Reference links show their formatted visible label, like inline links, using
   the `Markdown reference` style (`#A673D1`). Definitions retain their visible
   source notation so they can be navigated to and edited.
-- HTML comments stay visible with the `Comment` style. Choosing Comment in the
-  Character menu wraps selected visible text in a comment; at a caret it
+- HTML comments stay visible with the `Comment` style. Applying Comment
+  wraps selected visible text in a comment; at a caret it
   immediately inserts `<!--  -->` and enters Insert mode between the two spaces.
   Comment bodies remain literal, and their delimiters stay visible. Surplus blank
   lines remain editable empty paragraphs.
 - Images are atomic inline objects; image-only paragraphs use the Image
   paragraph style.
+- GFM task-list markers are non-text checkbox decorations on their owning
+  items. Task List is a third list type beside Bulleted and Numbered. New
+  tasks use unchecked bulleted syntax; imported ordered task lists preserve
+  their numbering, including new items. Custom-drawn native-looking checkboxes
+  fill a square from the paragraph font's cap height to the first row's baseline.
+  List availability reads indexed semantic context without parsing or trial edits;
+  pointer toggles require the exact current layout identity.
 - Embedded HTML is passive semantic formatting: Markdown inside HTML blocks
   stays literal and authored CSS is ignored.
 
@@ -803,6 +810,9 @@ text, excludes editor furniture, and needs no network resources.
   transactions. Test real native event routing, geometry and rendering, not
   just calls to Rust wrappers; rendering or cache changes need real provider
   geometry and cached-versus-fresh pixel comparisons.
+- Explicit zoom changes persist as the application default for new views and
+  restarts. Existing views retain independent zoom; replacing or reloading a
+  document preserves each view's scale without changing the saved default.
 - **macOS:** AppKit UI stays on the main thread. Thin carets use the native
   `NSTextInsertionIndicator`; other caret shapes are drawn from core geometry.
   Expose text, ranges and geometry to VoiceOver and text services without

@@ -17,11 +17,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private weak var recentDocumentsMenu: NSMenu?
     private let recentDocumentURLs: @MainActor () -> [URL]
     private let styleMenuProvider: @MainActor () -> (any EVStyleMenuProviding)?
-    private var styleMenuRoles: [ObjectIdentifier: EVStyleMenuRole] = [:]
-    private var styleMenuCatalogues: [ObjectIdentifier: EVStyleMenuCatalogue] = [:]
+    private var headingMenu: NSMenu?
     private let documentModeProvider: @MainActor () -> (any EVDocumentModeMenuProviding)?
     private var fileMenu: NSMenu?
     private var formatMenu: NSMenu?
+    private var insertTableMenu: NSMenu?
     private var codeModeMenu: NSMenu?
     private var codeModeItem: NSMenuItem?
     private var obscureCodeModeMenu: NSMenu?
@@ -62,8 +62,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         mainMenu.addItem(topLevelItem("Viem", submenu: makeApplicationMenu(for: application)))
         mainMenu.addItem(topLevelItem("File", submenu: makeFileMenu()))
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
+        mainMenu.addItem(topLevelItem("Insert", submenu: makeInsertMenu()))
         mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
-        mainMenu.addItem(topLevelItem("Style", submenu: makeStyleMenu()))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
         let windowMenu = makeWindowMenu(for: application)
@@ -100,11 +100,17 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             updateDocumentModes()
             return
         }
-        if menu === themeMenu { rebuildThemeMenu(menu); return }
-        if let role = styleMenuRoles[ObjectIdentifier(menu)] {
-            rebuildStyleMenu(menu, role: role)
+        if menu === insertTableMenu {
+            menu.removeAllItems()
+            if let view = (styleMenuProvider() as? any EVInsertMenuProviding)?.makeInsertTableMenuView(in: menu) {
+                let item = NSMenuItem(title: "Table dimensions", action: nil, keyEquivalent: "")
+                item.view = view
+                menu.addItem(item)
+            }
             return
         }
+        if menu === themeMenu { rebuildThemeMenu(menu); return }
+        if menu === headingMenu { rebuildHeadingMenu(menu); return }
 
         guard menu === recentDocumentsMenu else { return }
 
@@ -342,6 +348,41 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         return menu
     }
 
+    private func makeInsertMenu() -> NSMenu {
+        let menu = NSMenu(title: "Insert")
+        let headings = EVHeadingMenu(title: "Heading")
+        headings.delegate = self
+        headings.showsStateColumn = true
+        headingMenu = headings
+        rebuildHeadingMenu(headings)
+        let heading = coreItem("Heading", command: .paragraphStyles)
+        heading.submenu = headings
+        menu.addItem(heading)
+        for (title, command) in [("Code", EVMenuCommand.characterCode), ("Link", .insertLink),
+                                 ("Reference", .insertReference)] {
+            menu.addItem(coreItem(title, command: command))
+        }
+        menu.addItem(.separator())
+        for (title, command) in [("Bulleted List", EVMenuCommand.bulletedList), ("Numbered List", .numberedList),
+                                 ("Task List", .taskList)] {
+            menu.addItem(coreItem(title, command: command))
+        }
+        menu.addItem(.separator())
+        for (title, command) in [("Blockquote", EVMenuCommand.blockQuote), ("Code Block", .codeBlock), ("Image", .insertImage)] {
+            menu.addItem(coreItem(title, command: command))
+        }
+        let table = coreItem("Table", command: .insertTable)
+        let picker = NSMenu(title: "Table")
+        picker.delegate = self
+        picker.autoenablesItems = false
+        insertTableMenu = picker
+        table.submenu = picker
+        // AppKit needs a child to expose a submenu before its lazy refresh.
+        picker.addItem(NSMenuItem(title: "Table dimensions", action: nil, keyEquivalent: ""))
+        menu.addItem(table)
+        return menu
+    }
+
     private func makeFormatMenu() -> NSMenu {
         let menu = NSMenu(title: "Format")
         formatMenu = menu
@@ -351,7 +392,28 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(documentModeItem("Markdown Preview", choice: .markdown))
         menu.addItem(documentModeItem("Code", choice: .codeFormat))
         menu.addItem(.separator())
+        let themes = NSMenu(title: "Theme")
+        themes.delegate = self
+        themes.autoenablesItems = false
+        themeMenu = themes
+        rebuildThemeMenu(themes)
+        menu.addItem(submenuItem("Theme", submenu: themes))
+        menu.addItem(coreItem("Edit Styles…", command: .editStyles,
+            key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
+        menu.addItem(coreItem("Reload style sheet", command: .reloadStyleSheet))
+        menu.addItem(.separator())
         menu.addItem(coreItem("Word wrap", command: .wordWrap))
+        menu.addItem(coreItem("Align indents to previous line", command: .alignIndentsToPreviousLine))
+        // Keep toolbar and editing accelerators registered when their controls
+        // are hidden. Native fields still get first refusal through routing.
+        for (title, command) in [("Bold", EVMenuCommand.bold), ("Italic", .italic), ("Underline", .underline),
+                                 ("Superscript", .superscript), ("Subscript", .subscript),
+                                 ("Insert Paragraph in List Item", .insertListParagraph), ("Base Paragraph", .heading0)] {
+            let item = coreItem(title, command: command, key: command == .heading0 ? "0" : "")
+            item.isHidden = true
+            item.allowsKeyEquivalentWhenHidden = true
+            menu.addItem(item)
+        }
         return menu
     }
 
@@ -390,7 +452,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(coreItem("Show line numbers", command: .showLineNumbers))
         menu.addItem(coreItem("Show Invisible Characters", command: .showInvisibleCharacters))
-        menu.addItem(coreItem("Align indents to previous line", command: .alignIndentsToPreviousLine))
         menu.addItem(.separator())
         menu.addItem(coreItem("Zoom In", command: .zoomIn, key: "=", modifiers: [.command]))
         menu.addItem(coreItem("Zoom Out", command: .zoomOut, key: "-", modifiers: [.command]))
@@ -482,37 +543,6 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         return menu
     }
 
-    private func makeStyleMenu() -> NSMenu {
-        let menu = NSMenu(title: "Style")
-        let themes = NSMenu(title: "Theme")
-        themes.delegate = self
-        themes.autoenablesItems = false
-        themeMenu = themes
-        rebuildThemeMenu(themes)
-        menu.addItem(topLevelItem("Theme", submenu: themes))
-        menu.addItem(.separator())
-        menu.addItem(makeNamedStyleMenu(title: "Paragraph", role: .paragraph,
-            command: .paragraphStyles))
-        menu.addItem(makeNamedStyleMenu(title: "Character", role: .character,
-            command: .characterStyles))
-        menu.addItem(.separator())
-        for (title, command) in [("Bold", EVMenuCommand.bold), ("Italic", .italic), ("Underline", .underline),
-                                 ("Superscript", .superscript), ("Subscript", .subscript),
-                                 ("Code (Character)", .characterCode), ("Link…", .insertLink)] {
-            // Keep toolbar-only inline actions registered with AppKit without
-            // adding them to the named-style menu's visible presentation.
-            let item = coreItem(title, command: command)
-            item.isHidden = true
-            item.allowsKeyEquivalentWhenHidden = true
-            menu.addItem(item)
-        }
-        menu.addItem(coreItem("Edit Styles…", command: .editStyles,
-            key: String(UnicodeScalar(NSF8FunctionKey)!), modifiers: []))
-        menu.addItem(.separator())
-        menu.addItem(coreItem("Reload style sheet", command: .reloadStyleSheet))
-        return menu
-    }
-
     private func rebuildThemeMenu(_ menu: NSMenu) {
         try? themeActions.store.ensureCurrentThemeExists()
         menu.removeAllItems()
@@ -545,152 +575,26 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         themeActions.create(window: NSApplication.shared.keyWindow)
     }
 
-    private func makeNamedStyleMenu(
-        title: String,
-        role: EVStyleMenuRole,
-        command: EVMenuCommand
-    ) -> NSMenuItem {
-        let submenu = NSMenu(title: title)
-        submenu.delegate = self
-        // Keep checked and unchecked style titles aligned in the native gutter.
-        submenu.showsStateColumn = true
-        submenu.autoenablesItems = true
-        styleMenuRoles[ObjectIdentifier(submenu)] = role
-        populateUnavailableStyleMenu(submenu, role: role)
-        // Give submenu parents a responder-chain action so their availability
-        // is validated against the active document just like other commands.
-        let item = coreItem(title, command: command)
-        item.submenu = submenu
-        return item
-    }
-
-    private func rebuildStyleMenu(_ menu: NSMenu, role: EVStyleMenuRole) {
-        let specification = styleMenuSpecification(for: role)
-        guard let provider = styleMenuProvider(),
-              let catalogue = provider.currentStyleMenuCatalogue()
-        else {
-            populateUnavailableStyleMenu(menu, role: role)
-            return
-        }
-
-        let menuID = ObjectIdentifier(menu)
-        guard styleMenuCatalogues[menuID] != catalogue else { return }
-        styleMenuCatalogues[menuID] = catalogue
-        let matching = catalogue.entries.filter { $0.role == role }
-        let baseEntries = matching.filter(\.isBase)
-        let namedEntries = matching.filter { !$0.isBase }
-        let entries: [EVStyleMenuEntry]
-        if baseEntries.isEmpty {
-            entries = [unavailableBaseEntry(role: role, title: specification.baseTitle)]
-                + namedEntries
-        } else {
-            entries = baseEntries + namedEntries
-        }
-
+    private func rebuildHeadingMenu(_ menu: NSMenu) {
+        let catalogue = styleMenuProvider()?.currentStyleMenuCatalogue()
         menu.removeAllItems()
-        if role == .paragraph { addParagraphListCommands(to: menu) }
-        for entry in entries {
-            menu.addItem(styleActionItem(
-                title: entry.displayName,
-                command: specification.selectionCommand,
-                payload: EVStyleMenuAction(
-                    kind: entry.actionKind,
-                    role: role,
-                    stableID: entry.stableID,
-                    documentID: catalogue.documentID,
-                    documentRevision: catalogue.documentRevision,
-                    styleSheetRevision: catalogue.styleSheetRevision,
-                    syntaxName: entry.syntaxName
-                ),
-                presentation: entry.presentation
-            ))
-        }
-    }
-
-    private func populateUnavailableStyleMenu(
-        _ menu: NSMenu,
-        role: EVStyleMenuRole
-    ) {
-        let specification = styleMenuSpecification(for: role)
-        styleMenuCatalogues.removeValue(forKey: ObjectIdentifier(menu))
-        menu.removeAllItems()
-        if role == .paragraph { addParagraphListCommands(to: menu) }
-        menu.addItem(styleActionItem(
-            title: specification.baseTitle,
-            command: specification.selectionCommand,
-            payload: EVStyleMenuAction(
-                kind: .assign,
-                role: role,
-                stableID: specification.baseStableID,
-                documentID: 0,
-                documentRevision: 0,
-                styleSheetRevision: 0
-            ),
-            presentation: .disabled
-        ))
-        if role == .paragraph {
-            for level in 1...6 {
-                menu.addItem(coreItem("Heading \(level)", command: EVMenuCommand(rawValue: EVMenuCommand.heading0.rawValue + level)!, key: String(level)))
+        for level in 1...6 {
+            let stableID = "Heading\(level)"
+            let entry = catalogue?.entries.first {
+                $0.role == .paragraph && $0.stableID == stableID && $0.actionKind == .assign
             }
-        }
-    }
-
-    private func addParagraphListCommands(to menu: NSMenu) {
-        menu.addItem(coreItem("Bulleted List", command: .bulletedList))
-        menu.addItem(coreItem("Numbered List", command: .numberedList))
-        menu.addItem(coreItem("Indent", command: .increaseIndent))
-        menu.addItem(coreItem("Unindent", command: .decreaseIndent))
-        menu.addItem(coreItem("Insert Paragraph in List Item", command: .insertListParagraph))
-        menu.addItem(.separator())
-    }
-
-    private func styleActionItem(
-        title: String,
-        command: EVMenuCommand,
-        payload: EVStyleMenuAction,
-        presentation: EVMenuItemPresentation
-    ) -> NSMenuItem {
-        let item = NSMenuItem(
-            title: title,
-            action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)),
-            keyEquivalent: ""
-        )
-        if payload.kind == .assign, payload.role == .paragraph,
-           let level = payload.stableID == "Paragraph" ? 0 : Int(payload.stableID.hasPrefix("Heading") ? String(payload.stableID.dropFirst(7)) : ""),
-           (0...6).contains(level) {
-            item.action = #selector(EVEditorCommandRouting.performEditorMenuCommand(_:))
-            item.tag = EVMenuCommand.heading0.rawValue + level
-            item.keyEquivalent = String(level)
+            let item = NSMenuItem(title: entry?.displayName ?? "Heading \(level)",
+                action: #selector(EVStyleMenuActionRouting.performEditorStyleMenuAction(_:)),
+                keyEquivalent: String(level))
             item.keyEquivalentModifierMask = [.command]
-        } else { item.tag = command.rawValue }
-        item.target = nil
-        item.representedObject = payload
-        item.isEnabled = presentation.isEnabled
-        item.state = presentation.state
-        return item
-    }
-
-    private func unavailableBaseEntry(
-        role: EVStyleMenuRole,
-        title: String
-    ) -> EVStyleMenuEntry {
-        EVStyleMenuEntry(
-            role: role,
-            stableID: styleMenuSpecification(for: role).baseStableID,
-            displayName: title,
-            isBase: true,
-            presentation: .disabled
-        )
-    }
-
-    private func styleMenuSpecification(
-        for role: EVStyleMenuRole
-    ) -> (baseTitle: String, baseStableID: String, selectionCommand: EVMenuCommand) {
-        switch role {
-        case .character:
-            ("Default Paragraph", "", .defaultParagraphStyle)
-        case .paragraph:
-            ("Base Paragraph", "Paragraph", .baseParagraphStyle)
+            item.tag = EVMenuCommand.heading0.rawValue + level
+            item.representedObject = EVStyleMenuAction(kind: .assign, role: .paragraph, stableID: stableID,
+                documentID: catalogue?.documentID ?? 0,
+                documentRevision: catalogue?.documentRevision ?? 0,
+                styleSheetRevision: catalogue?.styleSheetRevision ?? 0)
+            item.isEnabled = entry?.presentation.isEnabled == true
+            item.state = entry?.presentation.state ?? .off
+            menu.addItem(item)
         }
     }
 
@@ -791,5 +695,20 @@ extension EVMenuBuilder: NSMenuItemValidation {
     public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if let action = menuItem.representedObject as? EVDocumentModeMenuAction { return action.expected != nil }
         return true
+    }
+}
+
+/// AppKit can match consecutive key equivalents without refreshing a submenu.
+/// Heading assignments carry exact document identities, so obtain the current
+/// catalogue before matching a keyboard action, as when opening this menu.
+@MainActor
+private final class EVHeadingMenu: NSMenu {
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers == [.command], let key = event.charactersIgnoringModifiers,
+           key.count == 1, let level = Int(key), (1...6).contains(level) {
+            delegate?.menuNeedsUpdate?(self)
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }

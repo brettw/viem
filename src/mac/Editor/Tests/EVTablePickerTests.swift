@@ -83,4 +83,73 @@ final class EVTablePickerTests: XCTestCase {
         _ = picker.handle(try event(.leftMouseUp, NSPoint(x: grid.minX - 5, y: grid.minY - 400)))
         XCTAssertFalse(picker.isOpen); XCTAssertEqual(accepts, 0)
     }
+    func testNativeMenuHostsTheSameInteractiveGridAndAcceptsPointerSize() async throws {
+        try await chooseInNativeMenu(heldDrag: false)
+    }
+
+    func testNativeMenuHeldPressCanDragIntoGridAndReleaseToInsert() async throws {
+        try await chooseInNativeMenu(heldDrag: true)
+    }
+
+    private func chooseInNativeMenu(heldDrag: Bool) async throws {
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 200, width: 600, height: 400),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let editor = try XCTUnwrap(window.contentView)
+        window.makeKeyAndOrderFront(nil)
+        let menu = NSMenu(title: "Table")
+        menu.autoenablesItems = false
+        let picker = EVTablePickerController()
+        defer { picker.close(); window.close() }
+        let accepted = expectation(description: "native menu commits chosen table dimensions")
+        var dimensions: (Int, Int)?
+        let content = picker.menuView(in: menu, editor: editor) { columns, rows in
+            dimensions = (columns, rows)
+            accepted.fulfill()
+        }
+        let item = NSMenuItem(title: "Table dimensions", action: nil, keyEquivalent: "")
+        item.view = content; menu.addItem(item)
+        picker.didOpen = { [weak picker] in
+            guard let picker else { return }
+            // AppKit's didBeginTracking notification precedes custom-view
+            // attachment. Wait for the picker's actual attached lifecycle.
+            RunLoop.main.perform(inModes: [.eventTracking]) {
+                MainActor.assumeIsolated {
+                    guard let host = content.window else { XCTFail("Native menu did not attach the picker"); menu.cancelTracking(); return }
+                    XCTAssertTrue(picker.isOpen)
+                    let grid = picker.scrollScreenRect
+                    let point = NSPoint(x: grid.minX + 2 * 21 + 10, y: grid.maxY - 3 * 21 - 10)
+                    let events: [NSEvent.EventType] = heldDrag
+                        ? [.leftMouseDragged, .leftMouseUp]
+                        : [.mouseMoved, .leftMouseDown, .leftMouseUp]
+                    for type in events {
+                        guard let event = NSEvent.mouseEvent(with: type, location: host.convertPoint(fromScreen: point),
+                            modifierFlags: [], timestamp: 0, windowNumber: host.windowNumber, context: nil,
+                            eventNumber: 1, clickCount: 1, pressure: 1) else { continue }
+                        // Native menus track outside NSApplication's synthetic
+                        // postEvent queue. Deliver the AppKit event to the real
+                        // attached item view while its NSMenu is tracking.
+                        switch type {
+                        case .mouseMoved: content.mouseMoved(with: event)
+                        case .leftMouseDown: content.mouseDown(with: event)
+                        case .leftMouseDragged: content.mouseDragged(with: event)
+                        case .leftMouseUp: content.mouseUp(with: event)
+                        default: XCTFail("Unexpected picker test event")
+                        }
+                    }
+                }
+            }
+        }
+        let watchdog = Timer(timeInterval: 5, repeats: false) { _ in
+            MainActor.assumeIsolated { XCTFail("Table menu did not finish tracking"); menu.cancelTracking() }
+        }
+        RunLoop.main.add(watchdog, forMode: .eventTracking)
+        defer { watchdog.invalidate() }
+        menu.popUp(positioning: nil, at: NSPoint(x: 30, y: 300), in: editor)
+        await fulfillment(of: [accepted], timeout: 2)
+        XCTAssertEqual(dimensions?.0, 3)
+        XCTAssertEqual(dimensions?.1, 4)
+        XCTAssertFalse(picker.isOpen)
+    }
+
 }

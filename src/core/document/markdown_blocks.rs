@@ -158,6 +158,17 @@ pub(super) fn marker_prefix_length(text: &str) -> Option<usize> {
     marker_prefix_geometry(text).map(|(bytes, _)| bytes)
 }
 
+/// A task marker follows an already established list marker. Callers must
+/// establish that ownership before treating this spelling as hidden syntax.
+pub(super) fn task_prefix_length(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    if bytes.first() != Some(&b'[') || !matches!(bytes.get(1), Some(b' ' | b'\t' | 0x0b | 0x0c | b'x' | b'X'))
+        || bytes.get(2) != Some(&b']')
+        || bytes.get(3).is_some_and(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | 0x0b | 0x0c))
+    { return None; }
+    Some(3 + bytes[3..].iter().take_while(|byte| matches!(byte, b' ' | b'\t')).count())
+}
+
 pub(super) fn marker_prefix_geometry(text: &str) -> Option<(usize, usize)> {
     // Physical source-line slices may retain their ending. A bare marker such
     // as `1.` is still an empty item when followed by that line ending.

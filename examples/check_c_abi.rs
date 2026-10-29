@@ -64,6 +64,12 @@ fn probe_source() -> String {
 #include <stddef.h>
 _Static_assert(VIEM_CORE_ABI_VERSION == {abi}, "ABI version");
 _Static_assert(VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED == {language_picker_disabled}, "fixed code language decoration flag");
+_Static_assert(VIEM_LAYOUT_DECORATION_CHECKBOX == {checkbox_decoration}, "checkbox decoration flag");
+_Static_assert(VIEM_LAYOUT_DECORATION_CHECKED == {checked_decoration}, "checked decoration flag");
+_Static_assert(VIEM_LIST_STYLE_TASK == {task_style}, "task list style");
+_Static_assert(VIEM_SELECTED_STYLE_HAS_TASKS == {has_tasks}, "task list state");
+_Static_assert(VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST == {task_capability}, "task list capability");
+static ViemStatus (*toggle_checkbox)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentityV1 *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_toggle_checkbox;
 _Static_assert(VIEM_KEY_ALT_ENTER == {alt_enter}, "list paragraph key");
 _Static_assert(VIEM_LIST_CAN_INSERT_PARAGRAPH == {list_paragraph_capability}, "list paragraph capability");
 static ViemStatus (*insert_list_paragraph)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_list_paragraph;
@@ -716,6 +722,11 @@ static void typecheck(void) {{
         abi = VIEM_CORE_ABI_VERSION,
         alt_enter = VIEM_KEY_ALT_ENTER,
         language_picker_disabled = VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED,
+        checkbox_decoration = VIEM_LAYOUT_DECORATION_CHECKBOX,
+        checked_decoration = VIEM_LAYOUT_DECORATION_CHECKED,
+        task_style = VIEM_LIST_STYLE_TASK,
+        has_tasks = VIEM_SELECTED_STYLE_HAS_TASKS,
+        task_capability = VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST,
         list_paragraph_capability = VIEM_LIST_CAN_INSERT_PARAGRAPH,
         selection_character = VIEM_MODE_SELECTION_CHARACTER,
         selection_line = VIEM_MODE_SELECTION_LINE,

@@ -50,6 +50,40 @@ final class EVConfigurationStoreTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: directory); defaults.removePersistentDomain(forName: name) }
     return (directory, defaults)
   }
+  func testZoomDefaultsAndPersistsWithoutBroadcastingToExistingViews() throws {
+    let (directory, legacy) = try fixture()
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertEqual(store.zoomScale, 1)
+    let changed = expectation(description: "Zoom is only a new-view default")
+    changed.isInverted = true
+    let observer = NotificationCenter.default.addObserver(forName: .viemConfigurationDidChange,
+      object: store, queue: .main) { _ in changed.fulfill() }
+    defer { NotificationCenter.default.removeObserver(observer) }
+    for scale in [Float(0.25), 1.03, 5, 1] {
+      try store.setZoomScale(scale)
+      XCTAssertEqual(EVConfigurationStore(directory: directory, legacyDefaults: legacy).zoomScale, scale)
+    }
+    let file = directory.appendingPathComponent("config.json")
+    let saved = try Data(contentsOf: file)
+    for scale in [Float(0), -1, 0.24, 5.01, .nan, .infinity] {
+      XCTAssertThrowsError(try store.setZoomScale(scale))
+      XCTAssertEqual(try Data(contentsOf: file), saved)
+      XCTAssertEqual(store.zoomScale, 1)
+    }
+    wait(for: [changed], timeout: 0.01)
+  }
+  func testInvalidSavedZoomFallsBackWithoutOverwritingSettings() throws {
+    let (directory, legacy) = try fixture()
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let file = directory.appendingPathComponent("config.json")
+    let before = Data(#"{"version":1,"view":{"zoomScale":false}}"#.utf8)
+    try before.write(to: file)
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertEqual(store.zoomScale, 1)
+    XCTAssertNotNil(store.lastError)
+    XCTAssertThrowsError(try store.setZoomScale(1.25))
+    XCTAssertEqual(try Data(contentsOf: file), before)
+  }
   func testLegacyPreferencesMigrateWhileTheLegacyThemeIsIgnored() throws {
     let (directory, legacy) = try fixture()
     let legacyTheme = try JSONEncoder().encode(EVTheme.paper)

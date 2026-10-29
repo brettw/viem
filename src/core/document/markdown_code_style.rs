@@ -40,8 +40,16 @@ impl Document {
                 .map_err(DocumentError::FormattedTextStorage)?;
             let (source, raw) = self.markdown_paragraph_source(&block, !enabled)?;
             let (body_range, body_syntax, opening, closing) = if enabled {
-                let container =
-                    &raw[..super::super::markdown_quotes::prefix(raw.lines().next().unwrap_or(""))];
+                // Removing a nested item's own treatment leaves its leaf in
+                // the parent item. Keep that parent's continuation prefix on
+                // every fence/body row instead of releasing the leaf again.
+                let continuation;
+                let container = if block.list_level().is_some() {
+                    continuation = self.markdown_list_continuation_context(block.range.start)?.2;
+                    continuation.as_str()
+                } else {
+                    &raw[..super::super::markdown_quotes::prefix(raw.lines().next().unwrap_or(""))]
+                };
                 let body = &visible;
                 // A fence must be longer than every possible closing run in
                 // its literal body, including pasted backtick-only lines.

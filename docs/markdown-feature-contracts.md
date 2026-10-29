@@ -27,7 +27,7 @@ consistency, full-suite, or native checks.
 
 ## Comment authoring
 
-Style → Character → Comment wraps a selection in a visible `<!-- … -->`
+Applying the Comment character style wraps a selection in a visible `<!-- … -->`
 span. At a caret it immediately inserts `<!--  -->` and enters Insert mode
 between the two spaces. This insertion is undoable before any body text is typed.
 The body is literal, and continued Insert or Replace input stays
@@ -189,3 +189,34 @@ use to a full reference to retain its destination. Removing a definition through
 ordinary editing preserves surviving visible uses as inline links. Toolbar
 insertion preserves selected formatting and adds any new shared definition in
 one transaction. See [reference controls](markdown-references.md).
+
+## Task-list checkboxes
+
+GFM task markers are hidden syntax at the start of a list item's first prose
+paragraph. Both bullet and numbered items accept `[ ]`, `[x]`, and `[X]`; inline
+occurrences, escaped markers, code, and ordinary paragraphs remain literal.
+Opening and saving retain the exact authored marker spelling. Task List is the
+third semantic list style beside Bulleted List and Numbered List. Creating or
+converting ordinary items uses `- [ ] ` without changing visible text. Applying
+Task List to an existing task preserves its checked state and authored source,
+including imported ordered markers. Choosing the active list style again removes
+the owning item's treatment; choosing Bullet or Numbered removes its checkbox.
+A caret in a continuation paragraph targets its first paragraph, while descendants
+retain their own kinds and move with the enclosing item. Mixed selections apply
+the chosen style to each selected owning item in one undo transaction.
+Headings, code, front matter, tables, definitions, passive HTML, and items whose
+first block is a nested quote do not offer Task List creation. Availability reads parsed block metadata and indexed item ownership;
+it never decodes source, prepares a candidate, or enumerates a complete list.
+
+Clicking a checkbox changes only its marker state in one verified transaction;
+new checked markers use lowercase `x`. Exact Undo restores even an authored
+uppercase `X`. Block clipboard fragments retain the original task marker; HTML
+export emits a disabled checkbox with its checked state. Enter, `o`, and `O`
+create unchecked siblings, preserving the ordered numbering and delimiter of
+imported tasks and the checked spelling of retained bodies. The checkbox
+is a square from the paragraph font's baseline to its cap height and follows
+platform control appearance. Rendering and pointer actions carry exact layout
+and paragraph identities; stale clicks cannot modify another item.
+
+`tests/all/markdown_tasks.rs` and `markdown_task_structure.rs` cover syntax, list styles, source and history,
+encoding and endings, unsupported contexts, and bounded capability queries.

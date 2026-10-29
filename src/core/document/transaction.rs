@@ -48,6 +48,8 @@ mod markdown_paragraph_projection;
 mod markdown_html_edit;
 #[path = "markdown_indented_edit.rs"]
 mod markdown_indented_edit;
+#[path = "markdown_tasks.rs"]
+mod markdown_tasks;
 #[path = "markdown_list_edit.rs"]
 mod markdown_list_edit;
 #[path = "markdown_list_structure.rs"]
@@ -317,6 +319,7 @@ pub enum ModelRequest {
         range: Range<usize>,
         enabled: bool,
     },
+    ToggleCheckbox { document: DocumentId, revision: Revision, at: usize, block_id: u64 },
     IndentList {
         document: DocumentId,
         revision: Revision,
@@ -438,6 +441,7 @@ impl ModelRequest {
             | Self::SetSemanticStyle { document, .. }
             | Self::SetListStyle { document, .. }
             | Self::SetBlockQuote { document, .. }
+            | Self::ToggleCheckbox { document, .. }
             | Self::IndentList { document, .. }
             | Self::IndentListParagraph { document, .. }
             | Self::SetParagraphStyle { document, .. }
@@ -468,6 +472,7 @@ impl ModelRequest {
             | Self::SetSemanticStyle { revision, .. }
             | Self::SetListStyle { revision, .. }
             | Self::SetBlockQuote { revision, .. }
+            | Self::ToggleCheckbox { revision, .. }
             | Self::IndentList { revision, .. }
             | Self::IndentListParagraph { revision, .. }
             | Self::SetParagraphStyle { revision, .. }
@@ -1291,6 +1296,7 @@ impl Document {
                 ..
             } => self.prepare_preserving_autolinks(&range,
                 |document| document.prepare_semantic_style(range.clone(), style, enabled)),
+            ModelRequest::ToggleCheckbox { at, block_id, .. } => self.prepare_toggle_checkbox(at, block_id),
             ModelRequest::IndentList {
                 range, unindent, ..
             } => self.prepare_list_indent(range, unindent),
@@ -2658,6 +2664,10 @@ impl Document {
         while let Some(marker) = super::markdown_blocks::marker_prefix_length(&prefix[body_start..]) {
             body_start += marker;
             body_start += super::markdown_quotes::prefix(&prefix[body_start..]);
+            if let Some(task) = super::markdown_blocks::task_prefix_length(&prefix[body_start..]) {
+                body_start += task;
+                break;
+            }
         }
         let body_prefix = &prefix[body_start..];
         let list_padding = super::markdown_blocks::marker_prefix_length(body_prefix)
@@ -2827,6 +2837,21 @@ impl Document {
             return self.prepare_markdown_supporting_patches(support, |doc| {
                 doc.prepare_formatted_payload_edits(edits.clone())
             });
+        }
+        if edits.len() == 1 && !edits[0].payload.break_offsets().is_empty() {
+            let edit = &edits[0];
+            if let Some(prepared) = self.prepare_structural_replacement(
+                edit.range.clone(), edit.payload.text(), |scratch, at| {
+                    // A replaced paragraph boundary owns its following hidden
+                    // prefixes even when the new payload supplies other breaks.
+                    // Delete through the structural adapter before inserting in
+                    // the surviving first paragraph's context.
+                    let payload = FormattedTextPayload::new(&scratch.hard_line_snapshot(),
+                        edit.payload.text(), edit.payload.break_offsets().to_vec())
+                        .map_err(|_| DocumentError::FormattedPayloadCannotReproject)?;
+                    scratch.prepare_formatted_payload_edits(vec![FormattedPayloadEdit::new(at..at, payload)])
+                },
+            )? { return Ok(prepared); }
         }
         if edits.iter().all(|edit| {
             edit.payload.break_offsets().iter().copied().eq(edit
@@ -3304,6 +3329,19 @@ impl Document {
         if !self.format().is_markdown() || !style.supports_markdown_paragraph_assignment() {
             return Err(DocumentError::UnsupportedFormatting.into());
         }
+        // A heading, code block, or list reset no longer owns a GFM task
+        // marker. Remove that hidden syntax in the same transaction before
+        // changing its leaf treatment. Wrapping the item in a quote retains it.
+        if style.0 != "Block quote" {
+            let patches = structural_style::selected_blocks(self, &range).iter()
+                .filter(|block| block.task_checkbox.is_some())
+                .map(|block| self.remove_checkbox_source_patches(block))
+                .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect::<Vec<_>>();
+            if !patches.is_empty() {
+                return self.prepare_markdown_supporting_patches(patches, |document|
+                    document.prepare_markdown_paragraph_style_raw(range.clone(), style.clone()));
+            }
+        }
         if style.0 == "Code Block" {
             return self.prepare_markdown_code_style(&range, true);
         }
@@ -3494,6 +3532,7 @@ impl Document {
         style: Option<super::ListStyle>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        if let Some(prepared) = self.prepare_task_list_style(&range, style)? { return Ok(prepared); }
         if style.is_none() && self.format().is_markdown()
             && structural_style::selected_blocks(self, &range).iter()
                 .all(|block| !matches!(block.kind, super::BlockKind::ListItem { .. }))
@@ -3515,6 +3554,18 @@ impl Document {
         style: Option<super::ListStyle>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
+        // Raw assignments are also used by contextual Paragraph resets and
+        // code-style normalization, so marker removal belongs at this boundary.
+        if style.is_none() && self.format().is_markdown() {
+            let patches = structural_style::selected_blocks(self, &range).iter()
+                .filter(|block| block.task_checkbox.is_some())
+                .map(|block| self.remove_checkbox_source_patches(block))
+                .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect::<Vec<_>>();
+            if !patches.is_empty() {
+                return self.prepare_markdown_supporting_patches(patches, |document|
+                    document.prepare_list_style_raw(range.clone(), style));
+            }
+        }
         if self.format() == Format::Markdown && style.is_some() {
             let identity = structural_style::selected_blocks(self, &range).into_iter()
                 .filter(|block| matches!(block.kind, super::BlockKind::Heading(_)))
@@ -3595,6 +3646,7 @@ impl Document {
                             let prefix = match style {
                                 super::ListStyle::Bullet => "- ".to_owned(),
                                 super::ListStyle::Numbered => format!("{ordinal}. "),
+                                super::ListStyle::Task => return Err(DocumentError::UnsupportedFormatting.into()),
                             };
                             for (range, text) in super::markdown_code::list_wrapper_patches(self, &block, &prefix)? {
                                 patches.push(SourcePatch::primary(range,
@@ -3641,6 +3693,7 @@ impl Document {
                 Some(_) if self.format() == Format::Markdown => String::new(),
                 Some(super::ListStyle::Bullet) => format!("{}- ", " ".repeat(indent)),
                 Some(super::ListStyle::Numbered) => format!("{}{ordinal}. ", " ".repeat(indent)),
+                Some(super::ListStyle::Task) => return Err(DocumentError::UnsupportedFormatting.into()),
                 None => {
                     if remove_visible > 0 && self.format() != Format::Markdown {
                         " ".repeat(indent)
@@ -3688,6 +3741,7 @@ impl Document {
                     Some(super::ListStyle::Numbered) => {
                         format!("{}{}. ", " ".repeat(indent), ordinal - 1)
                     }
+                    Some(super::ListStyle::Task) => return Err(DocumentError::UnsupportedFormatting.into()),
                     None if index == first && line.is_empty() && complete_marker.is_some()
                         && source_body[remove_source..].bytes()
                             .all(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
@@ -6368,7 +6422,12 @@ impl Document {
                             });
                         let rule = prefix.len() >= 3
                             && ['-', '*', '_'].iter().any(|marker| prefix.chars().all(|ch| ch == *marker));
-                        if begins_item || rule
+                        let task = prefix.as_bytes();
+                        let begins_task = task.first() == Some(&b'[')
+                            && task.get(1).is_some_and(|byte| matches!(byte, b' ' | b'\t' | b'x' | b'X'))
+                            && task.get(2) == Some(&b']')
+                            && task.get(3).is_some_and(|byte| byte.is_ascii_whitespace());
+                        if begins_item || begins_task || rule
                             || prefix.starts_with('>')
                             || prefix.trim_start_matches('#').starts_with([' ', '\t'])
                                 && prefix.starts_with('#')
