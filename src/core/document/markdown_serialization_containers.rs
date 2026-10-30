@@ -131,6 +131,11 @@ fn markdown(
             }
         }
 
+        // An alert's hidden marker opens its top-level quote.
+        if let Some(kind) = path.first().filter(|member| member.starts_here
+            && member.container.kind == ContainerKind::Quote).and_then(|member| member.container.alert) {
+            output.push_str(&format!("> [!{}]\n", kind.marker_name()));
+        }
         let opening = prefix(path, numbers, true);
         let continuation = prefix(path, numbers, false);
         output.push_str(&opening);

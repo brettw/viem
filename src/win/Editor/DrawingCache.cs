@@ -125,8 +125,12 @@ internal sealed partial class EditorPane
                 || d.typographic_bounds.y > drawnBottom + 4) continue;
             Color foreground = (d.paint.flags & VIEM_TEXT_PAINT_DEFAULT_FOREGROUND) != 0 ? theme.Foreground : Color(d.paint.foreground);
             if ((d.flags & (VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND | VIEM_LAYOUT_DECORATION_BLOCK_BORDER | VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER)) != 0) continue;
-            if ((d.flags & (VIEM_LAYOUT_DECORATION_CODE_LANGUAGE | VIEM_LAYOUT_DECORATION_CHECKBOX)) != 0) continue;
-            glyphs.Draw(d.render_run, new(d.x - viewport.left, row.baseline - viewport.top), foreground);
+            if ((d.flags & (VIEM_LAYOUT_DECORATION_CODE_LANGUAGE | VIEM_LAYOUT_DECORATION_CHECKBOX
+                | VIEM_LAYOUT_DECORATION_ALERT_ICON)) != 0) continue;
+            // An alert title sits in the band above its row, on its own baseline.
+            bool title = (d.flags & VIEM_LAYOUT_DECORATION_ALERT_TITLE) != 0;
+            if (title && (d.flags & VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) == 0) continue;
+            glyphs.Draw(d.render_run, new(d.x - viewport.left, (title ? d.baseline : row.baseline) - viewport.top), foreground);
         }
         glyphs.Flush();
         if (whitespace != null) View.Provider.DrawWhitespace(drawing, whitespace, snapshot, viewport, offset => {

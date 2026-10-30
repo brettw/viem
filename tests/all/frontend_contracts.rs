@@ -270,6 +270,7 @@ fn application_config_preserves_unknowns_and_sparse_styles_with_shared_defaults(
     use viem_core::application_config::normalize;
     let minimal = normalize(br#"{"version":1}"#).unwrap();
     assert_eq!(minimal["editing"]["textWidth"], 80);
+    assert_eq!(minimal["editing"]["smartHome"], true);
     assert_eq!(
         normalize(&serde_json::to_vec(&minimal).unwrap()).unwrap(),
         minimal,
@@ -293,6 +294,7 @@ fn application_config_preserves_unknowns_and_sparse_styles_with_shared_defaults(
         r#"{"version":1,"editing":{"textWidth":false}}"#,
         r#"{"version":1,"editing":{"textWidth":0}}"#,
         r#"{"version":1,"windows":{"showMenu":null}}"#,
+        r#"{"version":1,"editing":{"smartHome":1}}"#,
         r#"{"version":1,"recentDocuments":["relative"]}"#,
         r#"{"version":1,"editing":{"indentation":{"tabstop":0}}}"#,
         r#"{"version":1,"code":{"filenameAssociations":[{"pattern":"*","language":"bad/"}]}}"#,

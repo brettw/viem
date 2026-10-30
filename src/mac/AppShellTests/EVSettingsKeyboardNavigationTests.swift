@@ -101,10 +101,14 @@ final class EVSettingsKeyboardNavigationTests: XCTestCase {
     let width = try field("Text width (columns)", in: window)
     let autoselect = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
       .first { $0.accessibilityLabel() == "Use native selection for mouse and Shift-arrow keys" })
+    let smartHome = try XCTUnwrap(descendants(window.contentView).compactMap { $0 as? NSButton }
+      .first { $0.accessibilityLabel() == "Smart Home" })
     let tabstop = try field("Indentation tabstop", in: window)
     let shiftwidth = try field("Indentation shiftwidth", in: window)
+    XCTAssertEqual(smartHome.state, .on)
     XCTAssertTrue(width.nextKeyView === autoselect)
-    XCTAssertTrue(autoselect.nextKeyView === tabstop)
+    XCTAssertTrue(autoselect.nextKeyView === smartHome)
+    XCTAssertTrue(smartHome.nextKeyView === tabstop)
     XCTAssertTrue(tabstop.nextKeyView === shiftwidth)
     XCTAssertTrue(window.makeFirstResponder(width))
     let widthEditor = try XCTUnwrap(width.currentEditor() as? NSTextView)

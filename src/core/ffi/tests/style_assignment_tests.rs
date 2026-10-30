@@ -19,7 +19,8 @@ fn markdown_paragraph_assignment_capabilities_match_model_support() {
         for definition in export.definitions.iter().filter(|definition| definition.namespace == VIEM_STYLE_NAMESPACE_BLOCK) {
             let id = style_arena_text(&export.strings, definition.stable_id);
             let supported = matches!(id, "Paragraph" | "Heading1" | "Heading2" | "Heading3" | "Heading4"
-                | "Heading5" | "Heading6" | "Block quote" | "Code Block");
+                | "Heading5" | "Heading6" | "Block quote" | "Code Block"
+                | "Note" | "Tip" | "Important" | "Warning" | "Caution");
             assert_eq!(definition.capabilities & VIEM_STYLE_CAPABILITY_ASSIGN != 0, supported, "{format:?} {id}");
             let prepared = document.prepare_model_request(ModelRequest::AssignNamedStyle {
                 document: document.id(), revision: document.revision(), range: 0..5,

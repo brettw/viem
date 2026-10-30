@@ -26,6 +26,7 @@ pub mod insert_motion;
 mod number_change;
 mod normal_info;
 mod bracket_motion;
+mod delimiter_match;
 use bracket_motion::{bracket_target, BracketMotion};
 pub mod layout_motion;
 mod reflow;
@@ -5482,7 +5483,8 @@ impl CommandInterpreter {
                 self.move_cursor(document, Motion::LineOffsetFirstNonBlank(-1), count)
             }
             Key::Char('0') => self.move_cursor(document, Motion::LineStart, 1),
-            Key::Char('^') | Key::Home => self.move_cursor(document, Motion::FirstNonBlank, 1),
+            Key::Char('^') => self.move_cursor(document, Motion::FirstNonBlank, 1),
+            Key::Home => self.move_cursor(document, self.home_motion(document), 1),
             Key::Char('$') | Key::End => self.move_cursor(document, Motion::LineEnd, count),
             Key::Char('|') => self.move_cursor(document, Motion::Column(count), 1),
             Key::Char('w') => self.move_cursor(document, Motion::WordForward(false), count),
@@ -5773,7 +5775,8 @@ impl CommandInterpreter {
                 self.move_cursor(document, Motion::LineOffsetFirstNonBlank(-1), count)
             }
             Key::Char('0') => self.move_cursor(document, Motion::LineStart, 1),
-            Key::Char('^') | Key::Home => self.move_cursor(document, Motion::FirstNonBlank, 1),
+            Key::Char('^') => self.move_cursor(document, Motion::FirstNonBlank, 1),
+            Key::Home => self.move_cursor(document, self.home_motion(document), 1),
             Key::Char('$') | Key::End => self.move_cursor(document, Motion::LineEnd, count),
             Key::Char('|') => self.move_cursor(document, Motion::Column(count), 1),
             Key::Char('w') => self.move_cursor(document, Motion::WordForward(false), count),
@@ -5870,7 +5873,8 @@ impl CommandInterpreter {
         -> Option<bracket_motion::BracketTarget> {
         let lines = document.hard_line_snapshot();
         bracket_target(&lines, self.cursor.min(lines.text_length()), motion, count,
-            document.addressable_hard_line_count().saturating_sub(1), with_operator, &self.vim_options.text("sections"))
+            document.addressable_hard_line_count().saturating_sub(1), with_operator, &self.vim_options.text("sections"),
+            self.match_rules())
     }
 
     /// `go`: a jump to the [count] byte of the source artifact.
@@ -7124,7 +7128,10 @@ impl CommandInterpreter {
             Key::Char('^') | Key::Home => Ok(self.apply_visual_block_logical_motion(
                 document,
                 context,
-                |commands, document| commands.move_cursor(document, Motion::FirstNonBlank, 1),
+                |commands, document| {
+                    let motion = if key == Key::Home { commands.home_motion(document) } else { Motion::FirstNonBlank };
+                    commands.move_cursor(document, motion, 1)
+                },
             )),
             Key::Char('$') | Key::End => {
                 let output = self.apply_visual_block_logical_motion(
@@ -10239,6 +10246,8 @@ impl CommandInterpreter {
             if matches!(key, Key::Char('h') | Key::Backspace | Key::Left)
                 && self.vim_options.has_item("whichwrap", match key { Key::Char('h') => "h", Key::Backspace => "b", _ => "<" }) {
                 Some(OperatorMotion::WrappingLeft)
+            } else if key == Key::Home && self.home_reaches_hard_line_start(document) {
+                Some(OperatorMotion::LineStart)
             } else { operator_motion_for_key(key) }
         };
         let Some(motion) = motion else {
@@ -10342,7 +10351,7 @@ impl CommandInterpreter {
         if matches!(motion, OperatorMotion::Sentence(_) | OperatorMotion::MatchPair) {
             let destination = match motion {
                 OperatorMotion::Sentence(forward) => move_sentence(&lines, origin, forward, count),
-                OperatorMotion::MatchPair => matching_pair(&lines, origin)?,
+                OperatorMotion::MatchPair => matching_pair(&lines, origin, self.match_rules())?,
                 _ => unreachable!(),
             };
             let end = origin.max(destination);
@@ -10876,7 +10885,7 @@ impl CommandInterpreter {
             OperatorMotion::Paragraph(forward) => {
                 Some(text::move_document_paragraph(document, origin, forward, count))
             }
-            OperatorMotion::MatchPair => matching_pair(&lines, origin),
+            OperatorMotion::MatchPair => matching_pair(&lines, origin, self.match_rules()),
             OperatorMotion::Percentage => {
                 Some(nth_line_start(&lines, percentage_line(&lines, count)?))
             }
@@ -11266,7 +11275,7 @@ impl CommandInterpreter {
             Some(anchor) => text_object::resolve_visual_tag_block(document.text(), anchor.min(self.cursor),
                 anchor.max(self.cursor), scope, count),
             None => resolve_document_text_object(document, self.cursor, TextObject { scope, kind }, count,
-                self.vim_options.keywords()),
+                self.vim_options.keywords(), self.match_rules()),
         };
         let range = match resolved {
             Ok(range) if !range.is_empty() || matches!(kind, TextObjectKind::Word | TextObjectKind::BigWord) => range,
@@ -13981,6 +13990,7 @@ impl CommandInterpreter {
                     *object,
                     count,
             self.vim_options.keywords(),
+            self.match_rules(),
                 ) {
                     Ok(range) => Some(text_object_extent(document, *object, range)),
                     Err(error) => {
@@ -15489,6 +15499,7 @@ impl CommandInterpreter {
             TextObject { scope, kind },
             count,
             self.vim_options.keywords(),
+            self.match_rules(),
         ) {
             Ok(range) => range,
             Err(error) => {
@@ -15510,10 +15521,15 @@ impl CommandInterpreter {
         )
     }
 
+    /// Delimiter matching follows the `%` and `M` flags of 'cpoptions'.
+    fn match_rules(&self) -> delimiter_match::MatchRules {
+        delimiter_match::MatchRules::from_cpoptions(&self.vim_options.text("cpoptions"))
+    }
+
     fn match_pair_motion(&mut self, document: &Document) -> CommandOutput {
         let old = self.cursor;
         let Some(target) =
-            matching_pair(&document.hard_line_snapshot(), self.cursor)
+            matching_pair(&document.hard_line_snapshot(), self.cursor, self.match_rules())
         else {
             return CommandOutput {
                 status: CommandStatus::SearchNotFound,

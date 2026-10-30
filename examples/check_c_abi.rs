@@ -70,6 +70,15 @@ _Static_assert(VIEM_LIST_STYLE_TASK == {task_style}, "task list style");
 _Static_assert(VIEM_SELECTED_STYLE_HAS_TASKS == {has_tasks}, "task list state");
 _Static_assert(VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST == {task_capability}, "task list capability");
 static ViemStatus (*toggle_checkbox)(ViemCoreHandle, ViemViewId, const ViemLayoutSnapshotIdentityV1 *, uint64_t, ViemCoreOutcomeV1 *) = viem_core_view_toggle_checkbox;
+_Static_assert(VIEM_LAYOUT_DECORATION_ALERT_ICON == {alert_icon}, "alert icon decoration flag");
+_Static_assert(VIEM_LAYOUT_DECORATION_ALERT_TITLE == {alert_title}, "alert title decoration flag");
+_Static_assert(VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT == {alert_kind_shift}, "alert decoration kind shift");
+_Static_assert(VIEM_ALERT_CAUTION == {alert_caution}, "last alert kind");
+_Static_assert(VIEM_SELECTED_STYLE_CAN_SET_ALERT == {alert_capability}, "alert capability");
+_Static_assert(VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE == {plain_quote}, "plain quote state");
+_Static_assert(VIEM_SELECTED_STYLE_ALERT_SHIFT == {alert_state_shift}, "alert state shift");
+static ViemStatus (*set_alert)(ViemCoreHandle, ViemViewId, const ViemSetAlertV1 *, ViemCoreOutcomeV1 *) = viem_core_view_set_alert;
+static ViemStatus (*set_smart_home)(ViemCoreHandle, ViemViewId, uint32_t) = viem_core_view_set_smart_home;
 _Static_assert(VIEM_KEY_ALT_ENTER == {alt_enter}, "list paragraph key");
 _Static_assert(VIEM_LIST_CAN_INSERT_PARAGRAPH == {list_paragraph_capability}, "list paragraph capability");
 static ViemStatus (*insert_list_paragraph)(ViemCoreHandle, ViemViewId, const ViemLogicalSelectionIdentityV1 *, ViemCoreOutcomeV1 *) = viem_core_view_insert_list_paragraph;
@@ -727,6 +736,13 @@ static void typecheck(void) {{
         task_style = VIEM_LIST_STYLE_TASK,
         has_tasks = VIEM_SELECTED_STYLE_HAS_TASKS,
         task_capability = VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST,
+        alert_icon = VIEM_LAYOUT_DECORATION_ALERT_ICON,
+        alert_title = VIEM_LAYOUT_DECORATION_ALERT_TITLE,
+        alert_kind_shift = VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT,
+        alert_caution = VIEM_ALERT_CAUTION,
+        alert_capability = VIEM_SELECTED_STYLE_CAN_SET_ALERT,
+        plain_quote = VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE,
+        alert_state_shift = VIEM_SELECTED_STYLE_ALERT_SHIFT,
         list_paragraph_capability = VIEM_LIST_CAN_INSERT_PARAGRAPH,
         selection_character = VIEM_MODE_SELECTION_CHARACTER,
         selection_line = VIEM_MODE_SELECTION_LINE,

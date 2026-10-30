@@ -64,7 +64,7 @@ final class EVRecoveryDocumentTests: XCTestCase {
         let snapshot = EVRecoverySnapshot(source: Data(text.utf8), format: .code,
             encoding: 2, fileFormat: 3, documentID: 7, documentRevision: 3)
         let record = EVRecoveryRecord(version: 1, owner: UUID(), processID: Int32.max,
-            host: ProcessInfo.processInfo.hostName, targetPath: canonical.path,
+            host: EVRecoveryStore.hostName, targetPath: canonical.path,
             created: Date(), updated: Date(), snapshot: snapshot)
         try record.encoded().write(to: url)
         return url

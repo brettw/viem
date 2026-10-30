@@ -22,6 +22,14 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     return EVMenuItemPresentation(isEnabled: entry.presentation.isEnabled, state: selected.quoteState)
   }
 
+  /// Choosing the selection's only alert kind again restores a plain quote.
+  func alertPresentation(_ kind: UInt32) -> EVMenuItemPresentation {
+    guard backend.sourceFormat.isMarkdown, let selected = try? session?.selectedNamedStyles(),
+          !selected.hasTable, !selected.hasCodeBlock else { return .disabled }
+    let state = selected.alertState(kind)
+    return EVMenuItemPresentation(isEnabled: selected.canSetAlert || state == .on, state: state)
+  }
+
   func codeBlockPresentation() -> EVMenuItemPresentation {
     guard backend.sourceFormat.isMarkdown, let catalogue = currentStyleMenuCatalogue(),
           let selected = try? session?.selectedNamedStyles(), !selected.hasTable else { return .disabled }

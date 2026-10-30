@@ -526,6 +526,16 @@ impl DocumentLayoutStyles {
                     container_box.language_label = Some(block.language_label());
                     container_box.language_picker_disabled = !block.code_kind.language_editable();
                 }
+                if let Some(kind) = container.alert.filter(|_| container.kind == crate::document::ContainerKind::Quote) {
+                    // The title draws as a Heading 4 paragraph inside this alert
+                    // would, so it inherits the alert's appearance by cascade.
+                    let heading = Some(StyleId::from("Heading4")).filter(|id| sheet.block_style(id).is_some())
+                        .unwrap_or_else(|| sheet.base_paragraph.clone());
+                    let title = cascades.paragraph(sheet, input.document_style, &heading, &Default::default(),
+                        &container_character, &Default::default(), Some(&container_paragraph))?;
+                    container_box.alert = Some(super::AlertHeading { kind,
+                        style: shaping_style(&title.character)?, paint: paint_style(&title.character) });
+                }
                 container_box.inline_start = resolved.leading_indent;
                 container_box.inline_end = resolved.trailing_indent;
                 containers.push(super::ContainerLayoutStyle { id: container.id, kind: container.kind,

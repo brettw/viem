@@ -394,6 +394,10 @@ pub enum DecorationKind {
     BlockBackground,
     BlockBorder,
     CodeLanguage { picker_disabled: bool },
+    /// A GitHub alert's vector icon, drawn natively in its square bounds.
+    AlertIcon { kind: crate::document::AlertKind },
+    /// A GitHub alert's title text, drawn natively in the system UI font.
+    AlertTitle { kind: crate::document::AlertKind },
 }
 
 /// Drawable block furniture. It has no formatted text range or caret stops.
@@ -416,6 +420,9 @@ pub struct PositionedDecoration {
     pub render_run: Option<RenderRunHandle>,
     pub paint: ResolvedTextPaint,
     pub font_size: f32,
+    /// A text decoration's baseline: its row's, except for an alert title,
+    /// which sits in the band above its row. Zero for non-text furniture.
+    pub baseline: f32,
 }
 
 /// A caret stop within one layout. Its document and layout identity belong
@@ -3717,6 +3724,9 @@ fn translate_row_vertically(row: &mut VisualRow, delta: f32) -> Result<(), ViewH
         decoration.typographic_bounds.y =
             checked_layout_coordinate_sum(decoration.typographic_bounds.y, delta)?;
         decoration.ink_bounds.y = checked_layout_coordinate_sum(decoration.ink_bounds.y, delta)?;
+        if matches!(decoration.kind, DecorationKind::Text | DecorationKind::AlertTitle { .. }) {
+            decoration.baseline = checked_layout_coordinate_sum(decoration.baseline, delta)?;
+        }
     }
     Ok(())
 }
@@ -4856,6 +4866,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     if let Some(row) = rows.first_mut().filter(|row| row.table_cell.is_some()) {
                         decorate_block_row(row, &paragraph.style, gap, content_insets.left,
                             usable_width, view.scale, paragraph.style.base_direction == WritingDirection::RightToLeft);
+                        self.shape_alert_titles(row, &paragraph.style, document_id, document_revision, view.scale, &control)?;
                     }
                     lines.push(RegionalHardLineLayout { layout_revision, hard_line_index,
                         hard_line_range: line_slice.full_range.clone(), text_coverage: line_slice.full_range.clone(),
@@ -5176,6 +5187,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 view.scale, right_to_left);
             for row in &mut rows {
                 decorate_block_row_with(row, &paragraph.style, &plan, resolved_gap);
+                self.shape_alert_titles(row, &paragraph.style, document_id, document_revision, view.scale, &control)?;
             }
             if !extends_past_work && next_paragraph.is_none() {
                 y = document_end_extent(y, rows.last(), block_box::after(&paragraph.style) * view.scale, content_insets.bottom);
@@ -5785,6 +5797,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             }
             let (_, paragraph_plan) = plan.as_ref().expect("current paragraph plan");
             decorate_block_row_with(row, &paragraph.style, paragraph_plan, resolved_gaps[row.hard_line_index]);
+            self.shape_alert_titles(row, &paragraph.style, document_id, document_revision, view.scale, control)?;
         }
         y = document_end_extent(
             y,
@@ -5985,6 +5998,51 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         Ok(advance)
     }
 
+    /// Replace each alert title placeholder with clusters shaped in its
+    /// Heading 4 style and centered on the band, through the same bounded
+    /// furniture cache as list labels.
+    fn shape_alert_titles(&mut self, row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
+        document_id: DocumentId, document_revision: Revision, scale: f32, control: &LayoutRunControl<'_>,
+    ) -> Result<(), LayoutComputationError> {
+        while let Some(index) = row.decorations.iter().position(|item|
+            matches!(item.kind, DecorationKind::AlertTitle { .. }) && item.render_run.is_none() && !item.text.is_empty()) {
+            let placeholder = row.decorations.remove(index);
+            let Some(alert) = paragraph.containers.iter()
+                .find(|container| Some(DecorationOwner::Container(container.id)) == placeholder.owner)
+                .and_then(|container| container.style.alert.as_ref()) else { continue; };
+            let mut style = alert.style.clone();
+            style.direction = TextDirection::LeftToRight;
+            let text = placeholder.text.clone();
+            std::mem::swap(&mut self.shape_cache, &mut self.decoration_shape_cache);
+            let result = self.shape_ranges_with_origin(document_id, document_revision, &text, &[0..text.len()],
+                &[0..text.len()], 0, &[], &[], std::slice::from_ref(&style), &[TextDirection::LeftToRight], scale,
+                self.provider.measurement_environment_id(), self.provider.metrics_generation(), control);
+            std::mem::swap(&mut self.shape_cache, &mut self.decoration_shape_cache);
+            let fragments = result?;
+            let shaped = &fragments[0];
+            let ascent = shaped.clusters.iter().map(|cluster| cluster.metrics.ascent).fold(shaped.default_metrics.ascent, f32::max);
+            let descent = shaped.clusters.iter().map(|cluster| cluster.metrics.descent).fold(shaped.default_metrics.descent, f32::max);
+            let bounds = placeholder.typographic_bounds;
+            let baseline = bounds.y + (bounds.height - ascent - descent) * 0.5 + ascent;
+            let mut x = placeholder.x;
+            let mut clusters = Vec::with_capacity(shaped.clusters.len());
+            for cluster_index in fragment_visual_order(&shaped.clusters) {
+                let cluster = &shaped.clusters[cluster_index];
+                clusters.push(PositionedDecoration {
+                    kind: placeholder.kind, owner: placeholder.owner, text: text[cluster.text_range.clone()].into(),
+                    x, advance: cluster.advance,
+                    typographic_bounds: position_shaped_bounds(cluster.typographic_bounds, x, baseline),
+                    ink_bounds: position_shaped_bounds(cluster.ink_bounds, x, baseline),
+                    render_run: cluster.render_run.clone(), paint: placeholder.paint.clone(),
+                    font_size: placeholder.font_size, baseline,
+                });
+                x += cluster.advance;
+            }
+            row.decorations.splice(index..index, clusters);
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn decorate_list_row(
         &mut self,
@@ -6071,7 +6129,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 owner: Some(DecorationOwner::Paragraph(paragraph.block_id)),
                 text: String::new(), x, advance: size,
                 typographic_bounds: bounds, ink_bounds: bounds, render_run: None,
-                paint: paragraph.marker_paint.clone(), font_size: style.size * scale,
+                paint: paragraph.marker_paint.clone(), font_size: style.size * scale, baseline: 0.,
             });
             return Ok(());
         }
@@ -6098,6 +6156,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     render_run: cluster.render_run.clone(),
                     paint: paragraph.marker_paint.clone(),
                     font_size: style.size * scale,
+                    baseline: row.baseline,
                 });
             }
             x += cluster.advance;
@@ -7122,7 +7181,7 @@ fn decorate_quote_row(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle, sca
             owner: None,
             kind, text: String::new(), x: rect.x, advance: rect.width,
             typographic_bounds: rect, ink_bounds: rect, render_run: None,
-            paint: paint.clone(), font_size: 0.0,
+            paint: paint.clone(), font_size: 0.0, baseline: 0.,
         });
     }
 }
@@ -7160,7 +7219,7 @@ impl BlockDecorationPlan {
             left += (style.margin.left + if right_to_left { style.inline_end } else { style.inline_start }) * scale;
             right -= (style.margin.right + if right_to_left { style.inline_start } else { style.inline_end }) * scale;
             let border = [style.border.top, style.border.right, style.border.bottom, style.border.left];
-            if style.language_label.is_some() || style.background.is_some()
+            if style.language_label.is_some() || style.background.is_some() || style.alert.is_some()
                 || border.iter().any(|weight| !(*weight <= 0.)) {
                 painting.push((index, left, right));
             }
@@ -7230,7 +7289,11 @@ fn decorate_block_row_with(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle
                 label_paint.foreground_is_default = style.foreground_is_default;
                 row.decorations.push(PositionedDecoration { kind: DecorationKind::CodeLanguage { picker_disabled: style.language_picker_disabled },
                     owner: Some(owner), text, x: bounds.x, advance: width, typographic_bounds: bounds,
-                    ink_bounds: bounds, render_run: None, paint: label_paint, font_size: 11.0 * scale });
+                    ink_bounds: bounds, render_run: None, paint: label_paint, font_size: 11.0 * scale, baseline: 0. });
+            }
+            if let Some(alert) = &style.alert {
+                push_alert_heading(row, owner, alert, inner_rect.x + style.padding.left * scale,
+                    inner_top + style.padding.top * scale, scale);
             }
         }
         if let Some(color) = style.background {
@@ -7255,11 +7318,31 @@ fn decorate_block_row_with(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle
     row.decorations.append(&mut child_decorations);
 }
 
+/// The icon is one title em square, vertically centered in the band, in the
+/// title's color. The title is a placeholder spanning the band until
+/// `shape_alert_titles` replaces it with shaped clusters on a baseline.
+fn push_alert_heading(row: &mut VisualRow, owner: DecorationOwner, alert: &block_box::AlertHeading,
+    x: f32, top: f32, scale: f32) {
+    let size = alert.style.size * scale;
+    let height = alert.height() * scale;
+    let icon = LayoutRect { x, y: top + (height - size) * 0.5, width: size, height: size };
+    row.decorations.push(PositionedDecoration { kind: DecorationKind::AlertIcon { kind: alert.kind },
+        owner: Some(owner), text: String::new(), x, advance: size, typographic_bounds: icon, ink_bounds: icon,
+        render_run: None, paint: alert.paint.clone(), font_size: size, baseline: 0. });
+    let title = alert.kind.title();
+    let start = x + size * 1.5;
+    let width = title.chars().count() as f32 * size * 0.65;
+    let bounds = LayoutRect { x: start, y: top, width, height };
+    row.decorations.push(PositionedDecoration { kind: DecorationKind::AlertTitle { kind: alert.kind },
+        owner: Some(owner), text: title.into(), x: start, advance: width, typographic_bounds: bounds, ink_bounds: bounds,
+        render_run: None, paint: alert.paint.clone(), font_size: size, baseline: top + height * 0.8 });
+}
+
 fn push_box_rectangle(row: &mut VisualRow, owner: DecorationOwner, kind: DecorationKind, rect: LayoutRect, paint: ResolvedTextPaint) {
     if rect.width <= 0. || rect.height <= 0. { return; }
     row.decorations.push(PositionedDecoration { kind, owner: Some(owner), text: String::new(), x: rect.x,
         advance: rect.width, typographic_bounds: rect, ink_bounds: rect, render_run: None,
-        paint, font_size: 0. });
+        paint, font_size: 0., baseline: 0. });
 }
 
 fn starts_new_paragraph(current: &LineParagraphLayout, next: &LineParagraphLayout) -> bool {

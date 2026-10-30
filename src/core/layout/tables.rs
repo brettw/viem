@@ -1277,6 +1277,7 @@ fn box_decoration(
             ..Default::default()
         },
         font_size: 0.,
+        baseline: 0.,
     }
 }
 
@@ -1594,6 +1595,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     decorate_block_row(row, &paragraph.style, gap, content_insets.left,
                         usable_width(view.width, content_insets),
                         view.scale, paragraph.style.base_direction == WritingDirection::RightToLeft);
+                    self.shape_alert_titles(row, &paragraph.style, document_id, document_revision, view.scale, &control)?;
                 }
                 lines.push(RegionalHardLineLayout {
                     layout_revision: revision,

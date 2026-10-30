@@ -5,6 +5,7 @@ use super::text::{
     is_blank_hard_line_boundary, is_east_asian_sentence_terminator, is_sentence_closer,
     is_sentence_terminator, line_end,
 };
+use super::delimiter_match::{delimiter_pair, matching_delimiter, MatchRules};
 use crate::document::HardLineSnapshot;
 
 struct Item {
@@ -133,45 +134,22 @@ impl<'a> Scan<'a> {
         }
         at
     }
-    fn matching_pair(&mut self, offset: usize) -> Option<usize> {
+    /// Like Vim, the delimiter search under or after the cursor ignores
+    /// quotes and escapes; matching from it applies `rules`.
+    fn matching_pair(&mut self, offset: usize, rules: MatchRules) -> Option<usize> {
         let limit = line_end(self.lines, offset);
         let mut at = offset;
-        let (opening, closing, forward) = loop {
+        loop {
             let item = self.item(at)?;
-            let pair = match item.first {
-                '(' => Some(('(', ')', true)),
-                '[' => Some(('[', ']', true)),
-                '{' => Some(('{', '}', true)),
-                ')' => Some(('(', ')', false)),
-                ']' => Some(('[', ']', false)),
-                '}' => Some(('{', '}', false)),
-                _ => None,
-            };
-            if let Some(pair) = pair {
-                break pair;
+            if delimiter_pair(item.first).is_some() {
+                break;
             }
             at = item.end;
             if at >= limit {
                 return None;
             }
-        };
-        let mut depth = 0usize;
-        loop {
-            let item = self.item(at)?;
-            if item.first == if forward { opening } else { closing } {
-                depth += 1;
-            } else if item.first == if forward { closing } else { opening } {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(at);
-                }
-            }
-            at = if forward {
-                item.end
-            } else {
-                self.lines.previous_grapheme_boundary(at)?
-            };
         }
+        matching_delimiter(self.lines, at, rules)
     }
 }
 
@@ -183,8 +161,8 @@ pub(super) fn move_sentence(
 ) -> usize {
     Scan::new(lines).sentence(offset, forward, count)
 }
-pub(super) fn matching_pair(lines: &HardLineSnapshot, offset: usize) -> Option<usize> {
-    Scan::new(lines).matching_pair(offset)
+pub(super) fn matching_pair(lines: &HardLineSnapshot, offset: usize, rules: MatchRules) -> Option<usize> {
+    Scan::new(lines).matching_pair(offset, rules)
 }
 
 #[cfg(test)]
@@ -252,8 +230,8 @@ mod tests {
             let mut scan = Scan::new(&lines);
             assert_eq!(scan.sentence(start, true, 1), start + 7);
             assert_eq!(scan.sentence(start + 25, false, 1), start + 24);
-            assert_eq!(scan.matching_pair(start + 7), Some(start + 21));
-            assert_eq!(scan.matching_pair(start + 21), Some(start + 7));
+            assert_eq!(scan.matching_pair(start + 7, MatchRules::default()), Some(start + 21));
+            assert_eq!(scan.matching_pair(start + 21, MatchRules::default()), Some(start + 7));
             assert!(scan.inspected < 100, "{} items", scan.inspected);
             assert!(!document.projection().compatibility_text_is_materialized());
         }

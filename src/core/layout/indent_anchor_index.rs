@@ -16,7 +16,7 @@ const BLOCK_LINES: usize = 128;
 const MIN_BLOCK_LINES: usize = BLOCK_LINES / 2;
 
 /// Logical indentation, measured in the caller's character/tab columns.
-/// Eligibility is a policy hook; the current code policy includes every line.
+/// Eligibility is a policy hook; the code policy excludes blank lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LineIndentation {
     pub columns: usize,
@@ -228,9 +228,9 @@ impl IndentAnchorIndex {
         )
     }
 
-    /// Contiguous span containing all transitive dependents. With today's
-    /// all-eligible policy this is exact. A future excluded line with less
-    /// indentation can be a hole inside the span, but cannot end it.
+    /// Contiguous span containing all transitive dependents. Without excluded
+    /// lines this is exact. An excluded line with less indentation can be a
+    /// hole inside the span, but cannot end it.
     /// Equal-indent lines remain dependent, so only a *strictly* smaller
     /// eligible line terminates the span. No dependents are enumerated here.
     pub fn dependent_range(&self, line: usize) -> Option<Range<usize>> {
@@ -250,8 +250,8 @@ impl IndentAnchorIndex {
     /// Enumerate immediate children without materializing an adjacency list.
     /// Each yielded eligible child lowers the next search's threshold; its
     /// entire more-indented subtree is skipped. Cost is O((children + 1) log n)
-    /// with bounded leaf scans under the current all-eligible policy. Excluded
-    /// low-indent lines are additionally visited under future skip policies.
+    /// with bounded leaf scans when no lines are excluded. Excluded low-indent
+    /// lines, such as blank lines, are additionally visited.
     pub fn direct_dependents(&self, line: usize) -> IndentDependents<'_> {
         let indentation = self.line(line).filter(|line| line.anchor_eligible);
         IndentDependents {

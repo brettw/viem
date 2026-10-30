@@ -118,6 +118,8 @@ internal sealed unsafe partial class CoreView
     public static ViemStyleEditValueV1 Enum(uint kind, uint value) { var v = New<ViemStyleEditValueV1>(); v.kind = kind; v.enum_value = value; return v; }
     public void SetParagraph(uint level) => Apply(o => { var r = New<ViemSetParagraphStyleV1>(); r.level = level; r.expected_selection = LogicalSelection(); return viem_core_view_set_paragraph_style(Document.Handle, Id, &r, o); });
     public void SetBlockQuote(bool enabled) => Apply(o => { var r = New<ViemSetBlockQuoteV1>(); r.enabled = enabled ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_set_block_quote(Document.Handle, Id, &r, o); });
+    /// <summary>A VIEM_ALERT_* kind; VIEM_ALERT_NONE turns selected alerts back into plain quotes.</summary>
+    public void SetAlert(uint kind) => Apply(o => { var r = New<ViemSetAlertV1>(); r.kind = kind; r.expected_selection = LogicalSelection(); return viem_core_view_set_alert(Document.Handle, Id, &r, o); });
     public void SetList(uint style) => Apply(o => { var r = New<ViemSetListStyleV1>(); r.style = style; r.expected_selection = LogicalSelection(); return viem_core_view_set_list_style(Document.Handle, Id, &r, o); });
     public void IndentList(bool unindent) => Apply(o => { var r = New<ViemListIndentV1>(); r.unindent = unindent ? 1u : 0u; r.expected_selection = LogicalSelection(); return viem_core_view_indent_list(Document.Handle, Id, &r, o); });
     public void InsertListParagraph()

@@ -686,7 +686,7 @@ fn insert_and_replace_line_edge_keys_follow_visual_and_physical_line_policy() {
 #[test]
 fn home_matches_caret_and_insert_line_navigation_splits_undo_units() {
     let (mut core, view) = editor(Document::new("  alpha beta gamma delta epsilon\ntail"), 120.);
-    keys(&mut core, view, "ll");
+    keys(&mut core, view, "lll");
     key(&mut core, view, Key::Home);
     assert_eq!(core.command_state(view).unwrap().cursor(), 2);
     keys(&mut core, view, "iX");
@@ -698,6 +698,62 @@ fn home_matches_caret_and_insert_line_navigation_splits_undo_units() {
     assert!(!core.document().text().contains('Y'));
     keys(&mut core, view, "u");
     assert_eq!(core.document().text(), "  alpha beta gamma delta epsilon\ntail");
+}
+
+#[test]
+fn smart_home_toggles_first_nonblank_and_line_start_in_each_mode_and_line_meaning() {
+    let source = "    alpha beta\nnext";
+    for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        for mode in [Mode::Normal, Mode::VisualCharacter, Mode::VisualBlock, Mode::Insert] {
+            for smart in [true, false] {
+                let (mut core, view) = editor(Document::new(source), 400.);
+                core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+                core.handle(view, CoreEvent::SetSmartHome(smart)).unwrap();
+                keys(&mut core, view, "6|");
+                match mode {
+                    Mode::VisualCharacter => keys(&mut core, view, "v"),
+                    Mode::VisualBlock => key(&mut core, view, Key::Ctrl('v')),
+                    Mode::Insert => keys(&mut core, view, "i"),
+                    _ => {}
+                }
+                let visited: Vec<_> = (0..3).map(|_| {
+                    key(&mut core, view, Key::Home);
+                    core.command_state(view).unwrap().cursor()
+                }).collect();
+                let expected = if smart { [4, 0, 4] } else { [4, 4, 4] };
+                assert_eq!(visited, expected, "{line_mode:?} {mode:?} smart={smart}");
+                assert_eq!(core.command_state(view).unwrap().mode(), mode);
+                assert_eq!(core.document().source_bytes(), source.as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn smart_home_operator_from_first_nonblank_deletes_indent_and_repeats_resolved_motion() {
+    for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+        let (mut core, view) = editor(Document::new("    alpha\n    beta"), 400.);
+        core.handle(view, CoreEvent::SetLineMode(line_mode)).unwrap();
+        keys(&mut core, view, "^d");
+        key(&mut core, view, Key::Home);
+        assert_eq!(core.document().text(), "alpha\n    beta", "{line_mode:?}");
+        // The repeat replays the line-start motion Home resolved to; from `e`
+        // a fresh Home would instead have meant the first nonblank.
+        keys(&mut core, view, "j6|.");
+        assert_eq!(core.document().text(), "alpha\neta", "{line_mode:?}");
+        keys(&mut core, view, "uu");
+        assert_eq!(core.document().text(), "    alpha\n    beta");
+    }
+}
+
+#[test]
+fn mapped_home_replaces_smart_home() {
+    let (mut core, view) = editor(Document::new("    alpha beta"), 400.);
+    keys(&mut core, view, ":nnoremap <Home> 0");
+    key(&mut core, view, Key::Enter);
+    keys(&mut core, view, "6|");
+    key(&mut core, view, Key::Home);
+    assert_eq!(core.command_state(view).unwrap().cursor(), 0);
 }
 
 #[test]

@@ -107,6 +107,36 @@ impl CommandInterpreter {
     ) -> Result<crate::document::PhysicalSourceLine, DocumentError> {
         document.physical_line_at_source(self.physical_source_cursor(document)?)
     }
+    /// Smart Home toggles: from the first nonblank of the caret's line it goes
+    /// to the line start, and from anywhere else to that nonblank. Each line
+    /// meaning compares in its own domain: the displayed row, the physical
+    /// source line, or the hard line when no layout is available.
+    pub(super) fn smart_home_reaches_line_start(&self, document: &Document) -> bool {
+        if !self.smart_home() {
+            return false;
+        }
+        match (self.line_mode, &self.line_layout) {
+            (LineMode::Visual, Some(snapshot)) => self
+                .current_visual_position(snapshot)
+                .and_then(|current| {
+                    layout_motion::g_caret_for_document(document, snapshot, current)
+                        .map(|first| first.text_offset == current.text_offset)
+                })
+                .unwrap_or(false),
+            (LineMode::Visual, None) => self.home_reaches_hard_line_start(document),
+            (LineMode::PhysicalSource, _) => self
+                .physical_line(document)
+                .and_then(|line| {
+                    let point = document.visible_point_for_source(physical_first_nonblank(document, &line)?, true)?;
+                    Ok(if matches!(self.mode, Mode::Insert | Mode::Replace) {
+                        point
+                    } else {
+                        normalize_normal_cursor_document(document, &document.hard_line_snapshot(), point)
+                    })
+                })
+                .is_ok_and(|first| first == self.cursor),
+        }
+    }
     pub(super) fn remember_physical_cursor(&mut self, document: &Document, at: usize) {
         self.physical_cursor = document
             .source_point(at)
@@ -643,6 +673,7 @@ impl CommandInterpreter {
                 match key {
                     Key::Char('$') | Key::End => LineShape::End,
                     Key::Char('0') => LineShape::Start,
+                    Key::Home if self.smart_home_reaches_line_start(document) => LineShape::Start,
                     Key::Char('^') | Key::Home => LineShape::StartNonblank,
                     Key::Char('k' | '-') | Key::Up => LineShape::Up,
                     Key::Char('_') => LineShape::Whole,
@@ -720,6 +751,7 @@ impl CommandInterpreter {
                 Key::Char('-') => gk(&snapshot, current, count, None)
                     .and_then(|motion| layout_motion::g_caret_for_document(document, &snapshot, motion.position)),
                 Key::Char('0') => g0(&snapshot, current),
+                Key::Home if self.smart_home_reaches_line_start(document) => g0(&snapshot, current),
                 Key::Char('^') | Key::Home => layout_motion::g_caret_for_document(document, &snapshot, current),
                 Key::Char('$') | Key::End => {
                     if count == 1 {
@@ -816,17 +848,12 @@ impl CommandInterpreter {
             self.preferred_column = None;
             0
         };
+        let line_start = key == Key::Home && self.smart_home_reaches_line_start(document);
         let target = document.physical_line(target_index)?;
         let source = match key {
             Key::Char('$') | Key::End => target.content_range.end,
-            Key::Char('^' | '+' | '-' | '_') | Key::Home | Key::Enter => {
-                let blank = target.text.len() - target.text.trim_start_matches([' ', '\t']).len();
-                target.content_range.start
-                    + document
-                        .encoding()
-                        .encode_fragment(&target.text[..blank])?
-                        .len()
-            }
+            Key::Home if line_start => target.content_range.start,
+            Key::Char('^' | '+' | '-' | '_') | Key::Home | Key::Enter => physical_first_nonblank(document, &target)?,
             Key::Char('j' | 'k') | Key::Up | Key::Down => {
                 let prefix = target
                     .text
@@ -1513,6 +1540,8 @@ impl CommandInterpreter {
                 };
                 let moved = if at_end {
                     g_dollar_for_document(document, &snapshot, current)
+                } else if self.smart_home_reaches_line_start(document) {
+                    g0(&snapshot, current)
                 } else {
                     layout_motion::g_caret_for_document(document, &snapshot, current)
                 };
@@ -1528,18 +1557,20 @@ impl CommandInterpreter {
             let output = self.move_cursor(document, if at_end {
                 Motion::InsertionLineEnd
             } else {
-                Motion::FirstNonBlank
+                self.home_motion(document)
             }, 1);
             self.boundary_affinity = if at_end { BoundaryAffinity::Upstream } else { BoundaryAffinity::Downstream };
             self.visual_position = None;
             return Ok(output);
         }
+        let line_start = !at_end && self.smart_home_reaches_line_start(document);
         let line = self.physical_line(document)?;
         let source = if at_end {
             line.content_range.end
+        } else if line_start {
+            line.content_range.start
         } else {
-            let blank = line.text.len() - line.text.trim_start_matches([' ', '\t']).len();
-            line.content_range.start + document.encoding().encode_fragment(&line.text[..blank])?.len()
+            physical_first_nonblank(document, &line)?
         };
         let point = document.visible_point_for_source(source, !at_end)?;
         let before = (self.cursor, self.boundary_affinity);
@@ -2032,4 +2063,13 @@ impl CommandInterpreter {
         output.mode_changed = true;
         Ok(Some(output))
     }
+}
+
+/// Source offset after a physical line's leading spaces and tabs.
+fn physical_first_nonblank(
+    document: &Document,
+    line: &crate::document::PhysicalSourceLine,
+) -> Result<usize, DocumentError> {
+    let blank = line.text.len() - line.text.trim_start_matches([' ', '\t']).len();
+    Ok(line.content_range.start + document.encoding().encode_fragment(&line.text[..blank])?.len())
 }

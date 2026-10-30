@@ -25,6 +25,8 @@ mod command_rich_boundary_actions;
 mod comment_editing;
 mod composition_typing_style;
 mod core_acceptance;
+mod delimiter_matching;
+mod markdown_alerts;
 mod empty_markdown_list_input;
 mod encoding_lossless;
 mod eof_motion_semantics;

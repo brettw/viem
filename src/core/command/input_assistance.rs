@@ -7,6 +7,7 @@ pub(crate) struct InputAssistance {
     pub(super) literal: bool,
     smart_quotes: bool,
     markdown_autodetect: bool,
+    smart_home: bool,
     markdown_exit: Option<(crate::document::TextPoint, crate::document::SourcePoint)>,
 }
 
@@ -16,6 +17,7 @@ impl Default for InputAssistance {
             literal: false,
             smart_quotes: false,
             markdown_autodetect: true,
+            smart_home: true,
             markdown_exit: None,
         }
     }
@@ -72,6 +74,16 @@ impl CommandInterpreter {
 
     pub fn markdown_autodetect(&self) -> bool {
         self.input_assistance.markdown_autodetect
+    }
+
+    /// An application preference copied to each view: an unmapped Home goes
+    /// to the line start when the caret already rests on the first nonblank.
+    pub fn set_smart_home(&mut self, enabled: bool) {
+        self.input_assistance.smart_home = enabled;
+    }
+
+    pub fn smart_home(&self) -> bool {
+        self.input_assistance.smart_home
     }
 
     /// An application preference copied to each view. Changing it never edits

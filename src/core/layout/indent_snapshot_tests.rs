@@ -19,12 +19,8 @@ fn complete(snapshot: &mut IndentSnapshot) {
 fn verify_complete(snapshot: &mut IndentSnapshot) {
     complete(snapshot);
     for line in 0..snapshot.projection.presentation_line_count() {
-        let expected = indentation(&snapshot.projection, line, snapshot.tabstop).1;
-        assert_eq!(
-            snapshot.index.line(line).unwrap().columns,
-            expected,
-            "line {line}"
-        );
+        let expected = indentation_summary(&snapshot.projection, line, snapshot.tabstop);
+        assert_eq!(snapshot.index.line(line).unwrap(), expected, "line {line}");
     }
 }
 
@@ -392,4 +388,38 @@ fn tab_provenance_is_recorded_even_when_columns_equal_prefix_bytes() {
     );
     verify_complete(&mut snapshot);
     assert_eq!(snapshot.index.line(0).unwrap().columns, length + 5);
+}
+
+#[test]
+fn whitespace_only_lines_are_ineligible_and_edits_crossing_blankness_invalidate_dependents() {
+    let mut document = document("root\n  if (a\n\n \t \n      c\nlast");
+    let mut snapshot = IndentSnapshot::new(projection(&document), 4);
+    verify_complete(&mut snapshot);
+    let eligible = |snapshot: &IndentSnapshot| {
+        (0..snapshot.index.len())
+            .map(|line| snapshot.index.line(line).unwrap().anchor_eligible)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(eligible(&snapshot), [true, true, false, false, true, true]);
+    assert_eq!(snapshot.index.preceding_with_max(4, 5), Some(1));
+
+    // Deleting the anchor's body leaves only spaces: line 4 now skips back to
+    // the root, so the dirty range must include it.
+    let body = document.projection().presentation_line_range(1).unwrap();
+    document.delete(body.start + 2..body.end).unwrap();
+    let dirty = snapshot.synchronize(projection(&document), 4);
+    assert!(dirty.start <= 1 && dirty.end >= 5, "{dirty:?}");
+    assert_eq!(eligible(&snapshot), [true, false, false, false, true, true]);
+    assert_eq!(snapshot.index.preceding_with_max(4, 5), Some(0));
+    verify_complete(&mut snapshot);
+
+    // Typing a body character after the cached blank prefix makes it an
+    // anchor again without rescanning the prefix.
+    let blank = document.projection().presentation_line_range(3).unwrap();
+    document.insert(blank.end, "x").unwrap();
+    let dirty = snapshot.synchronize(projection(&document), 4);
+    assert!(dirty.start <= 3 && dirty.end >= 5, "{dirty:?}");
+    assert_eq!(eligible(&snapshot), [true, false, false, true, true, true]);
+    assert_eq!(snapshot.index.preceding_with_max(4, 5), Some(3));
+    verify_complete(&mut snapshot);
 }

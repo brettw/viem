@@ -60,6 +60,8 @@ mod markdown_numbering;
 mod markdown_paste;
 #[path = "markdown_quote_edit.rs"]
 mod markdown_quote_edit;
+#[path = "markdown_alerts.rs"]
+mod markdown_alerts;
 #[path = "markdown_split.rs"]
 mod markdown_split;
 #[path = "markdown_edit_spelling.rs"]
@@ -319,6 +321,13 @@ pub enum ModelRequest {
         range: Range<usize>,
         enabled: bool,
     },
+    /// Make the selection a GitHub alert of `kind`, or a plain quote.
+    SetAlert {
+        document: DocumentId,
+        revision: Revision,
+        range: Range<usize>,
+        kind: Option<super::AlertKind>,
+    },
     ToggleCheckbox { document: DocumentId, revision: Revision, at: usize, block_id: u64 },
     IndentList {
         document: DocumentId,
@@ -441,6 +450,7 @@ impl ModelRequest {
             | Self::SetSemanticStyle { document, .. }
             | Self::SetListStyle { document, .. }
             | Self::SetBlockQuote { document, .. }
+            | Self::SetAlert { document, .. }
             | Self::ToggleCheckbox { document, .. }
             | Self::IndentList { document, .. }
             | Self::IndentListParagraph { document, .. }
@@ -472,6 +482,7 @@ impl ModelRequest {
             | Self::SetSemanticStyle { revision, .. }
             | Self::SetListStyle { revision, .. }
             | Self::SetBlockQuote { revision, .. }
+            | Self::SetAlert { revision, .. }
             | Self::ToggleCheckbox { revision, .. }
             | Self::IndentList { revision, .. }
             | Self::IndentListParagraph { revision, .. }
@@ -1312,6 +1323,12 @@ impl Document {
                 }
                 self.prepare_markdown_quote_style(range, enabled)
             }
+            ModelRequest::SetAlert { range, kind, .. } => {
+                if !self.format().is_markdown() || self.projection().range_intersects_table(&range) {
+                    return Err(DocumentError::UnsupportedFormatting.into());
+                }
+                self.prepare_markdown_alert(range, kind)
+            }
             ModelRequest::SetParagraphStyle { range, style, .. } => {
                 self.prepare_markdown_paragraph_style(range, style)
             }
@@ -2149,6 +2166,11 @@ impl Document {
         }
         if let Some(prepared) = self.prepare_table_line_deletion(&range)? { return Ok(prepared); }
         if self.format() == Format::Markdown {
+            let markers = self.deleted_alert_marker_patches(&range)?;
+            if !markers.is_empty() {
+                return self.prepare_markdown_supporting_patches(markers, |scratch|
+                    scratch.prepare_line_deletion(selected.clone()));
+            }
             let support = self.markdown_structural_support(&[TextEdit::new(range.clone(), "")], Some(&selected))?;
             if !support.is_empty() {
                 return self.prepare_markdown_supporting_patches(support, |scratch|
@@ -3328,6 +3350,15 @@ impl Document {
         self.validate_range(&range)?;
         if !self.format().is_markdown() || !style.supports_markdown_paragraph_assignment() {
             return Err(DocumentError::UnsupportedFormatting.into());
+        }
+        // Alert styles name a quote treatment, as Block quote does; choosing
+        // Block quote in an alert keeps the quote and removes the marker.
+        if let Some(kind) = super::AlertKind::from_style(&style) {
+            return self.prepare_markdown_alert(range, Some(kind));
+        }
+        if style.0 == "Block quote" && structural_style::selected_blocks(self, &range).iter()
+            .any(|block| block.containers.first().is_some_and(|member| member.container.alert.is_some())) {
+            return self.prepare_markdown_alert(range, None);
         }
         // A heading, code block, or list reset no longer owns a GFM task
         // marker. Remove that hidden syntax in the same transaction before
@@ -6818,6 +6849,14 @@ impl Document {
             {
                 return candidate::decline(Strategy::LineLocal, "edit replaces a setext heading's whole text");
             }
+            // Authored rows added at an empty paragraph (an alert marker
+            // above its empty body) leave no visible row for the regional row
+            // map to pair with the neighbor captured below that paragraph.
+            if authored_syntax && blocks.iter().any(|block| block.range.is_empty())
+                && source_patches.iter().any(|patch| patch.replacement.contains(&b'\n') || patch.replacement.contains(&b'\r'))
+            {
+                return candidate::decline(Strategy::LineLocal, "authored rows at an empty paragraph");
+            }
             // New block syntax before blank rows can take ownership of them
             // (an item owns following blank lines), which the edited row's
             // parse cannot see.
@@ -7005,6 +7044,12 @@ impl Document {
             else {
                 return candidate::decline(Strategy::LineLocal, "region source row not found");
             };
+            // An alert's hidden marker line opens its first paragraph's quote.
+            // Parse it with that paragraph so the regional quote keeps its kind.
+            let first = self.projection().blocks_for_region(&(old_formatted.start..old_formatted.start)).iter()
+                .filter(|block| block.range.start == old_formatted.start)
+                .find_map(|block| self.alert_opening_line(block))
+                .map_or(first, |opening| opening.min(first));
             // The final empty formatted line owns the terminal empty
             // physical source row as well; end-1 identifies its preceding
             // delimiter and would otherwise omit that source record.

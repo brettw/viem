@@ -240,7 +240,25 @@ impl Document {
         Ok(Some(self.prepare_text_edits_with_patches(vec![edit], Some(patches))?))
     }
 
+    /// Removing quote treatment from an alert's first paragraph also removes
+    /// its hidden marker, which would otherwise become an empty alert.
     pub(super) fn prepare_markdown_quote_style(
+        &self,
+        range: Range<usize>,
+        quote: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        self.validate_range(&range)?;
+        if !quote {
+            let patches = self.unquoted_alert_marker_patches(&range)?;
+            if !patches.is_empty() {
+                return self.prepare_markdown_supporting_patches(patches, |document|
+                    document.prepare_markdown_quote_style_raw(range.clone(), false));
+            }
+        }
+        self.prepare_markdown_quote_style_raw(range, quote)
+    }
+
+    pub(super) fn prepare_markdown_quote_style_raw(
         &self,
         range: Range<usize>,
         quote: bool,
@@ -258,7 +276,7 @@ impl Document {
                 .collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect::<Vec<_>>();
             if !patches.is_empty() {
                 return self.prepare_markdown_supporting_patches(patches, |document|
-                    document.prepare_markdown_quote_style(range.clone(), quote));
+                    document.prepare_markdown_quote_style_raw(range.clone(), quote));
             }
         }
         let blocks = self.projection().blocks_for_region(&range);

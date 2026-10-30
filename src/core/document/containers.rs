@@ -9,12 +9,41 @@ pub struct ContainerIdentity { pub anchor: u64, pub slot: u32 }
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ContainerKind { Quote, CodeBlock, List { ordered: bool }, ListItem }
 
+/// A GitHub alert: a top-level quote whose first line is `[!TYPE]`. The marker
+/// line is hidden container syntax; the kind is semantic and survives a
+/// missing or deleted style.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum AlertKind { Note, Tip, Important, Warning, Caution }
+
+impl AlertKind {
+    pub const ALL: [Self; 5] = [Self::Note, Self::Tip, Self::Important, Self::Warning, Self::Caution];
+
+    /// The marker's type name; new markers use this uppercase spelling.
+    pub fn marker_name(self) -> &'static str {
+        match self { Self::Note => "NOTE", Self::Tip => "TIP", Self::Important => "IMPORTANT",
+            Self::Warning => "WARNING", Self::Caution => "CAUTION" }
+    }
+    /// The displayed title, as GitHub renders it.
+    pub fn title(self) -> &'static str {
+        match self { Self::Note => "Note", Self::Tip => "Tip", Self::Important => "Important",
+            Self::Warning => "Warning", Self::Caution => "Caution" }
+    }
+    /// The container style, derived from `Block quote`.
+    pub fn style_id(self) -> StyleId { self.title().into() }
+    pub fn from_style(style: &StyleId) -> Option<Self> { Self::ALL.into_iter().find(|kind| kind.title() == style.0) }
+    /// Stable ABI and serialization ordinal, starting at one.
+    pub fn ordinal(self) -> u32 { Self::ALL.iter().position(|kind| *kind == self).unwrap() as u32 + 1 }
+    pub fn from_ordinal(ordinal: u32) -> Option<Self> { Self::ALL.get(ordinal.checked_sub(1)? as usize).copied() }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContainerAttributes {
     pub id: ContainerIdentity,
     pub kind: ContainerKind,
     pub style: StyleId,
     pub direct_formatting: Option<Arc<BlockDirectFormatting>>,
+    /// Set only on a top-level quote that GitHub renders as an alert.
+    pub alert: Option<AlertKind>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -56,10 +85,11 @@ pub(super) struct SourceContainer {
     pub kind: ContainerKind,
     pub style: StyleId,
     pub direct_formatting: Option<Arc<BlockDirectFormatting>>,
+    pub alert: Option<AlertKind>,
 }
 impl SourceContainer {
     pub fn new(range: Range<usize>, kind: ContainerKind) -> Self {
-        Self { range, owns_empty_end: false, kind, style: kind.default_style(), direct_formatting: None }
+        Self { range, owns_empty_end: false, kind, style: kind.default_style(), direct_formatting: None, alert: None }
     }
 }
 

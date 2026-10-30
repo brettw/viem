@@ -227,6 +227,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     public void Padding(float top, float left, float bottom, float right) { Check(viem_core_view_set_padding(Document.Handle, Id, top, left, bottom, right), "Set margins"); Refresh(); }
     public void MarkdownAutodetect(bool enabled) => Check(viem_core_view_set_markdown_autodetect(Document.Handle, Id, enabled ? 1u : 0u), "Markdown typing");
     public void SmartQuotes(bool enabled) => Check(viem_core_view_set_smart_quotes(Document.Handle, Id, enabled ? 1u : 0u), "Smart quotes");
+    public void SmartHome(bool enabled) => Check(viem_core_view_set_smart_home(Document.Handle, Id, enabled ? 1u : 0u), "Smart Home");
     public void VisibleWhitespace(bool enabled) { Check(viem_core_view_set_visible_whitespace(Document.Handle, Id, (byte)(enabled ? 1 : 0)), "Visible whitespace"); Refresh(); }
     public void AlignIndentsToPreviousLine(bool enabled) { Check(viem_core_view_set_align_indents_to_previous_line(Document.Handle, Id, (byte)(enabled ? 1 : 0)), "Align indents to previous line"); Refresh(); }
     public void Scroll(float left, float top)

@@ -800,7 +800,7 @@ internal unsafe struct ViemLayoutDecorationV1
     public float @x;
     public float @advance;
     public float @font_size;
-    public float @reserved;
+    public float @baseline;
     public ViemLayoutRectV1 @typographic_bounds;
     public ViemLayoutRectV1 @ink_bounds;
     public ViemRenderRunHandleV1 @render_run;
@@ -1138,6 +1138,14 @@ internal unsafe struct ViemSetBlockQuoteV1
 {
     public uint @struct_size;
     public uint @enabled;
+    public ViemLogicalSelectionIdentityV1 @expected_selection;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemSetAlertV1
+{
+    public uint @struct_size;
+    public uint @kind;
     public ViemLogicalSelectionIdentityV1 @expected_selection;
 }
 
@@ -1868,6 +1876,10 @@ internal static unsafe partial class Native
     public const uint VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED = (1u << 5);
     public const uint VIEM_LAYOUT_DECORATION_CHECKBOX = (1u << 6);
     public const uint VIEM_LAYOUT_DECORATION_CHECKED = (1u << 7);
+    public const uint VIEM_LAYOUT_DECORATION_ALERT_ICON = (1u << 8);
+    public const uint VIEM_LAYOUT_DECORATION_ALERT_TITLE = (1u << 9);
+    public const uint VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT = 10u;
+    public const uint VIEM_LAYOUT_DECORATION_ALERT_KIND_MASK = (7u << 10);
     public static readonly uint VIEM_LAYOUT_DECORATION_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationV1));
     public static readonly uint VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationsInfoV1));
     public static readonly uint VIEM_POSITIONED_CARET_V1_SIZE = ((uint)sizeof(ViemPositionedCaretV1));
@@ -1969,6 +1981,13 @@ internal static unsafe partial class Native
     public const uint VIEM_LIST_STYLE_TASK = 3u;
     public static readonly uint VIEM_SET_LIST_STYLE_V1_SIZE = ((uint)sizeof(ViemSetListStyleV1));
     public static readonly uint VIEM_SET_BLOCK_QUOTE_V1_SIZE = ((uint)sizeof(ViemSetBlockQuoteV1));
+    public const uint VIEM_ALERT_NONE = 0u;
+    public const uint VIEM_ALERT_NOTE = 1u;
+    public const uint VIEM_ALERT_TIP = 2u;
+    public const uint VIEM_ALERT_IMPORTANT = 3u;
+    public const uint VIEM_ALERT_WARNING = 4u;
+    public const uint VIEM_ALERT_CAUTION = 5u;
+    public static readonly uint VIEM_SET_ALERT_V1_SIZE = ((uint)sizeof(ViemSetAlertV1));
     public const uint VIEM_LIST_CAN_INDENT = 1u;
     public const uint VIEM_LIST_CAN_UNINDENT = 2u;
     public const uint VIEM_LIST_CAN_INSERT_PARAGRAPH = 4u;
@@ -2022,6 +2041,9 @@ internal static unsafe partial class Native
     public const uint VIEM_SELECTED_STYLE_HAS_CODE_BLOCK = (1u << 8);
     public const uint VIEM_SELECTED_STYLE_HAS_TASKS = (1u << 9);
     public const uint VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST = (1u << 10);
+    public const uint VIEM_SELECTED_STYLE_CAN_SET_ALERT = (1u << 11);
+    public const uint VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE = (1u << 12);
+    public const uint VIEM_SELECTED_STYLE_ALERT_SHIFT = 13u;
     public const uint VIEM_THEME_PRESET_MIDNIGHT = 0u;
     public const uint VIEM_THEME_PRESET_PAPER = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_HTML = 1u;
@@ -2267,6 +2289,8 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_markdown_autodetect(ulong @core, ulong @view, uint @enabled);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_smart_home(ulong @core, ulong @view, uint @enabled);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_wrap(ulong @core, ulong @view, uint @wrap, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_linebreak(ulong @core, ulong @view, uint @linebreak, ViemCoreOutcomeV1* @out_outcome);
@@ -2294,6 +2318,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_view_copy_table_selection_ranges(ulong @core, ulong @view, ViemTableSelectionV1* @expected, ViemFormattedUtf8RangeV1* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_block_quote(ulong @core, ulong @view, ViemSetBlockQuoteV1* @request, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_set_alert(ulong @core, ulong @view, ViemSetAlertV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_set_list_style(ulong @core, ulong @view, ViemSetListStyleV1* @request, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

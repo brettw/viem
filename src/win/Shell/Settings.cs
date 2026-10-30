@@ -106,6 +106,9 @@ internal sealed partial class SettingsWindow : Window
         page.Children.Add(new TextBlock { Text = "Selection", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         Check(page, "Use native selection for mouse and Shift+arrow keys", preferences.Autoselect, value => preferences.Set("editing", "autoselect", value));
         page.Children.Add(new TextBlock { Text = "Typing replaces the selection, and Backspace or Delete enters Insert mode. When off, these selections use Vim Visual mode. :set autoselect overrides this until Viem exits.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
+        page.Children.Add(new TextBlock { Text = "Navigation", FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        Check(page, "Smart Home", preferences.SmartHome, value => preferences.Set("editing", "smartHome", value));
+        page.Children.Add(new TextBlock { Text = "Home moves to the first nonblank character, or to the start of the line when the caret is already there. When off, Home always moves to the first nonblank character. A Home mapping replaces this behavior.", TextWrapping = TextWrapping.Wrap, Opacity = .7 });
         var editing = preferences.Editing;
         var indentation = editing["indentation"] as JsonObject ?? new JsonObject();
         void Indent(string key, JsonNode? value) => preferences.Set("editing", "indentation", new JsonObject { [key] = value });

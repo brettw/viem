@@ -198,11 +198,12 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private weak var configuredEditingSession: EVCoreViewSession?
     private var configuredMarkdownAutodetect: Bool?
     private var configuredSmartQuotes: Bool?
+    private var configuredSmartHome: Bool?
     private var configuredTextWidth: UInt32?
     private var configuredIndentation: EVIndentationOptions?
     private var configuredWhitespace: EVWhitespacePresentationOptions?
     var editingPreferences = EVEditingPreferences.shared {
-        didSet { configuredMarkdownAutodetect = nil; configuredSmartQuotes = nil; configuredTextWidth = nil; configuredIndentation = nil; configuredWhitespace = nil; synchronizeEditingPreferences() }
+        didSet { configuredMarkdownAutodetect = nil; configuredSmartQuotes = nil; configuredSmartHome = nil; configuredTextWidth = nil; configuredIndentation = nil; configuredWhitespace = nil; synchronizeEditingPreferences() }
     }
     private lazy var customCaretBlinkController: EVCustomCaretBlinkController = {
         let controller = EVCustomCaretBlinkController()
@@ -669,16 +670,19 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         let textWidth = editingPreferences.textWidth
         guard configuredEditingSession !== session || configuredSmartQuotes != enabled
             || configuredMarkdownAutodetect != editingPreferences.markdownAutodetect
+            || configuredSmartHome != editingPreferences.smartHome
             || configuredTextWidth != textWidth || configuredIndentation != editingPreferences.indentation
             || configuredWhitespace != editingPreferences.whitespacePresentation else { return }
         do {
             try session.setMarkdownAutodetect(editingPreferences.markdownAutodetect)
             try session.setSmartQuotes(enabled)
+            try session.setSmartHome(editingPreferences.smartHome)
             try session.setTextWidthDefault(textWidth)
             try session.setWhitespaceDefaults(indentation: editingPreferences.indentation, presentation: editingPreferences.whitespacePresentation)
             configuredEditingSession = session
             configuredMarkdownAutodetect = editingPreferences.markdownAutodetect
             configuredSmartQuotes = enabled
+            configuredSmartHome = editingPreferences.smartHome
             configuredTextWidth = textWidth
             configuredIndentation = editingPreferences.indentation
             configuredWhitespace = editingPreferences.whitespacePresentation
@@ -3658,6 +3662,19 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
                     checked: item.flags & UInt32(VIEM_LAYOUT_DECORATION_CHECKED) != 0,
                     enabled: true,
                     view: self, context: context)
+                continue
+            }
+            if EVAlertDrawing.isAlert(item.flags) {
+                // Shaped title clusters sit in the band above their row.
+                if item.flags & UInt32(VIEM_LAYOUT_DECORATION_ALERT_TITLE) != 0,
+                   item.flags & UInt32(VIEM_POSITIONED_CLUSTER_HAS_RENDER_RUN) != 0,
+                   session.provider.renderRegistry.draw(identifier: item.render_run.identifier,
+                       metricsGeneration: item.render_run.metrics_generation,
+                       atBaseline: viewPoint(fromLayoutPoint: CGPoint(x: CGFloat(item.x), y: CGFloat(item.baseline))),
+                       color: nativeForeground(item.paint).cgColor, in: context) { continue }
+                let start = Int(item.label_byte_start), end = start + Int(item.label_byte_length)
+                EVAlertDrawing.draw(item, label: String(decoding: snapshot.decorationLabels[start..<end], as: UTF8.self),
+                    in: viewRect(item.typographic_bounds), color: nativeForeground(item.paint), context: context)
                 continue
             }
             let foreground = nativeForeground(item.paint)

@@ -368,7 +368,15 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
             menu.addItem(coreItem(title, command: command))
         }
         menu.addItem(.separator())
-        for (title, command) in [("Blockquote", EVMenuCommand.blockQuote), ("Code Block", .codeBlock), ("Image", .insertImage)] {
+        let quotes = NSMenu(title: "Blockquote")
+        quotes.showsStateColumn = true
+        quotes.addItem(coreItem("Blockquote", command: .blockQuote))
+        quotes.addItem(.separator())
+        for (title, command) in zip(["Note", "Tip", "Important", "Warning", "Caution"], EVMenuCommand.alertCommands) {
+            quotes.addItem(coreItem(title, command: command))
+        }
+        menu.addItem(submenuItem("Blockquote", submenu: quotes))
+        for (title, command) in [("Code Block", EVMenuCommand.codeBlock), ("Image", .insertImage)] {
             menu.addItem(coreItem(title, command: command))
         }
         let table = coreItem("Table", command: .insertTable)

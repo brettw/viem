@@ -1292,6 +1292,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             }
             decorate_block_row(&mut row, &paragraph.style, resolved_gap,
                 content_insets.left, usable_width, view.scale, right_to_left);
+            self.shape_alert_titles(&mut row, &paragraph.style, document_id, document_revision, view.scale, &control)?;
             if next.is_none() {
                 height = document_end_extent(
                     height, Some(&row), block_box::after(&paragraph.style) * view.scale, content_insets.bottom,

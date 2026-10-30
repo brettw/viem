@@ -2,6 +2,23 @@
 use super::*;
 
 impl CommandInterpreter {
+    /// Home's hard-line motion; see `smart_home_reaches_line_start`.
+    pub(super) fn home_motion(&self, document: &Document) -> Motion {
+        if self.home_reaches_hard_line_start(document) { Motion::LineStart } else { Motion::FirstNonBlank }
+    }
+
+    pub(super) fn home_reaches_hard_line_start(&self, document: &Document) -> bool {
+        if !self.smart_home() {
+            return false;
+        }
+        let lines = document.hard_line_snapshot();
+        let mut first = first_nonblank_document(document, &lines, self.cursor);
+        if !matches!(self.mode, Mode::Insert | Mode::Replace) {
+            first = normalize_normal_cursor_document(document, &lines, first);
+        }
+        first == self.cursor
+    }
+
     pub(super) fn move_cursor(
         &mut self,
         document: &Document,

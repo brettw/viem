@@ -15,12 +15,30 @@ pub struct BlockBoxStyle {
     pub foreground_is_default: bool,
     pub language_label: Option<String>,
     pub language_picker_disabled: bool,
+    /// A GitHub alert's title band, inside the top padding edge.
+    pub alert: Option<AlertHeading>,
     pub inline_start: f32,
     pub inline_end: f32,
 }
 impl Default for BlockBoxStyle {
     fn default() -> Self { Self { margin: EdgeInsets::default(), padding: EdgeInsets::default(), border: EdgeInsets::default(),
-        border_colors: [None; 4], background: None, foreground: Color { red: 0., green: 0., blue: 0., alpha: 1. }, foreground_is_default: true, language_label: None, language_picker_disabled: false, inline_start: 0., inline_end: 0. } }
+        border_colors: [None; 4], background: None, foreground: Color { red: 0., green: 0., blue: 0., alpha: 1. }, foreground_is_default: true, language_label: None, language_picker_disabled: false, alert: None, inline_start: 0., inline_end: 0. } }
+}
+
+/// Noneditable alert furniture: an icon and title on one row above the first
+/// body paragraph, as GitHub renders them. The title appears as a Heading 4
+/// paragraph inside the alert would, inheriting the alert's appearance.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlertHeading {
+    pub kind: crate::document::AlertKind,
+    /// Unscaled shaping style and paint of Heading 4 resolved in the alert.
+    pub style: super::ResolvedTextStyle,
+    pub paint: super::ResolvedTextPaint,
+}
+impl AlertHeading {
+    /// The band's unscaled height, one title row before the native shaper
+    /// measures it; the first paragraph's own margin follows it.
+    pub fn height(&self) -> f32 { self.style.size * 1.3 }
 }
 
 impl BlockBoxStyle {
@@ -33,10 +51,10 @@ impl BlockBoxStyle {
             background: style.background,
             foreground: style.character.foreground,
             foreground_is_default: style.character.foreground_is_default,
-            language_label: None, language_picker_disabled: false, inline_start: 0., inline_end: 0.,
+            language_label: None, language_picker_disabled: false, alert: None, inline_start: 0., inline_end: 0.,
         }
     }
-    pub fn top(&self) -> f32 { self.padding.top + self.border.top }
+    pub fn top(&self) -> f32 { self.padding.top + self.border.top + self.alert.as_ref().map_or(0., AlertHeading::height) }
     pub fn bottom(&self) -> f32 { self.padding.bottom + self.border.bottom }
     pub fn left(&self) -> f32 { self.left_in_direction(false) }
     pub fn right(&self) -> f32 { self.right_in_direction(false) }

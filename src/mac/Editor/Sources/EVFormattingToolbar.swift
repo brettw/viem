@@ -23,6 +23,8 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
   let characterCode = NSButton()
   let codeBlock = NSButton()
   let blockQuote = NSButton()
+  /// Pops up the GitHub alert kinds beside the quote toggle.
+  let blockQuoteAlerts = NSButton()
   let formattedView = NSButton()
   let insertTable = EVInsertTableButton()
   let insertLink = NSButton()
@@ -107,6 +109,12 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     blockQuote.image = Self.blockQuoteImage()
     blockQuote.action = #selector(toggleBlockQuote(_:))
     blockGroup.addArrangedSubview(blockQuote)
+    configure(blockQuoteAlerts, title: "Alert Type", symbol: "chevron.down", toggle: false)
+    blockQuoteAlerts.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 8, weight: .semibold)
+    blockQuoteAlerts.constraints.first { $0.firstAttribute == .width }?.constant = 13
+    blockQuoteAlerts.action = #selector(showAlertMenu(_:))
+    blockGroup.addArrangedSubview(blockQuoteAlerts)
+    blockGroup.setCustomSpacing(0, after: blockQuote)
     configure(codeBlock, title: "Code Block", symbol: "curlybraces", toggle: true)
     codeBlock.action = #selector(toggleCodeBlock(_:))
     blockGroup.addArrangedSubview(codeBlock)
@@ -285,11 +293,15 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     refreshCode(codeBlock, role: .paragraph, id: "Code Block", catalogue: next)
     blockQuote.state = selected?.quoteState ?? .off
     blockQuote.isEnabled = selected?.hasCodeBlock == false && next?.entries.contains { $0.role == .paragraph && $0.stableID == "Block quote" && $0.presentation.isEnabled } == true
+    blockQuoteAlerts.isEnabled = EVMenuCommand.alertCommands.contains { command in
+      command.alertKind.map { surface.alertPresentation($0).isEnabled } ?? false
+    }
     if selected?.hasTable == true {
       paragraphStyle.isEnabled = false
       for action in [EVMenuCommand.bulletedList, .numberedList, .taskList, .increaseIndent, .decreaseIndent] { commandButtons[action]?.isEnabled = false }
       setHidden(true, for: codeBlock)
       blockQuote.isEnabled = false
+      blockQuoteAlerts.isEnabled = false
     }
   }
 
@@ -398,6 +410,55 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     surface.performInput { _ = try session.setBlockQuote(selected.quoteState != .on, expected: selection) }
     finishAction()
   }
+  /// The alert kinds, checked by the selection's current kind, with their icons.
+  func makeAlertMenu() -> NSMenu {
+    let menu = NSMenu(title: "Alert Type")
+    menu.autoenablesItems = false
+    for (title, command) in zip(["Note", "Tip", "Important", "Warning", "Caution"], EVMenuCommand.alertCommands) {
+      guard let kind = command.alertKind else { continue }
+      let item = NSMenuItem(title: title, action: #selector(chooseAlertItem(_:)), keyEquivalent: "")
+      item.target = self
+      item.tag = Int(kind)
+      item.image = Self.alertImage(kind)
+      let presentation = surface?.alertPresentation(kind) ?? .disabled
+      item.isEnabled = presentation.isEnabled
+      item.state = presentation.state
+      menu.addItem(item)
+    }
+    return menu
+  }
+
+  @objc func showAlertMenu(_ sender: NSButton) {
+    let menu = makeAlertMenu()
+    // Align the menu under the whole control, starting at the quote button.
+    let below = sender.isFlipped ? sender.bounds.maxY + 4 : sender.bounds.minY - 4
+    menu.popUp(positioning: nil, at: NSPoint(x: blockQuote.frame.minX - sender.frame.minX, y: below), in: sender)
+  }
+
+  @objc private func chooseAlertItem(_ sender: NSMenuItem) { chooseAlert(UInt32(sender.tag)) }
+
+  /// Choosing the selection's only alert kind again restores a plain quote.
+  func chooseAlert(_ kind: UInt32) {
+    guard let surface, let session = surface.session,
+          let selected = try? session.selectedNamedStyles(), !selected.hasTable, !selected.hasCodeBlock,
+          let selection = try? session.listSelection(),
+          surface.backend.sourceFormat == .markdown else { refresh(); return }
+    let target = selected.alertState(kind) == .on ? UInt32(VIEM_ALERT_NONE) : kind
+    surface.performInput { _ = try session.setAlert(target, expected: selection) }
+    finishAction()
+  }
+
+  static func alertImage(_ kind: UInt32) -> NSImage {
+    let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { rect in
+      if let context = NSGraphicsContext.current?.cgContext {
+        EVAlertDrawing.drawIcon(kind: kind, in: rect, color: NSColor.black.cgColor, context: context)
+      }
+      return true
+    }
+    image.isTemplate = true
+    return image
+  }
+
   @objc func toggleMarkdownPreview(_ sender: NSButton) {
     guard let surface else { return }
     let editorWindow = window

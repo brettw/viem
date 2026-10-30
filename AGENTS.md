@@ -311,6 +311,12 @@ Deliberate presentation differences from GitHub:
   lines remain editable empty paragraphs.
 - Images are atomic inline objects; image-only paragraphs use the Image
   paragraph style.
+- GitHub alerts (`[!NOTE]` through `[!CAUTION]`, case-insensitive, top-level
+  quotes only) hide their marker line and draw an icon and title as a Heading 4
+  paragraph inside the alert would appear, inheriting the alert style's
+  appearance rather than GitHub's per-kind palette. The Note, Tip, Important,
+  Warning and Caution styles derive from Block quote. Choosing a kind quotes
+  the selection; choosing the current kind again restores a plain quote.
 - GFM task-list markers are non-text checkbox decorations on their owning
   items. Task List is a third list type beside Bulleted and Numbered. New
   tasks use unchecked bulleted syntax; imported ordered task lists preserve
@@ -589,9 +595,14 @@ Unsupported commands fail without side effects.
   `CTRL-^` edits the pane's alternate file but rejects a count, since there
   are no buffer numbers. `CTRL-G` omits the argument-list position, and `ga`
   reports no digraphs.
-- `[(`, `])`, `[{`, `]}` and the method motions match delimiters like `%`,
-  without Vim's quote and escape heuristics. `it`/`at` read the formatted
-  text, so hidden Markdown HTML has no tag blocks.
+- `%` matches only `()`, `[]` and `{}`, ignoring 'matchpairs', C comments
+  and preprocessor conditionals. It, `[(`, `])`, `[{`, `]}`, the method
+  motions and the block text objects keep Vim's quote, character-literal and
+  backslash rules, including 'cpoptions' `%` and `M`. `it`/`at` read the
+  formatted text, so hidden Markdown HTML has no tag blocks.
+- Home moves to the first nonblank, like `^`. Smart Home, on by default,
+  instead moves to the line start when the caret is already there, in the
+  view's line meaning. A mapped Home replaces both.
 - `!` never bypasses the external-change check when writing.
 - Native Paste follows gVim's clipboard `gP` behavior (see
   [Input, selection and clipboard](#input-selection-and-clipboard)).

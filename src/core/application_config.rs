@@ -13,7 +13,7 @@ pub const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub fn defaults() -> Value {
     json!({"version":1,
         "view":{"zoomScale":1.0,"margins":{"top":10,"left":10,"bottom":10,"right":10}},
-        "editing":{"autoselect":true,"caretHoverEffect":true,"markdownAutodetect":true,"smartQuotes":true,
+        "editing":{"autoselect":true,"caretHoverEffect":true,"markdownAutodetect":true,"smartQuotes":true,"smartHome":true,
             "markdownFormattedView":true,"textWidth":80,
             "indentation":IndentationOptions::default(),"whitespacePresentation":WhitespacePresentationOptions::default()},
         "appearance":{"showStatusBar":true},"windows":{"showMenu":true},
@@ -77,6 +77,7 @@ pub fn normalize(bytes: &[u8]) -> Result<Value, String> {
                 "caretHoverEffect",
                 "markdownAutodetect",
                 "smartQuotes",
+                "smartHome",
                 "markdownFormattedView",
             ][..],
         ),

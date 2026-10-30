@@ -9,8 +9,9 @@ font names and a few measured sample characters are not reliable substitutes.
 The setting belongs to the view. It changes presentation without changing
 source, logical columns, selections, registers, dirty state or undo history.
 
-For each indented line, its anchor is the nearest preceding line whose leading
-ASCII space/tab indentation is no greater. Indentation is compared in portable
+For each indented line, its anchor is the nearest preceding nonblank line whose
+leading ASCII space/tab indentation is no greater. A blank line is empty or
+contains only spaces and tabs; alignment skips back across any run of them. Indentation is compared in portable
 columns using the view's tabstop. The first body character is placed at that
 column's native caret position on the anchor. Body columns count grapheme display
 cells, including wide characters; tabs advance to the configured tabstop. For
@@ -41,7 +42,7 @@ Snapshots share immutable nodes and copy only changed paths and boundary blocks.
 | Find a preceding/following indentation threshold | O(log n + 128) |
 | Replace a range with m new summaries | O(log n + m + 128) construction; releasing unretained deleted blocks is proportional to those blocks |
 | Find a transitive dependency span | O(log n + 128) |
-| Enumerate k immediate dependents | O((k + 1)(log n + 128)) under the current all-eligible policy |
+| Enumerate k immediate dependents | O((k + 1 + b)(log n + 128)), where b counts intervening excluded lines with smaller indentation |
 
 Here n is the number of indexed lines. A line's transitive dependents extend
 until the next eligible line with *strictly smaller* indentation. Equal-indent
@@ -49,12 +50,16 @@ lines remain linked in the logical forest. Immediate children are successive
 decreasing indentation minima; threshold searches skip their intervening
 subtrees. The lazy iterator supports stopping after the visible dependents.
 
-Each line carries a separate eligibility policy bit. All current lines are
-eligible, including blank lines, comments and preprocessor lines. A future
-policy may exclude anchors without changing the sequence's ordinals or query
-interface. With exclusions, the transitive span can contain nondependent holes,
-and immediate-child enumeration can additionally visit excluded low-indent
-lines. No comment or preprocessor classification is implemented here.
+Each line carries a separate eligibility policy bit. Blank lines are
+ineligible; every other line is eligible, including comments and preprocessor
+lines. Exclusion changes neither the sequence's ordinals nor its query
+interface. A blank line still has its own anchor, so its indentation aligns
+like any other line, but no line anchors to it. The transitive span can
+therefore contain nondependent holes, and immediate-child enumeration can
+additionally visit excluded low-indent lines. Synchronization takes indentation
+minima over all changed lines, including blank ones, which keeps invalidation
+conservative when an edit makes a line blank or nonblank. No comment or
+preprocessor classification is implemented here.
 
 The million-line structural test bounds the initial tree's requested node and
 column payload below 11 bytes per line. That accounting excludes allocator
@@ -114,7 +119,8 @@ prefix can absorb a bounded whitespace edit through arithmetic on the changed
 extent, including ordinary space typing, Backspace and one inserted tab. Its
 provenance then records that tab; equal byte and column counts never imply an
 all-space prefix. Replacing the first body character with an ASCII body
-character also preserves the existing prefix proof. These common local cases
+character also preserves the existing prefix proof, and makes a cached blank
+line nonblank. These common local cases
 avoid a giant-prefix rescan during the next immediate layout. Cold prefixes and
 edits requiring an uncached/tabbed prefix still have the layout cost noted above.
 

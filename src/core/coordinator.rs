@@ -358,6 +358,7 @@ pub enum CoreEvent {
     SetLineMode(crate::command::LineMode),
     SetSmartQuotes(bool),
     SetMarkdownAutodetect(bool),
+    SetSmartHome(bool),
     /// Change the shared source line-ending spelling through one exact,
     /// revision-bound model transaction. This is intentionally typed rather
     /// than routed through Ex parsing so native UI can preserve model policy
@@ -384,6 +385,10 @@ pub enum CoreEvent {
     SetBlockQuote {
         expected: LogicalSelectionIdentity,
         enabled: bool,
+    },
+    SetAlert {
+        expected: LogicalSelectionIdentity,
+        kind: Option<crate::document::AlertKind>,
     },
     TableEdit {
         document: DocumentId,
@@ -1455,6 +1460,16 @@ impl<P: TextMeasurementProvider> Core<P> {
         Ok(self.document.is_modifiable() && !self.document.is_read_only() && view.composition.is_none() && view.commands.can_insert_list_paragraph(&self.document)
             && self.list_selection_identity(view_id).is_ok_and(|selection|
                 selection.kind() == LogicalSelectionKind::None && selection.range().is_empty()))
+    }
+
+    /// Structural toolbar/menu query, like `can_set_task_list`.
+    pub fn can_set_alert(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        if view.composition.is_some() || !self.document.is_modifiable() {
+            return Ok(false);
+        }
+        Ok(self.list_selection_identity(view_id).is_ok_and(|selection|
+            self.document.can_set_alert(selection.range())))
     }
 
     /// Structural toolbar/menu query: no layout, source parsing or trial edit.
@@ -5635,6 +5650,15 @@ impl<P: TextMeasurementProvider> Core<P> {
                     document: expected.document(), revision: expected.revision(), range: expected.range(), enabled,
                 });
             }
+            CoreEvent::SetAlert { expected, kind } => {
+                if self.list_selection_identity(view_id)? != expected {
+                    return Err(CoreError::StaleLogicalSelection);
+                }
+                self.reject_table_block_formatting(&expected)?;
+                return self.apply_native_model_request(view_id, ModelRequest::SetAlert {
+                    document: expected.document(), revision: expected.revision(), range: expected.range(), kind,
+                });
+            }
             CoreEvent::SetParagraphStyle { expected, style } => {
                 if self.list_selection_identity(view_id)? != expected {
                     return Err(CoreError::StaleLogicalSelection);
@@ -6160,6 +6184,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
             CoreEvent::SetMarkdownAutodetect(enabled) => {
                 self.views.get_mut(&view_id).expect("view checked").commands.set_markdown_autodetect(enabled);
+                Ok(CoreOutcome { command: None, document_changed: false, position_map: None,
+                    layout_changed: false, composition_changes: Vec::new() })
+            }
+            CoreEvent::SetSmartHome(enabled) => {
+                self.views.get_mut(&view_id).expect("view checked").commands.set_smart_home(enabled);
                 Ok(CoreOutcome { command: None, document_changed: false, position_map: None,
                     layout_changed: false, composition_changes: Vec::new() })
             }
@@ -6816,6 +6845,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             | CoreEvent::SetEncoding { .. }
             | CoreEvent::SetListStyle { .. }
             | CoreEvent::SetBlockQuote { .. }
+            | CoreEvent::SetAlert { .. }
             | CoreEvent::TableEdit { .. }
             | CoreEvent::ToggleCheckbox { .. }
             | CoreEvent::TableSelectionEdit { .. }

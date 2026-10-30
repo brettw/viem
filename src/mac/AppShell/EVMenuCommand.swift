@@ -57,6 +57,12 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case insertTable
     case blockQuote
     case codeBlock
+    /// GitHub alert kinds, in `VIEM_ALERT_*` order.
+    case alertNote = 314
+    case alertTip
+    case alertImportant
+    case alertWarning
+    case alertCaution
     case defaultParagraphStyle = 320
     case characterStyles
     case baseParagraphStyle
@@ -86,6 +92,13 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
     case actualSize
     case newWindowForDocument
     case alignIndentsToPreviousLine
+
+    public static let alertCommands: [EVMenuCommand] = [.alertNote, .alertTip, .alertImportant, .alertWarning, .alertCaution]
+
+    /// The `VIEM_ALERT_*` kind of an alert command, starting at one.
+    public var alertKind: UInt32? {
+        Self.alertCommands.firstIndex(of: self).map { UInt32($0 + 1) }
+    }
 
     /// Standard text actions must reach native field editors first. The custom
     /// document view implements the same selectors using core intentions.

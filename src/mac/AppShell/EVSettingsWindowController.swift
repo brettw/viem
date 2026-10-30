@@ -32,6 +32,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
   private weak var caretHoverCheckbox: NSButton?
   private weak var smartQuotesCheckbox: NSButton?
   private weak var autoselectCheckbox: NSButton?
+  private weak var smartHomeCheckbox: NSButton?
   private let textWidthField = NSTextField(string: "")
   private var indentationCheckboxes: [String: NSButton] = [:]
   private var indentationFields: [String: NSTextField] = [:]
@@ -305,6 +306,16 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
       let selectionGroup = section("Selection", views: [autoselect, autoselectExplanation])
       stack.addArrangedSubview(selectionGroup)
       selectionGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
+      let smartHome = NSButton(checkboxWithTitle: "Smart Home", target: self, action: #selector(changeSmartHome(_:)))
+      smartHome.state = editingPreferences.smartHome ? .on : .off
+      smartHome.setAccessibilityLabel("Smart Home")
+      smartHomeCheckbox = smartHome
+      let smartHomeExplanation = NSTextField(wrappingLabelWithString: "Home moves to the first nonblank character, or to the start of the line when the caret is already there. When off, Home always moves to the first nonblank character. A Home mapping replaces this behavior.")
+      smartHomeExplanation.textColor = .secondaryLabelColor
+      smartHomeExplanation.font = .systemFont(ofSize: 12)
+      let navigationGroup = section("Navigation", views: [smartHome, smartHomeExplanation])
+      stack.addArrangedSubview(navigationGroup)
+      navigationGroup.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -56).isActive = true
       buildIndentationSettings(in: stack)
       refreshEditingPreferences()
       return
@@ -466,6 +477,7 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     caretHoverCheckbox?.state = editingPreferences.caretHoverEffect ? .on : .off
     smartQuotesCheckbox?.state = editingPreferences.smartQuotes ? .on : .off
     autoselectCheckbox?.state = editingPreferences.autoselect ? .on : .off
+    smartHomeCheckbox?.state = editingPreferences.smartHome ? .on : .off
     textWidthField.stringValue = String(editingPreferences.textWidth)
     let options = editingPreferences.indentation
     let switches = ["autoindent": options.autoindent, "expandtab": options.expandtab, "smarttab": options.smarttab,
@@ -708,6 +720,10 @@ final class EVSettingsWindowController: NSWindowController, NSTableViewDataSourc
     sender.state = editingPreferences.smartQuotes ? .on : .off
     persistenceDiagnostic.stringValue = editingPreferences.lastError ?? ""
     persistenceDiagnostic.isHidden = persistenceDiagnostic.stringValue.isEmpty
+  }
+  @objc private func changeSmartHome(_ sender: NSButton) {
+    editingPreferences.setSmartHome(sender.state == .on)
+    refreshEditingPreferences()
   }
   @objc private func changeAutoselect(_ sender: NSButton) {
     editingPreferences.setAutoselect(sender.state == .on)

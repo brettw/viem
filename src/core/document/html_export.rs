@@ -429,6 +429,11 @@ fn render_projection(
                         extra.push_str(&format!(" value=\"{ordinal}\""));
                     }
                 }
+                let alert = container.style.alert.as_ref().filter(|_| container.kind == ContainerKind::Quote);
+                if let Some(alert) = alert {
+                    extra.push_str(&format!(" class=\"markdown-alert markdown-alert-{}\"",
+                        alert.kind.marker_name().to_ascii_lowercase()));
+                }
                 let mut css = super::html_styles::block_css(&box_properties(&container.style));
                 if block.task_checkbox.is_some() && container.kind == ContainerKind::ListItem
                     && path.iter().rev().find(|owner| owner.kind == ContainerKind::ListItem)
@@ -454,6 +459,12 @@ fn render_projection(
                     extra,
                     attribute(&css)
                 ));
+                if let Some(alert) = alert {
+                    // Shown as a Heading 4 inside the alert, as Preview draws it.
+                    let css = super::html::character_css(&character(&alert.style, &alert.paint));
+                    output.push_str(&format!("<p class=\"markdown-alert-title\"{}>{}</p>\n",
+                        attribute(&format!("{css}; margin:0 0 0.5em")), alert.kind.title()));
+                }
             }
             if let Some(table) = table {
                 output.push_str("<table style=\"border-collapse:collapse;white-space:pre\"><thead>\n");

@@ -89,7 +89,8 @@ final class EVFormattingToolbarTests: XCTestCase {
     let toolbar = surface.formattingToolbar
     let snapshot = try backend.styleSheetSnapshot()
     let supported = Set(snapshot.definitions.filter { $0.key.namespace == .block && $0.capabilities.contains(.assign) }.map { $0.key.id.rawValue })
-    let expected: Set<String> = ["Paragraph", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6", "Block quote", "Code Block"]
+    let expected: Set<String> = ["Paragraph", "Heading1", "Heading2", "Heading3", "Heading4", "Heading5", "Heading6", "Block quote", "Code Block",
+      "Note", "Tip", "Important", "Warning", "Caution"]
     XCTAssertEqual(supported, expected)
     let displayed = Set(toolbar.paragraphStyle.itemArray.compactMap { ($0.representedObject as? EVStyleMenuAction)?.stableID })
     XCTAssertEqual(displayed, supported)
@@ -299,7 +300,8 @@ final class EVFormattingToolbarTests: XCTestCase {
         XCTAssertEqual(toolbar.blockQuote.state, .off)
         let group = try XCTUnwrap(toolbar.codeBlock.superview as? NSStackView)
         let index = try XCTUnwrap(group.arrangedSubviews.firstIndex(of: toolbar.codeBlock))
-        XCTAssertTrue(group.arrangedSubviews[index - 1] === toolbar.blockQuote)
+        XCTAssertTrue(group.arrangedSubviews[index - 2] === toolbar.blockQuote)
+        XCTAssertTrue(group.arrangedSubviews[index - 1] === toolbar.blockQuoteAlerts)
         toolbar.blockQuote.performClick(nil)
         XCTAssertNil(surface.commandOutput)
         XCTAssertEqual(toolbar.blockQuote.state, .on)

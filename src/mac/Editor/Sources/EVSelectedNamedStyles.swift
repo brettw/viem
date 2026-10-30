@@ -16,9 +16,20 @@ struct EVSelectedNamedStyles {
   let hasNonQuote: Bool
   let hasTable: Bool
   let hasCodeBlock: Bool
+  let hasPlainQuote: Bool
+  let canSetAlert: Bool
+  /// Alert kinds present, as bits `1 << (kind - 1)`.
+  let alerts: UInt32
 
   var quoteState: NSControl.StateValue {
     hasQuotes ? (hasNonQuote ? .mixed : .on) : .off
+  }
+
+  /// One alert kind present everywhere is `.on`; alongside others it is mixed.
+  func alertState(_ kind: UInt32) -> NSControl.StateValue {
+    let bit = UInt32(1) << (kind - 1)
+    guard alerts & bit != 0 else { return .off }
+    return alerts == bit && !hasPlainQuote && !hasNonQuote ? .on : .mixed
   }
 
   var bulletState: NSControl.StateValue {
@@ -69,7 +80,10 @@ extension EVCoreViewSession {
       hasQuotes: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_QUOTES) != 0,
       hasNonQuote: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_NON_QUOTE) != 0,
       hasTable: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_TABLE) != 0,
-      hasCodeBlock: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_CODE_BLOCK) != 0)
+      hasCodeBlock: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_CODE_BLOCK) != 0,
+      hasPlainQuote: info.flags & UInt32(VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE) != 0,
+      canSetAlert: info.flags & UInt32(VIEM_SELECTED_STYLE_CAN_SET_ALERT) != 0,
+      alerts: (info.flags >> UInt32(VIEM_SELECTED_STYLE_ALERT_SHIFT)) & 0x1f)
   }
 }
 

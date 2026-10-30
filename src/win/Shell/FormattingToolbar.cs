@@ -20,6 +20,10 @@ internal sealed partial class FormattingToolbar : UserControl
     private EditorPane? pane;
     private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
+    /// <summary>The GitHub alert kinds beside the quote toggle; VIEM_ALERT_* tags.</summary>
+    internal readonly DropDownButton BlockQuoteAlerts = new() { Width = 22, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Flyout = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft } };
+    internal static readonly (uint Kind, string Title)[] AlertKinds = [(VIEM_ALERT_NOTE, "Note"), (VIEM_ALERT_TIP, "Tip"),
+        (VIEM_ALERT_IMPORTANT, "Important"), (VIEM_ALERT_WARNING, "Warning"), (VIEM_ALERT_CAUTION, "Caution")];
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
     internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
     internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
@@ -70,7 +74,7 @@ internal sealed partial class FormattingToolbar : UserControl
         chrome.SetBinding(Border.BackgroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = this, Path = new PropertyPath("Background") });
         Content = chrome;
         AutomationProperties.SetName(this, "Formatting toolbar");
-        foreach (var selector in new[] { Paragraph })
+        foreach (var selector in new[] { Paragraph, BlockQuoteAlerts })
         {
             var menu = (MenuFlyout)selector.Flyout;
             menu.Opening += (_, _) => tracking++;
@@ -97,7 +101,16 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
         Add(block, ToolbarAction.Tasks, "Task List", "");
         block.Children.Add(new Border { Style = (Style)Resources["FormattingToolbarDivider"] });
-        Add(block, ToolbarAction.BlockQuote, "Block Quote", "");
+        var quote = Group(0); block.Children.Add(quote);
+        Add(quote, ToolbarAction.BlockQuote, "Block Quote", "");
+        AutomationProperties.SetName(BlockQuoteAlerts, "Alert Type"); ToolTipService.SetToolTip(BlockQuoteAlerts, "Alert Type");
+        foreach (var (kind, title) in AlertKinds)
+        {
+            var item = new ToggleMenuFlyoutItem { Text = title, Tag = kind, Icon = AlertIcon(kind) };
+            item.Click += (_, _) => ChooseAlert(kind);
+            ((MenuFlyout)BlockQuoteAlerts.Flyout).Items.Add(item);
+        }
+        quote.Children.Add(BlockQuoteAlerts);
         Add(block, ToolbarAction.CodeBlock, "Code Block", "{ }", literal: true);
         AutomationProperties.SetName(InsertImage, "Insert image"); ToolTipService.SetToolTip(InsertImage, "Insert image");
         InsertImage.Click += (_, _) => {
@@ -158,6 +171,16 @@ internal sealed partial class FormattingToolbar : UserControl
         canvas.Children.Add(text); canvas.Children.Add(line);
         return canvas;
     }
+
+    /// <summary>Filled outlines of the macOS EVAlertDrawing icons on its 16-unit grid.</summary>
+    internal static IconElement AlertIcon(uint kind) => new PathIcon { Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), kind switch
+    {
+        VIEM_ALERT_TIP => "F0 M8,1 A5.5,5.5 0 1 0 8.001,1 Z M8,2.5 A4,4 0 1 1 7.999,2.5 Z M6,12.5 L10,12.5 L10,13.75 L6,13.75 Z M6.75,14.5 L9.25,14.5 L9.25,15.5 L6.75,15.5 Z",
+        VIEM_ALERT_IMPORTANT => "F0 M1,2.5 Q1,1 2.5,1 L13.5,1 Q15,1 15,2.5 L15,10.5 Q15,12 13.5,12 L8,12 L4.5,15 L4.5,12 L2.5,12 Q1,12 1,10.5 Z M2.5,2.5 L2.5,10.5 L6,10.5 L6,11.6 L7.5,10.5 L13.5,10.5 L13.5,2.5 Z M7.25,3.75 L8.75,3.75 L8.75,7 L7.25,7 Z M8,7.9 A0.9,0.9 0 1 0 8.001,7.9 Z",
+        VIEM_ALERT_WARNING => "F0 M8,0.75 L15.5,14.5 L0.5,14.5 Z M8,3.75 L2.9,13 L13.1,13 Z M7.25,6 L8.75,6 L8.75,9.5 L7.25,9.5 Z M8,10.5 A0.9,0.9 0 1 0 8.001,10.5 Z",
+        VIEM_ALERT_CAUTION => "F0 M5,1 L11,1 L15,5 L15,11 L11,15 L5,15 L1,11 L1,5 Z M5.6,2.5 L2.5,5.6 L2.5,10.4 L5.6,13.5 L10.4,13.5 L13.5,10.4 L13.5,5.6 L10.4,2.5 Z M7.25,4.5 L8.75,4.5 L8.75,8.25 L7.25,8.25 Z M8,9.5 A0.9,0.9 0 1 0 8.001,9.5 Z",
+        _ => "F0 M8,1 A7,7 0 1 0 8.001,1 Z M8,2.5 A5.5,5.5 0 1 1 7.999,2.5 Z M7.25,7 L8.75,7 L8.75,11.75 L7.25,11.75 Z M8,3.75 A1,1 0 1 0 8.001,3.75 Z",
+    }) };
 
     private static Border BlockQuoteIcon(ButtonBase owner)
     {
@@ -300,6 +323,15 @@ internal sealed partial class FormattingToolbar : UserControl
             Set(ToolbarAction.Indent, 0, (indent & VIEM_LIST_CAN_INDENT) != 0);
             Set(ToolbarAction.Unindent, 0, (indent & VIEM_LIST_CAN_UNINDENT) != 0);
             Set(ToolbarAction.BlockQuote, selected.QuoteState, available && !selected.HasTable && !selected.HasCodeBlock);
+            if (tracking == 0) foreach (ToggleMenuFlyoutItem item in ((MenuFlyout)BlockQuoteAlerts.Flyout).Items)
+            {
+                uint kind = (uint)item.Tag;
+                bool enabled = AlertAvailable(kind), on = AlertSelected(kind);
+                if (item.IsEnabled != enabled) item.IsEnabled = enabled;
+                if (item.IsChecked != on) item.IsChecked = on;
+            }
+            bool anyAlert = AlertKinds.Any(alert => AlertAvailable(alert.Kind));
+            if (BlockQuoteAlerts.IsEnabled != anyAlert) BlockQuoteAlerts.IsEnabled = anyAlert;
             if (selected.HasTable) {
                 Paragraph.IsEnabled = false;
                 foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers, ToolbarAction.Tasks, ToolbarAction.Indent, ToolbarAction.Unindent }) Buttons[action].IsEnabled = false;
@@ -369,6 +401,20 @@ internal sealed partial class FormattingToolbar : UserControl
         button.IsEnabled = entries.Any(c => c.Enabled);
     }
 
+    /// <summary>Choosing the selection's only alert kind again restores a plain quote.</summary>
+    internal bool AlertSelected(uint kind) => selected?.AlertState(kind) == VIEM_SEMANTIC_STYLE_STATE_ON;
+    internal bool AlertAvailable(uint kind) => selected is { } styles && View?.Document.State.format == VIEM_FORMAT_MARKDOWN
+        && !styles.HasTable && !styles.HasCodeBlock && (styles.CanSetAlert || AlertSelected(kind));
+    internal void ChooseAlert(uint kind)
+    {
+        if (View is not { } view) return;
+        Refresh(includeHidden: true);
+        if (!AlertAvailable(kind)) return;
+        bool clear = AlertSelected(kind);
+        Run(() => view.SetAlert(clear ? VIEM_ALERT_NONE : kind));
+        RestoreEditorFocus();
+    }
+
     private void Run(Action action) { pane?.Run(action); Refresh(); }
     internal void RefreshActions() => Refresh(includeHidden: true);
     internal bool ActionAvailable(ToolbarAction action)
@@ -432,6 +478,7 @@ internal sealed partial class FormattingToolbar : UserControl
     {
         tablePicker.Close();
         ((MenuFlyout)Paragraph.Flyout).Hide();
+        ((MenuFlyout)BlockQuoteAlerts.Flyout).Hide();
         return tracking > 0;
     }
 

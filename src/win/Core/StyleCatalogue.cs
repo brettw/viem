@@ -11,6 +11,15 @@ internal sealed record SelectedStyles(ViemStyleSheetIdentityV1 Identity, uint Fl
     public bool HasTable => (Flags & VIEM_SELECTED_STYLE_HAS_TABLE) != 0;
     public uint QuoteState => (Flags & VIEM_SELECTED_STYLE_HAS_QUOTES) == 0 ? VIEM_SEMANTIC_STYLE_STATE_OFF
         : (Flags & VIEM_SELECTED_STYLE_HAS_NON_QUOTE) != 0 ? VIEM_SEMANTIC_STYLE_STATE_MIXED : VIEM_SEMANTIC_STYLE_STATE_ON;
+    public bool CanSetAlert => (Flags & VIEM_SELECTED_STYLE_CAN_SET_ALERT) != 0;
+    /// <summary>One alert kind present everywhere is on; alongside others it is mixed.</summary>
+    public uint AlertState(uint kind)
+    {
+        uint alerts = (Flags >> (int)VIEM_SELECTED_STYLE_ALERT_SHIFT) & 0x1f, bit = 1u << (int)(kind - 1);
+        if ((alerts & bit) == 0) return VIEM_SEMANTIC_STYLE_STATE_OFF;
+        return alerts == bit && (Flags & (VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE | VIEM_SELECTED_STYLE_HAS_NON_QUOTE)) == 0
+            ? VIEM_SEMANTIC_STYLE_STATE_ON : VIEM_SEMANTIC_STYLE_STATE_MIXED;
+    }
     public bool ParagraphMixed => (Flags & VIEM_SELECTED_STYLE_PARAGRAPH_MIXED) != 0;
     public bool CharacterMixed => (Flags & VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0;
     public uint ListState(uint kind)

@@ -21,6 +21,7 @@ pub(super) fn scope(request: &ModelRequest) -> Option<NumberingScope> {
     let range = match request {
         ModelRequest::SetListStyle { range, .. }
         | ModelRequest::SetBlockQuote { range, .. }
+        | ModelRequest::SetAlert { range, .. }
         | ModelRequest::SetParagraphStyle { range, .. }
         | ModelRequest::AssignNamedStyle {
             range,

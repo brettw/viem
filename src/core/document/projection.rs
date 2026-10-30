@@ -235,6 +235,7 @@ impl PartialEq for BlockAttributes {
                 a.starts_here == b.starts_here && a.ends_here == b.ends_here
                     && a.container.kind == b.container.kind && a.container.style == b.container.style
                     && a.container.direct_formatting == b.container.direct_formatting
+                    && a.container.alert == b.container.alert
             }) && self.task_checkbox == other.task_checkbox && self.checkbox_insertable == other.checkbox_insertable && self.list_loose == other.list_loose && self.quote_depth == other.quote_depth && self.thematic_break == other.thematic_break && self.markdown_html == other.markdown_html && self.code_kind == other.code_kind && self.code_language == other.code_language && self.code_language_label == other.code_language_label && self.style == other.style && self.list_editing == other.list_editing && **self == **other
     }
 }
@@ -3214,11 +3215,13 @@ impl FormattedDocument {
         if scopes.is_empty() { return; }
         scopes.sort_by(|a, b| a.range.start.cmp(&b.range.start).then_with(|| b.range.end.cmp(&a.range.end)));
         let owners: Vec<_> = scopes.iter().map(|scope| {
-            let style = if self.style_sheet.block_style(&scope.style).is_some() && !self.style_sheet.configuration_deleted(&scope.style, true) {
-                scope.style.clone()
-            } else { self.style_sheet.base_paragraph.clone() };
+            let defined = |style: &StyleId| self.style_sheet.block_style(style).is_some()
+                && !self.style_sheet.configuration_deleted(style, true);
+            // A missing alert style still presents as an ordinary quote.
+            let style = [Some(scope.style.clone()), scope.alert.map(|_| scope.kind.default_style())].into_iter().flatten()
+                .find(defined).unwrap_or_else(|| self.style_sheet.base_paragraph.clone());
             Arc::new(super::ContainerAttributes { id: super::containers::provisional_identity(), kind: scope.kind,
-                style, direct_formatting: scope.direct_formatting.clone() })
+                style, direct_formatting: scope.direct_formatting.clone(), alert: scope.alert })
         }).collect();
         let mut blocks = self.blocks.to_vec();
         let mut active: Vec<usize> = Vec::new();
@@ -4990,6 +4993,30 @@ impl RegionalRowMap {
     }
 }
 
+/// A regional parse cannot see an alert marker above its region, so its quote
+/// looks plain. Whether the quote opens with a marker depends only on source
+/// before its first body point; while no patch changes that source, the
+/// clipped owner keeps its alert attributes.
+fn retain_clipped_alert(previous: &FormattedDocument, old_blocks: &[Block], patches: &[super::SourcePatch],
+    regional_blocks: &mut [Block]) {
+    let Some(first) = old_blocks.first() else { return; };
+    let Some(member) = first.containers.first().filter(|member| member.container.alert.is_some()) else { return; };
+    let body = previous.provenance_for_region(&first.range).first().map(|span| span.source.start)
+        .or_else(|| previous.provenance_touching(&first.range).iter()
+            .find(|span| span.formatted == first.range).map(|span| span.source.start));
+    let unchanged_opening = !member.starts_here
+        || body.is_some_and(|body| patches.iter().all(|patch| patch.range().start >= body));
+    if !unchanged_opening { return; }
+    for block in regional_blocks {
+        let Some(top) = block.containers.first() else { continue; };
+        if top.container.id != member.container.id || top.container.kind != super::ContainerKind::Quote
+            || top.container.alert.is_some() { continue; }
+        let mut path = block.containers.to_vec();
+        path[0].container = member.container.clone();
+        block.containers = path.into();
+    }
+}
+
 pub(crate) fn splice_line_local_projection(
     previous: &FormattedDocument,
     regional: FormattedDocument,
@@ -5209,6 +5236,7 @@ pub(crate) fn splice_line_local_projection(
     }
 
     super::containers::reconcile(&mut regional_blocks, &previous_region_blocks, true);
+    retain_clipped_alert(previous, &previous_region_blocks, source_patches, &mut regional_blocks);
     let mut range_stats = RangeSpliceStats::default();
     let blocks = previous
         .blocks
@@ -6097,6 +6125,27 @@ fn project_markdown(
     projected
 }
 
+/// An alert whose hidden marker has been consumed but whose body is not yet
+/// known: its quote end, the empty body's source point, the block count at
+/// the marker, and the marker line's normalized ending.
+struct PendingAlertBody {
+    quote_end: usize,
+    body: usize,
+    blocks: usize,
+    ending: Option<usize>,
+}
+
+/// Match an ordinary empty prose row, as a regional parse of a blank quote
+/// row projects it.
+fn push_empty_alert_body(builder: &mut MarkdownBuilder<'_>, source: usize) {
+    let at = builder.output.len();
+    builder.push_provenance(ProvenanceSpan { formatted: at..at, source: source..source });
+    let mut block = Block::new(0, at..at, BlockKind::Paragraph, "Paragraph".into(), None);
+    block.quote_depth = 1;
+    block.checkbox_insertable = true;
+    builder.blocks.push(block);
+}
+
 fn markdown_presented_kind(mut kind: BlockKind) -> BlockKind {
     if let BlockKind::ListItem {
         marker_is_decoration,
@@ -6133,10 +6182,11 @@ fn project_markdown_lines(
     let mut line_index = 0;
     let mut container_index = 0;
     let mut containers: Vec<&super::markdown_syntax::Container> = Vec::new();
+    let mut pending_alert: Option<PendingAlertBody> = None;
     let normalized_at = |at| normalized.normalized_at(at);
     while line_index < input_lines.len() {
         let line = &input_lines[line_index];
-        let output_start = builder.output.len();
+        let mut output_start = builder.output.len();
         // A final empty row has no unit. After a final line terminator it is
         // the last source row before that terminator (inside its quote, and
         // where typing belongs), not the boundary after the terminator.
@@ -6150,6 +6200,19 @@ fn project_markdown_lines(
         let source_end = builder.unit_at(line.end).map_or_else(
             || final_row.unwrap_or(source_content_end), |unit| unit.source.start);
         let at = source_at.unwrap();
+        // A hidden alert marker leaves its body undecided until a following
+        // row either adds a block to the quote or lies beyond it.
+        if let Some(pending) = pending_alert.take_if(|pending|
+            builder.blocks.len() > pending.blocks || at >= pending.quote_end) {
+            if builder.blocks.len() == pending.blocks {
+                push_empty_alert_body(&mut builder, pending.body);
+                if let Some(ending) = pending.ending {
+                    hard_breaks.push(builder.output.len());
+                    builder.emit_unit_at(ending);
+                }
+                output_start = builder.output.len();
+            }
+        }
         containers.retain(|container| at < container.range.end);
         while let Some(container) = syntax.containers.get(container_index).filter(|container| container.range.start <= source_end) {
             if container.range.end > at { containers.push(container); }
@@ -6188,6 +6251,22 @@ fn project_markdown_lines(
             } else { fallback };
             markdown_presented_kind(kind)
         };
+        if let Some(alert) = syntax.alert_marker_at(at) {
+            // The `[!TYPE]` line is hidden container syntax, like a fence
+            // opener, and its ending separates nothing in the Preview text.
+            // Without body text the alert still owns one editable empty
+            // paragraph: on its blank quote row, or after the marker.
+            let row = quote_context.iter().find(|row| row.range.start > alert.marker.end)
+                .filter(|row| row.range.start < alert.quote.end || row.range.start == alert.quote.end && row.range.is_empty());
+            pending_alert = Some(PendingAlertBody {
+                quote_end: alert.quote.end,
+                body: row.map_or(alert.marker.end, |row| row.content_start),
+                blocks: builder.blocks.len(),
+                ending: normalized.endings.get(line_index).map(|ending| ending.normalized.start),
+            });
+            line_index += 1;
+            continue;
+        }
         if let Some(table) = syntax.tables.get(syntax.tables.partition_point(|table| table.range.end <= at)).filter(|table| table.range.start <= source_end && at < table.range.end) {
             // All table rows belong to the same enclosing list item. Only
             // its first projected block can own an authored list marker.
@@ -6602,6 +6681,9 @@ fn project_markdown_lines(
             builder.emit_unit_at(ending.normalized.start);
         }
         line_index += 1;
+    }
+    if let Some(pending) = pending_alert.filter(|pending| builder.blocks.len() == pending.blocks) {
+        push_empty_alert_body(&mut builder, pending.body);
     }
 
     hard_breaks.append(&mut builder.inline_hard_breaks);

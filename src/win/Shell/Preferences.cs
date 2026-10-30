@@ -65,6 +65,7 @@ internal sealed partial class Preferences
     public bool MarkdownAutodetect => Get("editing", "markdownAutodetect", true);
     public bool CaretHoverEffect => Get("editing", "caretHoverEffect", true);
     public bool SmartQuotes => Get("editing", "smartQuotes", true);
+    public bool SmartHome => Get("editing", "smartHome", true);
     public bool Autoselect => Get("editing", "autoselect", true);
     public bool Midnight => Theme.Background.R * .2126 + Theme.Background.G * .7152 + Theme.Background.B * .0722 < 128;
     public Theme Theme {

@@ -430,6 +430,15 @@ fn fence_grammar_text(text: &str) -> std::borrow::Cow<'_, str> {
         |bytes| std::borrow::Cow::Owned(String::from_utf8(bytes).unwrap()))
 }
 
+fn alert_kind(kind: pulldown_cmark::BlockQuoteKind) -> super::AlertKind {
+    use pulldown_cmark::BlockQuoteKind as Kind;
+    match kind {
+        Kind::Note => super::AlertKind::Note, Kind::Tip => super::AlertKind::Tip,
+        Kind::Important => super::AlertKind::Important, Kind::Warning => super::AlertKind::Warning,
+        Kind::Caution => super::AlertKind::Caution,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum BlockRole { Heading(u8), Html, Rule }
 #[derive(Clone, Debug)]
@@ -453,9 +462,17 @@ pub(super) struct CodeSyntax {
     pub body_end: usize,
     pub fenced: bool,
 }
+/// A top-level GitHub alert. `marker` is the whole source line holding
+/// `[!TYPE]`, without its ending; it is hidden container syntax.
+#[derive(Clone, Debug)]
+pub(super) struct AlertSyntax {
+    pub quote: Range<usize>,
+    pub marker: Range<usize>,
+}
 #[derive(Default)]
 pub(super) struct Blocks {
     pub tasks: Vec<(Range<usize>, bool)>,
+    pub alerts: Vec<AlertSyntax>,
     pub front_matter: Option<super::markdown_front_matter::FrontMatter>,
     pub paragraphs: Vec<Range<usize>>,
     pub soft_breaks: Vec<Range<usize>>,
@@ -472,6 +489,16 @@ pub(super) struct Blocks {
 }
 impl Blocks {
     pub fn parse(text: &str, context: ParseContext) -> Self {
+        let (result, nested) = Self::parse_neutralizing(text, context, &[]);
+        if nested.is_empty() { return result; }
+        // GitHub never nests alerts: a nested `[!TYPE]` line stays ordinary
+        // quote text. Reparse with those markers neutralized for the grammar.
+        Self::parse_neutralizing(text, context, &nested).0
+    }
+
+    /// Parse with the alert markers at `neutralized` (quote starts) disabled,
+    /// returning any other nested alert quote starts that were found.
+    fn parse_neutralizing(text: &str, context: ParseContext, neutralized: &[usize]) -> (Self, Vec<usize>) {
         super::work_statistics::record(|work| {
             work.markdown_block_parse_calls += 1;
             work.markdown_block_parsed_bytes += text.len();
@@ -480,8 +507,18 @@ impl Blocks {
         let mut result = Self::default();
         result.front_matter = context.permits_metadata().then(|| super::markdown_front_matter::recognize(text)).flatten();
         let parse_start = result.front_matter.as_ref().map_or(0, |front| front.range.end);
-        let grammar = fence_grammar_text(&text[parse_start..]);
-        let parser = Parser::new_ext(&grammar, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS);
+        let mut grammar = fence_grammar_text(&text[parse_start..]);
+        for &start in neutralized {
+            // Same-length replacement keeps every grammar offset; `[?TYPE]`
+            // is plain paragraph text, as `[!TYPE]` is without alerts.
+            let local = start - parse_start;
+            let line_end = grammar[local..].find('\n').map_or(grammar.len(), |at| local + at);
+            if let Some(at) = grammar[local..line_end].find("[!") {
+                grammar.to_mut().replace_range(local + at + 1..local + at + 2, "?");
+            }
+        }
+        let mut nested = Vec::new();
+        let parser = Parser::new_ext(&grammar, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_GFM);
         let mut tables = super::markdown_tables::TableParser::default();
         result.definitions = definitions(text, context).1;
         if let Some(front) = &result.front_matter {
@@ -507,9 +544,21 @@ impl Blocks {
                 _ => {}
             }
             match event {
-                Event::Start(Tag::BlockQuote(_)) => {
+                Event::Start(Tag::BlockQuote(kind)) => {
+                    let mut owner = super::containers::SourceContainer::new(range.clone(), super::ContainerKind::Quote);
+                    if let Some(kind) = kind.map(alert_kind) {
+                        if quotes == 0 && lists.is_empty() {
+                            let line_start = text[..range.start].rfind('\n').map_or(0, |at| at + 1);
+                            let line_end = text[range.start..range.end].find('\n').map_or(range.end, |at| range.start + at);
+                            owner.alert = Some(kind);
+                            owner.style = kind.style_id();
+                            result.alerts.push(AlertSyntax { quote: range.clone(), marker: line_start..line_end });
+                        } else {
+                            nested.push(range.start);
+                        }
+                    }
                     quotes += 1;
-                    result.owners.push(super::containers::SourceContainer::new(range.clone(), super::ContainerKind::Quote));
+                    result.owners.push(owner);
                     result.containers.push(Container { range, quote_depth: quotes, list: None, loose: false });
                 }
                 Event::End(TagEnd::BlockQuote(_)) => quotes -= 1,
@@ -610,7 +659,13 @@ impl Blocks {
         result.tables = tables.tables;
         result.containers.sort_by_key(|container| container.range.start);
         result.definitions.sort_by_key(|range| range.start);
-        result
+        (result, nested)
+    }
+
+    /// The top-level alert whose hidden marker line contains `at`.
+    pub fn alert_marker_at(&self, at: usize) -> Option<&AlertSyntax> {
+        self.alerts.get(self.alerts.partition_point(|alert| alert.marker.end < at))
+            .filter(|alert| alert.marker.start <= at && at <= alert.marker.end)
     }
     pub fn to_source(mut self, input: &super::line_endings::NormalizedText) -> Self {
         let at = |at| input.source_at(at);
@@ -619,6 +674,10 @@ impl Blocks {
             front.body = at(front.body.start)..at(front.body.end);
         }
         for (range, _) in &mut self.tasks { *range = at(range.start)..at(range.end); }
+        for alert in &mut self.alerts {
+            alert.quote = at(alert.quote.start)..at(alert.quote.end);
+            alert.marker = at(alert.marker.start)..at(alert.marker.end);
+        }
         self.tables = self.tables.into_iter().map(|table| table.to_source(input)).collect();
         for block in &mut self.blocks { block.range = at(block.range.start)..at(block.range.end); block.content = at(block.content.start)..at(block.content.end); }
         for owner in &mut self.owners { owner.range = at(owner.range.start)..at(owner.range.end); }

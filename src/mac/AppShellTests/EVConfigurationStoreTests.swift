@@ -31,6 +31,19 @@ final class EVConfigurationStoreTests: XCTestCase {
     XCTAssertTrue(preferences.smartQuotes)
   }
 
+  func testSmartHomeDefaultsOnAndPersistsToLivePreferences() throws {
+    let (directory, legacy) = try fixture()
+    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    let preferences = EVEditingPreferences(configuration: store)
+    XCTAssertTrue(preferences.smartHome)
+    preferences.setSmartHome(false)
+    XCTAssertFalse(preferences.smartHome)
+    let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
+    XCTAssertFalse(reopened.smartHome)
+    try reopened.setSmartHome(true)
+    XCTAssertTrue(preferences.smartHome)
+  }
+
   func testInvalidMarkdownAutodetectDoesNotOverwriteSettings() throws {
     let (directory, legacy) = try fixture()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

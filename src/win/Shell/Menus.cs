@@ -52,6 +52,13 @@ internal sealed partial class EditorWindow
         validation.Add((item, () => FormattingActionAvailable(action)));
         return item;
     }
+    private ToggleMenuFlyoutItem AlertMenuItem(uint kind, string title)
+    {
+        var item = Toggle(title, title[..1], _ => ExecuteAlert(kind), () => InsertPresentation()?.AlertSelected(kind) == true);
+        item.Icon = FormattingToolbar.AlertIcon(kind);
+        validation.Add((item, () => InsertPresentation()?.AlertAvailable(kind) == true));
+        return item;
+    }
     private MenuBarItem Top(string title, string accessKey, params MenuFlyoutItemBase[] items)
     {
         var menu = new MenuBarItem { Title = title, AccessKey = accessKey, IsAccessKeyScope = true };
@@ -125,7 +132,8 @@ internal sealed partial class EditorWindow
             ListMenuItem("Numbered List", "N", ToolbarAction.Numbers, KeyPolicy.FormattingShortcut(NativeAction.Numbers)),
             ListMenuItem("Task List", "A", ToolbarAction.Tasks),
             Separator(),
-            ActionItem("Blockquote", "Q", () => ExecuteFormattingAction(ToolbarAction.BlockQuote), enabled: () => FormattingActionAvailable(ToolbarAction.BlockQuote)),
+            Sub("Blockquote", "Q", [ActionItem("Blockquote", "Q", () => ExecuteFormattingAction(ToolbarAction.BlockQuote), enabled: () => FormattingActionAvailable(ToolbarAction.BlockQuote)),
+                Separator(), .. FormattingToolbar.AlertKinds.Select(alert => AlertMenuItem(alert.Kind, alert.Title))]),
             ActionItem("Code Block", "O", () => ExecuteFormattingAction(ToolbarAction.CodeBlock), enabled: () => FormattingActionAvailable(ToolbarAction.CodeBlock)),
             Item("Image", "M", () => { if (ActivePane is { } pane) pane.Run(pane.ShowInsertImage); return Task.CompletedTask; }, enabled: () => {
                 var toolbar = InsertPresentation();

@@ -60,6 +60,10 @@ final class EVMenuBuilderTests: XCTestCase {
         XCTAssertEqual(tokens(in: insert), ["Heading", "Code", "Link", "Reference", "-",
             "Bulleted List", "Numbered List", "Task List", "-", "Blockquote", "Code Block", "Image", "Table"])
         XCTAssertNotNil(insert.item(withTitle: "Table")?.submenu)
+        let quotes = try submenu("Blockquote", of: insert)
+        XCTAssertEqual(tokens(in: quotes), ["Blockquote", "-", "Note", "Tip", "Important", "Warning", "Caution"])
+        // The shell has no core import; kinds follow `VIEM_ALERT_NOTE` (1) onward.
+        XCTAssertEqual(quotes.items.compactMap { EVMenuCommand(rawValue: $0.tag)?.alertKind }, [1, 2, 3, 4, 5])
         let format = try submenu("Format", of: menu)
         XCTAssertEqual(tokens(in: format), [
             "Plain text", "Markdown Preview", "Code", "-", "Theme", "Edit Styles…", "Reload style sheet", "-", "Word wrap", "Align indents to previous line",

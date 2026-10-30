@@ -22,6 +22,10 @@ pub struct SelectedNamedStyles {
     pub has_non_list: bool,
     pub has_quotes: bool,
     pub has_non_quote: bool,
+    /// Top-level quotes without an alert marker.
+    pub has_plain_quote: bool,
+    /// Alert kinds present, as bits `1 << (ordinal - 1)`.
+    pub alerts: u8,
     pub has_table: bool,
     /// Structural code ownership, including quoted fences; excludes inline Code.
     pub has_code_block: bool,
@@ -126,6 +130,8 @@ impl FormattedDocument {
         let mut has_code_block = false;
         let mut has_quotes = false;
         let mut has_non_quote = false;
+        let mut has_plain_quote = false;
+        let mut alerts = 0u8;
         for point in boundaries {
             if point == end && start != end {
                 break;
@@ -170,6 +176,13 @@ impl FormattedDocument {
                 || block.containers.iter().any(|member| member.container.kind == super::ContainerKind::CodeBlock));
             if block.is_some_and(|block| block.quote_depth > 0) { has_quotes = true; }
             else { has_non_quote = true; }
+            match block.and_then(|block| block.containers.first()).filter(|member| member.container.kind == super::ContainerKind::Quote) {
+                Some(member) => match member.container.alert {
+                    Some(kind) => alerts |= 1 << (kind.ordinal() - 1),
+                    None => has_plain_quote = true,
+                },
+                None => {}
+            }
             let list_owner = block.and_then(|block| self.list_item_first_block(block));
             match list_owner.as_ref().or(block).map(|block| (block.task_checkbox, &block.kind)) {
                 Some((Some(_), _)) => has_tasks = true,
@@ -200,6 +213,8 @@ impl FormattedDocument {
         SelectedNamedStyles {
             has_quotes,
             has_non_quote,
+            has_plain_quote,
+            alerts,
             has_code_block,
             has_table: self.range_intersects_table(&range),
             has_bullets,

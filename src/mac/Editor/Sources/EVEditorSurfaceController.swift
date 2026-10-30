@@ -1007,6 +1007,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             formattingToolbar.openTablePicker()
         case .blockQuote:
             formattingToolbar.toggleBlockQuote(formattingToolbar.blockQuote)
+        case .alertNote, .alertTip, .alertImportant, .alertWarning, .alertCaution:
+            guard let kind = menuCommand.alertKind, alertPresentation(kind).isEnabled else { return }
+            formattingToolbar.chooseAlert(kind)
         case .codeBlock:
             formattingToolbar.toggleCodeBlock(formattingToolbar.codeBlock)
         case .bold:
@@ -1152,6 +1155,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             EVMenuItemPresentation(isEnabled: backend.sourceFormat.isMarkdown && ((try? session?.tableContext().flags) ?? 0) & 1 != 0)
         case .blockQuote:
             blockQuotePresentation()
+        case .alertNote, .alertTip, .alertImportant, .alertWarning, .alertCaution:
+            menuCommand.alertKind.map(alertPresentation) ?? .disabled
         case .codeBlock:
             codeBlockPresentation()
         case .bold:

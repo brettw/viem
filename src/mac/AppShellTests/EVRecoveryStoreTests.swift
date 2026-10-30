@@ -19,7 +19,7 @@ final class EVRecoveryStoreTests: XCTestCase {
         XCTAssertEqual(kill(Int32.max, 0), -1)
         XCTAssertEqual(errno, ESRCH)
         return EVRecoveryRecord(version: 1, owner: UUID(), processID: Int32.max,
-            host: ProcessInfo.processInfo.hostName, targetPath: target.path,
+            host: EVRecoveryStore.hostName, targetPath: target.path,
             created: Date(), updated: Date(), snapshot: snapshot("abandoned contents"))
     }
     private func staleCandidate(for target: URL) throws -> EVRecoveryCandidate {

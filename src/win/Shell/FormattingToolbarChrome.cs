@@ -117,6 +117,14 @@ internal sealed partial class EditorWindow
         toolbar.Synchronize(pane, preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN));
         toolbar.Execute(action);
     }
+
+    internal void ExecuteAlert(uint kind)
+    {
+        if (ActivePane is not { CanUseFormattingCommands: true } pane) return;
+        var toolbar = EnsureFormattingToolbar();
+        toolbar.Synchronize(pane, preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN));
+        toolbar.ChooseAlert(kind);
+    }
 #if DEBUG
     internal FormattingToolbar Toolbar => formattingToolbar ?? throw new InvalidOperationException("The formatting toolbar has not been needed.");
     internal bool ToolbarCreated => formattingToolbar != null;

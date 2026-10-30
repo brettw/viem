@@ -1850,7 +1850,8 @@ pub struct ViemLayoutDecorationV1 {
     pub x: f32,
     pub advance: f32,
     pub font_size: f32,
-    pub reserved: f32,
+    /// A text decoration's layout baseline; zero for non-text furniture.
+    pub baseline: f32,
     pub typographic_bounds: ViemLayoutRectV1,
     pub ink_bounds: ViemLayoutRectV1,
     pub render_run: ViemRenderRunHandleV1,
@@ -1859,6 +1860,10 @@ pub struct ViemLayoutDecorationV1 {
 pub const VIEM_LAYOUT_DECORATION_V1_SIZE: u32 = size_of::<ViemLayoutDecorationV1>() as u32;
 pub const VIEM_LAYOUT_DECORATION_CHECKBOX: u32 = 1 << 6;
 pub const VIEM_LAYOUT_DECORATION_CHECKED: u32 = 1 << 7;
+pub const VIEM_LAYOUT_DECORATION_ALERT_ICON: u32 = 1 << 8;
+pub const VIEM_LAYOUT_DECORATION_ALERT_TITLE: u32 = 1 << 9;
+/// Alert decorations carry their `VIEM_ALERT_*` kind in three bits here.
+pub const VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT: u32 = 10;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_QUOTE_BORDER: u32 = 1 << 1;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND: u32 = 1 << 2;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BORDER: u32 = 1 << 3;
@@ -2268,6 +2273,10 @@ pub const VIEM_LIST_STYLE_NUMBERED: u32 = 2;
 pub const VIEM_LIST_STYLE_TASK: u32 = 3;
 pub const VIEM_SELECTED_STYLE_HAS_TASKS: u32 = 1 << 9;
 pub const VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST: u32 = 1 << 10;
+pub const VIEM_SELECTED_STYLE_CAN_SET_ALERT: u32 = 1 << 11;
+pub const VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE: u32 = 1 << 12;
+/// Alert kind `k` (1 through 5) sets bit `VIEM_SELECTED_STYLE_ALERT_SHIFT + k - 1`.
+pub const VIEM_SELECTED_STYLE_ALERT_SHIFT: u32 = 13;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -8583,6 +8592,10 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                                 crate::layout::DecorationKind::BlockBorder => VIEM_LAYOUT_DECORATION_BLOCK_BORDER,
                                 crate::layout::DecorationKind::CodeLanguage { picker_disabled } => VIEM_LAYOUT_DECORATION_CODE_LANGUAGE
                                     | if picker_disabled { VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED } else { 0 },
+                                crate::layout::DecorationKind::AlertIcon { kind } => VIEM_LAYOUT_DECORATION_ALERT_ICON
+                                    | kind.ordinal() << VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT,
+                                crate::layout::DecorationKind::AlertTitle { kind } => VIEM_LAYOUT_DECORATION_ALERT_TITLE
+                                    | kind.ordinal() << VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT,
                                 _ => 0,
                             },
                             row_index: checked_export_count(row_index)?,
@@ -8591,7 +8604,7 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                             x: item.x,
                             advance: item.advance,
                             font_size: item.font_size,
-                            reserved: 0.0,
+                            baseline: item.baseline,
                             typographic_bounds: layout_rect_to_ffi(item.typographic_bounds),
                             ink_bounds: layout_rect_to_ffi(item.ink_bounds),
                             render_run: item.render_run.as_ref().map(render_run_to_ffi).unwrap_or_default(),
@@ -13655,6 +13668,20 @@ pub extern "C" fn viem_core_view_set_markdown_autodetect(
     })
 }
 
+/// Application navigation policy: Home toggles between the first nonblank and
+/// the line start. A mapped Home is unaffected. No source or undo change.
+#[no_mangle]
+pub extern "C" fn viem_core_view_set_smart_home(
+    handle: ViemCoreHandle, view: ViemViewId, enabled: u32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        if enabled > 1 { return Err(ViemStatus::InvalidArgument); }
+        with_core_mut(handle, |core| {
+            dispatch_event(core, view, CoreEvent::SetSmartHome(enabled != 0)).map(|_| ())
+        })
+    })
+}
+
 pub const VIEM_LINE_LOCATION_GLOBAL_LINE_EXACT: u32 = 1;
 pub const VIEM_LINE_LOCATION_FRAGMENT_EXACT: u32 = 2;
 #[repr(C)]
@@ -13807,7 +13834,10 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
                     | (u32::from(selected.has_table) << 7)
                     | (u32::from(selected.has_code_block) << 8)
                     | if selected.has_tasks { VIEM_SELECTED_STYLE_HAS_TASKS } else { 0 }
-                    | if core.can_set_task_list(ViewId(view)).map_err(core_status)? { VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST } else { 0 },
+                    | if core.can_set_task_list(ViewId(view)).map_err(core_status)? { VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST } else { 0 }
+                    | if core.can_set_alert(ViewId(view)).map_err(core_status)? { VIEM_SELECTED_STYLE_CAN_SET_ALERT } else { 0 }
+                    | if selected.has_plain_quote { VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE } else { 0 }
+                    | (u32::from(selected.alerts) << VIEM_SELECTED_STYLE_ALERT_SHIFT),
                 document_id: core.document().id().0,
                 document_revision: expected_revision,
                 style_sheet_revision: core.document().projection().style_sheet().revision.0,

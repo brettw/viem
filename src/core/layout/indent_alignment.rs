@@ -15,10 +15,14 @@ struct IndentPrefix {
     columns: usize,
     /// Recorded while scanning; columns == byte length does not prove this.
     has_tabs: bool,
+    /// The prefix reaches the line end: the line is empty or only spaces and
+    /// tabs. Blank lines never anchor, so alignment skips back across them.
+    blank: bool,
 }
 
 impl IndentPrefix {
     fn pair(self) -> (usize, usize) { (self.end, self.columns) }
+    fn summary(self) -> LineIndentation { LineIndentation { columns: self.columns, anchor_eligible: !self.blank } }
 }
 
 #[derive(Clone, Debug)]
@@ -86,9 +90,11 @@ impl IndentSnapshot {
         // An untouched body character, or a replacement beginning with an
         // ASCII body character at the exact boundary, proves the prefix
         // unchanged without walking it. Non-ASCII combining text must rescan.
+        // That boundary character also makes a previously blank line nonblank.
         let unchanged_prefix = previous_prefix.filter(|prefix| old.start > prefix.end
             || old.start == prefix.end && next.text_tree().byte_chunk_at(new.start)
-                .first().is_some_and(u8::is_ascii_graphic));
+                .first().is_some_and(u8::is_ascii_graphic))
+            .map(|prefix| IndentPrefix { blank: prefix.blank && old.start > prefix.end, ..prefix });
         let body_only = unchanged_prefix.is_some() && old_end == start + 1 && new_end == start + 1;
         let updated_prefix = unchanged_prefix.or_else(|| {
             if old_end != start + 1 || new_end != start + 1 { return None; }
@@ -138,7 +144,7 @@ impl IndentSnapshot {
                     };
                     if self.prefixes.len() >= 256 { self.prefixes.pop_first(); }
                     self.prefixes.insert(line, prefix);
-                    replacement.push(LineIndentation { columns: prefix.columns, anchor_eligible: true });
+                    replacement.push(prefix.summary());
                 }
                 self.index.splice(start..old_end, replacement).expect("valid indexed edit hull");
                 let threshold = (start..new_end.min(self.index.len()))
@@ -176,7 +182,7 @@ impl IndentSnapshot {
             let mut entries = Vec::with_capacity(stop - start);
             for line in start..stop {
                 control.checkpoint()?;
-                entries.push(LineIndentation { columns: self.indentation(line, control)?.1, anchor_eligible: true });
+                entries.push(self.prefix(line, control)?.summary());
             }
             self.index.splice(start..start, entries).expect("append at index end");
         }
@@ -187,13 +193,17 @@ impl IndentSnapshot {
     /// every shape fragment or subsequent job. Cache eviction changes no index
     /// state; an entry is only valid for this exact immutable text snapshot.
     fn indentation(&mut self, line: usize, control: &LayoutRunControl<'_>) -> Result<(usize, usize), LayoutComputationError> {
+        Ok(self.prefix(line, control)?.pair())
+    }
+
+    fn prefix(&mut self, line: usize, control: &LayoutRunControl<'_>) -> Result<IndentPrefix, LayoutComputationError> {
         control.checkpoint()?;
-        if let Some(&prefix) = self.prefixes.get(&line) { return Ok(prefix.pair()); }
+        if let Some(&prefix) = self.prefixes.get(&line) { return Ok(prefix); }
         let prefix = scan_indentation(&self.projection, line, self.tabstop, control, None)?
             .expect("unbudgeted indentation scan completes");
         if self.prefixes.len() >= 256 { self.prefixes.pop_first(); }
         self.prefixes.insert(line, prefix);
-        Ok(prefix.pair())
+        Ok(prefix)
     }
 
     pub(crate) fn dependent_end(&self, lines: &Range<usize>) -> usize {
@@ -217,12 +227,14 @@ impl IndentSnapshot {
 #[path = "indent_snapshot_tests.rs"]
 mod snapshot_tests;
 
-/// Return the ASCII indent's end and portable column count without reading the
-/// line body, including multi-megabyte hard lines.
+/// Return the line's index summary from a fresh scan of its ASCII indent,
+/// without reading the line body, including multi-megabyte hard lines.
 #[cfg(test)]
-fn indentation(projection: &IndentProjection, line: usize, tabstop: u32) -> (usize, usize) {
-    indentation_cancellable(projection, line, tabstop, &LayoutRunControl::synchronous(&NeverCancelled))
+fn indentation_summary(projection: &IndentProjection, line: usize, tabstop: u32) -> LineIndentation {
+    scan_indentation(projection, line, tabstop, &LayoutRunControl::synchronous(&NeverCancelled), None)
         .expect("a retained projection has valid line and grapheme boundaries")
+        .expect("unbudgeted indentation scan completes")
+        .summary()
 }
 
 #[cfg(test)]
@@ -234,6 +246,7 @@ fn indentation_cancellable(projection: &IndentProjection, line: usize, tabstop: 
 /// Update a proven all-space prefix from its small changed extent. Tabs in
 /// the old prefix would make later tab stops depend on the change, so decline
 /// them explicitly rather than inferring their absence from column counts.
+/// Only whitespace changes, so the untouched body keeps its blankness.
 fn update_space_prefix(prefix: IndentPrefix, line_start: usize, old: &Range<usize>, new: &Range<usize>,
     next: &IndentProjection, tabstop: u32, budget: &mut usize) -> Option<IndentPrefix> {
     if prefix.has_tabs || old.start < line_start || old.end > prefix.end || new.len() > *budget { return None; }
@@ -257,6 +270,7 @@ fn update_space_prefix(prefix: IndentPrefix, line_start: usize, old: &Range<usiz
         end: prefix.end.checked_sub(old.len())?.checked_add(new.len())?,
         columns: column.checked_add(prefix.end - old.end)?,
         has_tabs,
+        blank: prefix.blank,
     })
 }
 
@@ -264,7 +278,7 @@ fn scan_indentation(projection: &IndentProjection, line: usize, tabstop: u32,
     control: &LayoutRunControl<'_>, mut budget: Option<&mut usize>)
     -> Result<Option<IndentPrefix>, LayoutComputationError> {
     let Some(range) = projection.presentation_line_range(line) else {
-        return Ok(Some(IndentPrefix { end: 0, columns: 0, has_tabs: false }));
+        return Ok(Some(IndentPrefix { end: 0, columns: 0, has_tabs: false, blank: true }));
     };
     let tree = projection.text_tree();
     let mut at = range.start;
@@ -296,7 +310,7 @@ fn scan_indentation(projection: &IndentProjection, line: usize, tabstop: u32,
         at -= 1;
         column = previous_column;
     }
-    Ok(Some(IndentPrefix { end: at, columns: column, has_tabs }))
+    Ok(Some(IndentPrefix { end: at, columns: column, has_tabs, blank: at == range.end }))
 }
 
 /// Read only borrowed leaf chunks and resume sequential long-prefix slices.
@@ -756,6 +770,20 @@ mod geometry_tests {
             let expected = snapshot.logical_endpoint_geometry(columns, BoundaryAffinity::Downstream).unwrap().rect.x;
             let actual = row_caret_x(&snapshot.rows[1], anchor.len() + 1 + columns).unwrap();
             assert!((actual - f64::from(expected)).abs() < 0.001, "column {columns}");
+        }
+    }
+
+    #[test]
+    fn blank_and_whitespace_only_lines_are_skipped_for_the_previous_nonblank_anchor() {
+        for blank in ["", "  ", "        ", "\t \t"] {
+            let text = format!("  if (a\n{blank}\n\n      c");
+            let (document, mut view) = fixture(&text);
+            let mut engine = LayoutEngine::new(MockTextMeasurementProvider::new());
+            engine.relayout(&document, &mut view).unwrap();
+            let snapshot = view.snapshot().unwrap();
+            let expected = row_caret_x(&snapshot.rows[0], 6).unwrap();
+            let actual = row_caret_x(&snapshot.rows[3], text.len() - 1).unwrap();
+            assert!((actual - expected).abs() < 0.001, "{blank:?}: {actual} != {expected}");
         }
     }
 

@@ -130,8 +130,16 @@ final class EVRecoveryStore: @unchecked Sendable {
         }.sorted { ($0.updated ?? .distantPast) > ($1.updated ?? .distantPast) }
     }
 
+    /// The kernel's host name, which identifies a slot owner's machine.
+    /// `ProcessInfo.hostName` can wait on reverse DNS during startup.
+    static let hostName: String = {
+        var buffer = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN) + 1)
+        guard gethostname(&buffer, buffer.count - 1) == 0 else { return "" }
+        return String(cString: buffer)
+    }()
+
     private static func ownerHasExited(_ record: EVRecoveryRecord) -> Bool {
-        guard record.host == ProcessInfo.processInfo.hostName, record.processID > 0 else { return false }
+        guard record.host == hostName, record.processID > 0 else { return false }
         return kill(record.processID, 0) == -1 && errno == ESRCH
     }
 
@@ -199,7 +207,7 @@ final class EVRecoveryStore: @unchecked Sendable {
 
     static func claim(for sourceURL: URL) throws -> EVRecoveryStore {
         let target = EVDocumentIdentity.canonicalURL(sourceURL)
-        let record = EVRecoveryRecord(version: 1, owner: UUID(), processID: getpid(), host: ProcessInfo.processInfo.hostName,
+        let record = EVRecoveryRecord(version: 1, owner: UUID(), processID: getpid(), host: hostName,
                                       targetPath: target.path, created: Date(), updated: Date(), snapshot: nil)
         let bytes = try record.encoded()
         for url in slotURLs(for: target) {

@@ -89,6 +89,12 @@ baseline and its height equal to that metric. `paragraph_id` identifies the
 owning paragraph only within the supplied snapshot; checkbox toggles reject
 stale document, view, layout, configuration and provider identities.
 
+`ViemLayoutDecorationV1.baseline` (formerly a reserved float) is a text
+decoration's layout baseline. List labels sit on their row's baseline; GitHub
+alert titles are shaped as a Heading 4 inside the alert and sit on their own
+baseline in the title band above the first body row. Frontends draw an alert
+title's render run there, and fall back to system-font text only without one.
+
 The cap-height field grows the ABI metrics record from 12 to 16 bytes. Keeping
 the native metric avoids estimating it from ascent or point size. The 2026-10-27
 standard, supplemental and rich-paste memory runs passed the existing limits;

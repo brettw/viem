@@ -19,6 +19,8 @@ impl FormattedDocument {
             has_non_list: true,
             has_quotes: false,
             has_non_quote: true,
+            has_plain_quote: false,
+            alerts: 0,
             has_table: false,
             has_code_block: false,
         };

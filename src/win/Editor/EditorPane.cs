@@ -277,6 +277,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             prepared.Number(View.NumberEnabled);
             prepared.MarkdownAutodetect(preferences.MarkdownAutodetect);
             prepared.SmartQuotes(preferences.SmartQuotes);
+            prepared.SmartHome(preferences.SmartHome);
             prepared.ClipboardText = View.ClipboardText;
             prepared.ClipboardFragment = View.ClipboardFragment;
             prepared.ClipboardGeneration = View.ClipboardGeneration;
@@ -309,7 +310,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
         float top = preferences.Margin("top"), bottom = preferences.Margin("bottom");
         if (preferences.ScriptScrollOff is { } rows) top = bottom = Math.Min(1000, rows * View!.DefaultLineHeight);
-        View!.Padding(top, preferences.Margin("left"), bottom, preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes); View.MarkdownAutodetect(preferences.MarkdownAutodetect);
+        View!.Padding(top, preferences.Margin("left"), bottom, preferences.Margin("right")); View.SmartQuotes(preferences.SmartQuotes); View.SmartHome(preferences.SmartHome); View.MarkdownAutodetect(preferences.MarkdownAutodetect);
     }
     private void ApplyTheme()
     {
@@ -787,6 +788,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DrawTableSelection(drawing, theme.Selection);
         drawing.DrawImage(cachedText, scrollOffset);
         DrawCheckboxes(drawing);
+        DrawAlerts(drawing);
         DrawInlineImages(drawing);
         if (CaretHoverRectangle is Rect hover && window.IsWindowActive) {
             var color = theme.Caret; color.A = (byte)Math.Round(color.A * .2);

@@ -510,7 +510,7 @@ internal static class FrontendSmokeTests
         Check(config["editing"]?["textWidth"]?.GetValue<int>() == 80, "configuration defaults come from core");
         Check(config["editing"]?["whitespacePresentation"]?["alignIndentsToPreviousLine"]?.GetValue<bool>() == true,
             "indent alignment defaults on in the portable settings schema");
-        foreach (string key in new[] { "caretHoverEffect", "smartQuotes", "markdownAutodetect" })
+        foreach (string key in new[] { "caretHoverEffect", "smartQuotes", "smartHome", "markdownAutodetect" })
             Check(config["editing"]?[key]?.GetValue<bool>() == true, key + " defaults on");
         var integralConfig = Viem.Windows.Shell.Preferences.Normalize(System.Text.Json.Nodes.JsonNode.Parse("{\"version\":1,\"editing\":{\"textWidth\":72.0}}")!.AsObject());
         Check(integralConfig["editing"]?["textWidth"]?.GetValue<uint>() == 72, "integral JSON values normalize for native integer readers");

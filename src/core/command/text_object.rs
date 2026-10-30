@@ -6,6 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use crate::document::HardLineSnapshot;
 
+use super::delimiter_match::{find_delimiter, DelimiterSearch, MatchRules};
 use super::text::{is_east_asian_sentence_terminator, is_sentence_closer, is_sentence_terminator};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -79,9 +80,11 @@ impl TextObjectKind {
 
 pub(super) fn resolve_document_text_object(
     document: &crate::document::Document, cursor: usize, object: TextObject, count: usize, keywords: &super::options::KeywordSet,
+    rules: MatchRules,
 ) -> Result<Range<usize>, TextObjectError> {
     if object.kind != TextObjectKind::Paragraph || !document.format().is_markdown() {
-        return resolve_text_object_with_keywords(document.text(), &document.hard_line_snapshot(), cursor, object, count, Some(keywords));
+        return resolve_text_object_with_keywords(document.text(), &document.hard_line_snapshot(), cursor, object, count,
+            Some(keywords), rules);
     }
     if count == 0 { return Err(TextObjectError::ZeroCount); }
     validate_cursor(document.text(), cursor)?;
@@ -107,12 +110,12 @@ pub fn resolve_text_object(
     object: TextObject,
     count: usize,
 ) -> Result<Range<usize>, TextObjectError> {
-    resolve_text_object_with_keywords(text, lines, cursor, object, count, None)
+    resolve_text_object_with_keywords(text, lines, cursor, object, count, None, MatchRules::default())
 }
 
 fn resolve_text_object_with_keywords(
     text: &str, lines: &HardLineSnapshot, cursor: usize, object: TextObject, count: usize,
-    keywords: Option<&super::options::KeywordSet>,
+    keywords: Option<&super::options::KeywordSet>, rules: MatchRules,
 ) -> Result<Range<usize>, TextObjectError> {
     if count == 0 {
         return Err(TextObjectError::ZeroCount);
@@ -139,7 +142,7 @@ fn resolve_text_object_with_keywords(
         TextObjectKind::Quote(kind) => {
             resolve_quote(text, lines, cursor, object.scope, count, kind)
         }
-        TextObjectKind::Pair(kind) => resolve_pair(text, cursor, object.scope, count, kind),
+        TextObjectKind::Pair(kind) => resolve_pair(text, lines, cursor, object.scope, count, kind, rules),
         TextObjectKind::Tag => resolve_tag_block(text, cursor, object.scope, count),
     }
     .ok_or(TextObjectError::NotFound)?;
@@ -746,12 +749,17 @@ fn tag_block(tags: &[Tag], from: usize, old_end: usize, scope: TextObjectScope, 
     }
 }
 
+/// Vim's `current_block()`: the opening delimiter is found without quote
+/// rules, then its partner with them, so a quoted closing delimiter inside
+/// the block does not end it.
 fn resolve_pair(
     text: &str,
+    lines: &HardLineSnapshot,
     cursor: usize,
     scope: TextObjectScope,
     count: usize,
     kind: PairKind,
+    rules: MatchRules,
 ) -> Option<Range<usize>> {
     let (open, close) = match kind {
         PairKind::Parentheses => ('(', ')'),
@@ -772,6 +780,9 @@ fn resolve_pair(
     } else {
         return None;
     };
+    let close_start = find_delimiter(lines, pair.open.start,
+        DelimiterSearch { target: close, nested: open, forward: true, escaped: false }, rules)?;
+    let pair = DelimiterPair { open: pair.open.clone(), close: close_start..close_start + close.len_utf8() };
     match scope {
         // Keep the empty half-open interior representable.  Operator-pending
         // yank can observe it even though Vim rejects a fresh Visual `vi(`;

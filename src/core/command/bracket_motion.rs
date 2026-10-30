@@ -1,7 +1,8 @@
 //! `[` and `]` motions: enclosing unmatched delimiters, Vim's brace-based
-//! method search and nroff/brace sections. Delimiters are matched like `%`:
-//! by the first scalar of each logical grapheme, without quote heuristics.
+//! method search and nroff/brace sections. Delimiters are matched like `%`,
+//! with Vim's quote and backslash rules; see `delimiter_match`.
 
+use super::delimiter_match::{find_delimiter, DelimiterSearch, MatchRules};
 use crate::document::HardLineSnapshot;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +37,7 @@ pub(super) struct BracketTarget {
 /// Resolve `motion` from `origin`. `last_line` is the last addressable hard
 /// line; `with_operator` selects Vim's operator variant of `]]`, which also
 /// stops at `}` in the first column. `sections` is the 'sections' option.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn bracket_target(
     lines: &HardLineSnapshot,
     origin: usize,
@@ -44,11 +46,12 @@ pub(super) fn bracket_target(
     last_line: usize,
     with_operator: bool,
     sections: &str,
+    rules: MatchRules,
 ) -> Option<BracketTarget> {
     let exclusive = |offset| BracketTarget { offset, inclusive: false };
     match motion {
-        BracketMotion::Unmatched(delimiter) => unmatched_delimiter(lines, origin, delimiter, count).map(exclusive),
-        BracketMotion::Method { forward, end } => method_boundary(lines, origin, forward, end, count).map(exclusive),
+        BracketMotion::Unmatched(delimiter) => unmatched_delimiter(lines, origin, delimiter, count, rules).map(exclusive),
+        BracketMotion::Method { forward, end } => method_boundary(lines, origin, forward, end, count, rules).map(exclusive),
         BracketMotion::Section { forward, end } => {
             section(lines, origin, forward, if end { '}' } else { '{' }, count, last_line, with_operator, sections)
         }
@@ -71,33 +74,21 @@ fn step(lines: &HardLineSnapshot, at: usize, forward: bool) -> Option<usize> {
 }
 
 /// Vim's `findmatchlimit()` for an explicit delimiter: the nearest `{`
-/// before (or `}` after) `origin` that encloses it.
-fn enclosing(lines: &HardLineSnapshot, origin: usize, forward: bool, opening: char, closing: char) -> Option<usize> {
-    let (wanted, nested) = if forward { (closing, opening) } else { (opening, closing) };
-    let mut depth = 0usize;
-    let mut at = origin;
-    loop {
-        at = step(lines, at, forward)?;
-        let character = first_char(lines, at)?;
-        if character == nested {
-            depth += 1;
-        } else if character == wanted {
-            if depth == 0 {
-                return Some(at);
-            }
-            depth -= 1;
-        }
-    }
+/// before (or `}` after) `origin` that encloses it. An explicit delimiter
+/// matches only unescaped candidates.
+fn enclosing(lines: &HardLineSnapshot, origin: usize, forward: bool, opening: char, closing: char, rules: MatchRules) -> Option<usize> {
+    let (target, nested) = if forward { (closing, opening) } else { (opening, closing) };
+    find_delimiter(lines, origin, DelimiterSearch { target, nested, forward, escaped: false }, rules)
 }
 
-fn unmatched_delimiter(lines: &HardLineSnapshot, origin: usize, delimiter: char, count: usize) -> Option<usize> {
+fn unmatched_delimiter(lines: &HardLineSnapshot, origin: usize, delimiter: char, count: usize, rules: MatchRules) -> Option<usize> {
     let (opening, closing) = if matches!(delimiter, '(' | ')') { ('(', ')') } else { ('{', '}') };
     let forward = matches!(delimiter, ')' | '}');
     let mut found = None;
     let mut at = origin;
     // Vim keeps the outermost delimiter found when the count runs out of levels.
     for _ in 0..count.max(1) {
-        let Some(next) = enclosing(lines, at, forward, opening, closing) else { break };
+        let Some(next) = enclosing(lines, at, forward, opening, closing, rules) else { break };
         found = Some(next);
         at = next;
     }
@@ -105,13 +96,13 @@ fn unmatched_delimiter(lines: &HardLineSnapshot, origin: usize, delimiter: char,
 }
 
 /// A port of the `[m`/`]m`/`[M`/`]M` branch of Vim's `nv_bracket_block()`.
-fn method_boundary(lines: &HardLineSnapshot, origin: usize, forward: bool, end: bool, count: usize) -> Option<usize> {
+fn method_boundary(lines: &HardLineSnapshot, origin: usize, forward: bool, end: bool, count: usize, rules: MatchRules) -> Option<usize> {
     let find = if forward { '}' } else { '{' };
     // Every enclosing brace level from the cursor outwards; `inner` is the
     // level just inside the outermost one, a method when inside a class.
     let (mut inner, mut outer) = (None, None);
     let mut at = origin;
-    while let Some(found) = enclosing(lines, at, forward, '{', '}') {
+    while let Some(found) = enclosing(lines, at, forward, '{', '}', rules) {
         inner = outer;
         outer = Some(found);
         at = found;
@@ -146,7 +137,7 @@ fn method_boundary(lines: &HardLineSnapshot, origin: usize, forward: bool, end: 
                 // Started outside every block and just entered one.
                 first_brace = Some(cursor);
                 result = Some(cursor);
-            } else if let Some(matched) = enclosing(lines, cursor, forward, '{', '}') {
+            } else if let Some(matched) = enclosing(lines, cursor, forward, '{', '}', rules) {
                 // The end of another method: continue from its other brace.
                 cursor = matched;
                 result = Some(matched);
@@ -253,7 +244,8 @@ mod tests {
         let document = Document::new(text);
         let lines = document.hard_line_snapshot();
         let motion = BracketMotion::from_keys(forward, key).unwrap();
-        bracket_target(&lines, origin, motion, count, document.addressable_hard_line_count() - 1, false, "SHNHH HUnhsh")
+        bracket_target(&lines, origin, motion, count, document.addressable_hard_line_count() - 1, false, "SHNHH HUnhsh",
+            MatchRules::default())
             .map(|target| target.offset)
     }
 

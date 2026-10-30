@@ -1492,6 +1492,14 @@ typedef struct ViemPositionedClusterV1 {
 #define VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED (1u << 5)
 #define VIEM_LAYOUT_DECORATION_CHECKBOX (1u << 6)
 #define VIEM_LAYOUT_DECORATION_CHECKED (1u << 7)
+/* GitHub alert furniture in its title's color: a vector icon filling its
+ * square bounds, and title clusters shaped as a Heading 4 inside the alert,
+ * drawn from their render runs at the decoration baseline. Both carry their
+ * VIEM_ALERT_* kind. */
+#define VIEM_LAYOUT_DECORATION_ALERT_ICON (1u << 8)
+#define VIEM_LAYOUT_DECORATION_ALERT_TITLE (1u << 9)
+#define VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT 10u
+#define VIEM_LAYOUT_DECORATION_ALERT_KIND_MASK (7u << 10)
 /* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
 typedef struct ViemLayoutDecorationV1 {
@@ -1504,7 +1512,9 @@ typedef struct ViemLayoutDecorationV1 {
   float x;
   float advance;
   float font_size;
-  float reserved;
+  /* A text decoration's layout baseline: its row's, except an alert title in
+   * the band above its row. Zero for non-text furniture. */
+  float baseline;
   ViemLayoutRectV1 typographic_bounds;
   ViemLayoutRectV1 ink_bounds;
   ViemRenderRunHandleV1 render_run;
@@ -2020,6 +2030,20 @@ typedef struct ViemSetBlockQuoteV1 {
   ViemLogicalSelectionIdentityV1 expected_selection;
 } ViemSetBlockQuoteV1;
 #define VIEM_SET_BLOCK_QUOTE_V1_SIZE ((uint32_t)sizeof(ViemSetBlockQuoteV1))
+
+/* GitHub alert kinds; VIEM_ALERT_NONE makes a plain quote. */
+#define VIEM_ALERT_NONE 0u
+#define VIEM_ALERT_NOTE 1u
+#define VIEM_ALERT_TIP 2u
+#define VIEM_ALERT_IMPORTANT 3u
+#define VIEM_ALERT_WARNING 4u
+#define VIEM_ALERT_CAUTION 5u
+typedef struct ViemSetAlertV1 {
+  uint32_t struct_size;
+  uint32_t kind;
+  ViemLogicalSelectionIdentityV1 expected_selection;
+} ViemSetAlertV1;
+#define VIEM_SET_ALERT_V1_SIZE ((uint32_t)sizeof(ViemSetAlertV1))
 
 #define VIEM_LIST_CAN_INDENT 1u
 #define VIEM_LIST_CAN_UNINDENT 2u
@@ -2757,6 +2781,8 @@ ViemStatus viem_core_view_set_line_mode(ViemCoreHandle core, ViemViewId view, ui
 /* Application input preference; enabled must be 0 or 1. No source/undo change. */
 ViemStatus viem_core_view_set_smart_quotes(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
 ViemStatus viem_core_view_set_markdown_autodetect(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
+/* Home toggles between the first nonblank and the line start; enabled is 0 or 1. */
+ViemStatus viem_core_view_set_smart_home(ViemCoreHandle core, ViemViewId view, uint32_t enabled);
 ViemStatus viem_core_view_set_wrap(ViemCoreHandle core, ViemViewId view,
                                    uint32_t wrap,
                                    ViemCoreOutcomeV1 *out_outcome);
@@ -2798,6 +2824,11 @@ ViemStatus viem_core_view_copy_table_selection_ranges(ViemCoreHandle core, ViemV
 ViemStatus viem_core_view_set_block_quote(
     ViemCoreHandle core, ViemViewId view,
     const ViemSetBlockQuoteV1 *request, ViemCoreOutcomeV1 *out_outcome);
+/* Make the exact selection an alert of request->kind, quoting unquoted blocks,
+ * or turn its alerts back into plain quotes. Visible text never changes. */
+ViemStatus viem_core_view_set_alert(
+    ViemCoreHandle core, ViemViewId view,
+    const ViemSetAlertV1 *request, ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_set_list_style(
     ViemCoreHandle core, ViemViewId view,
     const ViemSetListStyleV1 *request, ViemCoreOutcomeV1 *out_outcome);
@@ -2922,6 +2953,12 @@ ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
 #define VIEM_SELECTED_STYLE_HAS_TASKS (1u << 9)
 /* Indexed task-list eligibility for the current selection and editing state. */
 #define VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST (1u << 10)
+/* Every selected block can become part of a top-level GitHub alert. */
+#define VIEM_SELECTED_STYLE_CAN_SET_ALERT (1u << 11)
+/* A selected block is in a top-level quote without an alert marker. */
+#define VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE (1u << 12)
+/* Alert kind k (VIEM_ALERT_NOTE..VIEM_ALERT_CAUTION) sets bit SHIFT + k - 1. */
+#define VIEM_SELECTED_STYLE_ALERT_SHIFT 13u
 typedef struct ViemSelectedStylesInfoV1 {
   uint32_t struct_size;
   uint32_t flags;

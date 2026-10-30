@@ -1284,6 +1284,10 @@ final class EVCoreViewSession {
         try checked(viem_core_view_set_markdown_autodetect(document.core, viewID, enabled ? 1 : 0), operation: "Update Markdown typing")
     }
 
+    func setSmartHome(_ enabled: Bool) throws {
+        try checked(viem_core_view_set_smart_home(document.core, viewID, enabled ? 1 : 0), operation: "Update smart Home")
+    }
+
     func setSmartQuotes(_ enabled: Bool) throws {
         try checked(viem_core_view_set_smart_quotes(document.core, viewID, enabled ? 1 : 0), operation: "Update smart quotes")
     }
@@ -1579,6 +1583,18 @@ final class EVCoreViewSession {
         request.expected_selection = selection
         return try performCoreOperation("Change block quote") { outcome in
             viem_core_view_set_block_quote(document.core, viewID, &request, outcome)
+        }
+    }
+
+    /// `VIEM_ALERT_NONE` turns selected alerts back into plain quotes.
+    @discardableResult
+    func setAlert(_ kind: UInt32, expected selection: ViemLogicalSelectionIdentityV1) throws -> ViemCoreOutcomeV1 {
+        var request = ViemSetAlertV1()
+        request.struct_size = UInt32(MemoryLayout<ViemSetAlertV1>.size)
+        request.kind = kind
+        request.expected_selection = selection
+        return try performCoreOperation("Change alert") { outcome in
+            viem_core_view_set_alert(document.core, viewID, &request, outcome)
         }
     }
 

@@ -40,6 +40,7 @@ impl StyleId {
     pub(crate) fn supports_markdown_paragraph_assignment(&self) -> bool {
         matches!(self.0.as_str(), "Paragraph" | "Block quote" | "Code Block"
             | "Heading1" | "Heading2" | "Heading3" | "Heading4" | "Heading5" | "Heading6")
+            || super::AlertKind::from_style(self).is_some()
     }
 
     /// Presentation-only character overlay used for search matches.
@@ -1521,6 +1522,15 @@ impl StyleSheet {
                     .unwrap()
                     .block
                     .margin_left = Some(32.0);
+                // GitHub alerts present as quotes; each kind's title and
+                // icon use its resolved text color, inherited by default.
+                for kind in super::AlertKind::ALL {
+                    sheet.block_styles.insert(kind.style_id(), BlockStyle {
+                        id: kind.style_id(), based_on: Some("Block quote".into()), next_paragraph_style: None,
+                        role: BlockRole::Quote, character: CharacterProperties::default(), block: BlockProperties::default(),
+                    });
+                    sheet.block_metadata.insert(kind.style_id(), StyleDefinitionMetadata::generated(kind.title()));
+                }
             }
         }
         sheet

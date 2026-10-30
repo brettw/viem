@@ -183,8 +183,8 @@ Markdown caret, deletion, replacement, formatting and layout audits.
 
 ## P3 — unchanged and not implemented in this pass
 
-9. **Footnotes and alerts.** Footnote references/backlinks and GitHub alert
-   titles, icons and treatments remain unsupported.
+9. **Footnotes.** Footnote references and backlinks remain unsupported.
+   GitHub alerts are supported; see AGENTS.md for their presentation.
 10. **Math and diagrams.** Math expressions stay literal. Mermaid, GeoJSON,
    TopoJSON and ASCII STL fences remain code rather than rendered diagrams,
    maps or 3D models. GitHub supports

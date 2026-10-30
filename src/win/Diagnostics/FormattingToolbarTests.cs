@@ -265,6 +265,7 @@ internal static class FormattingToolbarTests
             new("VisibilityPreferences", editor => RunCase(editor, fixture => fixture.VisibilityPreferences())),
             new("NestedListsAndPreview", editor => RunCase(editor, fixture => fixture.NestedListsAndPreview())),
             new("QuoteTreatment", editor => RunCase(editor, fixture => fixture.QuoteTreatment())),
+            new("AlertTreatment", editor => RunCase(editor, fixture => fixture.AlertTreatment())),
             new("CodeBlockProtection", editor => RunCase(editor, fixture => fixture.CodeBlockProtection())),
             new("LiteralFormats", editor => RunCase(editor, fixture => fixture.LiteralFormats())),
         ], initialize: () =>
@@ -633,6 +634,28 @@ internal static class FormattingToolbarTests
             Check(State(toolbar, ToolbarAction.BlockQuote) == true, "quote toggle follows shared history");
             await CloseFixture(quotedPane);
 
+        }
+
+        internal async Task AlertTreatment()
+        {
+            var alertPane = window.AddPane(new CoreDocument(Encoding.UTF8.GetBytes("Words"), format: VIEM_FORMAT_MARKDOWN));
+            var alertView = await alertPane.Ready;
+            string Source() => Encoding.UTF8.GetString(alertPane.Document.Source(alertPane.Document.State.document_revision));
+            toolbar.RefreshActions();
+            var items = ((MenuFlyout)toolbar.BlockQuoteAlerts.Flyout).Items.Cast<ToggleMenuFlyoutItem>().ToArray();
+            Check(toolbar.BlockQuoteAlerts.IsEnabled && items.Select(item => item.Text).SequenceEqual(new[] { "Note", "Tip", "Important", "Warning", "Caution" })
+                && items.All(item => item.IsEnabled && item.IsChecked == false && item.Icon is PathIcon), "alert menu offers every GitHub kind with an icon");
+            toolbar.ChooseAlert(VIEM_ALERT_NOTE);
+            await InputRoutingTests.Settle();
+            Check(Source() == "> [!NOTE]\n> Words" && State(toolbar, ToolbarAction.BlockQuote) == true && toolbar.AlertSelected(VIEM_ALERT_NOTE),
+                "choosing Note quotes the paragraph behind a hidden marker", Source());
+            toolbar.ChooseAlert(VIEM_ALERT_WARNING);
+            toolbar.ChooseAlert(VIEM_ALERT_WARNING);
+            await InputRoutingTests.Settle();
+            Check(Source() == "> Words" && State(toolbar, ToolbarAction.BlockQuote) == true, "choosing the current kind restores a plain quote", Source());
+            alertView.Undo();
+            Check(Source() == "> [!WARNING]\n> Words", "alert changes follow shared history", Source());
+            await CloseFixture(alertPane);
         }
 
         internal async Task CodeBlockProtection()

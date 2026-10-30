@@ -375,8 +375,10 @@ A footnote reference[^demo-note] does not create a note or backlink.
 
 [^demo-note]: This remains source text.
 
+GitHub alerts are supported:
+
 > [!NOTE]
-> Alert titles and icons are not implemented.
+> Alerts show GitHub's icon and title in the quote's text color.
 
 ### Math and diagrams
 

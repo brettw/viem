@@ -55,6 +55,18 @@ pub(super) fn empty_insertion_patches(
     if prefix == 0 {
         return Err(super::DocumentError::AmbiguousProjection);
     }
+    if block.containers.first().is_some_and(|member| member.container.alert.is_some())
+        && alert_marker_kind(&decoded.text[prefix..]).is_some()
+    {
+        // An alert without a body row presents its empty body on the marker
+        // line. Typed text starts the first body row below that marker.
+        let content = decoded.text.trim_end_matches(['\r', '\n']);
+        let marker_end = line.start + document.encoding().encode_fragment(content)?.len();
+        let body_start = line.start + document.encoding().encode_fragment(&decoded.text[..prefix])?.len();
+        let text = format!("{}> {}", document.file_format().spelling(),
+            document.escape_markdown_source_text(body_start, replacement)?);
+        return Ok(Some(vec![(marker_end..marker_end, text)]));
+    }
     if !decoded.text[prefix..].trim().is_empty() {
         // A visually empty paragraph can retain inline markup. This adapter
         // owns only physically blank quote rows; ordinary contributor-based
@@ -121,6 +133,15 @@ pub(super) fn is_fenced_block(
         }
     }
     Ok(false)
+}
+
+/// `[!TYPE]` with optional trailing blanks after a quote prefix, as
+/// pulldown-cmark recognizes it. Returns the kind and the `TYPE` byte range.
+pub(super) fn alert_marker_kind(body: &str) -> Option<(super::AlertKind, Range<usize>)> {
+    let trimmed = body.trim_end_matches([' ', '\t', '\r', '\n']);
+    let name = trimmed.strip_prefix("[!")?.strip_suffix(']')?;
+    let kind = super::AlertKind::ALL.into_iter().find(|kind| kind.marker_name().eq_ignore_ascii_case(name))?;
+    Some((kind, 2..2 + name.len()))
 }
 
 #[derive(Clone, Debug)]
@@ -289,4 +310,20 @@ pub(super) fn source_context_with_syntax(input: &NormalizedText, syntax: &super:
             depth: line.depth,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod alert_marker_tests {
+    use super::alert_marker_kind;
+    use crate::document::AlertKind;
+
+    #[test]
+    fn markers_match_case_insensitively_with_trailing_blanks_only() {
+        assert_eq!(alert_marker_kind("[!NOTE]"), Some((AlertKind::Note, 2..6)));
+        assert_eq!(alert_marker_kind("[!caution] \t\r\n"), Some((AlertKind::Caution, 2..9)));
+        assert_eq!(alert_marker_kind("[!Tip]"), Some((AlertKind::Tip, 2..5)));
+        for body in ["[!NOTE] text", " [!NOTE]", "[!NOTES]", "[NOTE]", "[!]"] {
+            assert_eq!(alert_marker_kind(body), None, "{body:?}");
+        }
+    }
 }
