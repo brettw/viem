@@ -8,11 +8,21 @@ const MAX_WHITESPACE_BYTES: usize = 256;
 const MAX_TOKENS: usize = 128;
 const MAX_OWNER_PARAGRAPHS: usize = 64;
 
+/// Whether spelling cleanup may remove bracket escapes. Its proof parses only
+/// the edited paragraphs, so it cannot see a definition elsewhere that would
+/// resolve an unescaped label.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum BracketEscapes {
+    Simplify,
+    Keep,
+}
+
 impl Document {
     pub(super) fn simplify_markdown_edit_spelling(
         &self,
         edits: &[TextEdit],
         patches: &mut Vec<SourcePatch>,
+        brackets: BracketEscapes,
     ) -> Result<(), ModelTransactionError> {
         if self.format() != Format::Markdown || patches.is_empty() {
             return Ok(());
@@ -261,6 +271,7 @@ impl Document {
                         .chars()
                         .next()
                         .filter(char::is_ascii_punctuation)
+                        .filter(|ch| brackets == BracketEscapes::Simplify || !matches!(ch, '[' | ']'))
                         .map(|ch| (1 + ch.len_utf8(), ch.to_string()))
                 } else if tail.starts_with('&') {
                     super::super::html::reference(tail, false)

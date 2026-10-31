@@ -2486,6 +2486,11 @@ impl CommandInterpreter {
         self.compound_replay_depth = self.compound_replay_depth.saturating_sub(1);
     }
 
+    /// A macro, mapping, `:normal` or `:global` is replaying its inputs.
+    pub(crate) fn in_compound_replay(&self) -> bool {
+        self.compound_replay_depth > 0
+    }
+
     pub(crate) fn finish_deferred_insert_normal_once(
         &mut self,
         document: &mut Document,

@@ -260,6 +260,41 @@ pub(super) fn needs_reference_context(text: &str) -> bool {
     text[consumed..].contains('[')
 }
 
+/// The source counterpart of `needs_reference_context` for a bounded parse.
+/// Brackets in code spans, code blocks and task-list markers are inert too:
+/// none resolves through a definition, whatever the document defines.
+pub(super) fn source_needs_reference_context(text: &str) -> bool {
+    if !text.contains('[') { return false; }
+    let mut consumed = 0;
+    let grammar = fence_grammar_text(text);
+    for (event, range) in Parser::new_ext(&grammar, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS).into_offset_iter() {
+        if range.start < consumed { continue; }
+        if matches!(event, Event::Code(_) | Event::TaskListMarker(_) | Event::Start(Tag::CodeBlock(_))
+            | Event::Start(Tag::Link { link_type: LinkType::Inline, .. } | Tag::Image { link_type: LinkType::Inline, .. })) {
+            if text[consumed..range.start].contains('[') { return true; }
+            consumed = range.end;
+        }
+    }
+    text[consumed..].contains('[')
+}
+
+#[cfg(test)]
+mod source_reference_context_tests {
+    use super::source_needs_reference_context as needs;
+
+    #[test]
+    fn only_brackets_a_definition_could_resolve_need_reference_context() {
+        for inert in ["type `[label](url)` or `a[i]`", "- [ ] task\n- [x] done\n  1. [X] nested",
+            "[inline](url) and ![image](x.png)", "```\n[fenced]\n```", "no brackets"] {
+            assert!(!needs(inert), "{inert:?}");
+        }
+        for dependent in ["[shortcut]", "[full][ref]", "[collapsed][]", "![image][ref]", "\\[escaped]",
+            "`unclosed [x]", "- [ ] task with [shortcut]", "[^note]", "[ref]: /url"] {
+            assert!(needs(dependent), "{dependent:?}");
+        }
+    }
+}
+
 /// GFM extended autolinks: punctuation terminates a URL, balanced parentheses
 /// stay in it, and email domains must have a dot and a legal final label.
 pub(super) fn autolink(text: &str, at: usize, end: usize) -> Option<(usize, String)> {

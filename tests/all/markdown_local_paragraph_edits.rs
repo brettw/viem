@@ -538,3 +538,53 @@ fn list_editing_reads_only_the_surrounding_lists() {
         reopens_as_displayed(&core, label);
     }
 }
+
+#[test]
+fn deleting_lines_beside_inert_brackets_stays_regional_despite_a_matching_definition() {
+    // Brackets in code spans and task markers never resolve through a
+    // definition, so their bounded reparse needs no document-wide context.
+    let middle = "Type `[x]` or `a[i]` to start,\nthen a closing line.\n\n- [ ] open item\n- [x] done item\n- [ ] last item\n\n";
+    let source = format!("{}[x]: /url\n", document(200, middle));
+    for target in ["Type `[x]`", "then a closing line.", "- [x] done item", "- [ ] last item"] {
+        let line = source[..source.find(target).unwrap()].matches('\n').count() + 1;
+        let mut core = Core::new(Document::from_bytes(source.clone().into_bytes(), Encoding::Utf8, Format::Markdown).unwrap());
+        let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+        let (_, work) = measure_document_work(|| {
+            for key in format!(":{line}d").chars() { core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap(); }
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Enter))).unwrap()
+        });
+        assert!(!String::from_utf8_lossy(&core.document().source_bytes()).contains(target), "{target}");
+        assert_eq!(work.full_projection_candidates, 0, "{target}: {work:?}");
+        assert!(work.source_decoded_bytes < 4096, "{target}: {work:?}");
+        reopens_as_displayed(&core, target);
+        let deleted = core.document().source_bytes();
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "{target}");
+        core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Redo)).unwrap();
+        assert_eq!(core.document().source_bytes(), deleted, "{target}");
+    }
+}
+
+#[test]
+fn typing_a_bracket_beside_inert_brackets_stays_literal_despite_the_definition() {
+    // The bounded parse treats `[y]` in a code span as inert, but a typed
+    // bracket could resolve through the definition outside it. It needs that
+    // context to stay the literal text the user typed.
+    let middle = "Before `[y]` and after.\n\n";
+    let source = format!("{}[x]: /url\n", document(20, middle));
+    let original = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+    let at = original.text().find(" and after").unwrap();
+    let mut core = Core::new(original);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document().revision(), text_offset: at,
+        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+    for key in "i [x]".chars() { core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap(); }
+    core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+    assert!(core.document().text().contains("Before [y] [x] and after."));
+    assert!(String::from_utf8_lossy(&core.document().source_bytes()).contains("Before `[y]` \\[x\\] and after."));
+    reopens_as_displayed(&core, "typed bracket");
+    let fresh = Document::from_bytes(core.document().source_bytes(), Encoding::Utf8, Format::Markdown).unwrap();
+    assert_eq!(core.document().projection().style_spans(), fresh.projection().style_spans());
+}

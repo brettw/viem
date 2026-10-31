@@ -188,7 +188,12 @@ Definitions remain visible. Editing shortcut or collapsed labels promotes the
 use to a full reference to retain its destination. Removing a definition through
 ordinary editing preserves surviving visible uses as inline links. Toolbar
 insertion preserves selected formatting and adds any new shared definition in
-one transaction. See [reference controls](markdown-references.md).
+one transaction. Literal text that would form a defined label, whether inserted
+or left behind by removing a code span, keeps its brackets escaped. Spelling
+cleanup proves escapes unnecessary only within the edited paragraphs; when
+complete verification shows that a definition elsewhere resolves the label, the
+bracket escapes stay. See
+[reference controls](markdown-references.md).
 
 ## Task-list checkboxes
 

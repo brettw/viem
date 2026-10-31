@@ -66,6 +66,7 @@ mod markdown_alerts;
 mod markdown_split;
 #[path = "markdown_edit_spelling.rs"]
 mod markdown_edit_spelling;
+use markdown_edit_spelling::BracketEscapes;
 #[path = "markdown_reflow.rs"]
 mod markdown_reflow;
 #[path = "markdown_typing.rs"]
@@ -940,6 +941,18 @@ struct TextEditCandidate {
 /// Protect block syntax at the start of every line after the first in a
 /// multiline formatted insertion. The first line's context comes from its
 /// source prefix in `escape_markdown_source_text`.
+/// How a removed code span's shown text is spelled as prose.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodeRemovalSpelling {
+    /// Escapes the local simplifier cannot prove unnecessary.
+    Simplified,
+    /// As `Simplified`, with every bracket escaped: a definition outside the
+    /// simplifier's paragraph can resolve a label.
+    SimplifiedBrackets,
+    /// Every Markdown punctuation character escaped.
+    Escaped,
+}
+
 fn escape_interior_line_starts(text: &str) -> String {
     let mut output = String::with_capacity(text.len() + 8);
     for (index, line) in text.split('\n').enumerate() {
@@ -2249,9 +2262,31 @@ impl Document {
 
     pub(super) fn prepare_text_edits_with_patch_policy(
         &self,
+        edits: Vec<TextEdit>,
+        explicit_source_patches: Option<Vec<SourcePatch>>,
+        authored_syntax: bool,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        // Spelling cleanup proves an unescaped bracket literal only within
+        // the edited paragraphs. When a definition elsewhere resolves it, the
+        // complete verification fails and the bracket escapes stay instead.
+        let retry = (!authored_syntax && self.format() == Format::Markdown
+            && edits.iter().any(|edit| edit.replacement.contains(['[', ']'])))
+            .then(|| (edits.clone(), explicit_source_patches.clone()));
+        let prepared = self.prepare_text_edits_with_spelling(
+            edits, explicit_source_patches, authored_syntax, BracketEscapes::Simplify);
+        match (prepared, retry) {
+            (Err(ModelTransactionError::Document(DocumentError::VerificationFailed)), Some((edits, patches))) =>
+                self.prepare_text_edits_with_spelling(edits, patches, authored_syntax, BracketEscapes::Keep),
+            (prepared, _) => prepared,
+        }
+    }
+
+    fn prepare_text_edits_with_spelling(
+        &self,
         mut edits: Vec<TextEdit>,
         explicit_source_patches: Option<Vec<SourcePatch>>,
         authored_syntax: bool,
+        brackets: BracketEscapes,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         if authored_syntax && edits.is_empty() {
             if let Some(patch) = explicit_source_patches.as_ref().and_then(|patches| patches.first()) {
@@ -2361,7 +2396,7 @@ impl Document {
         markdown_block_styles::absorb_blank_line_trivia(self, &mut source_patches)?;
         if !authored_syntax {
             self.repair_markdown_reference_dependents(&edits, &mut source_patches)?;
-            self.simplify_markdown_edit_spelling(&edits, &mut source_patches)?;
+            self.simplify_markdown_edit_spelling(&edits, &mut source_patches, brackets)?;
         }
         self.repair_reference_label_edits(&edits, &mut source_patches)?;
         let repaired_utf16 =
@@ -2973,7 +3008,7 @@ impl Document {
                 .map(|edit| &edit.range),
             &mut source_patches,
         )?;
-        self.simplify_markdown_edit_spelling(&text_edits, &mut source_patches)?;
+        self.simplify_markdown_edit_spelling(&text_edits, &mut source_patches, BracketEscapes::Simplify)?;
         let repaired_utf16 =
             self.repair_incomplete_utf16_insertions(&text_edits, &mut source_patches)?;
         validate_source_patches(&mut source_patches)?;
@@ -3940,6 +3975,69 @@ impl Document {
             }
         }
 
+        let prepared = self.prepare_semantic_style_patches(&range, style, enabled, source_patches);
+        if enabled || style != SemanticInlineStyle::Code
+            || !matches!(prepared, Err(ModelTransactionError::Document(DocumentError::VerificationFailed)))
+        {
+            return prepared;
+        }
+        // Without its delimiters, code text can acquire Markdown meaning, such
+        // as a label that a definition elsewhere resolves. Keep the characters
+        // it showed: escape them, preferring literal spelling where the local
+        // simplifier proves an escape unnecessary. That proof sees no
+        // definitions outside its paragraph, so brackets may keep their escapes.
+        for spelling in [CodeRemovalSpelling::Simplified, CodeRemovalSpelling::SimplifiedBrackets,
+            CodeRemovalSpelling::Escaped]
+        {
+            let Some(patches) = self.escaped_code_removal_patches(&range, spelling)? else { break; };
+            match self.prepare_semantic_style_patches(&range, style, enabled, patches) {
+                Err(ModelTransactionError::Document(DocumentError::VerificationFailed)) => {}
+                result => return result,
+            }
+        }
+        prepared
+    }
+
+    /// Replace a code span with its shown text as escaped prose. A span whose
+    /// source crosses a line ending shows that ending as a space; rewriting it
+    /// on one line would change more source than the treatment owns.
+    fn escaped_code_removal_patches(
+        &self,
+        range: &Range<usize>,
+        spelling: CodeRemovalSpelling,
+    ) -> Result<Option<Vec<SourcePatch>>, ModelTransactionError> {
+        let source_range = self.projection().source_range(range.clone())
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        let Some((opening, closing)) = super::markdown_code::delimiter_ranges(self, &source_range)? else {
+            return Ok(None);
+        };
+        let bytes = self.state().source.bytes_in(opening.start..closing.end)
+            .ok_or(DocumentError::AmbiguousProjection)?;
+        if self.encoding().decode_region(&bytes, opening.start)?.text.contains(['\n', '\r']) {
+            return Ok(None);
+        }
+        let shown = self.projection().text_tree().slice(range.clone())
+            .map_err(DocumentError::FormattedTextStorage)?;
+        let escaped = self.escape_markdown_source_text(opening.start, &shown)?;
+        let mut patches = vec![SourcePatch::primary(opening.start..closing.end,
+            self.encoding().encode_fragment(&escaped)?)];
+        if spelling == CodeRemovalSpelling::Escaped {
+            return Ok(Some(patches));
+        }
+        let brackets = if spelling == CodeRemovalSpelling::SimplifiedBrackets { BracketEscapes::Keep }
+            else { BracketEscapes::Simplify };
+        self.simplify_markdown_edit_spelling(&[TextEdit::new(range.clone(), shown.to_string())], &mut patches, brackets)?;
+        Ok(Some(patches))
+    }
+
+    fn prepare_semantic_style_patches(
+        &self,
+        range: &Range<usize>,
+        style: SemanticInlineStyle,
+        enabled: bool,
+        mut source_patches: Vec<SourcePatch>,
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let range = range.clone();
         validate_source_patches(&mut source_patches)?;
         self.prevent_accidental_front_matter(&mut source_patches)?;
         let source = apply_source_patches(&self.state().source, &source_patches)?;
@@ -6627,31 +6725,7 @@ impl Document {
             return false;
         }
         edits.iter().any(|edit| {
-            // A reference image hides its brackets in WYSIWYG, but its
-            // destination still depends on definitions outside this paragraph.
-            // Regional reparsing must retain that global grammar dependency.
-            if self.projection().blocks_for_region(&edit.range).iter().any(|block|
-                self.projection().inline_images_for_region(&block.range).iter().any(|image| !image.inline && !image.html)) {
-                return true;
-            }
-            if self
-                .projection()
-                .style_spans_for_region(&(edit.range.start.saturating_sub(1)
-                    ..edit.range.end.saturating_add(1).min(self.projection().text_tree().byte_len())))
-                .iter()
-                // Reference definitions may span several physical rows. A
-                // continuation row has no bracket of its own, but carries the
-                // same global dependency; boundary insertions touch it too.
-                .any(|span| span.application == StyleApplication::Automatic("Markdown reference".into()))
-            {
-                return true;
-            }
-            if edit.replacement.contains('[') {
-                return true;
-            }
-            if self.projection().blocks_for_region(&edit.range).iter().any(|block|
-                self.projection().style_spans_for_region(&block.range).iter().any(|span|
-                    span.application == StyleApplication::Automatic("Markdown reference".into()))) {
+            if self.markdown_range_has_references(&edit.range) || edit.replacement.contains('[') {
                 return true;
             }
             self.projection()
@@ -6664,6 +6738,33 @@ impl Document {
                         .is_ok_and(|text| super::markdown_syntax::needs_reference_context(&text))
                 })
         })
+    }
+
+    /// Projected references in or beside `range`. Formatted text hides code
+    /// span and task-marker syntax, so a bounded parse that checks its own
+    /// old and new source with `source_needs_reference_context` needs only
+    /// this projection check, not the formatted-text bracket check.
+    pub(super) fn markdown_range_has_references(&self, range: &Range<usize>) -> bool {
+        if !self.format().is_markdown() {
+            return false;
+        }
+        // A reference image hides its brackets in WYSIWYG, but its
+        // destination still depends on definitions outside this paragraph.
+        // Regional reparsing must retain that global grammar dependency.
+        if self.projection().blocks_for_region(range).iter().any(|block|
+            self.projection().inline_images_for_region(&block.range).iter().any(|image| !image.inline && !image.html)) {
+            return true;
+        }
+        let reference = |span: &StyleSpan| span.application == StyleApplication::Automatic("Markdown reference".into());
+        // Reference definitions may span several physical rows. A
+        // continuation row has no bracket of its own, but carries the
+        // same global dependency; boundary insertions touch it too.
+        self.projection()
+            .style_spans_for_region(&(range.start.saturating_sub(1)
+                ..range.end.saturating_add(1).min(self.projection().text_tree().byte_len())))
+            .iter().any(reference)
+            || self.projection().blocks_for_region(range).iter().any(|block|
+                self.projection().style_spans_for_region(&block.range).iter().any(reference))
     }
 
     /// Whether a heading block takes its level from an underline row rather

@@ -1604,6 +1604,10 @@ impl Document {
         self.replace(start.offset..end.offset, replacement)
     }
 
+    /// Replace formatted text with literal text. In Markdown, the source
+    /// escapes whatever syntax the replacement would otherwise form,
+    /// including a label that a definition elsewhere resolves, so the
+    /// document shows exactly `replacement`.
     pub fn replace(&mut self, range: Range<usize>, replacement: &str) -> Result<(), DocumentError> {
         self.apply_edits(vec![TextEdit::new(range, replacement)])
     }

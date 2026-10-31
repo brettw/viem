@@ -57,6 +57,9 @@ pub struct DocumentWorkStatistics {
     /// Complete Markdown block grammar passes and their normalized input bytes.
     pub markdown_block_parse_calls: usize,
     pub markdown_block_parsed_bytes: usize,
+    /// Batches advanced by the cooperative search presentation scanners
+    /// (visible matches and match counts).
+    pub search_scan_batches: usize,
 }
 
 impl DocumentWorkStatistics {
@@ -99,7 +102,8 @@ impl DocumentWorkStatistics {
             source_relocation_graphemes_visited,
             markdown_container_prefix_bytes,
             markdown_block_parse_calls,
-            markdown_block_parsed_bytes
+            markdown_block_parsed_bytes,
+            search_scan_batches
         );
 
     }
@@ -149,7 +153,7 @@ pub(super) fn unobserved<T>(operation: impl FnOnce() -> T) -> T {
 }
 
 #[inline]
-pub(super) fn record(update: impl FnOnce(&mut DocumentWorkStatistics)) {
+pub(crate) fn record(update: impl FnOnce(&mut DocumentWorkStatistics)) {
     ACTIVE.with(|active| {
         if let Some(mut counters) = active.get() {
             update(&mut counters);

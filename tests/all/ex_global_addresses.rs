@@ -270,6 +270,24 @@ fn coordinator_global_continues_errors_keeps_outer_history_and_reuses_marks() {
 }
 
 #[test]
+fn coordinator_global_scans_search_matches_once_for_any_number_of_targets() {
+    // Every target's edit restarts the match-count scanner for the `:g`
+    // pattern. Scanning between replayed inputs would grow with the targets.
+    let scan = |lines: usize| {
+        let mut core = Core::new(Document::new(&"alpha\n".repeat(lines)));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 250., 200.);
+        let (output, work) = viem_core::document::measure_document_work(||
+            core_ex(&mut core, view, ":g/alpha/normal Ax"));
+        success(output);
+        assert_eq!(core.document().text(), "alphax\n".repeat(lines));
+        assert_eq!(core.search_match_count(view).map(|count| count.total), Some(lines));
+        work.search_scan_batches
+    };
+    assert_eq!(scan(4), 1);
+    assert_eq!(scan(40), 1);
+}
+
+#[test]
 fn coordinator_visual_marks_are_shared_rebased_and_valid_after_visual_deletion() {
     let mut core = Core::new(Document::new("one\ntwo\nthree\nfour"));
     let first = core.add_view(MockTextMeasurementProvider::new(), 250., 200.);

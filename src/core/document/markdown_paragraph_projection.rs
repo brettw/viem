@@ -166,7 +166,7 @@ impl Document {
         if (!guarded && (run.len() > 2 || !run.iter().all(|block| self.independent_markdown_paragraph(block))))
             || run.iter().any(|block| self.projection().table_at(block.range.start).is_some())
             || !(first_block.range.start <= point && end_point <= last_block.range.end)
-            || self.markdown_edit_needs_reference_context(&[TextEdit::new(block_range.clone(), "")])
+            || self.markdown_range_has_references(&block_range)
         { return candidate::decline(Strategy::IndependentParagraph, "edited blocks are not independent prose"); }
         // Blank rows beside a list can still belong to its final item; an
         // unclosed HTML block can consume all later source. Neither neighbor
@@ -262,7 +262,7 @@ impl Document {
                 return Err(DocumentError::UnsupportedFormatting.into());
             }
             if !guarded && normalized.text.contains('<')
-                || super::super::markdown_syntax::needs_reference_context(&normalized.text)
+                || super::super::markdown_syntax::source_needs_reference_context(&normalized.text)
             {
                 return Err(DocumentError::UnsupportedFormatting.into());
             }
@@ -455,7 +455,7 @@ impl Document {
         let old_source = start..end;
         if patches.iter().any(|patch|
             patch.part != SourcePartId::PRIMARY || patch.range.start < start || patch.range.end > end)
-            || self.markdown_edit_needs_reference_context(&[TextEdit::new(block_range.clone(), "")])
+            || self.markdown_range_has_references(&block_range)
         { return candidate::decline(Strategy::ListParagraph, "patches extend beyond the list or need references"); }
         let source = apply_source_patches(&self.state().source, patches)?;
         let new_source = start..rebase_source_boundary(end, patches, Association::AfterInsertion)?;
@@ -469,7 +469,7 @@ impl Document {
             // an editable empty paragraph. Other HTML/reference grammar may
             // depend on source outside this complete list and stays excluded.
             if normalized.text.replace("<span>", "").replace("</span>", "").contains('<')
-                || super::super::markdown_syntax::needs_reference_context(&normalized.text)
+                || super::super::markdown_syntax::source_needs_reference_context(&normalized.text)
             { return Err(DocumentError::UnsupportedFormatting.into()); }
             let mut rows = Vec::new();
             let mut cursor = range.start;

@@ -451,3 +451,78 @@ fn removing_reference_retains_formatting_without_reactivating_autolinks() {
     assert!(doc.link_at(doc.text_point(1).unwrap()).unwrap().is_none());
     assert!(viem_core::layout::DocumentLayoutStyles::semantic_character_at(doc.projection(), 1, false).unwrap().bold);
 }
+
+#[test]
+fn removing_code_from_a_defined_label_keeps_its_brackets_literal() {
+    use viem_core::document::SemanticInlineStyle;
+    // Without its backticks `[x]` would resolve through the definition and
+    // hide its brackets. Escapes keep the text the code span showed.
+    for (source, shown, expected) in [
+        ("Use `[x]` here.\n\n[x]: /url\n", "[x]", "Use \\[x\\] here.\n\n[x]: /url\n"),
+        ("Use `[x] and a_b *c*` here.\n\n[x]: /url\n", "[x] and a_b *c*",
+            "Use \\[x\\] and a_b \\*c* here.\n\n[x]: /url\n"),
+        ("Use `[z]` here.\n\n[x]: /url\n", "[z]", "Use [z] here.\n\n[x]: /url\n"),
+    ] {
+        let mut doc = open(source);
+        let text = doc.text().to_owned();
+        let at = text.find(shown).unwrap();
+        doc.set_semantic_style(at..at + shown.len(), SemanticInlineStyle::Code, false).unwrap();
+        assert_eq!(doc.text(), text, "{source:?}");
+        assert_eq!(String::from_utf8(doc.source_bytes()).unwrap(), expected);
+        let fresh = open(expected);
+        assert_eq!(fresh.text(), text, "{source:?}");
+        assert_eq!(doc.projection().style_spans(), fresh.projection().style_spans(), "{source:?}");
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        assert!(doc.redo());
+        assert_eq!(doc.source_bytes(), expected.as_bytes());
+    }
+}
+
+#[test]
+fn selection_code_removal_beside_a_definition_is_one_literal_undo_unit() {
+    use viem_core::command::InputEvent;
+    use viem_core::document::{BoundaryAffinity, HistoryNavigationRequest, SemanticInlineStyle};
+    use viem_core::layout::MockTextMeasurementProvider;
+    use viem_core::{Core, CoreEvent};
+    let source = "Use `[x]` here.\n\n[x]: /url\n";
+    let mut core = Core::new(open(source));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
+    let at = core.document().text().find("[x]").unwrap();
+    core.handle(view, CoreEvent::Input(InputEvent::key('i'))).unwrap();
+    core.handle(view, CoreEvent::BeginPointerGesture {
+        document_revision: core.document().revision(), text_offset: at, affinity: BoundaryAffinity::Downstream,
+    }).unwrap();
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document().revision(), text_offset: at + 3,
+        affinity: BoundaryAffinity::Upstream, extend_selection: true,
+    }).unwrap();
+    let expected = core.list_selection_identity(view).unwrap();
+    core.handle(view, CoreEvent::SetSelectionSemanticStyle {
+        expected, style: SemanticInlineStyle::Code, enabled: false,
+    }).unwrap();
+    assert_eq!(core.document().source_bytes(), b"Use \\[x\\] here.\n\n[x]: /url\n");
+    assert_eq!(core.document().text(), "Use [x] here.\n[x]: /url");
+    core.handle(view, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+    assert_eq!(core.document().source_bytes(), source.as_bytes());
+}
+
+#[test]
+fn inserting_a_defined_label_keeps_its_brackets_literal() {
+    // Spelling cleanup cannot see the definition, so it must not remove the
+    // bracket escapes that keep the inserted label literal.
+    let source = "Before and after.\n\n[x]: /url\n";
+    for (inserted, expected) in [
+        (" [x]", "Before \\[x\\] and after.\n\n[x]: /url\n"),
+        (" *a* [x]", "Before \\*a* \\[x\\] and after.\n\n[x]: /url\n"),
+        (" [z]", "Before [z] and after.\n\n[x]: /url\n"),
+    ] {
+        let mut doc = open(source);
+        let at = doc.text().find(" and after").unwrap();
+        doc.insert(at, inserted).unwrap();
+        assert_eq!(doc.text(), format!("Before{inserted} and after.\n[x]: /url"));
+        assert_eq!(String::from_utf8(doc.source_bytes()).unwrap(), expected);
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+    }
+}

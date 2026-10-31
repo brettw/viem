@@ -304,13 +304,18 @@ impl<P: TextMeasurementProvider> Core<P> {
                 }
             }
         }
+        // Every replayed edit publishes a revision that restarts both
+        // scanners, so scanning between replayed inputs is discarded work. The
+        // poll after the outermost input resumes them.
+        let replaying = self.views[&view_id].commands.in_compound_replay();
         {
             let state = &mut self.views.get_mut(&view_id).unwrap().search;
             if let Some(scanner) = state
                 .scanner
                 .as_mut()
-                .filter(|scanner| !scanner.is_complete())
+                .filter(|scanner| !replaying && !scanner.is_complete())
             {
+                crate::document::work_statistics::record(|stats| stats.search_scan_batches += 1);
                 match scanner.advance(SEARCH_BATCH_BYTES) {
                     Ok(matches) => {
                         let region = state.region.as_ref().expect("scanner has viewport region");
@@ -419,7 +424,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             changed = true;
         }
         let state = &mut self.views.get_mut(&view_id).unwrap().search;
-        if let Some(scanner) = state.count_scanner.as_mut().filter(|scanner| !scanner.is_complete()) {
+        if let Some(scanner) = state.count_scanner.as_mut().filter(|scanner| !replaying && !scanner.is_complete()) {
+            crate::document::work_statistics::record(|stats| stats.search_scan_batches += 1);
             match scanner.advance(SEARCH_BATCH_BYTES) {
                 Ok(matches) => {
                     let (key, cursor) = state.count_key.as_ref().expect("count scanner has query");
