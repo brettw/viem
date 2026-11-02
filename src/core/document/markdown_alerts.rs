@@ -20,27 +20,49 @@ struct AlertSource {
 
 use crate::document::markdown_quotes::alert_marker_kind as marker_kind;
 
+/// A quote's first line that cannot interrupt a paragraph continues a new
+/// marker's paragraph. That keeps prose unchanged, but an item numbered other
+/// than one, an empty item, indented code or a definition would become
+/// paragraph text, so it needs a blank quote row after the marker.
+fn joins_marker(body: &str) -> bool {
+    use crate::document::markdown_syntax::{definitions, Blocks, ParseContext};
+    let indent = body.len() - body.trim_start_matches([' ', '\t']).len();
+    let starts_paragraph = |text: &str, at: usize| Blocks::parse(text, ParseContext::Interior).paragraphs.iter()
+        .any(|paragraph| (at..=at + indent).contains(&paragraph.start));
+    let marker = "> [!NOTE]\n> ";
+    // Definitions are found without alert syntax, where the marker is
+    // paragraph text that a definition cannot interrupt.
+    !starts_paragraph(body, 0) && (starts_paragraph(&format!("{marker}{body}"), marker.len())
+        || !definitions(body, ParseContext::Interior).1.is_empty())
+}
+
 impl Document {
     fn top_level_quote(block: &Block) -> Option<ContainerIdentity> {
         let first = block.containers.first()?;
         (first.container.kind == ContainerKind::Quote).then_some(first.container.id)
     }
 
-    /// Alerts cannot nest, so every selected block must be top-level prose
-    /// or the body of a top-level quote, outside lists, tables and metadata.
+    /// Alerts cannot nest, so every selected block must already be in exactly
+    /// one quote, a top-level one, or be one that Block quote gives a
+    /// top-level quote: prose or a top-level list's content. Block quote puts
+    /// a nested item's quote, or a listed code block's, inside the list
+    /// marker, where it could not be an alert.
     pub fn can_set_alert(&self, range: Range<usize>) -> bool {
         if self.format() != Format::Markdown || !self.is_modifiable() || self.validate_range(&range).is_err()
             || self.projection().range_intersects_table(&range) {
             return false;
         }
+        let count = |block: &Block, kind: fn(&ContainerKind) -> bool|
+            block.containers.iter().filter(|member| kind(&member.container.kind)).count();
         let selected = structural_style::selected_blocks(self, &range);
         !selected.is_empty() && selected.iter().all(|block| {
-            !block.is_front_matter()
-                && block.containers.iter().filter(|member| member.container.kind == ContainerKind::Quote).count() <= 1
-                && !block.containers.iter().any(|member| matches!(member.container.kind,
-                    ContainerKind::List { .. } | ContainerKind::ListItem))
-                && !matches!(block.kind, crate::document::BlockKind::ListItem { .. })
-                && (block.quote_depth == 0 || Self::top_level_quote(block).is_some())
+            let lists = count(block, |kind| matches!(kind, ContainerKind::List { .. }));
+            let code = block.style.0 == "Code Block" || count(block, |kind| *kind == ContainerKind::CodeBlock) > 0;
+            !block.is_front_matter() && match count(block, |kind| *kind == ContainerKind::Quote) {
+                0 => lists == 0 || lists == 1 && !code,
+                1 => Self::top_level_quote(block).is_some(),
+                _ => false,
+            }
         })
     }
 
@@ -129,8 +151,14 @@ impl Document {
                     token, self.encoding().encode_fragment(kind.marker_name())?)),
                 (Some(_), Some(_)) | (None, None) => {}
                 (None, Some(kind)) => {
-                    let line = self.state().source_hard_lines.get(source.first_line).ok_or(DocumentError::AmbiguousProjection)?;
-                    let marker = format!("> [!{}]{}", kind.marker_name(), self.file_format().spelling());
+                    let (line, decoded) = self.decoded_source_line(source.first_line)?;
+                    let text = decoded.text.trim_end_matches(['\r', '\n']);
+                    let ending = self.file_format().spelling();
+                    let mut marker = format!("> [!{}]{ending}", kind.marker_name());
+                    if joins_marker(&text[crate::document::markdown_quotes::prefix_with_limit(text, 1).0..]) {
+                        marker.push('>');
+                        marker.push_str(ending);
+                    }
                     patches.push(SourcePatch::primary(line.start..line.start, self.encoding().encode_fragment(&marker)?));
                 }
                 (Some((line, _, _)), None) => patches.push(self.alert_marker_removal(line, source.body_line)?),
@@ -139,12 +167,21 @@ impl Document {
         Ok(patches)
     }
 
-    /// Delete a marker line with its ending. When the empty body is presented
-    /// on the marker line itself, keep that row as an empty quote row instead.
+    /// Delete a marker line with its ending. Blank quote rows before the body
+    /// are hidden in an alert but would be empty paragraphs in a plain quote,
+    /// so they go too. When the empty body is presented on the marker line
+    /// itself, keep that row as an empty quote row instead.
     fn alert_marker_removal(&self, line: usize, body_line: usize) -> Result<SourcePatch, ModelTransactionError> {
         let (range, decoded) = self.decoded_source_line(line)?;
         if body_line > line {
-            let next = self.state().source_hard_lines.get(line + 1).ok_or(DocumentError::AmbiguousProjection)?;
+            let mut end = line + 1;
+            while end < body_line {
+                let (_, decoded) = self.decoded_source_line(end)?;
+                let text = decoded.text.trim_end_matches(['\r', '\n']);
+                if !text[crate::document::markdown_quotes::prefix(text)..].trim().is_empty() { break; }
+                end += 1;
+            }
+            let next = self.state().source_hard_lines.get(end).ok_or(DocumentError::AmbiguousProjection)?;
             return Ok(SourcePatch::primary(range.start..next.start, Vec::new()));
         }
         let text = decoded.text.trim_end_matches(['\r', '\n']);

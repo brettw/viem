@@ -86,6 +86,9 @@ fn choosing_a_kind_quotes_prose_and_rewrites_or_removes_markers_with_exact_undo(
         ("> [!note]\n> body", 1, Some(AlertKind::Caution), "> [!CAUTION]\n> body"),
         ("> [!NOTE]\n> body", 1, Some(AlertKind::Note), "> [!NOTE]\n> body"),
         ("> [!NOTE]\n> body", 1, None, "> body"),
+        // Hidden blank rows before the body would be empty quote paragraphs.
+        ("> [!TIP]\n>\n>\n> body", 0, None, "> body"),
+        ("> [!TIP]\n>\n> ```\n> code\n> ```", 0, None, "> ```\n> code\n> ```"),
         ("> [!NOTE]\n>", 0, None, ">"),
         ("> [!NOTE]", 0, None, "> "),
         ("plain", 0, None, "> plain"),
@@ -113,8 +116,10 @@ fn new_markers_use_the_documents_line_endings() {
 }
 
 #[test]
-fn alerts_cannot_be_created_inside_lists_or_nested_quotes() {
-    for (source, at) in [("- item", 0), ("> > nested", 0), ("> - item", 0)] {
+fn alerts_cannot_be_created_inside_nested_items_nested_quotes_or_listed_code() {
+    // Block quote puts the quotes of nested items and listed code inside
+    // the list marker, where they cannot become top-level alerts.
+    for (source, at) in [("- a\n  - b", 2), ("- > q", 0), ("> > nested", 0), ("- a\n\n  ```\n  code\n  ```", 2)] {
         let (mut core, view) = open(source);
         place(&mut core, view, at);
         assert!(!core.can_set_alert(view).unwrap(), "{source:?}");
@@ -124,6 +129,66 @@ fn alerts_cannot_be_created_inside_lists_or_nested_quotes() {
     }
     let (core, view) = open("prose");
     assert!(core.can_set_alert(view).unwrap());
+}
+
+#[test]
+fn choosing_a_kind_in_a_top_level_list_quotes_the_list_with_exact_undo() {
+    let note = Some(Some(AlertKind::Note));
+    for (source, range, after, expected) in [
+        ("- item", 0..0, "> [!NOTE]\n> - item", vec![note]),
+        ("- [ ] task", 0..0, "> [!NOTE]\n> - [ ] task", vec![note]),
+        ("- one\n- two", 0..7, "> [!NOTE]\n> - one\n> - two", vec![note; 2]),
+        ("- one\n- two", 4..4, "- one\n> [!NOTE]\n> - two", vec![None, note]),
+        ("> - item", 0..0, "> [!NOTE]\n> - item", vec![note]),
+        ("> - a\n>   - b", 2..2, "> [!NOTE]\n> - a\n>   - b", vec![note; 2]),
+    ] {
+        let (mut core, view) = open(source);
+        let text = core.document().text().to_owned();
+        place(&mut core, view, range.start);
+        if !range.is_empty() {
+            core.handle_with_layout(view, CoreEvent::PlaceCursor {
+                document_revision: core.document().revision(), text_offset: range.end,
+                affinity: BoundaryAffinity::Upstream, extend_selection: true,
+            }).unwrap();
+        }
+        assert!(core.can_set_alert(view).unwrap(), "{source:?}");
+        set_alert(&mut core, view, Some(AlertKind::Note));
+        assert_eq!(String::from_utf8_lossy(&core.document().source_bytes()), after, "{source:?}");
+        assert_eq!(core.document().text(), text, "{source:?}");
+        assert_eq!(alerts(core.document()), expected, "{source:?}");
+        undo_all(&mut core, view, source);
+    }
+}
+
+#[test]
+fn a_first_line_that_cannot_interrupt_the_marker_paragraph_is_separated_from_it() {
+    // An item numbered other than one, an empty item, indented code and a
+    // definition would otherwise continue the marker line as paragraph text.
+    for source in ["> 2. two", "> -", ">     code", "> [x]: /url\n> [x]"] {
+        let (mut core, view) = open(source);
+        let text = core.document().text().to_owned();
+        place(&mut core, view, 0);
+        set_alert(&mut core, view, Some(AlertKind::Note));
+        let after = format!("> [!NOTE]\n>\n{source}");
+        assert_eq!(String::from_utf8_lossy(&core.document().source_bytes()), after, "{source:?}");
+        assert_eq!(core.document().text(), text, "{source:?}");
+        assert!(alerts(core.document()).iter().all(|alert| *alert == Some(Some(AlertKind::Note))), "{source:?}");
+        set_alert(&mut core, view, None);
+        assert_eq!(core.document().source_bytes(), source.as_bytes(), "clearing removes the separator");
+        undo_all(&mut core, view, source);
+    }
+}
+
+#[test]
+fn an_alert_on_a_later_ordered_item_splits_it_from_the_list() {
+    let source = "1. one\n2. two";
+    let (mut core, view) = open(source);
+    place(&mut core, view, 4);
+    assert!(core.can_set_alert(view).unwrap());
+    set_alert(&mut core, view, Some(AlertKind::Note));
+    assert_eq!(core.document().text(), "one\ntwo");
+    assert_eq!(alerts(core.document()), vec![None, Some(Some(AlertKind::Note))]);
+    undo_all(&mut core, view, source);
 }
 
 #[test]
