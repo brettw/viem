@@ -536,6 +536,10 @@ internal static class FrontendSmokeTests
             Check(KeyPolicy.Route(key, true, false, false).Kind == VIEM_KEY_CONTROL_CHARACTER, $"preserve Ctrl+{key}");
         Check(KeyPolicy.Route(VirtualKey.C, true, false, false, true).Action == NativeAction.Copy, "Ctrl+C overrides literal/vi bindings");
         Check(KeyPolicy.Route(VirtualKey.X, true, false, false).Action == NativeAction.Cut, "Ctrl+X override");
+        Check(KeyPolicy.Route(VirtualKey.X, true, true, false, formatting: true).Action == NativeAction.Strikethrough
+            && KeyPolicy.Route(VirtualKey.X, true, true, false) == default
+            && KeyPolicy.Route(VirtualKey.X, true, true, false, literal: true).Kind == VIEM_KEY_CONTROL_CHARACTER,
+            "Ctrl+Shift+X strikes through where formatting applies and otherwise never cuts or decrements");
         Check(KeyPolicy.Route(VirtualKey.V, true, false, false).Action == NativeAction.Paste, "Ctrl+V override");
         Check(KeyPolicy.Route(VirtualKey.V, true, false, true).Action == NativeAction.None, "AltGr remains text input");
         Check(KeyPolicy.Route(VirtualKey.Z, true, false, true).Action == NativeAction.None

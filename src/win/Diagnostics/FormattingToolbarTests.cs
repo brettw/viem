@@ -104,6 +104,7 @@ internal static class FormattingToolbarTests
                 Check(!window.ToolbarCreated, "hidden toolbar starts unconstructed");
                 foreach (var (action, key, shift) in new[] {
                     (ToolbarAction.CharacterCode, VirtualKey.E, true),
+                    (ToolbarAction.Strikethrough, VirtualKey.X, true),
                     (ToolbarAction.Superscript, (VirtualKey)190, false),
                     (ToolbarAction.Subscript, (VirtualKey)188, false),
                     (ToolbarAction.Bullets, VirtualKey.Number8, true),
@@ -114,6 +115,7 @@ internal static class FormattingToolbarTests
                     Check(action switch
                     {
                         ToolbarAction.CharacterCode => view.SelectedNamedStyles().Character == "Code" && window.Toolbar.Visibility == Visibility.Collapsed,
+                        ToolbarAction.Strikethrough => view.StrikethroughState() == VIEM_SEMANTIC_STYLE_STATE_ON,
                         ToolbarAction.Superscript => view.SuperscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
                         ToolbarAction.Subscript => view.SubscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
                         ToolbarAction.Bullets => view.Formatting().State(VIEM_FORMATTING_BULLETED_LIST) == VIEM_SEMANTIC_STYLE_STATE_ON,

@@ -144,6 +144,7 @@ final class EVMenuBuilderTests: XCTestCase {
             "Format/Bold": ("b", [.command]),
             "Format/Italic": ("i", [.command]),
             "Format/Underline": ("u", [.command]),
+            "Format/Strikethrough": ("x", [.shift, .command]),
             "Format/Superscript": ("+", [.control, .command]),
             "Format/Subscript": ("-", [.control, .command]),
             "Insert/Code": ("c", [.option, .command]),
@@ -188,7 +189,7 @@ final class EVMenuBuilderTests: XCTestCase {
         let grouped = Dictionary(grouping: tagged, by: \.0)
 
         let commandsWithoutMenuItems: Set<EVMenuCommand> = [
-            .baseParagraphStyle, .defaultParagraphStyle, .characterStyles, .removeList, .strikethrough,
+            .baseParagraphStyle, .defaultParagraphStyle, .characterStyles, .removeList,
             .increaseIndent, .decreaseIndent,
         ]
         let menuCommands = Set(EVMenuCommand.allCases).subtracting(commandsWithoutMenuItems)
@@ -216,13 +217,24 @@ final class EVMenuBuilderTests: XCTestCase {
                 XCTAssertEqual(item.action, styleSelector, "\(command) must use the typed style route")
             } else if command.formattingShortcut != nil {
                 XCTAssertEqual(item.action, formattingSelector, "\(command) must belong to the focused document editor")
-                let hiddenShortcut = [.bold, .italic, .underline, .superscript, .subscript, .insertListParagraph].contains(command)
+                let hiddenShortcut = [.bold, .italic, .underline, .strikethrough, .superscript, .subscript, .insertListParagraph]
+                    .contains(command)
                 XCTAssertEqual(item.isHidden, hiddenShortcut)
                 if hiddenShortcut { XCTAssertTrue(item.allowsKeyEquivalentWhenHidden) }
             } else {
                 XCTAssertEqual(item.action, coreSelector, "\(command) must use the editor route")
             }
             XCTAssertNil(item.target, "\(command) must use the responder chain")
+        }
+    }
+
+    func testShiftCommandXIsStrikethroughButCommandXIsNot() throws {
+        let cases: [(NSEvent.ModifierFlags, String, EVMenuCommand?)] = [([.command, .shift], "X", .strikethrough), ([.command], "x", nil)]
+        for (modifiers, key, expected) in cases {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers,
+                timestamp: 0, windowNumber: 0, context: nil, characters: key, charactersIgnoringModifiers: key,
+                isARepeat: false, keyCode: 7))
+            XCTAssertEqual(EVMenuCommand.formattingCommand(for: event), expected, key)
         }
     }
 

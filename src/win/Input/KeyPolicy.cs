@@ -3,7 +3,7 @@ using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Input;
 
-internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading, Styles, ContextMenu, ZoomIn, ZoomOut, CharacterCode, Link, Superscript, Subscript, Bullets, Numbers }
+internal enum NativeAction { None, Copy, Cut, Paste, PastePlain, Undo, Redo, Save, SaveAs, Heading, Styles, ContextMenu, ZoomIn, ZoomOut, CharacterCode, Link, Strikethrough, Superscript, Subscript, Bullets, Numbers }
 internal readonly record struct KeyRoute(uint Kind = 0, uint Codepoint = 0, uint Modifiers = 0, NativeAction Action = NativeAction.None);
 
 /// <summary>Reserve Windows shortcuts explicitly; preserve all other vi bindings.</summary>
@@ -13,6 +13,7 @@ internal static class KeyPolicy
     {
         NativeAction.CharacterCode => "Ctrl+Shift+E",
         NativeAction.Link => "Ctrl+Shift+K",
+        NativeAction.Strikethrough => "Ctrl+Shift+X",
         NativeAction.Superscript => "Ctrl+.",
         NativeAction.Subscript => "Ctrl+,",
         NativeAction.Bullets => "Ctrl+Shift+8",
@@ -48,6 +49,7 @@ internal static class KeyPolicy
                 {
                     (VirtualKey.E, true) => NativeAction.CharacterCode,
                     (VirtualKey.K, true) => NativeAction.Link,
+                    (VirtualKey.X, true) => NativeAction.Strikethrough,
                     ((VirtualKey)190, false) => NativeAction.Superscript,
                     ((VirtualKey)188, false) => NativeAction.Subscript,
                     (VirtualKey.Number8, true) => NativeAction.Bullets,
@@ -57,6 +59,9 @@ internal static class KeyPolicy
                 if (action != NativeAction.None) return new(Action: action);
             }
             if (key == VirtualKey.C) return new(Action: NativeAction.Copy);
+            // Ctrl+Shift+X is Strikethrough, never Cut. Where formatting is
+            // unavailable it is not Vim's Ctrl-X either, except when quoted.
+            if (key == VirtualKey.X && shift) return literal ? new(VIEM_KEY_CONTROL_CHARACTER, 'x') : default;
             if (key == VirtualKey.X) return new(Action: NativeAction.Cut);
             if (key == VirtualKey.V) return new(Action: shift ? NativeAction.PastePlain : NativeAction.Paste);
             if (!literal && key == VirtualKey.Z) return new(Action: shift ? NativeAction.Redo : NativeAction.Undo);

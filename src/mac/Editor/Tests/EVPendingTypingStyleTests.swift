@@ -147,6 +147,24 @@ final class EVPendingTypingStyleTests: XCTestCase {
     }
   }
 
+  func testShiftCommandXStrikesTheSelection() throws {
+    let backend = EVCoreDocumentBackend()
+    try backend.readUntitled(source: Data("word".utf8), typeName: EVDocument.markdownType)
+    let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentViewController = surface
+    defer { window.close() }
+    XCTAssertTrue(window.makeFirstResponder(surface.editorView))
+    surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 0, length: 4))
+    let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
+      modifierFlags: [.command, .shift], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+      characters: "X", charactersIgnoringModifiers: "X", isARepeat: false, keyCode: 7))
+    XCTAssertTrue(surface.editorView.performKeyEquivalent(with: event))
+    XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("~~word~~".utf8))
+  }
+
   func testFormattingMenuCannotFallThroughANativeFieldInAnotherWindow() throws {
     let backend = EVCoreDocumentBackend()
     let source = Data("word".utf8)

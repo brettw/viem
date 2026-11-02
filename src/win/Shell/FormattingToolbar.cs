@@ -162,6 +162,7 @@ internal sealed partial class FormattingToolbar : UserControl
     internal static string Shortcut(ToolbarAction action) => KeyPolicy.FormattingShortcut(action switch
     {
         ToolbarAction.CharacterCode => NativeAction.CharacterCode,
+        ToolbarAction.Strikethrough => NativeAction.Strikethrough,
         ToolbarAction.Superscript => NativeAction.Superscript,
         ToolbarAction.Subscript => NativeAction.Subscript,
         ToolbarAction.Bullets => NativeAction.Bullets,

@@ -132,6 +132,7 @@ public enum EVMenuCommand: Int, CaseIterable, Sendable {
         case .bold: .init(key: "b", modifiers: [.command], label: "⌘B")
         case .italic: .init(key: "i", modifiers: [.command], label: "⌘I")
         case .underline: .init(key: "u", modifiers: [.command], label: "⌘U")
+        case .strikethrough: .init(key: "x", modifiers: [.shift, .command], label: "⇧⌘X")
         case .characterCode: .init(key: "c", modifiers: [.option, .command], label: "⌥⌘C")
         case .superscript: .init(key: "+", modifiers: [.control, .command], label: "⌃⌘+")
         case .subscript: .init(key: "-", modifiers: [.control, .command], label: "⌃⌘−")

@@ -415,7 +415,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         // Keep toolbar and editing accelerators registered when their controls
         // are hidden. Native fields still get first refusal through routing.
         for (title, command) in [("Bold", EVMenuCommand.bold), ("Italic", .italic), ("Underline", .underline),
-                                 ("Superscript", .superscript), ("Subscript", .subscript),
+                                 ("Strikethrough", .strikethrough), ("Superscript", .superscript), ("Subscript", .subscript),
                                  ("Insert Paragraph in List Item", .insertListParagraph), ("Base Paragraph", .heading0)] {
             let item = coreItem(title, command: command, key: command == .heading0 ? "0" : "")
             item.isHidden = true

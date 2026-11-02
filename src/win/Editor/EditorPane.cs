@@ -386,6 +386,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
                 case NativeAction.SaveAs: await window.Save(this, true); break;
                 case NativeAction.Heading: View.SetParagraph(route.Codepoint); break;
                 case NativeAction.CharacterCode: window.ExecuteFormattingAction(ToolbarAction.CharacterCode); break;
+                case NativeAction.Strikethrough: window.ExecuteFormattingAction(ToolbarAction.Strikethrough); break;
                 case NativeAction.Superscript: window.ExecuteFormattingAction(ToolbarAction.Superscript); break;
                 case NativeAction.Subscript: window.ExecuteFormattingAction(ToolbarAction.Subscript); break;
                 case NativeAction.Bullets: window.ExecuteFormattingAction(ToolbarAction.Bullets); break;

@@ -40,6 +40,7 @@ work in Preview, including when the toolbar is hidden:
 
 | Action | macOS | Windows |
 | --- | --- | --- |
+| Strikethrough | Shift-Command-X | Ctrl-Shift-X |
 | Inline code | Option-Command-C | Ctrl-Shift-E |
 | Superscript | Control-Command-Plus | Ctrl-Period |
 | Subscript | Control-Command-Minus | Ctrl-Comma |
