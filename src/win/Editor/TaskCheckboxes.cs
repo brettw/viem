@@ -29,15 +29,47 @@ internal sealed partial class EditorPane
         return null;
     }
 
+    // A pressed checkbox and its press point, in layout coordinates, until the
+    // drag leaves the box or the pointer is released.
+    private (Point Press, Rect Box)? checkboxPress;
+
     internal bool ToggleCheckboxAt(Point point)
     {
         if (snapshot == null || View == null || CheckboxAt(point) is not { } item) return false;
+        var box = item.typographic_bounds;
+        checkboxPress = (new Point(point.X + viewport.left, point.Y + viewport.top),
+            new Rect(box.x, box.y, Math.Max(0, box.width), Math.Max(0, box.height)));
         if (!View.Composing)
         {
             var expected = snapshot.Info.identity;
             Run(() => View?.ToggleCheckbox(expected, item.paragraph_id));
             FocusEditor();
         }
+        return true;
+    }
+
+    // Starts ordinary pointer selection at a checkbox press once its drag
+    // leaves the box, so the selection follows the pointer from there. Layout
+    // coordinates keep the box and press fixed to their text if the viewport
+    // scrolls. Returns false while the pointer remains on the box.
+    private bool LeaveCheckboxPress(Point point)
+    {
+        if (checkboxPress is not { } press || View == null) return true;
+        if (press.Box.Contains(new Point(point.X + viewport.left, point.Y + viewport.top))) return false;
+        checkboxPress = null;
+        DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
+        caretHoverLocation = null; SetCaretHover(null);
+        DismissCommandOutput(false);
+        wordSelectionDragging = false; dragging = true; pointerClickCount = 0;
+        Run(() => {
+            if (composing) { compositionRejected = true; ClearInput(); }
+            View.PreparePointerSelection(); Refresh();
+            if (snapshot == null) return;
+            var origin = new Point(press.Press.X - viewport.left, press.Press.Y - viewport.top);
+            View.Place((float)origin.X, (float)origin.Y);
+            BeginTableDrag(origin);
+        });
+        UpdatePointerCursor();
         return true;
     }
 

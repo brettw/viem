@@ -141,6 +141,7 @@ internal static class CheckboxInteractionTests
             toolbar.DismissPopups();
             Check(pane.LastError == null, "checkbox and Insert menu actions complete without native errors");
             await ImportedOrderedTask(preferences);
+            await DragFromCheckbox(preferences);
         }
         finally
         {
@@ -174,6 +175,51 @@ internal static class CheckboxInteractionTests
             Check(Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
                 "undo restores the imported ordinal and uppercase checked marker exactly");
             Check(pane.LastError == null, "imported task list changes complete without native errors");
+        }
+        finally { window.Close(); }
+    }
+
+    private static async Task DragFromCheckbox(Preferences preferences)
+    {
+        var document = new CoreDocument("- [ ] Task\n- Next"u8.ToArray(), format: VIEM_FORMAT_MARKDOWN);
+        var window = new EditorWindow(preferences, document);
+        App.Instance.Windows.Add(window);
+        window.Activate();
+        try
+        {
+            var pane = window.ActivePane!;
+            var view = await pane.Ready;
+            await InputRoutingTests.Settle();
+            view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, view.Presentation.document_revision);
+            pane.Refresh();
+            var caret = view.Presentation.cursor_utf8_offset;
+            var mode = view.Presentation.mode;
+            var layout = view.Layout();
+            var viewport = view.Viewport;
+            var decoration = layout.Decorations.Single(item => (item.flags & VIEM_LAYOUT_DECORATION_CHECKBOX) != 0);
+            var last = layout.Clusters.Last(item => item.row_index == decoration.row_index);
+            var row = layout.Rows.Single(item => item.row_index == decoration.row_index);
+            var box = decoration.typographic_bounds;
+            Point Fraction(double x, double y) => new((x - viewport.left) / pane.Canvas.ActualWidth, (y - viewport.top) / pane.Canvas.ActualHeight);
+            var points = new[] {
+                Fraction(box.x + box.width * .5, box.y + box.height * .5),
+                Fraction(box.x + box.width * .25, box.y + box.height * .25),
+                Fraction(box.x + box.width * .75, box.y + box.height * .75),
+                Fraction(last.x + last.advance * .9, row.y + row.ascent * .5),
+            };
+            await InputRoutingTests.Drag(window, pane.Canvas, points, i => {
+                if (i is 0 or 3) return;
+                var current = view.Presentation;
+                Check(!view.HasSelection && current.cursor_utf8_offset == caret && current.mode == mode
+                    && pane.PointerCursorForTesting == "arrow",
+                    "a drag within a checkbox keeps the caret, selects nothing and keeps the arrow cursor");
+            }, focusTarget: false);
+            await InputRoutingTests.Settle();
+            var selection = view.LogicalSelection();
+            Check(view.HasSelection && selection.text_start == 0 && selection.text_end == 4
+                && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == "- [x] Task\n- Next",
+                "a drag that leaves a checkbox toggles it once and selects from the press to the pointer");
+            Check(pane.LastError == null, "checkbox drag selection completes without native errors");
         }
         finally { window.Close(); }
     }

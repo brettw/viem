@@ -284,6 +284,44 @@ final class EVCheckboxTests: XCTestCase {
         XCTAssertThrowsError(try session.toggleCheckbox(paragraphID: checkbox.paragraph_id, expected: snapshot.info.identity),
                              "a checkbox click from an old layout is rejected")
     }
+    func testDragFromCheckboxSelectsNothingUntilItLeavesTheBoxThenFollowsThePointer() throws {
+        let (backend, surface, session) = try surface("- [ ] Task\n- Next")
+        let window = EVTestFocusWindow(contentRect: NSRect(x: 100, y: 200, width: 600, height: 400),
+                                       styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = surface
+        window.setKeyWindowForTesting(true)
+        defer { window.close() }
+        window.makeFirstResponder(surface.editorView)
+        surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: 2, length: 0))
+        let caret = surface.viewPresentation.cursor_utf8_offset
+        let mode = surface.viewPresentation.mode
+        let snapshot = try session.layoutExport()
+        let checkbox = try XCTUnwrap(snapshot.decorations.first { $0.flags & UInt32(VIEM_LAYOUT_DECORATION_CHECKBOX) != 0 })
+        let rect = surface.editorView.viewRect(checkbox.typographic_bounds)
+        let last = try XCTUnwrap(snapshot.clusters.last { $0.row_index == checkbox.row_index })
+        let row = try XCTUnwrap(snapshot.rows.first { $0.row_index == checkbox.row_index })
+        let textEnd = surface.editorView.viewPoint(fromLayoutPoint: CGPoint(
+            x: CGFloat(last.x) + CGFloat(last.advance) * 0.9, y: CGFloat(row.y + row.ascent * 0.5)))
+        func event(_ type: NSEvent.EventType, _ point: NSPoint) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: surface.editorView.convert(point, to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 1, clickCount: 1, pressure: 1))
+        }
+        surface.editorView.mouseDown(with: try event(.leftMouseDown, NSPoint(x: rect.midX, y: rect.midY)))
+        for point in [NSPoint(x: rect.minX + 1, y: rect.minY + 1), NSPoint(x: rect.maxX - 1, y: rect.maxY - 1)] {
+            surface.editorView.mouseDragged(with: try event(.leftMouseDragged, point))
+            XCTAssertTrue(surface.selectedUTF8Ranges().isEmpty, "a drag within the box selects nothing")
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, caret)
+            XCTAssertEqual(surface.viewPresentation.mode, mode)
+        }
+        surface.editorView.mouseDragged(with: try event(.leftMouseDragged, textEnd))
+        surface.editorView.mouseUp(with: try event(.leftMouseUp, textEnd))
+        XCTAssertEqual(surface.editorView.accessibilitySelectedText(), "Task",
+                       "leaving the box selects from the press to the pointer")
+        XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data("- [x] Task\n- Next".utf8))
+    }
+
     func testCheckboxClickDoesNotCommitCompletionOrCompositionOverlay() throws {
         for composing in [false, true] {
             let source = "- [ ] apple apricot\n\nap"

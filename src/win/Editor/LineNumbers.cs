@@ -97,7 +97,7 @@ internal sealed partial class EditorPane
     private void EndPointerSelection(UIElement owner, PointerRoutedEventArgs args)
     {
         bool selectedRowsOrColumns = gutterSelectionDragging || tableColumnGesture != null;
-        pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
+        pressedPointer = null; checkboxPress = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
         owner.ReleasePointerCapture(args.Pointer);
         // Controls for selected rows or columns appear once the gesture ends.
         if (selectedRowsOrColumns) EndTableColumnSelection();

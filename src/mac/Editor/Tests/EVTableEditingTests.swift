@@ -146,6 +146,60 @@ final class EVTableEditingTests: XCTestCase {
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), Data(text.utf8))
     }
 
+    func testHoverInsertionsPlaceTheCaretInTheFirstNewCellWithoutScrolling() async throws {
+        let text = String(repeating: "Paragraph.\n\n", count: 80) + "| A | B | C |\n| --- | --- | --- |\n| x | y | z |\n"
+            + String(repeating: "\nAfter.\n", count: 40)
+        for column in [false, true] {
+            let (_, surface, session) = try surface(text)
+            let window = EVTestFocusWindow(contentRect: NSRect(x: 100, y: 200, width: 700, height: 400),
+                                           styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = surface
+            window.setKeyWindowForTesting(true)
+            defer { window.close() }
+            window.makeFirstResponder(surface.editorView)
+            func settle() async throws {
+                for _ in 0..<500 {
+                    if session.backgroundLayout.isIdle && session.tableWidthRefinement.isIdle { return }
+                    try await Task.sleep(nanoseconds: 10_000_000)
+                }
+                XCTFail("background layout did not settle")
+            }
+            let editor = surface.editorView
+            XCTAssertEqual(surface.viewPresentation.cursor_utf8_offset, 0)
+            func tableTop() -> CGFloat? {
+                surface.layoutSnapshot?.tableCells.first { ($0.row, $0.column) == (0, 0) }.map { editor.viewRect($0.rect).minY }
+            }
+            var top: CGFloat = 0
+            while tableTop().map({ $0 > 120 }) ?? true {
+                guard top < 5_000 else { return XCTFail("the table never scrolled into view") }
+                top += 40
+                surface.requestVerticalViewport(top: top)
+            }
+            try await settle()
+            let interaction = EVTableInteraction(editor: editor)
+            let widget = try XCTUnwrap(editor.subviews.last as? NSStackView)
+            let cell = try XCTUnwrap(surface.layoutSnapshot?.tableCells.first {
+                column ? ($0.row, $0.column) == (0, 1) : ($0.row, $0.column) == (1, 0) })
+            let rect = editor.viewRect(cell.rect), table = editor.viewRect(cell.table_rect)
+            interaction.moved(to: column ? NSPoint(x: rect.midX, y: table.minY - 1) : NSPoint(x: table.maxX + 20, y: rect.midY))
+            let label = column ? "Insert column right of column 2" : "Insert row below row 2"
+            let insert = try XCTUnwrap(widget.arrangedSubviews.compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == label })
+            let viewport = surface.viewportState
+            let before = try XCTUnwrap(tableTop())
+            insert.performClick(nil)
+            for settled in [false, true] {
+                if settled { try await settle() }
+                XCTAssertEqual(surface.viewportState.left, viewport.left, label)
+                XCTAssertEqual(try XCTUnwrap(tableTop()), before, accuracy: 0.5, "\(label) keeps the visible table in place")
+                let context = try session.tableContext()
+                XCTAssertEqual(context.row, column ? 0 : 2, label)
+                XCTAssertEqual(context.column, column ? 2 : 0, label)
+                XCTAssertEqual(surface.viewPresentation.mode, UInt32(VIEM_MODE_INSERT))
+            }
+        }
+    }
+
     func testRowHoverEdgesCornersAndClippingUseActualTableBoundaries() throws {
         let (_, surface, _) = try surface("| A | B | C |\n| --- | --- | --- |\n| one | two | three |\n| four | five | six |")
         let editor = surface.editorView

@@ -68,6 +68,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (disposed) return;
         ProtectedCursor = gutterSelectionDragging ? gutterCursor ??= GutterCursor.Create()
             : tableColumnGesture != null ? columnCursor ??= GutterCursor.CreateColumnSelection()
+            : checkboxPress != null ? textArrowCursor
             : pressedPointer != null ? textInsertionCursor
             : pointerOverCheckbox ? textArrowCursor
             : pointerOverGutter ? gutterCursor ??= GutterCursor.Create()
@@ -506,7 +507,14 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
-        if (ToggleCheckboxAt(e.GetCurrentPoint(Canvas).Position)) { e.Handled = true; return; }
+        checkboxPress = null;
+        if (ToggleCheckboxAt(e.GetCurrentPoint(Canvas).Position)) {
+            // Capture so a drag that leaves the box can select from the press.
+            pointerPress = dragPoint = e.GetCurrentPoint(Canvas).Position; dragging = false;
+            pressedPointer = Canvas.CapturePointer(e.Pointer) ? e.Pointer.PointerId : null;
+            UpdatePointerCursor();
+            e.Handled = true; return;
+        }
         if (ShowCodeBlockLanguageMenu(e.GetCurrentPoint(Canvas).Position)) { e.Handled = true; return; }
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         caretHoverLocation = null; SetCaretHover(null);
@@ -559,6 +567,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         dragPoint = point.Position;
         if (gutterSelectionDragging) { ContinueGutterSelection(e); return; }
         if (tableColumnGesture != null) { Run(() => DragTableColumns(dragPoint)); e.Handled = true; return; }
+        if (!LeaveCheckboxPress(dragPoint)) { e.Handled = true; return; }
         if (!dragging)
         {
             // WinUI can report movement at the press point. Match the pane-bar

@@ -221,7 +221,10 @@ create unchecked siblings, preserving the ordered numbering and delimiter of
 imported tasks and the checked spelling of retained bodies. The checkbox
 is a square from the paragraph font's baseline to its cap height and follows
 platform control appearance. Rendering and pointer actions carry exact layout
-and paragraph identities; stale clicks cannot modify another item.
+and paragraph identities; stale clicks cannot modify another item. A drag that
+starts on a checkbox leaves the caret and selection alone while it stays on the
+box; once it leaves, pointer selection begins at the press and follows the
+pointer.
 
 `tests/all/markdown_tasks.rs` and `markdown_task_structure.rs` cover syntax, list styles, source and history,
 encoding and endings, unsupported contexts, and bounded capability queries.

@@ -190,6 +190,10 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     private var caretHoverLocation: NSPoint?
     private var caretHoverSuppressedAt: NSPoint?
     private var caretHoverPointerPressed = false
+    /// A pressed checkbox and press point, in layout coordinates, until the
+    /// drag leaves the box or the button is released.
+    private struct CheckboxPress { var point: CGPoint; var bounds: CGRect }
+    private var checkboxPress: CheckboxPress?
     private weak var pointerCursorWindow: NSWindow?
     private(set) var caretHoverRect: NSRect?
     private(set) var caretHoverMode: UInt32 = UInt32(VIEM_MODE_NORMAL)
@@ -2378,6 +2382,9 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
               surface.refreshGeometryBeforeInteraction(), let snapshot = surface.layoutSnapshot else { return false }
         let point = convert(event.locationInWindow, from: nil)
         guard let item = checkbox(at: point, in: snapshot) else { return false }
+        let bounds = item.typographic_bounds
+        checkboxPress = CheckboxPress(point: layoutPoint(fromViewPoint: point), bounds: CGRect(
+            x: CGFloat(bounds.x), y: CGFloat(bounds.y), width: CGFloat(bounds.width), height: CGFloat(bounds.height)))
         // Overlay offsets are presentation-only. A checkbox click must not
         // commit completion and then try to edit through its obsolete geometry.
         guard !compositionActive, surface.completion?.isActive != true,
@@ -2389,7 +2396,21 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         return true
     }
 
+    /// Starts ordinary pointer selection at a checkbox press once its drag
+    /// leaves the box, so the selection follows the pointer from there.
+    private func beginSelectionFromCheckboxPress(at layoutPress: CGPoint) {
+        setCaretHoverRect(nil)
+        surface?.dismissCommandOutput()
+        caretHoverPointerPressed = true
+        beginPointerCursorLock()
+        wordSelectionDragging = false
+        let local = viewPoint(fromLayoutPoint: layoutPress)
+        placeCursor(at: local, extending: false)
+        tables.beginDrag(at: local)
+    }
+
     override func mouseDown(with event: NSEvent) {
+        checkboxPress = nil
         if toggleCheckbox(for: event) { return }
         if showCodeBlockLanguageMenu(for: event) { return }
         setCaretHoverRect(nil)
@@ -2442,6 +2463,13 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        if let press = checkboxPress {
+            // Layout coordinates keep the box and press fixed to their text if
+            // the viewport scrolls during the gesture.
+            if press.bounds.contains(layoutPoint(fromViewPoint: convert(event.locationInWindow, from: nil))) { return }
+            checkboxPress = nil
+            beginSelectionFromCheckboxPress(at: press.point)
+        }
         _ = autoscroll(with: event)
         pointerCursor(at: convert(event.locationInWindow, from: nil)).set()
         customCaretBlinkController.restartAfterActivity()
@@ -2462,6 +2490,7 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
     }
 
     override func mouseUp(with event: NSEvent) {
+        checkboxPress = nil
         endPointerCursorLock()
         // Controls for selected rows or columns appear once the gesture ends.
         tables.endColumnSelection()
