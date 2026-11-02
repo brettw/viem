@@ -142,7 +142,8 @@ internal static class CommandStatusTests
         await InputRoutingTests.Text(":e café 日本語");
         Check(pane.PromptControl.LastDrawnText == ":e café 日本語", "command prompt draws Unicode text");
         await InputRoutingTests.Key(VirtualKey.Back);
-        Check(pane.PromptControl.LastDrawnText == ":e café 日本", "command prompt redraws native Backspace");
+        Check(await SelfTestRunner.Until(() => pane.PromptControl.LastDrawnText == ":e café 日本"),
+            "command prompt redraws native Backspace");
         await InputRoutingTests.Text(new string('x', 240));
         Check(pane.CommandOutputText == null && pane.PromptControl.ScrollOffset > 0,
             "new commands dismiss old output and long prompts scroll to the caret");

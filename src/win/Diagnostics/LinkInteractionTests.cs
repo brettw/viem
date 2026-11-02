@@ -54,16 +54,16 @@ internal static class LinkInteractionTests
 
     private static async Task ReferenceActions(TestEditor editor)
     {
-        const string referenceSource = "[café link][réf]\n\n[réf]: https://example.test/original \"Title\"";
+        const string referenceSource = "[café][réf]\n\n[réf]: https://example.test/original \"Title\"";
         await editor.Reset(referenceSource);
         try
         {
             var view = editor.View;
             var context = view.LinkContext();
             var reference = context.Reference!;
-            Check(reference is { Name: "réf", Text: "café link", Destination: "https://example.test/original",
+            Check(reference is { Name: "réf", Text: "café", Destination: "https://example.test/original",
                 Title: "Title", Definition: false, Inactive: false, Links: 1, Images: 0, Complete: true, Editable: true }
-                && reference.DefinitionOffset != null && reference.Uses.Single() is { Text: "café link", Offset: 0, Image: false },
+                && reference.DefinitionOffset != null && reference.Uses.Single() is { Text: "café", Offset: 0, Image: false },
                 "reference context decodes Unicode, nullable offsets, flags and nested uses");
             var choices = view.ReferenceChoices(context);
             Check(choices.Single() is { Name: "réf", Destination: "https://example.test/original" }
@@ -83,10 +83,10 @@ internal static class LinkInteractionTests
 
             await editor.Reset("");
             view = editor.View;
-            view.ReferenceAction(view.LinkContext(), "insert", new() { ["text"] = "café link", ["name"] = "réf",
+            view.ReferenceAction(view.LinkContext(), "insert", new() { ["text"] = "café", ["name"] = "réf",
                 ["destination"] = "https://example.test/new", ["title"] = "新しい" });
             view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, editor.Document.State.document_revision);
-            Check(view.LinkContext().Reference is { Text: "café link", Name: "réf", Destination: "https://example.test/new", Title: "新しい" },
+            Check(view.LinkContext().Reference is { Text: "café", Name: "réf", Destination: "https://example.test/new", Title: "新しい" },
                 "reference insertion serializes both selection offsets and all text fields");
             view.Undo();
             Check(editor.Source == "", "reference insertion has exact undo");

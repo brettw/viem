@@ -69,7 +69,7 @@ internal static class VisibleWhitespaceStyleTests
             Check(ReferenceEquals(window.StyleInspector, inspector), "repeated whitespace settings actions reuse the same style window");
             SizeSettingsAndUndo(inspector, view, preferences);
             ExternalChangesRetireUndo(inspector, preferences);
-            StaleEditsAndRestoreDefaults(inspector, preferences, initial);
+            await StaleEditsAndRestoreDefaults(inspector, preferences, initial);
             Check(preferences.ThemeStyleDefaults(VIEM_FORMAT_CODE).AsSpan().SequenceEqual(themeBefore)
                 && CoreThemes.CodeStyleRevision == codeRevision && !document.IsDirty
                 && Encoding.UTF8.GetString(document.Source(document.State.document_revision)) == source,
@@ -151,7 +151,7 @@ internal static class VisibleWhitespaceStyleTests
             "external marker changes retire cached Code-family marker undo instead of restoring it after a stylesheet switch");
     }
 
-    private static void StaleEditsAndRestoreDefaults(StyleWindow inspector, Preferences preferences, JsonObject initial)
+    private static async Task StaleEditsAndRestoreDefaults(StyleWindow inspector, Preferences preferences, JsonObject initial)
     {
         // Change the file through a distinct settings owner: the next
         // action must refresh and reject, not overwrite that newer style.
@@ -165,11 +165,21 @@ internal static class VisibleWhitespaceStyleTests
             "a stale whitespace edit refreshes the controls and leaves another owner's stored setting intact");
         var reset = Children<Button>(inspector.RootControl).Single(button => button.Content as string == "Restore Defaults");
         new ButtonAutomationPeer(reset).Invoke();
-        Check(JsonNode.DeepEquals(preferences.VisibleWhitespaceStyle, VisibleWhitespaceStyle.RestoringDefaults(initial)),
+        await InputRoutingTests.Settle();
+        var expected = Preferences.Normalize(new JsonObject {
+            ["version"] = 1,
+            ["editing"] = new JsonObject { ["whitespacePresentation"] = new JsonObject {
+                ["visibleWhitespace"] = new JsonObject { ["style"] = VisibleWhitespaceStyle.RestoringDefaults(initial) }
+            } }
+        })["editing"]!["whitespacePresentation"]!["visibleWhitespace"]!["style"];
+        Check(JsonNode.DeepEquals(preferences.VisibleWhitespaceStyle, expected),
             "Restore Defaults on Visible whitespace resets known marker properties while preserving unknown fields");
         inspector.UndoThemeForTesting();
         Check(preferences.VisibleWhitespaceStyle["size"]!.GetValue<float>() == 31,
             "restoring marker defaults participates in ordinary inspector undo");
+        inspector.RedoThemeForTesting();
+        Check(JsonNode.DeepEquals(preferences.VisibleWhitespaceStyle, expected) && inspector.Error.Length == 0,
+            "redo restores the normalized marker defaults without a stale-settings conflict");
     }
 }
 #endif

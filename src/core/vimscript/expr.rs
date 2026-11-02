@@ -7,7 +7,26 @@ use super::value::{
     compare_values, str2nr, Blob, CaseMode, CompareOp, Dict, Funcref, VStr, Value,
 };
 
+// Each expression level uses several precedence-parser frames.
 pub const MAX_NESTING: usize = 1000;
+
+#[cfg(windows)]
+fn has_native_stack() -> bool {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentThreadStackLimits(low: *mut usize, high: *mut usize);
+    }
+    let (mut low, mut high) = (0, 0);
+    // These are the current thread's actual bounds, including when a host
+    // enters the interpreter from an already-deep call stack. Debug parser
+    // frames are much larger than optimized frames, so depth alone is unsafe.
+    unsafe { GetCurrentThreadStackLimits(&mut low, &mut high); }
+    let position = &low as *const usize as usize;
+    position < high && position.checked_sub(low).is_some_and(|remaining| remaining >= 256 * 1024)
+}
+
+#[cfg(not(windows))]
+fn has_native_stack() -> bool { true }
 
 pub struct Eval<'r, 'h, 's> {
     pub rt: &'r mut Runtime,
@@ -121,11 +140,11 @@ impl<'r, 'h, 's> Eval<'r, 'h, 's> {
     }
 
     fn enter(&mut self) -> EvalResult<()> {
-        self.depth += 1;
-        if self.depth > MAX_NESTING {
+        if self.depth >= MAX_NESTING || !has_native_stack() {
             return Err(Fail::Error(VimError::new(1169, "Expression too recursive")));
         }
         self.rt.charge(1)?;
+        self.depth += 1;
         Ok(())
     }
 

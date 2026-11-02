@@ -94,6 +94,25 @@ fn native_setup_rejects_unsupported_commands_and_unbounded_recursion_atomically(
 }
 
 #[test]
+#[cfg(windows)]
+fn expression_nesting_is_bounded_on_a_native_sized_stack() {
+    std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(|| {
+            // Exercise the native stack reserve in both optimized and Debug
+            // builds, whose parser frames have very different sizes.
+            for (depth, accepted) in [(4, true), (1000, false)] {
+                let source = format!("let x = {}1{}\nsyn keyword Good good", "(".repeat(depth), ")".repeat(depth));
+                assert_eq!(compile("nested.vim", &source, VimLoadLimits::default()).is_ok(), accepted, "depth {depth}");
+            }
+            assert!(compile("recursive.vim", "function s:Loop()\nreturn s:Loop()\nendfunction\nlet s:x = s:Loop()", VimLoadLimits::default()).is_err());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+#[test]
 fn native_setup_bounds_source_and_shared_execution_before_publication() {
     let source = "syn keyword Good good\nsyn keyword Other other\n";
     let limits = VimLoadLimits { source_bytes: 32, ..Default::default() };

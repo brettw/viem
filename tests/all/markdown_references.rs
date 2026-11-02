@@ -9,6 +9,34 @@ fn apply(doc: &mut Document, request: ReferenceRequest) {
     doc.commit_model_transaction(prepared).unwrap();
 }
 #[test]
+fn multibyte_reference_labels_preserve_source_and_edit_boundaries() {
+    for label in ["café", "日本語", "👩‍💻", "e\u{301}"] {
+        let source = format!("[{label}][ref]\n\n[ref]: target");
+        let mut doc = open(&source);
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        assert!(doc.text().starts_with(label));
+        assert_eq!(doc.reference_context_at(doc.text_point(0).unwrap()).unwrap().unwrap().text, label);
+        apply(&mut doc, ReferenceRequest::EditUse { offset: 0, text: "changed".into(), name: "ref".into() });
+        let changed = b"[changed][ref]\n\n[ref]: target";
+        assert_eq!(doc.source_bytes(), changed);
+        assert_eq!(open(std::str::from_utf8(changed).unwrap()).text(), doc.text());
+        assert!(doc.undo());
+        assert_eq!(doc.source_bytes(), source.as_bytes());
+        assert!(doc.redo());
+        assert_eq!(doc.source_bytes(), changed);
+    }
+}
+
+#[test]
+fn reference_inspector_identity_is_not_mixed_with_its_link_paint() {
+    use viem_core::layout::MockTextMeasurementProvider;
+    let mut core = viem_core::Core::new(open("[label][ref]\n\n[ref]: target"));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
+    let selected = core.selected_named_styles(view).unwrap();
+    assert_eq!(selected.character, Some("Markdown reference".into()));
+    assert!(!selected.character_mixed);
+}
+#[test]
 fn all_reference_spellings_and_shared_image_counts() {
     let doc =
         open("[one][ref] [ref][] [ref] ![image][ref]\n\n[ref]: #heading \"Title\"\n\n# Heading");

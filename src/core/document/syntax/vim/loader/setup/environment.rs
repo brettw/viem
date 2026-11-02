@@ -346,7 +346,8 @@ fn filename_modifier(value: &str, modifier: char) -> Result<String, String> {
                 &value[..last_separator.map_or(0, |at| at + 1) + at]
             })
             .to_owned(),
-        'p' if value.starts_with('/') || value.as_bytes().get(1) == Some(&b':') => value.to_owned(),
+        'p' if std::path::Path::new(value).is_absolute()
+            || value.starts_with('/') || value.as_bytes().get(1) == Some(&b':') => value.to_owned(),
         _ => {
             return Err(
                 "setup filename modifier needs unavailable filesystem or current-directory context"

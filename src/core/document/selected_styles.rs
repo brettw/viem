@@ -204,7 +204,12 @@ impl FormattedDocument {
                     .contains(&point)
             {
                 if character.is_none() && !active_automatic.is_empty() {
-                    characters.extend(active_automatic.values().cloned().map(Some));
+                    // A reference carries Link paint as well as its more
+                    // specific reference appearance. That is one inspector
+                    // identity, not a mixed character-style selection.
+                    let reference = active_automatic.values().any(|id| id.0 == "Markdown reference");
+                    characters.extend(active_automatic.values()
+                        .filter(|id| !reference || id.0 != "Link").cloned().map(Some));
                 } else {
                     characters.insert(character);
                 }

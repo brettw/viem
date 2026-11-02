@@ -191,6 +191,7 @@ internal static class CheckboxInteractionTests
             var pane = window.ActivePane!;
             var view = await pane.Ready;
             await InputRoutingTests.Settle();
+            await InputRoutingTests.CheckForegroundEditor(window, pane, "checkbox drag fixture owns native editor focus");
             view.Place(2, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, view.Presentation.document_revision);
             pane.Refresh();
             var caret = view.Presentation.cursor_utf8_offset;

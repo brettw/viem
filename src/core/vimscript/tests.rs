@@ -41,6 +41,10 @@ impl MemoryHost {
 }
 
 impl ScriptHost for MemoryHost {
+    fn getenv(&self, name: &str) -> Option<String> {
+        // Fixture scripts have a deterministic environment on every host.
+        (name == "HOME").then(|| "/test/home".into())
+    }
     fn execute(&mut self, _rt: &mut Runtime, command: &HostCommand) -> EvalResult<()> {
         self.executed += 1;
         self.commands.push(command.text.clone());

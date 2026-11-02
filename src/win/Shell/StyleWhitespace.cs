@@ -75,7 +75,9 @@ internal sealed partial class StyleWindow
             if (!JsonNode.DeepEquals(before, whitespaceCandidate))
             {
                 preferences.SaveVisibleWhitespaceStyle(before, whitespaceCandidate);
-                RecordThemeEdit(WhitespaceBytes(before), WhitespaceBytes(whitespaceCandidate), VisibleWhitespaceStyle.Key);
+                // Configuration validation may normalize sparse declarations.
+                // History must compare with exactly what was published to disk.
+                RecordThemeEdit(WhitespaceBytes(before), WhitespaceBytes(preferences.VisibleWhitespaceStyle), VisibleWhitespaceStyle.Key);
                 RefreshWhitespaceSession();
             }
             if (reload) Load(VisibleWhitespaceStyle.Key); else RefreshCommittedColors();

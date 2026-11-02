@@ -6934,7 +6934,9 @@ impl<'a> MarkdownBuilder<'a> {
                     }
                     InlineKind::Reference { name, destination, title } => {
                         let source = self.unit_at(at).unwrap().source.start..self.unit_at(inline.range.end - 1).unwrap().source.end;
-                        let label_source = self.unit_at(inline.inner.start).unwrap().source.start..self.unit_at(inline.inner.end - 1).unwrap().source.end;
+                        // The closing bracket is a scalar boundary even when the
+                        // label ends in multibyte text (or the label is empty).
+                        let label_source = self.unit_at(inline.inner.start).unwrap().source.start..self.unit_at(inline.inner.end).unwrap().source.start;
                         self.link_label_depth += 1;
                         self.parse_inline_depth(inline.inner.start, inline.inner.end, depth + 1);
                         self.link_label_depth -= 1;

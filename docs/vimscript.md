@@ -183,7 +183,11 @@ a script. Native dialogs remain explicit host operations.
 
 Work is bounded: scripts are limited to 1 MiB, source nesting to 16, function
 depth to 100, runtime frames to 200, expression depth to 1000 and runtime fuel to
-20 million units. File-read builtins accept regular files of at most 8 MiB.
+20 million units. Expression depth counts expression and primary-parser levels.
+Windows also rejects recursive evaluation when less than 256 KiB of native stack
+remains, allowing the parser to return an error even in unoptimized Debug builds
+or when called from an already-deep host stack.
+File-read builtins accept regular files of at most 8 MiB.
 Globbing is limited to 10,000 results, 100,000 traversal steps/directory entries
 and 128 nested path steps, including searches that find nothing. `globpath()`
 shares those limits across its directories. Generated ranges, repeated lists and

@@ -304,7 +304,7 @@ internal static class SelectionInputTests
             await Start(12);
             await InputRoutingTests.Key(VirtualKey.Home, control: true, shift: true);
             selection = view.LogicalSelection();
-            Check(selection.text_start == 0 && selection.text_end == 12, "native Ctrl+Shift+Home selects to the document start");
+            Check(selection.text_start == 0 && selection.text_end == 12, $"native Ctrl+Shift+Home selects to the document start (range={selection.text_start}..{selection.text_end}, mode={view.Presentation.mode}, error={pane.LastError})");
             await Start(3);
             await InputRoutingTests.Key(VirtualKey.End, control: true, shift: true);
             selection = view.LogicalSelection();

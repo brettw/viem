@@ -297,7 +297,8 @@ internal static class StyleAndSettingsTests
                 && settings.PreviewStatus.FontSize == preferences.StatusStyles.Status.Size, "Default selection restores built-in colors and status typography");
             for (int index = 0; index < 3; index++) {
                 settings.Categories.SelectedIndex = index; await InputRoutingTests.Settle();
-                Check(settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0, $"settings sidebar displays category {index + 1}");
+                Check(await SelfTestRunner.Until(() => settings.CurrentPage.Visibility == Visibility.Visible && settings.CurrentPage.ActualHeight > 0),
+                    $"settings sidebar displays category {index + 1}");
             }
             var markdownTyping = Children<CheckBox>(settings.CurrentPage).Single(c => c.Content as string == "Automatically format typed Markdown");
             Check(markdownTyping.IsChecked == preferences.MarkdownAutodetect, "Editing reflects the Markdown typing preference");
@@ -406,8 +407,8 @@ internal static class StyleAndSettingsTests
             byte[] related = doc.Source(doc.State.document_revision);
             new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await InputRoutingTests.Settle();
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
-                && inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
-                "parent navigation selects the referenced style while inheritance choices retain descendants for apply-time cycle validation");
+                && !inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
+                "parent navigation selects the referenced style while inheritance choices exclude descendants");
             inspector.StylePicker.SelectedItem = inspector.StylePicker.Items.OfType<StyleDefinition>().Single(s => s.Id == childId);
             new ButtonAutomationPeer(inspector.VisitNext).Invoke(); await InputRoutingTests.Settle();
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId && related.AsSpan().SequenceEqual(doc.Source(doc.State.document_revision)), "next paragraph arrow navigates without editing styles");
@@ -483,8 +484,8 @@ internal static class StyleAndSettingsTests
             byte[] related = view.ExportStyleDefaults();
             new ButtonAutomationPeer(inspector.VisitParent).Invoke(); await InputRoutingTests.Settle();
             Check(((StyleDefinition)inspector.StylePicker.SelectedItem).Id == parentId
-                && inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
-                "Code parent navigation selects the referenced style while inheritance choices retain descendants for apply-time cycle validation");
+                && !inspector.ParentPicker.Items.OfType<StyleDefinition>().Any(s => s.Id == childId),
+                "Code parent navigation selects the referenced style while inheritance choices exclude descendants");
             Check(related.AsSpan().SequenceEqual(view.ExportStyleDefaults()), "Code parent navigation does not edit shared styles");
             new ButtonAutomationPeer(restore).Invoke(); await InputRoutingTests.Settle();
             Check(inspector.Error.Length == 0 && !view.Styles().Styles.Any(style => style.Id == childId || style.Id == parentId),

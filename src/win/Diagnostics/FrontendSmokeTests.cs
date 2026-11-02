@@ -448,7 +448,9 @@ internal static class FrontendSmokeTests
                 float X(LayoutSnapshot snapshot, ulong offset) => snapshot.Clusters.First(c => c.text_start == offset).x;
                 view.AlignIndentsToPreviousLine(true);
                 var aligned = view.Layout();
-                other.Refresh();
+                // Global font changes invalidate both views. Request fresh
+                // geometry without reapplying the secondary view's setting.
+                other.Resize(700, 400);
                 Check(view.Whitespace(aligned.Info).AlignIndentsToPreviousLine
                     && !other.Whitespace(other.Layout().Info).AlignIndentsToPreviousLine,
                     "indent alignment is local to the selected view");

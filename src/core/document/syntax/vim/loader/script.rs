@@ -9,6 +9,13 @@ use crate::vimscript::{
 fn fatal(error: impl Into<String>) -> Fail {
     Fail::Interrupt(error.into())
 }
+fn native_script_path(value: &str) -> PathBuf {
+    // Vim scripts join names with '/', including paths expanded from a
+    // canonical Windows verbatim prefix. Win32 requires '\\' under that prefix.
+    #[cfg(windows)]
+    let value = value.replace('/', "\\");
+    PathBuf::from(value)
+}
 fn source_argument(source: &str) -> String {
     let mut result = String::new();
     let mut chars = source.trim_end().chars().peekable();
@@ -189,7 +196,7 @@ impl Loader<'_> {
             root
         };
         let path = base
-            .join(name)
+            .join(native_script_path(name))
             .canonicalize()
             .map_err(|e| VimError::new(484, e.to_string()))?;
         let autoload = root.parent().unwrap_or(root).join("autoload");
@@ -900,7 +907,7 @@ impl ScriptHost for Loader<'_> {
                 let runtime = syntax.parent().unwrap_or(&syntax).to_owned();
                 let mut paths = Vec::new();
                 for directory in directories.split(',').filter(|s| !s.is_empty()) {
-                    let directory = PathBuf::from(directory)
+                    let directory = native_script_path(directory)
                         .canonicalize()
                         .map_err(|e| fatal(e.to_string()))?;
                     if directory != runtime && !directory.starts_with(&syntax) {

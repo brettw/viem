@@ -283,8 +283,10 @@ fn coordinator_global_scans_search_matches_once_for_any_number_of_targets() {
         assert_eq!(core.search_match_count(view).map(|count| count.total), Some(lines));
         work.search_scan_batches
     };
-    assert_eq!(scan(4), 1);
-    assert_eq!(scan(40), 1);
+    // One and ten edits distinguish a scan per command from a scan per
+    // target without approaching the independent interactive time budget.
+    assert_eq!(scan(1), 1);
+    assert_eq!(scan(10), 1);
 }
 
 #[test]

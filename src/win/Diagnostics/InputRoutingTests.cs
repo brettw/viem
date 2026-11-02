@@ -14,6 +14,7 @@ namespace Viem.Windows.Diagnostics;
 /// <summary>Exercise WinUI's native input window, not the core input wrappers.</summary>
 internal static class InputRoutingTests
 {
+    private enum PointerPhase { Move, Press, Release }
     [DllImport("user32.dll")] private static extern nint GetFocus();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint process);
     [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint key, uint type);
@@ -56,6 +57,7 @@ internal static class InputRoutingTests
     {
         if (focusTarget) element.Focus(FocusState.Programmatic);
         await Settle();
+        owner.Content.UpdateLayout();
         // The automation peer for a windowed flyout omits the owner's client
         // origin. Map XAML root coordinates explicitly to physical screen pixels.
         var logical = element.TransformToVisual(owner.Content).TransformBounds(new(0, 0, element.ActualWidth, element.ActualHeight));
@@ -98,16 +100,16 @@ internal static class InputRoutingTests
         NativePoint expectedScreenPoint = default;
         global::Windows.Foundation.Point observedPoint = default;
         int observedEvents = 0;
-        bool expectingPress = false;
-        void Observed(PointerRoutedEventArgs args, bool press)
+        PointerPhase expectedPhase = PointerPhase.Move;
+        void Observed(PointerRoutedEventArgs args, PointerPhase phase)
         {
-            if (routedPointer is not { } pending || press != expectingPress) return;
+            if (routedPointer is not { } pending || phase != expectedPhase) return;
             // Status controls and splitters move in their own handlers. Match
             // the event in screen space, independent of the target's new frame.
             var point = args.GetCurrentPoint(owner.Content).Position;
             var clientOrigin = new NativePoint();
             if (!ClientToScreen(WinRT.Interop.WindowNative.GetWindowHandle(owner), ref clientOrigin)) return;
-            double currentScale = element.XamlRoot.RasterizationScale;
+            double currentScale = element.XamlRoot?.RasterizationScale ?? scale;
             observedPoint = new(clientOrigin.X + point.X * currentScale, clientOrigin.Y + point.Y * currentScale);
             observedEvents++;
             double pixelTolerance = 1 + .01 * currentScale; // Absolute input and XAML both round physical pixels.
@@ -116,20 +118,23 @@ internal static class InputRoutingTests
             // Complete after all routed handlers have published their selection.
             element.DispatcherQueue.TryEnqueue(() => pending.TrySetResult());
         }
-        PointerEventHandler pressed = (_, args) => Observed(args, true);
-        PointerEventHandler moved = (_, args) => Observed(args, false);
+        PointerEventHandler pressed = (_, args) => Observed(args, PointerPhase.Press);
+        PointerEventHandler moved = (_, args) => Observed(args, PointerPhase.Move);
+        PointerEventHandler released = (_, args) => Observed(args, PointerPhase.Release);
         owner.Content.AddHandler(UIElement.PointerPressedEvent, pressed, true);
         owner.Content.AddHandler(UIElement.PointerMovedEvent, moved, true);
+        owner.Content.AddHandler(UIElement.PointerReleasedEvent, released, true);
         // Windowed flyouts have their own routed tree; retain direct observation
         // there while the window root covers capture transfers to parent bars.
         if (!ReferenceEquals(element, owner.Content)) {
             element.AddHandler(UIElement.PointerPressedEvent, pressed, true);
             element.AddHandler(UIElement.PointerMovedEvent, moved, true);
+            element.AddHandler(UIElement.PointerReleasedEvent, released, true);
         }
-        async Task SendObserved(bool press, Action send)
+        async Task SendObserved(PointerPhase phase, Action send)
         {
             expectedScreenPoint = position;
-            expectingPress = press;
+            expectedPhase = phase;
             var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             routedPointer = pending;
             observedEvents = 0;
@@ -137,34 +142,40 @@ internal static class InputRoutingTests
             catch (TimeoutException error) {
                 var hit = WindowFromPoint(expectedScreenPoint);
                 var windowClass = new System.Text.StringBuilder(128); GetClassName(hit, windowClass, windowClass.Capacity);
-                throw new InvalidOperationException($"Native pointer {(press ? "press" : "move")} was not observed at {expectedScreenPoint.X},{expectedScreenPoint.Y}; last={observedPoint}, events={observedEvents}, scale={scale}, owner={WinRT.Interop.WindowNative.GetWindowHandle(owner):X}, hitRoot={GetAncestor(hit, 2):X}, foreground={GetForegroundWindow():X}, hitClass={windowClass}.", error);
+                GetCursorPos(out var currentPointer);
+                throw new InvalidOperationException($"Native pointer {phase} was not observed at {expectedScreenPoint.X},{expectedScreenPoint.Y}; last={observedPoint}, events={observedEvents}, scale={scale}, owner={WinRT.Interop.WindowNative.GetWindowHandle(owner):X}, hitRoot={GetAncestor(hit, 2):X}, foreground={GetForegroundWindow():X}, hitClass={windowClass}, focus={GetFocus():X}, original={original.X},{original.Y}, current={currentPointer.X},{currentPointer.Y}, bounds={bounds}.", error);
             }
             finally { routedPointer = null; }
         }
         try
         {
-            Move(position);
+            await SendObserved(PointerPhase.Move, () => Move(position));
             for (int click = 1; click < Math.Max(clickCount, doubleClick ? 2 : 1); click++)
             {
-                await SendObserved(true, () => Button(0x0002));
-                Button(0x0004); await Task.Delay(8);
+                await SendObserved(PointerPhase.Press, () => Button(0x0002));
+                await SendObserved(PointerPhase.Release, () => Button(0x0004));
             }
-            await SendObserved(true, () => Button(0x0002));
+            await SendObserved(PointerPhase.Press, () => Button(0x0002));
             for (int i = 0; i < fractions.Count; i++)
             {
                 position = Position(fractions[i]);
                 if (i == 0) { Move(position); await Task.Yield(); }
-                else await SendObserved(false, () => Move(position));
+                else await SendObserved(PointerPhase.Move, () => Move(position));
                 inspect(i);
             }
+            // Click/Tapped actions and capture teardown belong to release.
+            // Do not advance the next fixture while that native input is queued.
+            await SendObserved(PointerPhase.Release, () => Button(0x0004));
         }
         finally
         {
             owner.Content.RemoveHandler(UIElement.PointerPressedEvent, pressed);
             owner.Content.RemoveHandler(UIElement.PointerMovedEvent, moved);
+            owner.Content.RemoveHandler(UIElement.PointerReleasedEvent, released);
             if (!ReferenceEquals(element, owner.Content)) {
                 element.RemoveHandler(UIElement.PointerPressedEvent, pressed);
                 element.RemoveHandler(UIElement.PointerMovedEvent, moved);
+                element.RemoveHandler(UIElement.PointerReleasedEvent, released);
             }
             // Refusing an initial move must not send any input to another app.
             // An outstanding press still needs releasing if focus changed later.
@@ -241,7 +252,11 @@ internal static class InputRoutingTests
             if (!altOnly)
             {
                 uint scan = MapVirtualKey((uint)key, 0);
-                uint context = alt ? 0x20000000u : 0;
+                // These virtual keys name the dedicated navigation cluster.
+                // Without the extended bit WinUI reports their keypad aliases.
+                bool extended = key is VirtualKey.Home or VirtualKey.End or VirtualKey.PageUp or VirtualKey.PageDown
+                    or VirtualKey.Insert or VirtualKey.Delete or VirtualKey.Left or VirtualKey.Right or VirtualKey.Up or VirtualKey.Down;
+                uint context = (alt ? 0x20000000u : 0) | (extended ? 0x01000000u : 0);
                 Post(alt ? 0x0104u : 0x0100u, (uint)key, (nint)(1u | scan << 16 | context)); // WM_[SYS]KEYDOWN
                 Post(alt ? 0x0105u : 0x0101u, (uint)key, (nint)(0xC0000001u | scan << 16 | context)); // WM_[SYS]KEYUP
             }
