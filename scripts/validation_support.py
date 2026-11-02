@@ -107,9 +107,9 @@ def input_files(stage, root=ROOT):
     for name in list(selected):
         path = root / name
         if path.suffix == '.rs' and path.is_file():
-            for included in re.findall(r'\binclude_(?:str|bytes)!\s*\(\s*"([^"\n]+)"', path.read_text()):
+            for included in re.findall(r'\binclude_(?:str|bytes)!\s*\(\s*"([^"\n]+)"', path.read_text(encoding='utf-8')):
                 dependency = (path.parent / included).resolve()
-                try: selected.add(str(dependency.relative_to(root.resolve())))
+                try: selected.add(dependency.relative_to(root.resolve()).as_posix())
                 except ValueError: raise RuntimeError(f'validation input escapes checkout: {dependency}')
     return sorted(selected)
 

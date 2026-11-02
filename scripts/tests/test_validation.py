@@ -84,11 +84,11 @@ class ValidationTests(unittest.TestCase):
             root = Path(directory)
             subprocess.run(['git', 'init', '-q', directory], check=True)
             (root / 'src/core').mkdir(parents=True); (root / 'docs').mkdir()
-            (root / 'src/core/demo.rs').write_text('const DEMO: &str = include_str!("../../docs/demo.md");')
-            demo = root / 'docs/demo.md'; demo.write_text('# fixture')
+            (root / 'src/core/demo.rs').write_text('const DEMO: &str = include_str!("../../docs/\u6587\u4ef6.md");', encoding='utf-8')
+            demo = root / 'docs/\u6587\u4ef6.md'; demo.write_text('# fixture')
             (root / 'docs/workflow.md').write_text('unrelated prose')
             names = support.input_files('focused', root)
-            self.assertIn('docs/demo.md', names)
+            self.assertIn('docs/\u6587\u4ef6.md', names)
             self.assertNotIn('docs/workflow.md', names)
             first = support.digest_files(names, root)
             demo.write_text('# changed fixture')
@@ -137,6 +137,7 @@ class ValidationTests(unittest.TestCase):
         with mock.patch.object(support.sys, 'platform', 'darwin'), \
              mock.patch.object(support.shutil, 'which', return_value='/tool'), \
              mock.patch.object(support.subprocess, 'check_output', return_value='Aqua'), \
+             mock.patch.object(support.socket, 'AF_UNIX', object(), create=True), \
              mock.patch.object(support.socket, 'socket', side_effect=PermissionError('socket denied')):
             run = mock.Mock()
             with self.assertRaisesRegex(PermissionError, 'socket denied'):
@@ -144,12 +145,12 @@ class ValidationTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_contract_filters_resolve_to_existing_tests(self):
-        contracts = json.loads((SCRIPTS / 'fixtures/markdown-contracts.json').read_text())
+        contracts = json.loads((SCRIPTS / 'fixtures/markdown-contracts.json').read_text(encoding='utf-8'))
         root = SCRIPTS.parent
         for cases in contracts.values():
             for behavior, selected in cases.items():
                 module, function = selected.split('::', 1)
-                source = (root / 'tests/all' / f'{module}.rs').read_text()
+                source = (root / 'tests/all' / f'{module}.rs').read_text(encoding='utf-8')
                 if function: self.assertIn(f'fn {function}(', source, behavior)
 
     def test_cargo_artifacts_use_reported_paths_and_distinct_baseline_logs(self):

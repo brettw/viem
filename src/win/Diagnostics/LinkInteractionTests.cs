@@ -49,7 +49,50 @@ internal static class LinkInteractionTests
             new("DestinationSuppliesLabel", DestinationSuppliesLabel),
             new("CaretMovementAndFragment", CaretMovementAndFragment),
             new("LocalDocumentNavigation", LocalDocumentNavigation),
+            new("ReferenceActions", ReferenceActions),
         ], resetCase: editor => editor.RestoreCaret(source));
+
+    private static async Task ReferenceActions(TestEditor editor)
+    {
+        const string referenceSource = "[café link][réf]\n\n[réf]: https://example.test/original \"Title\"";
+        await editor.Reset(referenceSource);
+        try
+        {
+            var view = editor.View;
+            var context = view.LinkContext();
+            var reference = context.Reference!;
+            Check(reference is { Name: "réf", Text: "café link", Destination: "https://example.test/original",
+                Title: "Title", Definition: false, Inactive: false, Links: 1, Images: 0, Complete: true, Editable: true }
+                && reference.DefinitionOffset != null && reference.Uses.Single() is { Text: "café link", Offset: 0, Image: false },
+                "reference context decodes Unicode, nullable offsets, flags and nested uses");
+            var choices = view.ReferenceChoices(context);
+            Check(choices.Single() is { Name: "réf", Destination: "https://example.test/original" }
+                && choices[0].Offset == reference.DefinitionOffset && reference.Choices.SequenceEqual(choices),
+                "reference choices decode with the same definition identity as the context");
+            view.ReferenceAction(context, "goToDefinition");
+            Check(view.LinkContext().Reference is { Definition: true }, "reference action navigates to its definition");
+            view.ReferenceAction(view.LinkContext(), "goToUse", new() { ["target"] = reference.Uses[0].Offset });
+            Check(view.LinkContext().Reference is { Definition: false, Start: 0 },
+                "reference action serializes an unsigned target offset");
+            view.ReferenceAction(view.LinkContext(), "editDefinition",
+                new() { ["destination"] = "https://example.test/changed", ["title"] = "新しい" });
+            Check(view.LinkContext().Reference is { Destination: "https://example.test/changed", Title: "新しい" },
+                "reference action preserves Unicode request fields through the native core");
+            view.Undo();
+            Check(editor.Source == referenceSource, "reference definition editing has exact undo");
+
+            await editor.Reset("");
+            view = editor.View;
+            view.ReferenceAction(view.LinkContext(), "insert", new() { ["text"] = "café link", ["name"] = "réf",
+                ["destination"] = "https://example.test/new", ["title"] = "新しい" });
+            view.Place(0, VIEM_BOUNDARY_AFFINITY_DOWNSTREAM, editor.Document.State.document_revision);
+            Check(view.LinkContext().Reference is { Text: "café link", Name: "réf", Destination: "https://example.test/new", Title: "新しい" },
+                "reference insertion serializes both selection offsets and all text fields");
+            view.Undo();
+            Check(editor.Source == "", "reference insertion has exact undo");
+        }
+        finally { await editor.Reset(source); }
+    }
 
     private static Task CaretToolbar(TestEditor editor)
     {

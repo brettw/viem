@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Viem.Windows.Core;
+using Viem.Windows.Interop;
 using Viem.Windows.Shell;
 using Windows.Foundation;
 using static Viem.Windows.Interop.Native;
@@ -42,7 +43,7 @@ internal static class CheckboxInteractionTests
                 "Insert is between Edit and Format on Windows");
             var insert = window.Menu.Items.Single(item => item.Title == "Insert");
             Check(insert.Items.Select(item => item switch { MenuFlyoutItem command => command.Text,
-                    ToggleMenuFlyoutItem toggle => toggle.Text, MenuFlyoutSubItem submenu => submenu.Text, _ => "separator" })
+                    MenuFlyoutSubItem submenu => submenu.Text, _ => "separator" })
                 .SequenceEqual(new[] { "Heading", "Code", "Link", "Reference", "separator", "Bulleted List", "Numbered List", "Task List", "separator", "Blockquote", "Code Block", "Image", "Table" }),
                 "Insert contains the toolbar actions in the requested order");
             Check(!menus.Contains("Style"), "the Style top-level menu is removed");
@@ -52,7 +53,7 @@ internal static class CheckboxInteractionTests
                 "Insert Heading exposes all six catalogue heading levels in order");
             var format = window.Menu.Items.Single(item => item.Title == "Format");
             Check(format.Items.Skip(3).Select(item => item switch { MenuFlyoutItem command => command.Text,
-                    ToggleMenuFlyoutItem toggle => toggle.Text, MenuFlyoutSubItem submenu => submenu.Text, _ => "separator" })
+                    MenuFlyoutSubItem submenu => submenu.Text, _ => "separator" })
                 .SequenceEqual(new[] { "separator", "Theme", "Edit Styles…", "Reload Style Sheet", "separator", "Word wrap", "Align indents to previous line" }),
                 "Format places theme and style commands before Word wrap and indent alignment");
             var heading6 = heading.Items.Cast<ToggleMenuFlyoutItem>().Last();
@@ -114,7 +115,7 @@ internal static class CheckboxInteractionTests
             Check(Source() == "- [x] alpha", "checkbox click has exact redo");
             bool staleRejected = false;
             try { view.ToggleCheckbox(layout.Info.identity, decoration.paragraph_id); }
-            catch (CoreException) { staleRejected = true; }
+            catch (CoreException error) when (error.Status == VIEM_STATUS_STALE_REVISION) { staleRejected = true; }
             Check(staleRejected && Source() == "- [x] alpha", "checkbox click cannot use stale native layout geometry");
             view.Undo(); view.Undo();
             Check(Source() == "alpha", "undoing checkbox authoring restores the original ordinary paragraph");

@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
@@ -245,9 +246,9 @@ internal sealed partial class EditorPane
             }
             if (!insertingLink && context.Reference != null) {
                 var fields = referenceEditMode is "editDefinition" or "createDefinition"
-                    ? new Dictionary<string, object> { ["destination"] = linkDestination!.Text, ["title"] = referenceTitle!.Text }
-                    : referenceEditMode == "rename" ? new Dictionary<string, object> { ["name"] = referenceName!.Text }
-                    : new Dictionary<string, object> { ["text"] = linkText!.Text, ["name"] = referenceName!.Text };
+                    ? new JsonObject { ["destination"] = linkDestination!.Text, ["title"] = referenceTitle!.Text }
+                    : referenceEditMode == "rename" ? new JsonObject { ["name"] = referenceName!.Text }
+                    : new JsonObject { ["text"] = linkText!.Text, ["name"] = referenceName!.Text };
                 view.ReferenceAction(context, referenceEditMode, fields);
                 DismissLinkPopup(suppress: false); FocusEditor(); Refresh(); return;
             }
@@ -458,7 +459,7 @@ internal sealed partial class EditorPane
         linkApply.Content = referenceEditMode == "createDefinition" ? "Create definition" : referenceEditMode == "editDefinition" ? reference.Inactive ? "Update inactive definition" : $"Update {reference.Links + reference.Images} uses"
             : referenceEditMode == "rename" ? "Rename everywhere" : "Apply";
     }
-    private void ReferenceAction(string action, Dictionary<string, object>? fields = null, bool editDefinition = false)
+    private void ReferenceAction(string action, JsonObject? fields = null, bool editDefinition = false)
     {
         if (View is not { } view || shownLink is not { } context) return;
         view.ReferenceAction(context, action, fields);

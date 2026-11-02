@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Viem.Windows.Interop;
 using static Viem.Windows.Interop.Native;
 using static Viem.Windows.Interop.Abi;
@@ -39,7 +40,7 @@ internal sealed unsafe partial class CoreView
             root.GetProperty("canRemoveSelection").GetBoolean(), root.GetProperty("canExitLink").GetBoolean(),
             root.GetProperty("text").GetString() ?? "", link,
             root.TryGetProperty("reference", out var reference) && reference.ValueKind != JsonValueKind.Null
-                ? reference.Deserialize<ReferenceContext>(new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) : null);
+                ? reference.Deserialize(ReferenceJsonContext.Default.ReferenceContext) : null);
     }
     public void ValidateLinkContext(LinkContext expected)
     {
@@ -70,13 +71,13 @@ internal sealed unsafe partial class CoreView
                 expected.Link?.Start ?? 0, expected.Link?.End ?? 0, label, target, outcome);
         });
     }
-    public void ReferenceAction(LinkContext context, string action, Dictionary<string, object>? fields = null)
+    public void ReferenceAction(LinkContext context, string action, JsonObject? fields = null)
     {
         ValidateLinkContext(context);
         if (context.Reference == null && action != "insert") throw new InvalidOperationException("Select a reference first.");
         fields ??= new(); fields["action"] = action; fields["offset"] = context.Reference?.Start ?? context.Selection.text_start;
         if (action == "insert") fields["end"] = context.Selection.text_end;
-        using var arena = new NativeArena(); var request = arena.Utf8(JsonSerializer.Serialize(fields));
+        using var arena = new NativeArena(); var request = arena.Utf8(JsonSerializer.Serialize(fields, ReferenceJsonContext.Default.JsonObject));
         Apply(outcome => {
             var selection = context.Selection;
             return viem_core_view_reference_action(Document.Handle, Id, &selection, request, outcome);
@@ -85,9 +86,9 @@ internal sealed unsafe partial class CoreView
     public ReferenceChoice[] ReferenceChoices(LinkContext context)
     {
         ValidateLinkContext(context);
-        return JsonSerializer.Deserialize<ReferenceChoice[]>(Copy((p, n, r) =>
+        return JsonSerializer.Deserialize(Copy((p, n, r) =>
             viem_core_copy_reference_choices(Document.Handle, context.Selection.document_id, context.Selection.document_revision, p, n, r)),
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+            ReferenceJsonContext.Default.ReferenceChoiceArray) ?? [];
     }
     public void GoToLinkFragment(string fragment)
     {

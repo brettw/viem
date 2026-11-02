@@ -293,7 +293,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); ResetImagePreviews();
         Document.Changed -= DocumentChanged;
         if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.ZoomChanged -= RememberZoom; View.Dispose(); }
-        Document = document; View = prepared; View.SetHostRegister(35, AlternatePath ?? "");
+        Document = document; View = prepared; View?.SetHostRegister(35, AlternatePath ?? "");
         Document.Changed += DocumentChanged;
         if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom; Run(() => View.TakeStartupEffects(false)); }
         mapping.Stop(); compositionRejected = composing; composing = false; ClearInput();
