@@ -59,6 +59,11 @@ frontend marshaling; native integration tests cover the actual language boundary
 
 `viem_core_view_native_actions` reports available selection/search intentions;
 `viem_core_view_native_action` executes them through the shared controller.
+`viem_core_view_formatting_actions` reports each native formatting action's
+availability and on/off/mixed state for the view's selection; toolbars, menus
+and accelerators present it rather than deriving it from selected-style facts.
+Callers request only the actions they show, so validating one menu item stays
+cheap.
 `viem_core_style_parent_candidates` returns stable style IDs for an exact
 stylesheet identity, using model role and inheritance constraints.
 

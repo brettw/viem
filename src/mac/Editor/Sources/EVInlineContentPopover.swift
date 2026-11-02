@@ -268,29 +268,13 @@ final class EVInlineContentPopoverController: NSObject, NSTextFieldDelegate, NSC
         return result
     }
 
+    /// The toolbar's link toggle or image action, as core presents it.
     var toolbarPresentation: EVMenuItemPresentation {
-        guard let surface, surface.commandLine?.prompt == nil, let session = surface.session,
-              !session.hasActiveComposition, let selection = try? session.listSelection(),
-              let context = try? readContext(session: session, selection: selection) else { return .disabled }
-        if kind == .link {
-            if let reference = context.reference { return EVMenuItemPresentation(isEnabled: reference.editable, state: .on) }
-            return EVMenuItemPresentation(isEnabled: context.linked
-                ? (selection.text_start == selection.text_end ? context.canExitLink : context.canRemoveSelection)
-                : context.canInsert, state: context.linked ? .on : .off)
-        }
-        let active = context.item.map { image in
-            (surface.viewPresentation.mode == UInt32(VIEM_MODE_NORMAL) && selection.text_start == selection.text_end)
-                || (selection.text_start == image.start && selection.text_end == image.end)
-        } ?? false
-        return EVMenuItemPresentation(isEnabled: !active && context.canInsert, state: active ? .on : .off)
+        surface?.formattingPresentation(UInt32(kind == .link ? VIEM_FORMATTING_LINK : VIEM_FORMATTING_IMAGE)) ?? .disabled
     }
 
     var referenceToolbarPresentation: EVMenuItemPresentation {
-        guard let surface, surface.commandLine?.prompt == nil, let session = surface.session,
-              !session.hasActiveComposition, let selection = try? session.listSelection(),
-              let context = try? readContext(session: session, selection: selection) else { return .disabled }
-        return EVMenuItemPresentation(isEnabled: context.reference?.editable ?? (context.item == nil && context.canInsert),
-            state: context.reference == nil ? .off : .on)
+        surface?.formattingPresentation(UInt32(VIEM_FORMATTING_REFERENCE)) ?? .disabled
     }
 
     func openReferenceEditor() {

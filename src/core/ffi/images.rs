@@ -18,27 +18,11 @@ pub unsafe extern "C" fn viem_core_view_copy_image_context(
             typed_pointer_region(required, 1)?,
         ])?;
         let bytes = with_core(handle, |core| {
-            let selection = core
-                .list_selection_identity(ViewId(view))
-                .map_err(core_status)?;
-            let identity = logical_selection_identity_to_ffi(&selection)?;
+            let context = core.image_context(ViewId(view)).map_err(core_status)?;
+            let selection = &context.selection;
+            let identity = logical_selection_identity_to_ffi(selection)?;
             let document = core.document();
             let range = selection.range();
-            let cursor = core
-                .command_state(ViewId(view))
-                .ok_or(ViemStatus::InvalidView)?
-                .cursor();
-            let image = document
-                // Native selections are half-open and may leave their active
-                // caret just after the image. Sample selected content so both
-                // selection directions identify the same atomic image.
-                .image_snapshot_at(document.text_point(if range.is_empty() { cursor } else { range.start })
-                    .map_err(document_status)?)
-                .map_err(document_status)?
-                .filter(|image| {
-                    range.is_empty()
-                        || (image.range.start <= range.start && range.end <= image.range.end)
-                });
             let linear = matches!(
                 selection.kind(),
                 LogicalSelectionKind::None
@@ -58,8 +42,8 @@ pub unsafe extern "C" fn viem_core_view_copy_image_context(
                 "selection": { "viewId": view, "documentId": document.id().0, "revision": document.revision().0,
                     "start": range.start, "end": range.end, "kind": identity.kind, "anchor": selection.anchor(), "active": selection.active(),
                     "affinity": if selection.active_affinity() == BoundaryAffinity::Upstream { 0 } else { 1 } },
-                "canInsert": linear && document.can_insert_image(range), "text": text,
-                "image": image.map(|image| serde_json::json!({"start":image.range.start,"end":image.range.end,"text":image.text,"destination":image.destination,"width":image.width,"height":image.height,"editable":image.editable && !document.is_read_only()}))
+                "canInsert": context.can_insert, "text": text,
+                "image": context.image.as_ref().map(|image| serde_json::json!({"start":image.range.start,"end":image.range.end,"text":image.text,"destination":image.destination,"width":image.width,"height":image.height,"editable":image.editable && !document.is_read_only()}))
             })).map_err(|_| ViemStatus::CoreFailure)
         })?;
         unsafe {

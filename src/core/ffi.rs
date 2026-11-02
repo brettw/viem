@@ -23,6 +23,8 @@ mod style_candidates;
 pub use style_candidates::*;
 mod native_actions;
 pub use native_actions::*;
+mod formatting_actions;
+pub use formatting_actions::*;
 mod argument_list;
 pub use argument_list::*;
 mod view_restoration;
@@ -2271,12 +2273,9 @@ pub const VIEM_LIST_STYLE_NONE: u32 = 0;
 pub const VIEM_LIST_STYLE_BULLET: u32 = 1;
 pub const VIEM_LIST_STYLE_NUMBERED: u32 = 2;
 pub const VIEM_LIST_STYLE_TASK: u32 = 3;
-pub const VIEM_SELECTED_STYLE_HAS_TASKS: u32 = 1 << 9;
-pub const VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST: u32 = 1 << 10;
-pub const VIEM_SELECTED_STYLE_CAN_SET_ALERT: u32 = 1 << 11;
-pub const VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE: u32 = 1 << 12;
-/// Alert kind `k` (1 through 5) sets bit `VIEM_SELECTED_STYLE_ALERT_SHIFT + k - 1`.
-pub const VIEM_SELECTED_STYLE_ALERT_SHIFT: u32 = 13;
+pub const VIEM_SELECTED_STYLE_PARAGRAPH_MIXED: u32 = 1 << 0;
+pub const VIEM_SELECTED_STYLE_CHARACTER_MIXED: u32 = 1 << 1;
+pub const VIEM_SELECTED_STYLE_HAS_TABLE: u32 = 1 << 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -13824,20 +13823,9 @@ pub unsafe extern "C" fn viem_core_view_selected_styles_export(
             let character = selected.character.map(|id| id.0).unwrap_or_default();
             let info = ViemSelectedStylesInfoV1 {
                 struct_size: size_of::<ViemSelectedStylesInfoV1>() as u32,
-                flags: u32::from(selected.paragraph_mixed)
-                    | (u32::from(selected.character_mixed) << 1)
-                    | (u32::from(selected.has_bullets) << 2)
-                    | (u32::from(selected.has_numbering) << 3)
-                    | (u32::from(selected.has_non_list) << 4)
-                    | (u32::from(selected.has_quotes) << 5)
-                    | (u32::from(selected.has_non_quote) << 6)
-                    | (u32::from(selected.has_table) << 7)
-                    | (u32::from(selected.has_code_block) << 8)
-                    | if selected.has_tasks { VIEM_SELECTED_STYLE_HAS_TASKS } else { 0 }
-                    | if core.can_set_task_list(ViewId(view)).map_err(core_status)? { VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST } else { 0 }
-                    | if core.can_set_alert(ViewId(view)).map_err(core_status)? { VIEM_SELECTED_STYLE_CAN_SET_ALERT } else { 0 }
-                    | if selected.has_plain_quote { VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE } else { 0 }
-                    | (u32::from(selected.alerts) << VIEM_SELECTED_STYLE_ALERT_SHIFT),
+                flags: if selected.paragraph_mixed { VIEM_SELECTED_STYLE_PARAGRAPH_MIXED } else { 0 }
+                    | if selected.character_mixed { VIEM_SELECTED_STYLE_CHARACTER_MIXED } else { 0 }
+                    | if selected.has_table { VIEM_SELECTED_STYLE_HAS_TABLE } else { 0 },
                 document_id: core.document().id().0,
                 document_revision: expected_revision,
                 style_sheet_revision: core.document().projection().style_sheet().revision.0,

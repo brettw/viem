@@ -10,6 +10,7 @@
 mod application_theme;
 mod audit_rich_boundaries;
 mod formatting_presentation_work;
+mod formatting_actions;
 mod architecture_boundaries;
 mod autoselect;
 mod base_paragraph_root;

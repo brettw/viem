@@ -1378,6 +1378,16 @@ internal unsafe struct ViemSelectedStylesInfoV1
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemFormattingActionsV1
+{
+    public uint @struct_size;
+    public uint @reserved;
+    public ulong @enabled;
+    public ulong @on;
+    public ulong @mixed;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ViemCommandLineSelectionV1
 {
     public uint @struct_size;
@@ -2032,18 +2042,42 @@ internal static unsafe partial class Native
     public const uint VIEM_LINE_MODE_PHYSICAL_SOURCE = 1u;
     public const uint VIEM_SELECTED_STYLE_PARAGRAPH_MIXED = (1u << 0);
     public const uint VIEM_SELECTED_STYLE_CHARACTER_MIXED = (1u << 1);
-    public const uint VIEM_SELECTED_STYLE_HAS_BULLETS = (1u << 2);
-    public const uint VIEM_SELECTED_STYLE_HAS_NUMBERING = (1u << 3);
-    public const uint VIEM_SELECTED_STYLE_HAS_NON_LIST = (1u << 4);
-    public const uint VIEM_SELECTED_STYLE_HAS_QUOTES = (1u << 5);
-    public const uint VIEM_SELECTED_STYLE_HAS_NON_QUOTE = (1u << 6);
-    public const uint VIEM_SELECTED_STYLE_HAS_TABLE = (1u << 7);
-    public const uint VIEM_SELECTED_STYLE_HAS_CODE_BLOCK = (1u << 8);
-    public const uint VIEM_SELECTED_STYLE_HAS_TASKS = (1u << 9);
-    public const uint VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST = (1u << 10);
-    public const uint VIEM_SELECTED_STYLE_CAN_SET_ALERT = (1u << 11);
-    public const uint VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE = (1u << 12);
-    public const uint VIEM_SELECTED_STYLE_ALERT_SHIFT = 13u;
+    public const uint VIEM_SELECTED_STYLE_HAS_TABLE = (1u << 2);
+    public const uint VIEM_FORMATTING_BOLD = 1u;
+    public const uint VIEM_FORMATTING_ITALIC = 2u;
+    public const uint VIEM_FORMATTING_UNDERLINE = 3u;
+    public const uint VIEM_FORMATTING_STRIKETHROUGH = 4u;
+    public const uint VIEM_FORMATTING_SUPERSCRIPT = 5u;
+    public const uint VIEM_FORMATTING_SUBSCRIPT = 6u;
+    public const uint VIEM_FORMATTING_CODE = 7u;
+    public const uint VIEM_FORMATTING_CODE_BLOCK = 8u;
+    public const uint VIEM_FORMATTING_BLOCK_QUOTE = 9u;
+    public const uint VIEM_FORMATTING_ALERT_NOTE = 10u;
+    public const uint VIEM_FORMATTING_ALERT_TIP = 11u;
+    public const uint VIEM_FORMATTING_ALERT_IMPORTANT = 12u;
+    public const uint VIEM_FORMATTING_ALERT_WARNING = 13u;
+    public const uint VIEM_FORMATTING_ALERT_CAUTION = 14u;
+    public const uint VIEM_FORMATTING_BULLETED_LIST = 15u;
+    public const uint VIEM_FORMATTING_NUMBERED_LIST = 16u;
+    public const uint VIEM_FORMATTING_TASK_LIST = 17u;
+    public const uint VIEM_FORMATTING_REMOVE_LIST = 18u;
+    public const uint VIEM_FORMATTING_INDENT = 19u;
+    public const uint VIEM_FORMATTING_UNINDENT = 20u;
+    public const uint VIEM_FORMATTING_LIST_PARAGRAPH = 21u;
+    public const uint VIEM_FORMATTING_HEADING_0 = 22u;
+    public const uint VIEM_FORMATTING_HEADING_1 = 23u;
+    public const uint VIEM_FORMATTING_HEADING_2 = 24u;
+    public const uint VIEM_FORMATTING_HEADING_3 = 25u;
+    public const uint VIEM_FORMATTING_HEADING_4 = 26u;
+    public const uint VIEM_FORMATTING_HEADING_5 = 27u;
+    public const uint VIEM_FORMATTING_HEADING_6 = 28u;
+    public const uint VIEM_FORMATTING_LINK = 29u;
+    public const uint VIEM_FORMATTING_REFERENCE = 30u;
+    public const uint VIEM_FORMATTING_IMAGE = 31u;
+    public const uint VIEM_FORMATTING_TABLE = 32u;
+    public const uint VIEM_FORMATTING_PARAGRAPH_STYLES = 33u;
+    public const uint VIEM_FORMATTING_CHARACTER_STYLES = 34u;
+    public static readonly uint VIEM_FORMATTING_ACTIONS_V1_SIZE = ((uint)sizeof(ViemFormattingActionsV1));
     public const uint VIEM_THEME_PRESET_MIDNIGHT = 0u;
     public const uint VIEM_THEME_PRESET_PAPER = 1u;
     public const uint VIEM_CLIPBOARD_FORMAT_HTML = 1u;
@@ -2364,6 +2398,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_copy_formatted_utf8(ulong @core, ulong @expected_revision, byte* @output, ulong @output_capacity, ulong* @out_required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_selected_styles_export(ulong @core, ulong @view, ulong @expected_revision, ViemSelectedStylesInfoV1* @out_info, byte* @out_utf8, ulong @capacity);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_view_formatting_actions(ulong @core, ulong @view, ulong @requested, ViemFormattingActionsV1* @out_actions);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_initialize_style_defaults(ulong @core, ulong @expected_revision, byte* @json, ulong @length, nint @diagnostic, void* @context);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

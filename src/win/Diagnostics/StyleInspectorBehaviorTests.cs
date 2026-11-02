@@ -391,7 +391,7 @@ internal static partial class StyleInspectorBehaviorTests
         using var document = new CoreDocument("word"u8.ToArray(), "comment.md", VIEM_FORMAT_MARKDOWN);
         using var view = new CoreView(document, pane.Canvas.Device, pane.DispatcherQueue, 700, 400);
         var key = new StyleKey(2, "Comment");
-        Check(CoreView.StyleChoices(view.Styles(), view.SelectedNamedStyles(), false).Any(c => c.Key == key && c.Enabled),
+        Check(CoreView.StyleChoices(view.Styles(), view.SelectedNamedStyles(), view.Formatting()).Any(c => c.Key == key && c.Enabled),
             "Comment is assignable in the Markdown Character menu");
         view.SelectAll();
         view.ChooseStyle(key, view.SelectedNamedStyles().Identity);

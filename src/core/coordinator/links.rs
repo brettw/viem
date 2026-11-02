@@ -417,3 +417,83 @@ impl<P: TextMeasurementProvider> Core<P> {
         })
     }
 }
+
+/// The link popup's target for the current selection, shared by its export
+/// and by formatting-action availability.
+pub struct LinkContext {
+    pub selection: LogicalSelectionIdentity,
+    pub can_insert: bool,
+    pub linked: bool,
+    pub can_exit_link: bool,
+    pub can_remove_selection: bool,
+    /// An inline link around the selection or caret, editable before the
+    /// document's read-only flag is applied.
+    pub link: Option<crate::document::LinkSnapshot>,
+    /// A reference link, considered only where there is no inline link.
+    pub reference: Option<crate::document::ReferenceContext>,
+}
+
+impl LinkContext {
+    pub fn is_linear(&self) -> bool {
+        matches!(self.selection.kind(),
+            LogicalSelectionKind::None | LogicalSelectionKind::Character | LogicalSelectionKind::Line)
+    }
+}
+
+impl<P: TextMeasurementProvider> Core<P> {
+    pub fn link_context(&self, view_id: ViewId) -> Result<LinkContext, CoreError> {
+        let selection = self.list_selection_identity(view_id)?;
+        let commands = self.command_state(view_id).ok_or(CoreError::UnknownView(view_id))?;
+        let document = &self.document;
+        let range = selection.range();
+        let cursor = commands.cursor();
+        let affinity = if commands.mode() == Mode::Normal {
+            BoundaryAffinity::Downstream
+        } else {
+            commands.insertion_boundary_affinity()
+        };
+        let sample = if range.is_empty() && affinity == BoundaryAffinity::Upstream && cursor > 0 {
+            document.hard_line_snapshot().previous_grapheme_boundary(cursor).unwrap_or(cursor)
+        } else if range.is_empty() {
+            cursor
+        } else {
+            range.start
+        };
+        let linked = document.projection().style_spans_for_region(&(sample..sample.saturating_add(1)))
+            .iter()
+            .any(|span| span.application == StyleApplication::Automatic("Link".into())
+                && span.range.contains(&sample)
+                && (range.is_empty() || range.end <= span.range.end));
+        let link = document
+            .link_at_boundary(
+                if range.is_empty() { cursor } else { range.start },
+                if range.is_empty() { affinity } else { BoundaryAffinity::Downstream },
+            )?
+            .filter(|link| range.is_empty() || (link.range.start <= range.start && range.end <= link.range.end));
+        // An empty-label link has no text; its popup sits at the caret.
+        let link = match link {
+            None if range.is_empty() => document.empty_link_at(cursor)?,
+            link => link,
+        };
+        let reference = if link.is_none() {
+            document.reference_context_at(document.text_point(sample)?)?
+                .filter(|reference| range.is_empty() || range.start >= reference.start && range.end <= reference.end)
+        } else {
+            None
+        };
+        let linear = matches!(selection.kind(),
+            LogicalSelectionKind::None | LogicalSelectionKind::Character | LogicalSelectionKind::Line);
+        let typing_link_disabled = commands.typing_link_disabled();
+        Ok(LinkContext {
+            can_insert: linear && (document.can_insert_link(range.clone()) || range.is_empty() && typing_link_disabled
+                && commands.typing_named_style().is_none_or(|style| !document.character_style_is_code(style))
+                && document.can_exit_link_typing(cursor, affinity)),
+            linked: linked && (!range.is_empty() || !typing_link_disabled),
+            can_exit_link: range.is_empty() && !typing_link_disabled && document.can_exit_link_typing(cursor, affinity),
+            can_remove_selection: linear && document.can_remove_link_selection(range),
+            link,
+            reference,
+            selection,
+        })
+    }
+}

@@ -333,3 +333,30 @@ mod resource_tests {
     }
 
 }
+
+/// The image popup's target for the current selection, shared by its export
+/// and by formatting-action availability.
+pub struct ImageContext {
+    pub selection: LogicalSelectionIdentity,
+    pub can_insert: bool,
+    /// The image selected, or at the caret, editable before the document's
+    /// read-only flag is applied.
+    pub image: Option<crate::document::ImageSnapshot>,
+}
+
+impl<P: TextMeasurementProvider> Core<P> {
+    pub fn image_context(&self, view_id: ViewId) -> Result<ImageContext, CoreError> {
+        let selection = self.list_selection_identity(view_id)?;
+        let cursor = self.command_state(view_id).ok_or(CoreError::UnknownView(view_id))?.cursor();
+        let range = selection.range();
+        let image = self.document
+            // Native selections are half-open and may leave their active
+            // caret just after the image. Sample selected content so both
+            // selection directions identify the same atomic image.
+            .image_snapshot_at(self.document.text_point(if range.is_empty() { cursor } else { range.start })?)?
+            .filter(|image| range.is_empty() || (image.range.start <= range.start && range.end <= image.range.end));
+        let linear = matches!(selection.kind(),
+            LogicalSelectionKind::None | LogicalSelectionKind::Character | LogicalSelectionKind::Line);
+        Ok(ImageContext { can_insert: linear && self.document.can_insert_image(range), image, selection })
+    }
+}

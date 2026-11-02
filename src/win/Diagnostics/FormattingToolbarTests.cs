@@ -116,8 +116,8 @@ internal static class FormattingToolbarTests
                         ToolbarAction.CharacterCode => view.SelectedNamedStyles().Character == "Code" && window.Toolbar.Visibility == Visibility.Collapsed,
                         ToolbarAction.Superscript => view.SuperscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
                         ToolbarAction.Subscript => view.SubscriptState() == VIEM_SEMANTIC_STYLE_STATE_ON,
-                        ToolbarAction.Bullets => view.SelectedNamedStyles().ListState(VIEM_LIST_STYLE_BULLET) == VIEM_SEMANTIC_STYLE_STATE_ON,
-                        _ => view.SelectedNamedStyles().ListState(VIEM_LIST_STYLE_NUMBERED) == VIEM_SEMANTIC_STYLE_STATE_ON
+                        ToolbarAction.Bullets => view.Formatting().State(VIEM_FORMATTING_BULLETED_LIST) == VIEM_SEMANTIC_STYLE_STATE_ON,
+                        _ => view.Formatting().State(VIEM_FORMATTING_NUMBERED_LIST) == VIEM_SEMANTIC_STYLE_STATE_ON
                     }, $"native formatting shortcut applies {action} in format {format}");
                     view.Key(VIEM_KEY_ESCAPE);
                     view.Undo();
@@ -147,8 +147,10 @@ internal static class FormattingToolbarTests
                 Check(!pane.CanUseFormattingCommands, "composition disables formatting");
                 view.CancelComposition();
                 view.Key(VIEM_KEY_ESCAPE);
+                // Core decides each action's availability; save-only readonly
+                // does not take formatting accelerators back for Vim.
                 document.SetReadOnly(true);
-                Check(!pane.CanUseFormattingCommands, "read-only buffers disable formatting");
+                Check(pane.CanUseFormattingCommands, "read-only buffers keep formatting accelerators");
                 document.SetReadOnly(false);
                 var gate = new TaskCompletionSource<bool>();
                 view.Command("g");
@@ -626,7 +628,7 @@ internal static class FormattingToolbarTests
             Check(Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)) == "> # Heading", "quote toggle preserves heading syntax",
                 $"format={format}, source={Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)).Replace("\n", "\\n")}, mode={quotedView.Presentation.mode}, "
                 + $"before: {quoteTargetBefore}; after active={ReferenceEquals(window.ActivePane, quotedPane)}, activeView={window.ActivePane?.View?.Id}, toolbarView={toolbar.BoundViewIdForTesting}, "
-                + $"coreQuote={quotedView.SelectedNamedStyles().QuoteState}, toolbarQuote={State(toolbar, ToolbarAction.BlockQuote)}, "
+                + $"coreQuote={quotedView.Formatting().State(VIEM_FORMATTING_BLOCK_QUOTE)}, toolbarQuote={State(toolbar, ToolbarAction.BlockQuote)}, "
                 + $"foregroundOwnsWindow={InputRoutingTests.ForegroundWindowForTesting == window.Hwnd}, error={quotedPane.LastError}");
             await Click(toolbar, ToolbarAction.BlockQuote);
             Check(State(toolbar, ToolbarAction.BlockQuote) == false && Encoding.UTF8.GetString(quotedPane.Document.Source(quotedPane.Document.State.document_revision)) == inner, "quote toggle removes only quote treatment");
@@ -685,7 +687,7 @@ internal static class FormattingToolbarTests
             Check(State(toolbar, ToolbarAction.Strikethrough) == true && !toolbar.Buttons[ToolbarAction.Strikethrough].IsEnabled,
                 "literal code keeps resolved strikethrough appearance visible while disabling document formatting: " + format,
                 $"toggle={State(toolbar, ToolbarAction.Strikethrough)}, enabled={toolbar.Buttons[ToolbarAction.Strikethrough].IsEnabled}, "
-                + $"coreState={codeView.StrikethroughState()}, canFormat={codeView.CanFormatStrikethrough}, "
+                + $"coreState={codeView.StrikethroughState()}, canFormat={codeView.Formatting().Enabled(VIEM_FORMATTING_STRIKETHROUGH)}, "
                 + $"selected={literalStyles.Paragraph}/{literalStyles.Character}, flags={literalStyles.Flags}, "
                 + $"styles={string.Join(", ", literalSheet.Styles.Where(style => style.Id is "Paragraph" or "Code Block" or "Code").Select(style => $"{style.Namespace}:{style.Id} declared={style.Declares(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH)} effective={style.Value(VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH).enum_value}"))}, "
                 + $"mode={codeView.Presentation.mode}, cursor={codeView.Presentation.cursor_utf8_offset}, error={codePane.LastError}");

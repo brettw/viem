@@ -244,64 +244,51 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     // Only Preview has formatting controls; with Preview off the title bar
     // offers Preview in place of this detached toolbar.
     controlsViewport.isHidden = !markdown
+    // One core decision presents every action; tables and code blocks
+    // already disable the actions they exclude.
+    let actions = try? surface.session?.formattingActions()
+    func core(_ action: UInt32) -> EVMenuItemPresentation { actions?.presentation(action) ?? .disabled }
     setHidden(!markdown, for: insertTable)
     setHidden(!markdown, for: insertLink)
-    let link = surface.linkPopover.toolbarPresentation
+    let link = core(UInt32(VIEM_FORMATTING_LINK))
     insertLink.state = link.state
-    insertLink.isEnabled = markdown && link.isEnabled
+    insertLink.isEnabled = link.isEnabled
     setHidden(!markdown, for: insertReference)
-    let reference = surface.linkPopover.referenceToolbarPresentation
+    let reference = core(UInt32(VIEM_FORMATTING_REFERENCE))
     insertReference.state = reference.state
-    insertReference.isEnabled = markdown && reference.isEnabled
+    insertReference.isEnabled = reference.isEnabled
     setHidden(!markdown, for: insertImage)
-    let image = surface.imagePopover.toolbarPresentation
+    let image = core(UInt32(VIEM_FORMATTING_IMAGE))
     insertImage.state = image.state
-    insertImage.isEnabled = markdown && image.isEnabled
-    let tableContext = try? surface.session?.tableContext()
-    insertTable.isEnabled = markdown && (tableContext?.flags ?? 0) & 1 != 0
-    if let expected = pickerSelection, let current = tableContext?.selection,
+    insertImage.isEnabled = image.isEnabled
+    insertTable.isEnabled = core(UInt32(VIEM_FORMATTING_TABLE)).isEnabled
+    if let expected = pickerSelection, let current = try? surface.session?.tableContext().selection,
        !expected.isSameSelection(as: current) {
       tablePicker?.close()
     }
     let selected = try? surface.session?.selectedNamedStyles()
-    let selection = try? surface.session?.listSelection()
     if styleSnapshot?.identity != selected?.identity || styleSnapshot == nil {
       styleSnapshot = try? surface.backend.styleSheetSnapshot()
     }
     let next = styleSnapshot.map {
-      surface.styleMenuCatalogue(snapshot: $0, selectedStyles: selected, selectionAvailable: selection != nil)
+      surface.styleMenuCatalogue(snapshot: $0, selectedStyles: selected, actions: actions)
     }
-    let indent = selection.flatMap { try? surface.session?.listIndentCapabilities(expected: $0) } ?? 0
     if trackingMenus.isEmpty {
       catalogue = next
       refresh(paragraphStyle, role: .paragraph)
     }
     for (command, button) in commandButtons {
-      let presentation: EVMenuItemPresentation
-      switch command {
-      case .bulletedList, .numberedList, .taskList:
-        presentation = surface.listStylePresentation(command, selected: selected)
-      case .increaseIndent, .decreaseIndent:
-        let flag = UInt32(command == .increaseIndent ? VIEM_LIST_CAN_INDENT : VIEM_LIST_CAN_UNINDENT)
-        presentation = EVMenuItemPresentation(isEnabled: indent & flag != 0)
-      default: presentation = surface.presentation(for: command)
-      }
+      let presentation = command.formattingAction.map(core) ?? surface.presentation(for: command)
       if button.state != presentation.state { button.state = presentation.state }
       if button.isEnabled != presentation.isEnabled { button.isEnabled = presentation.isEnabled }
     }
-    refreshCode(characterCode, role: .character, id: "Code", catalogue: next)
-    refreshCode(codeBlock, role: .paragraph, id: "Code Block", catalogue: next)
-    blockQuote.state = selected?.quoteState ?? .off
-    blockQuote.isEnabled = selected?.hasCodeBlock == false && next?.entries.contains { $0.role == .paragraph && $0.stableID == "Block quote" && $0.presentation.isEnabled } == true
+    refreshCode(characterCode, core(UInt32(VIEM_FORMATTING_CODE)), role: .character, id: "Code", catalogue: next)
+    refreshCode(codeBlock, core(UInt32(VIEM_FORMATTING_CODE_BLOCK)), role: .paragraph, id: "Code Block", catalogue: next)
+    let quote = core(UInt32(VIEM_FORMATTING_BLOCK_QUOTE))
+    blockQuote.state = quote.state
+    blockQuote.isEnabled = quote.isEnabled
     blockQuoteAlerts.isEnabled = EVMenuCommand.alertCommands.contains { command in
-      command.alertKind.map { surface.alertPresentation($0).isEnabled } ?? false
-    }
-    if selected?.hasTable == true {
-      paragraphStyle.isEnabled = false
-      for action in [EVMenuCommand.bulletedList, .numberedList, .taskList, .increaseIndent, .decreaseIndent] { commandButtons[action]?.isEnabled = false }
-      setHidden(true, for: codeBlock)
-      blockQuote.isEnabled = false
-      blockQuoteAlerts.isEnabled = false
+      command.formattingAction.map { core($0).isEnabled } ?? false
     }
   }
 
@@ -350,21 +337,18 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     if popup.isEnabled != enabled { popup.isEnabled = enabled }
   }
 
-  private func refreshCode(_ button: NSButton, role: EVStyleMenuRole, id: String, catalogue: EVStyleMenuCatalogue?) {
-    let entry = catalogue?.entries.first { $0.role == role && $0.stableID == id }
-    let state = entry?.presentation.state ?? .off
-    if button.state != state { button.state = state }
-    let targetID = button.state == .on ? (role == .character ? "" : "Paragraph") : id
+  /// Inline Code stays visible while its style is defined; an unavailable
+  /// Code Block toggle hides, as it does in tables.
+  private func refreshCode(_ button: NSButton, _ presentation: EVMenuItemPresentation, role: EVStyleMenuRole,
+                           id: String, catalogue: EVStyleMenuCatalogue?) {
+    if button.state != presentation.state { button.state = presentation.state }
     if role == .character {
-      let target = catalogue?.entries.first { $0.role == role && $0.stableID == targetID }
       setHidden(surface?.backend.sourceFormat.hasSameSerialization(as: .markdown) != true
-        || entry == nil || target == nil, for: button)
-      button.isEnabled = target?.presentation.isEnabled == true
+        || catalogue?.entries.contains { $0.role == role && $0.stableID == id } != true, for: button)
+      button.isEnabled = presentation.isEnabled
       return
     }
-    setHidden(catalogue?.entries.first {
-      $0.role == role && $0.stableID == targetID
-    }?.presentation.isEnabled != true, for: button)
+    setHidden(!presentation.isEnabled, for: button)
   }
 
   private func action(for entry: EVStyleMenuEntry, in catalogue: EVStyleMenuCatalogue) -> EVStyleMenuAction {
@@ -400,14 +384,17 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   @objc func openLinkEditor(_ sender: NSButton) { surface?.linkPopover.performToolbarAction(); refresh() }
 
-  @objc func toggleCharacterCode(_ sender: NSButton) { toggleStyle(role: .character, id: "Code", fallback: "", sender: sender) }
-  @objc func toggleCodeBlock(_ sender: NSButton) { toggleStyle(role: .paragraph, id: "Code Block", fallback: "Paragraph", sender: sender) }
+  @objc func toggleCharacterCode(_ sender: NSButton) {
+    toggleStyle(UInt32(VIEM_FORMATTING_CODE), role: .character, id: "Code", fallback: "", sender: sender)
+  }
+  @objc func toggleCodeBlock(_ sender: NSButton) {
+    toggleStyle(UInt32(VIEM_FORMATTING_CODE_BLOCK), role: .paragraph, id: "Code Block", fallback: "Paragraph", sender: sender)
+  }
   @objc func toggleBlockQuote(_ sender: NSButton) {
-    guard let surface, let session = surface.session,
-          let selected = try? session.selectedNamedStyles(), !selected.hasTable, !selected.hasCodeBlock,
-          let selection = try? session.listSelection(),
-          surface.backend.sourceFormat == .markdown else { refresh(); return }
-    surface.performInput { _ = try session.setBlockQuote(selected.quoteState != .on, expected: selection) }
+    let quote = surface?.formattingPresentation(UInt32(VIEM_FORMATTING_BLOCK_QUOTE)) ?? .disabled
+    guard quote.isEnabled, let surface, let session = surface.session,
+          let selection = try? session.listSelection() else { refresh(); return }
+    surface.performInput { _ = try session.setBlockQuote(quote.state != .on, expected: selection) }
     finishAction()
   }
   /// The alert kinds, checked by the selection's current kind, with their icons.
@@ -420,7 +407,7 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
       item.target = self
       item.tag = Int(kind)
       item.image = Self.alertImage(kind)
-      let presentation = surface?.alertPresentation(kind) ?? .disabled
+      let presentation = surface?.formattingPresentation(EVFormattingActions.alert(kind)) ?? .disabled
       item.isEnabled = presentation.isEnabled
       item.state = presentation.state
       menu.addItem(item)
@@ -439,11 +426,10 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
 
   /// Choosing the selection's only alert kind again restores a plain quote.
   func chooseAlert(_ kind: UInt32) {
-    guard let surface, let session = surface.session,
-          let selected = try? session.selectedNamedStyles(), !selected.hasTable, !selected.hasCodeBlock,
-          let selection = try? session.listSelection(),
-          surface.backend.sourceFormat == .markdown else { refresh(); return }
-    let target = selected.alertState(kind) == .on ? UInt32(VIEM_ALERT_NONE) : kind
+    let alert = surface?.formattingPresentation(EVFormattingActions.alert(kind)) ?? .disabled
+    guard alert.isEnabled, let surface, let session = surface.session,
+          let selection = try? session.listSelection() else { refresh(); return }
+    let target = alert.state == .on ? UInt32(VIEM_ALERT_NONE) : kind
     surface.performInput { _ = try session.setAlert(target, expected: selection) }
     finishAction()
   }
@@ -468,11 +454,12 @@ final class EVFormattingToolbarView: NSView, NSMenuDelegate {
     editorWindow?.makeFirstResponder(surface.editorView)
   }
 
-  private func toggleStyle(role: EVStyleMenuRole, id: String, fallback: String, sender: NSButton) {
+  private func toggleStyle(_ formatting: UInt32, role: EVStyleMenuRole, id: String, fallback: String, sender: NSButton) {
     guard let surface, let catalogue = surface.currentStyleMenuCatalogue() else { return }
-    let active = catalogue.entries.contains { $0.role == role && $0.stableID == id && $0.presentation.state == .on }
-    guard let entry = catalogue.entries.first(where: { $0.role == role && $0.stableID == (active ? fallback : id) }),
-      entry.presentation.isEnabled else { refresh(); return }
+    let toggle = surface.formattingPresentation(formatting)
+    guard toggle.isEnabled,
+      let entry = catalogue.entries.first(where: { $0.role == role && $0.stableID == (toggle.state == .on ? fallback : id) })
+    else { refresh(); return }
     surface.perform(styleMenuAction: action(for: entry, in: catalogue), sender: sender)
     finishAction()
   }

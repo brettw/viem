@@ -727,8 +727,10 @@ Comment and list handling is in [code formatting](docs/code-formatting.md).
 - Prompt selection, clipboard and register insertion edit only the prompt; they
   never edit the document or submit a command through inserted register text.
 - Native toolbar, menu and accelerator actions use the same core intentions as
-  Vim commands. Pending Vim grammar, prompts, literal-next and IME composition
-  take priority over formatting accelerators.
+  Vim commands, and present core's availability and state for them
+  (`viem_core_view_formatting_actions`) instead of deriving their own. Pending
+  Vim grammar, prompts, literal-next and IME composition take priority over
+  formatting accelerators.
 
 ## HTML export
 

@@ -22,6 +22,14 @@ internal sealed partial class FormattingToolbar : UserControl
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
     /// <summary>The GitHub alert kinds beside the quote toggle; VIEM_ALERT_* tags.</summary>
     internal readonly DropDownButton BlockQuoteAlerts = new() { Width = 22, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Flyout = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft } };
+    /// <summary>Toolbar buttons that present one core formatting action each.</summary>
+    private static readonly (ToolbarAction Action, uint Core)[] ToolbarFormatting = [
+        (ToolbarAction.Bold, VIEM_FORMATTING_BOLD), (ToolbarAction.Italic, VIEM_FORMATTING_ITALIC),
+        (ToolbarAction.Underline, VIEM_FORMATTING_UNDERLINE), (ToolbarAction.Strikethrough, VIEM_FORMATTING_STRIKETHROUGH),
+        (ToolbarAction.Superscript, VIEM_FORMATTING_SUPERSCRIPT), (ToolbarAction.Subscript, VIEM_FORMATTING_SUBSCRIPT),
+        (ToolbarAction.Bullets, VIEM_FORMATTING_BULLETED_LIST), (ToolbarAction.Numbers, VIEM_FORMATTING_NUMBERED_LIST),
+        (ToolbarAction.Tasks, VIEM_FORMATTING_TASK_LIST), (ToolbarAction.Indent, VIEM_FORMATTING_INDENT),
+        (ToolbarAction.Unindent, VIEM_FORMATTING_UNINDENT), (ToolbarAction.BlockQuote, VIEM_FORMATTING_BLOCK_QUOTE)];
     internal static readonly (uint Kind, string Title)[] AlertKinds = [(VIEM_ALERT_NOTE, "Note"), (VIEM_ALERT_TIP, "Tip"),
         (VIEM_ALERT_IMPORTANT, "Important"), (VIEM_ALERT_WARNING, "Warning"), (VIEM_ALERT_CAUTION, "Caution")];
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
@@ -34,6 +42,7 @@ internal sealed partial class FormattingToolbar : UserControl
     private ViemLogicalSelectionIdentityV1? pickerSelection;
     private StyleSheet? sheet;
     private SelectedStyles? selected;
+    private FormattingActions formatting;
     private StyleChoice[] choices = [];
     private bool refreshing;
     private int tracking;
@@ -252,7 +261,7 @@ internal sealed partial class FormattingToolbar : UserControl
 
     internal void Synchronize(EditorPane? active, bool visible, bool refresh = true)
     {
-        if (pane != active) { tablePicker.Close(); sheet = null; selected = null; choices = []; }
+        if (pane != active) { tablePicker.Close(); sheet = null; selected = null; formatting = default; choices = []; }
         pane = active;
         // Reserve the visible toolbar row while the initial view attaches, so
         // its first layout uses the final editor height.
@@ -274,55 +283,31 @@ internal sealed partial class FormattingToolbar : UserControl
             FormattedView.IsEnabled = view.Document.IsMarkdownDocument;
             // With Preview off the document is literal Code: only the toggle remains.
             Viewport.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
-            bool available = view.HasFormattingSelection;
             InsertTable.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertImage.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertLink.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
             InsertReference.Visibility = InsertLink.Visibility;
-            var imageContext = markdown && available ? view.ImageContext() : null;
-            bool imageActive = imageContext?.Image is { } image
-                && (!view.HasSelection && view.Presentation.mode == VIEM_MODE_NORMAL
-                    || view.HasSelection && imageContext.Selection.text_start == image.Start && imageContext.Selection.text_end == image.End);
-            InsertImage.IsChecked = imageActive;
-            InsertImage.IsEnabled = imageContext?.CanInsert == true && !imageActive && !view.Composing && !view.Document.IsReadOnly;
-            var linkContext = markdown && available ? view.LinkContext() : null;
-            InsertReference.IsChecked = linkContext?.Reference != null;
-            InsertReference.IsEnabled = linkContext is { } referenceLink && (referenceLink.Reference?.Editable ?? (referenceLink.Link == null && referenceLink.CanInsert))
-                && !view.Composing && !view.Document.IsReadOnly;
-            InsertLink.IsChecked = linkContext?.Linked == true || linkContext?.Reference != null;
-            InsertLink.IsEnabled = linkContext is { } link && (link.Reference?.Editable == true || (link.Linked
-                ? view.HasSelection ? link.CanRemoveSelection : link.CanExitLink : link.CanInsert))
-                && !view.Composing && !view.Document.IsReadOnly;
-            // Rectangular selections and prompts have no formatting identity.
-            // Disable their actions without asking selection-dependent APIs.
-            var tableContext = markdown && available ? view.TableContext() : default;
-            InsertTable.IsEnabled = markdown && available && (tableContext.flags & 1) != 0;
-            if (pickerSelection is { } expected && !CoreView.SameSelection(expected, tableContext.selection)) tablePicker.Close();
+            // One core decision presents every action; tables, code blocks,
+            // prompts and rectangular selections already disable theirs.
+            formatting = view.Formatting();
+            InsertImage.IsChecked = formatting.State(VIEM_FORMATTING_IMAGE) == VIEM_SEMANTIC_STYLE_STATE_ON;
+            InsertImage.IsEnabled = formatting.Enabled(VIEM_FORMATTING_IMAGE);
+            InsertReference.IsChecked = formatting.State(VIEM_FORMATTING_REFERENCE) == VIEM_SEMANTIC_STYLE_STATE_ON;
+            InsertReference.IsEnabled = formatting.Enabled(VIEM_FORMATTING_REFERENCE);
+            InsertLink.IsChecked = formatting.State(VIEM_FORMATTING_LINK) == VIEM_SEMANTIC_STYLE_STATE_ON;
+            InsertLink.IsEnabled = formatting.Enabled(VIEM_FORMATTING_LINK);
+            InsertTable.IsEnabled = formatting.Enabled(VIEM_FORMATTING_TABLE);
+            if (pickerSelection is { } expected && (!view.HasFormattingSelection
+                || !CoreView.SameSelection(expected, view.TableContext().selection))) tablePicker.Close();
             selected = view.SelectedNamedStyles();
             sheet = view.Styles(selected.Identity);
-            choices = CoreView.StyleChoices(sheet, selected, view.Document.IsReadOnly);
-            if (!available) choices = choices.Select(c => c with { Enabled = false }).ToArray();
+            choices = CoreView.StyleChoices(sheet, selected, formatting);
             if (tracking == 0) { RefreshSelector(Paragraph, 1); }
-            foreach (var (action, semantic) in new[] { (ToolbarAction.Bold, VIEM_SEMANTIC_STYLE_STRONG), (ToolbarAction.Italic, VIEM_SEMANTIC_STYLE_EMPHASIS) })
-            {
-                var state = available ? view.SemanticStyle(semantic) : default;
-                Set(action, state.state, available && (state.flags & (VIEM_SEMANTIC_STYLE_CAN_SET | VIEM_SEMANTIC_STYLE_CAN_CLEAR)) != 0);
-            }
-            bool canStrike = view.CanFormatStrikethrough;
-            Set(ToolbarAction.Strikethrough, available ? view.StrikethroughState() : 0, canStrike);
-            Set(ToolbarAction.Underline, available ? view.UnderlineState() : 0, view.CanFormatUnderline);
-            Set(ToolbarAction.Superscript, available ? view.SuperscriptState() : 0, view.CanFormatSuperscript);
-            Set(ToolbarAction.Subscript, available ? view.SubscriptState() : 0, view.CanFormatSubscript);
-            RefreshCode(ToolbarAction.CharacterCode, new(2, "Code"), new(2, ""));
-            RefreshCode(ToolbarAction.CodeBlock, new(1, "Code Block"), new(1, "Paragraph"));
-            Set(ToolbarAction.Bullets, selected.ListState(VIEM_LIST_STYLE_BULLET), available);
-            Set(ToolbarAction.Numbers, selected.ListState(VIEM_LIST_STYLE_NUMBERED), available);
-            Set(ToolbarAction.Tasks, selected.ListState(VIEM_LIST_STYLE_TASK),
-                available && (selected.Flags & VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST) != 0);
-            uint indent = available ? view.ListCapabilities() : 0;
-            Set(ToolbarAction.Indent, 0, (indent & VIEM_LIST_CAN_INDENT) != 0);
-            Set(ToolbarAction.Unindent, 0, (indent & VIEM_LIST_CAN_UNINDENT) != 0);
-            Set(ToolbarAction.BlockQuote, selected.QuoteState, available && !selected.HasTable && !selected.HasCodeBlock);
+            foreach (var (action, core) in ToolbarFormatting) Set(action, formatting.State(core), formatting.Enabled(core));
+            // An unavailable Code Block toggle stays visible except in tables.
+            Set(ToolbarAction.CharacterCode, formatting.State(VIEM_FORMATTING_CODE), formatting.Enabled(VIEM_FORMATTING_CODE), markdown);
+            Set(ToolbarAction.CodeBlock, formatting.State(VIEM_FORMATTING_CODE_BLOCK), formatting.Enabled(VIEM_FORMATTING_CODE_BLOCK),
+                markdown && !selected.HasTable);
             if (tracking == 0) foreach (ToggleMenuFlyoutItem item in ((MenuFlyout)BlockQuoteAlerts.Flyout).Items)
             {
                 uint kind = (uint)item.Tag;
@@ -332,11 +317,6 @@ internal sealed partial class FormattingToolbar : UserControl
             }
             bool anyAlert = AlertKinds.Any(alert => AlertAvailable(alert.Kind));
             if (BlockQuoteAlerts.IsEnabled != anyAlert) BlockQuoteAlerts.IsEnabled = anyAlert;
-            if (selected.HasTable) {
-                Paragraph.IsEnabled = false;
-                foreach (var action in new[] { ToolbarAction.Bullets, ToolbarAction.Numbers, ToolbarAction.Tasks, ToolbarAction.Indent, ToolbarAction.Unindent }) Buttons[action].IsEnabled = false;
-                Buttons[ToolbarAction.CodeBlock].Visibility = Visibility.Collapsed;
-            }
         }
         catch (Exception error) { pane?.Report(error); }
         finally { refreshing = false; }
@@ -354,14 +334,6 @@ internal sealed partial class FormattingToolbar : UserControl
         var visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         if (button.Visibility != visibility) button.Visibility = visibility;
     }
-    private void RefreshCode(ToolbarAction action, StyleKey code, StyleKey fallback)
-    {
-        bool active = choices.Any(c => c.Key == code && c.Selected);
-        bool available = choices.Any(c => c.Key == (active ? fallback : code) && c.Enabled);
-        bool visible = View?.Document.State.format == VIEM_FORMAT_MARKDOWN;
-        Set(action, active ? 1u : 0u, available, visible);
-    }
-
     private void RefreshSelector(DropDownButton button, uint space)
     {
         var entries = choices.Where(c => c.Key.Namespace == space
@@ -402,9 +374,8 @@ internal sealed partial class FormattingToolbar : UserControl
     }
 
     /// <summary>Choosing the selection's only alert kind again restores a plain quote.</summary>
-    internal bool AlertSelected(uint kind) => selected?.AlertState(kind) == VIEM_SEMANTIC_STYLE_STATE_ON;
-    internal bool AlertAvailable(uint kind) => selected is { } styles && View?.Document.State.format == VIEM_FORMAT_MARKDOWN
-        && !styles.HasTable && !styles.HasCodeBlock && (styles.CanSetAlert || AlertSelected(kind));
+    internal bool AlertSelected(uint kind) => formatting.State(FormattingActions.Alert(kind)) == VIEM_SEMANTIC_STYLE_STATE_ON;
+    internal bool AlertAvailable(uint kind) => formatting.Enabled(FormattingActions.Alert(kind));
     internal void ChooseAlert(uint kind)
     {
         if (View is not { } view) return;
@@ -460,7 +431,7 @@ internal sealed partial class FormattingToolbar : UserControl
                 case ToolbarAction.Superscript: view.ToggleSuperscript(); break;
                 case ToolbarAction.Subscript: view.ToggleSubscript(); break;
                 case ToolbarAction.CharacterCode: Code(new(2, "Code"), new(2, "")); break;
-                case ToolbarAction.BlockQuote: view.SetBlockQuote(selected!.QuoteState != VIEM_SEMANTIC_STYLE_STATE_ON); break;
+                case ToolbarAction.BlockQuote: view.SetBlockQuote(formatting.State(VIEM_FORMATTING_BLOCK_QUOTE) != VIEM_SEMANTIC_STYLE_STATE_ON); break;
                 case ToolbarAction.CodeBlock: Code(new(1, "Code Block"), new(1, "Paragraph")); break;
                 case ToolbarAction.Bullets: List(VIEM_LIST_STYLE_BULLET); break;
                 case ToolbarAction.Numbers: List(VIEM_LIST_STYLE_NUMBERED); break;
@@ -470,7 +441,12 @@ internal sealed partial class FormattingToolbar : UserControl
             }
         });
         RestoreEditorFocus();
-        void List(uint kind) => view.SetList(view.SelectedNamedStyles().ListState(kind) == 1 ? VIEM_LIST_STYLE_NONE : kind);
+        void List(uint kind)
+        {
+            uint core = kind switch { VIEM_LIST_STYLE_BULLET => VIEM_FORMATTING_BULLETED_LIST,
+                VIEM_LIST_STYLE_NUMBERED => VIEM_FORMATTING_NUMBERED_LIST, _ => VIEM_FORMATTING_TASK_LIST };
+            view.SetList(formatting.State(core) == VIEM_SEMANTIC_STYLE_STATE_ON ? VIEM_LIST_STYLE_NONE : kind);
+        }
         void Code(StyleKey code, StyleKey fallback) { if (sheet != null) view.ChooseStyle(choices.Any(c => c.Key == code && c.Selected) ? fallback : code, sheet.Identity); }
     }
 

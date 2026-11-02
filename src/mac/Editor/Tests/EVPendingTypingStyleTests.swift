@@ -110,15 +110,15 @@ final class EVPendingTypingStyleTests: XCTestCase {
   }
 
   func testUnavailableFormattingAcceleratorsDoNotMutateSourceOrInvokeHeadings() throws {
-    for (type, source, readOnly, command) in [
-      (EVDocument.markdownType, "word", true, EVMenuCommand.characterCode),
-      (EVDocument.markdownType, "```\nword\n```", false, .superscript),
-      (EVDocument.plainTextType, "word", false, .bulletedList),
-      (EVDocument.codeType, "word", false, .characterCode),
+    // Save-only `readonly` leaves formatting available; `nomodifiable` does not.
+    for (type, source, modifiable, command) in [
+      (EVDocument.markdownType, "word", false, EVMenuCommand.characterCode),
+      (EVDocument.markdownType, "```\nword\n```", true, .superscript),
+      (EVDocument.plainTextType, "word", true, .bulletedList),
+      (EVDocument.codeType, "word", true, .characterCode),
     ] {
       let backend = EVCoreDocumentBackend()
       try backend.readUntitled(source: Data(source.utf8), typeName: type)
-      try backend.setReadOnly(readOnly)
       let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
       let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                             styleMask: [.titled], backing: .buffered, defer: false)
@@ -126,9 +126,15 @@ final class EVPendingTypingStyleTests: XCTestCase {
       window.contentViewController = surface
       defer { window.close() }
       XCTAssertTrue(window.makeFirstResponder(surface.editorView))
+      if !modifiable {
+        let session = try XCTUnwrap(surface.session)
+        surface.performInput {
+          _ = try session.sendText(":set noma")
+          _ = try session.sendKey(kind: UInt32(VIEM_KEY_ENTER))
+        }
+      }
       let text = try backend.formattedText() as NSString
       surface.editorView.setAccessibilitySelectedTextRange(text.range(of: "word"))
-      XCTAssertEqual(surface.documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) != 0, readOnly)
       let shortcut = try XCTUnwrap(command.formattingShortcut)
       let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
         modifierFlags: shortcut.modifiers, timestamp: 0, windowNumber: window.windowNumber, context: nil,

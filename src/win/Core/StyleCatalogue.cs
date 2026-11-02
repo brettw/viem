@@ -7,33 +7,22 @@ namespace Viem.Windows.Core;
 
 internal sealed record SelectedStyles(ViemStyleSheetIdentityV1 Identity, uint Flags, string Paragraph, string Character)
 {
-    public bool HasCodeBlock => (Flags & VIEM_SELECTED_STYLE_HAS_CODE_BLOCK) != 0;
     public bool HasTable => (Flags & VIEM_SELECTED_STYLE_HAS_TABLE) != 0;
-    public uint QuoteState => (Flags & VIEM_SELECTED_STYLE_HAS_QUOTES) == 0 ? VIEM_SEMANTIC_STYLE_STATE_OFF
-        : (Flags & VIEM_SELECTED_STYLE_HAS_NON_QUOTE) != 0 ? VIEM_SEMANTIC_STYLE_STATE_MIXED : VIEM_SEMANTIC_STYLE_STATE_ON;
-    public bool CanSetAlert => (Flags & VIEM_SELECTED_STYLE_CAN_SET_ALERT) != 0;
-    /// <summary>One alert kind present everywhere is on; alongside others it is mixed.</summary>
-    public uint AlertState(uint kind)
-    {
-        uint alerts = (Flags >> (int)VIEM_SELECTED_STYLE_ALERT_SHIFT) & 0x1f, bit = 1u << (int)(kind - 1);
-        if ((alerts & bit) == 0) return VIEM_SEMANTIC_STYLE_STATE_OFF;
-        return alerts == bit && (Flags & (VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE | VIEM_SELECTED_STYLE_HAS_NON_QUOTE)) == 0
-            ? VIEM_SEMANTIC_STYLE_STATE_ON : VIEM_SEMANTIC_STYLE_STATE_MIXED;
-    }
     public bool ParagraphMixed => (Flags & VIEM_SELECTED_STYLE_PARAGRAPH_MIXED) != 0;
     public bool CharacterMixed => (Flags & VIEM_SELECTED_STYLE_CHARACTER_MIXED) != 0;
-    public uint ListState(uint kind)
-    {
-        uint own = kind switch {
-            VIEM_LIST_STYLE_BULLET => VIEM_SELECTED_STYLE_HAS_BULLETS,
-            VIEM_LIST_STYLE_NUMBERED => VIEM_SELECTED_STYLE_HAS_NUMBERING,
-            VIEM_LIST_STYLE_TASK => VIEM_SELECTED_STYLE_HAS_TASKS,
-            _ => 0
-        };
-        uint other = (VIEM_SELECTED_STYLE_HAS_BULLETS | VIEM_SELECTED_STYLE_HAS_NUMBERING | VIEM_SELECTED_STYLE_HAS_TASKS) & ~own;
-        return (Flags & own) == 0 ? VIEM_SEMANTIC_STYLE_STATE_OFF
-            : (Flags & (other | VIEM_SELECTED_STYLE_HAS_NON_LIST)) != 0 ? VIEM_SEMANTIC_STYLE_STATE_MIXED : VIEM_SEMANTIC_STYLE_STATE_ON;
-    }
+}
+
+/// <summary>Core's availability and state for the native formatting actions.
+/// The toolbar, menus and accelerators present it without deriving their own.</summary>
+internal readonly record struct FormattingActions(ViemFormattingActionsV1 Native)
+{
+    /// <summary>The actions that decide which style assignments menus offer.</summary>
+    public const ulong StyleAssignments = (1UL << (int)VIEM_FORMATTING_PARAGRAPH_STYLES) | (1UL << (int)VIEM_FORMATTING_CHARACTER_STYLES);
+    public static ulong Bit(uint action) => 1UL << (int)action;
+    public static uint Alert(uint kind) => VIEM_FORMATTING_ALERT_NOTE + kind - VIEM_ALERT_NOTE;
+    public bool Enabled(uint action) => (Native.enabled & Bit(action)) != 0;
+    public uint State(uint action) => (Native.on & Bit(action)) != 0 ? VIEM_SEMANTIC_STYLE_STATE_ON
+        : (Native.mixed & Bit(action)) != 0 ? VIEM_SEMANTIC_STYLE_STATE_MIXED : VIEM_SEMANTIC_STYLE_STATE_OFF;
 }
 
 internal sealed record StyleChoice(StyleKey Key, string Name, bool Enabled, bool Selected);
@@ -65,17 +54,19 @@ internal sealed unsafe partial class CoreView
     }
 
     // Shared by native menus and toolbar; names are labels, never action IDs.
-    public static StyleChoice[] StyleChoices(StyleSheet sheet, SelectedStyles selected, bool readOnly)
+    // Core decides whether each role is assignable; a style also needs the
+    // assign capability.
+    public static StyleChoice[] StyleChoices(StyleSheet sheet, SelectedStyles selected, FormattingActions actions)
     {
         bool matches = sheet.Identity.Equals(selected.Identity);
+        bool paragraphs = actions.Enabled(VIEM_FORMATTING_PARAGRAPH_STYLES), characters = actions.Enabled(VIEM_FORMATTING_CHARACTER_STYLES);
         var choices = sheet.Styles.Where(s => s.Namespace is 1 or 2
             && (s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL) == 0
             && ((s.Native.flags & VIEM_STYLE_DEFINITION_INTERNAL_LIST) == 0 || matches && s.Id == selected.Paragraph))
             .OrderBy(s => s.Name, StringComparer.CurrentCultureIgnoreCase)
-            .Select(s => new StyleChoice(s.Key, s.Name, !readOnly && (s.Namespace == 2 ? !selected.HasCodeBlock : !selected.HasTable)
-                && (s.Has(VIEM_STYLE_CAPABILITY_ASSIGN) || HeadingLevel(s.Key) != null),
+            .Select(s => new StyleChoice(s.Key, s.Name, (s.Namespace == 2 ? characters : paragraphs) && s.Has(VIEM_STYLE_CAPABILITY_ASSIGN),
                 matches && (s.Namespace == 1 ? !selected.ParagraphMixed && selected.Paragraph == s.Id : !selected.CharacterMixed && selected.Character == s.Id))).ToList();
-        choices.Insert(0, new(new(2, ""), "Default Paragraph", !readOnly && !selected.HasCodeBlock,
+        choices.Insert(0, new(new(2, ""), "Default Paragraph", characters,
             matches && !selected.CharacterMixed && selected.Character.Length == 0));
         return choices.ToArray();
     }
@@ -90,7 +81,7 @@ internal sealed unsafe partial class CoreView
         if (!HasFormattingSelection) return;
         var selected = SelectedNamedStyles();
         if (!selected.Identity.Equals(expected)) return;
-        if (!StyleChoices(Styles(expected), selected, Document.IsReadOnly).Any(c => c.Key == key && c.Enabled)) return;
+        if (!StyleChoices(Styles(expected), selected, Formatting(FormattingActions.StyleAssignments)).Any(c => c.Key == key && c.Enabled)) return;
         if (HeadingLevel(key) is { } level) SetParagraph(level);
         else AssignStyle(key.Namespace, key.Id, expected);
     }

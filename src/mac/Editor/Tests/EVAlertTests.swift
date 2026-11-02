@@ -54,11 +54,16 @@ final class EVAlertTests: XCTestCase {
         }
     }
 
-    func testAlertKindsAreUnavailableInsideLists() throws {
-        let (_, surface) = try surface("- Item")
-        surface.formattingToolbar.refresh()
-        XCTAssertFalse(surface.formattingToolbar.blockQuoteAlerts.isEnabled)
-        XCTAssertFalse(surface.presentation(for: .alertNote).isEnabled)
+    func testAlertKindsAreAvailableOnTopLevelItemsButNotNestedOnes() throws {
+        // Block quote puts a nested item's quote inside its parent's marker.
+        let (_, surface) = try surface("- Item\n  - Nested")
+        for (location, available) in [(0, true), (5, false)] {
+            surface.editorView.setAccessibilitySelectedTextRange(NSRange(location: location, length: 0))
+            surface.formattingToolbar.refresh()
+            XCTAssertTrue(surface.formattingToolbar.blockQuote.isEnabled, "\(location)")
+            XCTAssertEqual(surface.formattingToolbar.blockQuoteAlerts.isEnabled, available, "\(location)")
+            XCTAssertEqual(surface.presentation(for: .alertNote).isEnabled, available, "\(location)")
+        }
     }
 
     func testEveryIconDrawsInsideItsSquareInTheRequestedColor() throws {

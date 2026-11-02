@@ -406,7 +406,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             literal: (state.flags & VIEM_VIEW_PRESENTATION_LITERAL_INPUT_PENDING) != 0, formatting: formatting, extended: extended);
     }
     internal bool CanUseFormattingCommands => IsActive && !composing && View is { } view && !view.Composing
-        && CoreDocument.IsMarkdown(Document.State.format) && !Document.IsReadOnly && view.HasFormattingSelection
+        && CoreDocument.IsMarkdown(Document.State.format) && view.HasFormattingSelection
         && (view.Presentation.flags & (VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING | VIEM_VIEW_PRESENTATION_HAS_COMMAND_LINE)) == 0;
     private void Enqueue(Func<Task> action)
     {

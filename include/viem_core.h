@@ -2942,23 +2942,9 @@ ViemStatus viem_core_copy_formatted_utf8(ViemCoreHandle core,
  * have zero bytes. The output is tied to the exact document revision. */
 #define VIEM_SELECTED_STYLE_PARAGRAPH_MIXED (1u << 0)
 #define VIEM_SELECTED_STYLE_CHARACTER_MIXED (1u << 1)
-/* Structural membership, independent of style assignment and list depth. */
-#define VIEM_SELECTED_STYLE_HAS_BULLETS (1u << 2)
-#define VIEM_SELECTED_STYLE_HAS_NUMBERING (1u << 3)
-#define VIEM_SELECTED_STYLE_HAS_NON_LIST (1u << 4)
-#define VIEM_SELECTED_STYLE_HAS_QUOTES (1u << 5)
-#define VIEM_SELECTED_STYLE_HAS_NON_QUOTE (1u << 6)
-#define VIEM_SELECTED_STYLE_HAS_TABLE (1u << 7)
-#define VIEM_SELECTED_STYLE_HAS_CODE_BLOCK (1u << 8)
-#define VIEM_SELECTED_STYLE_HAS_TASKS (1u << 9)
-/* Indexed task-list eligibility for the current selection and editing state. */
-#define VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST (1u << 10)
-/* Every selected block can become part of a top-level GitHub alert. */
-#define VIEM_SELECTED_STYLE_CAN_SET_ALERT (1u << 11)
-/* A selected block is in a top-level quote without an alert marker. */
-#define VIEM_SELECTED_STYLE_HAS_PLAIN_QUOTE (1u << 12)
-/* Alert kind k (VIEM_ALERT_NOTE..VIEM_ALERT_CAUTION) sets bit SHIFT + k - 1. */
-#define VIEM_SELECTED_STYLE_ALERT_SHIFT 13u
+/* Structural table membership, for layout; formatting availability and state
+ * come from viem_core_view_formatting_actions. */
+#define VIEM_SELECTED_STYLE_HAS_TABLE (1u << 2)
 typedef struct ViemSelectedStylesInfoV1 {
   uint32_t struct_size;
   uint32_t flags;
@@ -2971,6 +2957,59 @@ typedef struct ViemSelectedStylesInfoV1 {
 ViemStatus viem_core_view_selected_styles_export(ViemCoreHandle core,
     ViemViewId view, uint64_t expected_revision,
     ViemSelectedStylesInfoV1 *out_info, uint8_t *out_utf8, uint64_t capacity);
+
+/* Native formatting actions offered by toolbars, menus and accelerators.
+ * Core decides each action's availability and on/off/mixed state for the
+ * view's selection once for every frontend. Each mask uses bit 1 << action.
+ * Alerts are ALERT_NOTE + kind - VIEM_ALERT_NOTE; HEADING_0 + level names a
+ * heading level, with level 0 as Base Paragraph. */
+#define VIEM_FORMATTING_BOLD 1u
+#define VIEM_FORMATTING_ITALIC 2u
+#define VIEM_FORMATTING_UNDERLINE 3u
+#define VIEM_FORMATTING_STRIKETHROUGH 4u
+#define VIEM_FORMATTING_SUPERSCRIPT 5u
+#define VIEM_FORMATTING_SUBSCRIPT 6u
+#define VIEM_FORMATTING_CODE 7u
+#define VIEM_FORMATTING_CODE_BLOCK 8u
+#define VIEM_FORMATTING_BLOCK_QUOTE 9u
+#define VIEM_FORMATTING_ALERT_NOTE 10u
+#define VIEM_FORMATTING_ALERT_TIP 11u
+#define VIEM_FORMATTING_ALERT_IMPORTANT 12u
+#define VIEM_FORMATTING_ALERT_WARNING 13u
+#define VIEM_FORMATTING_ALERT_CAUTION 14u
+#define VIEM_FORMATTING_BULLETED_LIST 15u
+#define VIEM_FORMATTING_NUMBERED_LIST 16u
+#define VIEM_FORMATTING_TASK_LIST 17u
+#define VIEM_FORMATTING_REMOVE_LIST 18u
+#define VIEM_FORMATTING_INDENT 19u
+#define VIEM_FORMATTING_UNINDENT 20u
+#define VIEM_FORMATTING_LIST_PARAGRAPH 21u
+#define VIEM_FORMATTING_HEADING_0 22u
+#define VIEM_FORMATTING_HEADING_1 23u
+#define VIEM_FORMATTING_HEADING_2 24u
+#define VIEM_FORMATTING_HEADING_3 25u
+#define VIEM_FORMATTING_HEADING_4 26u
+#define VIEM_FORMATTING_HEADING_5 27u
+#define VIEM_FORMATTING_HEADING_6 28u
+#define VIEM_FORMATTING_LINK 29u
+#define VIEM_FORMATTING_REFERENCE 30u
+#define VIEM_FORMATTING_IMAGE 31u
+#define VIEM_FORMATTING_TABLE 32u
+#define VIEM_FORMATTING_PARAGRAPH_STYLES 33u
+#define VIEM_FORMATTING_CHARACTER_STYLES 34u
+typedef struct ViemFormattingActionsV1 {
+  uint32_t struct_size;
+  uint32_t reserved;
+  uint64_t enabled;
+  uint64_t on;
+  uint64_t mixed;
+} ViemFormattingActionsV1;
+#define VIEM_FORMATTING_ACTIONS_V1_SIZE ((uint32_t)sizeof(ViemFormattingActionsV1))
+/* Only actions in `requested` are evaluated, so validating one menu item stays
+ * cheap; the rest report disabled and off. Unknown bits are ignored, so
+ * UINT64_MAX requests every action. */
+ViemStatus viem_core_view_formatting_actions(ViemCoreHandle core, ViemViewId view,
+    uint64_t requested, ViemFormattingActionsV1 *out_actions);
 
 /* Version 1 UTF-8 JSON defaults. Initialization requires a pristine core with no views;
  * it does not change source, revision, dirty state, or history. Export is two-pass,

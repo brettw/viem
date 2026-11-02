@@ -145,7 +145,7 @@ internal sealed partial class EditorWindow
                 var pane = ActivePane;
                 DispatcherQueue.TryEnqueue(() => { if (ActivePane == pane && insertMenu != null) ActiveFormattingToolbar()?.OpenTablePicker(insertMenu); });
                 return Task.CompletedTask;
-            }, enabled: () => Rich && View is { } view && (view.TableContext().flags & 1) != 0));
+            }, enabled: () => Rich && View?.Formatting(FormattingActions.Bit(VIEM_FORMATTING_TABLE)).Enabled(VIEM_FORMATTING_TABLE) == true));
         wrapItem = Toggle("Word wrap", "W", b => View?.Wrap(b));
         bool CanAlignIndents() => View?.Document.State.format == VIEM_FORMAT_CODE;
         var alignIndentsItem = Toggle("Align indents to previous line", "A", b => View?.AlignIndentsToPreviousLine(b),
@@ -266,7 +266,7 @@ internal sealed partial class EditorWindow
         }
         var selected = View.SelectedNamedStyles();
         var snapshot = View.Styles(selected.Identity);
-        var choices = CoreView.StyleChoices(snapshot, selected, View.Document.IsReadOnly)
+        var choices = CoreView.StyleChoices(snapshot, selected, View.Formatting(FormattingActions.StyleAssignments))
             .Where(choice => CoreView.HeadingLevel(choice.Key) is >= 1 and <= 6)
             .OrderBy(choice => CoreView.HeadingLevel(choice.Key)).ToArray();
         var old = headingMenu.Items.OfType<ToggleMenuFlyoutItem>().ToArray();
@@ -289,7 +289,7 @@ internal sealed partial class EditorWindow
         {
             uint level = CoreView.HeadingLevel(choices[i].Key)!.Value;
             items[i].Text = choices[i].Name; items[i].AccessKey = level.ToString();
-            items[i].IsEnabled = Rich && View.HasFormattingSelection && choices[i].Enabled;
+            items[i].IsEnabled = Rich && choices[i].Enabled;
             items[i].IsChecked = Rich && choices[i].Selected; items[i].CommandParameter = snapshot.Identity;
             items[i].KeyboardAcceleratorTextOverride = level < 6 ? $"Ctrl+{level}" : "";
         }

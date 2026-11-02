@@ -1008,7 +1008,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         case .blockQuote:
             formattingToolbar.toggleBlockQuote(formattingToolbar.blockQuote)
         case .alertNote, .alertTip, .alertImportant, .alertWarning, .alertCaution:
-            guard let kind = menuCommand.alertKind, alertPresentation(kind).isEnabled else { return }
+            guard let kind = menuCommand.alertKind, presentation(for: menuCommand).isEnabled else { return }
             formattingToolbar.chooseAlert(kind)
         case .codeBlock:
             formattingToolbar.toggleCodeBlock(formattingToolbar.codeBlock)
@@ -1059,17 +1059,10 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             }
             return .disabled
         }
+        if let action = menuCommand.formattingAction { return formattingPresentation(action) }
         return switch menuCommand {
         case .paragraphStyles, .characterStyles:
             EVMenuItemPresentation(isEnabled: session != nil && backend.sourceFormat != .plainText)
-        case .heading0, .heading1, .heading2, .heading3, .heading4, .heading5, .heading6:
-            headingShortcutPresentation(level: UInt32(menuCommand.rawValue - EVMenuCommand.heading0.rawValue))
-        case .bulletedList, .numberedList, .taskList, .removeList:
-            listStylePresentation(menuCommand)
-        case .increaseIndent, .decreaseIndent:
-            listIndentPresentation(unindent: menuCommand == .decreaseIndent)
-        case .insertListParagraph:
-            listParagraphPresentation()
         case .save, .saveAs, .exportHTML, .pageSetup, .selectAll:
             .enabled
         case .selectWord: EVMenuItemPresentation(isEnabled: session?.nativeActionAvailable(UInt32(VIEM_NATIVE_SELECT_WORD)) == true)
@@ -1143,42 +1136,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             )
         case .actualSize:
             .enabled
-        case .characterCode:
-            characterCodePresentation()
         case .insertLink:
             backend.sourceFormat.isMarkdown ? linkPopover.editorPresentation : .disabled
-        case .insertReference:
-            backend.sourceFormat.isMarkdown ? linkPopover.referenceToolbarPresentation : .disabled
-        case .insertImage:
-            backend.sourceFormat.isMarkdown ? imagePopover.toolbarPresentation : .disabled
-        case .insertTable:
-            EVMenuItemPresentation(isEnabled: backend.sourceFormat.isMarkdown && ((try? session?.tableContext().flags) ?? 0) & 1 != 0)
-        case .blockQuote:
-            blockQuotePresentation()
-        case .alertNote, .alertTip, .alertImportant, .alertWarning, .alertCaution:
-            menuCommand.alertKind.map(alertPresentation) ?? .disabled
-        case .codeBlock:
-            codeBlockPresentation()
-        case .bold:
-            semanticStyleMenuPresentation(
-                UInt32(VIEM_SEMANTIC_STYLE_STRONG),
-                session: session
-            )
-        case .italic:
-            semanticStyleMenuPresentation(
-                UInt32(VIEM_SEMANTIC_STYLE_EMPHASIS),
-                session: session
-            )
-        case .underline, .superscript, .subscript:
-            inlinePropertyMenuPresentation(menuCommand, session: session)
-        case .strikethrough:
-            if backend.sourceFormat == .markdown, let session,
-               let state = try? session.strikethroughState() {
-                EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
-                    && (try? session.selectedNamedStyles().hasCodeBlock) != true,
-                    state: state == UInt32(VIEM_SEMANTIC_STYLE_STATE_ON) ? .on
-                        : state == UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
-            } else { .disabled }
         case .reloadStyleSheet:
             .enabled
         case .editStyles:
@@ -1471,53 +1430,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         if changesGeometry { editorView.performZoomGeometryUpdate(apply) }
         else { apply() }
-    }
-
-    private func inlinePropertyMenuPresentation(_ command: EVMenuCommand, session: EVCoreViewSession?) -> EVMenuItemPresentation {
-        guard backend.sourceFormat == .markdown, let session else { return .disabled }
-        let property: EVStyleProperty = command == .underline ? .characterUnderline : command == .superscript ? .characterSuperscript : .characterSubscript
-        let state = (try? session.inlinePropertyState(property)) ?? UInt32(VIEM_SEMANTIC_STYLE_STATE_OFF)
-        return EVMenuItemPresentation(isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
-            && (try? session.selectedNamedStyles().hasCodeBlock) != true,
-            state: state == UInt32(VIEM_SEMANTIC_STYLE_STATE_ON) ? .on
-                : state == UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED) ? .mixed : .off)
-    }
-
-    private func semanticStyleMenuPresentation(
-        _ style: UInt32,
-        session: EVCoreViewSession?
-    ) -> EVMenuItemPresentation {
-        guard let session,
-              let value = try? session.semanticStylePresentation(style),
-              value.struct_size >= UInt32(MemoryLayout<ViemSemanticStylePresentationV1>.size),
-              value.style == style,
-              value.flags & UInt32(VIEM_SEMANTIC_STYLE_HAS_ACTIVE_RANGE | VIEM_SEMANTIC_STYLE_TYPING_CONTEXT) != 0,
-              value.selection.struct_size
-                >= UInt32(MemoryLayout<ViemLogicalSelectionIdentityV1>.size)
-        else { return .disabled }
-
-        switch value.state {
-        case UInt32(VIEM_SEMANTIC_STYLE_STATE_OFF):
-            return EVMenuItemPresentation(
-                isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
-                    && value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
-                state: .off
-            )
-        case UInt32(VIEM_SEMANTIC_STYLE_STATE_ON):
-            return EVMenuItemPresentation(
-                isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
-                    && value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_CLEAR) != 0,
-                state: .on
-            )
-        case UInt32(VIEM_SEMANTIC_STYLE_STATE_MIXED):
-            return EVMenuItemPresentation(
-                isEnabled: documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0
-                    && value.flags & UInt32(VIEM_SEMANTIC_STYLE_CAN_SET) != 0,
-                state: .mixed
-            )
-        default:
-            return .disabled
-        }
     }
 
     private func toggleSemanticStyle(_ style: UInt32, session: EVCoreViewSession) {

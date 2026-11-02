@@ -82,14 +82,9 @@ internal sealed unsafe partial class CoreView
             return viem_core_view_set_semantic_style(Document.Handle, Id, &request, o); });
         FormattingContextChanged?.Invoke();
     }
-    public bool CanFormatStrikethrough => HasFormattingSelection
-        && Document.State.format == VIEM_FORMAT_MARKDOWN
-        && !Document.IsReadOnly && !SelectedNamedStyles().HasCodeBlock
-        && (LogicalSelection().kind is VIEM_LOGICAL_SELECTION_KIND_CHARACTER or VIEM_LOGICAL_SELECTION_KIND_LINE
-            || Presentation.mode is VIEM_MODE_NORMAL or VIEM_MODE_INSERT or VIEM_MODE_REPLACE);
-    public bool CanFormatUnderline => CanFormatStrikethrough;
-    public bool CanFormatSuperscript => CanFormatStrikethrough;
-    public bool CanFormatSubscript => CanFormatStrikethrough;
+    /// <summary>Only requested actions (bits <c>1 &lt;&lt; action</c>) are evaluated.</summary>
+    public FormattingActions Formatting(ulong requested = ulong.MaxValue)
+    { var value = New<ViemFormattingActionsV1>(); Check(viem_core_view_formatting_actions(Document.Handle, Id, requested, &value), "Read formatting actions"); return new(value); }
     public uint InlinePropertyState(uint property)
     { uint state = 0; Check(viem_core_view_inline_property_state(Document.Handle, Id, property, &state), "Read character formatting"); return state; }
     public uint UnderlineState() => InlinePropertyState(VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE);

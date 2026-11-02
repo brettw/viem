@@ -178,29 +178,6 @@ fn task_list_availability_obeys_editability_and_ignores_save_only_readonly() {
 }
 
 #[test]
-fn selected_style_ffi_reports_exclusive_task_state_and_local_eligibility() {
-    use viem_core::ffi::*;
-    for (source, task, available) in [
-        ("ordinary", false, true), ("3. [X] task", true, true),
-        ("- [ ] task", true, true), ("# heading", false, false),
-        ("```\ncode\n```", false, false),
-    ] {
-        let fixture = super::ffi_core_surface::table_ffi_fixture(source.as_bytes(), VIEM_FORMAT_MARKDOWN);
-        let mut selection = ViemLogicalSelectionIdentityV1::default();
-        let mut info = ViemSelectedStylesInfoV1::default();
-        unsafe {
-            assert_eq!(viem_core_view_list_selection(fixture.handle, fixture.view, &mut selection), ViemStatus::Ok);
-            let status = viem_core_view_selected_styles_export(fixture.handle, fixture.view,
-                selection.document_revision, &mut info, std::ptr::null_mut(), 0);
-            assert!(matches!(status, ViemStatus::Ok | ViemStatus::BufferTooSmall));
-        }
-        assert_eq!(info.flags & VIEM_SELECTED_STYLE_HAS_TASKS != 0, task, "{source}");
-        assert_eq!(info.flags & VIEM_SELECTED_STYLE_CAN_SET_TASK_LIST != 0, available, "{source}");
-        if task { assert_eq!(info.flags & ((1 << 2) | (1 << 3) | (1 << 4)), 0, "{source}"); }
-    }
-}
-
-#[test]
 fn rejected_task_list_action_preserves_active_style_gesture() {
     let mut core = Core::new(markdown("# heading"));
     let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);

@@ -1,6 +1,6 @@
 //! Bounded link popup queries and exact-selection authoring.
 use super::*;
-use crate::document::{LinkEditIntent, StyleApplication};
+use crate::document::LinkEditIntent;
 
 /// Explicit destination-picker enumeration, bound to the captured document.
 /// # Safety
@@ -76,81 +76,15 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
             typed_pointer_region(required, 1)?,
         ])?;
         let bytes = with_core(handle, |core| {
-            let selection = core
-                .list_selection_identity(ViewId(view))
-                .map_err(core_status)?;
-            let identity = logical_selection_identity_to_ffi(&selection)?;
+            let context = core.link_context(ViewId(view)).map_err(core_status)?;
+            let selection = &context.selection;
+            let identity = logical_selection_identity_to_ffi(selection)?;
             let document = core.document();
             let range = selection.range();
-            let cursor = core
-                .command_state(ViewId(view))
-                .ok_or(ViemStatus::InvalidView)?
-                .cursor();
-            let commands = core
-                .command_state(ViewId(view))
-                .ok_or(ViemStatus::InvalidView)?;
-            let affinity = if commands.mode() == Mode::Normal {
-                BoundaryAffinity::Downstream
-            } else {
-                commands.insertion_boundary_affinity()
-            };
-            let sample = if range.is_empty() && affinity == BoundaryAffinity::Upstream && cursor > 0
-            {
-                document
-                    .hard_line_snapshot()
-                    .previous_grapheme_boundary(cursor)
-                    .unwrap_or(cursor)
-            } else if range.is_empty() {
-                cursor
-            } else {
-                range.start
-            };
-            let linked = document
-                .projection()
-                .style_spans_for_region(&(sample..sample.saturating_add(1)))
-                .iter()
-                .any(|span| {
-                    span.application == StyleApplication::Automatic("Link".into())
-                        && span.range.contains(&sample)
-                        && (range.is_empty() || range.end <= span.range.end)
-                });
-            let link = document
-                .link_at_boundary(
-                    if range.is_empty() {
-                        cursor
-                    } else {
-                        range.start
-                    },
-                    if range.is_empty() {
-                        affinity
-                    } else {
-                        BoundaryAffinity::Downstream
-                    },
-                )
-                .map_err(document_status)?
-                .filter(|link| {
-                    range.is_empty()
-                        || (link.range.start <= range.start && range.end <= link.range.end)
-                });
-            // An empty-label link has no text; its popup sits at the caret.
-            let link = match link {
-                None if range.is_empty() => document.empty_link_at(cursor).map_err(document_status)?,
-                link => link,
-            };
-            let reference = if link.is_none() {
-                document.reference_context_at(document.text_point(sample).map_err(document_status)?)
-                    .map_err(document_status)?.filter(|r| range.is_empty() || range.start >= r.start && range.end <= r.end)
-            } else { None };
-            let reference_link = reference.as_ref().map(|r| serde_json::json!({
+            let reference_link = context.reference.as_ref().map(|r| serde_json::json!({
                 "start":r.start,"end":r.end,"text":r.text,"destination":r.destination,"editable":r.editable
             }));
-            let linear = matches!(
-                selection.kind(),
-                LogicalSelectionKind::None
-                    | LogicalSelectionKind::Character
-                    | LogicalSelectionKind::Line
-            );
-            let text = if linear && range.len() <= 32 * 1024 {
+            let text = if context.is_linear() && range.len() <= 32 * 1024 {
                 document
                     .projection()
                     .text_tree()
@@ -163,13 +97,12 @@ pub unsafe extern "C" fn viem_core_view_copy_link_context(
                 "selection": { "viewId": view, "documentId": document.id().0, "revision": document.revision().0,
                     "start": range.start, "end": range.end, "kind": identity.kind, "anchor": selection.anchor(), "active": selection.active(),
                     "affinity": if selection.active_affinity() == BoundaryAffinity::Upstream { 0 } else { 1 } },
-                "canInsert": linear && (document.can_insert_link(range.clone()) || range.is_empty() && commands.typing_link_disabled()
-                    && commands.typing_named_style().is_none_or(|style| !document.character_style_is_code(style)) && document.can_exit_link_typing(cursor, affinity)), "text": text,
-                "linked": linked && (!range.is_empty() || !commands.typing_link_disabled()),
-                "canExitLink": range.is_empty() && !commands.typing_link_disabled() && document.can_exit_link_typing(cursor, affinity),
-                "canRemoveSelection": linear && document.can_remove_link_selection(range),
-                "link": link.map(|link| serde_json::json!({"start":link.range.start,"end":link.range.end,"text":link.text,"destination":link.destination,"editable":link.editable && !document.is_read_only()})).or(reference_link),
-                "reference": reference
+                "canInsert": context.can_insert, "text": text,
+                "linked": context.linked,
+                "canExitLink": context.can_exit_link,
+                "canRemoveSelection": context.can_remove_selection,
+                "link": context.link.as_ref().map(|link| serde_json::json!({"start":link.range.start,"end":link.range.end,"text":link.text,"destination":link.destination,"editable":link.editable && !document.is_read_only()})).or(reference_link),
+                "reference": context.reference
             })).map_err(|_| ViemStatus::CoreFailure)
         })?;
         unsafe {

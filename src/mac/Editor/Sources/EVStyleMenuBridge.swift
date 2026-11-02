@@ -4,81 +4,21 @@ import ViemAppShell
 
 @MainActor
 extension EVEditorSurfaceController: EVStyleMenuProviding {
-  func listStylePresentation(_ command: EVMenuCommand, selected existing: EVSelectedNamedStyles? = nil) -> EVMenuItemPresentation {
-    guard backend.sourceFormat.isMarkdown, editorView.formattingInputAvailable,
-      let selected = existing ?? (try? session?.selectedNamedStyles()), !selected.hasTable else { return .disabled }
-    return EVMenuItemPresentation(isEnabled: command == .taskList ? selected.canSetTaskList
-        : documentState.flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY) == 0,
-      state: command == .bulletedList ? selected.bulletState
-        : command == .numberedList ? selected.numberedState
-        : command == .taskList ? selected.taskState : .off)
-  }
-
-  func blockQuotePresentation() -> EVMenuItemPresentation {
-    guard backend.sourceFormat.isMarkdown, let selected = try? session?.selectedNamedStyles(),
-          !selected.hasTable, !selected.hasCodeBlock,
-          let entry = currentStyleMenuCatalogue()?.entries.first(where: { $0.role == .paragraph && $0.stableID == "Block quote" })
-    else { return .disabled }
-    return EVMenuItemPresentation(isEnabled: entry.presentation.isEnabled, state: selected.quoteState)
-  }
-
-  /// Choosing the selection's only alert kind again restores a plain quote.
-  func alertPresentation(_ kind: UInt32) -> EVMenuItemPresentation {
-    guard backend.sourceFormat.isMarkdown, let selected = try? session?.selectedNamedStyles(),
-          !selected.hasTable, !selected.hasCodeBlock else { return .disabled }
-    let state = selected.alertState(kind)
-    return EVMenuItemPresentation(isEnabled: selected.canSetAlert || state == .on, state: state)
-  }
-
-  func codeBlockPresentation() -> EVMenuItemPresentation {
-    guard backend.sourceFormat.isMarkdown, let catalogue = currentStyleMenuCatalogue(),
-          let selected = try? session?.selectedNamedStyles(), !selected.hasTable else { return .disabled }
-    let active = catalogue.entries.contains { $0.role == .paragraph && $0.stableID == "Code Block" && $0.presentation.state == .on }
-    let entry = catalogue.entries.first { $0.role == .paragraph && $0.stableID == (active ? "Paragraph" : "Code Block") }
-    return EVMenuItemPresentation(isEnabled: entry?.presentation.isEnabled == true, state: active ? .on : .off)
-  }
-
-  func characterCodePresentation() -> EVMenuItemPresentation {
-    guard backend.sourceFormat.isMarkdown,
-      let catalogue = currentStyleMenuCatalogue() else { return .disabled }
-    let active = catalogue.entries.contains { $0.role == .character && $0.stableID == "Code" && $0.presentation.state == .on }
-    let target = catalogue.entries.first { $0.role == .character && $0.stableID == (active ? "" : "Code") }
-    return EVMenuItemPresentation(isEnabled: target?.presentation.isEnabled == true, state: active ? .on : .off)
-  }
-
-  func listIndentPresentation(unindent: Bool) -> EVMenuItemPresentation {
-    guard let selected = try? session?.selectedNamedStyles(), !selected.hasTable, let session,
-      let selection = try? session.listSelection(),
-      let flags = try? session.listIndentCapabilities(expected: selection)
-    else { return .disabled }
-    let capability = UInt32(unindent ? VIEM_LIST_CAN_UNINDENT : VIEM_LIST_CAN_INDENT)
-    return EVMenuItemPresentation(isEnabled: flags & capability != 0)
-  }
-
-  func listParagraphPresentation() -> EVMenuItemPresentation {
-    guard let session, let selection = try? session.listSelection(),
-      let flags = try? session.listIndentCapabilities(expected: selection)
-    else { return .disabled }
-    return EVMenuItemPresentation(isEnabled: flags & UInt32(VIEM_LIST_CAN_INSERT_PARAGRAPH) != 0)
-  }
-
   public func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? {
     if backend.sourceFormat == .code { return currentCodeStyleMenuCatalogue() }
     guard let snapshot = try? backend.styleSheetSnapshot() else { return nil }
-    let selection = try? session?.listSelection()
     let selectedStyles = try? session?.selectedNamedStyles()
-
-    return styleMenuCatalogue(snapshot: snapshot, selectedStyles: selectedStyles, selectionAvailable: selection != nil)
+    let actions = try? session?.formattingActions(EVFormattingActions.styleAssignments)
+    return styleMenuCatalogue(snapshot: snapshot, selectedStyles: selectedStyles, actions: actions)
   }
 
-  /// Menus and the persistent toolbar share assignment and selection policy.
-  /// The toolbar can reuse an exact-revision snapshot while the cursor moves.
+  /// Menus and the persistent toolbar share core's assignment policy; each
+  /// style also needs the assign capability. The toolbar can reuse an
+  /// exact-revision snapshot while the cursor moves.
   func styleMenuCatalogue(snapshot: EVStyleSheetSnapshot, selectedStyles: EVSelectedNamedStyles?,
-                          selectionAvailable: Bool) -> EVStyleMenuCatalogue {
-    let inTable = selectedStyles?.hasTable == true
-    let characterAssignmentsAvailable = selectionAvailable
-      && (try? backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY)) == 0
-      && selectedStyles?.hasCodeBlock != true
+                          actions: EVFormattingActions?) -> EVStyleMenuCatalogue {
+    let paragraphs = actions?.isEnabled(UInt32(VIEM_FORMATTING_PARAGRAPH_STYLES)) == true
+    let characters = actions?.isEnabled(UInt32(VIEM_FORMATTING_CHARACTER_STYLES)) == true
     var entries = snapshot.definitions.filter {
       !$0.flags.contains(.internalSyntax)
         && (!$0.flags.contains(.internalList)
@@ -93,13 +33,8 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         displayName: definition.name,
         isBase: definition.flags.isBase,
         presentation: EVMenuItemPresentation(
-          isEnabled: selectionAvailable && (!inTable || definition.kind == .character)
-            && (definition.kind != .character || characterAssignmentsAvailable)
-            && ((self.standardHeadingLevel(for: definition.key.id.rawValue) != nil
-              && definition.kind == .paragraph)
-              || (definition.capabilities.contains(.assign)
-                && (definition.kind == .paragraph || definition.kind.isContainer
-                  || definition.kind == .character))),
+          isEnabled: (definition.kind == .character ? characters : paragraphs)
+            && definition.capabilities.contains(.assign),
           state: selectedStyles?.identity == snapshot.identity
             && ((definition.kind != .character && selectedStyles?.paragraph == definition.key.id)
                 || (definition.kind == .character && selectedStyles?.character == definition.key.id))
@@ -110,7 +45,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
     entries.insert(EVStyleMenuEntry(
       role: .character, stableID: "", displayName: "Default Paragraph", isBase: true,
       presentation: EVMenuItemPresentation(
-        isEnabled: characterAssignmentsAvailable && backend.sourceFormat == .markdown,
+        isEnabled: characters,
         state: selectedStyles?.identity == snapshot.identity
           && selectedStyles?.characterMixed == false && selectedStyles?.character == nil ? .on : .off)
     ), at: 0)
@@ -182,25 +117,13 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
   }
 
   func performHeadingShortcut(level: UInt32) {
-    guard level <= 6, let session, headingShortcutPresentation(level: level).isEnabled else {
+    guard level <= 6, let session,
+      formattingPresentation(UInt32(VIEM_FORMATTING_HEADING_0) + level).isEnabled else {
       return
     }
     performInput {
       _ = try session.setParagraphStyle(level: level, expected: session.listSelection())
     }
-  }
-
-  func headingShortcutPresentation(level: UInt32) -> EVMenuItemPresentation {
-    let id = level == 0 ? "Paragraph" : "Heading\(level)"
-    let snapshot = try? backend.styleSheetSnapshot()
-    let selectedStyles = try? session?.selectedNamedStyles()
-    return EVMenuItemPresentation(
-      isEnabled: level <= 6 && session != nil
-        && standardHeadingLevel(for: id) != nil
-        && snapshot?.definition(namespace: .block, id: EVStyleID(rawValue: id)) != nil,
-      state: selectedStyles?.identity == snapshot?.identity
-        && selectedStyles?.paragraph?.rawValue == id ? .on : .off
-    )
   }
 
   private func standardHeadingLevel(for id: String) -> UInt32? {
@@ -232,8 +155,7 @@ extension EVEditorSurfaceController: EVStyleMenuProviding {
         snapshot.identity.styleSheetRevision == action.styleSheetRevision
       else { return }
       if action.role == .character {
-        guard (try? backend.documentState().flags & UInt32(VIEM_DOCUMENT_STATE_READ_ONLY)) == 0,
-              (try? session.selectedNamedStyles().hasCodeBlock) == false else { return }
+        guard formattingPresentation(UInt32(VIEM_FORMATTING_CHARACTER_STYLES)).isEnabled else { return }
       }
       let key = EVStyleKey(namespace: action.role.namespace, id: EVStyleID(rawValue: action.stableID))
       let clearCharacter = key == .defaultParagraph
