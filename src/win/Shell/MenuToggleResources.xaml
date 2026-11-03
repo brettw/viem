@@ -9,6 +9,60 @@
     <Setter Property="IsHitTestVisible" Value="False" />
     <Setter Property="Background" Value="{ThemeResource DividerStrokeColorDefaultBrush}" />
   </Style>
+  <!-- A compact trailing segment, without the standard dropdown's label
+       column and chevron margin. The quote group supplies the outer outline. -->
+  <Style x:Key="FormattingToolbarQuoteDropdown" TargetType="DropDownButton">
+    <Setter Property="Width" Value="20" />
+    <Setter Property="Height" Value="24" />
+    <Setter Property="MinWidth" Value="0" />
+    <Setter Property="MinHeight" Value="0" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Foreground" Value="{ThemeResource ButtonForeground}" />
+    <Setter Property="UseSystemFocusVisuals" Value="True" />
+    <Setter Property="Template">
+      <Setter.Value>
+        <ControlTemplate TargetType="DropDownButton">
+          <Grid x:Name="Root" Background="{TemplateBinding Background}" CornerRadius="0,3,3,0">
+            <VisualStateManager.VisualStateGroups>
+              <VisualStateGroup x:Name="CommonStates">
+                <VisualState x:Name="Normal" />
+                <VisualState x:Name="PointerOver">
+                  <VisualState.Setters>
+                    <Setter Target="Root.Background" Value="{ThemeResource ButtonBackgroundPointerOver}" />
+                  </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="Pressed">
+                  <VisualState.Setters>
+                    <Setter Target="Root.Background" Value="{ThemeResource ButtonBackgroundPressed}" />
+                    <Setter Target="Chevron.Stroke" Value="{ThemeResource ButtonForegroundPressed}" />
+                  </VisualState.Setters>
+                </VisualState>
+                <VisualState x:Name="Disabled">
+                  <VisualState.Setters>
+                    <Setter Target="Chevron.Stroke" Value="{ThemeResource ButtonForegroundDisabled}" />
+                  </VisualState.Setters>
+                </VisualState>
+              </VisualStateGroup>
+            </VisualStateManager.VisualStateGroups>
+            <Border Width="1" Height="12" HorizontalAlignment="Left"
+                    Background="{ThemeResource DividerStrokeColorDefaultBrush}" IsHitTestVisible="False" />
+            <Path x:Name="Chevron" Data="M 0,0 L 3.5,3.5 L 7,0"
+                  Width="8" Height="5" HorizontalAlignment="Center" VerticalAlignment="Center"
+                  Stroke="{TemplateBinding Foreground}" StrokeThickness="1.25"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"
+                  IsHitTestVisible="False" />
+          </Grid>
+        </ControlTemplate>
+      </Setter.Value>
+    </Setter>
+  </Style>
+  <Style x:Key="FormattingToolbarQuoteGroup" TargetType="Border">
+    <Setter Property="CornerRadius" Value="4" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}" />
+    <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}" />
+  </Style>
   <!-- Keep this title-bar toggle neutral without changing other toggles. -->
   <SolidColorBrush x:Key="ToggleButtonBackground" Color="Transparent" />
   <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="{ThemeResource ControlFillColorDefault}" />

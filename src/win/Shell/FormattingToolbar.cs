@@ -21,7 +21,7 @@ internal sealed partial class FormattingToolbar : UserControl
     private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     internal readonly DropDownButton Paragraph = Selector("Paragraph style");
     /// <summary>The GitHub alert kinds beside the quote toggle; VIEM_ALERT_* tags.</summary>
-    internal readonly DropDownButton BlockQuoteAlerts = new() { Width = 22, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Flyout = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft } };
+    internal readonly DropDownButton BlockQuoteAlerts = new() { AllowFocusOnInteraction = false, Flyout = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft } };
     /// <summary>Toolbar buttons that present one core formatting action each.</summary>
     private static readonly (ToolbarAction Action, uint Core)[] ToolbarFormatting = [
         (ToolbarAction.Bold, VIEM_FORMATTING_BOLD), (ToolbarAction.Italic, VIEM_FORMATTING_ITALIC),
@@ -110,8 +110,12 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(block, ToolbarAction.Numbers, "Numbered List", "\uE8EF");
         Add(block, ToolbarAction.Tasks, "Task List", "");
         block.Children.Add(new Border { Style = (Style)Resources["FormattingToolbarDivider"] });
-        var quote = Group(0); block.Children.Add(quote);
+        var quote = Group(0);
+        block.Children.Add(new Border { Style = (Style)Resources["FormattingToolbarQuoteGroup"], Child = quote });
         Add(quote, ToolbarAction.BlockQuote, "Block Quote", "");
+        var quoteButton = (ToggleButton)Buttons[ToolbarAction.BlockQuote];
+        quoteButton.Height = 24; quoteButton.BorderThickness = new(0); quoteButton.CornerRadius = new(3, 0, 0, 3);
+        BlockQuoteAlerts.Style = (Style)Resources["FormattingToolbarQuoteDropdown"];
         AutomationProperties.SetName(BlockQuoteAlerts, "Alert Type"); ToolTipService.SetToolTip(BlockQuoteAlerts, "Alert Type");
         foreach (var (kind, title) in AlertKinds)
         {
