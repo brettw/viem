@@ -16,11 +16,13 @@ internal static class InputRoutingTests
 {
     private enum PointerPhase { Move, Press, Release }
     [DllImport("user32.dll")] private static extern nint GetFocus();
+    [DllImport("user32.dll")] private static extern nint GetCapture();
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint process);
     [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint key, uint type);
     [DllImport("user32.dll")] private static extern bool GetKeyboardState([Out] byte[] state);
     [DllImport("user32.dll")] private static extern bool SetKeyboardState(byte[] state);
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool PostMessage(nint hwnd, uint message, nuint wparam, nint lparam);
+    [DllImport("user32.dll")] private static extern nint SendMessage(nint hwnd, uint message, nuint wparam, nint lparam);
     [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X, Y; }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(NativePoint point);
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
@@ -121,18 +123,23 @@ internal static class InputRoutingTests
         PointerEventHandler pressed = (_, args) => Observed(args, PointerPhase.Press);
         PointerEventHandler moved = (_, args) => Observed(args, PointerPhase.Move);
         PointerEventHandler released = (_, args) => Observed(args, PointerPhase.Release);
-        owner.Content.AddHandler(UIElement.PointerPressedEvent, pressed, true);
-        owner.Content.AddHandler(UIElement.PointerMovedEvent, moved, true);
-        owner.Content.AddHandler(UIElement.PointerReleasedEvent, released, true);
+        var observedRoots = new HashSet<UIElement>();
+        void ObserveRoot(UIElement root) {
+            if (!observedRoots.Add(root)) return;
+            root.AddHandler(UIElement.PointerPressedEvent, pressed, true);
+            root.AddHandler(UIElement.PointerMovedEvent, moved, true);
+            root.AddHandler(UIElement.PointerReleasedEvent, released, true);
+        }
+        ObserveRoot(owner.Content);
         // Windowed flyouts have their own routed tree; retain direct observation
         // there while the window root covers capture transfers to parent bars.
-        if (!ReferenceEquals(element, owner.Content)) {
-            element.AddHandler(UIElement.PointerPressedEvent, pressed, true);
-            element.AddHandler(UIElement.PointerMovedEvent, moved, true);
-            element.AddHandler(UIElement.PointerReleasedEvent, released, true);
-        }
+        ObserveRoot(element);
         async Task SendObserved(PointerPhase phase, Action send)
         {
+            // A press can open a windowed menu before release. Its input is
+            // routed through the popup child rather than the original canvas.
+            foreach (var popup in VisualTreeHelper.GetOpenPopupsForXamlRoot(owner.Content.XamlRoot))
+                if (popup.Child is { } child) ObserveRoot(child);
             expectedScreenPoint = position;
             expectedPhase = phase;
             var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -143,13 +150,19 @@ internal static class InputRoutingTests
                 var hit = WindowFromPoint(expectedScreenPoint);
                 var windowClass = new System.Text.StringBuilder(128); GetClassName(hit, windowClass, windowClass.Capacity);
                 GetCursorPos(out var currentPointer);
-                throw new InvalidOperationException($"Native pointer {phase} was not observed at {expectedScreenPoint.X},{expectedScreenPoint.Y}; last={observedPoint}, events={observedEvents}, scale={scale}, owner={WinRT.Interop.WindowNative.GetWindowHandle(owner):X}, hitRoot={GetAncestor(hit, 2):X}, foreground={GetForegroundWindow():X}, hitClass={windowClass}, focus={GetFocus():X}, original={original.X},{original.Y}, current={currentPointer.X},{currentPointer.Y}, bounds={bounds}.", error);
+                nint pointParameter = (nint)((uint)(ushort)expectedScreenPoint.X | (uint)(ushort)expectedScreenPoint.Y << 16);
+                nint nonclient = SendMessage(GetAncestor(hit, 2), 0x0084, 0, pointParameter);
+                throw new InvalidOperationException($"Native pointer {phase} was not observed at {expectedScreenPoint.X},{expectedScreenPoint.Y}; last={observedPoint}, events={observedEvents}, scale={scale}, owner={WinRT.Interop.WindowNative.GetWindowHandle(owner):X}, hitRoot={GetAncestor(hit, 2):X}, foreground={GetForegroundWindow():X}, hitClass={windowClass}, hitTest={nonclient}, focusRoot={GetAncestor(GetFocus(), 2):X}, capture={GetCapture():X}, original={original.X},{original.Y}, current={currentPointer.X},{currentPointer.Y}, bounds={bounds}.", error);
             }
             finally { routedPointer = null; }
         }
         try
         {
-            await SendObserved(PointerPhase.Move, () => Move(position));
+            // Positioning is setup; WinUI need not route a move when its
+            // pointer already occupies this point. The following press must
+            // still arrive at the exact requested screen position.
+            Move(position);
+            await Settle();
             for (int click = 1; click < Math.Max(clickCount, doubleClick ? 2 : 1); click++)
             {
                 await SendObserved(PointerPhase.Press, () => Button(0x0002));
@@ -169,13 +182,10 @@ internal static class InputRoutingTests
         }
         finally
         {
-            owner.Content.RemoveHandler(UIElement.PointerPressedEvent, pressed);
-            owner.Content.RemoveHandler(UIElement.PointerMovedEvent, moved);
-            owner.Content.RemoveHandler(UIElement.PointerReleasedEvent, released);
-            if (!ReferenceEquals(element, owner.Content)) {
-                element.RemoveHandler(UIElement.PointerPressedEvent, pressed);
-                element.RemoveHandler(UIElement.PointerMovedEvent, moved);
-                element.RemoveHandler(UIElement.PointerReleasedEvent, released);
+            foreach (var root in observedRoots) {
+                root.RemoveHandler(UIElement.PointerPressedEvent, pressed);
+                root.RemoveHandler(UIElement.PointerMovedEvent, moved);
+                root.RemoveHandler(UIElement.PointerReleasedEvent, released);
             }
             // Refusing an initial move must not send any input to another app.
             // An outstanding press still needs releasing if focus changed later.

@@ -139,7 +139,17 @@ internal static class CheckboxInteractionTests
             new MenuFlyoutItemAutomationPeer(table).Invoke();
             await SelfTestRunner.Until(() => toolbar.HasOpenPopup);
             Check(toolbar.HasOpenPopup, "Insert Table opens the existing interactive toolbar size picker");
-            toolbar.DismissPopups();
+            // Popup.IsOpen changes before WinUI removes its light-dismiss input
+            // surface. Retire that surface before creating another window.
+            var dismissed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            void Closed() { if (!toolbar.HasOpenPopup) dismissed.TrySetResult(); }
+            toolbar.PopupsClosed += Closed;
+            try {
+                toolbar.DismissPopups();
+                await dismissed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            finally { toolbar.PopupsClosed -= Closed; }
+            await MenuTestHelpers.Transition(false, () => { peer.Collapse(); return Task.CompletedTask; }, table);
             Check(pane.LastError == null, "checkbox and Insert menu actions complete without native errors");
             await ImportedOrderedTask(preferences);
             await DragFromCheckbox(preferences);
