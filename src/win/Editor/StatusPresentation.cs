@@ -87,8 +87,6 @@ internal sealed partial class EditorPane
         // Source coordinates remain exact when the caret is outside cached layout.
         var position = View.Location;
         locationText = $"Ln {position.line}, Col {position.column}";
-        if ((presentation.flags & VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT) != 0)
-            locationText += $" [{presentation.search_match_current}/{presentation.search_match_total}]";
         location.Text = (Document.IsReadOnly ? "🔒  " : "") + locationText;
         location.Width = Math.Ceiling(MeasureStatusText(location.Text));
         statusTextCanvas.Invalidate();

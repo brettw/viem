@@ -87,22 +87,13 @@ final class EVSearchHighlightTests: XCTestCase {
         XCTAssertFalse(surface.canUndo)
     }
 
-    func testSearchCountCrossesABIAndUpdatesTheStatusBarWithoutHighlighting() throws {
-        let (_, surface) = try fixture("hit gap hit", settings: "set nohlsearch incsearch")
+    func testStatusBarLocationShowsOnlyTheCaretPositionAfterSearch() throws {
+        let (_, surface) = try fixture("hit gap hit")
         try submit("/hit", in: surface)
-        XCTAssertNotEqual(surface.viewPresentation.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT), 0)
-        XCTAssertEqual(surface.viewPresentation.search_match_current, 2)
-        XCTAssertEqual(surface.viewPresentation.search_match_total, 2)
-        XCTAssertTrue(surface.statusBarState.location.hasSuffix("[2/2]"))
+        XCTAssertEqual(surface.statusBarState.location, "Ln 1, Col 9")
         type("n", into: surface)
         try finishSearch(surface)
-        XCTAssertTrue(surface.statusBarState.location.hasSuffix("[1/2]"))
-        type("/gap", into: surface)
-        try finishSearch(surface)
-        XCTAssertTrue(surface.statusBarState.location.hasSuffix("[1/1]"))
-        surface.editorView.cancelOperation(nil)
-        try finishSearch(surface)
-        XCTAssertTrue(surface.statusBarState.location.hasSuffix("[1/2]"))
+        XCTAssertEqual(surface.statusBarState.location, "Ln 1, Col 1")
     }
 
     func testSearchOptionQueriesUseNativeOptionNames() throws {

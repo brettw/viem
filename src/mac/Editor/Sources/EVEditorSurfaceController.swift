@@ -1574,8 +1574,6 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         let point = try? session?.lineLocation()
         let line = String(point?.line ?? 1)
         let column = point?.column ?? 1
-        let searchCount = (viewPresentation.flags & UInt32(VIEM_VIEW_PRESENTATION_HAS_SEARCH_COUNT)) != 0
-            ? " [\(viewPresentation.search_match_current)/\(viewPresentation.search_match_total)]" : ""
         let pending = withUnsafeBytes(of: viewPresentation.pending_command) {
             String(decoding: $0.prefix(Int(viewPresentation.pending_command_length)), as: UTF8.self)
         }
@@ -1583,7 +1581,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         statusBarState = EVStatusBarState(
             mode: recording ?? modeLabel(viewPresentation.mode),
             message: substituteConfirmationPrompt ?? (pending.isEmpty ? lastErrorMessage : pending),
-            location: "Ln \(line), Col \(column)" + searchCount,
+            location: "Ln \(line), Col \(column)",
             lineMode: (try? session?.lineMode()) ?? .visual,
             commandLine: editorView.commandLineRenderState().map {
                 EVStatusCommandLine(
