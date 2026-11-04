@@ -302,7 +302,9 @@ file-change review at a time across the application. Returning to the app checks
 all open windows. A single changed file uses the ordinary dialog; multiple files
 are listed by full path with **Reload all** and **Keep My Version all** buttons.
 The list is fixed when presentation starts. Later changes wait for the next
-dialog, and repeated events for one buffer share a single pending flag.
+dialog, and repeated events for one buffer share a single pending flag. When no
+listed buffer has unsaved edits, the dialog says each can be safely reloaded and
+Reload is the default button; otherwise Keep My Version is.
 
 Keep acknowledges only the listed disk states and retains the save baselines.
 Reload verifies each file and buffer again before replacing it in every shared

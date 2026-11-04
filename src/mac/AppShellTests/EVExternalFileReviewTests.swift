@@ -73,6 +73,31 @@ final class EVExternalFileReviewTests: XCTestCase {
     return result
   }
 
+  func testReviewAlertDefaultsToLoadFileOnlyWhenNothingIsDiscarded() {
+    let clean = EVDocument.externalFileReviewAlert(fileName: "notes.md", change: .modified,
+      review: EVExternalFileReview(canReload: true, discardsUnsavedChanges: false))
+    XCTAssertEqual(clean.decisions, [.loadFile, .keepBuffer])
+    XCTAssertEqual(clean.alert.buttons.map(\.title), ["Load File", "Keep Buffer"])
+    XCTAssertEqual(clean.alert.buttons.map(\.keyEquivalent), ["\r", "\u{1b}"])
+    XCTAssertEqual(clean.alert.alertStyle, .informational)
+    XCTAssertEqual(clean.alert.messageText, "“notes.md” changed outside Viem.")
+    XCTAssertTrue(clean.alert.informativeText.hasSuffix("\n\nThis buffer has not been modified and can be safely reloaded."))
+
+    let dirty = EVDocument.externalFileReviewAlert(fileName: "notes.md", change: .modified,
+      review: EVExternalFileReview(canReload: true, discardsUnsavedChanges: true))
+    XCTAssertEqual(dirty.decisions, [.keepBuffer, .loadFile])
+    XCTAssertEqual(dirty.alert.buttons.map(\.title), ["Keep Buffer", "Load File"])
+    XCTAssertEqual(dirty.alert.buttons.first?.keyEquivalent, "\r")
+    XCTAssertEqual(dirty.alert.alertStyle, .critical)
+    XCTAssertFalse(dirty.alert.informativeText.contains("safely reloaded"))
+
+    let deleted = EVDocument.externalFileReviewAlert(fileName: "notes.md", change: .deleted,
+      review: EVExternalFileReview(canReload: false, discardsUnsavedChanges: false))
+    XCTAssertEqual(deleted.decisions, [.keepBuffer])
+    XCTAssertEqual(deleted.alert.alertStyle, .warning)
+    XCTAssertFalse(deleted.alert.informativeText.contains("safely reloaded"))
+  }
+
   func testBackgroundChangesWaitForApplicationActivationAndReviewLatestVersion() throws {
     let (document, backend, url) = try fixture()
     var isActive = false

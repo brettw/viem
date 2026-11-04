@@ -148,7 +148,7 @@ internal sealed partial class EditorWindow
         EditorPane Pane, ulong Revision);
 
     internal sealed record ExternalFileReviewDialog(IReadOnlyList<CoreDocument> Documents,
-        string Title, string Text, string Primary, string Close);
+        string Title, string Text, string Primary, string Close, ContentDialogButton DefaultButton);
 
     private static async Task ReviewExternalFiles()
     {
@@ -207,7 +207,7 @@ internal sealed partial class EditorWindow
                     if (host.ExternalFileBatchDecisionForTesting is { } decideBatch) result = await decideBatch(dialog);
                     else
 #endif
-                    result = await host.Dialog(dialog.Title, dialog.Text, dialog.Primary, dialog.Close, defaultButton: ContentDialogButton.Close);
+                    result = await host.Dialog(dialog.Title, dialog.Text, dialog.Primary, dialog.Close, defaultButton: dialog.DefaultButton);
                     // The list is now fixed. Events received since presentation
                     // only set Pending and cannot inherit this decision.
                     foreach (var entry in batch) await ApplyExternalFileDecision(host, entry, result);
@@ -230,16 +230,20 @@ internal sealed partial class EditorWindow
     {
         bool multiple = batch.Count > 1;
         bool canReload = batch.Any(e => e.Pending.Observation.Digest != null);
+        bool discards = batch.Any(e => e.Pending.Observation.Digest != null && e.Pending.State.Document.IsDirty);
         string text = string.Join("\n\n", batch.Select(e =>
             $"{(multiple ? e.Pending.Path : e.Pending.State.Document.Name)} {e.Pending.Observation.Message}" +
-            (e.Pending.Observation.Digest != null && e.Pending.State.Document.IsDirty
-                ? " Reloading will discard your unsaved edits in all views." : "")));
+            (e.Pending.Observation.Digest == null ? ""
+                : e.Pending.State.Document.IsDirty ? " Reloading will discard your unsaved edits in all views."
+                : " This buffer has not been modified and can be safely reloaded.")));
         if (multiple && canReload && batch.Any(e => e.Pending.Observation.Digest == null))
             text += "\n\nReload all reloads the available files. Deleted or unreadable files keep their current buffers.";
         string suffix = multiple ? " all" : "";
+        // Reloading loses nothing when no listed buffer has unsaved edits.
         return new(batch.Select(e => e.Pending.State.Document).ToArray(),
             multiple ? "Files changed on disk" : "File changed on disk", text,
-            canReload ? "Reload" + suffix : "", "Keep My Version" + suffix);
+            canReload ? "Reload" + suffix : "", "Keep My Version" + suffix,
+            canReload && !discards ? ContentDialogButton.Primary : ContentDialogButton.Close);
     }
 
     private static async Task ApplyExternalFileDecision(EditorWindow host, PresentedFileReview entry, ContentDialogResult result)

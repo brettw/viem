@@ -38,8 +38,10 @@ internal static partial class ExternalFileChangeTests
         Check(firstDialog is { Documents.Count: 2 } && firstDialog.Documents.Contains(firstDocument) && firstDialog.Documents.Contains(secondDocument),
             "activation batches changed files across windows and deduplicates shared views");
         Check(firstDialog!.Title == "Files changed on disk" && firstDialog.Primary == "Reload all" && firstDialog.Close == "Keep My Version all"
-            && firstDialog.Text.Contains(firstPath) && firstDialog.Text.Contains(secondPath) && firstDialog.Text.Contains("discard your unsaved edits"),
-            "batch review lists full paths, warns about dirty buffers and appends all to both buttons");
+            && firstDialog.Text.Contains(firstPath) && firstDialog.Text.Contains(secondPath) && firstDialog.Text.Contains("discard your unsaved edits")
+            && firstDialog.Text.Contains("This buffer has not been modified and can be safely reloaded.")
+            && firstDialog.DefaultButton == ContentDialogButton.Close,
+            "batch review lists full paths, warns about dirty buffers, defaults to keeping them and appends all to both buttons");
         Check(reviews == 1 && firstDocument.FormattedText() == "First" && secondDocument.FormattedText() == unsaved
             && secondDocument.IsDirty && first.HasSavedBaselineForTesting(firstDocument, "First"u8.ToArray())
             && second.HasSavedBaselineForTesting(secondDocument, "Second"u8.ToArray()),
@@ -108,8 +110,9 @@ internal static partial class ExternalFileChangeTests
             await presenting.Task.WaitAsync(CompletionTimeout);
             Check(shown[0].Documents.Count == 1 && shown[0].Title == "File changed on disk"
                 && shown[0].Primary == "Reload" && shown[0].Close == "Keep My Version"
-                && shown[0].Text == "during-first.txt was changed by another program.",
-                "a one-file batch keeps the existing single-file dialog");
+                && shown[0].Text == "during-first.txt was changed by another program. This buffer has not been modified and can be safely reloaded."
+                && shown[0].DefaultButton == ContentDialogButton.Primary,
+                "a one-file batch of an unmodified buffer uses the single-file dialog and defaults to Reload");
             if (changeFirstAgain) File.WriteAllText(firstPath, "Newer first change");
             File.WriteAllText(secondPath, "Second change");
             first.ActivateExternalFileChecksForTesting();

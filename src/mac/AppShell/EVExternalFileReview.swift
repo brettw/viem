@@ -177,24 +177,42 @@ extension EVDocument {
       externalFileReviewState.finish(token: observation.token, acknowledge: false)
       completion(.success(nil)); return
     }
+    let (alert, decisions) = Self.externalFileReviewAlert(
+      fileName: target.lastPathComponent, change: observation.change, review: review)
+    alert.beginSheetModal(for: window) { response in
+      let index = response.rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+      decide(decisions.indices.contains(index) ? decisions[index] : .keepBuffer)
+    }
+  }
+
+  /// Builds the review sheet and the decision for each button, in order.
+  /// Reloading an unmodified buffer loses nothing, so Load File is then the
+  /// default and the alert is not critical.
+  static func externalFileReviewAlert(
+    fileName: String, change: EVExternalFileChange, review: EVExternalFileReview
+  ) -> (alert: NSAlert, decisions: [EVExternalFileDecision]) {
+    let reloadsSafely = review.canReload && !review.discardsUnsavedChanges
     let alert = NSAlert()
-    alert.alertStyle = review.discardsUnsavedChanges ? .critical : .warning
-    alert.messageText = "“\(target.lastPathComponent)” changed outside Viem."
-    var explanation = observation.change.message
+    alert.alertStyle = review.discardsUnsavedChanges ? .critical : reloadsSafely ? .informational : .warning
+    alert.messageText = "“\(fileName)” changed outside Viem."
+    var explanation = change.message
     if review.canReload {
       explanation += "\n\nKeep Buffer continues editing the version in Viem. Load File replaces it with the version on disk."
-      if review.discardsUnsavedChanges {
-        explanation += "\n\nThis buffer has unsaved changes. Load File will discard them in every view of this buffer."
-      }
+      explanation += review.discardsUnsavedChanges
+        ? "\n\nThis buffer has unsaved changes. Load File will discard them in every view of this buffer."
+        : "\n\nThis buffer has not been modified and can be safely reloaded."
     } else {
       explanation += "\n\nKeep Buffer preserves your text. You can save it to another location, or save to recreate the file if it was deleted."
     }
     alert.informativeText = explanation
-    alert.addButton(withTitle: "Keep Buffer")
-    if review.canReload { alert.addButton(withTitle: "Load File") }
-    alert.beginSheetModal(for: window) { response in
-      decide(response == .alertSecondButtonReturn ? .loadFile : .keepBuffer)
+    let decisions: [EVExternalFileDecision] =
+      reloadsSafely ? [.loadFile, .keepBuffer] : review.canReload ? [.keepBuffer, .loadFile] : [.keepBuffer]
+    for decision in decisions {
+      alert.addButton(withTitle: decision == .loadFile ? "Load File" : "Keep Buffer")
     }
+    // The first button takes Return; let Escape keep the buffer instead.
+    if reloadsSafely { alert.buttons[1].keyEquivalent = "\u{1b}" }
+    return (alert, decisions)
   }
 
   private func reloadReviewedFile(
