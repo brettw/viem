@@ -250,18 +250,45 @@ pub extern "C" fn viem_pane_layout_remove(handle: u64, pane: u64) -> ViemStatus 
 }
 /// Each delta is incremental, including deltas blocked at an edge. kind=0 for
 /// a pane's status bar, kind=1 for a vertical splitter from the current snapshot.
+/// A status drag may preview-close the panes below its boundary when all of
+/// them are listed in `closable`; splitter drags take no closable panes.
+/// # Safety
+/// closable identifies `closable_count` aligned readable IDs, or is null when zero.
 #[no_mangle]
-pub extern "C" fn viem_pane_layout_drag(handle: u64, id: u64, kind: u32, delta: f64) -> ViemStatus {
+pub unsafe extern "C" fn viem_pane_layout_drag(
+    handle: u64,
+    id: u64,
+    kind: u32,
+    delta: f64,
+    closable: *const u64,
+    closable_count: u64,
+) -> ViemStatus {
     ffi_boundary(|| {
-        if kind > 1 {
+        typed_pointer_region(closable, closable_count)?;
+        if kind > 1 || (kind == 1 && closable_count != 0) || closable_count > MAX_PANES as u64 {
             return Err(ViemStatus::InvalidArgument);
         }
-        checkout(handle)?
-            .state
-            .as_mut()
-            .unwrap()
-            .drag(id, kind == 0, delta)
-            .map_err(error)
+        let closable = if closable_count == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(closable, closable_count as usize) }
+        };
+        let mut lease = checkout(handle)?;
+        let state = lease.state.as_mut().unwrap();
+        if kind == 0 {
+            state.drag_status(id, delta, closable)
+        } else {
+            state.drag(id, false, delta)
+        }
+        .map_err(error)
+    })
+}
+/// Commits panes that the current status drag closed. Frames already omit them.
+#[no_mangle]
+pub extern "C" fn viem_pane_layout_end_drag(handle: u64) -> ViemStatus {
+    ffi_boundary(|| {
+        checkout(handle)?.state.as_mut().unwrap().finish_status_drag();
+        Ok(())
     })
 }
 /// Geometry operations: 1 focus(direction in count, steps in value, caret x/y);
@@ -466,7 +493,7 @@ mod tests {
         drop(lease);
         assert_eq!(viem_pane_layout_destroy(handle), ViemStatus::Ok);
         assert_eq!(
-            viem_pane_layout_drag(handle, 1, 0, 12.0),
+            unsafe { viem_pane_layout_drag(handle, 1, 0, 12.0, std::ptr::null(), 0) },
             ViemStatus::InvalidHandle
         );
         let mut other = 0;

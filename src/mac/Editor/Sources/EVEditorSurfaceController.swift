@@ -1578,11 +1578,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             String(decoding: $0.prefix(Int(viewPresentation.pending_command_length)), as: UTF8.self)
         }
         let recording = UnicodeScalar(viewPresentation.recording_register).flatMap { $0.value == 0 ? nil : "Recording @\($0)" }
+        let lineMode = (try? session?.lineModeState()) ?? (.visual, false)
         statusBarState = EVStatusBarState(
             mode: recording ?? modeLabel(viewPresentation.mode),
             message: substituteConfirmationPrompt ?? (pending.isEmpty ? lastErrorMessage : pending),
             location: "Ln \(line), Col \(column)",
-            lineMode: (try? session?.lineMode()) ?? .visual,
+            lineMode: lineMode.mode,
+            lineModeIsFixed: lineMode.isFixed,
             commandLine: editorView.commandLineRenderState().map {
                 EVStatusCommandLine(
                     prompt: $0.prompt,

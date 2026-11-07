@@ -1252,10 +1252,15 @@ final class EVCoreViewSession {
         return value
     }
 
-    func lineMode() throws -> EVLineMode {
+    func lineMode() throws -> EVLineMode { try lineModeState().mode }
+
+    /// The view's line mode and whether its format fixes it (Code always uses
+    /// physical source lines).
+    func lineModeState() throws -> (mode: EVLineMode, isFixed: Bool) {
         var value: UInt32 = 0
-        try checked(viem_core_view_line_mode(document.core, viewID, &value), operation: "Read line mode")
-        return EVLineMode(rawValue: value) ?? .visual
+        var fixed: UInt32 = 0
+        try checked(viem_core_view_line_mode(document.core, viewID, &value, &fixed), operation: "Read line mode")
+        return (EVLineMode(rawValue: value) ?? .visual, fixed != 0)
     }
 
     func defaultColumnWidth() throws -> CGFloat {

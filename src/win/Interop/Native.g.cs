@@ -2102,7 +2102,9 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_pane_layout_remove(ulong @handle, ulong @pane);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_pane_layout_drag(ulong @handle, ulong @id, uint @kind, double @delta);
+    public static extern uint viem_pane_layout_drag(ulong @handle, ulong @id, uint @kind, double @delta, ulong* @closable, ulong @closable_count);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_pane_layout_end_drag(ulong @handle);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_pane_layout_action(ulong @handle, ulong @pane, uint @operation, ulong @count, double @value, uint @flags, double @x, double @y, ulong* @out_focus);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2308,7 +2310,7 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_copy_line_number_regions(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ViemLayoutRectV1* @expected_viewport, ViemLineNumberRegionV1* @regions, ulong @capacity, ulong* @out_count);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_view_line_mode(ulong @core, ulong @view, uint* @out_mode);
+    public static extern uint viem_core_view_line_mode(ulong @core, ulong @view, uint* @out_mode, uint* @out_fixed);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_default_line_height(ulong @core, ulong @view, float* @out_height);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

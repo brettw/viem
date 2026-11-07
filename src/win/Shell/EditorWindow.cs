@@ -51,6 +51,7 @@ internal sealed partial class EditorWindow : Window
         using var startup = Diagnostics.StartupPerformance.Measure("window.initialize");
         this.preferences = preferences;
         paneGrid.Configure(preferences);
+        paneGrid.DragClosedPanes = ForgetDragClosedPanes;
         titleBar.Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         ConfigureFormattingToolbar();
         Diagnostics.StartupPerformance.Mark("window.resourcesReady");
@@ -201,6 +202,8 @@ internal sealed partial class EditorWindow : Window
     internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false, bool focusNewPane = true)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
+        // Pane indexes below refer to committed views only.
+        paneGrid.EndDrag();
         // Include any visible toolbar before attaching a canvas that can start
         // its native resources and first document layout immediately.
         if (focusNewPane) PrepareFormattingToolbar(doc);
@@ -290,7 +293,8 @@ internal sealed partial class EditorWindow : Window
     internal void UpdateTitle()
     {
         if (ActivePane == null || closed) return;
-        string value = ActivePane.Document.Name + (ActivePane.Document.IsDirty ? " •" : "") + (Panes.Count > 1 ? $" · {Panes.Count} panes" : "");
+        int panes = Panes.Count - paneGrid.PreviewClosedPanes.Count;
+        string value = ActivePane.Document.Name + (ActivePane.Document.IsDirty ? " •" : "") + (panes > 1 ? $" · {panes} panes" : "");
         if (titleText.Text != value) { Title = value + " — Viem"; titleText.Text = value; }
         menusDirty = true;
         if (openMenus.Count > 0) QueueInputTargetRefresh();
@@ -592,8 +596,11 @@ internal sealed partial class EditorWindow : Window
         }
         closing = true; Close();
     }
+    /// The status bar's Close pane: Close for one view, with the same review.
+    internal void RequestClosePane(EditorPane pane) => Safe(() => ClosePane(pane));
     internal async Task ClosePane(EditorPane pane, bool force = false)
     {
+        paneGrid.EndDrag();
         if (closed || !Panes.Contains(pane)) return;
         if (!force && !await ConfirmDiscard(pane)) return;
         if (closed || !Panes.Contains(pane)) return;
@@ -603,10 +610,37 @@ internal sealed partial class EditorWindow : Window
     private void RemovePane(EditorPane pane, bool rebuild = true)
     {
         pane.Focused -= SetActive;
-        paneGrid.RemovePane(pane); pane.Dispose(); Panes.Remove(pane);
+        paneGrid.RemovePane(pane);
+        if (Panes.Contains(pane)) ForgetPane(pane);
+        if (rebuild) { RebuildPanes(); paneGrid.Equalize(); if (ActivePane != null) SetActive(ActivePane); }
+    }
+    private void ForgetPane(EditorPane pane)
+    {
+        pane.Focused -= SetActive;
+        pane.Dispose(); Panes.Remove(pane);
+        if (lastPane == pane) lastPane = null;
         if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == pane.Document)) { savedSources.Remove(pane.Document); App.Instance.BlockingEdits.Released(pane.Document); pane.Document.Dispose(); }
         if (ActivePane == pane) ActivePane = Panes.FirstOrDefault();
-        if (rebuild) { RebuildPanes(); paneGrid.Equalize(); if (ActivePane != null) SetActive(ActivePane); }
+    }
+
+    private EditorPane? statusDragPane;
+    /// A status drag may close lower views of the dragged view's buffer; it
+    /// never closes a document. EndStatusDrag commits the closure.
+    internal void DragStatusBar(EditorPane pane, double delta)
+    {
+        statusDragPane = pane;
+        paneGrid.DragBar(pane, delta, Panes.Where(p => p != pane && p.Document == pane.Document).ToArray());
+        UpdateTitle();
+    }
+    internal void EndStatusDrag(EditorPane pane) { paneGrid.EndDrag(); statusDragPane = null; }
+    private void ForgetDragClosedPanes(IReadOnlyList<EditorPane> panes)
+    {
+        bool focusLost = ActivePane != null && panes.Contains(ActivePane);
+        foreach (var pane in panes) ForgetPane(pane);
+        // A closed focused view hands focus to the view whose bar was dragged.
+        var next = focusLost && statusDragPane is { } dragged && Panes.Contains(dragged) ? dragged : ActivePane;
+        if (next != null) { if (focusLost) FocusPane(next); else SetActive(next); }
+        UpdateTitle();
     }
     internal async Task<ContentDialogResult> Dialog(string title, string text, string primary = "OK", string close = "", string secondary = "", ContentDialogButton defaultButton = ContentDialogButton.Primary)
     {

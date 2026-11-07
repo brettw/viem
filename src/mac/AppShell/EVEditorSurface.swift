@@ -49,6 +49,8 @@ public struct EVStatusBarState: Equatable, Sendable {
   public var message: String
   public var location: String
   public var lineMode: EVLineMode
+  /// The format always uses `lineMode`, so the status bar offers no toggle.
+  public var lineModeIsFixed: Bool
   /// While this is set, the command line replaces the status line's left
   /// group. The caret position widget stays.
   public var commandLine: EVStatusCommandLine?
@@ -65,6 +67,7 @@ public struct EVStatusBarState: Equatable, Sendable {
     message: String = "",
     location: String = "Ln 1, Col 1",
     lineMode: EVLineMode = .visual,
+    lineModeIsFixed: Bool = false,
     commandLine: EVStatusCommandLine? = nil,
     commandOutput: String? = nil,
     requiresInteraction: Bool = false,
@@ -74,6 +77,7 @@ public struct EVStatusBarState: Equatable, Sendable {
     self.message = message
     self.location = location
     self.lineMode = lineMode
+    self.lineModeIsFixed = lineModeIsFixed
     self.commandLine = commandLine
     self.commandOutput = commandOutput
     self.requiresInteraction = requiresInteraction

@@ -32,6 +32,49 @@ final class EVStatusLineTests: XCTestCase {
     try XCTUnwrap(descendants(bar).first { $0.accessibilityLabel() == "Mode: NORMAL" })
   }
 
+  func testFixedLineModeShowsNoToggleAndIgnoresClicks() throws {
+    let bar = makeBar()
+    var options: [EVStatusBarOption] = []
+    bar.optionDidChange = { options.append($0) }
+    let location = try XCTUnwrap(try locationWidget(bar) as? NSButton)
+    XCTAssertNotNil(location.image)
+    location.performClick(nil)
+    XCTAssertEqual(options.count, 1, "Text and Markdown views toggle line meaning")
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34", lineMode: .physicalSource, lineModeIsFixed: true))
+    bar.layoutSubtreeIfNeeded()
+    XCTAssertNil(location.image, "Code always uses physical source lines")
+    location.performClick(nil)
+    XCTAssertEqual(options.count, 1)
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34", lineMode: .visual))
+    XCTAssertNotNil(location.image)
+  }
+
+  func testWindowActivatingClicksDoNotReachStatusControls() throws {
+    let bar = makeBar()
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandOutput: "output"))
+    bar.layoutSubtreeIfNeeded()
+    let controls = descendants(bar).filter { $0 is NSButton || $0 is NSTextView }
+    XCTAssertGreaterThanOrEqual(controls.count, 3, "position, output close and output text")
+    for view in [bar] + controls { XCTAssertFalse(view.acceptsFirstMouse(for: nil), "\(view)") }
+  }
+
+  func testStatusAreasWithoutTheirOwnMenuOfferClosePane() throws {
+    let bar = makeBar()
+    var closed = 0
+    bar.closePane = { closed += 1 }
+    let event = try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [],
+      timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+    let menu = try XCTUnwrap(bar.menu(for: event))
+    XCTAssertEqual(menu.items.map(\.title), ["Close pane"])
+    menu.update()
+    XCTAssertTrue(menu.items[0].isEnabled)
+    menu.performActionForItem(at: 0)
+    XCTAssertEqual(closed, 1)
+    bar.apply(EVStatusBarState(location: "Ln 12, Col 34", commandOutput: "output"))
+    let output = try XCTUnwrap(descendants(bar).compactMap { $0 as? EVStatusOutputTextView }.first)
+    XCTAssertEqual(try XCTUnwrap(output.menu(for: event)).items.map(\.title), ["Copy", "Select All", "", "Close pane"])
+  }
+
   func testStatusInsetsAndHeightUseTheStyleBox() {
     let style = EVThemeStore.shared.chromeStyles.statusBar
     XCTAssertEqual(EVStatusBarView.contentInset, style.padding.left)
@@ -114,7 +157,7 @@ final class EVStatusLineTests: XCTestCase {
 
   func testResizeHoverCoversOnlyEmptyMovableBackgroundAndFollowsPresentation() throws {
     let bar = makeBar(width: 900)
-    bar.dragDidMove = { _, _ in }
+    bar.dragDidMove = { _ in }
     func resizeCursor(at point: NSPoint) -> Bool { bar.resizeCursorRects.contains { $0.contains(point) } }
     let empty = NSPoint(x: bar.commandAreaRect.maxX - 2, y: bar.bounds.midY)
     XCTAssertTrue(resizeCursor(at: empty))
@@ -326,7 +369,7 @@ final class EVStatusLineTests: XCTestCase {
 
   func testOrdinaryStatusAndCommandPromptsDoNotConstructOutputControls() throws {
     let bar = makeBar()
-    bar.dragDidMove = { _, _ in }
+    bar.dragDidMove = { _ in }
     for state in [
       EVStatusBarState(mode: "INSERT", message: "Saved", location: "Ln 12, Col 34"),
       EVStatusBarState(commandLine: EVStatusCommandLine(prompt: ":", text: "set", cursorUTF8Offset: 3), isActive: true),

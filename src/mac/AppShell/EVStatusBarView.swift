@@ -56,10 +56,13 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     return gesture
   }()
   public var preferredHeightDidChange: (() -> Void)?
-  var dragDidBegin: (() -> Void)?
+  /// The press location in window coordinates, once movement becomes a drag.
+  var dragDidBegin: ((NSPoint) -> Void)?
   var dragDidEnd: (() -> Void)?
-  /// Top-to-bottom delta and pointer location in window coordinates.
-  var dragDidMove: ((CGFloat, NSPoint) -> Void)? {
+  /// Closes only this view, reviewing an unsaved buffer that has no other view.
+  var closePane: (() -> Void)?
+  /// Pointer location in window coordinates.
+  var dragDidMove: ((NSPoint) -> Void)? {
     didSet {
       resizeGesture.isEnabled = dragDidMove != nil
       if (oldValue == nil) != (dragDidMove == nil) { window?.invalidateCursorRects(for: self) }
@@ -74,7 +77,6 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     gesture.isEnabled = false
     return gesture
   }()
-  private var lastDragTranslation: CGFloat = 0
   private var themeObserver: NSObjectProtocol?
   private var heightConstraint: NSLayoutConstraint!
   private var currentState = EVStatusBarState()
@@ -110,12 +112,11 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
       guard filePath != oldValue else { return }
       filePathLabel.stringValue = filePath
       applyLabelAttributes()
-      filePathLabel.toolTip = filePath
       filePathLabel.setAccessibilityLabel("File: \(filePath)")
       needsLayout = true
     }
   }
-  private let locationLabel = NSButton(title: "", target: nil, action: nil)
+  private let locationLabel = EVStatusButton(title: "", target: nil, action: nil)
   public var optionDidChange: ((EVStatusBarOption) -> Void)?
   /// A click inside the command area, as a UTF-8 offset into its text.
   public var commandLineDidSelect: ((Int, Bool) -> Void)?
@@ -128,7 +129,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   private struct OutputControls {
     let scroll = NSScrollView()
     let text = EVStatusOutputTextView()
-    let close = NSButton()
+    let close = EVStatusButton()
   }
   private var outputControls: OutputControls?
   var outputTextView: EVStatusOutputTextView? { outputControls?.text }
@@ -168,6 +169,8 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     let directoryItem = NSMenuItem(title: "Change directory to here", action: #selector(changeDirectoryToFile(_:)), keyEquivalent: "")
     directoryItem.target = self
     pathMenu.addItem(directoryItem)
+    pathMenu.addItem(.separator())
+    pathMenu.addItem(closePaneItem())
     filePathLabel.menu = pathMenu
     messageLabel.textColor = .secondaryLabelColor
     messageLabel.lineBreakMode = .byTruncatingTail
@@ -193,7 +196,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     addSubview(commandCaret)
     heightConstraint = heightAnchor.constraint(equalToConstant: Self.preferredHeight)
     leftGroupTrailingConstraint = leftGroup.trailingAnchor.constraint(
-      lessThanOrEqualTo: locationLabel.leadingAnchor, constant: -14)
+      lessThanOrEqualTo: locationLabel.leadingAnchor, constant: -Self.positionGap)
     let inset = Self.contentInset
     leftInsetConstraint = leftGroup.leadingAnchor.constraint(equalTo: leadingAnchor, constant: inset)
     rightInsetConstraint = locationLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -inset)
@@ -247,6 +250,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     controls.scroll.hasHorizontalScroller = false
     controls.scroll.hasVerticalScroller = false
     addSubview(controls.scroll)
+    controls.text.closePaneItem = { [weak self] in self?.closePaneItem() }
     controls.close.image = NSImage(
       systemSymbolName: "xmark", accessibilityDescription: "Close command output")
     controls.close.imagePosition = .imageOnly
@@ -309,7 +313,23 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   }
 
   public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
-    fileURL != nil && (menuItem.action != #selector(changeDirectoryToFile(_:)) || changeDirectory != nil)
+    if menuItem.action == #selector(closePaneFromMenu(_:)) { return closePane != nil }
+    return fileURL != nil && (menuItem.action != #selector(changeDirectoryToFile(_:)) || changeDirectory != nil)
+  }
+
+  func closePaneItem() -> NSMenuItem {
+    let item = NSMenuItem(title: "Close pane", action: #selector(closePaneFromMenu(_:)), keyEquivalent: "")
+    item.target = self
+    return item
+  }
+
+  @objc private func closePaneFromMenu(_ sender: NSMenuItem) { closePane?() }
+
+  /// Areas without their own menu offer the pane commands.
+  public override func menu(for event: NSEvent) -> NSMenu? {
+    let menu = NSMenu()
+    menu.addItem(closePaneItem())
+    return menu
   }
 
   @objc private func copyFullPath(_ sender: NSMenuItem) {
@@ -330,22 +350,23 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   @objc private func observedClick() {}
 
   @objc private func toggleLineMode() {
+    guard !currentState.lineModeIsFixed else { return }
     optionDidChange?(.lineMode(currentState.lineMode == .visual ? .physicalSource : .visual))
   }
 
   @objc private func resizePanes(_ gesture: NSPanGestureRecognizer) {
     switch gesture.state {
     case .began, .changed:
+      let location = gesture.location(in: nil)
       if gesture.state == .began {
-        lastDragTranslation = 0; NSCursor.resizeUpDown.push(); dragCursorPushed = true
-        dragDidBegin?()
+        NSCursor.resizeUpDown.push(); dragCursorPushed = true
+        let translation = gesture.translation(in: nil)
+        dragDidBegin?(NSPoint(x: location.x - translation.x, y: location.y - translation.y))
       }
-      let translation = -gesture.translation(in: nil).y
-      let delta = translation - lastDragTranslation
-      lastDragTranslation = translation // Discard blocked overshoot at an edge.
-      dragDidMove?(delta, gesture.location(in: nil))
+      // The pane container keeps the press offset within the bar, so blocked
+      // movement beyond an edge never shifts the bar relative to the pointer.
+      dragDidMove?(location)
     default:
-      lastDragTranslation = 0
       dragDidEnd?()
       if dragCursorPushed { NSCursor.pop(); dragCursorPushed = false }
     }
@@ -590,7 +611,10 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     commandLineDidSelect?(offset, true)
   }
 
-  public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+  /// As for the editor, the click that activates the window does not also
+  /// press status controls, focus a pane or start a drag. AppKit asks only
+  /// before the window becomes key.
+  public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { window?.isKeyWindow == true }
 
   /// Empty background remains a resize target; native controls and command
   /// selection retain their usual hover cursors.
@@ -672,11 +696,16 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     if filePathLabel.stringValue != displayed {
       filePathLabel.attributedStringValue = NSAttributedString(string: displayed, attributes: barTextAttributes)
     }
+    let tip = displayed == filePath ? nil : filePath
+    if filePathLabel.toolTip != tip { filePathLabel.toolTip = tip }
   }
+
+  /// Status text may extend to this distance from the position widget.
+  static let positionGap: CGFloat = 10
 
   private var statusTextWidth: CGFloat {
     max(0, bounds.width - barStyle.padding.left - barStyle.padding.right
-      - locationLabel.intrinsicContentSize.width - leftGroup.spacing)
+      - locationLabel.intrinsicContentSize.width - Self.positionGap)
   }
 
   public func apply(_ state: EVStatusBarState) {
@@ -700,13 +729,17 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     applyLabelAttributes()
     messageLabel.isHidden = state.message.isEmpty
     if previous.location != state.location { updateLocationTitle() }
-    if previous.lineMode != state.lineMode || locationLabel.image == nil {
-      locationLabel.image = Self.lineIcon(state.lineMode)
+    if previous.lineMode != state.lineMode || previous.lineModeIsFixed != state.lineModeIsFixed
+      || (locationLabel.image == nil && !state.lineModeIsFixed)
+    {
+      locationLabel.image = state.lineModeIsFixed ? nil : Self.lineIcon(state.lineMode)
+      locationLabel.invalidateIntrinsicContentSize()
     }
     locationLabel.toolTip =
-      (state.lineMode == .visual
+      state.lineModeIsFixed ? "Commands and position use physical source lines."
+      : state.lineMode == .visual
         ? "Commands use visual lines · click for physical source lines. Position uses physical source coordinates."
-        : "Commands use physical source lines · click for visual lines. Position uses physical source coordinates.")
+        : "Commands use physical source lines · click for visual lines. Position uses physical source coordinates."
     modeLabel.setAccessibilityLabel("Mode: \(state.mode)")
     locationLabel.setAccessibilityLabel(
       "Physical source position: \(state.location)")
@@ -743,11 +776,20 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   }
 }
 
+/// Status controls leave the window-activating click to the window.
+@MainActor
+final class EVStatusButton: NSButton {
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { window?.isKeyWindow == true }
+}
+
 /// Selection and copying stay native. All ordinary typing returns to the
 /// editor without making the message editable or consuming the first key.
 @MainActor
 final class EVStatusOutputTextView: NSTextView {
   var didReceiveEditorKey: ((NSEvent) -> Void)?
+  var closePaneItem: (() -> NSMenuItem?)?
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { window?.isKeyWindow == true }
 
   override func keyDown(with event: NSEvent) {
     let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
@@ -768,6 +810,10 @@ final class EVStatusOutputTextView: NSTextView {
     let selectAll = menu.addItem(
       withTitle: "Select All", action: #selector(selectAll(_:)), keyEquivalent: "")
     selectAll.target = self
+    if let item = closePaneItem?() {
+      menu.addItem(.separator())
+      menu.addItem(item)
+    }
     return menu
   }
 }

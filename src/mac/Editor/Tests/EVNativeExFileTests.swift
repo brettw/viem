@@ -43,8 +43,9 @@ import XCTest
         // Invoke an already-created menu after the document is rebound.
         document.fileURL = destination.appendingPathComponent("renamed.md")
         menu.update()
-        XCTAssertTrue(menu.items.last?.isEnabled == true)
-        menu.performActionForItem(at: menu.numberOfItems - 1)
+        let changeDirectory = menu.indexOfItem(withTitle: "Change directory to here")
+        XCTAssertTrue(menu.item(at: changeDirectory)?.isEnabled == true)
+        menu.performActionForItem(at: changeDirectory)
         XCTAssertTrue(EVDocumentIdentity.sameFile(URL(fileURLWithPath: FileManager.default.currentDirectoryPath), destination))
         XCTAssertEqual(bar.filePath, "renamed.md")
         XCTAssertEqual(try backend.serializedSource(typeName: EVDocument.markdownType), source)

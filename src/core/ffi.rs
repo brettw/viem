@@ -2782,7 +2782,7 @@ fn document_status(error: DocumentError) -> ViemStatus {
         DocumentError::LineEndingConversionWouldReinterpretContent
         | DocumentError::UnrepresentableFormattedCharacter { .. } => ViemStatus::PolicyRequired,
         DocumentError::UnfinishedComment => ViemStatus::UnfinishedComment,
-        DocumentError::NotModifiable | DocumentError::UnsupportedFormatting | DocumentError::UnsupportedTableEdit(_) | DocumentError::OpaqueDecodingConflict { .. } => {
+        DocumentError::NotModifiable | DocumentError::UnsupportedFormatting | DocumentError::FixedLineMode | DocumentError::UnsupportedTableEdit(_) | DocumentError::OpaqueDecodingConflict { .. } => {
             ViemStatus::UnsupportedOperation
         }
         DocumentError::DocumentIdentityExhausted | DocumentError::BlockIdentityExhausted => {
@@ -13535,26 +13535,31 @@ mod tests {
     }
 }
 
-/// Read a view's line-command domain (0 visual, 1 physical source).
+/// Read a view's line-command domain (0 visual, 1 physical source) and
+/// whether its format fixes that domain (1) or lets the user choose (0).
 /// # Safety
-/// out_mode must identify one aligned writable u32.
+/// out_mode and out_fixed must identify disjoint aligned writable u32 values.
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_view_line_mode(
     handle: ViemCoreHandle,
     view: ViemViewId,
     out_mode: *mut u32,
+    out_fixed: *mut u32,
 ) -> ViemStatus {
     ffi_boundary(|| {
-        if out_mode.is_null() || (out_mode as usize) % std::mem::align_of::<u32>() != 0 {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let mode = with_core_mut(handle, |core| {
+        validate_disjoint_regions(&[
+            typed_pointer_region(out_mode, 1)?,
+            typed_pointer_region(out_fixed, 1)?,
+        ])?;
+        let (mode, fixed) = with_core_mut(handle, |core| {
+            let fixed = crate::command::LineMode::is_fixed_for(core.document().format());
             core.command_state(crate::coordinator::ViewId(view))
-                .map(|state| state.line_mode() as u32)
+                .map(|state| (state.line_mode() as u32, u32::from(fixed)))
                 .ok_or(ViemStatus::InvalidView)
         })?;
         unsafe {
             out_mode.write(mode);
+            out_fixed.write(fixed);
         }
         Ok(())
     })

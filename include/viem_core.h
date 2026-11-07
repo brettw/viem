@@ -85,7 +85,14 @@ ViemStatus viem_pane_layout_copy(uint64_t handle, ViemPaneFrame *frames, uint64_
 ViemStatus viem_pane_layout_can_split(uint64_t handle, uint64_t pane, uint32_t orientation, double status_height);
 ViemStatus viem_pane_layout_split(uint64_t handle, uint64_t pane, uint32_t orientation, double status_height, uint32_t placement, uint64_t *out_pane);
 ViemStatus viem_pane_layout_remove(uint64_t handle, uint64_t pane);
-ViemStatus viem_pane_layout_drag(uint64_t handle, uint64_t id, uint32_t kind, double delta);
+/* kind 0 drags a pane's status bar, 1 a splitter. A status drag preview-closes
+ * the panes below its boundary, bottom first, when the bar would overlap them
+ * and every one is listed in closable (none for splitters). Moving back to
+ * where a pane closed restores it exactly. Frames omit closed panes until
+ * end_drag or any structural change commits them. */
+ViemStatus viem_pane_layout_drag(uint64_t handle, uint64_t id, uint32_t kind, double delta,
+    const uint64_t *closable, uint64_t closable_count);
+ViemStatus viem_pane_layout_end_drag(uint64_t handle);
 /* Operations: focus=1(direction=count, steps=value, caret=x/y), rotate=2
  * (steps=count, flags:0 forward/1 backward), exchange=3(one-based count, 0=next), move=4(direction=count),
  * resize=5(axis=count, DIPs=value, flags:1 relative/2 maximize), equalize=6
@@ -2766,8 +2773,10 @@ ViemStatus viem_core_view_copy_line_number_regions(ViemCoreHandle core, ViemView
 
 #define VIEM_LINE_MODE_VISUAL 0u
 #define VIEM_LINE_MODE_PHYSICAL_SOURCE 1u
-/* View-local visual or physical source-line command policy. */
-ViemStatus viem_core_view_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t *out_mode);
+/* View-local visual or physical source-line command policy. out_fixed is 1
+ * when the format always uses that mode (Code uses physical source lines);
+ * setting the other mode then fails with UNSUPPORTED_OPERATION. */
+ViemStatus viem_core_view_line_mode(ViemCoreHandle core, ViemViewId view, uint32_t *out_mode, uint32_t *out_fixed);
 /* Base Paragraph font size with line spacing and this view's zoom applied.
  * Does not perform layout or consult the visible text's styles/font metrics. */
 ViemStatus viem_core_view_default_line_height(ViemCoreHandle core, ViemViewId view, float *out_height);

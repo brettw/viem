@@ -4421,12 +4421,12 @@ fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
     let mut provider = Box::new(FakeProviderContext::new(core.handle));
     let (view, mut outcome) = add_test_view(&core, &mut *provider);
     let (second, _) = add_test_view(&core, &mut *provider);
-    let mut mode = 99;
+    let (mut mode, mut fixed) = (99, 99);
     assert_eq!(
-        unsafe { viem_core_view_line_mode(core.handle, view, &mut mode) },
+        unsafe { viem_core_view_line_mode(core.handle, view, &mut mode, &mut fixed) },
         ViemStatus::Ok
     );
-    assert_eq!(mode, 0);
+    assert_eq!((mode, fixed), (0, 0));
     let mut location = ViemViewLineLocationV1::default();
     assert_eq!(
         unsafe { viem_core_view_line_location(core.handle, view, &mut location) },
@@ -4452,10 +4452,14 @@ fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
         ViemStatus::Ok
     );
     assert_eq!(
-        unsafe { viem_core_view_line_mode(core.handle, second, &mut mode) },
+        unsafe { viem_core_view_line_mode(core.handle, second, &mut mode, &mut fixed) },
         ViemStatus::Ok
     );
     assert_eq!(mode, 0);
+    assert_eq!(
+        unsafe { viem_core_view_line_mode(core.handle, second, &mut mode, ptr::null_mut()) },
+        ViemStatus::NullPointer
+    );
     assert_eq!(
         unsafe { viem_core_view_line_location(core.handle, view, &mut location) },
         ViemStatus::Ok
@@ -4479,6 +4483,32 @@ fn checked_line_mode_and_location_queries_are_view_local_and_do_not_edit() {
         copy_core_bytes(viem_core_copy_source_bytes, &core, revision),
         b"abcdef\nsecond"
     );
+}
+
+#[test]
+fn code_views_report_a_fixed_physical_line_mode_and_reject_visual_rows() {
+    let core = create_core(b"abc\ndef\n", ViemDocumentOptions { format: VIEM_FORMAT_CODE, ..ViemDocumentOptions::default() });
+    let mut provider = Box::new(FakeProviderContext::new(core.handle));
+    let (view, mut outcome) = add_test_view(&core, &mut *provider);
+    let (mut mode, mut fixed) = (99, 99);
+    assert_eq!(
+        unsafe { viem_core_view_line_mode(core.handle, view, &mut mode, &mut fixed) },
+        ViemStatus::Ok
+    );
+    assert_eq!((mode, fixed), (1, 1));
+    assert_eq!(
+        unsafe { viem_core_view_set_line_mode(core.handle, view, 0, &mut outcome) },
+        ViemStatus::UnsupportedOperation
+    );
+    assert_eq!(
+        unsafe { viem_core_view_set_line_mode(core.handle, view, 1, &mut outcome) },
+        ViemStatus::Ok
+    );
+    assert_eq!(
+        unsafe { viem_core_view_line_mode(core.handle, view, &mut mode, &mut fixed) },
+        ViemStatus::Ok
+    );
+    assert_eq!((mode, fixed), (1, 1));
 }
 
 #[test]

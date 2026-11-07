@@ -60,16 +60,24 @@ final class EVStatusFilePathTests: XCTestCase {
     let label = try XCTUnwrap(descendants(bar).compactMap { $0 as? NSTextField }
       .first { $0.accessibilityLabel() == "File: Untitled" })
     let menu = try XCTUnwrap(label.menu)
-    XCTAssertEqual(menu.items.map(\.title), ["Copy full path", "Copy relative path", "", "Change directory to here"])
-    XCTAssertTrue(menu.items[2].isSeparatorItem)
+    XCTAssertEqual(menu.items.map(\.title), ["Copy full path", "Copy relative path", "", "Change directory to here", "", "Close pane"])
+    XCTAssertTrue(menu.items[2].isSeparatorItem && menu.items[4].isSeparatorItem)
+    var paths: [NSMenuItem] { menu.items.prefix(4).filter { !$0.isSeparatorItem } }
     menu.update()
-    XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy { !$0.isEnabled })
+    XCTAssertTrue(paths.allSatisfy { !$0.isEnabled })
+    XCTAssertFalse(menu.items[5].isEnabled, "Close pane needs a pane")
+    var closed = 0
+    bar.closePane = { closed += 1 }
+    menu.update()
+    XCTAssertTrue(menu.items[5].isEnabled, "an untitled pane can close")
+    menu.performActionForItem(at: 5)
+    XCTAssertEqual(closed, 1)
     XCTAssertTrue(copied.isEmpty)
 
     let original = cwd.appendingPathComponent("original.md")
     bar.fileURL = original
     menu.update()
-    XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy(\.isEnabled))
+    XCTAssertTrue(paths.allSatisfy(\.isEnabled))
     menu.performActionForItem(at: 0)
     XCTAssertEqual(copied.last, original.path)
 
@@ -86,7 +94,7 @@ final class EVStatusFilePathTests: XCTestCase {
 
     bar.fileURL = nil
     menu.update()
-    XCTAssertTrue(menu.items.filter { !$0.isSeparatorItem }.allSatisfy { !$0.isEnabled })
+    XCTAssertTrue(paths.allSatisfy { !$0.isEnabled })
     XCTAssertEqual(copied.count, 3)
   }
 
@@ -114,7 +122,7 @@ final class EVStatusFilePathTests: XCTestCase {
     }
     XCTAssertEqual(path.lineBreakMode, .byClipping)
     XCTAssertGreaterThan(path.frame.width, 0)
-    XCTAssertEqual(path.toolTip, bar.filePath)
+    XCTAssertNil(path.toolTip, "an unclipped path needs no tooltip")
   }
 
   @MainActor
@@ -136,7 +144,9 @@ final class EVStatusFilePathTests: XCTestCase {
     let position = try XCTUnwrap(descendants(bar).compactMap { $0 as? NSButton }.first { $0.title == "Ln 1, Col 1" })
     bar.layoutSubtreeIfNeeded()
     let style = EVThemeStore.shared.chromeStyles.statusBar
-    let reserved = style.padding.left + style.padding.right + position.intrinsicContentSize.width + 14
+    // The path may extend to within the position gap of the position widget.
+    let reserved = style.padding.left + style.padding.right + position.intrinsicContentSize.width
+      + EVStatusBarView.positionGap
     func width(_ text: String) -> CGFloat { ceil(NSAttributedString(string: text, attributes: path.attributedStringValue.attributes(at: 0, effectiveRange: nil)).size().width) }
     let fullWidth = width(bar.filePath), filenameWidth = width("long-filename-with-café.md")
     func resize(_ width: CGFloat) {
@@ -156,13 +166,16 @@ final class EVStatusFilePathTests: XCTestCase {
     resize(reserved + fullWidth + 1)
     XCTAssertTrue(mode.isHiddenOrHasHiddenAncestor)
     XCTAssertEqual(path.stringValue, bar.filePath)
+    XCTAssertNil(path.toolTip)
     XCTAssertEqual(path.convert(path.alignmentRect(forFrame: path.bounds), to: bar).minX, style.padding.left, accuracy: 2)
     resize(reserved + filenameWidth + 1)
     XCTAssertEqual(path.stringValue, "long-filename-with-café.md")
+    XCTAssertEqual(path.toolTip, bar.filePath, "a clipped path shows the whole path on hover")
     resize(reserved + filenameWidth / 2)
     XCTAssertTrue(path.stringValue.hasSuffix("..."))
     XCTAssertTrue(path.stringValue.hasPrefix("long"))
-    XCTAssertLessThanOrEqual(path.convert(path.bounds, to: bar).maxX, position.frame.minX)
+    XCTAssertLessThanOrEqual(path.convert(path.bounds, to: bar).maxX,
+      position.frame.minX - EVStatusBarView.positionGap + 0.5)
     XCTAssertEqual(path.toolTip, bar.filePath)
     XCTAssertEqual(path.accessibilityLabel(), "File: \(bar.filePath)")
     resize(1200)

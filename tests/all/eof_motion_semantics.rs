@@ -70,6 +70,7 @@ fn literal_final_terminator_is_not_an_extra_normal_or_ex_line() {
     use viem_core::document::{Encoding, FileFormat, Format};
     for format in [Format::PlainText, Format::Code] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            if LineMode::is_fixed_for(format) && mode != LineMode::default_for(format) { continue; }
             for file_format in [FileFormat::Unix, FileFormat::Dos, FileFormat::Mac] {
                 let ending = match file_format { FileFormat::Unix => "\n", FileFormat::Dos => "\r\n", FileFormat::Mac => "\r" };
                 let original = format!("a{ending}b{ending}c{ending}");
@@ -129,6 +130,7 @@ fn literal_normal_vertical_motions_skip_the_final_insertion_boundary() {
     use viem_core::document::{Encoding, Format};
     for format in [Format::PlainText, Format::Code] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            if LineMode::is_fixed_for(format) && mode != LineMode::default_for(format) { continue; }
             for motion in [vec![Key::Down], vec![Key::Char('j')], vec![Key::Char('g'), Key::Char('j')]] {
                 let mut core = Core::new(Document::from_bytes(b"abc\ndef\n".to_vec(), Encoding::Utf8, format).unwrap());
                 let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
@@ -152,7 +154,8 @@ fn literal_normal_vertical_motions_skip_the_final_insertion_boundary() {
 fn ex_relative_visual_addresses_cannot_reach_a_final_terminator_row() {
     use viem_core::command::LineMode;
     use viem_core::document::{Encoding, Format};
-    for format in [Format::PlainText, Format::Code] {
+    // Code always uses physical source lines.
+    for format in [Format::PlainText] {
         for command in ["$+1d", ".+1d"] {
             let mut core = Core::new(Document::from_bytes(b"abc\ndef\n".to_vec(), Encoding::Utf8, format).unwrap());
             let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
@@ -173,6 +176,7 @@ fn counted_line_end_change_retains_the_final_file_terminator() {
     use viem_core::document::{Encoding, Format};
     for format in [Format::PlainText, Format::Code] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            if LineMode::is_fixed_for(format) && mode != LineMode::default_for(format) { continue; }
             let mut core = Core::new(Document::from_bytes(b"abc\ndef\n".to_vec(), Encoding::Utf8, format).unwrap());
             let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
             core.handle(view, CoreEvent::SetLineMode(mode)).unwrap();

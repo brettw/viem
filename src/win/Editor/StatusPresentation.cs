@@ -26,10 +26,12 @@ internal sealed partial class EditorPane
     private readonly FontIcon lineModeIcon = new() { FontSize = 14 };
     private uint? statusPointer;
     private DependencyObject? statusPointerSource;
-    private global::Windows.Foundation.Point statusPress, statusLastPoint;
+    private global::Windows.Foundation.Point statusPress;
     private bool statusDragging;
     private EditorPane? statusDragTarget;
     private bool statusDragNeedsSplit;
+    /// Pointer offset below the pressed bar's top, retained for the gesture.
+    private double statusGrabOffset;
     private bool statusSelectingOutput;
     private double filePathTextWidth, modeTextWidth, messageTextWidth;
     private (string Mode, string Message, string Family, double Size)? resizeHoverTextIdentity;
@@ -83,7 +85,8 @@ internal sealed partial class EditorPane
     private void UpdateLocation()
     {
         if (View == null) return;
-        uint lineMode = View.CurrentLineMode;
+        var (lineMode, lineModeFixed) = View.LineModeState;
+        lineModeIcon.Visibility = lineModeFixed ? Visibility.Collapsed : Visibility.Visible;
         // Source coordinates remain exact when the caret is outside cached layout.
         var position = View.Location;
         locationText = $"Ln {position.line}, Col {position.column}";
@@ -91,9 +94,22 @@ internal sealed partial class EditorPane
         location.Width = Math.Ceiling(MeasureStatusText(location.Text));
         statusTextCanvas.Invalidate();
         lineModeIcon.Glyph = lineMode == VIEM_LINE_MODE_VISUAL ? "\uE890" : "\uE8A5";
-        ToolTipService.SetToolTip(locationToggle, lineMode == VIEM_LINE_MODE_VISUAL
+        ToolTipService.SetToolTip(locationToggle, lineModeFixed ? "Commands and position use physical source lines."
+            : lineMode == VIEM_LINE_MODE_VISUAL
             ? "Commands use visual lines · click for physical source lines. Position uses physical source coordinates." : "Commands use physical source lines · click for visual lines. Position uses physical source coordinates.");
         AutomationProperties.SetName(locationToggle, "Physical source position: " + locationText);
+    }
+
+    private double StatusTop => status.TransformToVisual(window.PaneStack).TransformPoint(new global::Windows.Foundation.Point()).Y;
+
+    /// Ends the gesture, committing any views its drag closed.
+    private void EndStatusGesture()
+    {
+        bool wasDragging = statusDragging;
+        statusPointer = null; statusPointerSource = null; statusDragging = false;
+        statusDragTarget = null; statusDragNeedsSplit = false;
+        status.SetDragging(false);
+        if (wasDragging && !disposed) Run(() => window.EndStatusDrag(this));
     }
 
     private bool CaptureStatusDragPointer(PointerRoutedEventArgs args)
@@ -146,7 +162,13 @@ internal sealed partial class EditorPane
             if (!disposed && Document.FilePath is { } path && Path.GetDirectoryName(Path.GetFullPath(path)) is { } directory)
                 window.ChangeDirectory(this, directory);
         });
+        pathMenu.Items.Add(new MenuFlyoutSeparator());
+        pathMenu.Items.Add(ClosePaneItem());
         filePath.ContextFlyout = pathMenu;
+        // Areas without their own menu offer the pane commands.
+        var statusMenu = new MenuFlyout();
+        statusMenu.Items.Add(ClosePaneItem());
+        status.ContextFlyout = statusMenu;
         filePathHost.SizeChanged += (_, _) => UpdateFilePathText();
         normalStatus.SizeChanged += (_, _) => UpdateNormalStatusLayout();
         status.Children.Add(normalStatus); status.Children.Add(prompt); status.Children.Add(commandOutput);
@@ -156,7 +178,9 @@ internal sealed partial class EditorPane
         BuildStatusText();
         locationToggle.Click += (_, _) => {
             if (statusDragging || View == null) return;
-            Run(() => View.LineMode(View.CurrentLineMode == VIEM_LINE_MODE_VISUAL ? VIEM_LINE_MODE_PHYSICAL_SOURCE : VIEM_LINE_MODE_VISUAL));
+            // Code always uses physical source lines; the position only focuses.
+            if (View.LineModeState is (var lineMode, false))
+                Run(() => View.LineMode(lineMode == VIEM_LINE_MODE_VISUAL ? VIEM_LINE_MODE_PHYSICAL_SOURCE : VIEM_LINE_MODE_VISUAL));
             FocusEditor();
         };
         // Listen even when a child control handles the press. Native controls
@@ -164,9 +188,10 @@ internal sealed partial class EditorPane
         status.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) => {
             var point = e.GetCurrentPoint(window.PaneStack);
             if (!point.Properties.IsLeftButtonPressed) return;
-            statusPointer = e.Pointer.PointerId; statusPress = statusLastPoint = point.Position; statusDragging = false; statusSelectingOutput = !outputScroll.Visibility.Equals(Visibility.Collapsed) && e.OriginalSource is DependencyObject source && IsOutputDescendant(source);
+            statusPointer = e.Pointer.PointerId; statusPress = point.Position; statusDragging = false; statusSelectingOutput = !outputScroll.Visibility.Equals(Visibility.Collapsed) && e.OriginalSource is DependencyObject source && IsOutputDescendant(source);
             statusPointerSource = e.OriginalSource as DependencyObject;
             statusDragTarget = this; statusDragNeedsSplit = !window.PaneStack.CanDragBar(this);
+            statusGrabOffset = point.Position.Y - StatusTop;
             // Empty background has no child control to retain pointer events.
             // Capture immediately so a first move beyond the bar still reaches
             // the threshold handler, without taking focus or starting a drag.
@@ -177,7 +202,7 @@ internal sealed partial class EditorPane
             status.SetResizeHover(StatusResizeHoverAt(e.GetCurrentPoint(status).Position));
             if (statusPointer != e.Pointer.PointerId) return;
             var point = e.GetCurrentPoint(window.PaneStack);
-            if (!point.Properties.IsLeftButtonPressed) { statusPointer = null; statusPointerSource = null; statusDragTarget = null; statusDragNeedsSplit = false; statusDragging = false; status.SetDragging(false); return; }
+            if (!point.Properties.IsLeftButtonPressed) { EndStatusGesture(); return; }
             if (!statusDragging)
             {
                 if (Math.Abs(point.Position.Y - statusPress.Y) < 4 && Math.Abs(point.Position.X - statusPress.X) < 4) return;
@@ -185,41 +210,40 @@ internal sealed partial class EditorPane
                 status.SetDragging(true);
                 if (!statusSelectingOutput) {
                     bool captured = CaptureStatusDragPointer(e);
-                    if (!captured) { statusPointer = null; statusPointerSource = null; statusDragTarget = null; statusDragNeedsSplit = false; statusDragging = false; status.SetDragging(false); return; }
+                    if (!captured) { EndStatusGesture(); return; }
                 }
             }
-            double delta = point.Position.Y - statusLastPoint.Y;
-            statusLastPoint = point.Position; // No blocked overshoot survives a reversal.
+            // Track the pointer absolutely, keeping its offset within the bar:
+            // blocked movement past an edge is not retained, and the bar resumes
+            // only once the pointer returns to it.
+            double barTop = point.Position.Y - statusGrabOffset;
             if (statusDragNeedsSplit)
             {
-                double top = status.TransformToVisual(window.PaneStack).TransformPoint(new global::Windows.Foundation.Point()).Y;
-                if (point.Position.Y < top)
+                if (point.Position.Y < StatusTop)
                 {
-                    // Keep capture on this bar and move the new upper boundary.
+                    // The new view opens below this bar, so the rest of the
+                    // gesture is an ordinary drag that can close it again.
                     // Admission failures are reported only once per gesture.
                     statusDragNeedsSplit = false;
                     Run(() => {
-                        var added = window.SplitPane(this, Document, focusNewPane: false);
-                        statusDragTarget = added;
-                        double bottom = added.status.TransformToVisual(window.PaneStack)
-                            .TransformPoint(new global::Windows.Foundation.Point(0, added.StatusBarHeight)).Y;
-                        window.PaneStack.DragBar(added, point.Position.Y - bottom);
+                        window.SplitPane(this, Document, before: false, focusNewPane: false);
+                        window.PaneStack.DragBar(this, barTop - StatusTop);
                     });
                 }
             }
-            else if (statusDragTarget is { } target) window.PaneStack.DragBar(target, delta);
+            else if (statusDragTarget is { } target)
+                Run(() => window.DragStatusBar(target, barTop - target.StatusTop));
             e.Handled = true;
         }), true);
         status.AddHandler(PointerReleasedEvent, new PointerEventHandler((_, e) => {
             if (statusPointer != e.Pointer.PointerId) return;
             bool dragged = statusDragging;
-            statusDragTarget = null; statusDragNeedsSplit = false;
-            statusPointer = null; statusPointerSource = null; statusDragging = false; status.SetDragging(false);
+            EndStatusGesture();
             if (!dragged) window.FocusPane(this, keepStatusFocus: statusSelectingOutput);
             if (!statusSelectingOutput) { status.ReleasePointerCapture(e.Pointer); if (dragged) e.Handled = true; }
         }), true);
         status.PointerCaptureLost += (_, e) => {
-            if (ReferenceEquals(e.OriginalSource, status)) { statusPointer = null; statusPointerSource = null; statusDragging = false; statusDragTarget = null; statusDragNeedsSplit = false; status.SetDragging(false); }
+            if (ReferenceEquals(e.OriginalSource, status)) EndStatusGesture();
         };
         status.PointerExited += (_, e) => { if (ReferenceEquals(e.OriginalSource, status)) status.SetResizeHover(false); };
         commandOutput.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -246,6 +270,13 @@ internal sealed partial class EditorPane
             // deliver their subsequent native character event to the input host.
             OnKey(input, e);
         };
+    }
+
+    private MenuFlyoutItem ClosePaneItem()
+    {
+        var item = new MenuFlyoutItem { Text = "Close pane" };
+        item.Click += (_, _) => { if (!disposed) window.RequestClosePane(this); };
+        return item;
     }
 
     private bool OutputHasFocus
@@ -297,8 +328,10 @@ internal sealed partial class EditorPane
         // and alignment; command font changes cannot change container height.
         var inset = new Thickness(style.Padding.Left, style.Padding.Top + style.Border.Top,
             style.Padding.Right, style.Padding.Bottom + StatusBottomBorder);
-        normalStatus.Margin = commandOutput.Margin = inset;
-        locationToggle.Margin = inset;
+        commandOutput.Margin = inset;
+        // Status text reaches PositionGap from the position's content.
+        normalStatus.Margin = new(inset.Left, inset.Top, Math.Max(0, PositionGap - status.ColumnSpacing - locationToggle.Padding.Left), inset.Bottom);
+        locationToggle.Margin = new(0, inset.Top, inset.Right, inset.Bottom);
         prompt.Margin = new(0, style.Border.Top, 0, StatusBottomBorder);
         var font = FontCatalog.Resolve(style.Family, style.Face) ?? (Family: "Segoe UI", Stretch: global::Windows.UI.Text.FontStretch.Normal);
         foreach (var label in new[] { mode, message, location, filePath, outputText, statusMeasure }) {
@@ -328,7 +361,6 @@ internal sealed partial class EditorPane
         if (filePathIdentity == identity) return;
         filePathIdentity = identity;
         fullStatusFilePath = StatusFilePath.Display(identity.Item1, identity.Item2);
-        ToolTipService.SetToolTip(filePath, fullStatusFilePath);
         AutomationProperties.SetName(filePath, "File: " + fullStatusFilePath);
         UpdateNormalStatusLayout();
     }
@@ -346,11 +378,20 @@ internal sealed partial class EditorPane
         ClipboardFormats.Write(path, "");
     }
 
+    /// Status text may extend to this distance from the position widget.
+    internal const double PositionGap = 10;
+    private double filePathSlotWidth;
+
     private void UpdateFilePathText()
     {
-        filePath.Text = StatusFilePath.Fit(fullStatusFilePath, filePathHost.ActualWidth, MeasureStatusText);
-        filePath.Width = Math.Max(0, filePathHost.ActualWidth);
+        // The slot comes from the status width rather than the host's last
+        // arranged size, which lags one layout pass behind mode and message
+        // changes. An explicitly narrowed host still limits it.
+        double width = Math.Max(0, Math.Min(filePathSlotWidth, double.IsNaN(filePathHost.Width) ? double.PositiveInfinity : filePathHost.Width));
+        filePath.Text = StatusFilePath.Fit(fullStatusFilePath, width, MeasureStatusText);
+        filePath.Width = width;
         filePathTextWidth = MeasureStatusText(filePath.Text);
+        ToolTipService.SetToolTip(filePath, filePath.Text == fullStatusFilePath ? null : fullStatusFilePath);
         statusTextCanvas.Invalidate();
     }
 
@@ -364,6 +405,7 @@ internal sealed partial class EditorPane
             <= available - messageWidth - filePathHost.Margin.Right;
         mode.Visibility = showMode ? Visibility.Visible : Visibility.Collapsed;
         mode.Margin = new(0, 0, showMode ? 12 : 0, 0);
+        filePathSlotWidth = available - messageWidth - filePathHost.Margin.Right - (showMode ? mode.Width + mode.Margin.Right : 0);
         UpdateFilePathText();
     }
 

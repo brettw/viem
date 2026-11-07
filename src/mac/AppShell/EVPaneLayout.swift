@@ -30,9 +30,14 @@ final class EVPaneLayout {
     return id
   }
   func remove(_ pane: UInt64) { precondition(viem_pane_layout_remove(handle, pane) == VIEM_STATUS_OK) }
-  func drag(_ id: UInt64, splitter: Bool = false, delta: CGFloat) {
-    precondition(viem_pane_layout_drag(handle, id, splitter ? 1 : 0, delta) == VIEM_STATUS_OK)
+  /// A status drag may preview-close the panes listed in `closable`.
+  func drag(_ id: UInt64, splitter: Bool = false, delta: CGFloat, closable: [UInt64] = []) {
+    precondition(closable.withUnsafeBufferPointer {
+      viem_pane_layout_drag(handle, id, splitter ? 1 : 0, delta, $0.baseAddress, UInt64($0.count))
+    } == VIEM_STATUS_OK)
   }
+  /// Commits panes that the status drag closed.
+  func endDrag() { precondition(viem_pane_layout_end_drag(handle) == VIEM_STATUS_OK) }
   @discardableResult
   func action(_ pane: UInt64, operation: UInt32, count: UInt64 = 0, value: Double = 0,
               flags: UInt32 = 0, point: NSPoint = .zero) throws -> UInt64 {

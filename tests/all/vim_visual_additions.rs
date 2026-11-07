@@ -236,6 +236,7 @@ fn visual_yank_moves_the_cursor_to_the_region_start_like_vim() {
         (Format::Markdown, "alpha\n\nbravo\n\ncharlie\n\ndelta\n"),
     ] {
         for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            if LineMode::is_fixed_for(format) && line_mode != LineMode::default_for(format) { continue; }
             for &(selection, yank, expected) in cases {
                 let label = format!("{format:?} {line_mode:?} {selection}{yank}");
                 let (mut core, view) = editor(source, format);
@@ -291,12 +292,15 @@ fn visual_line_yank_cursor_starts_the_first_selected_row_or_physical_line() {
         let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
         let mut core = Core::new(document);
         let view = core.add_view(MockTextMeasurementProvider::new(), 120., 400.);
-        core.handle(view, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
-        run(&mut core, view, "gjg0");
-        let row_start = cursor(&core, view);
-        assert!(row_start > 0, "{format:?}: the first hard line wraps");
-        run(&mut core, view, "llVjy");
-        assert_eq!(cursor(&core, view), row_start, "{format:?}: Visual rows");
+        // Code always uses physical source lines.
+        if !LineMode::is_fixed_for(format) {
+            core.handle(view, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
+            run(&mut core, view, "gjg0");
+            let row_start = cursor(&core, view);
+            assert!(row_start > 0, "{format:?}: the first hard line wraps");
+            run(&mut core, view, "llVjy");
+            assert_eq!(cursor(&core, view), row_start, "{format:?}: Visual rows");
+        }
 
         core.handle(view, CoreEvent::SetLineMode(LineMode::PhysicalSource)).unwrap();
         run(&mut core, view, "ggllllV");
@@ -352,6 +356,7 @@ fn visual_line_keeps_columns_and_o_swaps_the_whole_selection_in_both_line_meanin
     let source = "alpha one\nbravo two\ncharlie three\ndelta four\necho five\n";
     for format in [Format::PlainText, Format::Code] {
         for mode in [LineMode::Visual, LineMode::PhysicalSource] {
+            if LineMode::is_fixed_for(format) && mode != LineMode::default_for(format) { continue; }
             for (keys, position, lines) in [
                 ("lllV", (1, 4), 5),
                 ("3lll3V", (3, 6), 5),

@@ -164,6 +164,49 @@ final class EVDocumentCloseReviewTests: XCTestCase {
         XCTAssertEqual(backend.acknowledgements, 0)
     }
 
+    func testClosePaneReviewsOnlyTheLastViewOfADirtyBufferAndTheLastPaneClosesTheWindow() throws {
+        let (first, firstBackend, controller) = try makeDocument()
+        let secondBackend = Backend()
+        let second = EVDocument(editorBackend: secondBackend)
+        installDecisions(on: second)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("viem-close-pane-\(UUID().uuidString).txt")
+        try Data().write(to: url)
+        second.fileURL = url
+        NSDocumentController.shared.addDocument(second)
+        defer { first.close(); second.close(); try? FileManager.default.removeItem(at: url) }
+        var split: Result<String?, Error>?
+        controller.perform(documentHostRequests: [.init(kind: .split, documentID: 1, documentRevision: 1)]) { split = $0 }
+        _ = try XCTUnwrap(split).get()
+        controller.perform(documentHostRequests: [.init(kind: .split, documentID: 1, documentRevision: 1, path: url.path)]) { split = $0 }
+        _ = try XCTUnwrap(split).get()
+        XCTAssertEqual(controller.paneCount, 3)
+        let panes = controller.paneContainer.panes
+        let firstViews = panes.filter { $0.document === first }
+        let secondView = try XCTUnwrap(panes.first { $0.document === second })
+        XCTAssertEqual(firstViews.count, 2)
+        reviewDecisions = [.cancel]; reviewCount = 0
+        controller.closePane(firstViews[0])
+        XCTAssertEqual(reviewCount, 0, "another view keeps the dirty buffer open")
+        XCTAssertEqual(controller.paneCount, 2)
+        controller.closePane(secondView)
+        XCTAssertEqual(reviewCount, 1, "the last view of a dirty buffer is reviewed")
+        XCTAssertEqual(controller.paneCount, 2, "cancel keeps the pane")
+        reviewDecisions = [.discard]
+        controller.closePane(secondView)
+        XCTAssertEqual(reviewCount, 2)
+        XCTAssertEqual(controller.paneCount, 1)
+        XCTAssertFalse(NSDocumentController.shared.documents.contains { $0 === second })
+        XCTAssertTrue(secondBackend.persistenceState.isDirty, "discard writes nothing")
+        let window = try XCTUnwrap(controller.window)
+        reviewCount = 0
+        controller.closePane(firstViews[1])
+        let deadline = Date(timeIntervalSinceNow: 5)
+        while window.isVisible && Date() < deadline { pump() }
+        XCTAssertFalse(window.isVisible, "the last pane closes its window like Close")
+        XCTAssertEqual(reviewCount, 1)
+        XCTAssertEqual(firstBackend.acknowledgements, 0)
+    }
+
     func testDifferentDirtyPaneDocumentsEachReviewAndCancelPreservesBoth() throws {
         let (first, firstBackend, controller) = try makeDocument()
         let secondBackend = Backend()

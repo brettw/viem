@@ -65,12 +65,38 @@ room, preferring to keep the content's left edge in the same screen position.
 Other windows take gutter space from the corresponding content view.
 
 Click a status bar to focus the buffer above it. Clicking the eye also toggles
-line mode. Dragging consumes the click and preserves focus. Status bars use an
+line mode in Text and Markdown Preview; Code always uses physical source lines
+and shows no eye. On macOS, the click that activates a window does not also
+reach its status bars. Dragging consumes the click and preserves focus. A
+dragged bar keeps the pointer's offset within it, even after the pointer leaves
+the window and returns. Status bars use an
 up/down cursor during dragging. Drag a column's bottom bar upward past its top
-to open a new pane of the same document above it and continue dragging the new
-pane's status bar. Focus stays put, the original bottom bar stays at the window
-edge, and dragging it downward does nothing. Each gesture creates at most one
-split and needs room for another status bar. Status bars
+to open a new pane of the same document below it; the dragged bar keeps
+following the pointer, and the new pane's bar stays at the window edge. The
+rest of the gesture is an ordinary status drag, so dragging back down closes the
+new view again as described below. Focus stays put, and dragging the bottom bar
+downward does nothing. Each gesture creates at most one split and needs room
+for another status bar.
+
+Dragging a bar down stacks the bars below it at the bottom of its column. When
+every pane from there to the bottom of that stack shows the same buffer as the
+dragged pane, dragging further closes them one at a time, bottom first. The
+bar still stops against the next one, and a view closes only once the pointer
+has moved the bar's full height past that stop, so the bar would cover the next
+one completely; the dragged pane can reach the bottom. Closing is a preview until release: dragging
+back restores the same views, and only release closes them. Such a drag never
+closes a document.
+
+Each status bar's context menu has **Close pane**, which closes only that view,
+reviewing unsaved changes when it is the buffer's last view, as **Close** does.
+It closes the window when it is the window's last pane. The filename menu lists
+it after its own commands.
+
+The filename extends to within 10 DIPs of the position. Without room, leading
+directories are dropped first, then the filename is clipped at its end; a
+clipped filename shows the whole path in a tooltip.
+
+Status bars
 use the same height and centered text regardless of split width. Empty
 background in any status bar also shows the up/down cursor on hover;
 text and controls keep their usual hover cursors. Editor areas
@@ -91,4 +117,5 @@ DIPs in the current view. A split without room reports an error.
 Dragging either kind of divider pushes any neighbours it reaches, collecting
 more dividers until it reaches the edge. Vertical groups retain their minimum
 widths. Reversing moves only the grabbed divider until it reaches a neighbour
-in the new direction, even after a drag has reached the edge.
+in the new direction. A vertical divider reverses immediately, even after a drag
+has reached the edge; a status bar resumes once the pointer returns to it.

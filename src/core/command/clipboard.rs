@@ -1266,6 +1266,9 @@ mod rich_tests {
             (Format::Markdown, "__word__", "word"),
         ] {
             for policy in [LineMode::Visual, LineMode::PhysicalSource] {
+                if LineMode::is_fixed_for(format) && policy != LineMode::default_for(format) {
+                    continue;
+                }
                 for input in ["V\"*c", "\"*cc"] {
                     let mut core = Core::new(open(source.as_bytes(), format));
                     let view = core.add_view(MockTextMeasurementProvider::new(), 1000.0, 200.0);

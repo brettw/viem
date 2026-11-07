@@ -514,41 +514,110 @@ final class EVWindowCommandTests: XCTestCase {
     let responder = controller.window?.firstResponder
     let state = document.editorBackend.persistenceState
     let top = original.view.frame.maxY - original.statusBarHeight
-    func move(to y: CGFloat, delta: CGFloat = -10) {
-      original.statusBar.dragDidMove?(delta, container.view.convert(NSPoint(x: 200, y: y), to: nil))
-    }
-    original.statusBar.dragDidBegin?()
+    func point(_ y: CGFloat) -> NSPoint { container.view.convert(NSPoint(x: 200, y: y), to: nil) }
+    func move(to y: CGFloat) { original.statusBar.dragDidMove?(point(y)) }
+    // The new bar keeps the pointer's offset within the pressed bar.
+    let grab: CGFloat = 4
+    original.statusBar.dragDidBegin?(point(top + grab))
     move(to: top + 4)
     move(to: top)
     XCTAssertEqual(container.panes.count, 2, "the pointer must cross above the top")
     move(to: top - 10)
     XCTAssertEqual(container.panes.count, 3)
-    let added = container.panes[1]
+    let added = container.panes[2]
     XCTAssertTrue(added.document === original.document)
-    XCTAssertTrue(container.panes.last === original)
-    XCTAssertEqual(added.view.frame.maxY, top - 10, accuracy: 1)
-    move(to: top - 35, delta: -25)
-    XCTAssertEqual(added.view.frame.maxY, top - 35, accuracy: 1)
+    XCTAssertTrue(container.panes[1] === original, "the new view opens below the dragged bar")
+    // Until the pointer's offset clears the new bar, the dragged bar rests on it.
+    XCTAssertEqual(original.view.frame.maxY, top, accuracy: 1)
+    move(to: top - 35)
+    XCTAssertEqual(original.view.frame.maxY - original.statusBarHeight, top - 35 - grab, accuracy: 1)
     XCTAssertEqual(container.panes.count, 3, "one split per gesture")
     XCTAssertTrue(container.activePane === focused)
     XCTAssertTrue(controller.window?.firstResponder === responder)
     XCTAssertEqual(document.editorBackend.persistenceState.documentRevision, state.documentRevision)
+    // The same gesture can drag back over the new bar to close it again.
+    // Closing waits until the dragged bar would cover the new one completely.
+    let covering = container.view.bounds.height - original.statusBarHeight + grab
+    move(to: covering - 1)
+    XCTAssertEqual(container.panes.count, 3, "the bar stops against the new one")
+    move(to: covering)
+    XCTAssertEqual(container.panes.count, 2)
+    XCTAssertTrue(added.view.isHidden)
+    move(to: top - 35)
+    XCTAssertTrue(container.panes.last === added, "dragging up again restores the same view")
+    move(to: covering)
     original.statusBar.dragDidEnd?()
+    XCTAssertEqual(container.panes.count, 2)
+    XCTAssertTrue(container.panes.last === original)
+    XCTAssertNil(added.parent, "release commits the closure")
+    XCTAssertEqual(original.view.frame.maxY, container.view.bounds.height, accuracy: 1)
+    XCTAssertTrue(container.activePane === focused)
+    XCTAssertTrue(controller.window?.firstResponder === responder)
     // Collapse the bottom editor. A failed admission is attempted only once.
-    container.dragStatusBar(of: added, by: 10_000)
+    container.dragStatusBar(of: container.panes[0], by: 10_000)
     var attempts = 0
     let split = container.splitForStatusDrag
     container.splitForStatusDrag = { source, bottom in attempts += 1; return try XCTUnwrap(split)(source, bottom) }
-    original.statusBar.dragDidBegin?()
+    original.statusBar.dragDidBegin?(point(top + grab))
     move(to: top - 20)
     move(to: top - 30)
     original.statusBar.dragDidEnd?()
     XCTAssertEqual(attempts, 1)
-    XCTAssertEqual(container.panes.count, 3)
+    XCTAssertEqual(container.panes.count, 2)
     checkBars(container)
   }
 
-  func testBottomStatusNativeDragCreatesUpperPaneAndContinuesAcrossReversal() async throws {
+  func testStatusDragPreviewClosesLowerViewsOfTheSameBufferUntilRelease() throws {
+    let (controller, backend, document) = try makeWindow(panes: 3)
+    defer { document.close() }
+    let container = try XCTUnwrap(backend.surfaces[0].viewController.parent?.parent as? EVPaneContainer)
+    let (first, second, third) = (container.panes[0], container.panes[1], container.panes[2])
+    let focused = container.activePane
+    let height = container.view.bounds.height
+    func point(_ y: CGFloat) -> NSPoint { container.view.convert(NSPoint(x: 200, y: y), to: nil) }
+    let grab: CGFloat = 3
+    first.statusBar.dragDidBegin?(point(first.view.frame.maxY - first.statusBarHeight + grab))
+    func moveBar(to top: CGFloat) { first.statusBar.dragDidMove?(point(top + grab)) }
+    let stacked = height - [first, second, third].map(\.statusBarHeight).reduce(0, +)
+    moveBar(to: stacked)
+    XCTAssertEqual(container.panes.count, 3, "touching bars close nothing")
+    let covered = stacked + second.statusBarHeight
+    moveBar(to: covered - 1)
+    XCTAssertEqual(container.panes.count, 3, "partial overlap closes nothing")
+    XCTAssertEqual(first.view.frame.maxY - first.statusBarHeight, stacked, accuracy: 1,
+                   "the bar stops against the next one")
+    moveBar(to: covered)
+    XCTAssertTrue(container.panes.elementsEqual([first, second], by: ===), "complete overlap closes the bottom view")
+    XCTAssertTrue(third.view.isHidden)
+    XCTAssertTrue(third.parent === container, "a preview keeps the closed view")
+    moveBar(to: stacked + 5)
+    XCTAssertTrue(container.panes.elementsEqual([first, second], by: ===))
+    XCTAssertEqual(first.view.frame.maxY - first.statusBarHeight, stacked + 5, accuracy: 1,
+                   "the bar follows the pointer after a view closes")
+    moveBar(to: height)
+    XCTAssertTrue(container.panes.elementsEqual([first], by: ===))
+    XCTAssertEqual(controller.paneCount, 1)
+    moveBar(to: stacked - 10)
+    XCTAssertTrue(container.panes.elementsEqual([first, second, third], by: ===),
+                  "dragging back restores the same views")
+    XCTAssertFalse(third.view.isHidden)
+    XCTAssertTrue(container.activePane === focused)
+    moveBar(to: covered)
+    first.statusBar.dragDidEnd?()
+    XCTAssertTrue(container.panes.elementsEqual([first, second], by: ===))
+    XCTAssertNil(third.parent, "release commits the closure")
+    XCTAssertNil(third.view.superview)
+    XCTAssertTrue(controller.window?.title.hasSuffix("· 2 panes") == true)
+    checkBars(container)
+    // Views without the dragged view's buffer never close.
+    let other = try stack(panes: 3)
+    other.dragStatusBar(of: other.panes[0], by: 10_000, closing: true)
+    other.finishStatusDrag()
+    XCTAssertEqual(other.panes.count, 3)
+    checkBars(other)
+  }
+
+  func testBottomStatusNativeDragCreatesLowerPaneAndContinuesAcrossReversal() async throws {
     let container = try stack(panes: 1)
     let original = container.panes[0]
     let left = EVDocumentContentViewController(editorSurface: Surface())
@@ -556,7 +625,7 @@ final class EVWindowCommandTests: XCTestCase {
     container.splitForStatusDrag = { [weak container] source, bottom in
       let container = try XCTUnwrap(container)
       let pane = EVDocumentContentViewController(editorSurface: Surface())
-      try container.insert(pane, splitting: source, before: true, focusNewPane: false,
+      try container.insert(pane, splitting: source, focusNewPane: false,
                            initialStatusBarBottom: bottom)
       return pane
     }
@@ -573,7 +642,7 @@ final class EVWindowCommandTests: XCTestCase {
     XCTAssertFalse(bar.resizeCursorRects.isEmpty, "bottom background has the resize cursor")
     var cursors: [Bool] = []
     let move = bar.dragDidMove
-    bar.dragDidMove = { delta, point in cursors.append(NSCursor.current == .resizeUpDown); move?(delta, point) }
+    bar.dragDidMove = { point in cursors.append(NSCursor.current == .resizeUpDown); move?(point) }
     try await pointerGesture(window: window, points: [grab, NSPoint(x: grab.x, y: grab.y - 30), grab])
     XCTAssertEqual(container.panes.count, 2, "downward dragging does not split")
     XCTAssertEqual(cursors.first, true)
@@ -581,10 +650,13 @@ final class EVWindowCommandTests: XCTestCase {
       NSPoint(x: top.x, y: top.y + 10), NSPoint(x: top.x, y: top.y + 60),
       NSPoint(x: top.x, y: top.y + 45), NSPoint(x: top.x, y: top.y + 45)])
     XCTAssertEqual(container.panes.count, 3)
-    let added = container.panes[1]
+    let added = container.panes[2]
     XCTAssertFalse(added === original)
-    XCTAssertEqual(added.view.frame.maxY, container.view.bounds.height - original.statusBarHeight - 45, accuracy: 1)
-    XCTAssertEqual(original.view.frame.maxY, container.view.bounds.height, accuracy: 1)
+    // The pointer keeps its press offset within the bar; `grab` is mid-bar.
+    let grabOffset = bar.bounds.height / 2
+    XCTAssertEqual(original.view.frame.maxY - original.statusBarHeight,
+                   container.view.bounds.height - added.statusBarHeight - 45 - grabOffset, accuracy: 1)
+    XCTAssertEqual(added.view.frame.maxY, container.view.bounds.height, accuracy: 1)
     XCTAssertEqual(left.view.frame, leftFrame, "only the dragged column splits")
     XCTAssertTrue(container.activePane === left)
     XCTAssertEqual((original.editorSurface as? Surface)?.statusClicks, 0)
@@ -738,9 +810,9 @@ final class EVWindowCommandTests: XCTestCase {
     let point = second.statusBar.convert(NSPoint(x:second.statusBar.bounds.midX,y:second.statusBar.bounds.midY),to:nil)
     var statusCursorTransitions: [Bool] = []
     let statusMove = second.statusBar.dragDidMove
-    second.statusBar.dragDidMove = { delta, point in
+    second.statusBar.dragDidMove = { point in
       statusCursorTransitions.append(NSCursor.current == NSCursor.resizeUpDown)
-      statusMove?(delta, point)
+      statusMove?(point)
     }
     try await pointerGesture(window:window,points:[point,NSPoint(x:point.x,y:point.y-30),NSPoint(x:point.x,y:point.y-30)])
     XCTAssertEqual(statusCursorTransitions.first, true,

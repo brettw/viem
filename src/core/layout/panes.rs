@@ -283,6 +283,19 @@ impl Node {
         }
     }
 
+    /// The group whose direct children include `child`.
+    fn group_of_mut(&mut self, child: u64) -> Option<&mut Node> {
+        let Kind::Group { children, .. } = &self.kind else {
+            return None;
+        };
+        if children.iter().any(|n| n.id == child) {
+            return Some(self);
+        }
+        let Kind::Group { children, .. } = &mut self.kind else {
+            unreachable!()
+        };
+        children.iter_mut().find_map(|n| n.group_of_mut(child))
+    }
     fn boundary_for_status(&self, pane: u64) -> Option<u64> {
         let Kind::Group { axis, children } = &self.kind else {
             return None;
@@ -393,12 +406,24 @@ pub struct Frame {
     /// Outer edges and splitter-to-splitter junctions keep their existing policy.
     pub suppress_splitter_top_border: bool,
 }
+/// Layout immediately before a status drag closed the last pane of a stack.
+/// Reopening restores it exactly, including the closed pane's identity.
+#[derive(Clone, Debug)]
+struct ClosePreview {
+    root: Node,
+    chrome: HashMap<u64, f64>,
+    /// The dragged pane's bottom edge when the closure began.
+    bottom: f64,
+    /// The stacked group whose trailing panes this gesture closes.
+    group: u64,
+}
 #[derive(Clone, Debug)]
 pub struct PaneLayout {
     root: Node,
     next_id: u64,
     chrome: HashMap<u64, f64>,
     size: Rect,
+    previews: Vec<ClosePreview>,
 }
 impl Default for PaneLayout {
     fn default() -> Self {
@@ -411,6 +436,7 @@ impl Default for PaneLayout {
             next_id: 2,
             chrome: HashMap::from([(1, 0.0)]),
             size: Rect::default(),
+            previews: Vec::new(),
         }
     }
 }
@@ -503,6 +529,7 @@ impl PaneLayout {
         placement: SplitPlacement,
     ) -> Result<u64, Error> {
         self.can_split(pane, axis, status_height)?;
+        self.previews.clear();
         let id = self.next_id;
         self.next_id += 2;
         self.chrome.insert(id, status_height);
@@ -522,6 +549,7 @@ impl PaneLayout {
         if self.chrome.len() <= 1 || self.root.remove(pane).is_none() {
             return Err(Error::InvalidPane);
         }
+        self.previews.clear();
         self.chrome.remove(&pane);
         self.root.normalize();
         self.place();
@@ -599,7 +627,113 @@ impl PaneLayout {
         }
         Ok(())
     }
+    /// Drag a status bar, previewing the closure of the panes below it. The
+    /// bar stops against the next one as usual; once its unconstrained
+    /// position would cover that bar completely and every pane from the
+    /// boundary to the bottom of its stack is listed in `closable`, the bottom
+    /// pane leaves the layout and the bar follows the pointer again. Moving back to the position where a
+    /// pane closed restores that exact earlier layout. Frames omit closed
+    /// panes; `finish_status_drag` or any structural change commits them.
+    pub fn drag_status(&mut self, pane: u64, delta: f64, closable: &[u64]) -> Result<(), Error> {
+        let start = self.pane_rect(pane)?;
+        if !delta.is_finite() {
+            return Err(Error::InvalidPane);
+        }
+        let target = start.y + start.height + delta;
+        while self
+            .previews
+            .last()
+            .is_some_and(|p| target <= p.bottom + EDGE_EPSILON)
+        {
+            let preview = self.previews.pop().expect("checked above");
+            self.root = preview.root;
+            self.chrome = preview.chrome;
+            self.place();
+        }
+        if self.root.find(pane).is_none() {
+            return Err(Error::InvalidPane);
+        }
+        loop {
+            let rect = self.pane_rect(pane)?;
+            let bottom = rect.y + rect.height;
+            if let Some(boundary) = self.boundary_in_preview_group(pane) {
+                self.root.drag(boundary, target - bottom, &self.chrome);
+                self.place();
+            }
+            let rect = self.pane_rect(pane)?;
+            let bottom = rect.y + rect.height;
+            if target <= bottom + EDGE_EPSILON
+                || !self.close_trailing(pane, bottom, target, closable)
+            {
+                return Ok(());
+            }
+        }
+    }
+    /// Commit any panes a status drag closed, returning whether there were any.
+    pub fn finish_status_drag(&mut self) -> bool {
+        let closed = !self.previews.is_empty();
+        self.previews.clear();
+        closed
+    }
+    /// The status boundary, limited to the stack whose panes this gesture
+    /// has already closed. A collapsed stack never hands the bar to an outer one.
+    fn boundary_in_preview_group(&mut self, pane: u64) -> Option<u64> {
+        let boundary = self.root.boundary_for_status(pane)?;
+        let group = self.root.group_of_mut(boundary)?.id;
+        self.previews
+            .first()
+            .is_none_or(|p| p.group == group)
+            .then_some(boundary)
+    }
+    fn close_trailing(&mut self, pane: u64, bottom: f64, target: f64, closable: &[u64]) -> bool {
+        let Some(boundary) = self.boundary_in_preview_group(pane) else {
+            return false;
+        };
+        let snapshot = self.root.clone();
+        let Some(group) = self.root.group_of_mut(boundary) else {
+            return false;
+        };
+        let group_id = group.id;
+        let Kind::Group {
+            axis: Axis::Height,
+            children,
+        } = &mut group.kind
+        else {
+            return false;
+        };
+        let Some(first) = children.iter().position(|n| n.id == boundary) else {
+            return false;
+        };
+        if !children[first..]
+            .iter()
+            .all(|n| matches!(n.kind, Kind::Pane) && closable.contains(&n.id))
+        {
+            return false;
+        }
+        // Stopping adjacent to the next bar must remain reachable, so closing
+        // waits until the unconstrained bar would hide all of it.
+        let next = self.chrome.get(&children[first].id).copied().unwrap_or(0.0);
+        if target + EDGE_EPSILON < bottom + next {
+            return false;
+        }
+        let removed = children.pop().expect("a boundary has a following child");
+        // The remaining bottom pane absorbs the space, so the dragged bar
+        // continues from where it stopped instead of jumping.
+        children.last_mut().expect("a boundary has a preceding child").rect.height +=
+            removed.rect.height;
+        self.previews.push(ClosePreview {
+            root: snapshot,
+            chrome: self.chrome.clone(),
+            bottom,
+            group: group_id,
+        });
+        self.chrome.remove(&removed.id);
+        self.root.normalize();
+        self.place();
+        true
+    }
     pub fn equalize(&mut self, axis: Option<Axis>) {
+        self.previews.clear();
         self.root.equalize(axis, &self.chrome);
         self.place();
     }
@@ -621,6 +755,7 @@ impl PaneLayout {
         } else {
             0.0
         };
+        self.previews.clear();
         let Some((parent, i)) = self.root.parent_mut(pane, Some(axis)) else {
             return Ok(());
         };
@@ -751,6 +886,7 @@ impl PaneLayout {
         rotate: Option<i64>,
         index: Option<usize>,
     ) -> Result<(), Error> {
+        self.previews.clear();
         let Some((parent, i)) = self.root.parent_mut(pane, None) else {
             return Ok(());
         };
@@ -784,6 +920,7 @@ impl PaneLayout {
         if self.next_id == u64::MAX {
             return Err(Error::TooManyPanes);
         }
+        self.previews.clear();
         let mut next = self.clone();
         let leaf = next.root.remove(pane).ok_or(Error::InvalidPane)?;
         next.root.normalize();
@@ -855,6 +992,86 @@ mod tests {
                 assert_eq!(panes(&p).iter().map(|f| f.id).collect::<Vec<_>>(), expected);
             }
         }
+    }
+    fn stack_of_three() -> (PaneLayout, u64, u64) {
+        let mut p = layout(800.0, 600.0);
+        let b = p.split(1, Axis::Height, 25.0, SplitPlacement::After).unwrap();
+        let c = p.split(b, Axis::Height, 25.0, SplitPlacement::After).unwrap();
+        (p, b, c)
+    }
+    fn ids(p: &PaneLayout) -> Vec<u64> {
+        panes(p).iter().map(|f| f.id).collect()
+    }
+    fn bottom(p: &PaneLayout, id: u64) -> f64 {
+        let r = p.pane_rect(id).unwrap();
+        r.y + r.height
+    }
+    #[test]
+    fn status_drag_closes_trailing_panes_bottom_first_and_reopens_them_exactly() {
+        let (mut p, b, c) = stack_of_three();
+        // Frontends drag toward the pointer, keeping the press offset.
+        let to = |p: &mut PaneLayout, y: f64| p.drag_status(1, y - bottom(p, 1), &[b, c]).unwrap();
+        to(&mut p, 550.0);
+        assert_eq!(ids(&p), vec![1, b, c], "stacking alone closes nothing");
+        let stacked = p.frames();
+        to(&mut p, 574.0);
+        assert_eq!((ids(&p), bottom(&p, 1)), (vec![1, b, c], 550.0),
+            "the bar stops against the next one until it would cover it");
+        to(&mut p, 575.0);
+        assert_eq!((ids(&p), bottom(&p, 1)), (vec![1, b], 575.0),
+            "complete overlap closes the bottom pane first");
+        to(&mut p, 560.0);
+        assert_eq!(ids(&p), vec![1, b], "C stays closed above where it closed");
+        assert_eq!(bottom(&p, 1), 560.0, "the bar follows the pointer after closing");
+        assert_eq!(p.pane_rect(b).unwrap().height, 40.0);
+        to(&mut p, 599.0);
+        assert_eq!((ids(&p), bottom(&p, 1)), (vec![1, b], 575.0));
+        to(&mut p, 660.0);
+        assert_eq!((ids(&p), bottom(&p, 1)), (vec![1], 600.0), "the dragged pane reaches the bottom");
+        to(&mut p, 585.0);
+        assert_eq!(ids(&p), vec![1], "B stays closed below where it closed");
+        to(&mut p, 570.0);
+        assert_eq!((ids(&p), bottom(&p, 1)), (vec![1, b], 570.0));
+        to(&mut p, 550.0);
+        assert_eq!(ids(&p), vec![1, b, c]);
+        for (restored, original) in p.frames().iter().zip(&stacked) {
+            assert_eq!((restored.id, restored.rect), (original.id, original.rect));
+        }
+        to(&mut p, 580.0);
+        assert!(p.finish_status_drag(), "release commits the closure");
+        to(&mut p, 400.0);
+        assert_eq!(ids(&p), vec![1, b], "committed panes never reopen");
+        assert!(!p.finish_status_drag());
+    }
+    #[test]
+    fn status_drag_closes_only_when_every_following_pane_is_closable() {
+        let (mut p, b, c) = stack_of_three();
+        for closable in [&[c][..], &[b][..], &[]] {
+            let mut q = p.clone();
+            q.drag_status(1, 1000.0, closable).unwrap();
+            assert_eq!(ids(&q), vec![1, b, c], "{closable:?}");
+            assert_eq!(bottom(&q, 1), 550.0, "an ineligible stack blocks as before");
+        }
+        // A structural change during the gesture commits it.
+        p.drag_status(1, 1000.0, &[b, c]).unwrap();
+        p.equalize(None);
+        p.drag_status(1, -1000.0, &[b, c]).unwrap();
+        assert_eq!(ids(&p), vec![1]);
+    }
+    #[test]
+    fn status_drag_closure_stays_within_the_dragged_stack() {
+        let mut p = layout(800.0, 600.0);
+        let e = p.split(1, Axis::Height, 25.0, SplitPlacement::After).unwrap();
+        let d = p.split(1, Axis::Width, 25.0, SplitPlacement::After).unwrap();
+        let b = p.split(1, Axis::Height, 25.0, SplitPlacement::After).unwrap();
+        let (column, lower) = (p.pane_rect(d).unwrap(), p.pane_rect(e).unwrap());
+        p.drag_status(1, 1000.0, &[b, d, e]).unwrap();
+        assert_eq!(ids(&p), vec![1, d, e]);
+        assert_eq!(bottom(&p, 1), column.y + column.height);
+        assert_eq!((p.pane_rect(d).unwrap(), p.pane_rect(e).unwrap()), (column, lower),
+            "the collapsed stack never drags the outer boundary");
+        p.drag_status(1, -1000.0, &[b, d, e]).unwrap();
+        assert_eq!(ids(&p), vec![1, b, d, e]);
     }
     #[test]
     fn width_admission_and_failed_split_are_atomic() {

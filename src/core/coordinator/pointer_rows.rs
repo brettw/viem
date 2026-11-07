@@ -166,6 +166,9 @@ mod tests {
         use crate::command::LineMode;
         for format in [Format::PlainText, Format::Code, Format::Markdown] {
             for line_mode in [LineMode::Visual, LineMode::PhysicalSource] {
+                if LineMode::is_fixed_for(format) && line_mode != LineMode::default_for(format) {
+                    continue;
+                }
                 for selectmode in ["", "mouse", "cmd"] {
                     let document = Document::from_bytes(b"first words wrap across many rows\n\nlast".to_vec(), Encoding::Utf8, format).unwrap();
                     let mut core = Core::new(document);

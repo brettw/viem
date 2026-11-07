@@ -28,6 +28,7 @@ internal static class PaneLayoutTests
             new("EyeClickAndDrag", editor => RunCase(editor, fixture => fixture.EyeClickAndDrag(), threeRows: true)),
             new("StatusBackgroundPointer", editor => RunCase(editor, fixture => fixture.StatusBackgroundPointer(), threeRows: true)),
             new("BottomBarCreatesSplit", editor => RunCase(editor, fixture => fixture.BottomBarCreatesSplit(), threeRows: true)),
+            new("StatusDragPreviewClose", editor => RunCase(editor, fixture => fixture.StatusDragPreviewClose(), threeRows: true)),
             new("VerticalSplitAndResize", editor => RunCase(editor, fixture => fixture.VerticalSplitAndResize())),
             new("NestedSplitterBorders", editor => RunCase(editor, fixture => fixture.NestedSplitterBorders())),
         ], format: VIEM_FORMAT_PLAIN_TEXT, initialize: () => {
@@ -201,15 +202,53 @@ internal static class PaneLayoutTests
             double bottomHeight = third.StatusControl.ActualHeight;
             await InputRoutingTests.Drag(window, third.StatusControl,
                 (Point[])[new(bottomX, .5), new(bottomX, -10 / bottomHeight),
+                    new(bottomX, -60 / bottomHeight), new(bottomX, .9)], _ => { }, focusTarget: false);
+            Check(window.Panes.SequenceEqual(new[] { first, second, third }) && Bars()[2] == fixedBottom,
+                "dragging a new split back over its bar closes it within the same gesture");
+            await InputRoutingTests.Drag(window, third.StatusControl,
+                (Point[])[new(bottomX, .5), new(bottomX, -10 / bottomHeight),
                     new(bottomX, -60 / bottomHeight), new(bottomX, -45 / bottomHeight)], _ => { }, focusTarget: false);
-            Check(window.Panes.Count == 4 && window.Panes[3] == third && Bars()[3] == fixedBottom,
-                "crossing above the bottom bar creates exactly one upper pane while keeping the bottom edge fixed");
-            var dragPane = window.Panes[2];
-            await dragPane.Ready;
-            Check(dragPane.Document == third.Document && window.ActivePane == first
-                && Math.Abs(Bars()[2] + dragPane.StatusBarHeight - (fixedBottom - 45)) < 2
+            Check(window.Panes.Count == 4 && window.Panes[2] == third && Bars()[3] == fixedBottom,
+                "crossing above the bottom bar creates exactly one lower pane below the dragged bar");
+            var added = window.Panes[3];
+            await added.Ready;
+            // The dragged bar keeps the pointer's offset within it (its middle).
+            Check(added.Document == third.Document && window.ActivePane == first
+                && Math.Abs(Bars()[2] - (fixedBottom - 45 - bottomHeight / 2)) < 2
                 && third.Document.State.document_revision == beforeDragRevision,
-                "the new upper bar follows continued dragging and reversal without changing focus or source");
+                "the dragged bar follows continued dragging and reversal without changing focus or source");
+        }
+
+        internal Task StatusDragPreviewClose()
+        {
+            double height = window.PaneStack.ActualHeight;
+            double Top(EditorPane pane) => pane.StatusControl.TransformToVisual(window.PaneStack).TransformPoint(new Point()).Y;
+            void MoveTo(double top) => window.DragStatusBar(first, top - Top(first));
+            bool Showing(params EditorPane[] panes) => window.PaneStack.OrderedPanes.SequenceEqual(panes);
+            double stacked = height - first.StatusBarHeight - second.StatusBarHeight - third.StatusBarHeight;
+            MoveTo(stacked);
+            Check(Showing(first, second, third), "touching status bars close no view");
+            double covered = stacked + second.StatusBarHeight;
+            MoveTo(covered - 1);
+            Check(Showing(first, second, third) && Math.Abs(Top(first) - stacked) < 1,
+                "the dragged bar stops against the next one until it would cover it");
+            MoveTo(covered);
+            Check(Showing(first, second) && third.Visibility == Microsoft.UI.Xaml.Visibility.Collapsed && window.Panes.Contains(third),
+                "covering the next bar preview-closes the bottom view of the same buffer");
+            MoveTo(stacked + 5);
+            Check(Showing(first, second) && Math.Abs(Top(first) - stacked - 5) < 1,
+                "the dragged bar follows the pointer after a view closes");
+            MoveTo(height);
+            Check(Showing(first), "the dragged view can reach the bottom");
+            MoveTo(stacked - 10);
+            Check(Showing(first, second, third) && third.Visibility == Microsoft.UI.Xaml.Visibility.Visible,
+                "dragging back restores the same views");
+            MoveTo(covered);
+            window.EndStatusDrag(first);
+            Check(window.Panes.SequenceEqual(new[] { first, second }) && !window.PaneStack.Children.Contains(third),
+                "releasing the drag closes the previewed view but not its document");
+            Check(first.Document.Handle != 0, "the buffer stays open");
+            return Task.CompletedTask;
         }
 
         internal async Task VerticalSplitAndResize()

@@ -274,7 +274,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
             var viewport = View.Viewport;
             prepared.Wrap((viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0);
             prepared.Zoom(viewport.scale);
-            prepared.LineMode(View.CurrentLineMode);
+            // A replacement of another format chooses its own line mode.
+            if (!prepared.LineModeState.Fixed) prepared.LineMode(View.CurrentLineMode);
             prepared.Number(View.NumberEnabled);
             prepared.MarkdownAutodetect(preferences.MarkdownAutodetect);
             prepared.SmartQuotes(preferences.SmartQuotes);

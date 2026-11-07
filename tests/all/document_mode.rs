@@ -226,19 +226,26 @@ fn views_follow_the_format_line_mode_default_unless_explicitly_changed() {
     let explicit = core.add_view(MockTextMeasurementProvider::new(), 300., 120.);
     let line_mode = |core: &Editor, view| core.command_state(view).unwrap().line_mode();
     assert_eq!(line_mode(&core, following), LineMode::PhysicalSource);
-    core.handle(explicit, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
+    assert!(core.handle(explicit, CoreEvent::SetLineMode(LineMode::Visual)).is_err(),
+        "Code always uses physical source lines");
+    assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
     select(&mut core, following, DocumentMode::Markdown);
     assert_eq!(line_mode(&core, following), LineMode::Visual);
     assert_eq!(line_mode(&core, explicit), LineMode::Visual);
+    core.handle(explicit, CoreEvent::SetLineMode(LineMode::PhysicalSource)).unwrap();
     select(&mut core, following, DocumentMode::Code("markdown".into()));
     assert_eq!(line_mode(&core, following), LineMode::PhysicalSource);
-    assert_eq!(line_mode(&core, explicit), LineMode::Visual);
-    // Undoing the switch restores the default of the restored format.
+    assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
+    // Undoing the switch restores the default of the restored format, and an
+    // explicit choice resumes outside Code.
     core.handle(following, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
     assert_eq!(core.document().format(), Format::Markdown);
     assert_eq!(line_mode(&core, following), LineMode::Visual);
+    assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
     // Choosing the default again resumes following it.
     core.handle(explicit, CoreEvent::SetLineMode(LineMode::Visual)).unwrap();
     select(&mut core, following, DocumentMode::Code("markdown".into()));
     assert_eq!(line_mode(&core, explicit), LineMode::PhysicalSource);
+    core.handle(following, CoreEvent::NavigateHistory(HistoryNavigationRequest::Undo)).unwrap();
+    assert_eq!(line_mode(&core, explicit), LineMode::Visual);
 }

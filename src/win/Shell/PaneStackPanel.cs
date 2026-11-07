@@ -18,6 +18,12 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     private readonly Dictionary<EditorPane, ulong> ids = [];
     private readonly Dictionary<ulong, VerticalSplitter> splitters = [];
     private ViemPaneFrame[] frames = [];
+    // Views a status drag closed, kept until the drag ends so that dragging
+    // back restores them unchanged.
+    private readonly HashSet<EditorPane> previewClosed = [];
+    /// Receives the views a status drag closed once the drag is committed.
+    internal Action<IReadOnlyList<EditorPane>>? DragClosedPanes { get; set; }
+    internal IReadOnlyCollection<EditorPane> PreviewClosedPanes => previewClosed;
     private Preferences? preferences;
     internal Size MinimumSize { get; private set; } = new(100, 0);
     internal IReadOnlyList<EditorPane> OrderedPanes => frames.Where(f => f.kind == 0).Select(f => ids.First(p => p.Value == f.id).Key).ToArray();
@@ -41,6 +47,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     }
     internal void Rebuild(IReadOnlyList<EditorPane> panes, int? splitIndex = null, bool vertical = false, bool splitBefore = false)
     {
+        EndDrag();
         foreach (var pane in ids.Keys.Where(p => !panes.Contains(p)).ToArray()) RemovePane(pane);
         foreach (var pane in panes.Where(p => !ids.ContainsKey(p)))
         {
@@ -56,11 +63,13 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     }
     internal void ReplacePane(EditorPane old, EditorPane next)
     {
+        EndDrag();
         ulong id = ids[old]; ids.Remove(old); ids.Add(next, id);
         Children.Remove(old); Children.Add(next); InvalidateMeasure();
     }
     internal void RemovePane(EditorPane pane)
     {
+        EndDrag();
         if (!ids.Remove(pane, out ulong id)) return;
         Check(viem_pane_layout_remove(handle, id)); Children.Remove(pane); RefreshFrames();
     }
@@ -71,7 +80,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     {
         if (ids.Count == 0) return;
         foreach (var pane in ids.Keys) pane.SetStatusBottomEdge(!CanDragBar(pane));
-        var chrome = ids.Select(p => new ViemPaneChrome { id = p.Value, status_height = p.Key.StatusBarHeight }).ToArray();
+        var chrome = ids.Where(p => !previewClosed.Contains(p.Key)).Select(p => new ViemPaneChrome { id = p.Value, status_height = p.Key.StatusBarHeight }).ToArray();
         fixed (ViemPaneChrome* input = chrome) Check(viem_pane_layout_update(handle, Math.Max(0, size.Width), Math.Max(0, size.Height), input, (ulong)chrome.Length));
         RefreshFrames();
     }
@@ -92,6 +101,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     }
     internal EditorPane Action(EditorPane pane, uint operation, ulong count = 0, double value = 0, uint flags = 0)
     {
+        EndDrag();
         UpdateLayout(); var point = pane.WindowFocusPoint; var origin = pane.TransformToVisual(this).TransformPoint(new Point()); ulong focus = 0;
         Check(viem_pane_layout_action(handle, ids[pane], operation, count, value, flags, origin.X + point.X, origin.Y + point.Y, &focus));
         RefreshFrames(); InvalidateMeasure(); UpdateLayout();
@@ -99,10 +109,39 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
         return ids.First(p => p.Value == focusedId).Key;
     }
     internal void Equalize(uint axis = 0) { if (ids.Count > 0) Action(ids.Keys.First(), 6, axis); }
-    internal void DragBar(EditorPane pane, double delta)
-    { if (!ids.TryGetValue(pane, out ulong id) || !double.IsFinite(delta)) return; Check(viem_pane_layout_drag(handle, id, 0, delta)); RefreshFrames(); InvalidateMeasure(); UpdateLayout(); }
+    /// Views in `closable` below the bar close, bottom first, when the bar
+    /// would overlap them, until EndDrag commits or the drag restores them.
+    internal void DragBar(EditorPane pane, double delta, IEnumerable<EditorPane>? closable = null)
+    {
+        if (!ids.TryGetValue(pane, out ulong id) || previewClosed.Contains(pane) || !double.IsFinite(delta)) return;
+        var closableIds = (closable ?? Enumerable.Empty<EditorPane>()).Where(ids.ContainsKey).Select(p => ids[p]).ToArray();
+        fixed (ulong* input = closableIds) Check(viem_pane_layout_drag(handle, id, 0, delta, input, (ulong)closableIds.Length));
+        RefreshFrames(); SynchronizePreviewClosed(); InvalidateMeasure(); UpdateLayout();
+    }
+    private void SynchronizePreviewClosed()
+    {
+        var visible = frames.Where(f => f.kind == 0).Select(f => f.id).ToHashSet();
+        foreach (var (pane, id) in ids)
+        {
+            bool hidden = !visible.Contains(id);
+            if (hidden == previewClosed.Contains(pane)) continue;
+            if (hidden) previewClosed.Add(pane); else previewClosed.Remove(pane);
+            pane.Visibility = hidden ? Visibility.Collapsed : Visibility.Visible;
+        }
+    }
+    /// Ends a status drag, handing the views it closed to DragClosedPanes.
+    internal void EndDrag()
+    {
+        if (handle == 0) return;
+        Check(viem_pane_layout_end_drag(handle));
+        if (previewClosed.Count == 0) return;
+        var closed = previewClosed.ToArray(); previewClosed.Clear();
+        foreach (var pane in closed) { ids.Remove(pane); Children.Remove(pane); }
+        InvalidateMeasure();
+        DragClosedPanes?.Invoke(closed);
+    }
     private void DragSplitter(ulong id, double delta)
-    { Check(viem_pane_layout_drag(handle, id, 1, delta)); RefreshFrames(); InvalidateMeasure(); UpdateLayout(); }
+    { Check(viem_pane_layout_drag(handle, id, 1, delta, null, 0)); RefreshFrames(); InvalidateMeasure(); UpdateLayout(); }
     internal void ResizePane(EditorPane pane, double textHeight) => Action(pane, 5, 0, textHeight);
     internal void ResizeWidth(EditorPane pane, double width) => Action(pane, 5, 1, width);
     protected override Size MeasureOverride(Size availableSize)
@@ -127,6 +166,7 @@ internal sealed unsafe partial class PaneStackPanel : Panel, IDisposable
     }
     public void Dispose()
     {
+        DragClosedPanes = null;
         if (preferences != null) preferences.Changed -= ApplyTheme;
         foreach (var splitter in splitters.Values) splitter.Dispose(); splitters.Clear();
         if (handle != 0) { Check(viem_pane_layout_destroy(handle)); handle = 0; }

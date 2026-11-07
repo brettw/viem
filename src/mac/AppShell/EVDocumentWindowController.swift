@@ -26,7 +26,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   public func documentURL(for surface: any EVEditorSurface) -> URL? {
     paneContainer.panes.first(where: { $0.editorSurface === surface })?.document?.fileURL
   }
-  private let paneContainer: EVPaneContainer
+  private(set) var paneContainer: EVPaneContainer
   private static var instances: [EVWeakDocumentWindow] = []
   static var hasOpenDocumentWindows: Bool {
     instances.contains { $0.value.map { !$0.isClosed } ?? false }
@@ -43,6 +43,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private var isClosed = false
   private var closeQueue: [EVDocument] = []
   private var closeReviewCompletion: ((Bool) -> Void)?
+  private var pendingPaneClose: (() -> Void)?
   private var closingAfterReview = false
   private var hasPresentedInitialWindow = false
   private var isPerformingDocumentHostEffect = false
@@ -106,11 +107,13 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
       guard let self, let document = source.document else { throw EVDocumentHostError.staleRequest }
       try self.paneContainer.requireSplitRoom(in: source)
       let pane = self.makePane(document: document, from: source)
-      try self.paneContainer.insert(pane, splitting: source, before: true, focusNewPane: false,
+      try self.paneContainer.insert(pane, splitting: source, focusNewPane: false,
                                     initialStatusBarBottom: bottom)
       self.updateActiveDocumentChrome()
       return pane
     }
+    paneContainer.closePaneRequest = { [weak self] pane in self?.closePane(pane) }
+    paneContainer.panesDidChange = { [weak self] in self?.updateActiveDocumentChrome() }
     window.delegate = self
     Self.instances.removeAll { $0.value == nil }
     Self.instances.append(EVWeakDocumentWindow(self))
@@ -1423,6 +1426,37 @@ extension EVDocumentWindowController {
       close()
       commandDidCloseWindow()
     }
+  }
+
+  /// Close one view, as Close does for the window: an unsaved buffer without
+  /// another view is reviewed first, and the last view closes the window.
+  func closePane(_ pane: EVDocumentContentViewController) {
+    guard !isClosed, closeReviewCompletion == nil, pendingPaneClose == nil,
+      paneContainer.panes.contains(where: { $0 === pane }) else { return }
+    guard paneContainer.panes.count > 1 else { window?.performClose(nil); return }
+    guard let document = pane.document else { return }
+    let finish = { [weak self, weak pane] in
+      guard let self, let pane, !self.isClosed, self.paneContainer.panes.count > 1,
+        self.paneContainer.panes.contains(where: { $0 === pane }) else { return }
+      self.paneContainer.remove(pane)
+      self.rebindWindowDocument()
+      self.closeIfUnrepresented(document)
+      self.updateActiveDocumentChrome()
+    }
+    guard (document.editorBackend.persistenceState.isDirty || document.isDocumentEdited)
+      && !hasOtherView(of: document, excluding: pane) else { finish(); return }
+    pendingPaneClose = finish
+    document.canClose(
+      withDelegate: self, shouldClose: #selector(reviewedPaneClose(_:shouldClose:contextInfo:)),
+      contextInfo: nil)
+  }
+
+  @objc private func reviewedPaneClose(
+    _ document: NSDocument, shouldClose: Bool, contextInfo: UnsafeMutableRawPointer?
+  ) {
+    let finish = pendingPaneClose
+    pendingPaneClose = nil
+    if shouldClose { finish?() }
   }
 
   fileprivate func hasOtherView(

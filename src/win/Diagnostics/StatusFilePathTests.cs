@@ -57,6 +57,8 @@ internal static class StatusFilePathTests
             await InputRoutingTests.Settle();
             check(pane.FilePathControl.Text == "café-notes.md" && pane.ModeControl.Visibility == Visibility.Collapsed,
                 "narrow native status removes mode first, then whole path components while retaining the filename");
+            check(ToolTipService.GetToolTip(pane.FilePathControl) as string == pane.FullStatusFilePath,
+                "a clipped status path shows the whole path on hover");
             await CheckCopyMenu(pane, check);
             // The directory action reports its result through command output.
             // Restore the ordinary visible status before measuring mode layout.
@@ -94,8 +96,12 @@ internal static class StatusFilePathTests
         var menu = pane.FilePathControl.ContextFlyout as MenuFlyout
             ?? throw new InvalidOperationException("Filename has no context menu.");
         var items = menu.Items.OfType<MenuFlyoutItem>().ToArray();
-        check(items.Select(item => item.Text).SequenceEqual(new[] { "Copy full path", "Copy relative path", "Change directory to here" })
-            && menu.Items[2] is MenuFlyoutSeparator, "filename context menu groups copy actions before the directory action");
+        check(items.Select(item => item.Text).SequenceEqual(new[] { "Copy full path", "Copy relative path", "Change directory to here", "Close pane" })
+            && menu.Items[2] is MenuFlyoutSeparator && menu.Items[4] is MenuFlyoutSeparator,
+            "filename context menu groups copy actions, the directory action and Close pane");
+        check(pane.StatusControl.ContextFlyout is MenuFlyout statusMenu && statusMenu.Items.Count == 1
+            && statusMenu.Items[0] is MenuFlyoutItem { Text: "Close pane" },
+            "status areas without their own menu offer Close pane");
         string? original = pane.Document.FilePath;
         string originalDirectory = Environment.CurrentDirectory;
         string temporaryRoot = Path.Combine(Path.GetTempPath(), "viem directory café # " + Guid.NewGuid().ToString("N"));

@@ -213,7 +213,17 @@ internal sealed unsafe partial class CoreView : IDisposable
     });
     public void RevealSelection() => Apply(o => viem_core_view_reveal_selection(Document.Handle, Id, o));
     public void Wrap(bool value) => Apply(o => viem_core_view_set_wrap(Document.Handle, Id, value ? 1u : 0u, o));
-    public uint CurrentLineMode { get { uint value = 0; Check(viem_core_view_line_mode(Document.Handle, Id, &value), "Read line mode"); return value; } }
+    public uint CurrentLineMode => LineModeState.Mode;
+    /// Fixed when the format always uses its line mode (Code uses physical source lines).
+    public (uint Mode, bool Fixed) LineModeState
+    {
+        get
+        {
+            uint value = 0, isFixed = 0;
+            Check(viem_core_view_line_mode(Document.Handle, Id, &value, &isFixed), "Read line mode");
+            return (value, isFixed != 0);
+        }
+    }
     public float DefaultColumnWidth { get { float width = 0; Check(viem_core_view_default_column_width(Document.Handle, Id, &width), "Read default column width"); return width; } }
     public float DefaultLineHeight { get { float height = 0; Check(viem_core_view_default_line_height(Document.Handle, Id, &height), "Read default line height"); return height; } }
     public void LineMode(uint value) => Apply(o => viem_core_view_set_line_mode(Document.Handle, Id, value, o));

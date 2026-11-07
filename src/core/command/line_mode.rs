@@ -265,22 +265,32 @@ impl CommandInterpreter {
         self.line_mode
     }
     /// Explicitly choose this view's line mode. Choosing its format's default
-    /// keeps the view following that default across format changes.
+    /// keeps the view following that default across format changes. Code
+    /// always uses physical source lines.
     pub fn set_line_mode(
         &mut self,
         document: &Document,
         mode: LineMode,
     ) -> Result<(), DocumentError> {
-        self.line_mode_explicit = mode != LineMode::default_for(document.format());
+        let format = document.format();
+        if LineMode::is_fixed_for(format) {
+            return if mode == LineMode::default_for(format) {
+                Ok(())
+            } else {
+                Err(DocumentError::FixedLineMode)
+            };
+        }
+        self.line_mode_explicit = mode != LineMode::default_for(format);
         self.install_line_mode(mode);
         Ok(())
     }
 
     /// Adopt the default line mode of a newly selected format unless the view
-    /// explicitly chose another mode.
+    /// explicitly chose another mode. Code overrides an explicit choice, which
+    /// resumes when the view returns to a format that allows it.
     pub(crate) fn follow_format_line_mode(&mut self, format: crate::document::Format) {
         let mode = LineMode::default_for(format);
-        if !self.line_mode_explicit && self.line_mode != mode {
+        if (!self.line_mode_explicit || LineMode::is_fixed_for(format)) && self.line_mode != mode {
             self.install_line_mode(mode);
         }
     }
@@ -299,6 +309,11 @@ impl LineMode {
     /// displayed rows.
     pub const fn default_for(format: crate::document::Format) -> Self {
         if format.is_code() { Self::PhysicalSource } else { Self::Visual }
+    }
+
+    /// Whether views of this format always use its default line mode.
+    pub const fn is_fixed_for(format: crate::document::Format) -> bool {
+        format.is_code()
     }
 }
 

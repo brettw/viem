@@ -160,12 +160,13 @@ final class EVDocumentReplacementTests: XCTestCase {
 
     func testReplacementPreservesEachSourceViewsLineMode() throws {
         let (backend, surfaces) = try makeDocumentWithTwoViews()
-        try backend.read(source: Data("first\nsecond".utf8), typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
+        // Code fixes physical source lines; plain text lets each view choose.
+        try backend.read(source: Data("first\nsecond".utf8), typeName: EVDocument.plainTextType, origin: .file(path: "notes.txt", automaticCode: false))
         let sessions = try surfaces.map { try XCTUnwrap($0.session) }
         try sessions[0].setLineMode(.physicalSource)
         try sessions[1].setLineMode(.visual)
 
-        try backend.read(source: Data("first\nchanged".utf8), typeName: EVDocument.codeType, origin: .file(path: "notes.md", automaticCode: false))
+        try backend.read(source: Data("first\nchanged".utf8), typeName: EVDocument.plainTextType, origin: .file(path: "notes.txt", automaticCode: false))
 
         let first = try XCTUnwrap(surfaces[0].session)
         let second = try XCTUnwrap(surfaces[1].session)

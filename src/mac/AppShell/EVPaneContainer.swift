@@ -19,8 +19,18 @@ final class EVPaneContainer: NSViewController {
   }
   private weak var lastAccessedPane: EVDocumentContentViewController?
   var splitForStatusDrag: ((EVDocumentContentViewController, CGFloat) throws -> EVDocumentContentViewController)?
+  /// A status bar's Close pane command.
+  var closePaneRequest: ((EVDocumentContentViewController) -> Void)?
+  /// Panes were added, removed or preview-closed outside a window command.
+  var panesDidChange: (() -> Void)?
   private weak var statusDragTarget: EVDocumentContentViewController?
   private var statusDragNeedsSplit = false
+  /// Pointer offset below the dragged bar's top edge, retained for the gesture.
+  private var statusDragOffset: CGFloat = 0
+  private weak var statusDragFocus: EVDocumentContentViewController?
+  /// Views a status drag has closed, retained until the drag ends so that
+  /// dragging back restores them unchanged.
+  private(set) var previewClosedPanes: [EVDocumentContentViewController] = []
 
   init(first: EVDocumentContentViewController) {
     panes = [first]; ids[ObjectIdentifier(first)] = 1
@@ -50,6 +60,7 @@ final class EVPaneContainer: NSViewController {
     if let index = panes.firstIndex(where: { $0 === pane }) { focusPane(at: index) }
   }
   func perform(_ request: EVWindowRequest) {
+    finishStatusDrag()
     loadViewIfNeeded(); layoutStack()
     let current = activePane, currentID = id(current), index = activeIndex, count = panes.count
     let line = Double(current.editorSurface.defaultLineHeight ?? 16)
@@ -105,9 +116,56 @@ final class EVPaneContainer: NSViewController {
     guard panes.contains(where: { $0 === source }) else { throw EVDocumentHostError.noRoomToSplit }
     try geometry.requireSplit(id(source), vertical: vertical, height: EVStatusBarView.preferredHeight)
   }
-  func dragStatusBar(of pane: EVDocumentContentViewController, by delta: CGFloat) {
+  /// With `closing`, overlapping views of the same buffer below the bar close
+  /// until the drag ends.
+  func dragStatusBar(of pane: EVDocumentContentViewController, by delta: CGFloat, closing: Bool = false) {
     guard panes.contains(where: { $0 === pane }), delta.isFinite else { return }
-    layoutStack(); geometry.drag(id(pane), delta: delta); layoutStack()
+    layoutStack()
+    // Only further views of the same buffer may close, so a drag never
+    // closes a document.
+    let closable = !closing ? [] : (panes + previewClosedPanes).filter { $0 !== pane && $0.document != nil && $0.document === pane.document }
+      .compactMap { ids[ObjectIdentifier($0)] }
+    geometry.drag(id(pane), delta: delta, closable: closable)
+    synchronizePreviewClosedPanes()
+    layoutStack()
+  }
+  private func statusBarTop(of pane: EVDocumentContentViewController) -> CGFloat {
+    pane.view.frame.maxY - pane.statusBarHeight
+  }
+  /// Hide views whose panes the drag closed and show those it restored.
+  private func synchronizePreviewClosedPanes() {
+    let visible = Set(geometry.snapshot().frames.filter { $0.kind == 0 }.map(\.id))
+    let hidden = panes.filter { !visible.contains(id($0)) }
+    let restored = previewClosedPanes.filter { visible.contains(id($0)) }
+    guard !hidden.isEmpty || !restored.isEmpty else { return }
+    let focus = statusDragFocus ?? panes[activeIndex]
+    for pane in hidden { pane.view.isHidden = true }
+    for pane in restored { pane.view.isHidden = false }
+    previewClosedPanes = previewClosedPanes.filter { !visible.contains(id($0)) } + hidden
+    panes = panes.filter { visible.contains(id($0)) } + restored
+    preferredIndex = panes.firstIndex(where: { $0 === focus })
+      ?? panes.firstIndex(where: { $0 === statusDragTarget }) ?? 0
+    panesDidChange?()
+  }
+  /// Release ends a status drag, committing the views it closed.
+  func finishStatusDrag() {
+    let target = statusDragTarget, focus = statusDragFocus
+    statusDragTarget = nil; statusDragFocus = nil
+    statusDragNeedsSplit = false
+    geometry.endDrag()
+    guard !previewClosedPanes.isEmpty else { return }
+    let closed = previewClosedPanes
+    previewClosedPanes = []
+    for pane in closed {
+      unbind(pane); pane.view.removeFromSuperview(); pane.removeFromParent()
+      ids.removeValue(forKey: ObjectIdentifier(pane))
+      if lastAccessedPane === pane { lastAccessedPane = nil }
+    }
+    layoutStack()
+    // A closed focused view hands focus to the view whose bar was dragged.
+    if let focus, closed.contains(where: { $0 === focus }),
+       let index = panes.firstIndex(where: { $0 === target }) ?? panes.indices.last { focusPane(at: index) }
+    panesDidChange?()
   }
   override func loadView() {
     stack.autoresizingMask = [.width,.height]; stack.didResize = { [weak self] in self?.layoutStack() }; view = stack
@@ -115,30 +173,40 @@ final class EVPaneContainer: NSViewController {
     layoutStack()
   }
   private func bind(_ pane: EVDocumentContentViewController) {
-    pane.statusBar.dragDidBegin = { [weak self, weak pane] in
+    pane.statusBar.dragDidBegin = { [weak self, weak pane] press in
       guard let self, let pane else { return }
+      self.finishStatusDrag()
+      self.layoutStack()
       self.statusDragTarget = pane
+      self.statusDragFocus = self.panes[self.activeIndex]
+      self.statusDragOffset = self.stack.convert(press, from: nil).y - self.statusBarTop(of: pane)
       self.statusDragNeedsSplit = self.geometry.snapshot().frames.contains {
         $0.kind == 0 && $0.id == self.id(pane) && $0.flags & UInt32(VIEM_PANE_FRAME_STATUS_DRAGGABLE) == 0
       }
     }
-    pane.statusBar.dragDidEnd = { [weak self] in
-      self?.statusDragTarget = nil; self?.statusDragNeedsSplit = false
-    }
-    pane.statusBar.dragDidMove = { [weak self, weak pane] delta, point in
+    pane.statusBar.dragDidEnd = { [weak self] in self?.finishStatusDrag() }
+    pane.statusBar.dragDidMove = { [weak self, weak pane] point in
       guard let self, let pane, let target = self.statusDragTarget,
             self.panes.contains(where: { $0 === target }) else { return }
+      let y = self.stack.convert(point, from: nil).y
       if self.statusDragNeedsSplit {
-        let y = self.stack.convert(point, from: nil).y
-        guard y < pane.view.frame.maxY - pane.statusBarHeight else { return }
-        // Attempt once per gesture. The original bar keeps mouse capture while
-        // its new upper neighbour becomes the moving boundary.
+        guard y < self.statusBarTop(of: pane) else { return }
+        // Attempt once per gesture. The new view opens below the dragged bar,
+        // so the rest of the gesture is an ordinary drag that can close it.
         self.statusDragNeedsSplit = false
         do {
-          guard let added = try self.splitForStatusDrag?(pane, y) else { return }
-          self.statusDragTarget = added
+          _ = try self.splitForStatusDrag?(pane, y - self.statusDragOffset + pane.statusBarHeight)
         } catch { pane.editorSurface.showDocumentMessage(error.localizedDescription) }
-      } else { self.dragStatusBar(of: target, by: delta) }
+      } else {
+        // Track the pointer absolutely: blocked movement past an edge is not
+        // retained, and the bar resumes only once the pointer returns to it.
+        self.layoutStack()
+        self.dragStatusBar(of: target, by: y - self.statusDragOffset - self.statusBarTop(of: target), closing: true)
+      }
+    }
+    pane.statusBar.closePane = { [weak self, weak pane] in
+      guard let self, let pane else { return }
+      self.closePaneRequest?(pane)
     }
     pane.statusBar.clicked = { [weak self, weak pane] in
       guard let self, let pane, let index = self.panes.firstIndex(where: { $0 === pane }) else { return }
@@ -157,7 +225,7 @@ final class EVPaneContainer: NSViewController {
   private func unbind(_ pane: EVDocumentContentViewController) {
     placementGutters.removeValue(forKey: ObjectIdentifier(pane))
     pane.statusBar.dragDidMove = nil; pane.statusBar.clicked = nil; pane.statusBarHeightDidChange = nil
-    pane.statusBar.dragDidBegin = nil; pane.statusBar.dragDidEnd = nil
+    pane.statusBar.dragDidBegin = nil; pane.statusBar.dragDidEnd = nil; pane.statusBar.closePane = nil
     pane.editorSurface.lineNumberGutterWidthWillChange = nil
   }
   private func reserveGutterSpace(in pane: EVDocumentContentViewController, delta: CGFloat) {
@@ -174,15 +242,18 @@ final class EVPaneContainer: NSViewController {
     if next != window.frame { window.setFrame(next, display: true); layoutStack() }
   }
   func insert(_ pane: EVDocumentContentViewController, splitting source: EVDocumentContentViewController? = nil, vertical: Bool = false, before: Bool = false, focusNewPane: Bool = true, initialStatusBarBottom: CGFloat? = nil) throws {
+    // A drag-created split continues its own gesture; other insertions end one.
+    if initialStatusBarBottom == nil { finishStatusDrag() }
     let source = source ?? activePane
     try requireSplitRoom(in: source, vertical: vertical)
     pane.loadViewIfNeeded()
     let newID = try geometry.split(id(source), vertical: vertical, height: pane.statusBarHeight, before: before)
     // A drag-created split starts at the pointer, not the default half split.
     // Resolve this in portable geometry before either editor sees a new size.
+    let upper = before ? newID : id(source)
     if let bottom = initialStatusBarBottom,
-       let frame = geometry.snapshot().frames.first(where: { $0.kind == 0 && $0.id == newID }) {
-      geometry.drag(newID, delta: bottom - (frame.y + frame.height))
+       let frame = geometry.snapshot().frames.first(where: { $0.kind == 0 && $0.id == upper }) {
+      geometry.drag(upper, delta: bottom - (frame.y + frame.height))
     }
     ids[ObjectIdentifier(pane)] = newID; panes.append(pane)
     addChild(pane); pane.view.autoresizingMask = []; bind(pane); layoutStack()
@@ -192,6 +263,7 @@ final class EVPaneContainer: NSViewController {
     if focusNewPane { focus(pane) }
   }
   func remove(_ pane: EVDocumentContentViewController) {
+    finishStatusDrag()
     guard panes.count > 1, let index = panes.firstIndex(where: { $0 === pane }) else { return }
     geometry.remove(id(pane)); unbind(pane); pane.view.removeFromSuperview(); pane.removeFromParent()
     ids.removeValue(forKey: ObjectIdentifier(pane)); panes.remove(at: index)
@@ -201,6 +273,7 @@ final class EVPaneContainer: NSViewController {
     layoutStack(); focusPane(at: preferredIndex)
   }
   func replace(_ old: EVDocumentContentViewController, with next: EVDocumentContentViewController) {
+    finishStatusDrag()
     guard let index = panes.firstIndex(where: { $0 === old }) else { return }
     ids[ObjectIdentifier(next)] = ids.removeValue(forKey: ObjectIdentifier(old))
     unbind(old); old.view.removeFromSuperview(); old.removeFromParent(); panes[index] = next

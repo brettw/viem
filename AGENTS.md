@@ -533,8 +533,9 @@ Unsupported commands fail without side effects.
 
 ### Line meaning
 
-- Each view uses Visual or Physical Source line meaning (Physical in Code and
-  Visual elsewhere, until the user chooses). It governs ordinary line motions
+- Each view uses Visual or Physical Source line meaning. Code always uses
+  Physical Source; Text and Markdown Preview default to Visual until the user
+  chooses, and that choice resumes after leaving Code. It governs ordinary line motions
   and operators, Visual Line and line-oriented insertion, including counts and
   replay. Explicit `g` motions stay visual. `gq`/`gw` count hard lines in
   Text and Code even with soft wrapping, but displayed rows in Markdown
