@@ -66,6 +66,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var viewportState = ViemViewportStateV1()
     /// Diff mode mirrors the aligned sides' vertical scrolling through this.
     var diffViewportTopDidChange: ((CGFloat) -> Void)?
+    /// Diff mode refreshes this side's scrollbar marks after each verified
+    /// frame, since layout can refine the heights they are measured in.
+    var diffPresentationDidRefresh: (() -> Void)?
     private(set) var documentState = ViemDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
     private var isRefreshingPresentation = false
@@ -581,6 +584,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             session.tableWidthRefinement.update()
             session.backgroundLayout.update()
             updateStatusBar()
+            diffPresentationDidRefresh?()
             if isViewLoaded {
                 editorView.updateLineNumberPresentation()
                 editorView.applyPresentation()

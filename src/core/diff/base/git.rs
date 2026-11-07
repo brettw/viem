@@ -35,15 +35,17 @@ pub struct GitRepository {
 }
 
 impl GitRepository {
-    /// Find the repository containing `file`. `program` is the git
-    /// executable, normally `git` resolved through `PATH`.
+    /// Find the repository containing `file`, or the folder `file` names.
+    /// `program` is the git executable, normally `git` resolved through
+    /// `PATH`.
     pub fn discover(
         program: &Path,
         file: &Path,
         limits: ProcessLimits,
         cancellation: &CancellationToken,
     ) -> Result<Self, BaseError> {
-        let directory = existing_ancestor(file.parent().unwrap_or(file))
+        let start = if file.is_dir() { file } else { file.parent().unwrap_or(file) };
+        let directory = existing_ancestor(start)
             .ok_or_else(|| BaseError::Unavailable(format!("{} has no existing folder", file.display())))?;
         let output = git(program, &directory, &["rev-parse", "--show-toplevel"], limits, cancellation)?;
         if !output.success {
@@ -84,6 +86,26 @@ impl GitRepository {
         Ok(parts.join("/"))
     }
 
+    /// A folder relative to the repository root, with `/` separators; `None`
+    /// for the root itself.
+    pub fn relative_folder(&self, folder: &Path) -> Result<Option<String>, BaseError> {
+        let root = std::fs::canonicalize(&self.root).map_err(|error| BaseError::Io(error.to_string()))?;
+        let folder = std::fs::canonicalize(folder).map_err(|error| BaseError::Io(error.to_string()))?;
+        let relative = folder
+            .strip_prefix(&root)
+            .map_err(|_| BaseError::Unavailable(format!("{} is outside the repository", folder.display())))?;
+        let mut parts = Vec::new();
+        for component in relative.components() {
+            match component {
+                Component::Normal(part) => parts.push(
+                    part.to_str().ok_or_else(|| BaseError::Unavailable("folder path is not UTF-8".into()))?.to_owned(),
+                ),
+                _ => return Err(BaseError::Unavailable("folder is not inside the working tree".into())),
+            }
+        }
+        Ok((!parts.is_empty()).then(|| parts.join("/")))
+    }
+
     /// Load the base version of `file` for a git base kind.
     pub fn load(&self, kind: &BaseKind, file: &Path, cancellation: &CancellationToken) -> Result<BaseText, BaseError> {
         let relative = self.relative_path(file)?;
@@ -110,7 +132,14 @@ impl GitRepository {
 
     /// Tracked files that differ from a git base, as `git diff` lists them,
     /// including its rename detection. Untracked files are never listed.
-    pub fn changed_files(&self, kind: &BaseKind, cancellation: &CancellationToken) -> Result<Vec<ChangedFile>, BaseError> {
+    /// `scope` limits the list to one folder, as `git diff -- <folder>` does.
+    pub fn changed_files(
+        &self,
+        kind: &BaseKind,
+        scope: Option<&Path>,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<ChangedFile>, BaseError> {
+        let folder = scope.map(|folder| self.relative_folder(folder)).transpose()?.flatten();
         let mut arguments = vec!["diff", "--name-status", "-z", "--no-ext-diff", "--no-textconv"];
         match kind {
             BaseKind::Unstaged => {}
@@ -119,6 +148,10 @@ impl GitRepository {
             _ => return Err(BaseError::Unavailable("not a git base".into())),
         }
         arguments.push("--");
+        // Pathspecs are literal: the environment sets GIT_LITERAL_PATHSPECS.
+        if let Some(folder) = &folder {
+            arguments.push(folder);
+        }
         let output = self.git(&arguments, cancellation)?;
         if !output.success {
             return Err(command_error(output));

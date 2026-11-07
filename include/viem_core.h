@@ -3301,6 +3301,16 @@ typedef uint64_t ViemDiffCancellationHandle;
 #define VIEM_DIFF_SYNC_INCREMENTAL 1u
 #define VIEM_DIFF_SYNC_FULL 2u
 
+#define VIEM_DIFF_NAVIGATE_NEXT 0u
+#define VIEM_DIFF_NAVIGATE_PREVIOUS 1u
+/* A change was found; otherwise the sides are identical and nothing moved. */
+#define VIEM_DIFF_NAVIGATION_FOUND (1u << 0)
+/* The views were repositioned, not only the caret. */
+#define VIEM_DIFF_NAVIGATION_SCROLLED (1u << 1)
+
+/* The mark is the new side's added lines; otherwise removed lines. */
+#define VIEM_DIFF_MARK_ADDED (1u << 0)
+
 /* LAST_SAVED loads the file on disk (Refresh); the in-memory copy comes from
  * viem_core_copy_saved_source. FILE loads the chosen file_path. */
 #define VIEM_DIFF_BASE_LAST_SAVED 0u
@@ -3340,6 +3350,9 @@ typedef struct ViemDiffBaseRequestV1 {
   /* File lists only: open buffers with unsaved changes join the list. */
   const ViemUtf8Slice *unsaved_paths;
   uint64_t unsaved_path_count;
+  /* File lists only: an absolute folder whose files alone are listed, as
+   * `git diff -- <folder>` does. Empty lists the whole repository. */
+  ViemUtf8Slice scope_path;
 } ViemDiffBaseRequestV1;
 #define VIEM_DIFF_BASE_REQUEST_V1_SIZE ((uint32_t)sizeof(ViemDiffBaseRequestV1))
 
@@ -3374,6 +3387,26 @@ typedef struct ViemDiffSessionInfoV1 {
 } ViemDiffSessionInfoV1;
 #define VIEM_DIFF_SESSION_INFO_V1_SIZE ((uint32_t)sizeof(ViemDiffSessionInfoV1))
 
+typedef struct ViemDiffNavigationV1 {
+  uint32_t struct_size;
+  /* VIEM_DIFF_NAVIGATION_* flags. */
+  uint32_t flags;
+  uint64_t change_index;
+  uint64_t change_count;
+  /* The new side's zero-based hard line that received the caret. */
+  uint64_t caret_line;
+} ViemDiffNavigationV1;
+#define VIEM_DIFF_NAVIGATION_V1_SIZE ((uint32_t)sizeof(ViemDiffNavigationV1))
+
+/* One stretch of a scrollbar track, in layout units from the document top. */
+typedef struct ViemDiffScrollbarMarkV1 {
+  float top;
+  float bottom;
+  /* VIEM_DIFF_MARK_* flags. */
+  uint32_t flags;
+  uint32_t reserved;
+} ViemDiffScrollbarMarkV1;
+
 ViemStatus viem_diff_session_create(ViemCoreHandle base_core, ViemCoreHandle new_core,
     uint32_t flags, ViemDiffSessionHandle *out_session);
 ViemStatus viem_diff_session_destroy(ViemDiffSessionHandle session);
@@ -3393,6 +3426,24 @@ ViemStatus viem_diff_session_corresponding_top(ViemDiffSessionHandle session,
     ViemCoreHandle to_core, ViemViewId to_view, float *out_top);
 ViemStatus viem_diff_session_info(ViemDiffSessionHandle session,
     ViemDiffSessionInfoV1 *out_info);
+/* Move both sides to the next or previous change (a VIEM_DIFF_NAVIGATE_*
+ * direction), wrapping within the file: the new view's caret moves to the
+ * change, and both views scroll unless it is already visible on both. Then
+ * refresh both views. */
+ViemStatus viem_diff_session_navigate(ViemDiffSessionHandle session,
+    ViemCoreHandle base_core, ViemViewId base_view,
+    ViemCoreHandle new_core, ViemViewId new_view, uint32_t direction,
+    ViemDiffNavigationV1 *out_navigation);
+/* The backgrounds of the Added line and Removed line Code styles, for
+ * scrollbar marks; the built-in defaults when a style declares none. */
+ViemStatus viem_diff_line_colors(ViemRgbaV1 *out_added, ViemRgbaV1 *out_removed);
+/* Two-pass copy of one side's scrollbar marks, sorted by top, and the
+ * document extent they are measured against; is_new is one for the live
+ * side. A short buffer reports the count with VIEM_STATUS_BUFFER_TOO_SMALL. */
+ViemStatus viem_diff_session_scrollbar_marks(ViemDiffSessionHandle session,
+    ViemCoreHandle core, ViemViewId view, uint32_t is_new,
+    ViemDiffScrollbarMarkV1 *marks, uint64_t capacity, uint64_t *out_count,
+    float *out_extent);
 /* Set the buffer-local `modifiable` policy; zero rejects every edit path. */
 ViemStatus viem_core_set_modifiable(ViemCoreHandle core, uint32_t modifiable);
 /* Remove diff presentation from a view when leaving diff mode. */

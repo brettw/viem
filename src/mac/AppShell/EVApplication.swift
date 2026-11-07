@@ -256,6 +256,17 @@ final class EVApplicationDelegate: NSObject,
         createUntitledDocument()
     }
 
+    /// Folder diffs also work with no window open; a window's own actions
+    /// handle them otherwise.
+    @objc func diffCurrentDirectory(_ sender: Any?) {
+        EVDocumentWindowController.diffFolder(
+            URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true), from: nil)
+    }
+
+    @objc func chooseDiffFolder(_ sender: Any?) {
+        EVDocumentWindowController.chooseDiffFolder(from: nil)
+    }
+
     @objc func openDocument(_ sender: Any?) {
         let replacement = captureUntitledReplacement()
         let panel = NSOpenPanel()

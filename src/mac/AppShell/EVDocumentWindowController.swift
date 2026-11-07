@@ -1362,6 +1362,12 @@ extension EVDocumentWindowController {
   fileprivate func openPaneDocument(
     _ url: URL, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
   ) {
+    Self.openPaneDocument(url, completion: completion)
+  }
+
+  fileprivate static func openPaneDocument(
+    _ url: URL, completion: @escaping @MainActor (EVDocument?, Error?) -> Void
+  ) {
     if !FileManager.default.fileExists(atPath: url.path),
       EVDocumentIdentity.existingDocument(at: url) == nil
     {
@@ -2027,6 +2033,98 @@ extension EVDocumentWindowController: EVDiffModeHost {
   @objc func chooseDiffBaseFile(_ sender: Any?) { diffMode?.chooseBaseFile() }
   @objc func showPreviousDiffFile(_ sender: Any?) { diffMode?.moveFile(by: -1) }
   @objc func showNextDiffFile(_ sender: Any?) { diffMode?.moveFile(by: 1) }
+  @objc func diffCurrentDirectory(_ sender: Any?) {
+    Self.diffFolder(URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true), from: self)
+  }
+  @objc func chooseDiffFolder(_ sender: Any?) { Self.chooseDiffFolder(from: self) }
+
+  /// Pick a folder for "Diff Folder…", as a sheet when a window is given.
+  static func chooseDiffFolder(from controller: EVDocumentWindowController?) {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = false
+    panel.canChooseDirectories = true
+    panel.allowsMultipleSelection = false
+    panel.showsHiddenFiles = true
+    panel.directoryURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    panel.message = "Choose a folder to compare with its git index"
+    panel.prompt = "Diff"
+    let selected: @MainActor (URL?) -> Void = { url in
+      guard let url else { return }
+      diffFolder(url, from: controller)
+    }
+    if let controller, let window = controller.window {
+      if let presenter = controller.openFilePanelPresenter {
+        presenter(panel, window, selected)
+      } else {
+        panel.beginSheetModal(for: window) { response in
+          MainActor.assumeIsolated { selected(response == .OK ? panel.url : nil) }
+        }
+      }
+    } else {
+      selected(panel.runModal() == .OK ? panel.url : nil)
+    }
+  }
+
+  /// Show the first file `git diff -- <folder>` lists in diff mode, in the
+  /// given window when it holds only a pristine untitled buffer, otherwise
+  /// in a new window. A folder outside a repository, or one without changes,
+  /// is reported instead.
+  static func diffFolder(_ folder: URL, from controller: EVDocumentWindowController?) {
+    let unsaved = (controller?.unsavedDocumentURLs() ?? []).map(\.path)
+    Task { @MainActor in
+      let listed = await EVDiffBaseLoader.listFiles(.unstaged, path: folder.path, unsaved: unsaved, scope: folder.path)
+      let files: [EVDiffFile]
+      switch listed {
+      case let .success(found) where !found.isEmpty:
+        files = found
+      case .success:
+        reportDiffFolder("There are no changes in \(folder.path).", in: controller)
+        return
+      case let .failure(error):
+        reportDiffFolder(error.localizedDescription, in: controller)
+        return
+      }
+      let replacement = controller?.captureUntitledReplacement()
+      let open = folderDiffDocumentOpener ?? { url, completion in openPaneDocument(url, completion: completion) }
+      open(files[0].url) { opened, error in
+        guard let opened else {
+          reportDiffFolder(error?.localizedDescription ?? "The file could not be opened.", in: controller)
+          return
+        }
+        let target: EVDocumentWindowController
+        if let controller, let replacement, replacement.install(opened) {
+          target = controller
+        } else {
+          target = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface())
+          target.argumentDocumentOpener = controller?.argumentDocumentOpener
+          opened.addWindowController(target)
+          target.showWindow(nil)
+        }
+        target.diffController.enable(folder: folder, files: files)
+        folderDiffDidOpen?(target)
+      }
+    }
+  }
+
+  /// Tests open documents without registered document types.
+  static var folderDiffDocumentOpener: ((URL, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
+  /// Tests observe the window a folder diff opened in.
+  static var folderDiffDidOpen: ((EVDocumentWindowController) -> Void)?
+  /// Tests capture folder-diff reports instead of showing an alert.
+  static var folderDiffReport: ((String) -> Void)?
+
+  private static func reportDiffFolder(_ message: String, in controller: EVDocumentWindowController?) {
+    if let folderDiffReport {
+      folderDiffReport(message)
+    } else if let controller, !controller.isClosed {
+      controller.editorSurface.showDocumentMessage(message)
+    } else {
+      let alert = NSAlert()
+      alert.messageText = "Can't diff the folder"
+      alert.informativeText = message
+      alert.runModal()
+    }
+  }
 }
 
 @MainActor

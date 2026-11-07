@@ -26,8 +26,19 @@ final class EVDocumentScrollbars: NSView {
         }
     }
 
+    /// One of diff mode's change marks on the vertical track, in layout
+    /// units from the document top (docs/diff_mode.md, Scrollbar).
+    struct ChangeMark: Equatable {
+        var top: CGFloat
+        var bottom: CGFloat
+        var color: NSColor
+    }
+
     var onScroll: ((Axis, Double) -> Void)?
     var onGeometryChange: (() -> Void)?
+    private(set) var changeMarks: [ChangeMark] = []
+    private(set) var changeMarkExtent: CGFloat = 0
+    private let changeMarkView = EVScrollerChangeMarkView()
 
     let verticalScroller = EVDocumentScroller(frame: NSRect(x: 0, y: 0, width: 15, height: 100))
     let horizontalScroller = EVDocumentScroller(frame: NSRect(x: 0, y: 0, width: 100, height: 15))
@@ -109,6 +120,8 @@ final class EVDocumentScrollbars: NSView {
             }
             addSubview(scroller)
         }
+        // Between the track and the knob, so marks read as track background.
+        addSubview(changeMarkView)
         addSubview(verticalKnob)
         addSubview(horizontalKnob)
         styleObserver = notificationCenter.addObserver(
@@ -327,7 +340,26 @@ final class EVDocumentScrollbars: NSView {
         return showing ? min(1, alpha + step) : max(0, alpha - step)
     }
 
+    /// Diff mode's marks. Legacy scrollers draw them in their knob slot,
+    /// under the native knob; overlay scrollers fade out when idle, so a
+    /// paint-only view keeps the marks visible beneath the knob overlay.
+    func setChangeMarks(_ marks: [ChangeMark], extent: CGFloat) {
+        guard marks != changeMarks || extent != changeMarkExtent else { return }
+        changeMarks = marks
+        changeMarkExtent = extent
+        verticalScroller.changeMarks = (marks, extent)
+        verticalScroller.needsDisplay = true
+        updateKnobOverlays()
+    }
+
     private func updateKnobOverlays() {
+        changeMarkView.frame = verticalScroller.frame
+        changeMarkView.nativeIsFlipped = verticalScroller.isFlipped
+        let slot = verticalScroller.rect(for: .knobSlot)
+        changeMarkView.slot = slot.isEmpty ? verticalScroller.bounds : slot
+        changeMarkView.marks = (changeMarks, changeMarkExtent)
+        changeMarkView.isHidden = scrollerStyle != .overlay || changeMarks.isEmpty
+        changeMarkView.needsDisplay = true
         for (scroller, knob) in [(verticalScroller, verticalKnob), (horizontalScroller, horizontalKnob)] {
             knob.frame = scroller.frame
             knob.nativeIsFlipped = scroller.isFlipped
@@ -383,6 +415,8 @@ final class EVDocumentScrollbars: NSView {
 /// parts-based overrides, but explicitly warns against replacing mouseDown.
 @MainActor
 final class EVDocumentScroller: NSScroller {
+    /// Diff mode's change marks, drawn in the legacy knob slot.
+    var changeMarks: (marks: [EVDocumentScrollbars.ChangeMark], extent: CGFloat) = ([], 0)
     var onTrackingChange: ((Bool) -> Void)?
     var onHoverChange: ((Bool) -> Void)?
     var onAccessibilityStep: ((Bool) -> Bool)?
@@ -398,6 +432,16 @@ final class EVDocumentScroller: NSScroller {
 
     override func accessibilityPerformDecrement() -> Bool {
         onAccessibilityStep?(false) ?? false
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
+        super.drawKnobSlot(in: slotRect, highlight: flag)
+        guard scrollerStyle == .legacy else { return }
+        for (rect, color) in EVChangeMarkGeometry.rects(changeMarks.marks, extent: changeMarks.extent,
+                                                         slot: slotRect, flipped: isFlipped) {
+            color.setFill()
+            rect.fill(using: .sourceOver)
+        }
     }
 
     override func trackKnob(with event: NSEvent) {
@@ -422,6 +466,55 @@ final class EVDocumentScroller: NSScroller {
     override func mouseExited(with event: NSEvent) {
         super.mouseExited(with: event)
         onHoverChange?(false)
+    }
+}
+
+/// Where change marks fall in a knob slot: each mark's share of the document
+/// extent, never thinner than a visible minimum.
+enum EVChangeMarkGeometry {
+    static let minimumHeight: CGFloat = 2
+
+    static func rects(_ marks: [EVDocumentScrollbars.ChangeMark], extent: CGFloat, slot: NSRect,
+                      flipped: Bool) -> [(NSRect, NSColor)] {
+        guard extent > 0, slot.height > 0, slot.width > 0 else { return [] }
+        let inset = min(2, slot.width / 4)
+        let x = slot.minX + inset
+        let width = max(1, slot.width - inset * 2)
+        return marks.map { mark in
+            let start = min(max(mark.top / extent, 0), 1) * slot.height
+            let end = min(max(mark.bottom / extent, 0), 1) * slot.height
+            let height = min(slot.height, max(minimumHeight, end - start))
+            let offset = min(start, slot.height - height)
+            let y = flipped ? slot.minY + offset : slot.maxY - offset - height
+            return (NSRect(x: x, y: y, width: width, height: height), mark.color)
+        }
+    }
+}
+
+/// Overlay scrollers' always-visible change marks; paint only.
+@MainActor
+private final class EVScrollerChangeMarkView: NSView {
+    var nativeIsFlipped = false
+    var slot = NSRect.zero
+    var marks: (marks: [EVDocumentScrollbars.ChangeMark], extent: CGFloat) = ([], 0)
+    override var isFlipped: Bool { nativeIsFlipped }
+    override var acceptsFirstResponder: Bool { false }
+
+    init() {
+        super.init(frame: .zero)
+        setAccessibilityElement(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder _: NSCoder) { fatalError("init(coder:) is unavailable") }
+
+    override func hitTest(_: NSPoint) -> NSView? { nil }
+
+    override func draw(_: NSRect) {
+        for (rect, color) in EVChangeMarkGeometry.rects(marks.marks, extent: marks.extent, slot: slot, flipped: isFlipped) {
+            color.setFill()
+            rect.fill(using: .sourceOver)
+        }
     }
 }
 

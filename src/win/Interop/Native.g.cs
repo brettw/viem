@@ -1447,6 +1447,25 @@ internal unsafe struct ViemDiffSessionInfoV1
     public ulong @new_line_count;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemDiffNavigationV1
+{
+    public uint @struct_size;
+    public uint @flags;
+    public ulong @change_index;
+    public ulong @change_count;
+    public ulong @caret_line;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemDiffScrollbarMarkV1
+{
+    public float @top;
+    public float @bottom;
+    public uint @flags;
+    public uint @reserved;
+}
+
 internal static unsafe partial class Native
 {
     public const uint VIEM_CORE_ABI_VERSION = 8u;
@@ -2131,6 +2150,11 @@ internal static unsafe partial class Native
     public const uint VIEM_DIFF_SYNC_UNCHANGED = 0u;
     public const uint VIEM_DIFF_SYNC_INCREMENTAL = 1u;
     public const uint VIEM_DIFF_SYNC_FULL = 2u;
+    public const uint VIEM_DIFF_NAVIGATE_NEXT = 0u;
+    public const uint VIEM_DIFF_NAVIGATE_PREVIOUS = 1u;
+    public const uint VIEM_DIFF_NAVIGATION_FOUND = (1u << 0);
+    public const uint VIEM_DIFF_NAVIGATION_SCROLLED = (1u << 1);
+    public const uint VIEM_DIFF_MARK_ADDED = (1u << 0);
     public const uint VIEM_DIFF_BASE_LAST_SAVED = 0u;
     public const uint VIEM_DIFF_BASE_UNSTAGED = 1u;
     public const uint VIEM_DIFF_BASE_HEAD = 2u;
@@ -2153,6 +2177,7 @@ internal static unsafe partial class Native
     public static readonly uint VIEM_DIFF_RESULT_INFO_V1_SIZE = ((uint)sizeof(ViemDiffResultInfoV1));
     public static readonly uint VIEM_DIFF_LIST_ITEM_V1_SIZE = ((uint)sizeof(ViemDiffListItemV1));
     public static readonly uint VIEM_DIFF_SESSION_INFO_V1_SIZE = ((uint)sizeof(ViemDiffSessionInfoV1));
+    public static readonly uint VIEM_DIFF_NAVIGATION_V1_SIZE = ((uint)sizeof(ViemDiffNavigationV1));
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_parse_launch_arguments(byte* @input, ulong @input_length, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2613,6 +2638,12 @@ internal static unsafe partial class Native
     public static extern uint viem_diff_session_corresponding_top(ulong @session, ulong @from_core, ulong @from_view, uint @from_new, ulong @to_core, ulong @to_view, float* @out_top);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_session_info(ulong @session, ViemDiffSessionInfoV1* @out_info);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_navigate(ulong @session, ulong @base_core, ulong @base_view, ulong @new_core, ulong @new_view, uint @direction, ViemDiffNavigationV1* @out_navigation);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_line_colors(ViemRgbaV1* @out_added, ViemRgbaV1* @out_removed);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_scrollbar_marks(ulong @session, ulong @core, ulong @view, uint @is_new, ViemDiffScrollbarMarkV1* @marks, ulong @capacity, ulong* @out_count, float* @out_extent);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_set_modifiable(ulong @core, uint @modifiable);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

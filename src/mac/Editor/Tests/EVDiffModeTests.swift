@@ -1,6 +1,6 @@
 import AppKit
 import CViemCore
-import ViemAppShell
+@testable import ViemAppShell
 import XCTest
 @testable import ViemEditor
 
@@ -154,6 +154,51 @@ final class EVDiffModeTests: XCTestCase {
         surface.performInput { _ = try XCTUnwrap(surface.session).setViewportOrigin(left: 0, top: 300) }
         surface.refreshPresentation()
         XCTAssertEqual(baseSurface.viewportState.top, baseTop, "unaligned sides scroll independently")
+    }
+
+    func testNextChangeMovesTheCaretAndScrollsBothSidesToTheChange() throws {
+        var lines = (0..<300).map { "line \($0)" }
+        let base = lines.joined(separator: "\n")
+        lines[200] = "changed"
+        let new = try backend(lines.joined(separator: "\n"))
+        let (surface, _, baseSurface, session) = try begin(new, base: base)
+        session.navigateChange(next: true)
+        let offset = try XCTUnwrap(source(new).range(of: "changed")).lowerBound.utf16Offset(in: try source(new))
+        XCTAssertEqual(Int(surface.viewPresentation.cursor_utf8_offset), offset, "the caret is on the changed line")
+        XCTAssertGreaterThan(surface.viewportState.top, 0)
+        let shown = try topLine(surface)
+        XCTAssertLessThan(shown, 200)
+        XCTAssertEqual(try topLine(baseSurface), shown, "the base lines up with the new side")
+        // The only change wraps to itself without moving the view.
+        let top = surface.viewportState.top
+        session.navigateChange(next: false)
+        XCTAssertEqual(surface.viewportState.top, top)
+    }
+
+    func testScrollbarMarksShowChangesInTheLineColorsUntilTheComparisonEnds() throws {
+        let lines = (0..<300).map { "line \($0)" }
+        var changed = lines
+        changed.insert("added", at: 150)
+        let new = try backend(changed.joined(separator: "\n"))
+        let (surface, _, baseSurface, session) = try begin(new, base: lines.joined(separator: "\n"))
+        let marks = surface.editorView.documentScrollbars.changeMarks
+        XCTAssertEqual(marks.count, 1)
+        let mark = try XCTUnwrap(marks.first)
+        let extent = surface.editorView.documentScrollbars.changeMarkExtent
+        XCTAssertEqual(mark.top / extent, 150.0 / 300.0, accuracy: 0.02, "the mark sits where the line is")
+        XCTAssertGreaterThan(mark.color.alphaComponent, 0)
+        XCTAssertGreaterThan(mark.color.greenComponent, mark.color.redComponent, "added lines are green")
+        let baseMark = try XCTUnwrap(baseSurface.editorView.documentScrollbars.changeMarks.first)
+        XCTAssertEqual(baseMark.color, mark.color, "the base marks the added line at its filler")
+        session.end()
+        XCTAssertTrue(surface.editorView.documentScrollbars.changeMarks.isEmpty)
+    }
+
+    func testChangeIconsAreTemplateImagesOfTheirOwnShape() {
+        let next = EVDiffToolbar.changeIcon(next: true)
+        let previous = EVDiffToolbar.changeIcon(next: false)
+        XCTAssertTrue(next.isTemplate)
+        XCTAssertNotEqual(next.tiffRepresentation, previous.tiffRepresentation)
     }
 
     func testLastSavedSourceComesFromMemory() throws {

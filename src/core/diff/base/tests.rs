@@ -159,7 +159,7 @@ fn git_file_lists_follow_git_diff_and_ignore_untracked_files() {
     std::fs::remove_file(root.join("gone.txt")).unwrap();
     std::fs::write(root.join("untracked.txt"), "x\n").unwrap();
     let token = CancellationToken::new();
-    let files = repository.changed_files(&BaseKind::Unstaged, &token).unwrap();
+    let files = repository.changed_files(&BaseKind::Unstaged, None, &token).unwrap();
     let canonical = |path: &Path| canonical_parent(path);
     assert_eq!(
         files.iter().map(|file| (canonical(&file.path), file.change)).collect::<Vec<_>>(),
@@ -168,10 +168,32 @@ fn git_file_lists_follow_git_diff_and_ignore_untracked_files() {
     // A staged rename shows against HEAD as one renamed entry.
     std::fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
     git(&root, &["mv", "a.txt", "renamed.txt"]);
-    let files = repository.changed_files(&BaseKind::Head, &token).unwrap();
+    let files = repository.changed_files(&BaseKind::Head, None, &token).unwrap();
     let renamed = files.iter().find(|file| file.change == FileChange::Renamed).expect("rename detected");
     assert_eq!(canonical(&renamed.path), root.join("renamed.txt"));
     assert_eq!(canonical(&renamed.base_path), root.join("a.txt"));
+}
+
+#[test]
+fn folder_scopes_list_only_the_files_under_the_folder() {
+    let Some((directory, repository)) = repository("scoped") else { return };
+    let root = std::fs::canonicalize(&directory.0).unwrap();
+    std::fs::create_dir(root.join("sub dir")).unwrap();
+    std::fs::write(root.join("sub dir/inner.txt"), "inner\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "inner"]);
+    std::fs::write(root.join("a.txt"), "outside\n").unwrap();
+    std::fs::write(root.join("sub dir/inner.txt"), "changed\n").unwrap();
+    let token = CancellationToken::new();
+    let scoped = repository.changed_files(&BaseKind::Unstaged, Some(&root.join("sub dir")), &token).unwrap();
+    assert_eq!(scoped.iter().map(|file| canonical_parent(&file.path)).collect::<Vec<_>>(), vec![root.join("sub dir/inner.txt")]);
+    // The repository root scopes nothing out.
+    assert_eq!(repository.changed_files(&BaseKind::Unstaged, Some(&root), &token).unwrap().len(), 2);
+    // A folder is discovered directly, not through its parent.
+    let from_folder = GitRepository::discover(Path::new("git"), &root.join("sub dir"), ProcessLimits::default(), &token).unwrap();
+    assert_eq!(std::fs::canonicalize(from_folder.root()).unwrap(), root);
+    let outside = std::env::temp_dir();
+    assert!(repository.changed_files(&BaseKind::Unstaged, Some(&outside), &token).is_err());
 }
 
 #[test]

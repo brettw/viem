@@ -44,6 +44,35 @@ Changing one view's state does not change other open views.
 - **Off:** each side is laid out as a normal file on its own, with additions
   and removals highlighted but no filler, and scrolls independently.
 
+### Collapsed context
+
+A **Collapse context** toggle in the diff toolbar hides unchanged lines that
+are the same on both sides. It is on by default; like Align sides, each diff
+view has its own state and an explicit change is saved in settings for new
+diff views.
+
+Each run of equal lines keeps `DIFF_CONTEXT_LINES` (3) visible lines next to
+every change on either side of it; a run at the start or end of the file keeps
+context only on the side that touches a change. The rest of the run collapses
+only when that hides more than `DIFF_CONTEXT_LINES` lines. A file with no
+changes collapses nothing.
+
+A collapsed run is replaced, on both sides, by a horizontal divider drawn by
+layout only, like filler: it is not source and cannot be edited, selected or
+searched, has no line number, and never reaches the clipboard. Collapsed
+lines are hidden from layout, not deleted, and stay in the buffer, search and
+Ex ranges. Hidden lines cost no layout work, however many there are.
+
+A collapsed region opens on both sides, and stays open until collapsing is
+toggled, the base is refreshed or another file is shown, when:
+
+- the user clicks its divider, or
+- the caret of either side moves onto one of its lines, for example by `j`,
+  a search, `:123` or undo.
+
+Editing reflows the collapsed regions around the changed hunks; regions that
+were opened stay open while their lines remain equal.
+
 ## Styles
 
 Diff mode adds four styles to the Code stylesheet:
@@ -69,6 +98,12 @@ the inserted whitespace as Added text. The old line on the base side is a
 Removed line with no Removed text, since nothing in it was deleted. Aligned
 filler is blank and takes no diff style.
 
+A fifth built-in Code block style, **Collapsed context**, draws the divider
+that replaces collapsed lines. The divider is one empty row in that style:
+its character properties set the row height and its margins, padding,
+borders and background draw the divider. By default it is a lightly tinted
+band with thin top and bottom rules.
+
 Diff mode is an exception to the rule that at most one named character style
 applies at a point: Added text and Removed text apply on top of the named
 syntax style beneath them.
@@ -92,6 +127,22 @@ state, base and file list.
 Turning diff mode on selects the Unstaged (`git diff`) base when the document
 is in a git repository, and Last saved otherwise. Outside a repository the git
 bases are unavailable.
+
+Two further items compare a whole folder:
+
+- **Diff <directory>** names Viem's current directory (the one `:cd` and
+  `:pwd` use), shortened from the left with a leading `…` to at most 40
+  characters. It turns diff mode on with the Unstaged base for the files under
+  that directory, as `git diff -- <directory>` lists them, and shows the first
+  listed file.
+- **Diff Folder…** does the same for a folder chosen in the native folder
+  picker.
+
+Both open a new window, except that a window holding only one empty,
+untitled, unmodified buffer is reused. The folder stays the scope of the
+window's file list when the base changes to HEAD or a branch. A folder
+outside a git repository, or one with no changes, reports that instead of
+opening a window.
 
 ## Diff toolbar
 
@@ -144,6 +195,37 @@ Renamed files appear as `git diff` shows them: git's own rename detection,
 including the user's `diff.renames` setting, decides what counts as a rename.
 A renamed file is listed once as `old → new`, with the old path's base
 version on the base side and the new file's live buffer on the new side.
+
+### Changes
+
+**Previous change** and **Next change** buttons, to the right of Collapse
+context, move both sides to the previous or next change (a run of added,
+removed or changed lines), wrapping within the file. The new side is the
+reference even when Align sides is off: it is positioned first, and the base
+side is then positioned as if the sides were aligned, with the corresponding
+change level with it.
+
+The caret on the new side moves to the change's first added line or, for a
+pure removal, to the line just after the removed lines. If the whole change
+is already visible on the new side, only the caret moves. Otherwise:
+
+- A change that fits in the view is centred vertically.
+- A taller change starts `DIFF_CONTEXT_LINES` rows below the top of the view
+  when more than four rows are visible, and at the top of the view when
+  fewer are or when the caret would otherwise be off screen.
+
+Rows here are default Code rows, the same unit as filler. Moving to a change
+inside collapsed context opens that region first.
+
+### Scrollbar
+
+Each side's vertical scrollbar track marks where the changes are: the new
+side's added lines and the base side's removed lines in the background colour
+of Added line and Removed line, and the other side's changes at the position
+where they line up (its filler, or the point between lines when unaligned).
+The marks stay visible while overlay scrollers are hidden, follow the
+current layout extent including collapsed context, and are never shorter
+than a visible minimum.
 
 Files that are not in the list can still be opened the usual ways (`:edit`,
 the Open dialog, links and so on). They are shown in diff mode against the
@@ -315,11 +397,88 @@ Layers are built bottom-up; each has focused tests before the next starts.
     `EVMenuBuilderTests` checks the Diff menu's position and first item.
 - [ ] 6. Windows frontend
 
+Second phase (folder diffs, change navigation, scrollbar marks, collapsed
+context), built in this order:
+
+- [x] 7. Change navigation and scrollbar marks. Core:
+  `DiffSession::navigate_change` (picks the change relative to the new
+  caret, places the caret with `CoreEvent::PlaceCursor`, then positions the
+  new view and the base view with `materialize_requested_viewport`, retrying
+  while heights refine) and `DiffSession::scrollbar_marks`;
+  `crate::diff::DIFF_CONTEXT_LINES`; `code_style::diff_line_background`.
+  ABI: `viem_diff_session_navigate`, `viem_diff_session_scrollbar_marks`,
+  `viem_diff_line_colors`. macOS: Previous/Next Change toolbar buttons with
+  drawn template icons (`EVDiffToolbar.changeIcon`),
+  `EVCoreDiffSession.navigateChange` (suppresses mirroring while both views
+  refresh), marks refreshed from `diffPresentationDidRefresh` when the layout
+  or extent changes, drawn by `EVDocumentScrollbars.setChangeMarks` (legacy:
+  in the knob slot; overlay: a paint-only view under the knob overlay).
+- [x] 8. Folder diffs. `GitRepository::changed_files(kind, scope, …)` adds
+  the folder as a literal pathspec (`relative_folder`; the root scopes
+  nothing) and `discover` accepts a folder. `ViemDiffBaseRequestV1` gained
+  `scope_path`; unsaved buffers join a scoped list only from inside the
+  folder. macOS: `EVDiffFolder.menuTitle` (40-character left clip), the
+  Diff menu's directory item retitled in `menuNeedsUpdate`,
+  `EVDocumentWindowController.diffFolder(_:from:)` and `chooseDiffFolder`
+  (window actions, with app-delegate fallbacks when no window is open),
+  reusing a pristine untitled window through `captureUntitledReplacement`,
+  and `EVDiffModeController.enable(folder:files:)`, whose `scope` follows
+  base changes and Refresh. Tests: `EVFolderDiffTests` (temporary git
+  repositories; documents open through `folderDiffDocumentOpener` because
+  the test host registers no document types).
+- [ ] 9. Collapsed context (not started; the spec above is settled). This
+  needs a new layout capability, elided hard-line ranges per view, and is
+  the largest remaining change. Plan:
+  - Core diff (`src/core/diff/presentation.rs`): each side's collapsible
+    runs, the equal chunks minus `DIFF_CONTEXT_LINES` of context next to each
+    change, kept only when they hide more than `DIFF_CONTEXT_LINES` lines.
+    `DiffSession` keeps the opened runs (keyed by their base-line range, so
+    they survive edits that leave the run equal) and clears them on toggle,
+    Refresh and file changes.
+  - Layout (`src/core/layout`): `DiffLayoutInput` gains `elided:
+    Vec<Range<usize>>` (hard lines) and the divider height. Elided lines are
+    one exact zero-height run in `ViewHeightIndex` (`hard_line_at_y` already
+    skips zero-height runs), never shaped, never given rows, and never
+    visited one by one: today a `RegionalLayoutSnapshot` holds one
+    `RegionalHardLineLayout` per line of a contiguous `hard_lines` range,
+    and about 35 sites in `engine.rs` index `lines` by
+    `hard_line - hard_lines.start`. Either let a snapshot's `lines` skip
+    elided ranges (a small sorted gap list with a `line_index(hard_line)`
+    helper replacing those sites) or split viewport and speculative regions
+    at elided ranges. The coordinator's viewport range
+    (`materialize_immediate_viewport`, around `first_line_reaching_y`) and
+    prelayout must skip elided lines in O(log n). Rows stay continuous in y
+    because hidden lines have no height.
+  - The divider is margin on the neighbouring visible line, like filler
+    (`margin_bottom` of the last context line before the run, or
+    `margin_top` of the first line after a run at the start of the file),
+    painted by a new `DecorationKind::CollapsedContext` from the Collapsed
+    context block style (a new internal Code block style beside the diff
+    line styles; default: a lightly tinted band with 1 px top and bottom
+    rules, one default row tall).
+  - Caret entry: after each handled event, if a diff view's cursor is on an
+    elided line, the core removes that run from the view's elided set before
+    reveal and layout and records it as opened, so no caret geometry is ever
+    requested for a hidden line. Change navigation opens the run first.
+  - Click: frontends hit-test `CollapsedContext` decorations and call a new
+    `viem_diff_session_open_collapsed(session, …, line)`; the session opens
+    the run on both sides.
+  - Settings `diff.collapseContext` (default true) in `application_config.rs`
+    and `EVConfigurationStore`; session flag `VIEM_DIFF_SESSION_COLLAPSED`;
+    a Collapse Context toggle in the toolbar, left of the change buttons.
+  - Tests: zero layout work for hidden lines (work counters) in a
+    million-line document, aligned and unaligned, both sides collapse the
+    same runs, divider geometry, caret entry from `j`, search and `:N`,
+    click, typing beside a collapsed run, incremental versus fresh, and
+    scrollbar marks against the collapsed extent.
+
 ### Next steps
 
-1. Try the macOS app by hand (`make run`): Diff menu, toolbar, file
-   navigation and its save review, Refresh, Choose Base File, Align Sides,
-   line-number memory, and leaving diff mode from a Markdown document.
+1. Try the macOS app by hand (`make run`): Diff menu (including Diff
+   <directory> and Diff Folder…), toolbar, file navigation and its save
+   review, Refresh, Choose Base File, Align Sides, Previous/Next Change,
+   scrollbar marks, line-number memory, and leaving diff mode from a
+   Markdown document.
    Automated coverage: `scripts/test-mac.sh --filter 'EVDiffModeTests'`.
    Two `EVThemeTests` status-style tests fail independently of diff mode:
    commit 7a5971c raised the Midnight status size from 11 to 13 without
@@ -329,10 +488,14 @@ Layers are built bottom-up; each has focused tests before the next starts.
    (a font-registry XPC reply that never arrived); later full runs of both a
    clean HEAD checkout and this branch completed, so that stall was
    environmental rather than caused by diff mode.
-2. Apply the saved `code.lineNumbers` when a view enters Code outside diff
+2. Collapsed context: step 9 above.
+3. Apply the saved `code.lineNumbers` when a view enters Code outside diff
    mode (today it is applied when leaving diff mode and saved on explicit
    toggles).
-3. Windows frontend (not started; needs a Windows host to build and test).
+4. Windows frontend (not started; needs a Windows host to build and test),
+   including the second phase: folder diff menu items, change buttons and
+   scrollbar marks (`viem_diff_session_navigate`,
+   `viem_diff_session_scrollbar_marks`, `viem_diff_line_colors`).
    `src/win/Interop/Native.g.cs` already has the diff ABI. Mirror the macOS
    split: a per-window controller in `src/win/Shell` (menu in
    `Shell/Menus.cs` before View, toolbar beside `Shell/FormattingToolbar*.cs`,
@@ -340,7 +503,7 @@ Layers are built bottom-up; each has focused tests before the next starts.
    and the base buffer plus session sync in `src/win/Core` (`CoreDocument.cs`,
    `CoreView.cs`) and `src/win/Editor/EditorPane.cs`. Base loads and file
    lists run on a worker and post results back with a generation check.
-4. Record the deliberate exceptions in `AGENTS.md` once the feature ships:
+5. Record the deliberate exceptions in `AGENTS.md` once the feature ships:
    diff text styles stack on syntax styles, incremental diffs may differ from
    fresh ones, and the git source starts an external program.
 

@@ -11,6 +11,10 @@ pub mod presentation;
 pub mod sequence;
 pub mod state;
 
+/// Unchanged lines kept visible beside a change: around collapsed context,
+/// and above a change too tall to fit in the view when navigating to it.
+pub const DIFF_CONTEXT_LINES: usize = 3;
+
 pub use inline::InlineSpans;
 pub use presentation::{Filler, Side, SidePresentation};
 pub use state::{DiffLimits, DiffState, Hunk, LineEdit, LinePair, LineSource, TextLines};

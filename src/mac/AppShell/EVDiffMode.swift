@@ -25,6 +25,8 @@ public protocol EVDiffBackend: AnyObject {
 @MainActor
 public protocol EVDiffSessionControlling: AnyObject {
   func setAligned(_ aligned: Bool)
+  /// Move both sides to the next or previous change, wrapping within the file.
+  func navigateChange(next: Bool)
   /// Remove the presentation and restore the document's previous mode.
   func end()
 }
@@ -110,8 +112,12 @@ enum EVDiffBaseLoader {
     await Task.detached(priority: .userInitiated) { loadBlocking(base, path: path) }.value
   }
 
-  static func listFiles(_ base: EVDiffBase, path: String, unsaved: [String]) async -> Result<[EVDiffFile], EVDiffLoadFailure> {
-    await Task.detached(priority: .userInitiated) { listFilesBlocking(base, path: path, unsaved: unsaved) }.value
+  /// `scope` limits a git list to one folder, as `git diff -- <folder>`.
+  static func listFiles(_ base: EVDiffBase, path: String, unsaved: [String],
+                        scope: String? = nil) async -> Result<[EVDiffFile], EVDiffLoadFailure> {
+    await Task.detached(priority: .userInitiated) {
+      listFilesBlocking(base, path: path, unsaved: unsaved, scope: scope)
+    }.value
   }
 
   static func listBranches(path: String) async -> Result<[String], EVDiffLoadFailure> {
@@ -135,8 +141,9 @@ enum EVDiffBaseLoader {
     }
   }
 
-  nonisolated static func listFilesBlocking(_ base: EVDiffBase, path: String, unsaved: [String]) -> Result<[EVDiffFile], EVDiffLoadFailure> {
-    withResult(base, path: path, unsaved: unsaved, call: viem_diff_list_files) { handle, info in
+  nonisolated static func listFilesBlocking(_ base: EVDiffBase, path: String, unsaved: [String],
+                                            scope: String? = nil) -> Result<[EVDiffFile], EVDiffLoadFailure> {
+    withResult(base, path: path, unsaved: unsaved, scope: scope, call: viem_diff_list_files) { handle, info in
       (0..<info.item_count).compactMap { index in
         guard let entry = item(handle, index) else { return nil }
         let url = URL(fileURLWithPath: entry.path)
@@ -165,7 +172,7 @@ enum EVDiffBaseLoader {
 
   /// Build one request, call the core, read the owned result and release it.
   private nonisolated static func withResult<T>(
-    _ base: EVDiffBase, path: String, unsaved: [String],
+    _ base: EVDiffBase, path: String, unsaved: [String], scope: String? = nil,
     call: (UnsafePointer<ViemDiffBaseRequestV1>?, UnsafeMutablePointer<ViemDiffResultHandle>?) -> ViemStatus,
     read: (ViemDiffResultHandle, ViemDiffResultInfoV1) -> T
   ) -> Result<T, EVDiffLoadFailure> {
@@ -176,7 +183,7 @@ enum EVDiffBaseLoader {
     case let .branch(name): filePath = path; branch = name
     default: filePath = path; branch = ""
     }
-    let strings = [filePath, branch] + unsaved
+    let strings = [filePath, branch, scope ?? ""] + unsaved
     let buffers = strings.map { string -> UnsafeMutableBufferPointer<UInt8> in
       let bytes = Array(string.utf8)
       let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: max(1, bytes.count))
@@ -187,12 +194,13 @@ enum EVDiffBaseLoader {
     func slice(_ index: Int) -> ViemUtf8Slice {
       ViemUtf8Slice(data: UnsafePointer(buffers[index].baseAddress), length: UInt64(strings[index].utf8.count))
     }
-    var unsavedSlices = (2..<strings.count).map(slice)
+    var unsavedSlices = (3..<strings.count).map(slice)
     var request = ViemDiffBaseRequestV1()
     request.struct_size = UInt32(MemoryLayout<ViemDiffBaseRequestV1>.size)
     request.kind = base.kind
     request.file_path = slice(0)
     request.branch = slice(1)
+    request.scope_path = slice(2)
     var handle: ViemDiffResultHandle = 0
     let status = unsavedSlices.withUnsafeMutableBufferPointer { slices -> ViemStatus in
       request.unsaved_paths = UnsafePointer(slices.baseAddress)
@@ -260,6 +268,8 @@ final class EVDiffToolbar: NSObject {
   let filePopup = NSPopUpButton(frame: .zero, pullsDown: false)
   let nextButton = NSButton()
   let alignButton = NSButton()
+  let previousChangeButton = NSButton()
+  let nextChangeButton = NSButton()
   var selectBase: ((Int) -> Void)?
   var chooseFile: (() -> Void)?
   var refresh: (() -> Void)?
@@ -267,6 +277,29 @@ final class EVDiffToolbar: NSObject {
   var next: (() -> Void)?
   var selectFile: ((Int) -> Void)?
   var toggleAlign: (() -> Void)?
+  var previousChange: (() -> Void)?
+  var nextChange: (() -> Void)?
+
+  /// An arrow pointing into a change block: below it for Next change, above
+  /// it for Previous change. A template image, so it follows the appearance.
+  static func changeIcon(next: Bool) -> NSImage {
+    let image = NSImage(size: NSSize(width: 16, height: 16), flipped: !next) { _ in
+      NSColor.black.setFill()
+      // Drawn for Next (block at the bottom); Previous flips the canvas.
+      NSBezierPath(roundedRect: NSRect(x: 3, y: 1.5, width: 10, height: 4), xRadius: 1.2, yRadius: 1.2).fill()
+      NSBezierPath(rect: NSRect(x: 7.2, y: 9.5, width: 1.6, height: 5)).fill()
+      let head = NSBezierPath()
+      head.move(to: NSPoint(x: 4.5, y: 10))
+      head.line(to: NSPoint(x: 11.5, y: 10))
+      head.line(to: NSPoint(x: 8, y: 6.6))
+      head.close()
+      head.fill()
+      return true
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = next ? "Next Change" : "Previous Change"
+    return image
+  }
 
   override init() {
     super.init()
@@ -303,9 +336,16 @@ final class EVDiffToolbar: NSObject {
     alignButton.target = self
     alignButton.action = #selector(alignClicked(_:))
     alignButton.refusesFirstResponder = true
+    for (button, next) in [(previousChangeButton, false), (nextChangeButton, true)] {
+      let label = next ? "Next Change" : "Previous Change"
+      configure(button, symbol: "circle", label: label,
+                action: next ? #selector(nextChangeClicked(_:)) : #selector(previousChangeClicked(_:)))
+      button.image = Self.changeIcon(next: next)
+    }
     filePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
     filePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
-    for view in [basePopup, chooseFileButton, refreshButton, previousButton, filePopup, nextButton, alignButton] as [NSView] {
+    for view in [basePopup, chooseFileButton, refreshButton, previousButton, filePopup, nextButton, alignButton,
+                 previousChangeButton, nextChangeButton] as [NSView] {
       stack.addArrangedSubview(view)
     }
     stack.frame = NSRect(x: 0, y: 0, width: 800, height: 34)
@@ -322,6 +362,21 @@ final class EVDiffToolbar: NSObject {
   @objc private func nextClicked(_ sender: Any?) { next?() }
   @objc private func fileChanged(_ sender: NSPopUpButton) { selectFile?(sender.indexOfSelectedItem) }
   @objc private func alignClicked(_ sender: Any?) { toggleAlign?() }
+  @objc private func previousChangeClicked(_ sender: Any?) { previousChange?() }
+  @objc private func nextChangeClicked(_ sender: Any?) { nextChange?() }
+}
+
+/// Folder diffs ("Diff <directory>" and "Diff Folder…").
+enum EVDiffFolder {
+  /// The longest directory path the menu names before clipping it.
+  static let menuPathLimit = 40
+
+  /// "Diff <directory>", the path shortened from the left with a leading
+  /// ellipsis to at most `menuPathLimit` characters.
+  static func menuTitle(forDirectory path: String) -> String {
+    let shown = path.count > menuPathLimit ? "…" + path.suffix(menuPathLimit - 1) : Substring(path)
+    return "Diff \(shown)"
+  }
 }
 
 /// What a window needs from its controller to run diff mode.
@@ -352,6 +407,8 @@ final class EVDiffModeController: NSObject {
   private(set) var files: [EVDiffFile] = []
   private(set) var branches: [String] = []
   private(set) var isAligned: Bool
+  /// The folder a folder diff lists; nil lists the whole repository.
+  private(set) var scope: URL?
   private var baseChoices: [EVDiffBase] = []
   private var baseBackend: (any EVDocumentBackend)?
   private var baseSurface: (any EVEditorSurface)?
@@ -379,6 +436,8 @@ final class EVDiffModeController: NSObject {
     toolbar.next = { [weak self] in self?.moveFile(by: 1) }
     toolbar.selectFile = { [weak self] index in self?.selectFile(at: index) }
     toolbar.toggleAlign = { [weak self] in self?.toggleAlign() }
+    toolbar.previousChange = { [weak self] in self?.navigateChange(next: false) }
+    toolbar.nextChange = { [weak self] in self?.navigateChange(next: true) }
   }
 
   // MARK: Entering and leaving
@@ -387,13 +446,31 @@ final class EVDiffModeController: NSObject {
     if isEnabled { disable() } else { enable() }
   }
 
-  func enable() {
-    guard !isEnabled, let host, let window = host.diffWindow, host.diffActiveDocument != nil else { return }
+  /// Turn diff mode on and show the toolbar; false when it cannot start.
+  private func begin() -> Bool {
+    guard !isEnabled, let host, let window = host.diffWindow, host.diffActiveDocument != nil else { return false }
     isEnabled = true
     isAligned = configuration.diffAlignSides
     if !window.titlebarAccessoryViewControllers.contains(where: { $0 === toolbar.accessory }) {
       window.addTitlebarAccessoryViewController(toolbar.accessory)
     }
+    return true
+  }
+
+  /// Compare the files `git diff -- <folder>` lists, starting with the
+  /// active document (normally the first of `files`).
+  func enable(folder: URL, files: [EVDiffFile]) {
+    guard isEnabled || begin() else { return }
+    scope = folder
+    base = .unstaged
+    self.files = files
+    generation += 1
+    present()
+  }
+
+  func enable() {
+    guard let host, begin() else { return }
+    scope = nil
     let url = host.diffActiveDocument?.fileURL
     generation += 1
     let current = generation
@@ -433,6 +510,7 @@ final class EVDiffModeController: NSObject {
       window.removeTitlebarAccessoryViewController(at: index)
     }
     files = []
+    scope = nil
     presentedDocument = nil
   }
 
@@ -548,7 +626,8 @@ final class EVDiffModeController: NSObject {
     default:
       let current = generation
       Task { @MainActor in
-        let listed = await EVDiffBaseLoader.listFiles(base, path: url.path, unsaved: self.unsavedPaths())
+        let listed = await EVDiffBaseLoader.listFiles(base, path: url.path, unsaved: self.unsavedPaths(),
+                                                      scope: self.scope?.path)
         guard current == self.generation, self.isEnabled else { return }
         switch listed {
         case let .success(files): self.files = files
@@ -623,6 +702,12 @@ final class EVDiffModeController: NSObject {
     try? configuration.setDiffAlignSides(isAligned)
     session?.setAligned(isAligned)
     refreshToolbar()
+  }
+
+  /// Move both sides to the next or previous change in this file.
+  func navigateChange(next: Bool) {
+    guard isEnabled else { return }
+    session?.navigateChange(next: next)
   }
 
   /// A line-number toggle on either side applies to both and is saved.
@@ -715,5 +800,7 @@ final class EVDiffModeController: NSObject {
     toolbar.previousButton.isEnabled = !files.isEmpty
     toolbar.nextButton.isEnabled = !files.isEmpty
     toolbar.alignButton.state = isAligned ? .on : .off
+    toolbar.previousChangeButton.isEnabled = session != nil
+    toolbar.nextChangeButton.isEnabled = session != nil
   }
 }

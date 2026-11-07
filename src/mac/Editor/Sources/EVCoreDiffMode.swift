@@ -77,6 +77,8 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
     private var restoreModifiable = false
     private var mirroring = false
     private(set) var lastSync: UInt32 = UInt32(VIEM_DIFF_SYNC_UNCHANGED)
+    /// The layout and extent each side's scrollbar marks were measured with.
+    private var markKeys: [ObjectIdentifier: (layout: ViemLayoutSnapshotIdentityV1, maximum: CGFloat)] = [:]
 
     init(document: EVCoreDocumentBackend, base: EVCoreDocumentBackend, baseSurface: EVEditorSurfaceController,
          surface: EVEditorSurfaceController, aligned: Bool, editable: Bool) throws {
@@ -102,6 +104,8 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         self.handle = handle
         surface.diffViewportTopDidChange = { [weak self] _ in self?.mirror(fromNew: true) }
         baseSurface.diffViewportTopDidChange = { [weak self] _ in self?.mirror(fromNew: false) }
+        surface.diffPresentationDidRefresh = { [weak self] in self?.updateMarks(isNew: true) }
+        baseSurface.diffPresentationDidRefresh = { [weak self] in self?.updateMarks(isNew: false) }
         sync(force: true)
         mirror(fromNew: true)
     }
@@ -134,10 +138,72 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         if force { surface.refreshPresentation() }
     }
 
+    /// Move both sides to the next or previous change, wrapping within the
+    /// file; beeps when the sides are identical.
+    func navigateChange(next: Bool) {
+        guard handle != 0, let document, let base, let surface, let baseSurface,
+              let newView = surface.session?.viewID, let baseView = baseSurface.session?.viewID else { return }
+        var navigation = ViemDiffNavigationV1()
+        navigation.struct_size = UInt32(MemoryLayout<ViemDiffNavigationV1>.size)
+        let direction = next ? UInt32(VIEM_DIFF_NAVIGATE_NEXT) : UInt32(VIEM_DIFF_NAVIGATE_PREVIOUS)
+        let status = viem_diff_session_navigate(handle, base.core, baseView, document.core, newView, direction, &navigation)
+        guard status == UInt32(VIEM_STATUS_OK) else {
+            surface.report(EVCoreFrontendError.core(operation: "Go to a change", status: status))
+            return
+        }
+        guard navigation.flags & UInt32(VIEM_DIFF_NAVIGATION_FOUND) != 0 else {
+            document.configuration.scriptOptions.beep()
+            return
+        }
+        // The core placed both sides; mirroring would re-derive the base
+        // from the new side's top line instead.
+        mirroring = true
+        defer { mirroring = false }
+        surface.refreshPresentation()
+        baseSurface.refreshPresentation()
+    }
+
+    /// Recompute one side's scrollbar marks when its layout or extent moved.
+    private func updateMarks(isNew: Bool) {
+        guard handle != 0, let side = isNew ? surface : baseSurface, let core = isNew ? document?.core : base?.core,
+              let view = side.session?.viewID, let layout = side.layoutSnapshot?.info.identity else { return }
+        let scrollbars = side.editorView.documentScrollbars
+        let maximum = scrollbars.verticalState.maximum
+        let key = ObjectIdentifier(side)
+        if let previous = markKeys[key], previous.layout.isSameLayout(as: layout), previous.maximum == maximum { return }
+        markKeys[key] = (layout, maximum)
+        var count: UInt64 = 0
+        var extent: Float = 0
+        var status = viem_diff_session_scrollbar_marks(handle, core, view, isNew ? 1 : 0, nil, 0, &count, &extent)
+        guard status == UInt32(VIEM_STATUS_OK) || status == UInt32(VIEM_STATUS_BUFFER_TOO_SMALL) else { return }
+        var marks = [ViemDiffScrollbarMarkV1](repeating: ViemDiffScrollbarMarkV1(), count: Int(count))
+        if count > 0 {
+            status = marks.withUnsafeMutableBufferPointer { buffer in
+                viem_diff_session_scrollbar_marks(handle, core, view, isNew ? 1 : 0, buffer.baseAddress, count, &count, &extent)
+            }
+            guard status == UInt32(VIEM_STATUS_OK) else { return }
+        }
+        var added = ViemRgbaV1()
+        var removed = ViemRgbaV1()
+        _ = viem_diff_line_colors(&added, &removed)
+        func color(_ value: ViemRgbaV1) -> NSColor {
+            NSColor(srgbRed: CGFloat(value.red), green: CGFloat(value.green), blue: CGFloat(value.blue), alpha: CGFloat(value.alpha))
+        }
+        let (addedColor, removedColor) = (color(added), color(removed))
+        scrollbars.setChangeMarks(marks.map { mark in
+            EVDocumentScrollbars.ChangeMark(top: CGFloat(mark.top), bottom: CGFloat(mark.bottom),
+                color: mark.flags & UInt32(VIEM_DIFF_MARK_ADDED) != 0 ? addedColor : removedColor)
+        }, extent: CGFloat(extent))
+    }
+
     func end() {
         guard handle != 0 else { return }
         surface?.diffViewportTopDidChange = nil
         baseSurface?.diffViewportTopDidChange = nil
+        surface?.diffPresentationDidRefresh = nil
+        baseSurface?.diffPresentationDidRefresh = nil
+        surface?.editorView.documentScrollbars.setChangeMarks([], extent: 0)
+        markKeys = [:]
         if let document, let view = surface?.session?.viewID {
             _ = viem_diff_clear_view(document.core, view)
         }

@@ -18,6 +18,7 @@ fn request(kind: u32, path: &str) -> ViemDiffBaseRequestV1 {
         cancellation: 0,
         unsaved_paths: ptr::null(),
         unsaved_path_count: 0,
+        scope_path: ViemUtf8Slice::default(),
     }
 }
 
@@ -157,4 +158,33 @@ fn saved_source_copies_the_last_saved_bytes() {
         assert_eq!(bytes, b"saved\n");
     }
     assert_eq!(viem_core_destroy(handle), ViemStatus::Ok);
+}
+
+#[test]
+fn navigation_and_scrollbar_marks_cross_the_abi() {
+    let mut storage = PaintTestProviderStorage::default();
+    let (base, base_view) = code_core("a\nb\nc\nd\n", &mut storage, 901);
+    let (new, new_view) = code_core("a\nb\nC\nd\n", &mut storage, 1001);
+    let mut session = 0;
+    unsafe {
+        assert_eq!(viem_diff_session_create(base, new, VIEM_DIFF_SESSION_ALIGNED, &mut session), ViemStatus::Ok);
+        let mut navigation = ViemDiffNavigationV1 { struct_size: VIEM_DIFF_NAVIGATION_V1_SIZE, ..Default::default() };
+        assert_eq!(viem_diff_session_navigate(session, base, base_view.0, new, new_view.0, 7, &mut navigation),
+            ViemStatus::InvalidArgument);
+        assert_eq!(viem_diff_session_navigate(session, base, base_view.0, new, new_view.0,
+            VIEM_DIFF_NAVIGATE_NEXT, &mut navigation), ViemStatus::Ok);
+        assert_eq!(navigation.flags & VIEM_DIFF_NAVIGATION_FOUND, VIEM_DIFF_NAVIGATION_FOUND);
+        assert_eq!((navigation.change_index, navigation.change_count, navigation.caret_line), (0, 1, 2));
+        let (mut count, mut extent) = (0, 0.0);
+        assert_eq!(viem_diff_session_scrollbar_marks(session, new, new_view.0, 1, ptr::null_mut(), 0, &mut count, &mut extent),
+            ViemStatus::BufferTooSmall);
+        assert_eq!(count, 1);
+        assert!(extent > 0.0);
+        let mut marks = vec![ViemDiffScrollbarMarkV1::default(); count as usize];
+        assert_eq!(viem_diff_session_scrollbar_marks(session, new, new_view.0, 1, marks.as_mut_ptr(), count, &mut count, &mut extent),
+            ViemStatus::Ok);
+        assert_eq!(marks[0].flags, VIEM_DIFF_MARK_ADDED);
+        assert!(marks[0].bottom > marks[0].top);
+        assert_eq!(viem_diff_session_destroy(session), ViemStatus::Ok);
+    }
 }

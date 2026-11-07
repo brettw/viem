@@ -119,6 +119,8 @@ _Static_assert(VIEM_DIFF_BASE_UNSTAGED == {diff_base_unstaged} && VIEM_DIFF_BASE
 _Static_assert(VIEM_DIFF_RESULT_UNAVAILABLE == {diff_result_unavailable} && VIEM_DIFF_RESULT_COMMAND_FAILED == {diff_result_command}, "diff result codes");
 _Static_assert(VIEM_DIFF_RESULT_BASE_EXISTS == {diff_base_exists}, "diff base exists flag");
 _Static_assert(VIEM_DIFF_FILE_RENAMED == {diff_file_renamed} && VIEM_DIFF_FILE_UNSAVED == {diff_file_unsaved}, "diff file changes");
+_Static_assert(VIEM_DIFF_NAVIGATE_PREVIOUS == {diff_navigate_previous} && VIEM_DIFF_NAVIGATION_SCROLLED == {diff_navigation_scrolled}, "diff navigation");
+_Static_assert(VIEM_DIFF_NAVIGATION_FOUND == {diff_navigation_found} && VIEM_DIFF_MARK_ADDED == {diff_mark_added}, "diff navigation and marks");
 _Static_assert(sizeof(ViemLineNumberSnapshotInfoV1) == {line_number_info_size}, "line number info size");
 _Static_assert(offsetof(ViemLineNumberSnapshotInfoV1, viewport) == {line_number_info_viewport}, "line number viewport offset");
 _Static_assert(sizeof(ViemLineNumberRegionV1) == {line_number_region_size}, "line number region size");
@@ -564,7 +566,13 @@ static void typecheck(void) {{
       uint64_t *) = viem_diff_result_copy_item;
   ViemStatus (*saved_source)(ViemCoreHandle, uint8_t *, uint64_t, uint64_t *, uint32_t *) =
       viem_core_copy_saved_source;
+  ViemStatus (*diff_navigate)(ViemDiffSessionHandle, ViemCoreHandle, ViemViewId, ViemCoreHandle,
+      ViemViewId, uint32_t, ViemDiffNavigationV1 *) = viem_diff_session_navigate;
+  ViemStatus (*diff_marks)(ViemDiffSessionHandle, ViemCoreHandle, ViemViewId, uint32_t,
+      ViemDiffScrollbarMarkV1 *, uint64_t, uint64_t *, float *) = viem_diff_session_scrollbar_marks;
   (void)diff_create; (void)diff_sync; (void)diff_line; (void)diff_load; (void)diff_item; (void)saved_source;
+  ViemStatus (*diff_colors)(ViemRgbaV1 *, ViemRgbaV1 *) = viem_diff_line_colors;
+  (void)diff_navigate; (void)diff_marks; (void)diff_colors;
   ViemStatus (*import_clipboard)(uint32_t, const uint8_t *, uint64_t,
       uint8_t *, uint64_t, uint64_t *) = viem_import_clipboard_json;
   ViemStatus (*style_sheet_info)(ViemCoreHandle, ViemStyleSheetInfoV1 *) =
@@ -751,6 +759,10 @@ static void typecheck(void) {{
         diff_base_exists = VIEM_DIFF_RESULT_BASE_EXISTS,
         diff_file_renamed = VIEM_DIFF_FILE_RENAMED,
         diff_file_unsaved = VIEM_DIFF_FILE_UNSAVED,
+        diff_navigate_previous = VIEM_DIFF_NAVIGATE_PREVIOUS,
+        diff_navigation_scrolled = VIEM_DIFF_NAVIGATION_SCROLLED,
+        diff_navigation_found = VIEM_DIFF_NAVIGATION_FOUND,
+        diff_mark_added = VIEM_DIFF_MARK_ADDED,
         line_number_info_size = std::mem::size_of::<ViemLineNumberSnapshotInfoV1>(),
         line_number_info_viewport = std::mem::offset_of!(ViemLineNumberSnapshotInfoV1, viewport),
         line_number_region_size = std::mem::size_of::<ViemLineNumberRegionV1>(),

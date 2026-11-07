@@ -65,7 +65,7 @@ pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
 mod line_numbers;
 mod diff;
-pub use diff::{DiffSession, DiffSync, DocumentLines};
+pub use diff::{ChangeDirection, ChangeNavigation, DiffSession, DiffSync, DocumentLines, ScrollbarMark};
 mod pointer_rows;
 pub use line_numbers::LineNumberRegion;
 mod restoration;

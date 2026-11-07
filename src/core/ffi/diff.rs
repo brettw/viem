@@ -23,6 +23,17 @@ pub const VIEM_DIFF_SYNC_UNCHANGED: u32 = 0;
 pub const VIEM_DIFF_SYNC_INCREMENTAL: u32 = 1;
 pub const VIEM_DIFF_SYNC_FULL: u32 = 2;
 
+pub const VIEM_DIFF_NAVIGATE_NEXT: u32 = 0;
+pub const VIEM_DIFF_NAVIGATE_PREVIOUS: u32 = 1;
+
+/// A change was found; otherwise the sides are identical and nothing moved.
+pub const VIEM_DIFF_NAVIGATION_FOUND: u32 = 1 << 0;
+/// The views were repositioned, not only the caret.
+pub const VIEM_DIFF_NAVIGATION_SCROLLED: u32 = 1 << 1;
+
+/// The mark is the new side's added lines; otherwise removed lines.
+pub const VIEM_DIFF_MARK_ADDED: u32 = 1 << 0;
+
 pub const VIEM_DIFF_BASE_LAST_SAVED: u32 = 0;
 pub const VIEM_DIFF_BASE_UNSTAGED: u32 = 1;
 pub const VIEM_DIFF_BASE_HEAD: u32 = 2;
@@ -64,6 +75,9 @@ pub struct ViemDiffBaseRequestV1 {
     /// changes, which join the list. May be null when the count is zero.
     pub unsaved_paths: *const ViemUtf8Slice,
     pub unsaved_path_count: u64,
+    /// File lists only: an absolute folder whose files alone are listed, as
+    /// `git diff -- <folder>` does. Empty lists the whole repository.
+    pub scope_path: ViemUtf8Slice,
 }
 pub const VIEM_DIFF_BASE_REQUEST_V1_SIZE: u32 = size_of::<ViemDiffBaseRequestV1>() as u32;
 
@@ -107,6 +121,30 @@ pub struct ViemDiffSessionInfoV1 {
     pub new_line_count: u64,
 }
 pub const VIEM_DIFF_SESSION_INFO_V1_SIZE: u32 = size_of::<ViemDiffSessionInfoV1>() as u32;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViemDiffNavigationV1 {
+    pub struct_size: u32,
+    /// VIEM_DIFF_NAVIGATION_* flags.
+    pub flags: u32,
+    pub change_index: u64,
+    pub change_count: u64,
+    /// The new side's zero-based hard line that received the caret.
+    pub caret_line: u64,
+}
+pub const VIEM_DIFF_NAVIGATION_V1_SIZE: u32 = size_of::<ViemDiffNavigationV1>() as u32;
+
+/// One stretch of a scrollbar track, in layout units from the document top.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ViemDiffScrollbarMarkV1 {
+    pub top: f32,
+    pub bottom: f32,
+    /// VIEM_DIFF_MARK_* flags.
+    pub flags: u32,
+    pub reserved: u32,
+}
 
 enum DiffResult {
     Base(Result<BaseText, BaseError>),
@@ -324,6 +362,139 @@ pub unsafe extern "C" fn viem_diff_session_corresponding_top(
     })
 }
 
+/// Move both sides to the next or previous change, wrapping within the file:
+/// the new view's caret moves to the change, and both views scroll unless it
+/// is already visible on both. Hosts then refresh both views.
+///
+/// # Safety
+/// `out_navigation` must point to an aligned, writable value whose
+/// `struct_size` is at least `VIEM_DIFF_NAVIGATION_V1_SIZE`.
+#[no_mangle]
+pub unsafe extern "C" fn viem_diff_session_navigate(
+    session: ViemDiffSessionHandle,
+    base_core: ViemCoreHandle,
+    base_view: ViemViewId,
+    new_core: ViemCoreHandle,
+    new_view: ViemViewId,
+    direction: u32,
+    out_navigation: *mut ViemDiffNavigationV1,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_navigation, 1)?;
+        if unsafe { (*out_navigation).struct_size } < VIEM_DIFF_NAVIGATION_V1_SIZE {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        unsafe { out_navigation.write(ViemDiffNavigationV1 { struct_size: VIEM_DIFF_NAVIGATION_V1_SIZE, ..Default::default() }) };
+        let direction = match direction {
+            VIEM_DIFF_NAVIGATE_NEXT => crate::coordinator::ChangeDirection::Next,
+            VIEM_DIFF_NAVIGATE_PREVIOUS => crate::coordinator::ChangeDirection::Previous,
+            _ => return Err(ViemStatus::InvalidArgument),
+        };
+        if base_core == new_core {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        let mut base = checkout_core(base_core)?;
+        let mut new = checkout_core(new_core)?;
+        let navigation = with_session(session, |session| {
+            session
+                .navigate_change(base.core_mut(), ViewId(base_view), new.core_mut(), ViewId(new_view), direction)
+                .map_err(core_status)
+        })?;
+        if let Some(navigation) = navigation {
+            let flags = VIEM_DIFF_NAVIGATION_FOUND | if navigation.scrolled { VIEM_DIFF_NAVIGATION_SCROLLED } else { 0 };
+            unsafe {
+                out_navigation.write(ViemDiffNavigationV1 {
+                    struct_size: VIEM_DIFF_NAVIGATION_V1_SIZE,
+                    flags,
+                    change_index: navigation.change as u64,
+                    change_count: navigation.change_count as u64,
+                    caret_line: navigation.caret_line as u64,
+                })
+            };
+        }
+        Ok(())
+    })
+}
+
+/// Two-pass copy of one side's scrollbar marks, sorted by top, and the
+/// document extent they are measured against. `is_new` is one for the live
+/// side. A short buffer reports the required count with
+/// `VIEM_STATUS_BUFFER_TOO_SMALL`.
+///
+/// # Safety
+/// `out_count` and `out_extent` are aligned and writable. Nonzero capacity
+/// requires writable mark storage of that size, disjoint from them.
+#[no_mangle]
+pub unsafe extern "C" fn viem_diff_session_scrollbar_marks(
+    session: ViemDiffSessionHandle,
+    core: ViemCoreHandle,
+    view: ViemViewId,
+    is_new: u32,
+    marks: *mut ViemDiffScrollbarMarkV1,
+    capacity: u64,
+    out_count: *mut u64,
+    out_extent: *mut f32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        let capacity = checked_length(capacity)?;
+        validate_disjoint_regions(&[
+            typed_pointer_region(marks, capacity as u64)?,
+            typed_pointer_region(out_count, 1)?,
+            typed_pointer_region(out_extent, 1)?,
+        ])?;
+        unsafe {
+            out_count.write(0);
+            out_extent.write(0.0);
+        }
+        if is_new > 1 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        let side = if is_new != 0 { crate::diff::Side::New } else { crate::diff::Side::Base };
+        let mut core = checkout_core(core)?;
+        let (found, extent) = with_session(session, |session| {
+            session.scrollbar_marks(core.core_mut(), ViewId(view), side).map_err(core_status)
+        })?;
+        unsafe {
+            out_count.write(found.len() as u64);
+            out_extent.write(extent);
+        }
+        if capacity < found.len() {
+            return Err(ViemStatus::BufferTooSmall);
+        }
+        for (index, mark) in found.iter().enumerate() {
+            let value = ViemDiffScrollbarMarkV1 {
+                top: mark.top,
+                bottom: mark.bottom,
+                flags: if mark.added { VIEM_DIFF_MARK_ADDED } else { 0 },
+                reserved: 0,
+            };
+            unsafe { marks.add(index).write(value) };
+        }
+        Ok(())
+    })
+}
+
+/// The backgrounds of the Added line and Removed line Code styles, which
+/// scrollbar marks use; the built-in defaults when a style declares none.
+///
+/// # Safety
+/// Both outputs are aligned, writable and disjoint.
+#[no_mangle]
+pub unsafe extern "C" fn viem_diff_line_colors(out_added: *mut ViemRgbaV1, out_removed: *mut ViemRgbaV1) -> ViemStatus {
+    ffi_boundary(|| {
+        validate_disjoint_regions(&[typed_pointer_region(out_added, 1)?, typed_pointer_region(out_removed, 1)?])?;
+        let color = |added| {
+            let color = crate::document::code_style::diff_line_background(added);
+            ViemRgbaV1 { red: color.red, green: color.green, blue: color.blue, alpha: color.alpha }
+        };
+        unsafe {
+            out_added.write(color(true));
+            out_removed.write(color(false));
+        }
+        Ok(())
+    })
+}
+
 /// # Safety
 /// `out_info` must point to an aligned, writable value whose `struct_size`
 /// is at least `VIEM_DIFF_SESSION_INFO_V1_SIZE`.
@@ -453,6 +624,7 @@ pub extern "C" fn viem_diff_cancellation_release(cancellation: ViemDiffCancellat
 struct BaseRequest {
     kind: BaseKind,
     path: PathBuf,
+    scope: Option<PathBuf>,
     git_program: PathBuf,
     cancellation: CancellationToken,
     unsaved: Vec<PathBuf>,
@@ -499,9 +671,15 @@ unsafe fn base_request(request: *const ViemDiffBaseRequestV1) -> Result<BaseRequ
             unsaved.push(PathBuf::from(unsafe { utf8_input(slice)? }));
         }
     }
+    let scope = unsafe { utf8_input(request.scope_path)? };
+    let scope = (!scope.is_empty()).then(|| PathBuf::from(scope));
+    if scope.as_ref().is_some_and(|scope| !scope.is_absolute()) {
+        return Err(ViemStatus::InvalidArgument);
+    }
     Ok(BaseRequest {
         kind,
         path,
+        scope,
         git_program: PathBuf::from(if program.is_empty() { "git" } else { program }),
         cancellation,
         unsaved,
@@ -566,10 +744,14 @@ pub unsafe extern "C" fn viem_diff_list_files(
             }]),
             BaseKind::File(_) => Ok(Vec::new()),
             kind => repository(&request).and_then(|repository| {
-                let mut files = repository.changed_files(kind, &request.cancellation)?;
-                let root = std::fs::canonicalize(repository.root()).unwrap_or_else(|_| repository.root().to_owned());
+                let mut files = repository.changed_files(kind, request.scope.as_deref(), &request.cancellation)?;
+                let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
+                let root = canonical(repository.root());
+                let scope = request.scope.as_deref().map(canonical);
                 let inside = |path: &Path| {
-                    std::fs::canonicalize(path.parent().unwrap_or(path)).is_ok_and(|parent| parent.starts_with(&root))
+                    std::fs::canonicalize(path.parent().unwrap_or(path)).is_ok_and(|parent| {
+                        parent.starts_with(&root) && scope.as_ref().is_none_or(|scope| parent.starts_with(scope))
+                    })
                 };
                 include_unsaved(&mut files, request.unsaved.iter().filter(|path| inside(path)).cloned());
                 Ok(files)

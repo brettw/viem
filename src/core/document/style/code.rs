@@ -286,9 +286,25 @@ pub fn default_sheet() -> StyleSheet {
 /// Diff mode's styles: translucent green and red, so they read on light and
 /// dark canvases, with stronger text overlays inside changed lines. They are
 /// separate from the Vim `Diff*` and `Added`/`Removed` syntax styles.
+fn diff_color(added: bool, alpha: f32) -> Color {
+    if added {
+        Color { red: 46. / 255., green: 160. / 255., blue: 67. / 255., alpha }
+    } else {
+        Color { red: 248. / 255., green: 81. / 255., blue: 73. / 255., alpha }
+    }
+}
+
+/// The background diff mode draws behind an Added line (or Removed line),
+/// from the current Code stylesheet; the built-in default when the style
+/// declares none, so scrollbar marks stay visible.
+pub fn diff_line_background(added: bool) -> Color {
+    let id = if added { StyleId::diff_added_line() } else { StyleId::diff_removed_line() };
+    snapshot().block_style(&id).and_then(|style| style.block.background).unwrap_or_else(|| diff_color(added, 0.15))
+}
+
 fn install_diff_styles(sheet: &mut StyleSheet) {
-    let green = |alpha| Color { red: 46. / 255., green: 160. / 255., blue: 67. / 255., alpha };
-    let red = |alpha| Color { red: 248. / 255., green: 81. / 255., blue: 73. / 255., alpha };
+    let green = |alpha| diff_color(true, alpha);
+    let red = |alpha| diff_color(false, alpha);
     for (id, color) in [(StyleId::diff_added_line(), green(0.15)), (StyleId::diff_removed_line(), red(0.15))] {
         let name = id.builtin_block_display_name().expect("diff line styles have fixed display names");
         sheet.block_metadata.insert(id.clone(), StyleDefinitionMetadata::generated(name));

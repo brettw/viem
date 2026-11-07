@@ -5,7 +5,7 @@
 //! See `docs/diff_mode.md`.
 
 use super::*;
-use crate::diff::{DiffLimits, DiffState, LineEdit, LineSource, Side, SidePresentation};
+use crate::diff::{DiffLimits, DiffState, Hunk, LineEdit, LineSource, Side, SidePresentation, DIFF_CONTEXT_LINES};
 use crate::layout::DiffLayoutInput;
 use std::borrow::Cow;
 use std::ops::Range;
@@ -38,6 +38,36 @@ pub enum DiffSync {
     Incremental,
     /// The diff was recomputed from scratch.
     Full,
+}
+
+/// Which way [`DiffSession::navigate_change`] moves.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ChangeDirection {
+    Next,
+    Previous,
+}
+
+/// Where [`DiffSession::navigate_change`] went.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChangeNavigation {
+    /// Zero-based index of the change among `change_count`.
+    pub change: usize,
+    pub change_count: usize,
+    /// The new side's hard line that received the caret.
+    pub caret_line: usize,
+    /// Whether the views were repositioned; false when the change was
+    /// already visible on both sides.
+    pub scrolled: bool,
+}
+
+/// A stretch of one side's vertical scrollbar track that marks a change, in
+/// layout units from the top of the document.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollbarMark {
+    pub top: f32,
+    pub bottom: f32,
+    /// Added (new side) rather than removed (base side) lines.
+    pub added: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -250,10 +280,200 @@ impl DiffSession {
         Ok(())
     }
 
+    /// Move to the next or previous change, wrapping within the file. The
+    /// new side is the reference: its caret moves to the change's first
+    /// added line, or to the line after a pure removal, and unless the
+    /// change is already visible on both sides, the new view is positioned
+    /// first and the base view is then placed as if the sides were aligned.
+    /// `None` when the sides are identical.
+    pub fn navigate_change<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
+        &mut self,
+        base: &mut Core<P>,
+        base_view: ViewId,
+        new: &mut Core<Q>,
+        new_view: ViewId,
+        direction: ChangeDirection,
+    ) -> Result<Option<ChangeNavigation>, CoreError> {
+        self.sync(base, base_view, new, new_view)?;
+        let hunks: Vec<Hunk> = self.state.hunks().collect();
+        if hunks.is_empty() {
+            return Ok(None);
+        }
+        let count = new.document().line_count();
+        let target = |hunk: &Hunk| hunk.new.start.min(count.saturating_sub(1));
+        let cursor = new.views.get(&new_view).ok_or(CoreError::UnknownView(new_view))?.commands.cursor();
+        let cursor_line = new.document().hard_line_at_offset(cursor).unwrap_or(0);
+        let index = match direction {
+            ChangeDirection::Next => hunks.iter().position(|hunk| target(hunk) > cursor_line).unwrap_or(0),
+            ChangeDirection::Previous => {
+                hunks.iter().rposition(|hunk| target(hunk) < cursor_line).unwrap_or(hunks.len() - 1)
+            }
+        };
+        let hunk = &hunks[index];
+        let caret_line = target(hunk);
+        let offset = new.document().projection().hard_line_range(caret_line).map_or(0, |range| range.start);
+        let revision = new.document().revision();
+        new.handle(
+            new_view,
+            CoreEvent::PlaceCursor {
+                document_revision: revision,
+                text_offset: offset,
+                affinity: BoundaryAffinity::Downstream,
+                extend_selection: false,
+            },
+        )?;
+        let scrolled = self.position_change(base, base_view, new, new_view, hunk, caret_line)?;
+        Ok(Some(ChangeNavigation { change: index, change_count: hunks.len(), caret_line, scrolled }))
+    }
+
+    /// Scroll both views to show `hunk` (see `docs/diff_mode.md`, Changes).
+    fn position_change<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
+        &self,
+        base: &mut Core<P>,
+        base_view: ViewId,
+        new: &mut Core<Q>,
+        new_view: ViewId,
+        hunk: &Hunk,
+        caret_line: usize,
+    ) -> Result<bool, CoreError> {
+        let new_row = f64::from(new.diff_default_row(new_view)?.0);
+        let base_row = f64::from(base.diff_default_row(base_view)?.0);
+        let (new_side, base_side) = (&self.installed[1].presentation, &self.installed[0].presentation);
+        let new_block = side_block(new, new_view, new_side, hunk.new.clone(), new_row)?;
+        let base_block = side_block(base, base_view, base_side, hunk.base.clone(), base_row)?;
+        let shows = |core_view: (f64, f64), block: &Range<f64>| {
+            let (top, height) = core_view;
+            block.start >= top - 0.5 && block.end <= top + height + 0.5
+        };
+        if shows(viewport(new, new_view)?, &new_block) && shows(viewport(base, base_view)?, &base_block) {
+            return Ok(false);
+        }
+        // A newly materialized region can refine the heights it was placed
+        // with; re-evaluate locally, with a finite retry budget.
+        let mut new_top = 0.0;
+        for _ in 0..3 {
+            let block = side_block(new, new_view, new_side, hunk.new.clone(), new_row)?;
+            let other = side_block(base, base_view, base_side, hunk.base.clone(), base_row)?;
+            let (_, view_height) = viewport(new, new_view)?;
+            // Pretend the sides are aligned: the change is as tall as its
+            // taller side.
+            let height = (block.end - block.start).max(other.end - other.start);
+            let requested = if height <= view_height {
+                block.start + height / 2.0 - view_height / 2.0
+            } else {
+                let below_context = block.start - DIFF_CONTEXT_LINES as f64 * new_row;
+                let caret = side_block(new, new_view, new_side, caret_line..caret_line + 1, new_row)?;
+                let caret_shows = caret.end <= below_context + view_height;
+                if view_height / new_row > 4.0 || caret_shows { below_context } else { block.start }
+            };
+            let left = new.views[&new_view].layout.viewport_left();
+            new.materialize_requested_viewport(new_view, left, requested.max(0.0) as f32)?;
+            let settled = f64::from(new.views[&new_view].layout.viewport_top());
+            let moved = (settled - new_top).abs() >= 0.01;
+            new_top = settled;
+            if !moved {
+                break;
+            }
+        }
+        for _ in 0..3 {
+            let block = side_block(new, new_view, new_side, hunk.new.clone(), new_row)?;
+            let other = side_block(base, base_view, base_side, hunk.base.clone(), base_row)?;
+            let requested = other.start - (block.start - new_top);
+            let left = base.views[&base_view].layout.viewport_left();
+            let before = base.views[&base_view].layout.viewport_top();
+            base.materialize_requested_viewport(base_view, left, requested.max(0.0) as f32)?;
+            if (base.views[&base_view].layout.viewport_top() - before).abs() < 0.01 {
+                break;
+            }
+        }
+        Ok(true)
+    }
+
+    /// The marks for one side's scrollbar track and the document extent they
+    /// are measured against: that side's changed lines in its own colour,
+    /// and the other side's changes where they line up, at its filler or,
+    /// when unaligned, as an empty mark between lines.
+    pub fn scrollbar_marks<P: TextMeasurementProvider>(
+        &self,
+        core: &mut Core<P>,
+        view: ViewId,
+        side: Side,
+    ) -> Result<(Vec<ScrollbarMark>, f32), CoreError> {
+        let installed = &self.installed[usize::from(side == Side::New)];
+        let layout = core.layout(view).ok_or(CoreError::UnknownView(view))?;
+        let count = core.document().line_count();
+        let extent = layout.hard_line_prefix_height(count).map_err(LayoutError::from)?.height();
+        if installed.view != Some(view) || installed.document.is_none() {
+            return Ok((Vec::new(), extent as f32));
+        }
+        let row = f64::from(core.diff_default_row(view)?.0);
+        let own = side == Side::New;
+        let presentation = &installed.presentation;
+        let mut marks = Vec::new();
+        for range in &presentation.lines {
+            let block = side_block(core, view, presentation, range.start..range.end, 0.0)?;
+            marks.push(ScrollbarMark { top: block.start as f32, bottom: block.end as f32, added: own });
+        }
+        if installed.aligned {
+            for filler in &presentation.fillers {
+                let line = filler.before_line.min(count);
+                let block = side_block(core, view, presentation, line..line, row)?;
+                marks.push(ScrollbarMark { top: block.start as f32, bottom: block.end as f32, added: !own });
+            }
+        } else {
+            for hunk in self.state.hunks() {
+                let lines = if own { hunk.new } else { hunk.base };
+                if lines.is_empty() {
+                    let block = side_block(core, view, presentation, lines.start..lines.start, 0.0)?;
+                    marks.push(ScrollbarMark { top: block.start as f32, bottom: block.start as f32, added: !own });
+                }
+            }
+        }
+        marks.sort_by(|a, b| a.top.total_cmp(&b.top));
+        Ok((marks, extent as f32))
+    }
+
     /// Remove diff presentation from a view, for leaving diff mode.
     pub fn clear<P: TextMeasurementProvider>(core: &mut Core<P>, view: ViewId) -> Result<(), CoreError> {
         core.install_diff_presentation(view, None, None)
     }
+}
+
+/// The current viewport top and height of a view, in layout units.
+fn viewport<P: TextMeasurementProvider>(core: &Core<P>, view: ViewId) -> Result<(f64, f64), CoreError> {
+    let view = core.views.get(&view).ok_or(CoreError::UnknownView(view))?;
+    Ok((f64::from(view.layout.viewport_top()), f64::from(view.layout.height())))
+}
+
+/// The vertical extent of `lines` on one side, in layout units, including
+/// the filler that follows them there. An empty range is the point between
+/// lines (with its filler, when aligned); a range at the end of the document
+/// covers the trailing filler. `row` sizes one filler line.
+fn side_block<P: TextMeasurementProvider>(
+    core: &Core<P>,
+    view: ViewId,
+    presentation: &SidePresentation,
+    lines: Range<usize>,
+    row: f64,
+) -> Result<Range<f64>, CoreError> {
+    let layout = core.layout(view).ok_or(CoreError::UnknownView(view))?;
+    let count = core.document().line_count();
+    let prefix = |line: usize| -> Result<f64, CoreError> {
+        Ok(layout.hard_line_prefix_height(line.min(count)).map_err(LayoutError::from)?.height())
+    };
+    let filler = |line: usize| -> f64 {
+        presentation.fillers.iter().filter(|filler| filler.before_line == line).map(|filler| filler.lines as f64 * row).sum()
+    };
+    let total = prefix(count)?;
+    let trailing: f64 = presentation
+        .fillers
+        .iter()
+        .filter(|filler| filler.before_line >= count)
+        .map(|filler| filler.lines as f64 * row)
+        .sum();
+    let start = if lines.start < count { prefix(lines.start)? } else { (total - trailing).max(0.0) };
+    let end = if lines.end < count { prefix(lines.end)? + filler(lines.end) } else { total };
+    Ok(start..end.max(start))
 }
 
 /// The hard-line edit described by one bounded formatted change, in the
@@ -408,6 +628,12 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// The unscaled height of one default Code row, which sizes aligned
     /// filler so that a filler line matches a text line.
     pub fn diff_filler_line_height(&mut self, view_id: ViewId) -> Result<f32, CoreError> {
+        let (advance, scale) = self.diff_default_row(view_id)?;
+        Ok(if scale > 0.0 { advance / scale } else { advance })
+    }
+
+    /// One default Code row in layout units, with the view's scale.
+    fn diff_default_row(&mut self, view_id: ViewId) -> Result<(f32, f32), CoreError> {
         let code_sheet;
         let sheet = if self.document.format().is_code() {
             code_sheet = crate::document::code_style::snapshot();
@@ -426,7 +652,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             self.document.revision(), &style, scale)
             .map_err(|error| CoreError::Layout(LayoutError::Measurement(error)))?;
         let advance = crate::layout::line_advance(height, paragraph.line_spacing);
-        Ok(if scale > 0.0 { advance / scale } else { advance })
+        Ok((advance, scale))
     }
 }
 

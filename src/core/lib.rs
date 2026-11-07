@@ -25,7 +25,7 @@ pub use command::composition::{
 };
 pub use command::layout_motion::{LayoutDemand, LayoutDemandEdge};
 pub use coordinator::{
-    DiffSession, DiffSync, DocumentLines,
+    ChangeDirection, ChangeNavigation, DiffSession, DiffSync, DocumentLines, ScrollbarMark,
     LineNumberRegion, CodeLanguagePolicy, DocumentMode, DocumentModeState, CompletionPopupAnchor, CompositionCancelReason, Core, CoreError, CoreEvent, CoreIdentifierKind, CoreOutcome,
     FormattingAction, FormattingActionSet, FormattingActions, ImageContext, LinkContext,
     LogicalSelectionIdentity, LogicalSelectionKind, SemanticStylePresentation, SemanticStyleState,

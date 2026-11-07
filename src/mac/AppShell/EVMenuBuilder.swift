@@ -28,6 +28,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
     private var obscureCodeModeItem: NSMenuItem?
     private var modeItems: [NSMenuItem] = []
     private var themeMenu: NSMenu?
+    private var diffMenu: NSMenu?
+    private var diffDirectoryItem: NSMenuItem?
     let themeActions: EVThemeActions
     private var trackingMenus = Set<ObjectIdentifier>()
 
@@ -99,6 +101,11 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
                 trackingMenus.contains(ObjectIdentifier($0))
             }) else { return }
             updateDocumentModes()
+            return
+        }
+        if menu === diffMenu {
+            // Name the directory `:cd` last chose.
+            diffDirectoryItem?.title = EVDiffFolder.menuTitle(forDirectory: FileManager.default.currentDirectoryPath)
             return
         }
         if menu === insertTableMenu {
@@ -457,6 +464,14 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.showsStateColumn = true
         menu.addItem(responderItem("Diff Mode", action: #selector(EVDocumentWindowController.toggleDiffMode(_:))))
         menu.addItem(.separator())
+        let directory = responderItem(EVDiffFolder.menuTitle(forDirectory: FileManager.default.currentDirectoryPath),
+                                      action: #selector(EVDocumentWindowController.diffCurrentDirectory(_:)))
+        menu.addItem(directory)
+        menu.addItem(responderItem("Diff Folder…", action: #selector(EVDocumentWindowController.chooseDiffFolder(_:))))
+        menu.addItem(.separator())
+        diffDirectoryItem = directory
+        diffMenu = menu
+        menu.delegate = self
         menu.addItem(responderItem("Align Sides", action: #selector(EVDocumentWindowController.toggleDiffAlignSides(_:))))
         menu.addItem(responderItem("Refresh Base", action: #selector(EVDocumentWindowController.refreshDiffBase(_:))))
         menu.addItem(responderItem("Choose Base File…", action: #selector(EVDocumentWindowController.chooseDiffBaseFile(_:))))
