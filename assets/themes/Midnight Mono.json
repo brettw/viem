@@ -67,22 +67,37 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.11999999731779099,
-              "green" : 0.054999999701976776,
-              "red" : 0.019999999552965164
+              "blue" : 0.54475075006484985,
+              "green" : 0.5666205883026123,
+              "red" : 0.58901417255401611
             },
             "base_direction" : null,
-            "border_bottom_color" : null,
-            "border_bottom_width" : 0,
-            "border_left_color" : null,
-            "border_left_width" : 0,
-            "border_right_color" : null,
-            "border_right_width" : 0,
+            "border_bottom_color" : {
+              "alpha" : 1,
+              "blue" : 0.39332032203674316,
+              "green" : 0.39332032203674316,
+              "red" : 0.39332032203674316
+            },
+            "border_bottom_width" : 1,
+            "border_left_color" : {
+              "alpha" : 1,
+              "blue" : 0.79749894142150879,
+              "green" : 0.8280644416809082,
+              "red" : 0.86156612634658813
+            },
+            "border_left_width" : 1,
+            "border_right_color" : {
+              "alpha" : 1,
+              "blue" : 0.39208984375,
+              "green" : 0.39208984375,
+              "red" : 0.39208984375
+            },
+            "border_right_width" : 1,
             "border_top_color" : {
               "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "blue" : 0.79749894142150879,
+              "green" : 0.8280644416809082,
+              "red" : 0.86156612634658813
             },
             "border_top_width" : 1,
             "first_line_indent" : null,
@@ -92,10 +107,10 @@
             "margin_left" : 0,
             "margin_right" : 0,
             "margin_top" : 0,
-            "padding_bottom" : 5,
+            "padding_bottom" : 2,
             "padding_left" : 10.5,
             "padding_right" : 10.5,
-            "padding_top" : 5,
+            "padding_top" : 2,
             "trailing_indent" : null
           },
           "character" : {
@@ -107,30 +122,30 @@
               "CRSV" : 0,
               "MONO" : 0,
               "slnt" : 0,
-              "wght" : 300
+              "wght" : 468
             },
             "font_face" : "Sans Linear Light",
             "font_families" : [
               "Recursive"
             ],
             "foreground" : {
-              "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "alpha" : 0.67633140087127686,
+              "blue" : 0,
+              "green" : 0,
+              "red" : 0
             },
             "language" : null,
             "letter_spacing" : 0,
             "open_type_features" : {
 
             },
-            "size" : 11,
+            "size" : 13,
             "slant" : "Upright",
             "strikethrough" : false,
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 300
+            "weight" : 468
           },
           "id" : "Status bar",
           "name" : "Status bar",
@@ -143,9 +158,9 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.38674157857894897,
-              "green" : 0.19268515706062317,
-              "red" : 0.070672564208507538
+              "blue" : 0.70073837041854858,
+              "green" : 0.72759467363357544,
+              "red" : 0.75703251361846924
             },
             "base_direction" : null,
             "border_bottom_color" : null,
@@ -1789,22 +1804,37 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.11999999731779099,
-              "green" : 0.054999999701976776,
-              "red" : 0.019999999552965164
+              "blue" : 0.54475075006484985,
+              "green" : 0.5666205883026123,
+              "red" : 0.58901417255401611
             },
             "base_direction" : null,
-            "border_bottom_color" : null,
-            "border_bottom_width" : 0,
-            "border_left_color" : null,
-            "border_left_width" : 0,
-            "border_right_color" : null,
-            "border_right_width" : 0,
+            "border_bottom_color" : {
+              "alpha" : 1,
+              "blue" : 0.39332032203674316,
+              "green" : 0.39332032203674316,
+              "red" : 0.39332032203674316
+            },
+            "border_bottom_width" : 1,
+            "border_left_color" : {
+              "alpha" : 1,
+              "blue" : 0.79749894142150879,
+              "green" : 0.8280644416809082,
+              "red" : 0.86156612634658813
+            },
+            "border_left_width" : 1,
+            "border_right_color" : {
+              "alpha" : 1,
+              "blue" : 0.39208984375,
+              "green" : 0.39208984375,
+              "red" : 0.39208984375
+            },
+            "border_right_width" : 1,
             "border_top_color" : {
               "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "blue" : 0.79749894142150879,
+              "green" : 0.8280644416809082,
+              "red" : 0.86156612634658813
             },
             "border_top_width" : 1,
             "first_line_indent" : null,
@@ -1814,10 +1844,10 @@
             "margin_left" : 0,
             "margin_right" : 0,
             "margin_top" : 0,
-            "padding_bottom" : 5,
+            "padding_bottom" : 2,
             "padding_left" : 10.5,
             "padding_right" : 10.5,
-            "padding_top" : 5,
+            "padding_top" : 2,
             "trailing_indent" : null
           },
           "character" : {
@@ -1829,30 +1859,30 @@
               "CRSV" : 0,
               "MONO" : 0,
               "slnt" : 0,
-              "wght" : 300
+              "wght" : 468
             },
             "font_face" : "Sans Linear Light",
             "font_families" : [
               "Recursive"
             ],
             "foreground" : {
-              "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "alpha" : 0.67633140087127686,
+              "blue" : 0,
+              "green" : 0,
+              "red" : 0
             },
             "language" : null,
             "letter_spacing" : 0,
             "open_type_features" : {
 
             },
-            "size" : 11,
+            "size" : 13,
             "slant" : "Upright",
             "strikethrough" : false,
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 300
+            "weight" : 468
           },
           "id" : "Status bar",
           "name" : "Status bar",
@@ -1865,9 +1895,9 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.38674157857894897,
-              "green" : 0.19268515706062317,
-              "red" : 0.070672564208507538
+              "blue" : 0.70073837041854858,
+              "green" : 0.72759467363357544,
+              "red" : 0.75703251361846924
             },
             "base_direction" : null,
             "border_bottom_color" : null,
@@ -2250,6 +2280,30 @@
             "size" : null,
             "slant" : null,
             "strikethrough" : null,
+            "subscript" : null,
+            "superscript" : null,
+            "underline" : null,
+            "weight" : null
+          }
+        },
+        {
+          "based_on" : null,
+          "id" : "Strikethrough",
+          "name" : "Strikethrough",
+          "properties" : {
+            "background" : null,
+            "bold" : null,
+            "direction" : null,
+            "font_axes" : null,
+            "font_face" : null,
+            "font_families" : null,
+            "foreground" : null,
+            "language" : null,
+            "letter_spacing" : null,
+            "open_type_features" : null,
+            "size" : null,
+            "slant" : null,
+            "strikethrough" : true,
             "subscript" : null,
             "superscript" : null,
             "underline" : null,
@@ -3472,22 +3526,37 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.11999999731779099,
-              "green" : 0.054999999701976776,
-              "red" : 0.019999999552965164
+              "blue" : 0.54475075006484985,
+              "green" : 0.5666205883026123,
+              "red" : 0.58901417255401611
             },
             "base_direction" : null,
-            "border_bottom_color" : null,
-            "border_bottom_width" : 0,
-            "border_left_color" : null,
-            "border_left_width" : 0,
-            "border_right_color" : null,
-            "border_right_width" : 0,
+            "border_bottom_color" : {
+              "alpha" : 1,
+              "blue" : 0.39332032203674316,
+              "green" : 0.39332032203674316,
+              "red" : 0.39332032203674316
+            },
+            "border_bottom_width" : 1,
+            "border_left_color" : {
+              "alpha" : 1,
+              "blue" : 0.79749894142150879,
+              "green" : 0.8280644416809082,
+              "red" : 0.86156612634658813
+            },
+            "border_left_width" : 1,
+            "border_right_color" : {
+              "alpha" : 1,
+              "blue" : 0.39208984375,
+              "green" : 0.39208984375,
+              "red" : 0.39208984375
+            },
+            "border_right_width" : 1,
             "border_top_color" : {
               "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "blue" : 0.79749894142150879,
+              "green" : 0.8280644416809082,
+              "red" : 0.86156612634658813
             },
             "border_top_width" : 1,
             "first_line_indent" : null,
@@ -3497,10 +3566,10 @@
             "margin_left" : 0,
             "margin_right" : 0,
             "margin_top" : 0,
-            "padding_bottom" : 5,
+            "padding_bottom" : 2,
             "padding_left" : 10.5,
             "padding_right" : 10.5,
-            "padding_top" : 5,
+            "padding_top" : 2,
             "trailing_indent" : null
           },
           "character" : {
@@ -3512,30 +3581,30 @@
               "CRSV" : 0,
               "MONO" : 0,
               "slnt" : 0,
-              "wght" : 300
+              "wght" : 468
             },
             "font_face" : "Sans Linear Light",
             "font_families" : [
               "Recursive"
             ],
             "foreground" : {
-              "alpha" : 1,
-              "blue" : 0.9100000262260437,
-              "green" : 0.77999997138977051,
-              "red" : 0.68000000715255737
+              "alpha" : 0.67633140087127686,
+              "blue" : 0,
+              "green" : 0,
+              "red" : 0
             },
             "language" : null,
             "letter_spacing" : 0,
             "open_type_features" : {
 
             },
-            "size" : 11,
+            "size" : 13,
             "slant" : "Upright",
             "strikethrough" : false,
             "subscript" : false,
             "superscript" : false,
             "underline" : false,
-            "weight" : 300
+            "weight" : 468
           },
           "id" : "Status bar",
           "name" : "Status bar",
@@ -3548,9 +3617,9 @@
             "alignment" : null,
             "background" : {
               "alpha" : 1,
-              "blue" : 0.38674157857894897,
-              "green" : 0.19268515706062317,
-              "red" : 0.070672564208507538
+              "blue" : 0.70073837041854858,
+              "green" : 0.72759467363357544,
+              "red" : 0.75703251361846924
             },
             "base_direction" : null,
             "border_bottom_color" : null,
