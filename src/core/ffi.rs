@@ -59,6 +59,8 @@ pub use line_numbers::*;
 pub use whitespace::*;
 mod html_export;
 pub use html_export::*;
+mod diff;
+pub use diff::*;
 mod startup;
 mod ex_files;
 mod autocmds;
@@ -10723,6 +10725,7 @@ mod tests {
     mod view_restoration_tests;
     mod prelayout_tests;
     mod html_export_tests;
+    mod diff_tests;
     mod syntax_wait_tests;
     mod clipboard_import_tests;
     mod theme_tests;

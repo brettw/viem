@@ -483,6 +483,9 @@ pub(crate) enum PendingArtifactWriteKind {
 pub(crate) struct PendingArtifactWrite {
     pub prepared: PreparedArtifactWrite,
     pub kind: PendingArtifactWriteKind,
+    /// The saved source of a Save or Save As, shared with history so that a
+    /// completed save retains no flat copy of the bytes.
+    pub saved_source: Option<super::source::SourceSnapshot>,
 }
 
 /// Deterministic provider used by core unit and integration tests.

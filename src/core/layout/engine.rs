@@ -2076,6 +2076,9 @@ impl LayoutJobViewConfiguration {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewLayout {
     search_matches: Option<(DocumentId, Revision, Vec<Range<usize>>)>,
+    /// Diff mode's presentation of this view's side, bound to the exact
+    /// snapshot it was built for.
+    diff_presentation: Option<(DocumentId, Revision, std::sync::Arc<super::style::DiffLayoutInput>)>,
     /// Visible paragraphs' resolved appearance, reused by the next viewport
     /// capture while their inputs are unchanged.
     paragraph_styles: super::style::ParagraphStyleCache,
@@ -2147,6 +2150,7 @@ impl ViewLayout {
     pub fn new(width: f32, height: f32) -> Self {
         Self {
             search_matches: None,
+            diff_presentation: None,
             paragraph_styles: Default::default(),
             whitespace: WhitespaceConfiguration::default(),
             whitespace_bounds: Default::default(),
@@ -2336,6 +2340,43 @@ impl ViewLayout {
         true
     }
 
+    /// Install or clear diff mode's presentation. `changed_lines` names the
+    /// hard lines whose diff appearance or filler changed, when known; other
+    /// cached geometry stays valid. `None` relays out every line.
+    pub(crate) fn set_diff_presentation(
+        &mut self,
+        document: DocumentId,
+        revision: Revision,
+        presentation: Option<std::sync::Arc<super::style::DiffLayoutInput>>,
+        changed_lines: Option<&[Range<usize>]>,
+    ) -> bool {
+        let next = presentation.map(|input| (document, revision, input));
+        if self.diff_presentation == next {
+            return false;
+        }
+        self.diff_presentation = next;
+        match changed_lines {
+            Some(lines) => {
+                for lines in lines {
+                    self.invalidate_geometry_lines(lines.clone());
+                }
+                self.bump_configuration(false);
+            }
+            None => self.bump_configuration(true),
+        }
+        true
+    }
+
+    /// Search matches and diff presentation current for one snapshot.
+    pub(crate) fn presentation_overlays(&self, document: DocumentId, revision: Revision) -> super::style::PresentationOverlays<'_> {
+        super::style::PresentationOverlays {
+            search_matches: self.search_matches(document, revision),
+            diff: self.diff_presentation.as_ref()
+                .filter(|(id, rev, _)| *id == document && *rev == revision)
+                .map(|(_, _, input)| input.as_ref()),
+        }
+    }
+
     pub(crate) fn search_matches(&self, document: DocumentId, revision: Revision) -> &[Range<usize>] {
         self.search_matches.as_ref().filter(|(id, rev, _)| *id == document && *rev == revision)
             .map_or(&[], |(_, _, ranges)| ranges.as_slice())
@@ -2343,10 +2384,13 @@ impl ViewLayout {
 
     /// Current search coverage with the paragraph style cache, borrowed together.
     pub(crate) fn style_resolution_inputs(&mut self, document: DocumentId, revision: Revision)
-        -> (&[Range<usize>], &mut super::style::ParagraphStyleCache) {
+        -> (super::style::PresentationOverlays<'_>, &mut super::style::ParagraphStyleCache) {
         let matches = self.search_matches.as_ref().filter(|(id, rev, _)| *id == document && *rev == revision)
             .map_or(&[][..], |(_, _, ranges)| ranges.as_slice());
-        (matches, &mut self.paragraph_styles)
+        let diff = self.diff_presentation.as_ref()
+            .filter(|(id, rev, _)| *id == document && *rev == revision)
+            .map(|(_, _, input)| input.as_ref());
+        (super::style::PresentationOverlays { search_matches: matches, diff }, &mut self.paragraph_styles)
     }
 
     /// An internal style has no authored assignment ranges to invalidate.
@@ -4418,7 +4462,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
     ) -> Result<(), LayoutError> {
         self.prepare_indent_alignment((view.whitespace.options.align_indents_to_previous_line && document.format().is_code())
             .then(|| Arc::new(document.projection().clone())), view.indent_index.clone(), view.whitespace.tabstop);
-        let document_styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), 0..document.projection().text_tree().byte_len(), view.search_matches(document.id(), document.revision()), document.format())?;
+        let document_styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), 0..document.projection().text_tree().byte_len(), view.presentation_overlays(document.id(), document.revision()), document.format())?;
         let hard_lines = (0..document.projection().presentation_line_count())
             .filter_map(|index| document.projection().presentation_line_range(index))
             .collect::<Vec<_>>();
@@ -7450,7 +7494,7 @@ fn aligned_row_x(
     }
 }
 
-fn line_advance(natural_height: f32, spacing: LineSpacing) -> f32 {
+pub(crate) fn line_advance(natural_height: f32, spacing: LineSpacing) -> f32 {
     match spacing {
         LineSpacing::Normal => natural_height,
         LineSpacing::Multiplier(multiplier) => natural_height * multiplier,

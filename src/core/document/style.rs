@@ -48,6 +48,38 @@ impl StyleId {
         Self("* Incremental match".into())
     }
 
+    /// Diff mode's paragraph style for a line on the new side that is wholly
+    /// or partly added.
+    pub fn diff_added_line() -> Self {
+        Self("Builtin diff added line".into())
+    }
+
+    /// Diff mode's paragraph style for a line on the base side that is wholly
+    /// or partly removed.
+    pub fn diff_removed_line() -> Self {
+        Self("Builtin diff removed line".into())
+    }
+
+    /// Diff mode's presentation-only character overlay for added text.
+    pub fn diff_added_text() -> Self {
+        Self("* Diff added text".into())
+    }
+
+    /// Diff mode's presentation-only character overlay for removed text.
+    pub fn diff_removed_text() -> Self {
+        Self("* Diff removed text".into())
+    }
+
+    /// Fixed display names of internal character overlays.
+    pub(crate) fn internal_character_display_name(&self) -> Option<&'static str> {
+        match self.0.as_str() {
+            "* Incremental match" => Some("Incremental match"),
+            "* Diff added text" => Some("Added text"),
+            "* Diff removed text" => Some("Removed text"),
+            _ => None,
+        }
+    }
+
     /// Structural list families are editable definitions, distinct from source
     /// syntax coloring styles. They are assigned through list commands.
     pub fn is_internal_list(&self) -> bool {
@@ -77,7 +109,7 @@ impl StyleId {
     }
 
     pub fn is_internal(&self) -> bool {
-        self.builtin_block_display_name().is_some() || self.0 == "* Incremental match"
+        self.builtin_block_display_name().is_some() || self.internal_character_display_name().is_some()
     }
 
     /// Reserved identities apply only in their own namespace. A character
@@ -85,7 +117,7 @@ impl StyleId {
     pub(crate) fn is_internal_in(&self, namespace: StyleNamespace) -> bool {
         match namespace {
             StyleNamespace::Block => self.builtin_block_display_name().is_some(),
-            StyleNamespace::Character => self.0 == "* Incremental match",
+            StyleNamespace::Character => self.internal_character_display_name().is_some(),
         }
     }
 
@@ -95,6 +127,8 @@ impl StyleId {
             "Builtin current line number" => Some("Current line number"),
             "Status bar" => Some("Status bar"),
             "Status bar command" => Some("Status bar command"),
+            "Builtin diff added line" => Some("Added line"),
+            "Builtin diff removed line" => Some("Removed line"),
             _ => None,
         }
     }
@@ -1386,6 +1420,29 @@ impl StyleSheet {
     /// no paragraph or emergency properties filled in for unspecified fields.
     pub fn incremental_match_properties(&self) -> Result<CharacterProperties, StyleError> {
         self.named_character_declarations(Some(&StyleId::incremental_match()))
+    }
+
+    /// Sparse declarations of a diff text overlay (Added text or Removed
+    /// text), or none when this sheet has no diff styles.
+    pub fn diff_text_properties(&self, added: bool) -> Result<CharacterProperties, StyleError> {
+        let id = if added { StyleId::diff_added_text() } else { StyleId::diff_removed_text() };
+        if self.character_styles.contains_key(&id) {
+            self.named_character_declarations(Some(&id))
+        } else {
+            Ok(CharacterProperties::default())
+        }
+    }
+
+    /// Apply a diff text overlay after the ordinary text cascade, including
+    /// syntax highlighting. Unspecified properties keep the underlying look.
+    pub fn overlay_diff_text(
+        &self,
+        underlying: &ResolvedCharacterStyle,
+        added: bool,
+    ) -> Result<ResolvedCharacterStyle, StyleError> {
+        let mut result = underlying.clone();
+        apply_character_properties(&mut result, &self.diff_text_properties(added)?);
+        Ok(result)
     }
 
     /// Apply search presentation after the complete ordinary text cascade.
@@ -3183,7 +3240,7 @@ fn validate_definition_metadata(
     let invalid_internal = id.is_internal_in(namespace)
         && (metadata.origin != StyleDefinitionOrigin::GeneratedConfiguration
             || metadata.display_name != match namespace {
-                StyleNamespace::Character => "Incremental match",
+                StyleNamespace::Character => id.internal_character_display_name().unwrap(),
                 StyleNamespace::Block => id.builtin_block_display_name().unwrap(),
             });
     if metadata.display_name.trim().is_empty() || metadata.display_name.contains('\0') || invalid_internal {

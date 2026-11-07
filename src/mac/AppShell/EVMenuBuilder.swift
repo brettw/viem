@@ -64,6 +64,7 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
         mainMenu.addItem(topLevelItem("Insert", submenu: makeInsertMenu()))
         mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
+        mainMenu.addItem(topLevelItem("Diff", submenu: makeDiffMenu()))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
         let windowMenu = makeWindowMenu(for: application)
@@ -448,6 +449,21 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         let codeItem = submenuItem("Code language", submenu: code)
         codeModeItem = codeItem
         return codeItem
+    }
+
+    /// Diff mode (docs/diff_mode.md). The window controller handles these.
+    private func makeDiffMenu() -> NSMenu {
+        let menu = NSMenu(title: "Diff")
+        menu.showsStateColumn = true
+        menu.addItem(responderItem("Diff Mode", action: #selector(EVDocumentWindowController.toggleDiffMode(_:))))
+        menu.addItem(.separator())
+        menu.addItem(responderItem("Align Sides", action: #selector(EVDocumentWindowController.toggleDiffAlignSides(_:))))
+        menu.addItem(responderItem("Refresh Base", action: #selector(EVDocumentWindowController.refreshDiffBase(_:))))
+        menu.addItem(responderItem("Choose Base File…", action: #selector(EVDocumentWindowController.chooseDiffBaseFile(_:))))
+        menu.addItem(.separator())
+        menu.addItem(responderItem("Previous File", action: #selector(EVDocumentWindowController.showPreviousDiffFile(_:))))
+        menu.addItem(responderItem("Next File", action: #selector(EVDocumentWindowController.showNextDiffFile(_:))))
+        return menu
     }
 
     private func makeViewMenu() -> NSMenu {

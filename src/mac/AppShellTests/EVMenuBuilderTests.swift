@@ -54,8 +54,10 @@ final class EVMenuBuilderTests: XCTestCase {
         application.mainMenu = menu
 
         XCTAssertEqual(menu.items.map(\.title), [
-            "Viem", "File", "Edit", "Insert", "Format", "View", "Window", "Help",
+            "Viem", "File", "Edit", "Insert", "Format", "Diff", "View", "Window", "Help",
         ])
+        let diff = try submenu("Diff", of: menu)
+        XCTAssertEqual(diff.items.first?.title, "Diff Mode", "Diff Mode is the first item")
         let insert = try submenu("Insert", of: menu)
         XCTAssertEqual(tokens(in: insert), ["Heading", "Code", "Link", "Reference", "-",
             "Bulleted List", "Numbered List", "Task List", "-", "Blockquote", "Code Block", "Image", "Table"])

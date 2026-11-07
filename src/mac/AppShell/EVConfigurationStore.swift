@@ -145,6 +145,21 @@ public final class EVConfigurationStore {
     Self.editingOptions(root, key: "whitespacePresentation") ?? EVWhitespacePresentationOptions()
   }
   public var showStatusBar: Bool { (root["appearance"] as? [String: Any])?["showStatusBar"] as? Bool ?? true }
+  /// Diff mode's Align sides default for new diff views (last explicit choice).
+  public var diffAlignSides: Bool { (root["diff"] as? [String: Any])?["alignSides"] as? Bool ?? true }
+  public func setDiffAlignSides(_ aligned: Bool) throws {
+    try update(section: "diff", values: ["alignSides": aligned], notify: false)
+  }
+  /// Diff mode's saved line-number setting (last explicit choice in diff mode).
+  public var diffLineNumbers: Bool { (root["diff"] as? [String: Any])?["lineNumbers"] as? Bool ?? true }
+  public func setDiffLineNumbers(_ shows: Bool) throws {
+    try update(section: "diff", values: ["lineNumbers": shows], notify: false)
+  }
+  /// Code's saved line-number setting, absent until first set explicitly.
+  public var codeLineNumbers: Bool? { (root["code"] as? [String: Any])?["lineNumbers"] as? Bool }
+  public func setCodeLineNumbers(_ shows: Bool) throws {
+    try update(section: "code", values: ["lineNumbers": shows], notify: false)
+  }
   public func showFormattingToolbar(for format: EVSourceFormat) -> Bool {
     (root["formattingToolbar"] as? [String: Any])?[format.rawValue] as? Bool ?? true
   }

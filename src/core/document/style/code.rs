@@ -279,7 +279,37 @@ pub fn default_sheet() -> StyleSheet {
         sheet.character_styles.insert(id.clone(), CharacterStyle { id: id.clone(), based_on, properties });
         sheet.character_metadata.insert(id, StyleDefinitionMetadata::generated(name));
     }
+    install_diff_styles(&mut sheet);
     sheet
+}
+
+/// Diff mode's styles: translucent green and red, so they read on light and
+/// dark canvases, with stronger text overlays inside changed lines. They are
+/// separate from the Vim `Diff*` and `Added`/`Removed` syntax styles.
+fn install_diff_styles(sheet: &mut StyleSheet) {
+    let green = |alpha| Color { red: 46. / 255., green: 160. / 255., blue: 67. / 255., alpha };
+    let red = |alpha| Color { red: 248. / 255., green: 81. / 255., blue: 73. / 255., alpha };
+    for (id, color) in [(StyleId::diff_added_line(), green(0.15)), (StyleId::diff_removed_line(), red(0.15))] {
+        let name = id.builtin_block_display_name().expect("diff line styles have fixed display names");
+        sheet.block_metadata.insert(id.clone(), StyleDefinitionMetadata::generated(name));
+        sheet.block_styles.insert(id.clone(), BlockStyle {
+            id,
+            based_on: Some(sheet.base_paragraph.clone()),
+            next_paragraph_style: None,
+            role: BlockRole::Paragraph,
+            character: CharacterProperties::default(),
+            block: BlockProperties { background: Some(color), ..Default::default() },
+        });
+    }
+    for (id, color) in [(StyleId::diff_added_text(), green(0.40)), (StyleId::diff_removed_text(), red(0.40))] {
+        let name = id.internal_character_display_name().expect("diff text styles have fixed display names");
+        sheet.character_metadata.insert(id.clone(), StyleDefinitionMetadata::generated(name));
+        sheet.character_styles.insert(id.clone(), CharacterStyle {
+            id,
+            based_on: None,
+            properties: CharacterProperties { background: Some(color), ..Default::default() },
+        });
+    }
 }
 
 /// Provider normalization, not fuzzy style lookup. Preserve everything after

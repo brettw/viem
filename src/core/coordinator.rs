@@ -64,6 +64,8 @@ mod autocmds;
 pub use completion_layout::CompletionPopupAnchor;
 mod viewport;
 mod line_numbers;
+mod diff;
+pub use diff::{DiffSession, DiffSync, DocumentLines};
 mod pointer_rows;
 pub use line_numbers::LineNumberRegion;
 mod restoration;
@@ -3830,7 +3832,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .transpose()
             .map_err(DocumentError::FormattedTextStorage)?
             .unwrap_or(base_text_end);
-        let styles = DocumentLayoutStyles::resolve_region_for_presentation(self.document.projection(), base_text_start..style_end, self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()), self.document.format())
+        let styles = DocumentLayoutStyles::resolve_region_for_presentation(self.document.projection(), base_text_start..style_end, self.views[&view_id].layout.presentation_overlays(self.document.id(), self.document.revision()), self.document.format())
         .map_err(LayoutError::from)?;
         let indent_marked_style = resolved_composition_shaping_style(&styles, overlay.replacement_range().start, overlay.base_utf8_len(), affinity);
         let styles = composition_layout_styles(styles, &overlay, affinity)?;
@@ -4007,7 +4009,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 .transpose()
                 .map_err(DocumentError::FormattedTextStorage)?
                 .unwrap_or_else(|| to_base(style_capture.end, true));
-            let styles = DocumentLayoutStyles::resolve_region_for_presentation(self.document.projection(), to_base(capture.start, false)..style_end, self.views[&view_id].layout.search_matches(self.document.id(), self.document.revision()), self.document.format())
+            let styles = DocumentLayoutStyles::resolve_region_for_presentation(self.document.projection(), to_base(capture.start, false)..style_end, self.views[&view_id].layout.presentation_overlays(self.document.id(), self.document.revision()), self.document.format())
             .map_err(LayoutError::from)?;
             let indent_marked_style = resolved_composition_shaping_style(&styles, overlay.replacement_range().start, overlay.base_utf8_len(), affinity);
         let styles = composition_layout_styles(styles, &overlay, affinity)?;

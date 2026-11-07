@@ -755,6 +755,11 @@ pub struct Document {
     read_only: bool,
     modifiable: bool,
     recovered_dirty: bool,
+    /// The source as last loaded or saved, for diff mode's Last saved base.
+    /// It shares unchanged buffers with history, including after an
+    /// asynchronous save. `None` after recovery, when the persisted source is
+    /// unknown.
+    saved_source: Option<SourceSnapshot>,
     /// Disposable presentation cache; never retained by document history.
     code_presentation: Option<code_presentation::CodePresentation>,
     configuration: Option<configuration::Configuration>,
@@ -894,6 +899,7 @@ impl Document {
             suspended_edit_group: None,
             position_map_capture: None,
             layout_changes: std::collections::VecDeque::new(),
+            saved_source: None,
             artifact_binding: None,
             pending_artifact_writes: HashMap::new(),
             next_artifact_write_token: 1,
@@ -1038,6 +1044,7 @@ impl Document {
             decoded_utf8_len,
             &state.projection,
         );
+        let saved_source = Some(state.source.clone());
         Ok(Self {
             id: allocate_document_id(&NEXT_DOCUMENT_ID)?,
             history: new_document_history(state),
@@ -1049,6 +1056,7 @@ impl Document {
             suspended_edit_group: None,
             position_map_capture: None,
             layout_changes: std::collections::VecDeque::new(),
+            saved_source,
             artifact_binding: None,
             pending_artifact_writes: HashMap::new(),
             next_artifact_write_token: 1,
@@ -1199,6 +1207,31 @@ impl Document {
             .find(|record| record.after == after)
             .filter(|record| record.before == before)
             .and_then(|record| record.local.clone())
+    }
+
+    /// The bounded formatted changes connecting `from` to the current
+    /// revision, oldest first, when every step was a recorded regional
+    /// transaction. `None` means some step was unbounded or is no longer
+    /// retained; an empty list means `from` is current.
+    pub(crate) fn layout_change_chain(&self, from: Revision) -> Option<Vec<LocalFormattedChange>> {
+        let current = self.revision();
+        if from == current {
+            return Some(Vec::new());
+        }
+        let start = self.layout_changes.iter().position(|record| record.before == from)?;
+        let mut chain = Vec::new();
+        let mut at = from;
+        for record in self.layout_changes.iter().skip(start) {
+            if record.before != at {
+                return None;
+            }
+            chain.push(record.local.clone()?);
+            at = record.after;
+            if at == current {
+                return Some(chain);
+            }
+        }
+        None
     }
 
     /// Run one serial controller operation while composing every committed
@@ -1357,6 +1390,11 @@ impl Document {
             return Err(PersistenceError::DestinationWritePending(destination));
         }
 
+        let saved_source = matches!(
+            kind,
+            PendingArtifactWriteKind::Save { .. } | PendingArtifactWriteKind::SaveAs { .. }
+        )
+        .then(|| self.state().source.clone());
         let token = self.allocate_artifact_write_token()?;
         let prepared = PreparedArtifactWrite {
             token,
@@ -1372,6 +1410,7 @@ impl Document {
             PendingArtifactWrite {
                 prepared: prepared.clone(),
                 kind,
+                saved_source,
             },
         );
         Ok(prepared)
@@ -1457,6 +1496,7 @@ impl Document {
                 if let Some(sequence) = save_sequence {
                     self.last_successful_save_sequence = sequence;
                     self.recovered_dirty = false;
+                    self.saved_source = pending.saved_source.clone();
                 }
                 let file_identity_changed = self.artifact_binding != previous_binding;
                 self.finish_artifact_write(token);
@@ -2130,7 +2170,15 @@ impl Document {
     pub fn mark_saved(&mut self) -> HistoryNodeId {
         self.close_edit_group();
         self.recovered_dirty = false;
+        self.saved_source = Some(self.state().source.clone());
         self.history.mark_saved()
+    }
+
+    /// The exact source bytes as last loaded or saved, for diff mode's Last
+    /// saved base. This materializes a flat copy. `None` when the persisted
+    /// source is unknown, such as after recovery.
+    pub fn saved_source_bytes(&self) -> Option<Vec<u8>> {
+        self.saved_source.as_ref().map(SourceSnapshot::bytes)
     }
 
     /// Whether the current source snapshot differs from the persisted one.
@@ -2162,6 +2210,7 @@ impl Document {
     /// Keep it dirty even at the initial history node or after undo to it.
     pub fn mark_recovered(&mut self) {
         self.recovered_dirty = true;
+        self.saved_source = None;
     }
     pub fn validate_write_policy(&self, force: bool) -> Result<(), PersistenceError> {
         if self.read_only && !force {

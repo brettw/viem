@@ -189,6 +189,7 @@ mod containers;
 mod block_boxes;
 
 mod document_mode;
+mod diff_mode;
 mod markdown_autodetect;
 
 mod markdown_table_commands;

@@ -64,6 +64,8 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var visualSelection: EVVisualSelectionExport?
     private(set) var viewPresentation = ViemViewPresentationV1()
     private(set) var viewportState = ViemViewportStateV1()
+    /// Diff mode mirrors the aligned sides' vertical scrolling through this.
+    var diffViewportTopDidChange: ((CGFloat) -> Void)?
     private(set) var documentState = ViemDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
     private var isRefreshingPresentation = false
@@ -542,7 +544,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             viewPresentation = nextPresentation
             selectionPresentationViewID = session.viewID
             selectionCharacterContextGeneration = session.characterContextGeneration
+            let previousTop = viewportState.top
             viewportState = nextViewport
+            if previousTop != nextViewport.top { diffViewportTopDidChange?(CGFloat(nextViewport.top)) }
             layoutSnapshot = nextLayoutSnapshot
             layoutPaint = nextLayoutPaint
             layoutTextSlices = nextLayoutTextSlices

@@ -82,7 +82,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private(set) var core: ViemCoreHandle = 0
     private var source = Data()
     private var typeName = "public.plain-text"
-    private var openingFilename = ""
+    private(set) var openingFilename = ""
     // The document owns resource identity. A pane being prepared is not yet
     // registered with its window, so its host URL lookup may temporarily be nil.
     private(set) var documentImages = CoreTextDocumentImages()
@@ -97,6 +97,8 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
     private var isRefreshingSurfaces = false
     private var isApplyingThemeStyles = false
     private var pendingSourceChangeOrigins: [ViemViewId] = []
+    /// Diff mode comparisons of this document, synchronized on each change.
+    var diffSessions: [WeakDiffSession] = []
 
     let configuration: EVConfigurationStore
     public private(set) var configurationWarning: String?
@@ -240,6 +242,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
         surfaces.append(WeakSurface(surface))
         return surface
     }
+
+    /// The document's editor surfaces that are still open.
+    var liveEditorSurfaces: [EVEditorSurfaceController] { surfaces.compactMap(\.value) }
 
     public func updateFilename(_ filename: String) {
         guard openingFilename != filename else { return }
@@ -527,6 +532,9 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             // undo returns to the saved revision and must clear AppKit's
             // provisional change count again.
             _ = try? documentState()
+            // Diff presentation must match this revision before views redraw.
+            diffSessions.removeAll { $0.value == nil }
+            for session in diffSessions.compactMap(\.value) { session.sync() }
             surfaces.removeAll { $0.value == nil }
             for surface in surfaces.compactMap(\.value) {
                 surface.sharedDocumentDidChange(originatingViewIDs: origins)

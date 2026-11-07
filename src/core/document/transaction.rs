@@ -1195,6 +1195,8 @@ impl Document {
             suspended_edit_group: None,
             position_map_capture: None,
             layout_changes: std::collections::VecDeque::new(),
+            // Candidates never back a diff base.
+            saved_source: None,
             artifact_binding: None,
             pending_artifact_writes: Default::default(),
             next_artifact_write_token: 1,

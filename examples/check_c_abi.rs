@@ -113,6 +113,12 @@ _Static_assert(VIEM_EX_OPTION_NUMBER == {number_option}, "number option");
 _Static_assert(VIEM_STYLE_DEFINITION_LINE_NUMBER == {line_number_style_flag}, "line number definition flag");
 _Static_assert(VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER == {current_line_number_style_flag}, "current line number definition flag");
 _Static_assert(VIEM_LINE_NUMBER_REGION_CURRENT == {current_line_number_region_flag}, "current line number region flag");
+_Static_assert(VIEM_DIFF_SESSION_ALIGNED == {diff_aligned}, "diff aligned flag");
+_Static_assert(VIEM_DIFF_SYNC_INCREMENTAL == {diff_sync_incremental} && VIEM_DIFF_SYNC_FULL == {diff_sync_full}, "diff sync results");
+_Static_assert(VIEM_DIFF_BASE_UNSTAGED == {diff_base_unstaged} && VIEM_DIFF_BASE_BRANCH == {diff_base_branch} && VIEM_DIFF_BASE_FILE == {diff_base_file}, "diff base kinds");
+_Static_assert(VIEM_DIFF_RESULT_UNAVAILABLE == {diff_result_unavailable} && VIEM_DIFF_RESULT_COMMAND_FAILED == {diff_result_command}, "diff result codes");
+_Static_assert(VIEM_DIFF_RESULT_BASE_EXISTS == {diff_base_exists}, "diff base exists flag");
+_Static_assert(VIEM_DIFF_FILE_RENAMED == {diff_file_renamed} && VIEM_DIFF_FILE_UNSAVED == {diff_file_unsaved}, "diff file changes");
 _Static_assert(sizeof(ViemLineNumberSnapshotInfoV1) == {line_number_info_size}, "line number info size");
 _Static_assert(offsetof(ViemLineNumberSnapshotInfoV1, viewport) == {line_number_info_viewport}, "line number viewport offset");
 _Static_assert(sizeof(ViemLineNumberRegionV1) == {line_number_region_size}, "line number region size");
@@ -547,6 +553,18 @@ static void typecheck(void) {{
   ViemStatus (*copy_html_export)(ViemHtmlExportHandle, uint8_t *, uint64_t,
       uint64_t *) = viem_html_export_copy_utf8;
   ViemStatus (*release_html_export)(ViemHtmlExportHandle) = viem_html_export_release;
+  ViemStatus (*diff_create)(ViemCoreHandle, ViemCoreHandle, uint32_t, ViemDiffSessionHandle *) =
+      viem_diff_session_create;
+  ViemStatus (*diff_sync)(ViemDiffSessionHandle, ViemCoreHandle, ViemViewId, ViemCoreHandle,
+      ViemViewId, uint32_t *) = viem_diff_session_sync;
+  ViemStatus (*diff_line)(ViemDiffSessionHandle, uint32_t, uint64_t, uint64_t *) =
+      viem_diff_session_corresponding_line;
+  ViemStatus (*diff_load)(const ViemDiffBaseRequestV1 *, ViemDiffResultHandle *) = viem_diff_load_base;
+  ViemStatus (*diff_item)(ViemDiffResultHandle, uint64_t, ViemDiffListItemV1 *, uint8_t *, uint64_t,
+      uint64_t *) = viem_diff_result_copy_item;
+  ViemStatus (*saved_source)(ViemCoreHandle, uint8_t *, uint64_t, uint64_t *, uint32_t *) =
+      viem_core_copy_saved_source;
+  (void)diff_create; (void)diff_sync; (void)diff_line; (void)diff_load; (void)diff_item; (void)saved_source;
   ViemStatus (*import_clipboard)(uint32_t, const uint8_t *, uint64_t,
       uint8_t *, uint64_t, uint64_t *) = viem_import_clipboard_json;
   ViemStatus (*style_sheet_info)(ViemCoreHandle, ViemStyleSheetInfoV1 *) =
@@ -722,6 +740,17 @@ static void typecheck(void) {{
         line_number_style_flag = VIEM_STYLE_DEFINITION_LINE_NUMBER,
         current_line_number_style_flag = VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER,
         current_line_number_region_flag = VIEM_LINE_NUMBER_REGION_CURRENT,
+        diff_aligned = VIEM_DIFF_SESSION_ALIGNED,
+        diff_sync_incremental = VIEM_DIFF_SYNC_INCREMENTAL,
+        diff_sync_full = VIEM_DIFF_SYNC_FULL,
+        diff_base_unstaged = VIEM_DIFF_BASE_UNSTAGED,
+        diff_base_branch = VIEM_DIFF_BASE_BRANCH,
+        diff_base_file = VIEM_DIFF_BASE_FILE,
+        diff_result_unavailable = VIEM_DIFF_RESULT_UNAVAILABLE,
+        diff_result_command = VIEM_DIFF_RESULT_COMMAND_FAILED,
+        diff_base_exists = VIEM_DIFF_RESULT_BASE_EXISTS,
+        diff_file_renamed = VIEM_DIFF_FILE_RENAMED,
+        diff_file_unsaved = VIEM_DIFF_FILE_UNSAVED,
         line_number_info_size = std::mem::size_of::<ViemLineNumberSnapshotInfoV1>(),
         line_number_info_viewport = std::mem::offset_of!(ViemLineNumberSnapshotInfoV1, viewport),
         line_number_region_size = std::mem::size_of::<ViemLineNumberRegionV1>(),

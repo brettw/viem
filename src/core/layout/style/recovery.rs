@@ -90,6 +90,9 @@ impl DocumentLayoutStyles {
             style_sheet: &sheet,
             document_style: &assignment,
             search_matches: &[],
+            // Filler geometry survives recovery; line styles apply only when
+            // the fallback sheet defines them.
+            diff: input.diff,
         }, None)?;
         // Recovery is still an exact layout of the current source/style
         // snapshot, not an installed replacement stylesheet.

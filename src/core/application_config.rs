@@ -18,6 +18,7 @@ pub fn defaults() -> Value {
             "indentation":IndentationOptions::default(),"whitespacePresentation":WhitespacePresentationOptions::default()},
         "appearance":{"showStatusBar":true},"windows":{"showMenu":true},
         "code":{"filenameAssociations":[]},
+        "diff":{"alignSides":true,"lineNumbers":true},
         "formattingToolbar":{"plainText":true,"code":true,"markdown":true},"recentDocuments":[]})
 }
 fn fill(value: &mut Value, defaults: Value) {
@@ -54,6 +55,7 @@ pub fn normalize(bytes: &[u8]) -> Result<Value, String> {
         "editing",
         "appearance",
         "code",
+        "diff",
         "windows",
         "formattingToolbar",
     ] {
@@ -84,6 +86,10 @@ pub fn normalize(bytes: &[u8]) -> Result<Value, String> {
         ("appearance", &["showStatusBar"][..]),
         ("windows", &["showMenu"][..]),
         ("formattingToolbar", &["plainText", "code", "markdown"][..]),
+        // Diff mode and Code each save the last line-number state set
+        // explicitly in that mode; Code's is absent until first set.
+        ("diff", &["alignSides", "lineNumbers"][..]),
+        ("code", &["lineNumbers"][..]),
     ] {
         for key in keys {
             if value[section].get(key).is_some_and(|v| !v.is_boolean()) {

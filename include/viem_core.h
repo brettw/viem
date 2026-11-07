@@ -3286,6 +3286,145 @@ ViemStatus viem_core_view_toggle_checkbox(ViemCoreHandle core, ViemViewId view,
     const ViemLayoutSnapshotIdentityV1 *expected, uint64_t paragraph_id,
     ViemCoreOutcomeV1 *out_outcome);
 
+/* Diff mode (docs/diff_mode.md). A session compares a read-only base core
+ * with a live core and installs each side's presentation in a view. Base
+ * loads and file lists may block on disk or a `git` process: call them on a
+ * worker. They return an owned result even when the base is unavailable;
+ * only invalid arguments fail the call. Release every result. */
+typedef uint64_t ViemDiffSessionHandle;
+typedef uint64_t ViemDiffResultHandle;
+typedef uint64_t ViemDiffCancellationHandle;
+
+#define VIEM_DIFF_SESSION_ALIGNED (1u << 0)
+
+#define VIEM_DIFF_SYNC_UNCHANGED 0u
+#define VIEM_DIFF_SYNC_INCREMENTAL 1u
+#define VIEM_DIFF_SYNC_FULL 2u
+
+/* LAST_SAVED loads the file on disk (Refresh); the in-memory copy comes from
+ * viem_core_copy_saved_source. FILE loads the chosen file_path. */
+#define VIEM_DIFF_BASE_LAST_SAVED 0u
+#define VIEM_DIFF_BASE_UNSTAGED 1u
+#define VIEM_DIFF_BASE_HEAD 2u
+#define VIEM_DIFF_BASE_BRANCH 3u
+#define VIEM_DIFF_BASE_FILE 4u
+
+#define VIEM_DIFF_RESULT_OK 0u
+#define VIEM_DIFF_RESULT_UNAVAILABLE 1u
+#define VIEM_DIFF_RESULT_CANCELLED 2u
+#define VIEM_DIFF_RESULT_TIMED_OUT 3u
+#define VIEM_DIFF_RESULT_TOO_LARGE 4u
+#define VIEM_DIFF_RESULT_IO_ERROR 5u
+#define VIEM_DIFF_RESULT_COMMAND_FAILED 6u
+/* The base exists in that version; otherwise its bytes are empty. */
+#define VIEM_DIFF_RESULT_BASE_EXISTS (1u << 0)
+
+#define VIEM_DIFF_FILE_MODIFIED 0u
+#define VIEM_DIFF_FILE_ADDED 1u
+#define VIEM_DIFF_FILE_DELETED 2u
+#define VIEM_DIFF_FILE_RENAMED 3u
+#define VIEM_DIFF_FILE_UNSAVED 4u
+
+typedef struct ViemDiffBaseRequestV1 {
+  uint32_t struct_size;
+  uint32_t kind;
+  /* Absolute UTF-8 path of the document, the chosen base file, or a renamed
+   * file's base path. */
+  ViemUtf8Slice file_path;
+  /* VIEM_DIFF_BASE_BRANCH only. */
+  ViemUtf8Slice branch;
+  /* Empty means `git` found through PATH. */
+  ViemUtf8Slice git_program;
+  /* Zero for none. */
+  ViemDiffCancellationHandle cancellation;
+  /* File lists only: open buffers with unsaved changes join the list. */
+  const ViemUtf8Slice *unsaved_paths;
+  uint64_t unsaved_path_count;
+} ViemDiffBaseRequestV1;
+#define VIEM_DIFF_BASE_REQUEST_V1_SIZE ((uint32_t)sizeof(ViemDiffBaseRequestV1))
+
+typedef struct ViemDiffResultInfoV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  /* A VIEM_DIFF_RESULT_* code. */
+  uint32_t result;
+  uint32_t reserved;
+  uint64_t byte_count;
+  uint64_t item_count;
+  uint64_t message_bytes;
+} ViemDiffResultInfoV1;
+#define VIEM_DIFF_RESULT_INFO_V1_SIZE ((uint32_t)sizeof(ViemDiffResultInfoV1))
+
+/* A list item's path (or branch name) bytes, then its base path bytes, are
+ * copied back to back into the caller's text buffer. */
+typedef struct ViemDiffListItemV1 {
+  uint32_t struct_size;
+  uint32_t change;
+  uint64_t path_bytes;
+  uint64_t base_path_bytes;
+} ViemDiffListItemV1;
+#define VIEM_DIFF_LIST_ITEM_V1_SIZE ((uint32_t)sizeof(ViemDiffListItemV1))
+
+typedef struct ViemDiffSessionInfoV1 {
+  uint32_t struct_size;
+  uint32_t flags;
+  uint64_t hunk_count;
+  uint64_t base_line_count;
+  uint64_t new_line_count;
+} ViemDiffSessionInfoV1;
+#define VIEM_DIFF_SESSION_INFO_V1_SIZE ((uint32_t)sizeof(ViemDiffSessionInfoV1))
+
+ViemStatus viem_diff_session_create(ViemCoreHandle base_core, ViemCoreHandle new_core,
+    uint32_t flags, ViemDiffSessionHandle *out_session);
+ViemStatus viem_diff_session_destroy(ViemDiffSessionHandle session);
+ViemStatus viem_diff_session_set_aligned(ViemDiffSessionHandle session, uint32_t aligned);
+/* Update the diff after any change to either core and install both sides'
+ * presentations; out_sync is a VIEM_DIFF_SYNC_* value. */
+ViemStatus viem_diff_session_sync(ViemDiffSessionHandle session,
+    ViemCoreHandle base_core, ViemViewId base_view,
+    ViemCoreHandle new_core, ViemViewId new_view, uint32_t *out_sync);
+/* The zero-based hard line on the other side corresponding to `line`. */
+ViemStatus viem_diff_session_corresponding_line(ViemDiffSessionHandle session,
+    uint32_t from_new, uint64_t line, uint64_t *out_line);
+/* The viewport top for to_view showing the text corresponding to the top of
+ * from_view, for scrolling aligned sides together. */
+ViemStatus viem_diff_session_corresponding_top(ViemDiffSessionHandle session,
+    ViemCoreHandle from_core, ViemViewId from_view, uint32_t from_new,
+    ViemCoreHandle to_core, ViemViewId to_view, float *out_top);
+ViemStatus viem_diff_session_info(ViemDiffSessionHandle session,
+    ViemDiffSessionInfoV1 *out_info);
+/* Set the buffer-local `modifiable` policy; zero rejects every edit path. */
+ViemStatus viem_core_set_modifiable(ViemCoreHandle core, uint32_t modifiable);
+/* Remove diff presentation from a view when leaving diff mode. */
+ViemStatus viem_diff_clear_view(ViemCoreHandle core, ViemViewId view);
+/* Two-pass copy of the source as last loaded or saved (the Last saved base).
+ * out_available is zero when it is unknown, such as after recovery. */
+ViemStatus viem_core_copy_saved_source(ViemCoreHandle core, uint8_t *output,
+    uint64_t output_capacity, uint64_t *out_required, uint32_t *out_available);
+
+ViemStatus viem_diff_cancellation_create(ViemDiffCancellationHandle *out_cancellation);
+/* Cancel loads using this token from any thread. */
+ViemStatus viem_diff_cancellation_cancel(ViemDiffCancellationHandle cancellation);
+ViemStatus viem_diff_cancellation_release(ViemDiffCancellationHandle cancellation);
+
+ViemStatus viem_diff_load_base(const ViemDiffBaseRequestV1 *request,
+    ViemDiffResultHandle *out_result);
+/* Git bases list tracked changes as `git diff` does plus unsaved buffers in
+ * the repository; Last saved lists only the document; FILE lists nothing. */
+ViemStatus viem_diff_list_files(const ViemDiffBaseRequestV1 *request,
+    ViemDiffResultHandle *out_result);
+ViemStatus viem_diff_list_branches(const ViemDiffBaseRequestV1 *request,
+    ViemDiffResultHandle *out_result);
+ViemStatus viem_diff_result_info(ViemDiffResultHandle result, ViemDiffResultInfoV1 *out_info);
+ViemStatus viem_diff_result_copy_bytes(ViemDiffResultHandle result, uint8_t *output,
+    uint64_t output_capacity, uint64_t *out_required);
+ViemStatus viem_diff_result_copy_message(ViemDiffResultHandle result, uint8_t *output,
+    uint64_t output_capacity, uint64_t *out_required);
+ViemStatus viem_diff_result_copy_item(ViemDiffResultHandle result, uint64_t index,
+    ViemDiffListItemV1 *out_item, uint8_t *text, uint64_t text_capacity,
+    uint64_t *out_required);
+ViemStatus viem_diff_result_release(ViemDiffResultHandle result);
+
 #ifdef __cplusplus
 }
 #endif

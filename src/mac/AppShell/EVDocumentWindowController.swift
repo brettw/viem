@@ -52,6 +52,8 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private var initialWindowFrame: NSRect?
   private(set) lazy var formattingToolbar = EVFormattingToolbarChrome(
     window: window!, configuration: configuration)
+  /// Created when diff mode is first used in this window.
+  private(set) var diffMode: EVDiffModeController?
 
   /// Injectable I/O boundary for launch and argument-list opens.
   var argumentDocumentOpener: ((URL, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
@@ -113,6 +115,10 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
       return pane
     }
     paneContainer.closePaneRequest = { [weak self] pane in self?.closePane(pane) }
+    firstPane.editorMenuCommandDidPerform = { [weak self, weak firstPane] command in
+      guard let self, let firstPane else { return }
+      self.editorMenuCommandDidPerform(command, in: firstPane)
+    }
     paneContainer.panesDidChange = { [weak self] in self?.updateActiveDocumentChrome() }
     window.delegate = self
     Self.instances.removeAll { $0.value == nil }
@@ -221,6 +227,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   func updateActiveDocumentChrome() {
     guard !isClosed, let document = activeDocument else { return }
     formattingToolbar.synchronize(surface: editorSurface)
+    diffMode?.activeDocumentDidChange()
     window?.title =
       document.displayName
       + (paneContainer.panes.count > 1 ? " · \(paneContainer.panes.count) panes" : "")
@@ -312,6 +319,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   public func windowWillClose(_ notification: Notification) {
     guard !isClosed else { return }
+    diffMode?.disable()
     if hasPresentedInitialWindow, let window { placement.record(window: window, gutterWidth: placementGutterWidth) }
     isClosed = true
     let documents = paneContainer.panes.compactMap(\.document)
@@ -1489,6 +1497,10 @@ extension EVDocumentWindowController {
       pane.argumentIndex = matched
     }
     (surface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
+    pane.editorMenuCommandDidPerform = { [weak self, weak pane] command in
+      guard let self, let pane else { return }
+      self.editorMenuCommandDidPerform(command, in: pane)
+    }
     return pane
   }
 
@@ -1746,6 +1758,9 @@ final class EVDocumentContentViewController: NSViewController,
   let editorSurface: any EVEditorSurface
   private let configuration: EVConfigurationStore
   let statusBar = EVStatusBarView()
+  /// Runs after an editor menu command, so the window can follow settings
+  /// that diff mode and Code remember.
+  var editorMenuCommandDidPerform: ((EVMenuCommand) -> Void)?
   var statusBarHeightDidChange: (() -> Void)?
   private var showsStatusBar: Bool
 
@@ -1900,6 +1915,7 @@ final class EVDocumentContentViewController: NSViewController,
       document?.showAdditionalWindow()
     } else {
       editorSurface.perform(menuCommand: command, sender: sender)
+      editorMenuCommandDidPerform?(command)
     }
   }
 
@@ -1942,5 +1958,94 @@ final class EVDocumentContentViewController: NSViewController,
       menuItem.title = title
     }
     return presentation.isEnabled
+  }
+}
+
+// MARK: Diff mode
+
+@MainActor
+extension EVDocumentWindowController: EVDiffModeHost {
+  var diffWindow: NSWindow? { window }
+  var diffActiveDocument: EVDocument? { activeDocument }
+  var diffActiveSurface: (any EVEditorSurface)? { isClosed ? nil : editorSurface }
+  var diffDocumentContentView: NSView { paneContainer.view }
+  var diffOpenPanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)? {
+    openFilePanelPresenter
+  }
+
+  func installDiffContent(_ view: NSView?) {
+    guard let window else { return }
+    let content = view ?? paneContainer.view
+    guard window.contentView !== content else { return }
+    content.frame = NSRect(origin: .zero, size: window.contentLayoutRect.size)
+    content.translatesAutoresizingMaskIntoConstraints = false
+    if view == nil { paneContainer.view.removeFromSuperview() }
+    window.contentView = content
+    content.layoutSubtreeIfNeeded()
+    paneContainer.layoutPanes()
+  }
+
+  func openDiffFile(_ url: URL, completion: @escaping @MainActor (Error?) -> Void) {
+    guard let document = activeDocument else { completion(EVDocumentHostError.staleRequest); return }
+    // The caller has already shown the window-close save review.
+    edit(document, in: documentContentController, path: url.path, force: true) { result in
+      switch result {
+      case .success: completion(nil)
+      case let .failure(error): completion(error)
+      }
+    }
+  }
+
+  func unsavedDocumentURLs() -> [URL] {
+    NSDocumentController.shared.documents.compactMap { document in
+      guard let document = document as? EVDocument, let url = document.fileURL,
+        document.editorBackend.persistenceState.isDirty else { return nil }
+      return url
+    }
+  }
+
+  private var diffController: EVDiffModeController {
+    if let diffMode { return diffMode }
+    let controller = EVDiffModeController(host: self, configuration: configuration)
+    diffMode = controller
+    return controller
+  }
+
+  fileprivate func editorMenuCommandDidPerform(_ command: EVMenuCommand, in pane: EVDocumentContentViewController) {
+    guard command == .showLineNumbers else { return }
+    if diffMode?.isEnabled == true {
+      diffMode?.lineNumbersDidToggle(on: pane.editorSurface)
+    } else if pane.document?.editorBackend.sourceFormat == .code,
+      let shows = (pane.editorSurface as? any EVDiffLineNumberControlling)?.showsLineNumbers {
+      try? configuration.setCodeLineNumbers(shows)
+    }
+  }
+
+  @objc func toggleDiffMode(_ sender: Any?) { diffController.toggle() }
+  @objc func toggleDiffAlignSides(_ sender: Any?) { diffMode?.toggleAlign() }
+  @objc func refreshDiffBase(_ sender: Any?) { diffMode?.refresh() }
+  @objc func chooseDiffBaseFile(_ sender: Any?) { diffMode?.chooseBaseFile() }
+  @objc func showPreviousDiffFile(_ sender: Any?) { diffMode?.moveFile(by: -1) }
+  @objc func showNextDiffFile(_ sender: Any?) { diffMode?.moveFile(by: 1) }
+}
+
+@MainActor
+extension EVDocumentWindowController: NSMenuItemValidation {
+  public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    let enabled = diffMode?.isEnabled == true
+    switch menuItem.action {
+    case #selector(toggleDiffMode(_:)):
+      menuItem.state = enabled ? .on : .off
+      return activeDocument != nil
+    case #selector(toggleDiffAlignSides(_:)):
+      menuItem.state = (diffMode?.isAligned ?? configuration.diffAlignSides) ? .on : .off
+      return enabled
+    case #selector(refreshDiffBase(_:)), #selector(chooseDiffBaseFile(_:)):
+      return enabled
+    case #selector(showPreviousDiffFile(_:)), #selector(showNextDiffFile(_:)):
+      return enabled && !(diffMode?.files.isEmpty ?? true)
+    default:
+      return true
+    }
   }
 }

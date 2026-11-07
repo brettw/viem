@@ -822,7 +822,7 @@ where
             Some(document_line_range(document, range.end)?)
         } else { None };
         let style_end = following_style_end(document, following_line_range.as_ref(), text_end)?;
-        let styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, view.search_matches(document.id(), document.revision()), document.format())?;
+        let styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, view.presentation_overlays(document.id(), document.revision()), document.format())?;
         let styles = retain_regional_styles(styles, &line_ranges, following_line_range.as_ref());
         (
             CapturedLayoutInput::UnwrappedViewport { text: document.projection().text_tree().clone(), line_ranges,
@@ -885,7 +885,7 @@ where
             return Err(LayoutJobError::Cancelled);
         }
         let styles =
-            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), context_start..style_end, view.search_matches(document.id(), document.revision()), document.format())?;
+            DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), context_start..style_end, view.presentation_overlays(document.id(), document.revision()), document.format())?;
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);
         }
@@ -955,7 +955,7 @@ where
                 text_origin..style_end, search_matches, document.format(), cache)?
         } else {
             DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end,
-                view.search_matches(document.id(), document.revision()), document.format())?
+                view.presentation_overlays(document.id(), document.revision()), document.format())?
         };
         if cancellation.is_cancelled() {
             return Err(LayoutJobError::Cancelled);

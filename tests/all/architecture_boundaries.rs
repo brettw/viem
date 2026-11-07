@@ -83,3 +83,17 @@ fn portable_core_has_no_native_ui_framework_dependency() {
         ],
     );
 }
+
+#[test]
+fn diff_computation_is_portable_logic() {
+    assert_sources_omit(
+        "src/core/diff",
+        &[
+            "crate::command",
+            "crate::coordinator",
+            "crate::document",
+            "crate::layout",
+            "crate::ffi",
+        ],
+    );
+}

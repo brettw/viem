@@ -1403,6 +1403,50 @@ internal unsafe struct ViemSetDocumentModeV1
     public ulong @document_revision;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemDiffBaseRequestV1
+{
+    public uint @struct_size;
+    public uint @kind;
+    public ViemUtf8Slice @file_path;
+    public ViemUtf8Slice @branch;
+    public ViemUtf8Slice @git_program;
+    public ulong @cancellation;
+    public ViemUtf8Slice* @unsaved_paths;
+    public ulong @unsaved_path_count;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemDiffResultInfoV1
+{
+    public uint @struct_size;
+    public uint @flags;
+    public uint @result;
+    public uint @reserved;
+    public ulong @byte_count;
+    public ulong @item_count;
+    public ulong @message_bytes;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemDiffListItemV1
+{
+    public uint @struct_size;
+    public uint @change;
+    public ulong @path_bytes;
+    public ulong @base_path_bytes;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ViemDiffSessionInfoV1
+{
+    public uint @struct_size;
+    public uint @flags;
+    public ulong @hunk_count;
+    public ulong @base_line_count;
+    public ulong @new_line_count;
+}
+
 internal static unsafe partial class Native
 {
     public const uint VIEM_CORE_ABI_VERSION = 8u;
@@ -2083,6 +2127,32 @@ internal static unsafe partial class Native
     public const uint VIEM_DOCUMENT_MODE_MARKDOWN = 2u;
     public const uint VIEM_DOCUMENT_MODE_CODE = 3u;
     public static readonly uint VIEM_SET_DOCUMENT_MODE_V1_SIZE = ((uint)sizeof(ViemSetDocumentModeV1));
+    public const uint VIEM_DIFF_SESSION_ALIGNED = (1u << 0);
+    public const uint VIEM_DIFF_SYNC_UNCHANGED = 0u;
+    public const uint VIEM_DIFF_SYNC_INCREMENTAL = 1u;
+    public const uint VIEM_DIFF_SYNC_FULL = 2u;
+    public const uint VIEM_DIFF_BASE_LAST_SAVED = 0u;
+    public const uint VIEM_DIFF_BASE_UNSTAGED = 1u;
+    public const uint VIEM_DIFF_BASE_HEAD = 2u;
+    public const uint VIEM_DIFF_BASE_BRANCH = 3u;
+    public const uint VIEM_DIFF_BASE_FILE = 4u;
+    public const uint VIEM_DIFF_RESULT_OK = 0u;
+    public const uint VIEM_DIFF_RESULT_UNAVAILABLE = 1u;
+    public const uint VIEM_DIFF_RESULT_CANCELLED = 2u;
+    public const uint VIEM_DIFF_RESULT_TIMED_OUT = 3u;
+    public const uint VIEM_DIFF_RESULT_TOO_LARGE = 4u;
+    public const uint VIEM_DIFF_RESULT_IO_ERROR = 5u;
+    public const uint VIEM_DIFF_RESULT_COMMAND_FAILED = 6u;
+    public const uint VIEM_DIFF_RESULT_BASE_EXISTS = (1u << 0);
+    public const uint VIEM_DIFF_FILE_MODIFIED = 0u;
+    public const uint VIEM_DIFF_FILE_ADDED = 1u;
+    public const uint VIEM_DIFF_FILE_DELETED = 2u;
+    public const uint VIEM_DIFF_FILE_RENAMED = 3u;
+    public const uint VIEM_DIFF_FILE_UNSAVED = 4u;
+    public static readonly uint VIEM_DIFF_BASE_REQUEST_V1_SIZE = ((uint)sizeof(ViemDiffBaseRequestV1));
+    public static readonly uint VIEM_DIFF_RESULT_INFO_V1_SIZE = ((uint)sizeof(ViemDiffResultInfoV1));
+    public static readonly uint VIEM_DIFF_LIST_ITEM_V1_SIZE = ((uint)sizeof(ViemDiffListItemV1));
+    public static readonly uint VIEM_DIFF_SESSION_INFO_V1_SIZE = ((uint)sizeof(ViemDiffSessionInfoV1));
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_parse_launch_arguments(byte* @input, ulong @input_length, byte* @output, ulong @capacity, ulong* @required);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2529,4 +2599,46 @@ internal static unsafe partial class Native
     public static extern uint viem_set_theme_names(byte* @names, ulong @length);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_toggle_checkbox(ulong @core, ulong @view, ViemLayoutSnapshotIdentityV1* @expected, ulong @paragraph_id, ViemCoreOutcomeV1* @out_outcome);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_create(ulong @base_core, ulong @new_core, uint @flags, ulong* @out_session);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_destroy(ulong @session);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_set_aligned(ulong @session, uint @aligned);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_sync(ulong @session, ulong @base_core, ulong @base_view, ulong @new_core, ulong @new_view, uint* @out_sync);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_corresponding_line(ulong @session, uint @from_new, ulong @line, ulong* @out_line);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_corresponding_top(ulong @session, ulong @from_core, ulong @from_view, uint @from_new, ulong @to_core, ulong @to_view, float* @out_top);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_info(ulong @session, ViemDiffSessionInfoV1* @out_info);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_set_modifiable(ulong @core, uint @modifiable);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_clear_view(ulong @core, ulong @view);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_core_copy_saved_source(ulong @core, byte* @output, ulong @output_capacity, ulong* @out_required, uint* @out_available);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_cancellation_create(ulong* @out_cancellation);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_cancellation_cancel(ulong @cancellation);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_cancellation_release(ulong @cancellation);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_load_base(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_list_files(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_list_branches(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_result_info(ulong @result, ViemDiffResultInfoV1* @out_info);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_result_copy_bytes(ulong @result, byte* @output, ulong @output_capacity, ulong* @out_required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_result_copy_message(ulong @result, byte* @output, ulong @output_capacity, ulong* @out_required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_result_copy_item(ulong @result, ulong @index, ViemDiffListItemV1* @out_item, byte* @text, ulong @text_capacity, ulong* @out_required);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_result_release(ulong @result);
 }

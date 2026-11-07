@@ -220,6 +220,111 @@ struct StyleCascadeInput<'a> {
     style_sheet: &'a StyleSheet,
     document_style: &'a DocumentStyleAssignment,
     search_matches: &'a [Range<usize>],
+    diff: Option<&'a DiffLayoutInput>,
+}
+
+/// View-local presentation applied over the document's own styles.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct PresentationOverlays<'a> {
+    pub(crate) search_matches: &'a [Range<usize>],
+    pub(crate) diff: Option<&'a DiffLayoutInput>,
+}
+
+impl<'a> From<&'a [Range<usize>]> for PresentationOverlays<'a> {
+    fn from(search_matches: &'a [Range<usize>]) -> Self {
+        Self { search_matches, diff: None }
+    }
+}
+
+impl<'a> From<&'a [Range<usize>; 0]> for PresentationOverlays<'a> {
+    fn from(_: &'a [Range<usize>; 0]) -> Self {
+        Self::default()
+    }
+}
+
+impl<'a> From<&'a Vec<Range<usize>>> for PresentationOverlays<'a> {
+    fn from(search_matches: &'a Vec<Range<usize>>) -> Self {
+        Self { search_matches, diff: None }
+    }
+}
+
+/// One side of diff mode, in formatted-text offsets of the exact snapshot it
+/// was installed for. Changed lines take the diff line paragraph style,
+/// changed spans the diff text overlay, and filler becomes paragraph margin.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct DiffLayoutInput {
+    /// True for the new side (Added line/text), false for the base side.
+    pub(crate) added: bool,
+    /// Sorted, disjoint extents of changed hard-line runs, from the first
+    /// line's start to the last line's end (excluding its delimiter).
+    pub(crate) lines: Vec<Range<usize>>,
+    /// Sorted, disjoint changed spans.
+    pub(crate) text: Vec<Range<usize>>,
+    /// Filler before the hard line starting at an offset, in unscaled
+    /// points, sorted by offset.
+    pub(crate) fillers: Vec<(usize, f32)>,
+    /// Filler after the last line, in unscaled points.
+    pub(crate) trailing_filler: f32,
+    /// Formatted text length the presentation was built for.
+    pub(crate) text_len: usize,
+}
+
+impl DiffLayoutInput {
+    fn line_style(&self, block: &Block) -> Option<StyleId> {
+        let index = self.lines.partition_point(|range| range.end < block.range.start);
+        self.lines
+            .get(index)
+            .filter(|range| range.start <= block.range.start)
+            .map(|_| if self.added { StyleId::diff_added_line() } else { StyleId::diff_removed_line() })
+    }
+
+    fn filler_before(&self, block: &Block) -> f32 {
+        let index = self.fillers.partition_point(|(offset, _)| *offset < block.range.start);
+        self.fillers.get(index).filter(|(offset, _)| *offset == block.range.start).map_or(0.0, |(_, points)| *points)
+    }
+
+    fn filler_after(&self, block: &Block) -> f32 {
+        if block.range.end == self.text_len { self.trailing_filler } else { 0.0 }
+    }
+
+    fn text_in(&self, range: &Range<usize>) -> &[Range<usize>] {
+        let first = self.text.partition_point(|span| span.end <= range.start);
+        let last = self.text.partition_point(|span| span.start < range.end);
+        &self.text[first..last.max(first)]
+    }
+
+    /// Everything about this presentation that can change one paragraph's
+    /// resolved appearance, relative to the paragraph's start.
+    fn paragraph_key(&self, block: &Block) -> DiffParagraphKey {
+        let start = block.range.start;
+        DiffParagraphKey {
+            added: self.added,
+            line: self.line_style(block).is_some(),
+            filler_before: self.filler_before(block).to_bits(),
+            filler_after: self.filler_after(block).to_bits(),
+            text: self.text_in(&block.range).iter()
+                .map(|span| span.start.max(block.range.start) - start..span.end.min(block.range.end) - start)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct DiffParagraphKey {
+    added: bool,
+    line: bool,
+    filler_before: u32,
+    filler_after: u32,
+    text: Vec<Range<usize>>,
+}
+
+/// The paragraph style a block resolves with: its own, or diff mode's line
+/// style when a diff presentation marks it changed and the sheet defines it.
+fn effective_paragraph_style<'a>(input: &StyleCascadeInput<'a>, block: &'a Block, owned: &'a Option<StyleId>) -> &'a StyleId {
+    match owned {
+        Some(id) if input.style_sheet.block_style(id).is_some() => id,
+        _ => &block.style,
+    }
 }
 
 impl<'a> From<DocumentStyleInput<'a>> for StyleCascadeInput<'a> {
@@ -231,6 +336,7 @@ impl<'a> From<DocumentStyleInput<'a>> for StyleCascadeInput<'a> {
             style_sheet: input.style_sheet,
             document_style: input.document_style,
             search_matches: &[],
+            diff: None,
         }
     }
 }
@@ -334,6 +440,7 @@ impl DocumentLayoutStyles {
                 style_sheet: if automatic { document.layout_style_sheet() } else { document.style_sheet() },
                 document_style: document.document_style(),
                 search_matches: &[],
+                diff: None,
             },
             &block,
             range,
@@ -357,38 +464,39 @@ impl DocumentLayoutStyles {
         Self::resolve_region_with_search(document, text_range, &[])
     }
 
-    pub(crate) fn resolve_region_with_search(
+    pub(crate) fn resolve_region_with_search<'o>(
         document: &FormattedDocument,
         text_range: Range<usize>,
-        search_matches: &[Range<usize>],
+        overlays: impl Into<PresentationOverlays<'o>>,
     ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_impl(document, text_range, search_matches, None, None)
+        Self::resolve_region_impl(document, text_range, overlays.into(), None, None)
     }
 
-    pub(crate) fn resolve_region_for_presentation(
+    pub(crate) fn resolve_region_for_presentation<'o>(
         document: &FormattedDocument,
         text_range: Range<usize>,
-        search_matches: &[Range<usize>],
+        overlays: impl Into<PresentationOverlays<'o>>,
         format: crate::document::Format,
     ) -> Result<Self, DocumentStyleError> {
-        Self::resolve_region_impl(document, text_range, search_matches, Some(format), None)
+        Self::resolve_region_impl(document, text_range, overlays.into(), Some(format), None)
     }
 
     /// As [`Self::resolve_region_for_presentation`], reusing the appearance of
     /// paragraphs whose inputs are unchanged since the view's previous
     /// resolution.
-    pub(crate) fn resolve_region_for_presentation_cached(
+    pub(crate) fn resolve_region_for_presentation_cached<'o>(
         document: &FormattedDocument,
         text_range: Range<usize>,
-        search_matches: &[Range<usize>],
+        overlays: impl Into<PresentationOverlays<'o>>,
         format: crate::document::Format,
         cache: &mut ParagraphStyleCache,
     ) -> Result<Self, DocumentStyleError> {
-        let styles = Self::resolve_region_impl(document, text_range.clone(), search_matches, Some(format), Some(cache))?;
+        let overlays = overlays.into();
+        let styles = Self::resolve_region_impl(document, text_range.clone(), overlays, Some(format), Some(cache))?;
         // Debug builds verify every reuse against a complete resolution.
         #[cfg(debug_assertions)]
         {
-            let mut fresh = Self::resolve_region_impl(document, text_range, search_matches, Some(format), None)?;
+            let mut fresh = Self::resolve_region_impl(document, text_range, overlays, Some(format), None)?;
             // Each resolution captures its own table context for one projection.
             assert_eq!(styles.table_context.is_some(), fresh.table_context.is_some());
             fresh.table_context = styles.table_context.clone();
@@ -400,7 +508,7 @@ impl DocumentLayoutStyles {
     fn resolve_region_impl(
         document: &FormattedDocument,
         text_range: Range<usize>,
-        search_matches: &[Range<usize>],
+        overlays: PresentationOverlays<'_>,
         recovery_format: Option<crate::document::Format>,
         mut cache: Option<&mut ParagraphStyleCache>,
     ) -> Result<Self, DocumentStyleError> {
@@ -423,7 +531,8 @@ impl DocumentLayoutStyles {
             inline_images: &regional_images,
             style_sheet: document.layout_style_sheet(),
             document_style: document.document_style(),
-            search_matches,
+            search_matches: overlays.search_matches,
+            diff: overlays.diff,
         };
         if let Some(cache) = cache.as_deref_mut() {
             cache.prepare(document.layout_style_sheet_arc(), document.document_style());
@@ -556,13 +665,14 @@ impl DocumentLayoutStyles {
             quote_border &= block.containers.is_empty();
             let container_body = block.containers.iter().any(|membership| membership.container.style == block.style)
                 && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
+            let diff_line_style = input.diff.and_then(|diff| diff.line_style(block));
             let paragraph = cascades.paragraph(
                 sheet,
                 input.document_style,
                 if container_body {
                     &sheet.base_paragraph
                 } else {
-                    &block.style
+                    effective_paragraph_style(&input, block, &diff_line_style)
                 },
                 &block.direct_paragraph,
                 &container_character,
@@ -657,8 +767,10 @@ impl DocumentLayoutStyles {
                     value
                 },
                 containers: containers.into(),
-                margin_top: if container_body { 0.0 } else if block.list_loose { paragraph.margin_top.max(7.0) } else { paragraph.margin_top },
-                margin_bottom: if container_body { 0.0 } else if block.list_loose { paragraph.margin_bottom.max(7.0) } else { paragraph.margin_bottom },
+                margin_top: (if container_body { 0.0 } else if block.list_loose { paragraph.margin_top.max(7.0) } else { paragraph.margin_top })
+                    + input.diff.map_or(0.0, |diff| diff.filler_before(block)),
+                margin_bottom: (if container_body { 0.0 } else if block.list_loose { paragraph.margin_bottom.max(7.0) } else { paragraph.margin_bottom })
+                    + input.diff.map_or(0.0, |diff| diff.filler_after(block)),
                 line_spacing: paragraph.line_spacing,
                 first_line_indent: if matches!(
                     block.kind,
@@ -827,7 +939,8 @@ fn resolve_block_runs(
         .search_matches
         .partition_point(|matched| matched.start < block.range.end);
     let search_matches = &input.search_matches[first_match..last_match];
-    for matched in search_matches {
+    let diff_text = input.diff.map_or(&[][..], |diff| diff.text_in(&block.range));
+    for matched in search_matches.iter().chain(diff_text) {
         let start = matched.start.max(block.range.start);
         let end = matched.end.min(block.range.end);
         if start < end {
@@ -836,6 +949,7 @@ fn resolve_block_runs(
         }
     }
     let boundaries: Vec<_> = boundaries.into_iter().collect();
+    let mut diff_index = 0;
 
     let mut match_index = 0;
     let mut event_index = 0;
@@ -871,6 +985,15 @@ fn resolve_block_runs(
             };
             cascade.resolve(input, block, context, memo)?
         };
+        while diff_index < diff_text.len() && diff_text[diff_index].end <= range.start {
+            diff_index += 1;
+        }
+        if let Some(diff) = input.diff.filter(|_| diff_text
+            .get(diff_index)
+            .is_some_and(|span| span.start <= range.start && range.end <= span.end))
+        {
+            character = input.style_sheet.overlay_diff_text(&character, diff.added)?;
+        }
         while match_index < search_matches.len() && search_matches[match_index].end <= range.start {
             match_index += 1;
         }
@@ -962,6 +1085,7 @@ struct CachedParagraphStyle {
     spans: Vec<(Range<usize>, StyleApplication)>,
     images: Vec<(isize, isize)>,
     search: Vec<Range<usize>>,
+    diff: Option<DiffParagraphKey>,
     paragraph: ParagraphLayoutStyle,
     shaping_runs: Vec<ShapeStyleRun>,
     paint_runs: Vec<PaintStyleRun>,
@@ -1002,6 +1126,7 @@ impl CachedParagraphStyle {
             spans: spans.map(|(range, application)| (range, application.clone())).collect(),
             images: images.collect(),
             search: search.collect(),
+            diff: input.diff.map(|diff| diff.paragraph_key(block)),
             paragraph,
             shaping_runs: shaping_runs.iter().map(|run| ShapeStyleRun {
                 text_range: run.text_range.start - start..run.text_range.end - start, style: run.style.clone() }).collect(),
@@ -1020,13 +1145,14 @@ impl CachedParagraphStyle {
         spans.eq(self.spans.iter().map(|(range, application)| (range.clone(), application)))
             && images.eq(self.images.iter().copied())
             && search.eq(self.search.iter().cloned())
+            && input.diff.map(|diff| diff.paragraph_key(block)) == self.diff
     }
 }
 
 /// Block-level inputs of every character cascade in one paragraph, resolved
 /// once rather than for each styled segment.
 struct BlockCharacterContext<'a> {
-    paragraph_style: &'a StyleId,
+    paragraph_style: std::borrow::Cow<'a, StyleId>,
     container_character: CharacterProperties,
 }
 
@@ -1042,8 +1168,16 @@ impl<'a> BlockCharacterContext<'a> {
         }
         let container_body = block.containers.iter().any(|member| member.container.style == block.style)
             && sheet.block_style(&block.style).is_some_and(|style| style.role.is_container());
+        let diff_line_style = input.diff.and_then(|diff| diff.line_style(block))
+            .filter(|id| sheet.block_style(id).is_some());
         Ok(Self {
-            paragraph_style: if container_body { &sheet.base_paragraph } else { &block.style },
+            paragraph_style: if container_body {
+                std::borrow::Cow::Borrowed(&sheet.base_paragraph)
+            } else if let Some(id) = diff_line_style {
+                std::borrow::Cow::Owned(id)
+            } else {
+                std::borrow::Cow::Borrowed(&block.style)
+            },
             container_character,
         })
     }
@@ -1295,7 +1429,7 @@ impl<'a> SpanCascade<'a> {
         } else {
             &block.direct_default_character
         };
-        memo.resolve(input.style_sheet, input.document_style, context.paragraph_style, &block.direct_paragraph,
+        memo.resolve(input.style_sheet, input.document_style, &context.paragraph_style, &block.direct_paragraph,
             &context.container_character, direct_default_character, named, &semantic)
     }
 }
@@ -1476,7 +1610,7 @@ mod tests {
                 }) }
         }).collect::<Vec<_>>();
         let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans, inline_images: &[],
-            style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
+            style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[], diff: None };
         let actual = DocumentLayoutStyles::resolve_validated(input, None).unwrap();
         let mut shapes = Vec::new();
         let mut paints = Vec::new();
@@ -1513,7 +1647,7 @@ mod tests {
             application: StyleApplication::direct(CharacterProperties {
                 strikethrough: Some(index % 2 == 0), ..Default::default() }) }));
         let input = StyleCascadeInput { blocks: projection.blocks(), style_spans: &spans, inline_images: &[],
-            style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[] };
+            style_sheet: projection.style_sheet(), document_style: projection.document_style(), search_matches: &[], diff: None };
         let actual = DocumentLayoutStyles::resolve_validated(input, None).unwrap();
         let mut shapes = Vec::new();
         let mut paints = Vec::new();
