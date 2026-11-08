@@ -12,13 +12,20 @@ public protocol EVDiffBackend: AnyObject {
   /// The source as last loaded or saved, from memory; nil when unknown.
   func diffSavedSource() -> Data?
   /// A read-only, non-modifiable Code buffer showing `source`, with this
-  /// document's language.
-  func makeDiffBase(source: Data) throws -> any EVDocumentBackend
+  /// document's language. `reusing` is the previous file's base buffer,
+  /// which is refilled in place so its surface and view survive.
+  func makeDiffBase(source: Data, reusing: (any EVDocumentBackend)?) throws -> any EVDocumentBackend
   /// Compare `base` (shown by `baseSurface`) with this document (shown by
   /// `surface`). The session shows the document in Code until it ends.
   /// `editable` is false for a file deleted since the base.
   func beginDiff(base: any EVDocumentBackend, baseSurface: any EVEditorSurface,
                  surface: any EVEditorSurface, aligned: Bool, editable: Bool) throws -> any EVDiffSessionControlling
+}
+
+extension EVDiffBackend {
+  func makeDiffBase(source: Data) throws -> any EVDocumentBackend {
+    try makeDiffBase(source: source, reusing: nil)
+  }
 }
 
 /// One live comparison, owned by the window's diff mode.
@@ -39,7 +46,7 @@ public protocol EVDiffLineNumberControlling: AnyObject {
 }
 
 /// The version a window's diff compares with.
-public enum EVDiffBase: Equatable, Sendable {
+public enum EVDiffBase: Hashable, Sendable {
   case lastSaved
   case unstaged
   case head
@@ -91,6 +98,26 @@ public struct EVDiffFile: Equatable, Sendable {
     case UInt32(VIEM_DIFF_FILE_ADDED): return "\(name) (added)"
     case UInt32(VIEM_DIFF_FILE_UNSAVED): return "\(name) (unsaved)"
     default: return name
+    }
+  }
+}
+
+extension EVDiffFile {
+  /// The file list's menu titles. A name that more than one file shares is
+  /// followed by each file's folder, relative to the folder the list shares,
+  /// so every entry is distinct.
+  static func menuTitles(for files: [EVDiffFile]) -> [String] {
+    let names = files.map(\.url.lastPathComponent)
+    let counts = Dictionary(names.map { ($0, 1) }, uniquingKeysWith: +)
+    let folders = files.map { $0.url.deletingLastPathComponent().standardizedFileURL.pathComponents }
+    var shared = folders.first ?? []
+    for folder in folders.dropFirst() {
+      shared = Array(zip(shared, folder).prefix { $0 == $1 }.map(\.0))
+    }
+    return zip(files, folders).map { file, folder in
+      guard counts[file.url.lastPathComponent, default: 0] > 1 else { return file.title }
+      let relative = folder.dropFirst(shared.count).joined(separator: "/")
+      return "\(file.title) — \(relative.isEmpty ? "." : relative)"
     }
   }
 }
@@ -224,6 +251,71 @@ enum EVDiffBaseLoader {
       return .failure(EVDiffLoadFailure(result: info.result, message: String(decoding: message, as: UTF8.self)))
     }
     return .success(read(handle, info))
+  }
+}
+
+/// Loaded bases by base and path. The base stays fixed while diff mode is
+/// open (Refresh reloads it), so a loaded version stays valid until the
+/// window's base, scope or Refresh discards the cache. Concurrent requests
+/// for one version share a load, and the cache keeps a few recent versions
+/// within a byte budget.
+@MainActor
+final class EVDiffBaseCache {
+  struct Key: Hashable {
+    var base: EVDiffBase
+    var path: String
+  }
+  typealias Result = Swift.Result<EVDiffBaseLoader.Loaded, EVDiffLoadFailure>
+
+  static let maximumEntries = 8
+  static let maximumBytes = 64 << 20
+  private var loaded: [Key: EVDiffBaseLoader.Loaded] = [:]
+  private var recent: [Key] = []
+  private var inFlight: [Key: Task<Result, Never>] = [:]
+  /// Retires loads that finish after the cache was discarded.
+  private var epoch = 0
+
+  func cached(_ key: Key) -> EVDiffBaseLoader.Loaded? {
+    guard let hit = loaded[key] else { return nil }
+    recent.removeAll { $0 == key }
+    recent.append(key)
+    return hit
+  }
+
+  /// The version's load, started now unless it is cached or already running.
+  @discardableResult
+  func load(_ key: Key) -> Task<Result, Never> {
+    if let hit = loaded[key] { return Task { .success(hit) } }
+    if let running = inFlight[key] { return running }
+    let epoch = self.epoch
+    let task = Task { @MainActor [weak self] () -> Result in
+      let result = await EVDiffBaseLoader.load(key.base, path: key.path)
+      if let self, self.epoch == epoch {
+        self.inFlight[key] = nil
+        if case let .success(value) = result { self.store(value, for: key) }
+      }
+      return result
+    }
+    inFlight[key] = task
+    return task
+  }
+
+  func removeAll() {
+    epoch += 1
+    loaded.removeAll()
+    recent.removeAll()
+    inFlight.removeAll()
+  }
+
+  private func store(_ value: EVDiffBaseLoader.Loaded, for key: Key) {
+    guard value.bytes.count <= Self.maximumBytes else { return }
+    loaded[key] = value
+    recent.removeAll { $0 == key }
+    recent.append(key)
+    while recent.count > Self.maximumEntries
+            || loaded.values.reduce(0, { $0 + $1.bytes.count }) > Self.maximumBytes {
+      loaded[recent.removeFirst()] = nil
+    }
   }
 }
 
@@ -401,7 +493,7 @@ protocol EVDiffModeHost: AnyObject {
 final class EVDiffModeController: NSObject {
   private weak var host: (any EVDiffModeHost)?
   private let configuration: EVConfigurationStore
-  private let toolbar = EVDiffToolbar()
+  let toolbar = EVDiffToolbar()
   private(set) var isEnabled = false
   private(set) var base: EVDiffBase = .lastSaved
   private(set) var files: [EVDiffFile] = []
@@ -412,6 +504,8 @@ final class EVDiffModeController: NSObject {
   private var baseChoices: [EVDiffBase] = []
   private var baseBackend: (any EVDocumentBackend)?
   private var baseSurface: (any EVEditorSurface)?
+  private var split: EVDiffSplitView?
+  private let baseCache = EVDiffBaseCache()
   private var session: (any EVDiffSessionControlling)?
   private weak var presentedDocument: EVDocument?
   private weak var presentedSurface: AnyObject?
@@ -461,6 +555,7 @@ final class EVDiffModeController: NSObject {
   /// active document (normally the first of `files`).
   func enable(folder: URL, files: [EVDiffFile]) {
     guard isEnabled || begin() else { return }
+    baseCache.removeAll()
     scope = folder
     base = .unstaged
     self.files = files
@@ -500,6 +595,7 @@ final class EVDiffModeController: NSObject {
     isEnabled = false
     generation += 1
     tearDownComparison()
+    baseCache.removeAll()
     if let surface = host?.diffActiveSurface as? any EVDiffLineNumberControlling,
        let code = configuration.codeLineNumbers {
       surface.setShowsLineNumbers(code)
@@ -519,6 +615,7 @@ final class EVDiffModeController: NSObject {
     session = nil
     baseSurface = nil
     baseBackend = nil
+    split = nil
     presentedSurface = nil
   }
 
@@ -561,8 +658,15 @@ final class EVDiffModeController: NSObject {
       return
     }
     let deleted = files.contains { $0.isDeleted && $0.url.path == document.fileURL?.path }
+    let key = EVDiffBaseCache.Key(base: base, path: path)
+    if readingDisk { baseCache.removeAll() }
+    if let cached = baseCache.cached(key) {
+      install(base: cached.bytes, for: document, editable: !deleted)
+      return
+    }
+    let loading = baseCache.load(key)
     Task { @MainActor in
-      let loaded = await EVDiffBaseLoader.load(base, path: path)
+      let loaded = await loading.value
       guard current == self.generation, self.isEnabled, host.diffActiveDocument === document else { return }
       switch loaded {
       case let .success(result): self.install(base: result.bytes, for: document, editable: !deleted)
@@ -579,14 +683,31 @@ final class EVDiffModeController: NSObject {
           let backend = document.editorBackend as? any EVDiffBackend else { return }
     isInstalling = true
     defer { isInstalling = false }
-    tearDownComparison()
+    // The previous base buffer, surface and split stay: refilling the buffer
+    // keeps its view, so the window layout does not change between files.
+    let reusable = (baseBackend, baseSurface, split)
+    session?.end()
+    session = nil
     presentedDocument = document
     presentedSurface = surface
     do {
-      let baseBackend = try backend.makeDiffBase(source: bytes)
-      let baseSurface = baseBackend.makeEditorSurface()
-      let split = EVDiffSplitView(base: baseSurface.viewController.view, document: host.diffDocumentContentView)
-      host.installDiffContent(split)
+      let baseBackend: any EVDocumentBackend
+      if let previous = reusable.0, let made = try? backend.makeDiffBase(source: bytes, reusing: previous) {
+        baseBackend = made
+      } else {
+        baseBackend = try backend.makeDiffBase(source: bytes, reusing: nil)
+      }
+      let reused = reusable.0 === baseBackend
+      let baseSurface = (reused ? reusable.1 : nil) ?? baseBackend.makeEditorSurface()
+      let split: EVDiffSplitView
+      if reused, let previous = reusable.2, previous.base === baseSurface.viewController.view,
+         previous.document === host.diffDocumentContentView, host.diffWindow?.contentView === previous {
+        split = previous
+      } else {
+        split = EVDiffSplitView(base: baseSurface.viewController.view, document: host.diffDocumentContentView)
+        host.installDiffContent(split)
+      }
+      self.split = split
       split.layoutSubtreeIfNeeded()
       session = try backend.beginDiff(base: baseBackend, baseSurface: baseSurface, surface: surface,
                                       aligned: isAligned, editable: editable)
@@ -603,13 +724,35 @@ final class EVDiffModeController: NSObject {
       surface.showDocumentMessage(error.localizedDescription)
     }
     refreshToolbar()
+    prefetchNeighbours()
     didPresent?()
+  }
+
+  /// Start loading the bases of the files the arrows reach next, so moving
+  /// through the list finds them ready.
+  private func prefetchNeighbours() {
+    guard base.isGit || { if case .file = base { return true } else { return false } }(),
+          files.count > 1, let index = currentFileIndex else { return }
+    for step in [1, -1] {
+      prefetch(files[((index + step) % files.count + files.count) % files.count])
+    }
+  }
+
+  private func prefetch(_ file: EVDiffFile) {
+    let path: String
+    switch base {
+    case let .file(url): path = url.path
+    case .lastSaved: return
+    default: path = file.baseURL.path
+    }
+    baseCache.load(EVDiffBaseCache.Key(base: base, path: path))
   }
 
   // MARK: Toolbar and menu actions
 
   func refresh() {
     guard isEnabled, let host, let document = host.diffActiveDocument else { return }
+    baseCache.removeAll()
     reloadFiles(for: document) { [weak self] in self?.present(readingDisk: true) }
   }
 
@@ -644,6 +787,7 @@ final class EVDiffModeController: NSObject {
   func setBase(_ next: EVDiffBase) {
     guard isEnabled, let document = host?.diffActiveDocument else { return }
     base = next
+    baseCache.removeAll()
     generation += 1
     reloadFiles(for: document) { [weak self] in self?.present() }
   }
@@ -740,6 +884,8 @@ final class EVDiffModeController: NSObject {
     guard target.standardizedFileURL != document.fileURL?.standardizedFileURL else { return }
     reviewUnsavedChanges(of: document) { [weak self] proceed in
       guard let self, proceed, self.isEnabled else { self?.refreshToolbar(); return }
+      // Load the base while the document opens.
+      self.prefetch(self.files[index])
       host.openDiffFile(target) { error in
         if let error { host.diffActiveSurface?.showDocumentMessage(error.localizedDescription) }
         self.present()
@@ -779,21 +925,24 @@ final class EVDiffModeController: NSObject {
     if case .file = base { choices.append(base) }
     if case .branch = base, !choices.contains(base) { choices.insert(base, at: min(3, choices.count)) }
     baseChoices = choices
-    let popup = toolbar.basePopup
-    popup.removeAllItems()
-    for choice in choices {
-      if case .branch("") = choice { popup.addItem(withTitle: "Branch…") } else { popup.addItem(withTitle: choice.title) }
+    // NSPopUpButton.addItem(withTitle:) replaces an item with the same
+    // title, which would shift every later index; add menu items directly so
+    // item i is always choice i (or file i).
+    func fill(_ popup: NSPopUpButton, with titles: [String]) {
+      popup.removeAllItems()
+      for title in titles { popup.menu?.addItem(NSMenuItem(title: title, action: nil, keyEquivalent: "")) }
     }
+    let popup = toolbar.basePopup
+    fill(popup, with: choices.map { if case .branch("") = $0 { "Branch…" } else { $0.title } })
     popup.selectItem(at: choices.firstIndex(of: base) ?? 0)
     let filePopup = toolbar.filePopup
-    filePopup.removeAllItems()
-    for file in files { filePopup.addItem(withTitle: file.title) }
+    fill(filePopup, with: EVDiffFile.menuTitles(for: files))
     if let index = currentFileIndex {
       filePopup.selectItem(at: index)
     } else {
       // The current file is not one of the listed files.
       let name = fileURL?.lastPathComponent ?? "Untitled"
-      filePopup.addItem(withTitle: files.isEmpty ? name : "\(name) (not in this diff)")
+      filePopup.menu?.addItem(NSMenuItem(title: files.isEmpty ? name : "\(name) (not in this diff)", action: nil, keyEquivalent: ""))
       filePopup.selectItem(at: filePopup.numberOfItems - 1)
     }
     filePopup.isEnabled = !files.isEmpty

@@ -21,8 +21,8 @@ impl Default for ProcessLimits {
     }
 }
 
-/// Cancels the process a load is running, from any thread. Cancelling
-/// before the process starts makes the load fail immediately.
+/// Cancels the processes a load is running, from any thread. Cancelling
+/// before a process starts makes it fail immediately.
 #[derive(Clone, Debug, Default)]
 pub struct CancellationToken {
     state: Arc<Mutex<CancellationState>>,
@@ -31,7 +31,8 @@ pub struct CancellationToken {
 #[derive(Debug, Default)]
 struct CancellationState {
     cancelled: bool,
-    running: Option<Arc<Mutex<Child>>>,
+    /// A load may run several processes at once.
+    running: Vec<Arc<Mutex<Child>>>,
 }
 
 impl CancellationToken {
@@ -43,9 +44,9 @@ impl CancellationToken {
         let running = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.cancelled = true;
-            state.running.take()
+            std::mem::take(&mut state.running)
         };
-        if let Some(child) = running {
+        for child in running {
             let _ = child.lock().unwrap_or_else(|error| error.into_inner()).kill();
         }
     }
@@ -63,11 +64,14 @@ pub(super) struct ProcessOutput {
     pub success: bool,
 }
 
+/// `input`, when given, is written to the child's standard input, which is
+/// then closed; otherwise standard input is empty.
 pub(super) fn run(
     program: &Path,
     arguments: &[&std::ffi::OsStr],
     directory: &Path,
     environment: &[(&str, &str)],
+    input: Option<&[u8]>,
     limits: ProcessLimits,
     cancellation: &CancellationToken,
 ) -> Result<ProcessOutput, BaseError> {
@@ -75,7 +79,8 @@ pub(super) fn run(
         return Err(BaseError::Cancelled);
     }
     let mut command = Command::new(program);
-    command.args(arguments).current_dir(directory).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
+    command.args(arguments).current_dir(directory).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in environment {
         command.env(key, value);
     }
@@ -85,6 +90,14 @@ pub(super) fn run(
     })?;
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
+    let writer = child.stdin.take().zip(input).map(|(mut pipe, bytes)| {
+        let bytes = bytes.to_vec();
+        // A separate writer keeps a full output pipe from blocking the input.
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let _ = pipe.write_all(&bytes);
+        })
+    });
     let child = Arc::new(Mutex::new(child));
     {
         let mut state = cancellation.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -93,7 +106,7 @@ pub(super) fn run(
             let _ = child.lock().unwrap_or_else(|error| error.into_inner()).kill();
             return Err(BaseError::Cancelled);
         }
-        state.running = Some(Arc::clone(&child));
+        state.running.push(Arc::clone(&child));
     }
     let limit = limits.max_output_bytes;
     let (sender, receiver) = mpsc::channel();
@@ -128,9 +141,12 @@ pub(super) fn run(
     }
     let finished = {
         let mut state = cancellation.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.running = None;
+        state.running.retain(|running| !Arc::ptr_eq(running, &child));
         state.cancelled
     };
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
     let mut child = child.lock().unwrap_or_else(|error| error.into_inner());
     if failure.is_some() || finished {
         let _ = child.kill();

@@ -14,6 +14,12 @@ pub(super) mod metrics;
 /// Editing pause before a pre-rendered document is re-highlighted completely.
 /// Visible text is always analyzed immediately.
 const COMPLETE_SYNTAX_EDIT_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+/// Complete highlighting asks for one line-aligned stretch of about this
+/// size at a time. A single whole-document query can exceed the provider's
+/// time slice (a 28 KiB Rust file takes about 6 ms against a 4 ms slice),
+/// and its repeated misses settle the request on fallback colours, which
+/// then replace the exact colours already shown.
+pub(super) const COMPLETE_SYNTAX_CHUNK_BYTES: usize = 8 * 1024;
 
 #[cfg(test)]
 mod filename_tests {
@@ -75,6 +81,10 @@ pub(super) struct CoreSyntax {
     /// When the analyzed input last changed. Speculative whole-document
     /// analysis waits for editing to pause.
     input_changed: Option<(SyntaxInputIdentity, std::time::Instant)>,
+    /// How far complete highlighting of the current input has progressed.
+    /// Finished chunks are never revisited, so evicted coverage entries
+    /// cannot make the pass repeat itself.
+    complete_progress: Option<(SyntaxInputIdentity, usize)>,
     /// When the document revision last changed, for preparing the other
     /// Markdown view only after editing pauses.
     pub(super) view_format_changed: Option<((crate::document::DocumentId, crate::document::Revision), std::time::Instant)>,
@@ -101,6 +111,7 @@ impl Default for CoreSyntax {
             filename: String::new(),
             published: None,
             input_changed: None,
+            complete_progress: None,
             view_format_changed: None,
             referenced_names: Vec::new(),
             implicit_limited: false,
@@ -372,7 +383,20 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         if now.duration_since(changed_at) < COMPLETE_SYNTAX_EDIT_PAUSE { return; }
         if !visible.iter().all(|range| self.syntax.service.covers(input, range.clone())) { return; }
-        self.syntax.service.request(input.clone(), 0..input.byte_len());
+        let len = input.byte_len();
+        let mut start = match self.syntax.complete_progress {
+            Some((identity, offset)) if identity == input.identity() => offset,
+            _ => 0,
+        };
+        while start < len {
+            let end = complete_syntax_chunk_end(input, start);
+            if !self.syntax.service.covers(input, start..end) {
+                self.syntax.service.request(input.clone(), start..end);
+                break;
+            }
+            start = end;
+        }
+        self.syntax.complete_progress = Some((input.identity(), start));
     }
 
     /// Capture the current view's syntax request without waiting under the
@@ -616,3 +640,20 @@ fn code_metrics_changed(
 
 #[cfg(test)]
 mod tests;
+
+/// The end of the complete-highlighting chunk starting at `start`: the start
+/// of the hard line after the one that reaches `COMPLETE_SYNTAX_CHUNK_BYTES`,
+/// or the end of the document. Always past `start`.
+pub(super) fn complete_syntax_chunk_end(input: &SyntaxInputSnapshot, start: usize) -> usize {
+    let len = input.byte_len();
+    let tree = input.text_tree();
+    let reach = start.saturating_add(COMPLETE_SYNTAX_CHUNK_BYTES).min(len);
+    if reach >= len {
+        return len;
+    }
+    tree.hard_line_at_byte(reach)
+        .ok()
+        .and_then(|line| tree.hard_line_start(line + 1).ok())
+        .filter(|end| *end > start && *end <= len)
+        .unwrap_or(len)
+}

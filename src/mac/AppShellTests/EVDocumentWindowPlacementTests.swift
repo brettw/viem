@@ -39,6 +39,28 @@ final class EVDocumentWindowPlacementTests: XCTestCase {
     XCTAssertEqual(reopened.documentWindowFrame, saved)
   }
 
+  func testDiffWindowsRememberTheirOwnFrameAndFirstOpenTwiceAsWide() throws {
+    let directory = configurationDirectory()
+    let configuration = EVConfigurationStore(directory: directory)
+    let regular = EVDocumentWindowPlacement(configuration: configuration)
+    regular.record(frame: NSRect(x: 100, y: 200, width: 700, height: 600))
+    let diff = EVDocumentWindowPlacement(configuration: configuration, diffWindows: true)
+    XCTAssertEqual(diff.rememberedFrame, NSRect(x: 100, y: 200, width: 1400, height: 600),
+                   "before any diff window, a regular frame twice as wide")
+    diff.record(frame: NSRect(x: 50, y: 60, width: 1500, height: 800))
+    let reopened = EVConfigurationStore(directory: directory)
+    XCTAssertEqual(reopened.diffWindowFrame, NSRect(x: 50, y: 60, width: 1500, height: 800))
+    XCTAssertEqual(reopened.documentWindowFrame, NSRect(x: 100, y: 200, width: 700, height: 600),
+                   "a diff window leaves the regular frame alone")
+    XCTAssertEqual(EVDocumentWindowPlacement(configuration: reopened, diffWindows: true).rememberedFrame,
+                   NSRect(x: 50, y: 60, width: 1500, height: 800))
+    let invalid = Data(#"{"version":1,"windows":{"diffFrame":{"x":0,"y":0,"width":-5,"height":600}}}"#.utf8)
+    let invalidDirectory = configurationDirectory()
+    try FileManager.default.createDirectory(at: invalidDirectory, withIntermediateDirectories: true)
+    try invalid.write(to: invalidDirectory.appendingPathComponent("config.json"))
+    XCTAssertNil(EVConfigurationStore(directory: invalidDirectory).diffWindowFrame)
+  }
+
   func testGutterGrowthAndRemovalPreserveContentWidthAndScreenOriginWhenRoomExists() {
     let frame = NSRect(x: 200, y: 100, width: 700, height: 500)
     let grown = EVDocumentWindowPlacement.frameForGutterChange(frame, delta: 31, screen: desktop, minimumWidth: 480)

@@ -125,12 +125,14 @@ pub fn normalize(bytes: &[u8]) -> Result<Value, String> {
         // as 72.0, which passes the shared whole-number validation.
         *v = Value::from(width as u32);
     }
-    if let Some(frame) = value["windows"].get("documentFrame") {
+    // Regular windows and diff windows remember their frames separately.
+    for (key, name) in [("documentFrame", "Document window frame"), ("diffFrame", "Diff window frame")] {
+        let Some(frame) = value["windows"].get(key) else { continue };
         let mut values = Vec::new();
         for key in ["x", "y", "width", "height"] {
             values.push(number(
                 &frame[key],
-                "document window frame",
+                &name.to_lowercase(),
                 -f64::MAX,
                 f64::MAX,
                 false,
@@ -142,7 +144,7 @@ pub fn normalize(bytes: &[u8]) -> Result<Value, String> {
             || !(values[1] + values[3]).is_finite()
         {
             return Err(
-                "Document window frame must have finite coordinates and positive dimensions".into(),
+                format!("{name} must have finite coordinates and positive dimensions"),
             );
         }
     }

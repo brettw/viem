@@ -48,6 +48,14 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   private var hasPresentedInitialWindow = false
   private var isPerformingDocumentHostEffect = false
   private let placement: EVDocumentWindowPlacement
+  /// Where the window's frame comes from and is remembered while it shows a
+  /// diff; regular windows use `placement`.
+  private let diffPlacement: EVDocumentWindowPlacement
+  /// A window opened to show a diff starts from the last diff window's frame.
+  var opensForDiff = false
+  private var activePlacement: EVDocumentWindowPlacement {
+    diffMode?.isEnabled == true || (opensForDiff && diffMode == nil) ? diffPlacement : placement
+  }
   private let configuration: EVConfigurationStore
   private var initialWindowFrame: NSRect?
   private(set) lazy var formattingToolbar = EVFormattingToolbarChrome(
@@ -67,10 +75,12 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
   }
 
   public init(document: EVDocument, editorSurface: any EVEditorSurface, placement: EVDocumentWindowPlacement? = nil,
-              configuration: EVConfigurationStore? = nil) {
+              diffPlacement: EVDocumentWindowPlacement? = nil, configuration: EVConfigurationStore? = nil) {
     let configuration = configuration ?? .shared
     self.configuration = configuration
     self.placement = placement ?? .shared
+    // An injected placement also stands in for diff windows unless one is given.
+    self.diffPlacement = diffPlacement ?? placement ?? .sharedDiff
     let firstPane = EVDocumentContentViewController(editorSurface: editorSurface, configuration: configuration)
     firstPane.document = document
     if let owner = Self.instances.compactMap(\.value).first(where: {
@@ -319,8 +329,9 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   public func windowWillClose(_ notification: Notification) {
     guard !isClosed else { return }
+    // Record before leaving diff mode, so a diff window's frame stays a diff frame.
+    if hasPresentedInitialWindow, let window { activePlacement.record(window: window, gutterWidth: placementGutterWidth) }
     diffMode?.disable()
-    if hasPresentedInitialWindow, let window { placement.record(window: window, gutterWidth: placementGutterWidth) }
     isClosed = true
     let documents = paneContainer.panes.compactMap(\.document)
     (document as? EVDocument)?.removeWindowController(self)
@@ -362,7 +373,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
       // fighting subsequent user resizing.
       prepareInitialFrame(of: window)
       hasPresentedInitialWindow = true
-      placement.record(window: window, gutterWidth: placementGutterWidth)
+      activePlacement.record(window: window, gutterWidth: placementGutterWidth)
     }
     _ = synchronizeContentFrame(of: window)
     window.makeFirstResponder(editorSurface.viewController.view)
@@ -375,9 +386,9 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   private func prepareInitialFrame(of window: NSWindow) {
     if initialWindowFrame == nil {
-      initialWindowFrame = placement.initialFrame(for: window, defaultContentSize: Self.initialContentSize)
+      initialWindowFrame = activePlacement.initialFrame(for: window, defaultContentSize: Self.initialContentSize)
     }
-    if let initialWindowFrame { window.setFrame(placement.fittedFrame(EVDocumentWindowPlacement.includingGutter(initialWindowFrame, width: placementGutterWidth)), display: false) }
+    if let initialWindowFrame { window.setFrame(activePlacement.fittedFrame(EVDocumentWindowPlacement.includingGutter(initialWindowFrame, width: placementGutterWidth)), display: false) }
     _ = synchronizeContentFrame(of: window)
   }
 
@@ -386,7 +397,7 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
 
   private func recordWindowPlacement() {
     guard hasPresentedInitialWindow, !isClosed, let window else { return }
-    placement.record(window: window, gutterWidth: placementGutterWidth)
+    activePlacement.record(window: window, gutterWidth: placementGutterWidth)
   }
 
   @discardableResult
@@ -2094,9 +2105,12 @@ extension EVDocumentWindowController: EVDiffModeHost {
         let target: EVDocumentWindowController
         if let controller, let replacement, replacement.install(opened) {
           target = controller
+          controller.adoptDiffPlacement()
         } else {
-          target = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface())
+          target = EVDocumentWindowController(document: opened, editorSurface: opened.editorBackend.makeEditorSurface(),
+                                              diffPlacement: folderDiffPlacement)
           target.argumentDocumentOpener = controller?.argumentDocumentOpener
+          target.opensForDiff = true
           opened.addWindowController(target)
           target.showWindow(nil)
         }
@@ -2106,6 +2120,18 @@ extension EVDocumentWindowController: EVDiffModeHost {
     }
   }
 
+  /// A reused placeholder window becomes a diff window: give it the last
+  /// diff window's size, keeping its top-left corner on screen.
+  func adoptDiffPlacement() {
+    guard let window, !window.styleMask.contains(.fullScreen), !window.isMiniaturized,
+          let remembered = diffPlacement.rememberedFrame else { return }
+    var frame = EVDocumentWindowPlacement.includingGutter(remembered, width: placementGutterWidth)
+    frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+    window.setFrame(diffPlacement.fittedFrame(frame), display: true)
+  }
+
+  /// Tests inject the placement new diff windows use.
+  static var folderDiffPlacement: EVDocumentWindowPlacement?
   /// Tests open documents without registered document types.
   static var folderDiffDocumentOpener: ((URL, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
   /// Tests observe the window a folder diff opened in.

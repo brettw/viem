@@ -139,7 +139,15 @@ Two further items compare a whole folder:
   picker.
 
 Both open a new window, except that a window holding only one empty,
-untitled, unmodified buffer is reused. The folder stays the scope of the
+untitled, unmodified buffer is reused and resized to the diff window size.
+
+Diff windows remember their size and position separately from regular
+windows (`windows.diffFrame` beside `windows.documentFrame` in
+`config.json`), since a diff is normally about twice as wide. A new diff
+window starts from the last diff window's frame, or, before there is one, a
+regular window's frame at twice the width; later diff windows cascade from
+it. A window records its frame as a diff frame while it shows a diff,
+including when it closes. The folder stays the scope of the
 window's file list when the base changes to HEAD or a branch. A folder
 outside a git repository, or one with no changes, reports that instead of
 opening a window.
@@ -173,7 +181,9 @@ while diff mode is open.
 
 A diff can cover many files; for example, many files may differ from `main`.
 The toolbar has a file dropdown listing the files in the current diff.
-Choosing one shows that file in diff mode against the same base.
+Choosing one shows that file in diff mode against the same base. Entries show
+file names; a name that several listed files share is followed by each one's
+folder, relative to the folder the whole list shares (`tests.rs — diff/base`).
 
 For the git bases the list holds tracked files that differ from the base,
 including files whose only differences are unsaved edits in an open buffer.
@@ -508,6 +518,27 @@ context), built in this order:
    fresh ones, and the git source starts an external program.
 
 ### Implementation notes
+
+- Switching files is fast because little is rebuilt:
+  - A git base load is one `git cat-file --batch` round trip from the file's
+    own folder (`:./name`, `HEAD:./name`, `<branch>:./name`) with
+    `check-attr` and `config` running beside it, and no repository
+    discovery (`GitRepository::load_file`; about 20 ms, against about 85 ms
+    for discovery plus four sequential processes). Paths with a newline
+    fall back to discovery.
+  - `EVDiffBaseCache` keeps up to eight loaded bases (64 MiB) per window and
+    shares in-flight loads. Selecting a file starts its load while the
+    document opens; after each comparison the previous and next files'
+    bases are prefetched. Refresh, a new base and a new folder scope discard
+    it, matching the rule that the base stays fixed while diff mode is open.
+  - The base buffer, its surface and the split view are reused: the base
+    backend is refilled in place (`makeDiffBase(source:reusing:)` calls
+    `read`, which swaps a new core under the existing surface).
+  - Measured on a 28 KB Rust file: about 66 ms from choosing a prefetched
+    file until both sides show it, all on the main thread, of which about
+    35 ms is building the base buffer's new core, 16 ms starting the
+    comparison (diff plus layout of both sides) and 8 ms ending the
+    previous one. Syntax colours for the base arrive asynchronously.
 
 - Code projections publish one block per hard line, so a diff line style can
   replace that line's paragraph style in the cascade without touching source.

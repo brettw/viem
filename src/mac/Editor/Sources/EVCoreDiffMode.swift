@@ -34,8 +34,10 @@ extension EVCoreDocumentBackend: EVDiffBackend {
         return copied == UInt32(VIEM_STATUS_OK) && available != 0 ? bytes : nil
     }
 
-    public func makeDiffBase(source: Data) throws -> any EVDocumentBackend {
-        let base = EVCoreDocumentBackend(configuration: configuration)
+    public func makeDiffBase(source: Data, reusing previous: (any EVDocumentBackend)?) throws -> any EVDocumentBackend {
+        // Refilling the previous base replaces its core under the surfaces it
+        // already has; its comparison must have ended first.
+        let base = (previous as? EVCoreDocumentBackend) ?? EVCoreDocumentBackend(configuration: configuration)
         // The document's filename selects the same language as the document;
         // the base itself is never bound to that file.
         try base.read(source: source, typeName: EVDocument.codeType,

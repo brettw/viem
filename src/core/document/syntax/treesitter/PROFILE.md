@@ -192,7 +192,12 @@ Child result caches total at most 4 MiB, and total included child input is
 limited to 16 MiB. Host and child parser accounts share a 256 MiB buffer limit.
 Compiled bundled packages are shared, so each injected child reuses one query.
 A query that misses its time slice is retried in later slices, up to three
-times, before it is treated as capped work.
+times, before it is treated as capped work. The 4 ms slice therefore bounds
+each request's size: complete highlighting of a pre-rendered document is
+requested in line-aligned chunks of about 8 KiB
+(`COMPLETE_SYNTAX_CHUNK_BYTES`), each visited once per input, because a
+single whole-document query can exceed the slice (a 28 KiB Rust file takes
+about 6 ms) and would settle on fallback colours.
 
 Actual edits are included even when native structural changed ranges are empty.
 The present implementation conservatively invalidates an edited suffix instead

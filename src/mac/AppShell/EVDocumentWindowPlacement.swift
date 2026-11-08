@@ -2,9 +2,11 @@ import AppKit
 
 /// Native window placement is separate from document/view layout. The first
 /// window restores the last frame; later windows use AppKit's cascade spacing.
+/// Diff windows are placed and remembered separately (`sharedDiff`).
 @MainActor
 public final class EVDocumentWindowPlacement {
   public static let shared = EVDocumentWindowPlacement()
+  public static let sharedDiff = EVDocumentWindowPlacement(diffWindows: true)
 
   private let loadFrame: @MainActor () -> NSRect?
   private let saveFrame: @MainActor (NSRect) throws -> Void
@@ -13,11 +15,11 @@ public final class EVDocumentWindowPlacement {
   private var lastFrame: NSRect?
   private var hasPlacedWindow = false
 
-  public convenience init(configuration: EVConfigurationStore? = nil) {
+  public convenience init(configuration: EVConfigurationStore? = nil, diffWindows: Bool = false) {
     let configuration = configuration ?? .shared
     self.init(
-      loadFrame: { configuration.documentWindowFrame },
-      saveFrame: { try configuration.setDocumentWindowFrame($0) },
+      loadFrame: { diffWindows ? Self.diffFrame(in: configuration) : configuration.documentWindowFrame },
+      saveFrame: { diffWindows ? try configuration.setDiffWindowFrame($0) : try configuration.setDocumentWindowFrame($0) },
       visibleScreens: {
         let screens = NSScreen.screens
         guard let main = NSScreen.main else { return screens.map(\.visibleFrame) }
@@ -42,6 +44,20 @@ public final class EVDocumentWindowPlacement {
     self.saveFrame = saveFrame
     self.visibleScreens = visibleScreens
     self.nextCascadePoint = nextCascadePoint
+  }
+
+  /// The last diff window's frame or, before there is one, a regular
+  /// window's frame twice as wide, since a diff shows two documents.
+  static func diffFrame(in configuration: EVConfigurationStore) -> NSRect? {
+    if let frame = configuration.diffWindowFrame { return frame }
+    guard var frame = configuration.documentWindowFrame else { return nil }
+    frame.size.width *= 2
+    return frame
+  }
+
+  /// The frame a new window would start from, if one is known.
+  var rememberedFrame: NSRect? {
+    (lastFrame ?? loadFrame()).flatMap { Self.isValid($0) ? $0 : nil }
   }
 
   func initialFrame(for window: NSWindow, defaultContentSize: NSSize) -> NSRect {

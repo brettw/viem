@@ -527,3 +527,114 @@ fn pinned_code_pipeline_performance() {
     let result = serde_json::json!({"fixture_revision":1,"hardware":command("sysctl",&["-n","hw.memsize","hw.model","machdep.cpu.brand_string"]),"compiler":command("rustc",&["--version"]),"provider_condition":"all worker callbacks controllably suspended; no foreground provider execution or waits","results":rows});
     std::fs::write(path, serde_json::to_vec_pretty(&result).unwrap()).unwrap();
 }
+
+/// Records every analyzed range and reports exact, empty coverage.
+struct RecordingProvider(Arc<Mutex<Vec<std::ops::Range<usize>>>>);
+impl SyntaxProvider for RecordingProvider {
+    fn analyze(&mut self, request: &SyntaxRequest, _: &AtomicBool) -> SyntaxResult {
+        self.0.lock().unwrap().push(request.range.clone());
+        let mut result = SyntaxResult::missing(request, "recording");
+        result.coverage = crate::document::syntax::Coverage::Exact;
+        result
+    }
+}
+
+#[test]
+fn complete_highlighting_is_requested_in_bounded_chunks_once_each() {
+    let text: String = (0..3000).map(|line| format!("fn function_{line}() {{}}\n")).collect();
+    let len = text.len();
+    assert!(len > 4 * COMPLETE_SYNTAX_CHUNK_BYTES);
+    let mut core = Core::<MockTextMeasurementProvider>::new(
+        Document::from_bytes(text.into_bytes(), Encoding::Utf8, Format::Code).unwrap(),
+    );
+    core.initialize_code_detection("fixture.rs", false).unwrap();
+    let ranges = Arc::new(Mutex::new(Vec::new()));
+    let recorded = ranges.clone();
+    core.set_syntax_provider_factory(Arc::new(move || Box::new(RecordingProvider(recorded.clone()))));
+    let view = core.add_view(MockTextMeasurementProvider::new(), 400., 200.);
+    let covered = |ranges: &[std::ops::Range<usize>]| {
+        let mut sorted = ranges.to_vec();
+        sorted.sort_by_key(|range| range.start);
+        let mut end = 0;
+        for range in sorted {
+            if range.start > end { return false; }
+            end = end.max(range.end);
+        }
+        end >= len
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !covered(&ranges.lock().unwrap()) {
+        core.poll_syntax();
+        let _ = core.prepare_view_syntax_wait(view, Instant::now());
+        assert!(Instant::now() < deadline, "complete highlighting did not finish: {:?}", ranges.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let ranges = ranges.lock().unwrap().clone();
+    let longest_line = 32;
+    assert!(ranges.iter().all(|range| range.len() <= COMPLETE_SYNTAX_CHUNK_BYTES + longest_line),
+        "every request fits one chunk: {ranges:?}");
+    let mut unique = ranges.clone();
+    unique.sort_by_key(|range| (range.start, range.end));
+    unique.dedup();
+    assert_eq!(unique.len(), ranges.len(), "no chunk is analyzed twice: {ranges:?}");
+    // Polling after completion requests nothing further.
+    let count = ranges.len();
+    for _ in 0..20 {
+        core.poll_syntax();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(core.syntax.service.statistics.requests as usize, count);
+}
+
+#[test]
+fn complete_highlighting_chunks_end_at_line_starts() {
+    let text: String = (0..2000).map(|line| format!("line {line}\n")).collect();
+    let input = SyntaxInputSnapshot::new(
+        SyntaxInputIdentity { document: 1, revision: 0, generation: 1 },
+        crate::document::FormattedTextTree::try_from_text(text.as_str()).unwrap(),
+    );
+    let mut start = 0;
+    let mut chunks = 0;
+    while start < text.len() {
+        let end = super::complete_syntax_chunk_end(&input, start);
+        assert!(end > start);
+        assert!(end == text.len() || text.as_bytes()[end - 1] == b'\n', "chunk ends after a line delimiter");
+        assert!(end - start <= COMPLETE_SYNTAX_CHUNK_BYTES + 12);
+        start = end;
+        chunks += 1;
+    }
+    assert!(chunks <= text.len() / COMPLETE_SYNTAX_CHUNK_BYTES + 1);
+    assert!(chunks >= text.len() / (COMPLETE_SYNTAX_CHUNK_BYTES + 12));
+}
+
+#[test]
+fn complete_highlighting_of_a_large_rust_file_keeps_tree_sitter_styles() {
+    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
+    let mut text = String::from("//! Module documentation.\n//! More of it.\n\nuse std::fmt;\n\n");
+    for index in 0..900 {
+        text.push_str(&format!("/// Doc for item {index}.\npub fn item_{index}(value: u32) -> u32 {{ value + {index} }}\n"));
+    }
+    assert!(text.len() > 40 * 1024);
+    let len = text.len();
+    let mut core = Core::<MockTextMeasurementProvider>::new(
+        Document::from_bytes(text.into_bytes(), Encoding::Utf8, Format::Code).unwrap(),
+    );
+    core.initialize_code_detection("fixture.rs", false).unwrap();
+    let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        core.poll_syntax();
+        let _ = core.prepare_view_syntax_wait(view, Instant::now());
+        let identity = core.syntax_input().identity();
+        if core.syntax.complete_progress == Some((identity, len)) && !core.syntax.service.has_pending_work() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "complete highlighting did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    core.poll_syntax();
+    let runs = core.syntax.service.runs(core.syntax_input().identity());
+    let first = runs.iter().find(|run| run.range.start == 0).expect("the module comment is highlighted");
+    assert!(first.name.0.starts_with("Comment"), "Tree-sitter capture, not a Vim group: {:?}", first.name);
+    assert!(!core.syntax_diagnostics().contains("slice deadline"), "{}", core.syntax_diagnostics());
+}

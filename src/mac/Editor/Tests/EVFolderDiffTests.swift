@@ -130,6 +130,44 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertFalse(busy.diffMode?.isEnabled ?? false)
     }
 
+    func testANewDiffWindowStartsFromAndRecordsTheDiffFrame() throws {
+        let root = try repository()
+        let remembered = NSRect(x: 120, y: 140, width: 1000, height: 560)
+        var saved: [NSRect] = []
+        EVDocumentWindowController.folderDiffPlacement = EVDocumentWindowPlacement(
+            loadFrame: { remembered }, saveFrame: { saved.append($0) })
+        defer { EVDocumentWindowController.folderDiffPlacement = nil }
+        let busy = try window(text: "keep me\n")
+        let target = try XCTUnwrap(diff(root, from: busy))
+        let window = try XCTUnwrap(target.window)
+        XCTAssertEqual(window.frame.height, remembered.height, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(window.frame.width, remembered.width - 1)
+        saved.removeAll()
+        window.setFrame(NSRect(x: 130, y: 150, width: 1100, height: 600), display: false)
+        XCTAssertEqual(saved.last?.height, 600, "a diff window's resize is a diff frame")
+    }
+
+    func testAReusedPlaceholderTakesTheDiffWindowSize() throws {
+        EVFrontendRegistry.install { EVCoreDocumentBackend() }
+        let document = EVDocument(editorBackend: EVCoreDocumentBackend())
+        documents.append(document)
+        let remembered = NSRect(x: 0, y: 0, width: 1000, height: 520)
+        let controller = EVDocumentWindowController(
+            document: document, editorSurface: document.editorBackend.makeEditorSurface(),
+            placement: EVDocumentWindowPlacement(loadFrame: { NSRect(x: 200, y: 200, width: 600, height: 400) }),
+            diffPlacement: EVDocumentWindowPlacement(loadFrame: { remembered }))
+        document.addWindowController(controller)
+        controller.showWindow(nil)
+        windows.append(controller)
+        let window = try XCTUnwrap(controller.window)
+        let top = window.frame.maxY
+        XCTAssertEqual(window.frame.height, 400, accuracy: 1, "a regular window starts from the regular frame")
+        controller.adoptDiffPlacement()
+        XCTAssertEqual(window.frame.height, remembered.height, accuracy: 1)
+        XCTAssertGreaterThanOrEqual(window.frame.width, remembered.width - 1)
+        XCTAssertEqual(window.frame.maxY, top, accuracy: 1, "the top edge stays put")
+    }
+
     func testFoldersWithoutChangesOrARepositoryReportInsteadOfOpening() throws {
         let root = try repository()
         let placeholder = try window(text: nil)
@@ -150,6 +188,38 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertTrue(reports.contains { $0.contains("no changes") })
         XCTAssertEqual(reports.count, 2)
         XCTAssertFalse(placeholder.diffMode?.isEnabled ?? false)
+    }
+
+    func testTheFilePopupListsSameNamedFilesSeparatelyAndFollowsTheShownFile() throws {
+        let root = try repository()
+        for folder in ["one", "two"] {
+            let directory = root.appendingPathComponent(folder)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("same\n".utf8).write(to: directory.appendingPathComponent("same.txt"))
+        }
+        try run(["-c", "user.name=Viem", "-c", "user.email=viem@example.invalid", "add", "."], in: root)
+        try run(["-c", "user.name=Viem", "-c", "user.email=viem@example.invalid", "commit", "-q", "-m", "same"], in: root)
+        for folder in ["one", "two"] {
+            try Data("changed\n".utf8).write(to: root.appendingPathComponent(folder).appendingPathComponent("same.txt"))
+        }
+        let placeholder = try window(text: nil)
+        let target = try XCTUnwrap(diff(root, from: placeholder))
+        let mode = try XCTUnwrap(target.diffMode)
+        let popup = mode.toolbar.filePopup
+        XCTAssertEqual(popup.numberOfItems, mode.files.count, "one item per listed file")
+        XCTAssertEqual(Set(popup.itemTitles).count, popup.numberOfItems, "every title is distinct")
+        XCTAssertTrue(popup.itemTitles.contains("same.txt — one"))
+        XCTAssertTrue(popup.itemTitles.contains("same.txt — two"))
+        for _ in 0..<mode.files.count {
+            let presented = expectation(description: "presented")
+            mode.didPresent = { presented.fulfill() }
+            mode.moveFile(by: 1)
+            wait(for: [presented], timeout: 20)
+            let shown = try XCTUnwrap(target.activeDocument?.fileURL?.resolvingSymlinksInPath())
+            let selected = popup.indexOfSelectedItem
+            XCTAssertEqual(mode.files[selected].url.resolvingSymlinksInPath(), shown,
+                           "the popup names the shown file: \(popup.titleOfSelectedItem ?? "")")
+        }
     }
 
     func testTheMenuNamesTheDirectoryClippedFromTheLeft() {

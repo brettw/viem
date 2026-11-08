@@ -714,7 +714,7 @@ pub unsafe extern "C" fn viem_diff_load_base(
         let request = unsafe { base_request(request)? };
         let result = match &request.kind {
             BaseKind::LastSaved | BaseKind::File(_) => read_file_base(&request.path),
-            kind => repository(&request).and_then(|repository| repository.load(kind, &request.path, &request.cancellation)),
+            kind => GitRepository::load_file(&request.git_program, kind, &request.path, ProcessLimits::default(), &request.cancellation),
         };
         publish(DiffResult::Base(result), out_result)
     })

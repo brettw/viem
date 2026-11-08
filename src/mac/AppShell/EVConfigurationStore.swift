@@ -171,12 +171,23 @@ public final class EVConfigurationStore {
     Self.documentWindowFrame(in: root)
   }
   public func setDocumentWindowFrame(_ frame: CGRect) throws {
+    try setWindowFrame(frame, key: "documentFrame", name: "Document window frame")
+  }
+  /// Diff windows show two documents side by side, so they remember their
+  /// own frame separately from regular windows.
+  public var diffWindowFrame: CGRect? {
+    Self.documentWindowFrame(in: root, key: "diffFrame")
+  }
+  public func setDiffWindowFrame(_ frame: CGRect) throws {
+    try setWindowFrame(frame, key: "diffFrame", name: "Diff window frame")
+  }
+  private func setWindowFrame(_ frame: CGRect, key: String, name: String) throws {
     let fields: [String: Any] = ["x": frame.origin.x, "y": frame.origin.y,
       "width": frame.width, "height": frame.height]
-    guard Self.documentWindowFrame(in: ["windows": ["documentFrame": fields]]) != nil else {
-      throw invalid("Document window frame must have finite coordinates and positive dimensions")
+    guard Self.documentWindowFrame(in: ["windows": [key: fields]], key: key) != nil else {
+      throw invalid("\(name) must have finite coordinates and positive dimensions")
     }
-    try update(section: "windows", values: ["documentFrame": fields], notify: false)
+    try update(section: "windows", values: [key: fields], notify: false)
   }
   /// Application resource discovery, independent of persisted preferences.
   public var bundledVimSyntaxDirectory: String {
@@ -383,8 +394,8 @@ public final class EVConfigurationStore {
     guard double.isFinite, double >= 1, double <= Double(UInt32.max), double == double.rounded(.towardZero) else { return nil }
     return UInt32(exactly: double)
   }
-  private static func documentWindowFrame(in object: [String: Any]) -> CGRect? {
-    guard let fields = (object["windows"] as? [String: Any])?["documentFrame"] as? [String: Any] else { return nil }
+  private static func documentWindowFrame(in object: [String: Any], key: String = "documentFrame") -> CGRect? {
+    guard let fields = (object["windows"] as? [String: Any])?[key] as? [String: Any] else { return nil }
     var values: [Double] = []
     for key in ["x", "y", "width", "height"] {
       guard let number = fields[key] as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),

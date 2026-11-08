@@ -108,6 +108,86 @@ impl GitRepository {
 
     /// Load the base version of `file` for a git base kind.
     pub fn load(&self, kind: &BaseKind, file: &Path, cancellation: &CancellationToken) -> Result<BaseText, BaseError> {
+        Self::load_file(&self.program, kind, file, self.limits, cancellation)
+    }
+
+    /// Load the base version of `file` for a git base kind without finding
+    /// the repository first. Every command runs from the file's nearest
+    /// existing folder and names the file relative to it (`:./name`,
+    /// `HEAD:./name`), and the object, its attributes and the line-ending
+    /// configuration are read concurrently: one process round trip, not five
+    /// in sequence. A file outside a repository is unavailable.
+    pub fn load_file(
+        program: &Path,
+        kind: &BaseKind,
+        file: &Path,
+        limits: ProcessLimits,
+        cancellation: &CancellationToken,
+    ) -> Result<BaseText, BaseError> {
+        let revision = match kind {
+            BaseKind::Unstaged => "",
+            BaseKind::Head => "HEAD",
+            BaseKind::Branch(branch) => validated_revision(branch)?,
+            _ => return Err(BaseError::Unavailable("not a git base".into())),
+        };
+        let directory = existing_ancestor(file.parent().unwrap_or(file))
+            .ok_or_else(|| BaseError::Unavailable(format!("{} has no existing folder", file.display())))?;
+        let mut parts = Vec::new();
+        for component in file.strip_prefix(&directory).map_err(|_| BaseError::Unavailable("file path is unavailable".into()))?.components() {
+            match component {
+                Component::Normal(part) => parts.push(
+                    part.to_str().ok_or_else(|| BaseError::Unavailable("file path is not UTF-8".into()))?,
+                ),
+                _ => return Err(BaseError::Unavailable("file path is not inside a folder".into())),
+            }
+        }
+        let relative = format!("./{}", parts.join("/"));
+        // `cat-file --batch` reads one object name per line.
+        if relative.contains(['\n', '\r']) {
+            let repository = Self::discover(program, file, limits, cancellation)?;
+            return repository.load_by_discovery(kind, file, cancellation);
+        }
+        let request = format!("{revision}:{relative}\n");
+        let (object, attributes, config) = std::thread::scope(|scope| {
+            let attributes = scope.spawn(|| {
+                git(program, &directory, &["check-attr", "-z", "text", "eol", "crlf", "--", &relative], limits, cancellation)
+            });
+            let config = scope.spawn(|| {
+                git(program, &directory, &["config", "-z", "--get-regexp", r"^core\.(autocrlf|eol)$"], limits, cancellation)
+            });
+            let object = git_with_input(program, &directory, &["cat-file", "--batch"], request.as_bytes(), limits, cancellation);
+            (object, attributes.join(), config.join())
+        });
+        let object = object?;
+        if !object.success {
+            if String::from_utf8_lossy(&object.stderr).contains("not a git repository") {
+                return Err(BaseError::Unavailable("not in a git repository".into()));
+            }
+            return Err(command_error(object));
+        }
+        let Some(blob) = batch_blob(&object.stdout)? else {
+            return Ok(BaseText { bytes: Vec::new(), exists: false });
+        };
+        let mut eol = EolAttributes::default();
+        if let Ok(Ok(output)) = attributes {
+            if output.success {
+                parse_attributes(&output.stdout, &mut eol);
+            }
+        }
+        if let Ok(Ok(output)) = config {
+            // Exit status 1 means neither setting is present.
+            parse_core_config(&output.stdout, &mut eol);
+        }
+        let bytes = match checkout_line_endings(blob, &eol) {
+            std::borrow::Cow::Borrowed(bytes) => bytes.to_vec(),
+            std::borrow::Cow::Owned(converted) => converted,
+        };
+        Ok(BaseText { bytes, exists: true })
+    }
+
+    /// The original object lookup through the discovered repository, for
+    /// paths `cat-file --batch` cannot name.
+    fn load_by_discovery(&self, kind: &BaseKind, file: &Path, cancellation: &CancellationToken) -> Result<BaseText, BaseError> {
         let relative = self.relative_path(file)?;
         let object = match kind {
             BaseKind::Unstaged => self.index_object(&relative, cancellation)?,
@@ -212,29 +292,11 @@ impl GitRepository {
         let mut attributes = EolAttributes::default();
         let output = self.git(&["check-attr", "-z", "text", "eol", "crlf", "--", relative], cancellation)?;
         if output.success {
-            let fields: Vec<&[u8]> = output.stdout.split(|&byte| byte == 0).collect();
-            for entry in fields.chunks(3).filter(|entry| entry.len() == 3) {
-                let value = Some(String::from_utf8_lossy(entry[2]).into_owned());
-                match entry[1] {
-                    b"text" => attributes.text = value,
-                    b"eol" => attributes.eol = value,
-                    b"crlf" => attributes.crlf = value,
-                    _ => {}
-                }
-            }
+            parse_attributes(&output.stdout, &mut attributes);
         }
         let output = self.git(&["config", "-z", "--get-regexp", r"^core\.(autocrlf|eol)$"], cancellation)?;
         // Exit status 1 means neither setting is present.
-        for entry in output.stdout.split(|&byte| byte == 0) {
-            let entry = String::from_utf8_lossy(entry);
-            if let Some((key, value)) = entry.split_once('\n') {
-                match key {
-                    "core.autocrlf" => attributes.core_autocrlf = Some(value.to_owned()),
-                    "core.eol" => attributes.core_eol = Some(value.to_owned()),
-                    _ => {}
-                }
-            }
-        }
+        parse_core_config(&output.stdout, &mut attributes);
         Ok(attributes)
     }
 
@@ -250,9 +312,78 @@ fn git(
     limits: ProcessLimits,
     cancellation: &CancellationToken,
 ) -> Result<ProcessOutput, BaseError> {
+    run_git(program, directory, arguments, None, limits, cancellation)
+}
+
+fn git_with_input(
+    program: &Path,
+    directory: &Path,
+    arguments: &[&str],
+    input: &[u8],
+    limits: ProcessLimits,
+    cancellation: &CancellationToken,
+) -> Result<ProcessOutput, BaseError> {
+    run_git(program, directory, arguments, Some(input), limits, cancellation)
+}
+
+fn run_git(
+    program: &Path,
+    directory: &Path,
+    arguments: &[&str],
+    input: Option<&[u8]>,
+    limits: ProcessLimits,
+    cancellation: &CancellationToken,
+) -> Result<ProcessOutput, BaseError> {
     let all: Vec<OsString> = SAFETY_OPTIONS.iter().chain(arguments).map(OsString::from).collect();
     let all: Vec<&OsStr> = all.iter().map(OsString::as_os_str).collect();
-    run(program, &all, directory, ENVIRONMENT, limits, cancellation)
+    run(program, &all, directory, ENVIRONMENT, input, limits, cancellation)
+}
+
+/// `check-attr -z` output: `<path> NUL <attribute> NUL <value> NUL` triples.
+fn parse_attributes(stdout: &[u8], attributes: &mut EolAttributes) {
+    let fields: Vec<&[u8]> = stdout.split(|&byte| byte == 0).collect();
+    for entry in fields.chunks(3).filter(|entry| entry.len() == 3) {
+        let value = Some(String::from_utf8_lossy(entry[2]).into_owned());
+        match entry[1] {
+            b"text" => attributes.text = value,
+            b"eol" => attributes.eol = value,
+            b"crlf" => attributes.crlf = value,
+            _ => {}
+        }
+    }
+}
+
+/// `config -z --get-regexp` output: `<key> LF <value> NUL` entries.
+fn parse_core_config(stdout: &[u8], attributes: &mut EolAttributes) {
+    for entry in stdout.split(|&byte| byte == 0) {
+        let entry = String::from_utf8_lossy(entry);
+        if let Some((key, value)) = entry.split_once('\n') {
+            match key {
+                "core.autocrlf" => attributes.core_autocrlf = Some(value.to_owned()),
+                "core.eol" => attributes.core_eol = Some(value.to_owned()),
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The blob in `cat-file --batch` output for one request: `None` when the
+/// name is missing or not a blob (a directory or a submodule).
+fn batch_blob(stdout: &[u8]) -> Result<Option<&[u8]>, BaseError> {
+    let malformed = || BaseError::Command { status: None, message: "unexpected git cat-file output".into() };
+    let header_end = stdout.iter().position(|&byte| byte == b'\n').ok_or_else(malformed)?;
+    let header = std::str::from_utf8(&stdout[..header_end]).map_err(|_| malformed())?;
+    if header.ends_with(" missing") {
+        return Ok(None);
+    }
+    if header.ends_with(" ambiguous") {
+        return Err(BaseError::Command { status: None, message: format!("git object name is ambiguous: {header}") });
+    }
+    let mut fields = header.rsplitn(3, ' ');
+    let (size, kind) = (fields.next(), fields.next());
+    let size: usize = size.and_then(|size| size.parse().ok()).ok_or_else(malformed)?;
+    let body = stdout.get(header_end + 1..header_end + 1 + size).ok_or_else(malformed)?;
+    Ok((kind == Some("blob")).then_some(body))
 }
 
 fn command_error(output: ProcessOutput) -> BaseError {
@@ -325,4 +456,20 @@ fn parse_name_status(output: &[u8], root: &Path) -> Vec<ChangedFile> {
 #[cfg(test)]
 pub(super) fn parse_name_status_for_tests(output: &[u8], root: &Path) -> Vec<ChangedFile> {
     parse_name_status(output, root)
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::batch_blob;
+
+    #[test]
+    fn batch_output_names_blobs_and_absent_objects() {
+        assert_eq!(batch_blob(b"0123 blob 3\nabc\n").unwrap(), Some(&b"abc"[..]));
+        assert_eq!(batch_blob(b"0123 blob 0\n\n").unwrap(), Some(&b""[..]));
+        assert_eq!(batch_blob(b":./x missing\n").unwrap(), None);
+        assert_eq!(batch_blob(b"0123 tree 30\n").unwrap_or(None), None);
+        assert!(batch_blob(b"HEAD:./x ambiguous\n").is_err());
+        assert!(batch_blob(b"0123 blob 10\nshort\n").is_err(), "a truncated body is malformed");
+        assert!(batch_blob(b"").is_err());
+    }
 }

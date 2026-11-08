@@ -210,3 +210,33 @@ fn canonical_parent(path: &Path) -> PathBuf {
     let parent = std::fs::canonicalize(path.parent().unwrap()).unwrap();
     parent.join(path.file_name().unwrap())
 }
+
+#[test]
+fn folder_relative_loads_need_no_repository_discovery() {
+    let Some((directory, _)) = repository("relative") else { return };
+    let root = std::fs::canonicalize(&directory.0).unwrap();
+    std::fs::create_dir(root.join("gone dir")).unwrap();
+    std::fs::write(root.join("gone dir/inner.txt"), "inner\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "inner"]);
+    std::fs::write(root.join("a.txt"), "worktree\n").unwrap();
+    let token = CancellationToken::new();
+    let load = |kind: &BaseKind, file: &Path| GitRepository::load_file(Path::new("git"), kind, file, ProcessLimits::default(), &token);
+    assert_eq!(load(&BaseKind::Unstaged, &root.join("a.txt")).unwrap().bytes, b"one\ntwo\n");
+    // A deleted folder's file still has its committed version.
+    std::fs::remove_dir_all(root.join("gone dir")).unwrap();
+    assert_eq!(load(&BaseKind::Head, &root.join("gone dir/inner.txt")).unwrap().bytes, b"inner\n");
+    // Directories and names git does not know are absent, not errors.
+    assert!(!load(&BaseKind::Head, &root.join("new.txt")).unwrap().exists);
+    std::fs::create_dir(root.join("folder")).unwrap();
+    assert!(!load(&BaseKind::Unstaged, &root.join("folder")).unwrap().exists);
+    let outside = TempDirectory::new("outside");
+    std::fs::write(outside.0.join("x.txt"), "x\n").unwrap();
+    assert!(matches!(load(&BaseKind::Unstaged, &outside.0.join("x.txt")), Err(BaseError::Unavailable(_))));
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        GitRepository::load_file(Path::new("git"), &BaseKind::Head, &root.join("a.txt"), ProcessLimits::default(), &cancelled),
+        Err(BaseError::Cancelled)
+    ));
+}
