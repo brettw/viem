@@ -2169,7 +2169,7 @@ impl Document {
         ))
     }
 
-    fn prepare_line_deletion(
+    pub(super) fn prepare_line_deletion(
         &self,
         range: Range<usize>,
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {

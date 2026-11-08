@@ -16,6 +16,12 @@ Diff mode is side by side:
   comparison always uses the live buffer, including unsaved edits, never the
   file on disk.
 
+The sides start at equal widths, separated by the same splitter as vertical
+split views. Dragging it moves the boundary, stopping at each side's minimum
+width (that of a view, or more when the live side holds vertical splits).
+The base keeps its share of the width while the window resizes and while
+that window shows other files or bases.
+
 Showing the new side in Code reprojects the buffer as Code, as turning
 Preview off does. It never converts the source (see
 [source formats](../AGENTS.md#product)).

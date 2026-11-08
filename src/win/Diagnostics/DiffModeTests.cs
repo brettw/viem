@@ -52,6 +52,20 @@ internal sealed partial class EditorWindow
                     && left.Document.Source(left.Document.State.document_revision).AsSpan().SequenceEqual(System.Text.Encoding.UTF8.GetBytes(original)),
                     "Diff menu opens an untitled Markdown document beside its saved source in Code");
                 Check(preferences.MarkdownFormattedView, "Comparing Markdown preserves the opening preference for other files");
+                await WaitFor(() => left.ActualWidth > 0 && window.diffSplitter?.ActualWidth > 0);
+                var splitter = window.diffSplitter!;
+                double available = window.root.ActualWidth - DiffSplitterWidth;
+                bool Near(double actual, double expected) => Math.Abs(actual - expected) < 1;
+                Check(Grid.GetColumn(splitter) == 1 && Near(splitter.ActualWidth, DiffSplitterWidth) && Near(left.ActualWidth, available / 2)
+                    && AutomationProperties.GetName(splitter) == "Resize views horizontally",
+                    "The pane splitter divides the two sides of a diff evenly");
+                window.DragDiffSplitter(60); window.root.UpdateLayout();
+                Check(Near(left.ActualWidth, available / 2 + 60), "Dragging the diff splitter moves the boundary between the sides");
+                window.DragDiffSplitter(-available); window.root.UpdateLayout();
+                Check(Near(left.ActualWidth, DiffMinimumWidth), "The diff splitter stops at the base side's minimum width");
+                window.DragDiffSplitter(40); window.root.UpdateLayout();
+                Check(Near(left.ActualWidth, DiffMinimumWidth + 40), "Reversing a blocked diff splitter drag moves the boundary at once");
+                window.diffSplitFraction = .5; window.ApplyDiffSplit(); window.root.UpdateLayout();
                 var source = left.Document.Source(left.Document.State.document_revision);
                 try { left.View!.Ex("1delete"); } catch (InvalidOperationException) { }
                 Check(left.Document.Source(left.Document.State.document_revision).SequenceEqual(source) && !left.Document.IsDirty,

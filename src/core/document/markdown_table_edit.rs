@@ -426,37 +426,20 @@ impl Document {
         if self.format() != Format::Markdown {
             return Ok(None);
         }
-        let Some(table) = self
-            .projection()
-            .tables()
-            .iter()
-            .find(|table| range.start < table.range.end && table.range.start < range.end)
-        else {
+        let touched = self.line_deletion_tables(range);
+        let Some(&first) = touched.first() else {
             return Ok(None);
         };
-        if range.start < table.range.start
-            || range.end
-                > table.range.end
-                    + usize::from(self.text().as_bytes().get(table.range.end) == Some(&b'\n'))
+        let table = self.projection().tables().get(first).expect("touched table");
+        // A complete table also leaves its separator and container lines to
+        // ordinary line deletion, like any other selected block.
+        if range.start <= table.range.start && range.end >= table.range.end
+            || range.start < table.range.start
+            || range.end > self.table_line_end(table)
         {
-            return Err(unsupported(
-                "This line deletion crosses table and paragraph boundaries.",
-            ));
+            return self.prepare_table_spanning_line_deletion(range, &touched).map(Some);
         }
-        if range.start <= table.range.start && range.end >= table.range.end {
-            return self
-                .prepare_reprojected_source_patches(vec![SourcePatch::primary(
-                    table.source_range.clone(),
-                    Vec::new(),
-                )])
-                .map(Some);
-        }
-        let table_index = self
-            .projection()
-            .tables()
-            .iter()
-            .position(|candidate| candidate.id == table.id)
-            .unwrap();
+        let table_index = first;
         let first = table
             .rows
             .partition_point(|row| row.range.end <= range.start);
@@ -514,6 +497,145 @@ impl Document {
         }
         self.prepare_reprojected_source_patches(composition.source_patches())
             .map(Some)
+    }
+
+    /// Ordinals of the tables a formatted line-deletion range touches. An
+    /// empty table (one empty header cell) is touched when the range covers
+    /// its boundary. At the end of the text, the range may instead begin with
+    /// the separator after a table's final cell, which that table owns.
+    fn line_deletion_tables(&self, range: &Range<usize>) -> Vec<usize> {
+        let tables = self.projection().tables();
+        let through_end = !range.is_empty() && range.end == self.projection().text_tree().byte_len();
+        (tables.partition_point_end(range.start.saturating_sub(1))..tables.len())
+            .map_while(|index| {
+                let table = tables.get(index)?;
+                (table.range.start < range.end).then_some((index, table))
+            })
+            .filter(|(_, table)| range.start < table.range.end.max(table.range.start + 1)
+                || through_end && range.start == table.range.end)
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The end of a table's last line, including the following block separator.
+    fn table_line_end(&self, table: &MarkdownTable) -> usize {
+        table.range.end + usize::from(table.range.end < self.projection().text_tree().byte_len())
+    }
+
+    /// A line deletion that crosses table boundaries composes verified steps
+    /// from the end backward, so each step's earlier offsets stay valid. A
+    /// partially selected table at either edge keeps the in-table rules:
+    /// complete rows are deleted and partial rows are cleared. Each completely
+    /// selected table first becomes a one-line placeholder heading, so the
+    /// ordinary line deletion owns the remaining lines together with their
+    /// container, fence and separator syntax.
+    fn prepare_table_spanning_line_deletion(
+        &self,
+        range: &Range<usize>,
+        touched: &[usize],
+    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
+        let tables = self.projection().tables();
+        let first = tables.get(touched[0]).expect("touched table").clone();
+        let last = tables.get(*touched.last().unwrap()).expect("touched table").clone();
+        let head = (range.start > first.range.start).then_some(&first);
+        let tail = (range.end < last.range.end && range.start < last.range.start).then_some(&last);
+        let mut scratch = self.scratch_document();
+        let mut sources = super::replacement::PatchComposition::new(self.source_byte_len());
+        let mut formatted =
+            super::replacement::PatchComposition::new(self.projection().text_tree().byte_len());
+        let mut record = |scratch: &mut Document,
+                          prepared: PreparedModelTransaction|
+         -> Result<(), ModelTransactionError> {
+            for patch in prepared.summary.source_patches.iter().rev() {
+                sources.splice(patch.range(), patch.replacement());
+            }
+            formatted.record_formatted(&prepared)?;
+            scratch.commit_model_transaction(prepared)?;
+            Ok(())
+        };
+        let mut lines = head.map_or(range.start, |table| self.table_line_end(table))
+            ..tail.map_or(range.end, |table| table.range.start);
+        if let Some(table) = tail {
+            let prepared = scratch
+                .prepare_table_line_deletion(&(table.range.start..range.end))?
+                .ok_or(DocumentError::VerificationFailed)?;
+            record(&mut scratch, prepared)?;
+        }
+        let placeholder = "x";
+        let heading = self.encoding().encode_fragment(&format!("# {placeholder}"))?;
+        for &index in touched.iter().rev() {
+            let table = tables.get(index).expect("touched table");
+            if head.is_some_and(|head| head.id == table.id)
+                || tail.is_some_and(|tail| tail.id == table.id)
+            {
+                continue;
+            }
+            // Row bodies exclude container prefixes and the final line ending.
+            let (Some(first_row), Some(last_row)) = (table.source_rows.first(), table.source_rows.last()) else {
+                return Err(DocumentError::VerificationFailed.into());
+            };
+            let before = scratch.projection().text_tree().byte_len();
+            let prepared = scratch.prepare_reprojected_source_patches(vec![SourcePatch::primary(
+                first_row.source_body.start..last_row.source_body.end,
+                heading.clone(),
+            )])?;
+            record(&mut scratch, prepared)?;
+            let text = scratch.projection().text_tree();
+            let end = table.range.start + placeholder.len();
+            let shrink = before
+                .checked_sub(text.byte_len())
+                .filter(|&shrink| shrink + placeholder.len() == table.range.len())
+                .ok_or(DocumentError::VerificationFailed)?;
+            if text.slice(table.range.start..end).map_err(DocumentError::FormattedTextStorage)?
+                != placeholder
+                || scratch.projection().table_at(table.range.start).is_some()
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            lines.end -= shrink;
+        }
+        let through_end = range.end == self.projection().text_tree().byte_len();
+        if let Some(table) = head.filter(|table| through_end && range.end > table.range.end) {
+            // Deleting through the end leaves this table last. The separator
+            // after its final cell has no line of its own, so truncate the
+            // source after that row, keeping the artifact's final terminator.
+            let row = table.source_rows.last().ok_or(DocumentError::VerificationFailed)?;
+            let end = scratch.physical_line_at_source(scratch.source_byte_len().saturating_sub(1))?.content_range.end;
+            let rows = table.rows.len();
+            let prepared = scratch.prepare_reprojected_source_patches(vec![SourcePatch::primary(
+                row.source_body.end..end.max(row.source_body.end),
+                Vec::new(),
+            )])?;
+            record(&mut scratch, prepared)?;
+            if scratch.projection().text_tree().byte_len() != table.range.end
+                || scratch.projection().table_at(table.range.start).is_none_or(|kept| kept.rows.len() != rows)
+            {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+        } else if !lines.is_empty() {
+            if !scratch.line_deletion_tables(&lines).is_empty() {
+                return Err(DocumentError::VerificationFailed.into());
+            }
+            let prepared = scratch.prepare_line_deletion(lines)?;
+            record(&mut scratch, prepared)?;
+        }
+        if let Some(table) = head.filter(|table| range.start < table.range.end) {
+            let prepared = scratch
+                .prepare_table_line_deletion(&(range.start..table.range.end))?
+                .ok_or(DocumentError::VerificationFailed)?;
+            record(&mut scratch, prepared)?;
+        }
+        // The composed edits verify the composed patches without copying
+        // either text; the steps already verified each intermediate state.
+        let result =
+            self.prepare_text_edits_with_patches(formatted.formatted_edits(), Some(sources.source_patches()))?;
+        let PreparedPublication::State(candidate) = &result.publication else {
+            return Err(DocumentError::VerificationFailed.into());
+        };
+        if candidate.projection.text_tree().byte_len() != scratch.projection().text_tree().byte_len() {
+            return Err(DocumentError::VerificationFailed.into());
+        }
+        Ok(result)
     }
     pub(super) fn table_style_fragments(
         &self,

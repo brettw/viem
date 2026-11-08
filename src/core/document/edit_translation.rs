@@ -25,7 +25,11 @@ impl Document {
                 block.range.start < selected_rows.end && (selected_rows.start < block.range.end || selects_empty_tail(block))
             }
         }).collect::<Vec<_>>();
-        if selected.is_empty() || selected.iter().any(|block|
+        // An empty passive-HTML row (such as a closing `</details>`) owns tag
+        // syntax this adapter does not remove. Decline rather than leave it.
+        let skips_html_row = blocks.iter().any(|block| block.range.is_empty() && block.markdown_html
+            && block.style.0 != "Code Block" && selected_rows.contains(&block.range.start));
+        if skips_html_row || selected.is_empty() || selected.iter().any(|block|
             matches!(block.kind, super::super::BlockKind::ListItem { .. }) && block.style.0 != "Code Block"
                 || self.projection().table_at(block.range.start).is_some()) {
             return Ok(None);
@@ -148,7 +152,7 @@ impl Document {
     /// An HTML leaf may begin after hidden opening rows or end before hidden
     /// closing rows. Return the parsed source owner and its complete visible
     /// extent so callers can distinguish outer boundaries from shared leaves.
-    fn markdown_html_row_owner(
+    pub(super) fn markdown_html_row_owner(
         &self,
         block: &super::super::Block,
     ) -> Result<Option<(Range<usize>, Range<usize>)>, DocumentError> {

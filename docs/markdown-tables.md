@@ -278,7 +278,11 @@ delimiter row. In Preview, a command
 that fully consumes a source table row uses structural row deletion and its
 header rules; partial visual-line deletion clears only its exact cell content.
 Deleting just the hidden delimiter row in Preview is unavailable because it
-would destroy table interpretation without a visible content target. Counts,
+would destroy table interpretation without a visible content target. A line
+deletion that also covers lines outside a table removes each completely
+selected table with the other lines, including their separators and enclosing
+list, quote or HTML syntax; a table selected only in part at either end keeps
+these row rules. Counts,
 cross-cell selections, registers, and replay must retain the originating line
 domain and exact range set. Do not claim command support until these cases and
 the complete-table deletion case have entry-point tests.

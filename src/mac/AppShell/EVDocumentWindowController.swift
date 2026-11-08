@@ -1986,6 +1986,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
   var diffActiveDocument: EVDocument? { activeDocument }
   var diffActiveSurface: (any EVEditorSurface)? { isClosed ? nil : editorSurface }
   var diffDocumentContentView: NSView { paneContainer.view }
+  var diffDocumentMinimumWidth: CGFloat { max(EVDiffSplitView.minimumWidth, paneContainer.minimumContentWidth) }
   var diffOpenPanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)? {
     openFilePanelPresenter
   }

@@ -68,7 +68,19 @@ impl Document {
 
     fn guarded_markdown_paragraphs(
         &self,
+        run: Vec<super::super::Block>,
+    ) -> Result<Option<(Vec<super::super::Block>, Vec<Range<usize>>)>, ModelTransactionError> {
+        self.guarded_markdown_band(run, false)
+    }
+
+    /// `table_edges` lets a band of the unedited source end at a top-level
+    /// table: the full parse began that table after an explicit separator,
+    /// so nothing in the band is still open there or extends into it. An
+    /// edit could remove that separator, so edited bands never use it.
+    fn guarded_markdown_band(
+        &self,
         mut run: Vec<super::super::Block>,
+        table_edges: bool,
     ) -> Result<Option<(Vec<super::super::Block>, Vec<Range<usize>>)>, ModelTransactionError> {
         // Structural grammars may absorb a separator or a neighboring body.
         // Capture unchanged, independent paragraphs on both sides and prove
@@ -86,6 +98,11 @@ impl Document {
                 let Some(block) = self.projection().blocks_for_region(&(neighbor..neighbor)).into_iter()
                     .find(|block| if preceding { block.range.end < edge } else { block.range.start > edge })
                     else { return Ok(None); };
+                if table_edges && block.containers.is_empty() && block.quote_depth == 0
+                    && self.projection().table_at(block.range.start).is_some()
+                {
+                    break;
+                }
                 let guard = self.independent_markdown_paragraph(&block);
                 if guard { guards.push(block.range.clone()); }
                 if preceding { run.insert(0, block); } else { run.push(block); }
@@ -104,26 +121,65 @@ impl Document {
         range: Range<usize>,
     ) -> Result<Option<super::super::line_endings::NormalizedText>, ModelTransactionError> {
         let run = self.projection().blocks_for_region(&range);
-        let Some((run, _)) = self.guarded_markdown_paragraphs(run)? else { return Ok(None); };
+        let Some((run, _)) = self.guarded_markdown_band(run, true)? else { return Ok(None); };
         let formatted = run[0].range.start..run.last().unwrap().range.end;
         if self.markdown_edit_needs_reference_context(&[TextEdit::new(formatted.clone(), "")]) {
             return Ok(None);
         }
-        for boundary in [formatted.start.checked_sub(1),
-            (formatted.end < self.projection().text_tree().byte_len()).then_some(formatted.end)]
-            .into_iter().flatten()
+        // Beside a table edge the band spans the complete non-blank lines up
+        // to that table, including hidden tag lines such as `<details>`, and
+        // at least one blank line must separate them.
+        let top_level = |at: usize| self.projection().blocks_for_region(&(at..at)).into_iter()
+            .any(|block| block.containers.is_empty() && block.quote_depth == 0);
+        let table_before = formatted.start.checked_sub(1)
+            .and_then(|at| self.projection().table_at(at))
+            .filter(|table| table.range.end + 1 == formatted.start && top_level(table.range.end));
+        let table_after = self.projection().table_at(formatted.end + 1)
+            .filter(|table| table.range.start == formatted.end + 1 && top_level(table.range.start));
+        for (boundary, table) in [(formatted.start.checked_sub(1), table_before),
+            ((formatted.end < self.projection().text_tree().byte_len()).then_some(formatted.end), table_after)]
         {
+            let Some(boundary) = boundary.filter(|_| table.is_none()) else { continue; };
             let Some(source) = self.projection().source_range(boundary..boundary + 1) else { return Ok(None); };
             if !markdown_block_styles::explicit_paragraph_separator(self, &source, &[])? { return Ok(None); }
         }
         let Some(contributors) = self.projection().source_range(formatted.clone()) else { return Ok(None); };
-        let start = if formatted.start == 0 { self.projection().source_content_start() } else {
+        let blank = |line: &super::super::PhysicalSourceLine| line.text.trim().is_empty();
+        let start = if formatted.start == 0 { self.projection().source_content_start() }
+        else if let Some(table) = table_before {
+            let Some(row) = table.source_rows.last() else { return Ok(None); };
+            let mut line = self.physical_line_at_source(row.source_body.end)?;
+            let mut separated = false;
+            loop {
+                line = self.physical_line(line.index + 1)?;
+                if !blank(&line) { break; }
+                if line.source_range.start >= contributors.start { return Ok(None); }
+                separated = true;
+            }
+            if !separated { return Ok(None); }
+            line.source_range.start
+        } else {
             self.physical_line_at_source(contributors.start)?.source_range.start
         };
-        let end = if formatted.end == self.projection().text_tree().byte_len() { self.source_byte_len() } else {
+        let end = if formatted.end == self.projection().text_tree().byte_len() { self.source_byte_len() }
+        else if let Some(table) = table_after {
+            let Some(row) = table.source_rows.first() else { return Ok(None); };
+            let mut line = self.physical_line_at_source(row.source_range.start)?;
+            let mut separated = false;
+            loop {
+                let Some(index) = line.index.checked_sub(1) else { return Ok(None); };
+                line = self.physical_line(index)?;
+                if !blank(&line) { break; }
+                if line.source_range.end <= contributors.end { return Ok(None); }
+                separated = true;
+            }
+            if !separated { return Ok(None); }
+            line.content_range.end
+        } else {
             let Some(separator) = self.projection().source_range(formatted.end..formatted.end + 1) else { return Ok(None); };
             separator.start
         };
+        if start > contributors.start || end < contributors.end { return Ok(None); }
         if end - start > 32768 { return Ok(None); }
         let bytes = self.source_bytes_in(start..end)?;
         let decoded = self.encoding().decode_region(&bytes, start)?;

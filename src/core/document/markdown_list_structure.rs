@@ -356,7 +356,10 @@ pub(super) fn deletion_patches(
     {
         return Ok(None);
     }
-    if !paragraphs
+    // Passive HTML rows own tag syntax on other physical lines (an opening
+    // `<details>` before its `<summary>` row); their adapter removes it.
+    if paragraphs.iter().any(|block| block.markdown_html)
+        || !paragraphs
         .iter()
         .any(|block| matches!(block.kind, super::super::BlockKind::ListItem { .. })
             || whole_line && matches!(block.kind, super::super::BlockKind::Heading(_)))
@@ -411,7 +414,18 @@ pub(super) fn deletion_patches(
             .into_iter()
             .find(|block| block.range.start == range.end)
             .ok_or(DocumentError::AmbiguousProjection)?;
-        let next_start = source_line(&next, false)?.start;
+        // An HTML row's hidden opening lines (`<details>` before its
+        // `<summary>` row) precede its first visible source line.
+        // An empty row has no visible line of its own to skip past.
+        let next_start = if next.markdown_html && !next.range.is_empty() {
+            match document.markdown_html_row_owner(&next)? {
+                Some((owner, formatted)) if formatted.start == next.range.start =>
+                    document.physical_line_at_source(owner.start)?.source_range.start,
+                _ => return Ok(None),
+            }
+        } else {
+            source_line(&next, false)?.start
+        };
         let last_end = source_line(last, true)?.end;
         // Blank lines between the deleted lines and the next block separate
         // it from the content above. Keep them unless a blank line already

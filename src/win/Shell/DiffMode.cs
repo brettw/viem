@@ -10,8 +10,14 @@ namespace Viem.Windows.Shell;
 
 internal sealed partial class EditorWindow
 {
+    // The pane layout's splitter width and minimum pane width
+    // (`SPLITTER_WIDTH` and `MIN_WIDTH` in src/core/layout/panes.rs).
+    private const double DiffSplitterWidth = 5, DiffMinimumWidth = 100;
     private DiffToolbar? diffToolbar;
     private EditorPane? diffLive, diffLeft;
+    private VerticalSplitter? diffSplitter;
+    /// The base's share of the width beside the splitter, kept while the window lives.
+    private double diffSplitFraction = .5;
     private DiffComparison? comparison;
     private DiffBase diffBase = new(VIEM_DIFF_BASE_LAST_SAVED);
     private DiffFile[] diffFiles = [];
@@ -105,7 +111,7 @@ internal sealed partial class EditorWindow
                 left.Dispose();
                 left.Document.Dispose();
             }
-            root.ColumnDefinitions[0].Width = new(0);
+            DetachDiffSplitter();
             if (live?.View is { } view) {
                 live.ClearDiffMarks();
                 if (deletedSide) live.Document.ProtectDeletedSide(false);
@@ -291,9 +297,70 @@ internal sealed partial class EditorWindow
         diffLeft = left;
         prepared.Installed = true;
         AutomationProperties.SetName(left, "Diff base");
-        root.ColumnDefinitions[0].Width = new(1, GridUnitType.Star);
         Grid.SetRow(left, 4);
         root.Children.Add(left);
+        AttachDiffSplitter();
+    }
+
+    /// The pane splitter between the two sides. Dragging it moves the
+    /// boundary; the base keeps its share of the width while the window resizes.
+    private void AttachDiffSplitter()
+    {
+        if (diffSplitter == null) {
+            diffSplitter = new VerticalSplitter(root, DragDiffSplitter);
+            diffSplitter.ApplyTheme(preferences);
+            preferences.Changed += ApplyDiffSplitterTheme;
+            Grid.SetRow(diffSplitter, 4);
+            Grid.SetColumn(diffSplitter, 1);
+            root.Children.Add(diffSplitter);
+        }
+        ApplyDiffSplit();
+    }
+
+    private void DetachDiffSplitter()
+    {
+        if (diffSplitter is { } splitter) {
+            diffSplitter = null;
+            preferences.Changed -= ApplyDiffSplitterTheme;
+            root.Children.Remove(splitter);
+            splitter.Dispose();
+        }
+        var columns = root.ColumnDefinitions;
+        columns[0].Width = new(0); columns[0].MinWidth = 0;
+        columns[1].Width = new(0);
+        columns[2].Width = new(1, GridUnitType.Star); columns[2].MinWidth = 0;
+    }
+
+    private void ApplyDiffSplitterTheme() => diffSplitter?.ApplyTheme(preferences);
+
+    /// The document side's minimum width, which its own vertical splits raise.
+    private double DiffDocumentMinimumWidth => Math.Max(DiffMinimumWidth, paneGrid.MinimumSize.Width);
+
+    private void ApplyDiffSplit()
+    {
+        var columns = root.ColumnDefinitions;
+        columns[0].Width = new(diffSplitFraction, GridUnitType.Star); columns[0].MinWidth = DiffMinimumWidth;
+        columns[1].Width = new(DiffSplitterWidth);
+        columns[2].Width = new(1 - diffSplitFraction, GridUnitType.Star); columns[2].MinWidth = DiffDocumentMinimumWidth;
+    }
+
+    /// `width` limited so that both sides keep their minimums. A window too
+    /// narrow for both divides its width evenly.
+    private double ClampDiffBaseWidth(double width, double available)
+    {
+        double upper = available - DiffDocumentMinimumWidth;
+        return upper < DiffMinimumWidth ? available / 2 : Math.Clamp(width, DiffMinimumWidth, upper);
+    }
+
+    /// Like the pane splitter, a move past a minimum is discarded rather than
+    /// accumulated, so reversing the drag moves the boundary at once.
+    private void DragDiffSplitter(double delta)
+    {
+        double available = root.ActualWidth - DiffSplitterWidth;
+        if (diffSplitter == null || available <= 0) return;
+        double width = ClampDiffBaseWidth(ClampDiffBaseWidth(available * diffSplitFraction, available) + delta, available);
+        diffSplitFraction = width / available;
+        ApplyDiffSplit();
     }
 
     private async Task InstallDiff(EditorPane live, PreparedDiff prepared, CancellationToken token)

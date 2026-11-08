@@ -60,11 +60,14 @@ internal sealed partial class EditorWindow : Window
         using (Diagnostics.StartupPerformance.Measure("window.attachContent")) Content = root;
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
         root.RowDefinitions.Insert(3, new() { Height = GridLength.Auto });
+        // The diff base and its splitter, then the panes; the first two are
+        // empty outside diff mode.
+        root.ColumnDefinitions.Add(new() { Width = new(0) });
         root.ColumnDefinitions.Add(new() { Width = new(0) });
         root.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
-        root.Children.Add(titleBar); Grid.SetColumnSpan(titleBar, 2);
-        root.Children.Add(Menu); Grid.SetRow(Menu, 1); Grid.SetColumnSpan(Menu, 2);
-        root.Children.Add(paneGrid); Grid.SetColumn(paneGrid, 1); Grid.SetRow(paneGrid, 4);
+        root.Children.Add(titleBar); Grid.SetColumnSpan(titleBar, 3);
+        root.Children.Add(Menu); Grid.SetRow(Menu, 1); Grid.SetColumnSpan(Menu, 3);
+        root.Children.Add(paneGrid); Grid.SetColumn(paneGrid, 2); Grid.SetRow(paneGrid, 4);
         titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
         titleBar.Children.Add(titleDrag); titleDrag.Children.Add(titleText); titleBar.Children.Add(menuToggle); Grid.SetColumn(menuToggle, 1);
         titleBar.Children.Add(toolbarToggle); Grid.SetColumn(toolbarToggle, 2);
@@ -164,7 +167,7 @@ internal sealed partial class EditorWindow : Window
             Source = titleBar, Path = new PropertyPath("Background")
         });
         Grid.SetRow(toolbar, gridRow);
-        Grid.SetColumnSpan(toolbar, 2);
+        Grid.SetColumnSpan(toolbar, 3);
         root.Children.Add(toolbar);
     }
 

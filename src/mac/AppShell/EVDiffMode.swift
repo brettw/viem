@@ -319,33 +319,72 @@ final class EVDiffBaseCache {
   }
 }
 
-/// The left (base) and right (document) halves of a diff window.
+/// The left (base) and right (document) halves of a diff window, separated
+/// by the pane splitter. Dragging it moves the boundary; the base keeps its
+/// share of the width while the window resizes.
 @MainActor
 final class EVDiffSplitView: NSView {
+  /// The pane layout's splitter width and minimum pane width
+  /// (`SPLITTER_WIDTH` and `MIN_WIDTH` in `src/core/layout/panes.rs`).
+  static let splitterWidth: CGFloat = 5
+  static let minimumWidth: CGFloat = 100
+
   let base: NSView
   let document: NSView
-  private let divider = NSBox()
+  let splitter = EVVerticalSplitter(frame: .zero)
+  /// The base's share of the width beside the splitter.
+  private(set) var baseFraction: CGFloat
+  /// The document side's minimum width, which its own vertical splits raise.
+  var documentMinimumWidth: () -> CGFloat = { EVDiffSplitView.minimumWidth }
+  /// Reports each dragged share, so a replacement split can keep it.
+  var baseFractionDidChange: ((CGFloat) -> Void)?
 
-  init(base: NSView, document: NSView) {
+  init(base: NSView, document: NSView, baseFraction: CGFloat = 0.5) {
     self.base = base
     self.document = document
+    self.baseFraction = baseFraction
     super.init(frame: .zero)
-    divider.boxType = .separator
-    for view in [base, divider, document] {
+    for view in [base, splitter, document] {
       view.translatesAutoresizingMaskIntoConstraints = true
       addSubview(view)
     }
+    splitter.dragDidMove = { [weak self] delta in self?.moveSplitter(by: delta) }
     setAccessibilityElement(false)
   }
 
   @available(*, unavailable) required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
+  private var availableWidth: CGFloat { max(0, bounds.width - Self.splitterWidth) }
+
+  /// `width` limited so that both sides keep their minimums. A window too
+  /// narrow for both divides its width evenly.
+  private func clampedBaseWidth(_ width: CGFloat) -> CGFloat {
+    let available = availableWidth
+    let upper = available - max(Self.minimumWidth, documentMinimumWidth())
+    guard upper >= Self.minimumWidth else { return available / 2 }
+    return min(max(width, Self.minimumWidth), upper)
+  }
+
+  /// Like the pane splitter, a move past a minimum is discarded rather than
+  /// accumulated, so reversing the drag moves the boundary at once.
+  func moveSplitter(by delta: CGFloat) {
+    let available = availableWidth
+    guard available > 0 else { return }
+    let width = clampedBaseWidth(clampedBaseWidth(available * baseFraction) + delta)
+    baseFraction = width / available
+    baseFractionDidChange?(baseFraction)
+    needsLayout = true
+    layoutSubtreeIfNeeded()
+  }
+
   override func layout() {
     super.layout()
-    let half = (bounds.width - 1) / 2
-    base.frame = NSRect(x: 0, y: 0, width: half.rounded(.down), height: bounds.height)
-    divider.frame = NSRect(x: base.frame.maxX, y: 0, width: 1, height: bounds.height)
-    document.frame = NSRect(x: divider.frame.maxX, y: 0, width: bounds.width - divider.frame.maxX, height: bounds.height)
+    let scale = window?.backingScaleFactor ?? 1
+    let width = (clampedBaseWidth(availableWidth * baseFraction) * scale).rounded() / scale
+    base.frame = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+    splitter.frame = NSRect(x: width, y: 0, width: Self.splitterWidth, height: bounds.height)
+    document.frame = NSRect(x: splitter.frame.maxX, y: 0, width: max(0, bounds.width - splitter.frame.maxX),
+                            height: bounds.height)
   }
 }
 
@@ -478,6 +517,8 @@ protocol EVDiffModeHost: AnyObject {
   var diffActiveDocument: EVDocument? { get }
   var diffActiveSurface: (any EVEditorSurface)? { get }
   var diffDocumentContentView: NSView { get }
+  /// The narrowest the document side may be, including its vertical splits.
+  var diffDocumentMinimumWidth: CGFloat { get }
   var diffOpenPanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)? { get }
   /// Show `view` as the window's content; nil restores the pane container.
   func installDiffContent(_ view: NSView?)
@@ -486,6 +527,10 @@ protocol EVDiffModeHost: AnyObject {
   func openDiffFile(_ url: URL, completion: @escaping @MainActor (Error?) -> Void)
   /// Unsaved open documents, for the file list.
   func unsavedDocumentURLs() -> [URL]
+}
+
+extension EVDiffModeHost {
+  var diffDocumentMinimumWidth: CGFloat { EVDiffSplitView.minimumWidth }
 }
 
 /// One window's diff mode: its base, file list, toolbar and comparison.
@@ -505,6 +550,8 @@ final class EVDiffModeController: NSObject {
   private var baseBackend: (any EVDocumentBackend)?
   private var baseSurface: (any EVEditorSurface)?
   private var split: EVDiffSplitView?
+  /// The base's share of the window, kept while the window lives.
+  private(set) var splitFraction: CGFloat = 0.5
   private let baseCache = EVDiffBaseCache()
   private var session: (any EVDiffSessionControlling)?
   private weak var presentedDocument: EVDocument?
@@ -704,7 +751,10 @@ final class EVDiffModeController: NSObject {
          previous.document === host.diffDocumentContentView, host.diffWindow?.contentView === previous {
         split = previous
       } else {
-        split = EVDiffSplitView(base: baseSurface.viewController.view, document: host.diffDocumentContentView)
+        split = EVDiffSplitView(base: baseSurface.viewController.view, document: host.diffDocumentContentView,
+                                baseFraction: splitFraction)
+        split.documentMinimumWidth = { [weak host] in host?.diffDocumentMinimumWidth ?? EVDiffSplitView.minimumWidth }
+        split.baseFractionDidChange = { [weak self] fraction in self?.splitFraction = fraction }
         host.installDiffContent(split)
       }
       self.split = split
