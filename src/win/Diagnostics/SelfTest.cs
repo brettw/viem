@@ -97,6 +97,7 @@ internal sealed partial class EditorWindow
             new("StyleInheritedActivation", () => StyleInspectorBehaviorTests.InheritedActivation(pane, preferences)),
             new("SelectionFind", () => SelectionFindTests.Run(preferences)),
             new("DocumentModeMenu", () => DocumentModeMenuTests.Run(preferences)),
+            new("DiffMode", () => TestDiffMode(preferences)),
             ListInteractionTests.Group(preferences),
             new("CodeStyles", () => StyleAndSettingsTests.CodeStyleChecks(pane, preferences)),
             new("StylePreview", async () => {

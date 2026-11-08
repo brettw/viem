@@ -1414,6 +1414,7 @@ internal unsafe struct ViemDiffBaseRequestV1
     public ulong @cancellation;
     public ViemUtf8Slice* @unsaved_paths;
     public ulong @unsaved_path_count;
+    public ViemUtf8Slice @scope_path;
 }
 
 [StructLayout(LayoutKind.Sequential)]

@@ -10,7 +10,7 @@ internal sealed partial class EditorWindow
 
     internal void AdjustForGutter(EditorPane pane, double delta)
     {
-        if (!double.IsFinite(delta) || Math.Abs(delta) < .01 || !Panes.Contains(pane)
+        if (diffEnabled || !double.IsFinite(delta) || Math.Abs(delta) < .01 || !Panes.Contains(pane)
             || Panes.Select(p => p.Document).Distinct().Count() != 1 || PaneStack.Splitters.Count != 0
             || AppWindow.Presenter is not OverlappedPresenter { State: OverlappedPresenterState.Restored }) return;
         double scale = Math.Max(96, GetDpiForWindow(Hwnd)) / 96d;

@@ -14,12 +14,11 @@ namespace Viem.Windows.Shell;
 internal enum ToolbarAction { Bold, Italic, Underline, Strikethrough, Superscript, Subscript, CharacterCode, Bullets, Numbers, Tasks, BlockQuote, CodeBlock, Indent, Unindent }
 
 /// <summary>Native controls over the active core view's selection and transactions.</summary>
-internal sealed partial class FormattingToolbar : UserControl
+internal sealed partial class FormattingToolbar : EditorToolbar
 {
     internal readonly FormattingToolbarViewport Viewport = new() { MinWidth = 0 };
     private EditorPane? pane;
-    private readonly StackPanel row = new() { Orientation = Orientation.Horizontal, Spacing = 8, Padding = new(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-    internal readonly DropDownButton Paragraph = Selector("Paragraph style");
+    internal readonly DropDownButton Paragraph = Selector(new DropDownButton { Width = 148, Flyout = new MenuFlyout() }, "Paragraph style");
     /// <summary>The GitHub alert kinds beside the quote toggle; VIEM_ALERT_* tags.</summary>
     internal readonly DropDownButton BlockQuoteAlerts = new() { AllowFocusOnInteraction = false, Flyout = new MenuFlyout { Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft } };
     /// <summary>Toolbar buttons that present one core formatting action each.</summary>
@@ -33,11 +32,11 @@ internal sealed partial class FormattingToolbar : UserControl
     internal static readonly (uint Kind, string Title)[] AlertKinds = [(VIEM_ALERT_NOTE, "Note"), (VIEM_ALERT_TIP, "Tip"),
         (VIEM_ALERT_IMPORTANT, "Important"), (VIEM_ALERT_WARNING, "Warning"), (VIEM_ALERT_CAUTION, "Caution")];
     internal readonly Dictionary<ToolbarAction, ButtonBase> Buttons = [];
-    internal readonly ToggleButton FormattedView = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), VerticalAlignment = VerticalAlignment.Center, AllowFocusOnInteraction = false };
-    internal readonly TableInsertButton InsertTable = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false };
-    internal readonly ToggleButton InsertImage = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uEB9F", FontSize = 14 } };
-    internal readonly ToggleButton InsertReference = new() { Width = 32, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = "[d]" };
-    internal readonly ToggleButton InsertLink = new() { Width = 28, Height = 26, MinWidth = 0, MinHeight = 0, Padding = new(0), AllowFocusOnInteraction = false, Content = new FontIcon { Glyph = "\uE71B", FontSize = 14 } };
+    internal readonly ToggleButton FormattedView = IconButton(new ToggleButton(), "Markdown Preview");
+    internal readonly TableInsertButton InsertTable = IconButton(new TableInsertButton(), "Insert Table");
+    internal readonly ToggleButton InsertImage = IconButton(new ToggleButton(), "Insert image", Glyph("\uEB9F"));
+    internal readonly ToggleButton InsertReference = IconButton(new ToggleButton(), "Reference", "[d]", width: 32);
+    internal readonly ToggleButton InsertLink = IconButton(new ToggleButton(), "Link", Glyph("\uE71B"), shortcut: KeyPolicy.FormattingShortcut(NativeAction.Link));
     private readonly TablePicker tablePicker;
     private ViemLogicalSelectionIdentityV1? pickerSelection;
     private StyleSheet? sheet;
@@ -53,9 +52,8 @@ internal sealed partial class FormattingToolbar : UserControl
     internal ulong BoundViewIdForTesting => View?.Id ?? 0;
 #endif
 
-    internal FormattingToolbar()
+    internal FormattingToolbar() : base("Formatting toolbar")
     {
-        Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
         tablePicker = new(InsertTable, RestoreEditorFocus);
         tablePicker.Closed += () => { pickerSelection = null; PopupsClosed?.Invoke(); };
         tablePicker.Start = e => {
@@ -65,24 +63,14 @@ internal sealed partial class FormattingToolbar : UserControl
             pickerSelection = context.selection;
             tablePicker.Open(e, (columns, rows) => { if (View == view) Run(() => view.InsertTable(columns, rows, context.selection)); });
         };
-        Height = 42; Visibility = Visibility.Collapsed;
         Viewport.Children.Add(row);
-        var layout = new Grid { ColumnSpacing = 12, Padding = new(0, 0, 10, 0) };
-        layout.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star), MinWidth = 0 });
-        layout.ColumnDefinitions.Add(new() { Width = GridLength.Auto });
-        layout.Children.Add(Viewport); layout.Children.Add(FormattedView); Grid.SetColumn(FormattedView, 1);
+        SetLayout(Viewport, FormattedView);
         FormattedView.Content = FormattedViewIcon(FormattedView);
-        AutomationProperties.SetName(FormattedView, "Markdown Preview");
-        ToolTipService.SetToolTip(FormattedView, "Markdown Preview");
         FormattedView.Click += (_, _) => {
             if (View is not { } view) return;
             Run(() => view.SetMarkdownPreview(FormattedView.IsChecked == true));
             RestoreEditorFocus();
         };
-        var chrome = new Border { Child = layout };
-        chrome.SetBinding(Border.BackgroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = this, Path = new PropertyPath("Background") });
-        Content = chrome;
-        AutomationProperties.SetName(this, "Formatting toolbar");
         foreach (var selector in new[] { Paragraph, BlockQuoteAlerts })
         {
             var menu = (MenuFlyout)selector.Flyout;
@@ -99,10 +87,8 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(script, ToolbarAction.Subscript, "Subscript", "x₂", literal: true);
         var codeLink = Group(); row.Children.Add(codeLink);
         Add(codeLink, ToolbarAction.CharacterCode, "Code (Character)", "</>", literal: true);
-        AutomationProperties.SetName(InsertLink, "Link"); ToolTipService.SetToolTip(InsertLink, "Link (" + KeyPolicy.FormattingShortcut(NativeAction.Link) + ")");
         InsertLink.Click += (_, _) => ExecuteLink();
         codeLink.Children.Add(InsertLink);
-        AutomationProperties.SetName(InsertReference, "Reference"); ToolTipService.SetToolTip(InsertReference, "Reference");
         InsertReference.Click += (_, _) => pane?.ShowInsertReference();
         codeLink.Children.Add(InsertReference);
         var block = Group(); row.Children.Add(block);
@@ -116,7 +102,7 @@ internal sealed partial class FormattingToolbar : UserControl
         var quoteButton = (ToggleButton)Buttons[ToolbarAction.BlockQuote];
         quoteButton.Height = 24; quoteButton.BorderThickness = new(0); quoteButton.CornerRadius = new(3, 0, 0, 3);
         BlockQuoteAlerts.Style = (Style)Resources["FormattingToolbarQuoteDropdown"];
-        AutomationProperties.SetName(BlockQuoteAlerts, "Alert Type"); ToolTipService.SetToolTip(BlockQuoteAlerts, "Alert Type");
+        Label(BlockQuoteAlerts, "Alert Type");
         foreach (var (kind, title) in AlertKinds)
         {
             var item = new ToggleMenuFlyoutItem { Text = title, Tag = kind, Icon = AlertIcon(kind) };
@@ -125,7 +111,6 @@ internal sealed partial class FormattingToolbar : UserControl
         }
         quote.Children.Add(BlockQuoteAlerts);
         Add(block, ToolbarAction.CodeBlock, "Code Block", "{ }", literal: true);
-        AutomationProperties.SetName(InsertImage, "Insert image"); ToolTipService.SetToolTip(InsertImage, "Insert image");
         InsertImage.Click += (_, _) => {
             Refresh();
             if (InsertImage.IsEnabled && pane is { } target) target.Run(target.ShowInsertImage);
@@ -137,28 +122,17 @@ internal sealed partial class FormattingToolbar : UserControl
         Add(indent, ToolbarAction.Unindent, "Unindent", "\uE8F3", toggle: false);
         row.Children.Add(Paragraph);
         InsertTable.Content = TableIcon(InsertTable);
-        AutomationProperties.SetName(InsertTable, "Insert Table"); ToolTipService.SetToolTip(InsertTable, "Insert Table");
     }
 
-    private static StackPanel Group(double spacing = 2) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
-    private static DropDownButton Selector(string label)
-    {
-        var button = new DropDownButton { Width = 148, Height = 26, MinHeight = 0, Padding = new(8, 0, 8, 0), FontSize = 12, Flyout = new MenuFlyout() };
-        AutomationProperties.SetName(button, label); ToolTipService.SetToolTip(button, label); return button;
-    }
     private void Add(Panel group, ToolbarAction action, string label, string glyph, bool toggle = true, bool literal = false)
     {
         ButtonBase button = toggle ? new ToggleButton { IsThreeState = true } : new Button();
-        button.Width = 28; button.Height = 26; button.MinWidth = 0; button.MinHeight = 0; button.Padding = new(0);
-        button.IsTabStop = true; button.AllowFocusOnInteraction = false;
+        IconButton(button, label, shortcut: Shortcut(action));
         button.Content = action is ToolbarAction.Superscript or ToolbarAction.Subscript ? StyleIcons.ScriptIcon(button, action == ToolbarAction.Superscript)
             : action == ToolbarAction.Strikethrough ? StrikethroughIcon(button)
             : action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Tasks or ToolbarAction.Indent or ToolbarAction.Unindent
             ? StructuralIcon(button, action)
-            : literal ? new TextBlock { Text = glyph, FontSize = 13 } : new FontIcon { Glyph = glyph, FontSize = 14 };
-        AutomationProperties.SetName(button, label);
-        string shortcut = Shortcut(action);
-        ToolTipService.SetToolTip(button, shortcut.Length == 0 ? label : label + " (" + shortcut + ")");
+            : literal ? new TextBlock { Text = glyph, FontSize = 13 } : Glyph(glyph);
         button.Click += (_, _) => Execute(action);
         Buttons.Add(action, button); group.Children.Add(button);
     }
@@ -209,9 +183,7 @@ internal sealed partial class FormattingToolbar : UserControl
         var geometry = new GeometryGroup();
         foreach (double x in new double[] { 1, 9, 17 }) geometry.Children.Add(new LineGeometry { StartPoint = new(x, 1.5), EndPoint = new(x, 13.5) });
         foreach (double y in new double[] { 1.5, 5.5, 9.5, 13.5 }) geometry.Children.Add(new LineGeometry { StartPoint = new(1, y), EndPoint = new(17, y) });
-        var path = new Microsoft.UI.Xaml.Shapes.Path { Data = geometry, StrokeThickness = 1 };
-        path.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
-        canvas.Children.Add(path); return canvas;
+        canvas.Children.Add(Outline(owner, geometry)); return canvas;
     }
 
     internal static Canvas FormattedViewIcon(ButtonBase owner)
@@ -221,8 +193,7 @@ internal sealed partial class FormattingToolbar : UserControl
         void Line(double x, double y, double endX, double endY) => geometry.Children.Add(new LineGeometry { StartPoint = new(x, y), EndPoint = new(endX, endY) });
         Line(2, 1, 12, 1); Line(12, 1, 17, 6); Line(17, 6, 17, 19); Line(17, 19, 2, 19); Line(2, 19, 2, 1);
         Line(12, 1, 12, 6); Line(12, 6, 17, 6);
-        var outline = new Microsoft.UI.Xaml.Shapes.Path { Data = geometry, StrokeThickness = 1 };
-        outline.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        var outline = Outline(owner, geometry);
         var text = new TextBlock { Text = "Aa", FontFamily = new FontFamily("Georgia"), FontSize = 10 };
         text.SetBinding(TextBlock.ForegroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
         Canvas.SetLeft(text, 3); Canvas.SetTop(text, 6);
@@ -259,9 +230,7 @@ internal sealed partial class FormattingToolbar : UserControl
             double tip = action == ToolbarAction.Indent ? 6 : 0, tail = 6 - tip;
             Line(tail, 8, tip, 8); Line(tail + (tip - tail) / 2, 5, tip, 8); Line(tail + (tip - tail) / 2, 11, tip, 8);
         }
-        var path = new Microsoft.UI.Xaml.Shapes.Path { Data = geometry, StrokeThickness = 1 };
-        path.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
-        canvas.Children.Add(path); return canvas;
+        canvas.Children.Add(Outline(owner, geometry)); return canvas;
     }
 
     internal void Synchronize(EditorPane? active, bool visible, bool refresh = true)

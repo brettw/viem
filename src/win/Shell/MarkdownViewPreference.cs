@@ -21,6 +21,7 @@ internal sealed partial class Preferences
             uint current = document.State.format;
             if (current == previous) return;
             uint old = previous; previous = current;
+            if (document.SwitchingDiffProjection) return;
             // Markdown Preview off is literal Code with the Markdown language.
             if (old is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_CODE)
                 || current is not (VIEM_FORMAT_MARKDOWN or VIEM_FORMAT_CODE)

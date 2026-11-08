@@ -1,4 +1,6 @@
 using System.Numerics;
+using Viem.Windows.Core;
+using Viem.Windows.Interop;
 using Microsoft.Graphics.Canvas;
 using Microsoft.Graphics.Canvas.UI.Xaml;
 using Microsoft.UI.Xaml;
@@ -78,7 +80,41 @@ internal sealed partial class EditorPane
         }
     }
 
+    private ViemLayoutSnapshotIdentityV1? diffMarkLayout;
+    private float diffMarkMaximum;
+    private (ViemDiffScrollbarMarkV1[] Marks, float Extent, ViemRgbaV1 Added, ViemRgbaV1 Removed) diffMarks;
+
+    internal void UpdateDiffMarks(DiffComparison comparison, bool newSide)
+    {
+        if (snapshot == null) return;
+        var identity = snapshot.Info.identity;
+        if (diffMarkLayout is { } previous && CoreView.SameLayout(previous, identity) && viewport.maximum_top == diffMarkMaximum) return;
+        diffMarks = comparison.Marks(newSide);
+        diffMarkLayout = identity;
+        diffMarkMaximum = viewport.maximum_top;
+        scrollbarPaint.Invalidate();
+    }
+
+    internal void ClearDiffMarks()
+    {
+        diffMarkLayout = null;
+        diffMarks = default;
+        scrollbarPaint.Invalidate();
+    }
+
     internal void DrawScrollbarPaint(CanvasDrawingSession drawing)
+    {
+        DrawScrollbarOverflow(drawing);
+        if (diffMarks.Marks == null || diffMarks.Extent <= 0) return;
+        float scale = (float)scrollbarPaint.ActualHeight / diffMarks.Extent;
+        foreach (var mark in diffMarks.Marks) {
+            var color = (mark.flags & Native.VIEM_DIFF_MARK_ADDED) != 0 ? diffMarks.Added : diffMarks.Removed;
+            drawing.FillRectangle(0, mark.top * scale, (float)scrollbarPaint.ActualWidth,
+                Math.Max(2, (mark.bottom - mark.top) * scale), Color(color));
+        }
+    }
+
+    private void DrawScrollbarOverflow(CanvasDrawingSession drawing)
     {
         if (disposed || snapshot == null || View == null || viewport.maximum_left <= 0) {
             ClearCanvasBackground(drawing);

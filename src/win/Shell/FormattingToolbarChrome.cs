@@ -45,12 +45,12 @@ internal sealed partial class EditorWindow
     {
         if (formattingToolbar != null) return formattingToolbar;
         using var startup = Diagnostics.StartupPerformance.Measure("window.formattingToolbar");
-        var toolbar = new FormattingToolbar { Background = titleBar.Background };
+        var toolbar = new FormattingToolbar();
         formattingToolbar = toolbar;
         toolbar.PopupsClosed += () => {
             if (closeAfterToolbarPopup && !toolbar.HasOpenPopup) DispatcherQueue.TryEnqueue(Close);
         };
-        root.Children.Add(toolbar); Grid.SetRow(toolbar, 2);
+        AttachToolbar(toolbar, 2);
         return toolbar;
     }
 
@@ -75,11 +75,11 @@ internal sealed partial class EditorWindow
     {
         if (closed) return;
         var document = ActivePane?.Document;
-        bool preview = document?.State.format == VIEM_FORMAT_MARKDOWN;
+        bool preview = !diffEnabled && document?.State.format == VIEM_FORMAT_MARKDOWN;
         bool visible = preview && preferences.ShowFormattingToolbar(VIEM_FORMAT_MARKDOWN);
         // Preview shows the toolbar toggle; literal Markdown offers Preview
         // in its place. Text and other Code show neither.
-        bool literalMarkdown = !preview && document?.State.format == VIEM_FORMAT_CODE && document.IsMarkdownDocument;
+        bool literalMarkdown = !diffEnabled && !preview && document?.State.format == VIEM_FORMAT_CODE && document.IsMarkdownDocument;
         toolbarToggle.Visibility = preview ? Visibility.Visible : Visibility.Collapsed;
         previewToggle.Visibility = literalMarkdown ? Visibility.Visible : Visibility.Collapsed;
         toolbarToggle.IsChecked = visible;

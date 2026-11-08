@@ -16,6 +16,7 @@ internal sealed partial class EditorWindow : Window
 {
     private readonly Preferences preferences;
     private readonly Action capturePlacement;
+    private readonly DocumentWindowPlacement windowPlacement;
     private readonly Grid root = new();
     private readonly Grid titleBar = new() { Height = 32 };
     private readonly Grid titleDrag = new() { Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent) };
@@ -58,14 +59,20 @@ internal sealed partial class EditorWindow : Window
         Title = "Viem";
         using (Diagnostics.StartupPerformance.Measure("window.attachContent")) Content = root;
         root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = GridLength.Auto }); root.RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) });
-        root.Children.Add(titleBar); root.Children.Add(Menu); Grid.SetRow(Menu, 1); root.Children.Add(paneGrid); Grid.SetRow(paneGrid, 3);
+        root.RowDefinitions.Insert(3, new() { Height = GridLength.Auto });
+        root.ColumnDefinitions.Add(new() { Width = new(0) });
+        root.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
+        root.Children.Add(titleBar); Grid.SetColumnSpan(titleBar, 2);
+        root.Children.Add(Menu); Grid.SetRow(Menu, 1); Grid.SetColumnSpan(Menu, 2);
+        root.Children.Add(paneGrid); Grid.SetColumn(paneGrid, 1); Grid.SetRow(paneGrid, 4);
         titleBar.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = GridLength.Auto }); titleBar.ColumnDefinitions.Add(new() { Width = new(138) });
         titleBar.Children.Add(titleDrag); titleDrag.Children.Add(titleText); titleBar.Children.Add(menuToggle); Grid.SetColumn(menuToggle, 1);
         titleBar.Children.Add(toolbarToggle); Grid.SetColumn(toolbarToggle, 2);
         titleBar.Children.Add(previewToggle); Grid.SetColumn(previewToggle, 2);
         ExtendsContentIntoTitleBar = true; SetTitleBar(titleDrag);
         Diagnostics.StartupPerformance.Mark("window.chromeReady");
-        capturePlacement = (placement ?? App.Instance.WindowPlacement).Track(this, () => paneGrid.OrderedPanes.FirstOrDefault()?.GutterWidth ?? 0);
+        windowPlacement = placement ?? App.Instance.WindowPlacement;
+        capturePlacement = windowPlacement.Track(this, () => diffEnabled ? 0 : paneGrid.OrderedPanes.FirstOrDefault()?.GutterWidth ?? 0, () => diffEnabled);
         WindowSizing.Appearance(this, preferences.Midnight);
         Diagnostics.StartupPerformance.Mark("window.placementReady");
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Standard;
@@ -92,6 +99,8 @@ internal sealed partial class EditorWindow : Window
         AppWindow.Closing += (_, e) => { if (!closing) { e.Cancel = true; Safe(RequestClose); } };
         Closed += (_, _) => {
             closed = true; poll.Stop(); preferences.Changed -= ApplyPreferences; preferences.RecentChanged -= RefreshRecentMenu; preferences.ThemesChanged -= RefreshThemeMenu;
+            folderRequest?.Cancel();
+            if (diffEnabled) EndDiff();
             ReleaseMenuAccessKeys();
             settingsWindow?.Close();
             var documents = Panes.Select(p => p.Document).Distinct().ToArray();
@@ -115,6 +124,7 @@ internal sealed partial class EditorWindow : Window
         poll.Tick += (_, _) => {
             foreach (var doc in Panes.Select(p => p.Document).Distinct().ToArray()) ActivePane?.Run(() => doc.PollSyntax());
             foreach (var pane in Panes.ToArray()) pane.Poll();
+            if (diffLeft is { } left) { left.Run(() => left.Document.PollSyntax()); left.Poll(); }
         };
         poll.Start();
     }
@@ -143,12 +153,21 @@ internal sealed partial class EditorWindow : Window
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
         AppWindow.TitleBar.ButtonForegroundColor = preferences.Midnight ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
         titleBar.Background = Menu.Background = new SolidColorBrush(preferences.Midnight ? Theme.Rgb(31, 31, 31) : Theme.Rgb(243, 243, 243));
-        if (formattingToolbar != null) formattingToolbar.Background = titleBar.Background;
         SynchronizeFormattingToolbar();
         GlobalSelectionOptions.Configure(preferences.DirectoryPath, preferences.Autoselect);
         updatingPreferences = false;
         RefreshRecentMenu();
     }
+    private void AttachToolbar(EditorToolbar toolbar, int gridRow)
+    {
+        toolbar.SetBinding(Control.BackgroundProperty, new Microsoft.UI.Xaml.Data.Binding {
+            Source = titleBar, Path = new PropertyPath("Background")
+        });
+        Grid.SetRow(toolbar, gridRow);
+        Grid.SetColumnSpan(toolbar, 2);
+        root.Children.Add(toolbar);
+    }
+
     private CoreDocument NewDocument(byte[]? source = null, string? path = null, uint? format = null, uint encoding = 0, uint fileFormat = 0,
         CoreDocument? reloading = null)
     {
@@ -223,6 +242,7 @@ internal sealed partial class EditorWindow : Window
         pane.AlternatePath = ActivePane?.AlternatePath;
         if (replacing != null)
         {
+            DiffPaneLeaving(replacing);
             int index = Panes.IndexOf(replacing); Panes[index] = pane;
             pane.RememberedArgument = replacing.RememberedArgument;
             pane.AlternatePath = replacing.Document.FilePath ?? replacing.AlternatePath;
@@ -249,6 +269,8 @@ internal sealed partial class EditorWindow : Window
         {
             lastPane = ActivePane; ActivePane = pane;
         }
+        if (diffEnabled && diffLive != pane) Safe(() => LoadDiff(probeAvailability: true,
+            listedFiles: diffBase.IsGit && CurrentDiffFile >= 0 ? diffFiles : null));
         if (IsWindowActive && pane.View is { } view) pane.Run(() => styleInspector?.FollowActiveView(view));
         foreach (var item in Panes) item.IsActive = item == pane;
         UpdateTitle(); RefreshStyleMenus();
@@ -314,6 +336,12 @@ internal sealed partial class EditorWindow : Window
     {
         path = ResolvePath(path);
         if (!File.Exists(path)) throw new FileNotFoundException("The file could not be found.", path);
+        if (diffEnabled && ActivePane is { } compared) {
+            if (compared.Document.FilePath is { } currentFile && SamePath(currentFile, path)) return;
+            if (await ConfirmDiscard(compared, alwaysReview: true) && diffEnabled && ActivePane == compared)
+                await OpenPath(path, targetPane: compared, force: true, compareHere: true);
+            return;
+        }
         if (App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document.FilePath is string file && FileIdentity.Same(file, path))) { await OpenPath(path); return; }
         bool reusable = Panes.Count == 1 && ActivePane is { Document: var current } && current.FilePath == null && current.State.source_byte_count == 0 && !current.IsDirty && (current.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0;
         if (reusable) { await OpenPath(path); return; }
@@ -352,7 +380,8 @@ internal sealed partial class EditorWindow : Window
         return (await picker.PickSingleFileAsync())?.Path;
     }
     internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null,
-        bool vertical = false, EditorPane? targetPane = null, bool newWindow = false, string? linkFragment = null, bool reuseOpenDocument = false, bool splitBefore = true)
+        bool vertical = false, EditorPane? targetPane = null, bool newWindow = false, string? linkFragment = null, bool reuseOpenDocument = false, bool splitBefore = true,
+        bool compareHere = false, long? diffGenerationAtOpen = null, CancellationToken cancellation = default)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         var old = targetPane ?? ActivePane;
@@ -361,6 +390,8 @@ internal sealed partial class EditorWindow : Window
         bool? originalDirty = old?.Document.IsDirty;
         void ValidateTarget()
         {
+            cancellation.ThrowIfCancellationRequested();
+            if (diffGenerationAtOpen.HasValue && diffGeneration != diffGenerationAtOpen) throw new OperationCanceledException();
             if (closed || (old != null && (!Panes.Contains(old) || old.Document.Handle == 0
                 || old.Document.State.document_id != expected!.Value.document_id
                 || old.Document.State.document_revision != expected.Value.document_revision
@@ -396,7 +427,8 @@ internal sealed partial class EditorWindow : Window
         var existing = FindExisting();
         async Task<bool> ShowExisting()
         {
-            if (existing.Pane == null || split || (newWindow && !reuseOpenDocument) || pickedFile) return false;
+            if (existing.Pane == null || split || compareHere || (diffEnabled && !newWindow && !reuseOpenDocument)
+                || (newWindow && !reuseOpenDocument) || pickedFile) return false;
             if (reuseOpenDocument) await existing.Window.ShowLinkedPane(existing.Pane, linkFragment);
             else { existing.Window.Activate(); existing.Pane.FocusEditor(); }
             preferences.Remember(path); return true;
@@ -574,9 +606,9 @@ internal sealed partial class EditorWindow : Window
         if (!closingWindow && Panes.Any(p => p != removing && p.Document == document)) return true;
         return App.Instance.Windows.Any(w => w != this && !w.closed && w.Panes.Any(p => p.Document == document));
     }
-    private async Task<bool> ConfirmDiscard(EditorPane pane, bool closingWindow = false)
+    private async Task<bool> ConfirmDiscard(EditorPane pane, bool closingWindow = false, bool alwaysReview = false)
     {
-        if (!pane.Document.IsDirty || HasSurvivingView(pane.Document, pane, closingWindow)) return true;
+        if (!pane.Document.IsDirty || (!alwaysReview && HasSurvivingView(pane.Document, pane, closingWindow))) return true;
         ContentDialogResult result;
 #if DEBUG
         if (CloseReviewDecisionForTesting is { } decide) result = await decide(pane.Document);
@@ -617,6 +649,7 @@ internal sealed partial class EditorWindow : Window
     private void ForgetPane(EditorPane pane)
     {
         pane.Focused -= SetActive;
+        DiffPaneLeaving(pane);
         pane.Dispose(); Panes.Remove(pane);
         if (lastPane == pane) lastPane = null;
         if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == pane.Document)) { savedSources.Remove(pane.Document); App.Instance.BlockingEdits.Released(pane.Document); pane.Document.Dispose(); }
@@ -807,11 +840,15 @@ internal sealed partial class EditorWindow : Window
         }
         // All new views are ready before publishing; keep the panes themselves
         // so focus, split sizes, and argument-list positions remain unchanged.
-        foreach (var entry in prepared) entry.Pane.InstallReplacement(replacement, entry.View);
+        foreach (var entry in prepared) {
+            entry.Window.DiffPaneLeaving(entry.Pane);
+            entry.Pane.InstallReplacement(replacement, entry.View);
+        }
         foreach (var w in prepared.Select(entry => entry.Window).Distinct())
         {
             w.savedSources.Remove(old); w.savedSources[replacement] = SHA256.HashData(bytes); w.UpdateTitle();
             w.TrackExternalFile(replacement);
+            if (w.diffEnabled && w.ActivePane?.Document == replacement) w.Safe(() => w.LoadDiff());
         }
         App.Instance.BlockingEdits.Replace(old, replacement);
         old.Dispose();

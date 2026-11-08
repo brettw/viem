@@ -134,10 +134,12 @@ internal sealed partial class EditorPane : Grid, IDisposable
         return window.Content.TransformToVisual(Canvas).TransformPoint(new Point(point.X / scale, point.Y / scale));
     }
 
-    public EditorPane(EditorWindow window, CoreDocument document, Preferences preferences)
+    private readonly bool diffBasePane;
+    public EditorPane(EditorWindow window, CoreDocument document, Preferences preferences, bool diffBasePane = false)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("pane.initialize");
         this.window = window; Document = document; this.preferences = preferences;
+        this.diffBasePane = diffBasePane;
         prompt = new(this, preferences) { Visibility = Visibility.Collapsed };
         RowDefinitions.Add(new() { Height = new(1, GridUnitType.Star) }); RowDefinitions.Add(new() { Height = GridLength.Auto });
         ColumnDefinitions.Add(new() { Width = GridLength.Auto }); ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); ColumnDefinitions.Add(new() { Width = GridLength.Auto });
@@ -262,7 +264,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (InitialNumber is { } number) { View.Number(number); InitialNumber = null; }
         ApplyPreferences(); Refresh(); if (IsActive) FocusEditor();
         ready.TrySetResult(View);
-        window.PaneReady(this);
+        if (!diffBasePane) window.PaneReady(this);
     }
     internal CoreView? PrepareReplacement(CoreDocument document)
     {
@@ -383,8 +385,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
                             Math.Clamp(caretRect.Bottom, 0, Math.Max(0, Canvas.ActualHeight)))
                     });
                     break;
-                case NativeAction.Save: await window.Save(this); break;
-                case NativeAction.SaveAs: await window.Save(this, true); break;
+                case NativeAction.Save: if (!diffBasePane) await window.Save(this); break;
+                case NativeAction.SaveAs: if (!diffBasePane) await window.Save(this, true); break;
                 case NativeAction.Heading: View.SetParagraph(route.Codepoint); break;
                 case NativeAction.CharacterCode: window.ExecuteFormattingAction(ToolbarAction.CharacterCode); break;
                 case NativeAction.Strikethrough: window.ExecuteFormattingAction(ToolbarAction.Strikethrough); break;
@@ -504,7 +506,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (failed && effects.Requests.LastOrDefault(request => request.Value.kind == VIEM_EX_FRONTEND_SCRIPT_CONTINUATION) is { } continuation) {
             View?.ResumeScript(continuation.Value.window_count, false); return;
         }
-        _ = window.ApplyEffects(this, effects);
+        if (diffBasePane) {
+            if (effects.Output.Length > 0) ShowCommandOutput(string.Join("\n", effects.Output));
+            if (effects.Requests.Length > 0) SetMessage("Window and file commands are unavailable in the diff base.");
+        } else _ = window.ApplyEffects(this, effects);
     }
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
@@ -611,6 +616,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
         refreshing = true;
         try
         {
+            float previousTop = viewport.top;
+            window.BeforeDiffLayout(this);
             // The command/status surface must update even when document
             // geometry is temporarily unavailable (for example after scrolling).
             if (!StringComparer.OrdinalIgnoreCase.Equals(imageDocumentPath, Document.FilePath)) ResetImagePreviews();
@@ -629,6 +636,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             try { using var layoutMeasurement = Diagnostics.InputPerformance.Measure("layout.export"); snapshot = View.Layout(); }
             catch (CoreException e) when (e.Status == VIEM_STATUS_LAYOUT_UNAVAILABLE) { View.Resize((float)Canvas.ActualWidth, (float)Canvas.ActualHeight); snapshot = View.Layout(); }
             presentation = View.Presentation; UpdatePointerCursor(); viewport = View.Viewport;
+            bool? previousNumbers = lineNumbers?.Enabled;
             try { RefreshLineNumbers(); }
             catch (CoreException error) { lineNumbers = null; lineNumberCanvas.Invalidate(); PresentationWarning("line numbers", error); }
             try { RefreshImagePreviews(); }
@@ -666,6 +674,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
             Microsoft.UI.Xaml.Controls.Canvas.SetTop(input, Math.Clamp(caretRect.Y, 0, Math.Max(0, Canvas.ActualHeight - 24)));
             input.Height = Math.Max(16, caretRect.Height);
             Canvas.Invalidate(); window.UpdateTitle();
+            window.DiffLayoutUpdated(this, previousTop != viewport.top);
+            if (previousNumbers is { } prior && lineNumbers is { } current && prior != current.Enabled)
+                window.DiffNumbersChanged(this, current.Enabled);
             if (snapshot.Diagnostics != lastLayoutWarning) {
                 lastLayoutWarning = snapshot.Diagnostics;
                 if (lastLayoutWarning.Length > 0) SetMessage(lastLayoutWarning);
@@ -858,7 +869,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
     public void Dispose()
     {
-        if (disposed) return; disposed = true; blink.Stop(); mapping.Stop(); outputTimer.Stop();
+        if (disposed) return; disposed = true; ready.TrySetCanceled(); blink.Stop(); mapping.Stop(); outputTimer.Stop();
         DismissCodeBlockLanguageMenu();
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         ResetImagePreviews();

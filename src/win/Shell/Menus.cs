@@ -158,7 +158,8 @@ internal sealed partial class EditorWindow
                 preferences.ReloadCurrentTheme();
                 ActivePane?.SetMessage("Reloaded theme " + preferences.ThemeDisplayName);
             }), Separator(), wrapItem, alignIndentsItem);
-        var lineNumbersItem = Toggle("Show line numbers", "N", b => View?.Number(b), () => View?.NumberEnabled == true);
+        BuildDiffMenu();
+        var lineNumbersItem = Toggle("Show line numbers", "N", SetLineNumbers, () => View?.NumberEnabled == true);
         validation.Add((lineNumbersItem, () => View != null));
         Top("View", "V", Toggle("Show Status Bar", "S", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", "B", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(),
             Toggle("Physical Source Lines", "L", b => View?.LineMode(b ? 1u : 0u), () => View?.CurrentLineMode == 1), lineNumbersItem, Toggle("Show Invisible Characters", "I", b => View?.VisibleWhitespace(b), () => ActivePane?.WhitespaceEnabled == true),

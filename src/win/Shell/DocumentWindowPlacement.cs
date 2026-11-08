@@ -36,11 +36,11 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
     [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; }
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint window, out NativeRect rect);
     private readonly DispatcherTimer saveTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
-    private WindowFrame? lastFrame, pending;
+    private WindowFrame? lastFrame, pending, lastDiffFrame, pendingDiff;
     private bool hasPlacedWindow, timerAttached;
     internal Exception? LastError { get; private set; }
 
-    internal Action Track(Window window, Func<double>? gutterWidth = null)
+    internal Action Track(Window window, Func<double>? gutterWidth = null, Func<bool>? diffMode = null)
     {
         var appWindow = window.AppWindow;
         double GutterPixels() => Math.Max(0, gutterWidth?.Invoke() ?? 0) * Math.Max(96, GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window))) / 96d;
@@ -65,7 +65,7 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
         }
         lastFrame = ExcludingGutter(frame, GutterPixels()); hasPlacedWindow = true;
         WindowFrame normalFrame = ExcludingGutter(WindowFrame.From(appWindow), GutterPixels());
-        bool shown = false, closed = false, captureQueued = false;
+        bool shown = false, closed = false, captureQueued = false, recordedDiff = false;
         void RecordNormal(bool requireVisible = true)
         {
             if (closed || !shown || !GetWindowRect(hwnd, out var bounds) || (requireVisible && !appWindow.IsVisible)
@@ -74,7 +74,8 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
             var current = new WindowFrame(bounds.Left, bounds.Top, (double)bounds.Right - bounds.Left, (double)bounds.Bottom - bounds.Top);
             if (!current.IsValid) return;
             normalFrame = ExcludingGutter(current, GutterPixels());
-            Record(normalFrame);
+            recordedDiff = diffMode?.Invoke() == true;
+            Record(normalFrame, recordedDiff);
         }
         window.Activated += (_, args) => {
             if (args.WindowActivationState == WindowActivationState.Deactivated) return;
@@ -97,7 +98,7 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
             // If native teardown already occurred, keep the last normal frame.
             RecordNormal(requireVisible: false);
             closed = true;
-            if (shown) Record(normalFrame);
+            if (shown) Record(normalFrame, recordedDiff);
             Flush();
         };
         if (!timerAttached) { saveTimer.Tick += (_, _) => Flush(); timerAttached = true; }
@@ -121,18 +122,36 @@ internal sealed class DocumentWindowPlacement(Preferences preferences)
     internal static WindowFrame DesktopWorkArea(RectInt32 bounds, RectInt32 work) =>
         new((double)bounds.X + work.X, (double)bounds.Y + work.Y, work.Width, work.Height);
 
-    private void Record(WindowFrame frame)
+    internal void ApplyDiffFrame(Window window, bool cascade)
     {
-        lastFrame = frame; pending = frame;
+        var current = WindowFrame.From(window.AppWindow);
+        var previous = lastDiffFrame ?? preferences.DiffWindowFrame;
+        var frame = previous ?? (current with { Width = current.Width * 2 });
+        if (!cascade) frame = frame with { X = current.X, Y = current.Y };
+        else if (lastDiffFrame.HasValue) {
+            int offset = Math.Max(1, GetSystemMetricsForDpi(4, GetDpiForWindow(WinRT.Interop.WindowNative.GetWindowHandle(window))));
+            frame = frame with { X = frame.X + offset, Y = frame.Y + offset };
+        }
+        var displays = DisplayArea.FindAll();
+        var screens = new List<WindowFrame>();
+        for (int i = 0; i < displays.Count; ++i) screens.Add(WorkArea(displays[i]));
+        window.AppWindow.MoveAndResize(Fitting(frame, screens).Native);
+    }
+
+    private void Record(WindowFrame frame, bool diff)
+    {
+        if (diff) lastDiffFrame = pendingDiff = frame;
+        else lastFrame = pending = frame;
         saveTimer.Stop(); saveTimer.Start();
     }
     internal void Flush()
     {
         saveTimer.Stop();
-        if (pending is not { } frame) return;
+        if (pending == null && pendingDiff == null) return;
         try {
-            if (preferences.DocumentWindowFrame != frame) preferences.SetDocumentWindowFrame(frame);
-            pending = null; LastError = null;
+            if (pending is { } frame && preferences.DocumentWindowFrame != frame) preferences.SetDocumentWindowFrame(frame);
+            if (pendingDiff is { } diff && preferences.DiffWindowFrame != diff) preferences.SetDocumentWindowFrame(diff, diff: true);
+            pending = pendingDiff = null; LastError = null;
         }
         // A bad/read-only configuration must not interrupt moving or closing.
         catch (Exception error) { LastError = error; }

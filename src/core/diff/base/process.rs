@@ -79,6 +79,12 @@ pub(super) fn run(
         return Err(BaseError::Cancelled);
     }
     let mut command = Command::new(program);
+    // Git launched from the Windows GUI must not flash a console for each blob or attribute request.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     let stdin = if input.is_some() { Stdio::piped() } else { Stdio::null() };
     command.args(arguments).current_dir(directory).stdin(stdin).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in environment {

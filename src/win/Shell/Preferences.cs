@@ -56,10 +56,11 @@ internal sealed partial class Preferences
     public bool ShowFormattingToolbar(uint format) => Get("formattingToolbar", ToolbarFormatKey(format), true);
     public void SetFormattingToolbar(uint format, bool visible) => Set("formattingToolbar", ToolbarFormatKey(format), visible);
     public WindowFrame? DocumentWindowFrame => WindowFrame.Read(root["windows"]?["documentFrame"]);
-    public void SetDocumentWindowFrame(WindowFrame frame)
+    public WindowFrame? DiffWindowFrame => WindowFrame.Read(root["windows"]?["diffFrame"]);
+    public void SetDocumentWindowFrame(WindowFrame frame, bool diff = false)
     {
         if (!frame.IsValid) throw new InvalidDataException("Document window frame must have finite coordinates and positive dimensions.");
-        Update(candidate => Merge(candidate, new JsonObject { ["windows"] = new JsonObject { ["documentFrame"] = frame.Json } }), notify: false);
+        Update(candidate => Merge(candidate, new JsonObject { ["windows"] = new JsonObject { [diff ? "diffFrame" : "documentFrame"] = frame.Json } }), notify: false);
     }
     public bool ShowStatus => ScriptShowStatus ?? Get("appearance", "showStatusBar", true);
     public bool MarkdownAutodetect => Get("editing", "markdownAutodetect", true);

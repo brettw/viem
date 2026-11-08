@@ -186,6 +186,7 @@ internal sealed partial class EditorPane
         // Listen even when a child control handles the press. Native controls
         // retain their clicks until movement becomes a pane drag.
         status.AddHandler(PointerPressedEvent, new PointerEventHandler((_, e) => {
+            if (diffBasePane) return;
             var point = e.GetCurrentPoint(window.PaneStack);
             if (!point.Properties.IsLeftButtonPressed) return;
             statusPointer = e.Pointer.PointerId; statusPress = point.Position; statusDragging = false; statusSelectingOutput = !outputScroll.Visibility.Equals(Visibility.Collapsed) && e.OriginalSource is DependencyObject source && IsOutputDescendant(source);

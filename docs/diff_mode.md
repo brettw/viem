@@ -1,6 +1,7 @@
 # Diff mode
 
-Status: design draft. Nothing here is implemented.
+The macOS and Windows frontends share the comparison engine and Git base sources.
+Collapsed context remains planned.
 
 Diff mode shows a document beside an earlier version of itself so the writer
 can review and edit their changes.
@@ -405,7 +406,10 @@ Layers are built bottom-up; each has focused tests before the next starts.
     of the document, since the compared pane may already have closed.
   - Tests: `src/mac/Editor/Tests/EVDiffModeTests.swift`;
     `EVMenuBuilderTests` checks the Diff menu's position and first item.
-- [ ] 6. Windows frontend
+- [x] 6. Windows frontend. `src/win/Shell/DiffMode.cs` owns the window’s
+  comparison and toolbar. `src/win/Core/DiffComparison.cs` synchronizes the
+  two editor views, and `DiffSources.cs` loads cancellable bases and lists.
+  Run the Windows UI checks with `scripts/test-win.ps1 -Suite DiffMode`.
 
 Second phase (folder diffs, change navigation, scrollbar marks, collapsed
 context), built in this order:
@@ -502,20 +506,7 @@ context), built in this order:
 3. Apply the saved `code.lineNumbers` when a view enters Code outside diff
    mode (today it is applied when leaving diff mode and saved on explicit
    toggles).
-4. Windows frontend (not started; needs a Windows host to build and test),
-   including the second phase: folder diff menu items, change buttons and
-   scrollbar marks (`viem_diff_session_navigate`,
-   `viem_diff_session_scrollbar_marks`, `viem_diff_line_colors`).
-   `src/win/Interop/Native.g.cs` already has the diff ABI. Mirror the macOS
-   split: a per-window controller in `src/win/Shell` (menu in
-   `Shell/Menus.cs` before View, toolbar beside `Shell/FormattingToolbar*.cs`,
-   layout in `Shell/EditorWindow.cs`, settings in `Shell/Preferences.cs`),
-   and the base buffer plus session sync in `src/win/Core` (`CoreDocument.cs`,
-   `CoreView.cs`) and `src/win/Editor/EditorPane.cs`. Base loads and file
-   lists run on a worker and post results back with a generation check.
-5. Record the deliberate exceptions in `AGENTS.md` once the feature ships:
-   diff text styles stack on syntax styles, incremental diffs may differ from
-   fresh ones, and the git source starts an external program.
+
 
 ### Implementation notes
 

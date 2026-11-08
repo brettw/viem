@@ -469,6 +469,15 @@ Deliberate presentation differences from GitHub:
   tokens and lines, injections, cancellation, fallback and limits, and compare
   incremental output with fresh analysis.
 
+## Diff mode
+
+- A window compares its editable live buffer with a protected Code base.
+  Diff character styles layer over syntax. Incremental diffs may retain
+  earlier line pairings when several valid alignments exist.
+- The Git base source runs bounded, cancellable read-only Git commands with
+  argument lists. See [diff mode](docs/diff_mode.md) for the base sources,
+  comparison layout and navigation contracts.
+
 ## Layout
 
 - Core owns layout, wrapping, hit testing and scroll policy. Native shapers
