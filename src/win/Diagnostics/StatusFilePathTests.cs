@@ -154,7 +154,8 @@ internal static class StatusFilePathTests
                 && pane.FullStatusFilePath == "renamed.md", "filename directory action uses normal cd behavior and refreshes displayed relative paths");
             pane.Document.FilePath = null;
             await Open();
-            check(items.All(item => !item.IsEnabled), "unnamed documents disable filename actions");
+            check(items.Take(3).All(item => !item.IsEnabled) && items[3].IsEnabled,
+                "unnamed documents disable filename actions and still offer Close pane");
             await Close();
             string drive = Path.GetPathRoot(Environment.CurrentDirectory)!.StartsWith("C:", StringComparison.OrdinalIgnoreCase) ? "D:" : "C:";
             pane.Document.FilePath = drive + @"\notes.md";

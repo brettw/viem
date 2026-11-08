@@ -566,6 +566,13 @@ impl SyntaxProvider for BackendProvider {
     }
 
     fn analyze(&mut self, request: &SyntaxRequest, cancelled: &AtomicBool) -> SyntaxResult {
+        self.analyze_with_budget(request, cancelled, &TreeSitterBudget::default())
+    }
+}
+
+impl BackendProvider {
+    pub(crate) fn analyze_with_budget(&mut self, request: &SyntaxRequest, cancelled: &AtomicBool,
+        primary_budget: &TreeSitterBudget) -> SyntaxResult {
         if request.configuration.registry_generation != treesitter::package_registry_generation() {
             return SyntaxResult::missing(
                 request,
@@ -633,11 +640,9 @@ impl SyntaxProvider for BackendProvider {
             MAX_TOTAL_PARSE_PROGRESS
         };
         let budget = TreeSitterBudget {
-            max_native_bytes: TreeSitterBudget::default().max_native_bytes.saturating_sub(child_native),
-            max_progress_callbacks: TreeSitterBudget::default()
-                .max_progress_callbacks
-                .min(total_progress_limit.saturating_sub(self.parse_progress)),
-            ..TreeSitterBudget::default()
+            max_native_bytes: primary_budget.max_native_bytes.saturating_sub(child_native),
+            max_progress_callbacks: primary_budget.max_progress_callbacks.min(total_progress_limit.saturating_sub(self.parse_progress)),
+            ..primary_budget.clone()
         };
         let edits = edits_for(primary, &request.input);
         let repair_dependencies = edits
@@ -679,7 +684,7 @@ impl SyntaxProvider for BackendProvider {
                 let output = treesitter::highlight_injecting(
                     &snapshot,
                     request.range.clone(),
-                    &TreeSitterBudget::default(),
+                    primary_budget,
                     cancelled,
                     &mut |language| known_injectable(injectable, language),
                 );

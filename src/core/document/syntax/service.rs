@@ -16,7 +16,7 @@ mod providers;
 mod retention;
 mod runs;
 /// Fuzz targets drive the worker-side provider synchronously.
-#[cfg(fuzzing)]
+#[cfg(any(fuzzing, test))]
 pub use providers::BackendProvider;
 pub use runs::{PublicationDelta, RunStore};
 pub const MAX_REGION_BYTES: usize = 256 * 1024;
@@ -570,13 +570,22 @@ impl SyntaxService {
     /// still fit the budget that the failed one exceeded, so it never stands in
     /// for coverage of its subranges.
     fn has_coverage(&self, input: SyntaxInputIdentity, range: &Range<usize>) -> bool {
-        self.cache.iter().any(|r| r.input == input
-            && r.configuration == self.configuration
-            && if r.coverage == Coverage::Missing {
-                r.range == *range
-            } else {
-                r.range.start <= range.start && r.range.end >= range.end
-            })
+        let mut covered = range.start;
+        loop {
+            let before = covered;
+            // The bounded cache is in eviction order. Adjacent results can
+            // cover the viewport together even if neither covers it alone.
+            for result in &self.cache {
+                if result.input != input || result.configuration != self.configuration { continue; }
+                if result.coverage == Coverage::Missing {
+                    if result.range == *range { return true; }
+                } else if result.range.start <= covered {
+                    if result.range.end >= range.end { return true; }
+                    covered = covered.max(result.range.end);
+                }
+            }
+            if covered == before { return false; }
+        }
     }
     /// Request only missing visible coverage and return a detached wait handle.
     /// Exact empty captures and terminal failure both count as ready: neither

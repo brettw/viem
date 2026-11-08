@@ -92,6 +92,9 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
   checks. Each test asserts the behavior its name states, with the smallest
   fixture beyond the limits it depends on
   ([test design](docs/development-workflow.md#test-design)).
+- Run every Rust test in its ordinary suite. Keep optional diagnostic output
+  and performance measurements separate from the assertions so they never
+  require an ignored test.
 
 ## Core architecture
 

@@ -533,6 +533,18 @@ internal sealed partial class EditorPane : Grid, IDisposable
             if (effects.Requests.Length > 0) SetMessage("Window and file commands are unavailable in the diff base.");
         } else _ = window.ApplyEffects(this, effects);
     }
+    private ulong? CollapsedDividerAt(Point point)
+    {
+        if (snapshot == null) return null;
+        foreach (var decoration in snapshot.Decorations) {
+            if ((decoration.flags & VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT) == 0
+                || !OffsetRect(decoration.typographic_bounds, viewport).Contains(point)) continue;
+            foreach (var row in snapshot.Rows)
+                if (row.row_index == decoration.row_index) return row.hard_line_index;
+        }
+        return null;
+    }
+
     private void OnPointerPressed(object sender, PointerRoutedEventArgs e)
     {
         if (View == null || !e.GetCurrentPoint(Canvas).Properties.IsLeftButtonPressed) return;
@@ -544,12 +556,24 @@ internal sealed partial class EditorPane : Grid, IDisposable
             UpdatePointerCursor();
             e.Handled = true; return;
         }
-        if (ShowCodeBlockLanguageMenu(e.GetCurrentPoint(Canvas).Position)) { e.Handled = true; return; }
+        var point = e.GetCurrentPoint(Canvas).Position;
+        if (CollapsedDividerAt(point) is { } line) {
+            // A divider is presentation only. Recheck the hit before opening
+            // it, without starting selection or accepting a text completion.
+            Run(() => {
+                Refresh();
+                if (CollapsedDividerAt(point) == line && window.OpenCollapsedContext(this, line)) FocusEditor();
+            });
+            pointerClickCount = 0;
+            e.Handled = true;
+            return;
+        }
+        if (ShowCodeBlockLanguageMenu(point)) { e.Handled = true; return; }
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false);
         caretHoverLocation = null; SetCaretHover(null);
         DismissCommandOutput(false);
         wordSelectionDragging = false;
-        FocusEditor(); var point = e.GetCurrentPoint(Canvas).Position;
+        FocusEditor();
         Run(() => {
             if (composing) { compositionRejected = true; ClearInput(); }
             View.PreparePointerSelection(); Refresh();

@@ -1,8 +1,6 @@
 # Diff mode
 
 The macOS and Windows frontends share the comparison engine and Git base sources.
-Collapsed context is available on macOS; the Windows frontend does not offer it
-yet.
 
 Diff mode shows a document beside an earlier version of itself so the writer
 can review and edit their changes.
@@ -489,8 +487,7 @@ context), built in this order:
   base changes and Refresh. Tests: `EVFolderDiffTests` (temporary git
   repositories; documents open through `folderDiffDocumentOpener` because
   the test host registers no document types).
-- [x] 9. Collapsed context, in the core and the macOS frontend; the
-  Windows frontend does not offer it yet (see Next steps).
+- [x] 9. Collapsed context in the core and both native frontends.
   - Core diff: `DiffState::collapsible_runs` (`src/core/diff/presentation.rs`)
     lists the equal runs less `DIFF_CONTEXT_LINES` of context beside each
     change. `DiffSession` keeps `collapsed`, the opened runs by base range
@@ -536,6 +533,9 @@ context), built in this order:
     the change buttons and in the Diff menu, applied to every pair and
     saved; `EVCoreDiffSession` syncs after a frame whose caret opened a run
     and after divider clicks, which `EVEditorView` hit-tests.
+  - Windows uses the same session flags and settings. The Diff menu and toolbar
+    toggle the current comparison. A divider click or caret entry in either
+    pane opens the corresponding region in both panes.
   - Tests: `src/core/diff/presentation.rs` (runs) and
     `src/core/coordinator/diff_tests.rs` (both sides, aligned, unaligned and
     unwrapped; divider geometry and scrollbar marks; clicks and toggling;
@@ -543,7 +543,9 @@ context), built in this order:
     run against a fresh diff; edits and undo reaching hidden lines; a
     million-line document caching and capturing only shown lines);
     `EVDiffModeTests` on macOS (both sides, divider clicks, caret entry and
-    the toolbar toggle).
+    the toolbar toggle). On Windows, run
+    `scripts/test-win.ps1 -Suite DiffCollapsedContext,DiffMode` for native
+    pointer routing, caret entry, menu and toolbar controls, and persistence.
 
 ### Next steps
 
@@ -553,22 +555,12 @@ context), built in this order:
    scrollbar marks, line-number memory, and leaving diff mode from a
    Markdown document.
    Automated coverage: `scripts/test-mac.sh --filter 'EVDiffModeTests'`.
-   Two `EVThemeTests` status-style tests fail independently of diff mode:
-   commit 7a5971c raised the Midnight status size from 11 to 13 without
-   updating their expectations. Every other XCTest and swift-testing test
-   passes in a full `scripts/test-mac.sh` run. Two earlier full runs on
+   Two earlier full runs on
    2026-11-07 hung in the swift-testing phase inside Core Text font matching
    (a font-registry XPC reply that never arrived); later full runs of both a
    clean HEAD checkout and this branch completed, so that stall was
    environmental rather than caused by diff mode.
-2. Windows: collapsed context (step 9). Add the toolbar toggle and Diff menu
-   item backed by `diff.collapseContext`, create sessions with
-   `VIEM_DIFF_SESSION_COLLAPSED`, call `viem_diff_session_set_collapsed`,
-   open a clicked `VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT` divider with
-   `viem_diff_session_open_collapsed`, and sync after any frame for which
-   `viem_diff_view_opened_context` reports a caret-opened run. The divider
-   already draws, since it carries the background and border bits.
-3. Apply the saved `code.lineNumbers` when a view enters Code outside diff
+2. Apply the saved `code.lineNumbers` when a view enters Code outside diff
    mode (today it is applied when leaving diff mode and saved on explicit
    toggles).
 

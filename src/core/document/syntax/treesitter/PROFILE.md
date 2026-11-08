@@ -289,7 +289,7 @@ latency.
 The uncached regional-query diagnostic can be run separately from compilation
 or other benchmarks:
 
-    cargo test --release --offline --lib regional_query_scroll_timings -- --ignored --nocapture --test-threads=1
+    VIEM_REGIONAL_QUERY_TIMINGS=1 cargo test --release --offline --lib regional_queries_highlight_each_scrolled_page -- --nocapture --test-threads=1
 
 It reports seven samples of 40 distinct viewport queries each for Rust,
 TypeScript and Python on existing completed trees. Package construction and

@@ -587,6 +587,46 @@ fn complete_highlighting_is_requested_in_bounded_chunks_once_each() {
 }
 
 #[test]
+fn highlighting_settles_when_a_collapsed_diff_spans_background_chunks() {
+    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
+    let text: String = (0..160).map(|i| format!("Paragraph {i:03} {}\n", "x".repeat(60))).collect();
+    let modified = text.replace("Paragraph 010", "Changed 010").replace("Paragraph 145", "Changed 145");
+    let side = |source: &str| {
+        let mut core = Core::new(Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, Format::Code).unwrap());
+        core.initialize_code_detection("fixture.md", false).unwrap();
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        core.set_syntax_provider_factory(Arc::new(move || Box::new(RecordingProvider(recorded.clone()))));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 1000., 500.);
+        (core, view)
+    };
+    let (mut base, left) = side(&text);
+    let (mut live, right) = side(&modified);
+    let mut diff = DiffSession::new(base.document(), live.document(), true);
+    diff.set_collapsed(true);
+    diff.sync(&mut base, left, &mut live, right).unwrap();
+    for (core, view) in [(&mut base, left), (&mut live, right)] {
+        let input = core.syntax_input();
+        let chunk_end = complete_syntax_chunk_end(&input, 0);
+        let visible = core.visible_syntax_range(&input, &core.views[&view]);
+        assert!(0 < visible.start && visible.start < chunk_end && chunk_end < visible.end);
+        // Enter the idle phase without waiting for the edit-pause timer.
+        core.syntax.input_changed = Some((input.identity(), Instant::now() - COMPLETE_SYNTAX_EDIT_PAUSE));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let (_, wait) = core.prepare_view_syntax_wait(view, deadline).unwrap();
+            if let Some(wait) = wait { wait.wait_until(deadline); }
+            if core.syntax.complete_progress == Some((input.identity(), input.byte_len()))
+                && !core.syntax.service.has_pending_work() { break; }
+            assert!(core.syntax_statistics().requests <= 6, "idle highlighting repeatedly requested the same bytes");
+            assert!(Instant::now() < deadline, "background highlighting did not finish");
+            std::thread::yield_now();
+        }
+        assert!(!core.poll_syntax());
+        assert!(!core.syntax.service.has_pending_work(), "another frame must stay idle");
+    }
+}
+
+#[test]
 fn complete_highlighting_chunks_end_at_line_starts() {
     let text: String = (0..2000).map(|line| format!("line {line}\n")).collect();
     let input = SyntaxInputSnapshot::new(
@@ -609,6 +649,16 @@ fn complete_highlighting_chunks_end_at_line_starts() {
 
 #[test]
 fn complete_highlighting_of_a_large_rust_file_keeps_tree_sitter_styles() {
+    use crate::document::syntax::{service::BackendProvider, treesitter::TreeSitterBudget};
+    // Style correctness must be reproducible under parallel test load. Use
+    // the real provider with its normal work limits and a generous time slice.
+    struct Provider(BackendProvider);
+    impl SyntaxProvider for Provider {
+        fn analyze(&mut self, request: &SyntaxRequest, cancelled: &AtomicBool) -> SyntaxResult {
+            let budget = TreeSitterBudget { slice_duration: Duration::from_secs(5), ..Default::default() };
+            self.0.analyze_with_budget(request, cancelled, &budget)
+        }
+    }
     let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
     let mut text = String::from("//! Module documentation.\n//! More of it.\n\nuse std::fmt;\n\n");
     for index in 0..900 {
@@ -620,6 +670,7 @@ fn complete_highlighting_of_a_large_rust_file_keeps_tree_sitter_styles() {
         Document::from_bytes(text.into_bytes(), Encoding::Utf8, Format::Code).unwrap(),
     );
     core.initialize_code_detection("fixture.rs", false).unwrap();
+    core.set_syntax_provider_factory(Arc::new(|| Box::new(Provider(BackendProvider::default()))));
     let view = core.add_view(MockTextMeasurementProvider::new(), 600., 300.);
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -636,5 +687,8 @@ fn complete_highlighting_of_a_large_rust_file_keeps_tree_sitter_styles() {
     let runs = core.syntax.service.runs(core.syntax_input().identity());
     let first = runs.iter().find(|run| run.range.start == 0).expect("the module comment is highlighted");
     assert!(first.name.0.starts_with("Comment"), "Tree-sitter capture, not a Vim group: {:?}", first.name);
+    let last_comment = core.document().text().rfind("/// Doc for item").unwrap();
+    assert!(runs.iter().any(|run| run.range.contains(&last_comment) && run.name.0.starts_with("Comment")),
+        "the last background chunk also retains its Tree-sitter comment style");
     assert!(!core.syntax_diagnostics().contains("slice deadline"), "{}", core.syntax_diagnostics());
 }

@@ -162,7 +162,7 @@ internal sealed partial class StyleWindow
         if (label == "B") button.FontWeight = Microsoft.UI.Text.FontWeights.Bold;
         if (label == "I") button.FontStyle = FontStyle.Italic;
         if (property is VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT or VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT)
-            button.Content = StyleIcons.ScriptIcon(button, property == VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT);
+            button.Content = StyleIcons.ScriptIcon(property == VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT);
         if (label is "U" or "S") button.Content = new TextBlock { Text = label, TextDecorations = label == "U" ? TextDecorations.Underline : TextDecorations.Strikethrough, FontSize = 14 };
         string name = property switch {
             VIEM_STYLE_PROPERTY_CHARACTER_BOLD => "Bold", VIEM_STYLE_PROPERTY_CHARACTER_SLANT => "Italic",

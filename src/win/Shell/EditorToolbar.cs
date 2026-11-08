@@ -18,7 +18,7 @@ internal partial class EditorToolbar : UserControl
     {
         Height = 42;
         Visibility = Visibility.Collapsed;
-        Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/MenuToggleResources.xaml") };
+        Resources = new ResourceDictionary { Source = new Uri("ms-appx:///Shell/ToolbarResources.xaml") };
         AutomationProperties.SetName(this, name);
     }
 
@@ -72,10 +72,24 @@ internal partial class EditorToolbar : UserControl
 
     protected static FontIcon Glyph(string glyph) => new() { Glyph = glyph, FontSize = 14 };
 
-    protected static Microsoft.UI.Xaml.Shapes.Path Outline(ButtonBase owner, Geometry geometry)
+    // Text and FontIcon inherit the presenter's state-specific foreground.
+    // Strokes and borders need an explicit brush from the same presenter.
+    internal static void BindIconBrush(FrameworkElement icon, DependencyProperty brush)
+    {
+        icon.Loaded += (_, _) => {
+            for (var parent = VisualTreeHelper.GetParent(icon); parent != null; parent = VisualTreeHelper.GetParent(parent)) {
+                if (parent is ContentPresenter presenter) {
+                    icon.SetBinding(brush, new Binding { Source = presenter, Path = new PropertyPath("Foreground") });
+                    break;
+                }
+            }
+        };
+    }
+
+    protected static Microsoft.UI.Xaml.Shapes.Path Outline(Geometry geometry)
     {
         var path = new Microsoft.UI.Xaml.Shapes.Path { Data = geometry, StrokeThickness = 1 };
-        path.SetBinding(Shape.StrokeProperty, new Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        BindIconBrush(path, Shape.StrokeProperty);
         return path;
     }
 }

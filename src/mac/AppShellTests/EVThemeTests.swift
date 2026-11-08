@@ -103,6 +103,7 @@ final class EVThemeTests: XCTestCase {
       let data = try XCTUnwrap(configuration.styleDefaults(named: family))
       return try XCTUnwrap((JSONSerialization.jsonObject(with: data) as? [String: Any])?["block_styles"] as? [[String: Any]])
     }
+    let originalStatusSize = store.chromeStyles.statusBar.font.pointSize
     let textBefore = try blocks("text")
     let codeBefore = try blocks("code")
     let markdownBefore = try XCTUnwrap(configuration.styleDefaults(named: "markdown"))
@@ -120,14 +121,14 @@ final class EVThemeTests: XCTestCase {
     }
     // The existing theme-style undo path restores the originating specimen.
     try configuration.saveStyleDefaults(markdownBefore, named: "markdown")
-    XCTAssertEqual(store.chromeStyles.statusBar.font.pointSize, 11)
+    XCTAssertEqual(store.chromeStyles.statusBar.font.pointSize, originalStatusSize)
     let file = try XCTUnwrap(configuration.selectedThemeURL)
     let corrupt = Data("broken theme".utf8)
     try corrupt.write(to: file)
     let generation = store.generation
     XCTAssertThrowsError(try editStatusStyle(configuration, family: "markdown", character: ["size": 24]))
     XCTAssertEqual(store.generation, generation)
-    XCTAssertEqual(store.chromeStyles.statusBar.font.pointSize, 11)
+    XCTAssertEqual(store.chromeStyles.statusBar.font.pointSize, originalStatusSize)
     XCTAssertEqual(try Data(contentsOf: file), corrupt)
   }
 
@@ -136,11 +137,13 @@ final class EVThemeTests: XCTestCase {
     addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
     let configuration = EVConfigurationStore(directory: directory)
     let store = EVThemeStore(configuration: configuration)
+    let originalStatusSize = store.chromeStyles.statusBar.font.pointSize
+    let originalCommandSize = store.chromeStyles.statusCommand.font.pointSize
     try editStatusStyle(configuration, family: "code", character: ["size": 23])
     XCTAssertEqual(store.chromeStyles.statusBar.font.pointSize, 23)
     try configuration.saveCodeStyleSheet(Data("{\"version\":3,\"block_styles\":[],\"character_styles\":[],\"suppressed_character_ids\":[]}".utf8))
-    XCTAssertEqual(store.chromeStyles.statusBar.font.pointSize, 11)
-    XCTAssertEqual(store.chromeStyles.statusCommand.font.pointSize, 11)
+    XCTAssertEqual(store.chromeStyles.statusBar.font.pointSize, originalStatusSize)
+    XCTAssertEqual(store.chromeStyles.statusCommand.font.pointSize, originalCommandSize)
   }
 
   func testUnrelatedCodeDeltaEditPreservesSharedStatusStylesWhenPriorDefinitionsAreOmitted() throws {

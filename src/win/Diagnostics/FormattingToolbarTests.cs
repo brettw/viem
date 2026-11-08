@@ -322,6 +322,18 @@ internal static class FormattingToolbarTests
         {
             Check(window.ToolbarToggle.Visibility == Visibility.Visible && toolbar.Visibility == Visibility.Visible, "Markdown toolbar defaults visible");
             Check(Grid.GetColumn(window.ToolbarToggle) == Grid.GetColumn(window.MenuToggle) + 1, "toolbar toggle immediately follows the menu toggle");
+            var preview = (ContentPresenter)VisualTreeHelper.GetChild(toolbar.FormattedView, 0);
+            var title = (ContentPresenter)VisualTreeHelper.GetChild(window.ToolbarToggle, 0);
+            var previewIcon = (Canvas)toolbar.FormattedView.Content;
+            var titleBrushes = ((Grid)window.ToolbarToggle.Parent).Resources;
+            Check(toolbar.FormattedView.IsChecked == true && window.ToolbarToggle.IsChecked == true
+                && preview.Background is SolidColorBrush { Color.A: 255 } fill
+                && title.Background is SolidColorBrush titleFill && titleFill.Color != fill.Color
+                && titleFill.Color == ((SolidColorBrush)titleBrushes["ToggleButtonBackgroundChecked"]).Color
+                && previewIcon.Children.OfType<Microsoft.UI.Xaml.Shapes.Path>().Single().Stroke == preview.Foreground
+                && previewIcon.Children.OfType<TextBlock>().Single().Foreground == preview.Foreground
+                && ((Microsoft.UI.Xaml.Shapes.Path)window.ToolbarToggle.Content).Stroke == title.Foreground,
+                "Checked Markdown toggles use the accent fill and title-bar toggles use the neutral fill, with matching icon foregrounds");
             Check(Title(toolbar.Paragraph) == "Heading 1", "toolbar reads the initial named paragraph");
             Check(((StackPanel)toolbar.Paragraph.Content).Children.First() is IconElement
                 && ((MenuFlyout)toolbar.Paragraph.Flyout).Items.OfType<ToggleMenuFlyoutItem>().All(i => i.Icon != null),

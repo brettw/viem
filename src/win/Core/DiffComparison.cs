@@ -66,12 +66,13 @@ internal sealed unsafe class DiffComparison : IDisposable
 {
     private readonly CoreView basis, live;
     private ulong handle;
-    internal DiffComparison(CoreView basis, CoreView live, bool aligned)
+    internal DiffComparison(CoreView basis, CoreView live, bool aligned, bool collapsed)
     {
         this.basis = basis;
         this.live = live;
         ulong session = 0;
-        Check(viem_diff_session_create(basis.Document.Handle, live.Document.Handle, aligned ? VIEM_DIFF_SESSION_ALIGNED : 0, &session), "Compare documents");
+        uint flags = (aligned ? VIEM_DIFF_SESSION_ALIGNED : 0) | (collapsed ? VIEM_DIFF_SESSION_COLLAPSED : 0);
+        Check(viem_diff_session_create(basis.Document.Handle, live.Document.Handle, flags, &session), "Compare documents");
         handle = session;
     }
     internal void Sync()
@@ -90,6 +91,23 @@ internal sealed unsafe class DiffComparison : IDisposable
         Check(viem_diff_session_navigate(handle, basis.Document.Handle, basis.Id, live.Document.Handle, live.Id,
             next ? VIEM_DIFF_NAVIGATE_NEXT : VIEM_DIFF_NAVIGATE_PREVIOUS, &target), "Go to change");
         return (target.flags & VIEM_DIFF_NAVIGATION_FOUND) != 0;
+    }
+    internal void SetCollapsed(bool collapsed) =>
+        Check(viem_diff_session_set_collapsed(handle, collapsed ? 1u : 0u), "Collapse diff context");
+
+    internal bool OpenCollapsed(bool fromLive, ulong line)
+    {
+        uint opened = 0;
+        Check(viem_diff_session_open_collapsed(handle, fromLive ? 1u : 0u, line, &opened), "Open collapsed context");
+        return opened != 0;
+    }
+
+    internal bool HasOpenedContext(bool fromLive)
+    {
+        var view = fromLive ? live : basis;
+        uint opened = 0;
+        Check(viem_diff_view_opened_context(view.Document.Handle, view.Id, &opened), "Check for opened diff context");
+        return opened != 0;
     }
     internal void Mirror(bool fromLive)
     {

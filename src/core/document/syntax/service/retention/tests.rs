@@ -226,6 +226,7 @@ fn overlapping_queries_replace_only_their_coverage_and_stale_packages_cannot_cle
         run(8..14, "Comment"),
     ];
     assert_eq!(service.runs(input.identity()), expected);
+    assert!(service.covers(&input, 0..14), "both untouched sides still have coverage");
     let mut stale = result(&service, &input, 0..14, Vec::new(), Coverage::Exact);
     stale.input.revision = 0;
     assert!(!publish(&mut service, stale, &input));

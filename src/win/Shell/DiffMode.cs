@@ -23,7 +23,7 @@ internal sealed partial class EditorWindow
     private DiffFile[] diffFiles = [];
     private string[] diffBranches = [];
     private string? diffScope;
-    private bool diffEnabled, diffAligned, diffGit, mirroring, deletedSide, originalNumbers;
+    private bool diffEnabled, diffAligned, diffCollapsed, diffGit, mirroring, deletedSide, originalNumbers;
     private bool enteredDiff, changingNumbers;
     private ulong syncedRevision;
     private DiffRequest? diffRequest;
@@ -43,6 +43,8 @@ internal sealed partial class EditorWindow
         validation.Add((mode, () => View != null));
         var align = Toggle("Align Sides", "A", SetDiffAlignment, () => diffEnabled ? diffAligned : preferences.Get("diff", "alignSides", true));
         validation.Add((align, () => diffEnabled));
+        var collapse = Toggle("Collapse Context", "C", SetDiffCollapsed, () => diffEnabled ? diffCollapsed : preferences.Get("diff", "collapseContext", true));
+        validation.Add((collapse, () => diffEnabled));
         var folder = Item("", "D", () => DiffFolder(Environment.CurrentDirectory));
         void NameFolder() {
             string path = Environment.CurrentDirectory;
@@ -50,7 +52,7 @@ internal sealed partial class EditorWindow
         }
         NameFolder();
         folder.Loaded += (_, _) => NameFolder();
-        Top("Diff", "D", mode, Separator(), folder, Item("Diff Folder…", "F", ChooseDiffFolder), Separator(), align,
+        Top("Diff", "D", mode, Separator(), folder, Item("Diff Folder…", "F", ChooseDiffFolder), Separator(), align, collapse,
             Item("Refresh Base", "R", RefreshDiff, enabled: () => diffEnabled),
             Item("Choose Base File…", "B", ChooseDiffFile, enabled: () => diffEnabled), Separator(),
             Item("Previous File", "P", () => MoveDiffFile(-1), enabled: () => diffEnabled && diffFiles.Length > 0),
@@ -65,10 +67,12 @@ internal sealed partial class EditorWindow
             diffToolbar.BaseSelected += choice => Safe(() => ChooseDiffBase(choice));
             diffToolbar.FileSelected += index => Safe(() => SelectDiffFile(index));
             diffToolbar.AlignmentChanged += value => Safe(() => { SetDiffAlignment(value); return Task.CompletedTask; });
+            diffToolbar.CollapseChanged += value => Safe(() => { SetDiffCollapsed(value); return Task.CompletedTask; });
             AttachToolbar(diffToolbar, 3);
         }
         diffEnabled = true;
         diffAligned = preferences.Get("diff", "alignSides", true);
+        diffCollapsed = preferences.Get("diff", "collapseContext", true);
         diffToolbar.Visibility = Visibility.Visible;
         SynchronizeFormattingToolbar();
     }
@@ -391,9 +395,8 @@ internal sealed partial class EditorWindow
         }
         if (leftView.NumberEnabled != numbers) leftView.Number(numbers);
         if (view.NumberEnabled != numbers) view.Number(numbers);
-        comparison = new(leftView, view, diffAligned);
+        comparison = new(leftView, view, diffAligned, diffCollapsed);
         SyncDiff();
-        if (diffAligned) MirrorDiff(true);
         diffLeft.Opacity = 1;
         diffBase = prepared.Basis; diffFiles = prepared.Files; diffGit = prepared.Git;
         bool wrap = preferences.CodeWordWrap;
@@ -424,7 +427,7 @@ internal sealed partial class EditorWindow
             if (prepared.Deleted && !document.IsDirty) { document.ProtectDeletedSide(true); protectedFile = true; }
             if (liveView.NumberEnabled != numbers) liveView.Number(numbers);
             if (baseView.NumberEnabled != numbers) baseView.Number(numbers);
-            next = new(baseView, liveView, diffAligned);
+            next = new(baseView, liveView, diffAligned, diffCollapsed);
             next.Sync();
             if (diffAligned) next.Mirror(true);
         } catch {
@@ -468,14 +471,21 @@ internal sealed partial class EditorWindow
         PrefetchDiffNeighbours();
     }
 
-    private void SyncDiff()
+    private void SyncDiff(bool fromLive = true)
     {
         comparison!.Sync();
         syncedRevision = diffLive!.Document.State.document_revision;
         diffLive.ClearDiffMarks();
         diffLeft!.ClearDiffMarks();
-        diffLeft.Refresh();
-        diffLive.Refresh();
+        // Reflow can move either viewport. Align from the pane that opened
+        // the region, even if the other pane refreshes first.
+        bool wasMirroring = mirroring;
+        mirroring = true;
+        try {
+            if (diffAligned && !wasMirroring) comparison.Mirror(fromLive);
+            diffLeft.Refresh();
+            diffLive.Refresh();
+        } finally { mirroring = wasMirroring; }
     }
     internal void BeforeDiffLayout(EditorPane pane)
     {
@@ -488,8 +498,21 @@ internal sealed partial class EditorWindow
     internal void DiffLayoutUpdated(EditorPane pane, bool scrolled)
     {
         if (comparison == null || pane != diffLive && pane != diffLeft) return;
-        pane.UpdateDiffMarks(comparison, pane == diffLive);
-        if (scrolled && diffAligned) MirrorDiff(pane == diffLive);
+        bool fromLive = pane == diffLive;
+        if (diffCollapsed && comparison.HasOpenedContext(fromLive)) {
+            SyncDiff(fromLive);
+            return;
+        }
+        pane.UpdateDiffMarks(comparison, fromLive);
+        if (scrolled && diffAligned) MirrorDiff(fromLive);
+    }
+    internal bool OpenCollapsedContext(EditorPane pane, ulong line)
+    {
+        if (comparison == null || pane != diffLive && pane != diffLeft) return false;
+        bool fromLive = pane == diffLive;
+        if (!comparison.OpenCollapsed(fromLive, line)) return false;
+        SyncDiff(fromLive);
+        return true;
     }
     private void MirrorDiff(bool fromLive)
     {
@@ -518,6 +541,15 @@ internal sealed partial class EditorWindow
             if (enabled) MirrorDiff(true);
         }
         preferences.Set("diff", "alignSides", enabled);
+        UpdateDiffToolbar();
+    }
+    private void SetDiffCollapsed(bool enabled)
+    {
+        if (!diffEnabled || diffCollapsed == enabled) return;
+        comparison?.SetCollapsed(enabled);
+        diffCollapsed = enabled;
+        if (comparison != null) SyncDiff();
+        preferences.Set("diff", "collapseContext", enabled);
         UpdateDiffToolbar();
     }
     private void SetLineNumbers(bool enabled)
@@ -560,7 +592,7 @@ internal sealed partial class EditorWindow
     {
         menusDirty = true;
         if (diffEnabled) diffToolbar?.Update(diffBase, diffGit, diffBranches, diffFiles, CurrentDiffFile,
-            ActivePane?.Document.Name ?? "Untitled", diffAligned, comparison != null, noChanges: diffScope != null && diffFiles.Length == 0);
+            ActivePane?.Document.Name ?? "Untitled", diffAligned, diffCollapsed, comparison != null, noChanges: diffScope != null && diffFiles.Length == 0);
     }
 
     private Task RefreshDiff() { ClearDiffCache(); return LoadDiff(refresh: true); }

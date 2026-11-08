@@ -20,6 +20,9 @@ internal sealed partial class Preferences
     public string? SelectedThemePath { get; private set; }
     private static byte[] ThemeBytes(JsonNode value) => JsonSerializer.SerializeToUtf8Bytes(value, FrontendJsonContext.Indented.JsonNode);
     private static JsonObject DefaultTheme() => JsonNode.Parse(CoreThemes.Defaults())!.AsObject();
+#if DEBUG
+    internal bool MatchesBuiltInThemeForTesting => JsonNode.DeepEquals(activeTheme, DefaultTheme());
+#endif
     private string ThemePath(string name) { CoreThemes.ValidateName(name); return Path.Combine(ThemesDirectory, name + ".json"); }
     internal sealed record ThemeFile(string Name, string Path) { public override string ToString() => Name; }
     public ThemeFile[] ThemeFiles => Directory.Exists(ThemesDirectory)

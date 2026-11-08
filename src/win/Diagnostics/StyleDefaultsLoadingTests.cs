@@ -22,13 +22,7 @@ internal static class StyleDefaultsLoadingTests
 
     // Fallback tests compare the complete built-in theme contract. They do not
     // freeze the font sizes or other editable numbers chosen by that preset.
-    internal static bool MatchesBuiltInTheme(Preferences preferences)
-    {
-        var builtin = JsonNode.Parse(CoreThemes.Defaults())!;
-        return preferences.Theme == Theme.Midnight
-            && new[] { (VIEM_FORMAT_PLAIN_TEXT, "text"), (VIEM_FORMAT_MARKDOWN, "markdown"), (VIEM_FORMAT_CODE, "code") }
-                .All(pair => JsonNode.DeepEquals(JsonNode.Parse(preferences.ThemeStyleDefaults(pair.Item1)), builtin["styles"]![pair.Item2]));
-    }
+    internal static bool MatchesBuiltInTheme(Preferences preferences) => preferences.MatchesBuiltInThemeForTesting;
 
     internal static async Task Run(Preferences ownerPreferences)
     {

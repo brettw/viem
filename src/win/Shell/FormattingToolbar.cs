@@ -65,7 +65,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
         };
         Viewport.Children.Add(row);
         SetLayout(Viewport, FormattedView);
-        FormattedView.Content = FormattedViewIcon(FormattedView);
+        FormattedView.Content = FormattedViewIcon();
         FormattedView.Click += (_, _) => {
             if (View is not { } view) return;
             Run(() => view.SetMarkdownPreview(FormattedView.IsChecked == true));
@@ -121,17 +121,17 @@ internal sealed partial class FormattingToolbar : EditorToolbar
         Add(indent, ToolbarAction.Indent, "Indent", "\uE8F4", toggle: false);
         Add(indent, ToolbarAction.Unindent, "Unindent", "\uE8F3", toggle: false);
         row.Children.Add(Paragraph);
-        InsertTable.Content = TableIcon(InsertTable);
+        InsertTable.Content = TableIcon();
     }
 
     private void Add(Panel group, ToolbarAction action, string label, string glyph, bool toggle = true, bool literal = false)
     {
         ButtonBase button = toggle ? new ToggleButton { IsThreeState = true } : new Button();
         IconButton(button, label, shortcut: Shortcut(action));
-        button.Content = action is ToolbarAction.Superscript or ToolbarAction.Subscript ? StyleIcons.ScriptIcon(button, action == ToolbarAction.Superscript)
-            : action == ToolbarAction.Strikethrough ? StrikethroughIcon(button)
-            : action == ToolbarAction.BlockQuote ? BlockQuoteIcon(button) : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Tasks or ToolbarAction.Indent or ToolbarAction.Unindent
-            ? StructuralIcon(button, action)
+        button.Content = action is ToolbarAction.Superscript or ToolbarAction.Subscript ? StyleIcons.ScriptIcon(action == ToolbarAction.Superscript)
+            : action == ToolbarAction.Strikethrough ? StrikethroughIcon()
+            : action == ToolbarAction.BlockQuote ? BlockQuoteIcon() : action is ToolbarAction.Bullets or ToolbarAction.Numbers or ToolbarAction.Tasks or ToolbarAction.Indent or ToolbarAction.Unindent
+            ? StructuralIcon(action)
             : literal ? new TextBlock { Text = glyph, FontSize = 13 } : Glyph(glyph);
         button.Click += (_, _) => Execute(action);
         Buttons.Add(action, button); group.Children.Add(button);
@@ -148,14 +148,14 @@ internal sealed partial class FormattingToolbar : EditorToolbar
         _ => NativeAction.None
     });
 
-    private static Canvas StrikethroughIcon(ButtonBase owner)
+    private static Canvas StrikethroughIcon()
     {
         var canvas = new Canvas { Width = 18, Height = 18 };
         var text = new TextBlock { Text = "s", FontSize = 16 };
-        StyleIcons.CenterIconText(text, owner, 0, 9 - 1.5);
+        StyleIcons.CenterIconText(text, 0, 9 - 1.5);
         Canvas.SetLeft(text, (18 - text.DesiredSize.Width) / 2);
         var line = new Microsoft.UI.Xaml.Shapes.Line { X1 = 3, X2 = 15, Y1 = 9, Y2 = 9, StrokeThickness = 1 };
-        line.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        BindIconBrush(line, Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty);
         canvas.Children.Add(text); canvas.Children.Add(line);
         return canvas;
     }
@@ -170,37 +170,36 @@ internal sealed partial class FormattingToolbar : EditorToolbar
         _ => "F0 M8,1 A7,7 0 1 0 8.001,1 Z M8,2.5 A5.5,5.5 0 1 1 7.999,2.5 Z M7.25,7 L8.75,7 L8.75,11.75 L7.25,11.75 Z M8,3.75 A1,1 0 1 0 8.001,3.75 Z",
     }) };
 
-    private static Border BlockQuoteIcon(ButtonBase owner)
+    private static Border BlockQuoteIcon()
     {
         var icon = new Border { Width = 18, Height = 12, BorderThickness = new Thickness(4, 1, 1, 1) };
-        icon.SetBinding(Border.BorderBrushProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
+        BindIconBrush(icon, Border.BorderBrushProperty);
         return icon;
     }
 
-    private static Canvas TableIcon(Button owner)
+    private static Canvas TableIcon()
     {
         var canvas = new Canvas { Width = 18, Height = 15 };
         var geometry = new GeometryGroup();
         foreach (double x in new double[] { 1, 9, 17 }) geometry.Children.Add(new LineGeometry { StartPoint = new(x, 1.5), EndPoint = new(x, 13.5) });
         foreach (double y in new double[] { 1.5, 5.5, 9.5, 13.5 }) geometry.Children.Add(new LineGeometry { StartPoint = new(1, y), EndPoint = new(17, y) });
-        canvas.Children.Add(Outline(owner, geometry)); return canvas;
+        canvas.Children.Add(Outline(geometry)); return canvas;
     }
 
-    internal static Canvas FormattedViewIcon(ButtonBase owner)
+    internal static Canvas FormattedViewIcon()
     {
         var canvas = new Canvas { Width = 18, Height = 20 };
         var geometry = new GeometryGroup();
         void Line(double x, double y, double endX, double endY) => geometry.Children.Add(new LineGeometry { StartPoint = new(x, y), EndPoint = new(endX, endY) });
         Line(2, 1, 12, 1); Line(12, 1, 17, 6); Line(17, 6, 17, 19); Line(17, 19, 2, 19); Line(2, 19, 2, 1);
         Line(12, 1, 12, 6); Line(12, 6, 17, 6);
-        var outline = Outline(owner, geometry);
+        var outline = Outline(geometry);
         var text = new TextBlock { Text = "Aa", FontFamily = new FontFamily("Georgia"), FontSize = 10 };
-        text.SetBinding(TextBlock.ForegroundProperty, new Microsoft.UI.Xaml.Data.Binding { Source = owner, Path = new PropertyPath("Foreground") });
         Canvas.SetLeft(text, 3); Canvas.SetTop(text, 6);
         canvas.Children.Add(outline); canvas.Children.Add(text); return canvas;
     }
 
-    private static Canvas StructuralIcon(ButtonBase owner, ToolbarAction action)
+    private static Canvas StructuralIcon(ToolbarAction action)
     {
         var canvas = new Canvas { Width = 18, Height = 16 };
         var geometry = new GeometryGroup();
@@ -219,7 +218,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
                 else
                 {
                     var number = new TextBlock { Text = (i + 1).ToString(), FontSize = 8 };
-                    StyleIcons.CenterIconText(number, owner, 0, y);
+                    StyleIcons.CenterIconText(number, 0, y);
                     canvas.Children.Add(number);
                 }
             }
@@ -230,7 +229,7 @@ internal sealed partial class FormattingToolbar : EditorToolbar
             double tip = action == ToolbarAction.Indent ? 6 : 0, tail = 6 - tip;
             Line(tail, 8, tip, 8); Line(tail + (tip - tail) / 2, 5, tip, 8); Line(tail + (tip - tail) / 2, 11, tip, 8);
         }
-        canvas.Children.Add(Outline(owner, geometry)); return canvas;
+        canvas.Children.Add(Outline(geometry)); return canvas;
     }
 
     internal void Synchronize(EditorPane? active, bool visible, bool refresh = true)

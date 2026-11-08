@@ -11,6 +11,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     private readonly ComboBox bases = Selector(new ComboBox { MinWidth = 118, MaxWidth = 220 }, "Diff base");
     private readonly ComboBox files = Selector(new ComboBox { MinWidth = 140, MaxWidth = 360 }, "Files in this diff");
     internal readonly ToggleButton Align = IconButton(new ToggleButton(), "Align Sides");
+    internal readonly ToggleButton Collapse = IconButton(new ToggleButton(), "Collapse Context");
     private readonly Button previousFile, nextFile, previousChange, nextChange;
     private bool updating;
     private readonly List<DiffBase> choices = [];
@@ -20,6 +21,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     internal event Action<DiffBase>? BaseSelected;
     internal event Action<int>? FileSelected;
     internal event Action<bool>? AlignmentChanged;
+    internal event Action<bool>? CollapseChanged;
 
     internal DiffToolbar(Action choose, Action refresh, Action<int> move, Action<bool> navigate) : base("Diff toolbar")
     {
@@ -39,14 +41,15 @@ internal sealed partial class DiffToolbar : EditorToolbar
         nextFile = AddButton(navigation, "Next File", "\uE76C", () => move(1));
 
         // Two panes with a shared middle row convey vertical alignment at toolbar size.
-        var alignedRows = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry),
+        SetIcon(Align,
             "M1.5,2.5 H7.5 V13.5 H1.5 Z M10.5,2.5 H16.5 V13.5 H10.5 Z " +
             "M3.5,5.5 H5.5 M12.5,5.5 H14.5 M3.5,8 H14.5 M3.5,10.5 H5.5 M12.5,10.5 H14.5");
-        var icon = new Canvas { Width = 18, Height = 16 };
-        icon.Children.Add(Outline(Align, alignedRows));
-        Align.Content = icon;
         row.Children.Add(Align);
         Align.Click += (_, _) => AlignmentChanged?.Invoke(Align.IsChecked == true);
+
+        SetIcon(Collapse, "M5,1.5 L9,5.5 L13,1.5 M2,8 H16 M5,14.5 L9,10.5 L13,14.5");
+        row.Children.Add(Collapse);
+        Collapse.Click += (_, _) => CollapseChanged?.Invoke(Collapse.IsChecked == true);
 
         var changes = Group();
         row.Children.Add(changes);
@@ -58,6 +61,14 @@ internal sealed partial class DiffToolbar : EditorToolbar
         files.SelectionChanged += (_, _) => {
             if (!updating && files.SelectedIndex >= 0) FileSelected?.Invoke(files.SelectedIndex);
         };
+    }
+
+    private static void SetIcon(ToggleButton button, string path)
+    {
+        var geometry = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry), path);
+        var icon = new Canvas { Width = 18, Height = 16 };
+        icon.Children.Add(Outline(geometry));
+        button.Content = icon;
     }
 
     private static Button AddButton(Panel group, string name, string glyph, Action action)
@@ -72,7 +83,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     internal const string NoChangesTitle = "no changes";
 
     internal void Update(DiffBase basis, bool git, string[] branches, DiffFile[] entries, int current,
-        string documentName, bool aligned, bool comparing, bool noChanges = false)
+        string documentName, bool aligned, bool collapsed, bool comparing, bool noChanges = false)
     {
         updating = true;
         try {
@@ -118,6 +129,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
             files.IsEnabled = previousFile.IsEnabled = nextFile.IsEnabled = entries.Length != 0;
             previousChange.IsEnabled = nextChange.IsEnabled = comparing;
             Align.IsChecked = aligned;
+            Collapse.IsChecked = collapsed;
         } finally { updating = false; }
     }
 

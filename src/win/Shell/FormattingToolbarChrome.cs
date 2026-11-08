@@ -25,14 +25,14 @@ internal sealed partial class EditorWindow
         geometry.Children.Add(new RectangleGeometry { Rect = new Rect(1.5, 3.5, 21, 11) });
         foreach (double x in new[] { 4d, 10d, 16d }) geometry.Children.Add(new RectangleGeometry { Rect = new Rect(x, 7, 4, 4) });
         var icon = new Microsoft.UI.Xaml.Shapes.Path { Data = geometry, StrokeThickness = 1, Width = 24, Height = 18 };
-        icon.SetBinding(Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty, new Microsoft.UI.Xaml.Data.Binding { Source = toolbarToggle, Path = new PropertyPath("Foreground") });
+        EditorToolbar.BindIconBrush(icon, Microsoft.UI.Xaml.Shapes.Shape.StrokeProperty);
         toolbarToggle.Content = icon;
         AutomationProperties.SetName(toolbarToggle, "Formatting toolbar");
         toolbarToggle.Click += (_, _) => Safe(() => {
             if (ActivePane != null) preferences.SetFormattingToolbar(VIEM_FORMAT_MARKDOWN, toolbarToggle.IsChecked == true);
             SynchronizeFormattingToolbar(); RestoreEditorFocusAfterControl(); return Task.CompletedTask;
         });
-        previewToggle.Content = FormattingToolbar.FormattedViewIcon(previewToggle);
+        previewToggle.Content = FormattingToolbar.FormattedViewIcon();
         AutomationProperties.SetName(previewToggle, "Markdown Preview");
         ToolTipService.SetToolTip(previewToggle, "Markdown Preview");
         previewToggle.Click += (_, _) => Safe(() => {

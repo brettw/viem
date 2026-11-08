@@ -560,6 +560,7 @@ ad-hoc file through the in-memory host:
 
 ```sh
 VIEM_VIMSCRIPT_FIXTURE=silent_errors python3 scripts/validate.py focused --tests lib --filter vimscript::tests::fixtures_match_vim_output
+VIEM_DEBUG_SCRIPT=path/to/script.vim cargo test --lib vimscript::tests::fixtures_match_vim_output -- --nocapture
 ```
 
 Refresh oracle output explicitly with

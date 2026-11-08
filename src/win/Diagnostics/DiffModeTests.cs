@@ -4,20 +4,103 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Diagnostics;
+using Viem.Windows.Editor;
 using static Viem.Windows.Interop.Native;
 
 namespace Viem.Windows.Shell;
 
 internal sealed partial class EditorWindow
 {
+    private static void CheckDiff(bool condition, string name)
+    {
+        if (!condition) throw new InvalidOperationException(name);
+        FrontendSmokeTests.UiChecks.Add(name);
+    }
+
+    private static async Task TestCollapsedDiff(Preferences preferences)
+    {
+        var profile = new Preferences(Path.Combine(preferences.DirectoryPath, "collapsed-diff"));
+        var lines = Enumerable.Range(0, 40).Select(n => $"line {n}").ToList();
+        string basePath = Path.Combine(profile.DirectoryPath, "base.txt");
+        await File.WriteAllTextAsync(basePath, string.Join("\n", lines));
+        lines[30] = "replaced";
+        lines.Insert(10, "inserted");
+        string source = string.Join("\n", lines);
+        await using var editor = await TestEditor.Open(profile, source, VIEM_FORMAT_CODE);
+        var window = editor.Window;
+        await window.SetDiffMode(true);
+        await window.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basePath));
+        var left = window.diffLeft!;
+        var live = editor.Pane;
+        var button = window.diffToolbar!.Collapse;
+        const uint band = VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT | VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND;
+        static bool Shown(EditorPane pane, ulong line) => pane.View!.Layout().Rows.Any(r => r.hard_line_index == line);
+        static bool HasDivider(EditorPane pane) => pane.View!.Layout().Decorations.Any(d => (d.flags & band) == band);
+        async Task ClickMiddleDivider(EditorPane pane, ulong ownerLine) {
+            var layout = pane.View!.Layout();
+            var row = layout.Rows.Single(r => r.hard_line_index == ownerLine);
+            var box = layout.Decorations.Single(d => d.row_index == row.row_index && (d.flags & band) == band).typographic_bounds;
+            var viewport = pane.View.Viewport;
+            var point = new global::Windows.Foundation.Point((box.x + box.width / 2 - viewport.left) / pane.Canvas.ActualWidth,
+                (box.y + box.height / 2 - viewport.top) / pane.Canvas.ActualHeight);
+            await InputRoutingTests.Drag(window, pane.Canvas, new[] { point }, _ => { }, focusTarget: false);
+        }
+
+        CheckDiff(button.IsChecked == true && AutomationProperties.GetName(button) == "Collapse Context"
+            && Equals(ToolTipService.GetToolTip(button), "Collapse Context"), "Collapse Context starts checked and names its toolbar icon");
+        var face = (ContentPresenter)VisualTreeHelper.GetChild(button, 0);
+        var checkedFill = ((SolidColorBrush)face.Background).Color;
+        var glyph = (Microsoft.UI.Xaml.Shapes.Path)((Canvas)button.Content).Children.Single();
+        CheckDiff(glyph.Stroke == face.Foreground && checkedFill.A == 255
+            && checkedFill != ((SolidColorBrush)face.Foreground).Color, "Checked Collapse Context has a solid fill and contrasting icon");
+        await WindowCapture.SaveElement(button, live.Canvas.Device, FrontendSmokeTests.ReportPath + ".collapse-on.png");
+        CheckDiff(Shown(left, 7) && Shown(live, 7) && !Shown(left, 0) && !Shown(live, 0)
+            && Shown(left, 12) && Shown(live, 13) && !Shown(left, 14) && !Shown(live, 15),
+            "The initial diff hides leading and middle context on both sides of an insertion");
+        foreach (var (pane, line) in new[] { (left, 12UL), (live, 13UL) }) {
+            if (pane == live) pane.View!.Command("i");
+            ulong caret = pane.View!.Presentation.cursor_utf8_offset;
+            uint mode = pane.View.Presentation.mode;
+            await ClickMiddleDivider(pane, line);
+            CheckDiff(Shown(left, 14) && Shown(live, 15) && !Shown(left, 0) && !Shown(live, 0)
+                && pane.View.Presentation.cursor_utf8_offset == caret && pane.View.Presentation.mode == mode && editor.Source == source,
+                $"Clicking the {(pane == left ? "base" : "live")} divider opens only its region on both sides and preserves the caret, mode and source");
+            if (pane == live) pane.View.Key(VIEM_KEY_ESCAPE);
+            await window.RefreshDiff();
+            CheckDiff(!Shown(left, 14) && !Shown(live, 15), "Refreshing the base closes manually opened context");
+        }
+        window.SetDiffAlignment(false);
+        left.View!.Ex("16");
+        CheckDiff(Shown(left, 15) && Shown(live, 16), "A base caret entering hidden context opens the live side while unaligned");
+        live.View!.Command("gg");
+        CheckDiff(Shown(left, 0) && Shown(live, 0), "A live caret entering hidden context opens the base side while unaligned");
+        var menu = window.Menu.Items.Single(m => m.Title == "Diff");
+        var item = menu.Items.OfType<ToggleMenuFlyoutItem>().Single(i => i.Text == "Collapse Context");
+        var peer = new MenuBarItemAutomationPeer(menu);
+        await MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, item);
+        CheckDiff(item.IsChecked && item.Focus(FocusState.Programmatic), "The Diff menu reflects the collapse toggle");
+        await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+        CheckDiff(button.IsChecked == false && !HasDivider(left) && !HasDivider(live)
+            && !new Preferences(profile.DirectoryPath).Get("diff", "collapseContext", true), "The menu expands both sides and saves the choice");
+        CheckDiff(((SolidColorBrush)face.Background).Color != checkedFill, "Turning collapse off removes the checked fill");
+        await WindowCapture.SaveElement(button, live.Canvas.Device, FrontendSmokeTests.ReportPath + ".collapse-off.png");
+        await window.SetDiffMode(false);
+        await window.SetDiffMode(true);
+        await window.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basePath));
+        CheckDiff(button.IsChecked == false && !HasDivider(window.diffLeft!) && Shown(live, 15),
+            "A new comparison starts expanded after saving that choice");
+        button.Focus(FocusState.Programmatic);
+        await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
+        CheckDiff(button.IsChecked == true && HasDivider(window.diffLeft!) && HasDivider(live)
+            && Shown(live, 0) && !Shown(live, 15), "The toolbar recollapses context while keeping the live caret visible");
+    }
+
     private static async Task TestDiffMode(Preferences preferences)
     {
-        static void Check(bool condition, string name) {
-            if (!condition) throw new InvalidOperationException(name);
-            FrontendSmokeTests.UiChecks.Add(name);
-        }
+        static void Check(bool condition, string name) => CheckDiff(condition, name);
         static async Task WaitFor(Func<bool> predicate) {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
             while (!predicate()) await Task.Delay(25, timeout.Token);
@@ -84,6 +167,8 @@ internal sealed partial class EditorWindow
                     && AutomationProperties.GetName(align) == "Align Sides" && Equals(ToolTipService.GetToolTip(align), "Align Sides"),
                     "Diff uses Markdown toolbar dimensions and exposes the alignment icon as a named toggle");
                 window.SetDiffAlignment(true);
+                // The scroll tests need the unchanged lines to extend beyond the viewport.
+                window.SetDiffCollapsed(false);
                 editor.View.Scroll(0, 300);
                 Check(left.View!.Viewport.top > 0, "Scrolling the aligned live side moves the base");
                 Check(align.IsChecked == true && align.Focus(FocusState.Programmatic), "Align Sides reflects the menu state and takes keyboard focus");
@@ -147,6 +232,7 @@ internal sealed partial class EditorWindow
                 await File.WriteAllTextAsync(path, "// changed " + name + "\n" + rust);
             }
             await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_UNSTAGED));
+            folder.SetDiffCollapsed(true);
             var times = new List<string>();
             for (int pass = 0; pass < 2; ++pass) {
                 foreach (string name in names) {
@@ -171,6 +257,9 @@ internal sealed partial class EditorWindow
                         Check(livePane == folder.ActivePane && basePane == folder.diffLeft && folder.comparison != null
                             && livePane.LineNumbersForTesting?.Enabled == true && basePane.LineNumbersForTesting?.Enabled == true,
                             $"{name} installs both numbered views and the comparison before file navigation returns");
+                        Check(livePane.View!.Layout().Decorations.Any(d => (d.flags & VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT) != 0)
+                            && basePane.View!.Layout().Decorations.Any(d => (d.flags & VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT) != 0),
+                            $"{name} opens with unchanged context collapsed on both sides");
                         await WaitFor(() => complete);
                         times.Add($"{pass + 1} {name} {timer.Elapsed.TotalMilliseconds:F1}");
                         Check(partialFrame == null, $"{name} first appears with both text surfaces and both gutters in the same frame {partialFrame}");

@@ -787,18 +787,29 @@ fn nested_captures_keep_innermost_styles_and_ignore_spell_controls() {
 }
 
 #[test]
-#[ignore = "diagnostic regional-query timings; run serially in release mode"]
-fn regional_query_scroll_timings() {
+fn regional_queries_highlight_each_scrolled_page() {
+    let report_timings = std::env::var_os("VIEM_REGIONAL_QUERY_TIMINGS").is_some();
     let fixtures = [
         ("rust", "fn example(value: usize) -> usize {\n    let next = value + 42; // comment\n    next\n}\n"),
         ("typescript", "function example(value: number): number {\n    const next = value + 42; // comment\n    return next;\n}\n"),
         ("python", "def example(value):\n    next_value = value + 42 # comment\n    return next_value\n"),
     ];
     for (language, fixture) in fixtures {
-        let text = fixture.repeat(4_000);
+        let text = fixture.repeat(if report_timings { 4_000 } else { 3 });
         let mut session =
             TreeSitterSession::new(TreeSitterPackage::bundled(language).unwrap()).unwrap();
         let (snapshot, _) = parsed(&mut session, input(&text, 1), &[]);
+        for page in [1, 2] {
+            let start = page * fixture.len();
+            let range = start..start + fixture.len();
+            let output = highlight(&snapshot, range.clone(), &generous(), &AtomicBool::new(false));
+            assert_eq!(output.coverage, Coverage::Exact, "{language}: {:?}", output.diagnostic);
+            assert_eq!(output.range, range);
+            let number = start + fixture.find("42").unwrap();
+            assert!(output.runs.iter().any(|run| run.range.contains(&number)), "{language} page {page} lost its numeric literal");
+            assert!(output.runs.iter().all(|run| run.range.start >= range.start && run.range.end <= range.end));
+        }
+        if !report_timings { continue; }
         let mut samples = Vec::new();
         let mut captures = 0;
         for _ in 0..7 {

@@ -95,13 +95,32 @@ impl SyntaxService {
         // place, and coverage leaves other requests' failures in place.
         // Otherwise a failed whole-document request and the visible requests
         // inside it would evict each other and be requested again forever.
-        let missing = result.coverage == Coverage::Missing;
-        self.cache.retain(|old| old.input == result.input
-            && if missing || old.coverage == Coverage::Missing {
-                old.range != result.range
-            } else {
-                !overlaps(&old.range, &result.range)
-            });
+        // A successful result replaces only its own bytes. In a collapsed
+        // diff, the visible range can cross several background highlighting
+        // chunks. Discarding their untouched coverage makes the foreground
+        // and background continually request and publish each other's work.
+        for _ in 0..self.cache.len() {
+            let mut old = self.cache.pop_front().expect("original cache entry");
+            if old.input != result.input || old.range == result.range { continue; }
+            if !ready || old.coverage == Coverage::Missing || !overlaps(&old.range, &result.range) {
+                self.cache.push_back(old);
+                continue;
+            }
+            if old.range.start < result.range.start {
+                if old.range.end <= result.range.end {
+                    old.range.end = result.range.start;
+                    self.cache.push_back(old);
+                    continue;
+                }
+                let mut before = old.clone();
+                before.range.end = result.range.start;
+                self.cache.push_back(before);
+            }
+            if old.range.end > result.range.end {
+                old.range.start = result.range.end;
+                self.cache.push_back(old);
+            }
+        }
         changed
     }
 

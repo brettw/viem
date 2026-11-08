@@ -138,6 +138,9 @@ Open **Diff → Diff Mode** (Alt+D opens the menu) to compare the live buffer
 with a saved version, the Git index, HEAD, a branch, or a chosen file.
 **Diff Folder…** opens the tracked changes in a folder. The toolbar selects
 files, moves between changes, and controls aligned scrolling.
+**Collapse Context** in the toolbar and Diff menu hides long runs of unchanged
+lines by default. Click a divider or move either caret into hidden lines to
+open that region on both sides. New comparisons remember the last toggle setting.
 See [Diff mode](../../docs/diff_mode.md) for the comparison behavior.
 
 Known gap: Windows still shows one base column for the whole window rather

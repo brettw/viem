@@ -218,6 +218,10 @@ fn fixtures_match_vim_output() {
     }
     assert!(checked > 0, "no fixtures found");
     assert!(failures.is_empty(), "{} of {checked} fixtures differ:\n\n{}", failures.len(), failures.join("\n\n"));
+    if let Some(path) = std::env::var_os("VIEM_DEBUG_SCRIPT") {
+        let script = std::fs::read_to_string(path).expect("read VIEM_DEBUG_SCRIPT");
+        println!("{}", run_script(&script));
+    }
 }
 
 #[test]
@@ -241,15 +245,6 @@ fn statement_level_calls_suspend_and_resume() {
     host.suspend_after = None;
     assert_eq!(rt.run(&mut host), RunState::Complete);
     assert_eq!(host.output, "\nafter\nend");
-}
-
-/// `VIEM_DEBUG_SCRIPT=path cargo test --lib vimscript::tests::debug_script -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn debug_script() {
-    let path = std::env::var("VIEM_DEBUG_SCRIPT").expect("VIEM_DEBUG_SCRIPT");
-    let script = std::fs::read_to_string(path).unwrap();
-    println!("{}", run_script(&script));
 }
 
 #[test]
