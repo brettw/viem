@@ -25,6 +25,7 @@ internal sealed partial class EditorWindow
         string directory = Path.Combine(preferences.DirectoryPath, "diff " + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         preferences = new Preferences(Path.Combine(directory, "profile"));
+        var placement = new DocumentWindowPlacement(preferences);
         async Task Git(params string[] arguments) {
             var start = new ProcessStartInfo("git") { WorkingDirectory = directory, UseShellExecute = false,
                 CreateNoWindow = true, RedirectStandardError = true };
@@ -36,7 +37,7 @@ internal sealed partial class EditorWindow
         }
         try {
             string original = string.Join("\n", Enumerable.Range(1, 110).Select(n => $"Line {n}")) + "\n";
-            await using (var editor = await TestEditor.Open(preferences, original)) {
+            await using (var editor = await TestEditor.Open(preferences, original, placement: placement)) {
                 var window = editor.Window;
                 var menu = window.Menu.Items.Single(m => m.Title == "Diff");
                 var mode = (ToggleMenuFlyoutItem)menu.Items[0];
@@ -98,7 +99,7 @@ internal sealed partial class EditorWindow
             await File.WriteAllTextAsync(a, "index a"); await Git("add", "sub/a");
             await File.WriteAllTextAsync(a, "live a"); File.Delete(b);
             await File.WriteAllTextAsync(Path.Combine(directory, "outside"), "modified");
-            await using var empty = await TestEditor.Open(preferences, "", VIEM_FORMAT_PLAIN_TEXT);
+            await using var empty = await TestEditor.Open(preferences, "", VIEM_FORMAT_PLAIN_TEXT, placement);
             var folder = empty.Window;
             await folder.DiffFolder(scoped);
             Check(folder.diffFiles.Length == 2 && SamePath(folder.ActivePane!.Document.FilePath!, a)
@@ -122,6 +123,67 @@ internal sealed partial class EditorWindow
             await folder.MoveDiffFile(1);
             await WaitFor(() => folder.comparison != null);
             Check(SamePath(folder.ActivePane!.Document.FilePath!, a), "Next File wraps from the last file to the first");
+            folder.SetLineNumbers(true);
+            string rust = string.Join("\n", Enumerable.Range(0, 650).Select(n => $"pub fn value_{n}() -> usize {{ {n} }}"));
+            string[] names = ["c.rs", "d.rs", "e.rs"];
+            foreach (string name in names) {
+                string path = Path.Combine(scoped, name);
+                await File.WriteAllTextAsync(path, rust);
+                await Git("add", "sub/" + name);
+                await File.WriteAllTextAsync(path, "// changed " + name + "\n" + rust);
+            }
+            await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_UNSTAGED));
+            var times = new List<string>();
+            for (int pass = 0; pass < 2; ++pass) {
+                foreach (string name in names) {
+                    int index = Array.FindIndex(folder.diffFiles, file => Path.GetFileName(file.Path) == name);
+                    var timer = Stopwatch.StartNew();
+                    var livePane = folder.ActivePane!;
+                    var basePane = folder.diffLeft!;
+                    bool complete = false;
+                    string? partialFrame = null;
+                    void Frame(object? sender, object args) {
+                        if (!SamePath(livePane.Document.FilePath!, folder.diffFiles[index].Path)) return;
+                        ulong liveId = livePane.Document.State.document_id, baseId = basePane.Document.State.document_id;
+                        bool text = livePane.PaintedDocumentForTesting == liveId, numbers = livePane.PaintedNumberDocumentForTesting == liveId;
+                        bool baseText = basePane.PaintedDocumentForTesting == baseId, baseNumbers = basePane.PaintedNumberDocumentForTesting == baseId;
+                        complete = text && numbers && baseText && baseNumbers;
+                        if (!complete && (text || numbers || baseText || baseNumbers))
+                            partialFrame ??= $"live text={text}, numbers={numbers}, base text={baseText}, numbers={baseNumbers}";
+                    }
+                    Microsoft.UI.Xaml.Media.CompositionTarget.Rendered += Frame;
+                    try {
+                        await folder.SelectDiffFile(index);
+                        Check(livePane == folder.ActivePane && basePane == folder.diffLeft && folder.comparison != null
+                            && livePane.LineNumbersForTesting?.Enabled == true && basePane.LineNumbersForTesting?.Enabled == true,
+                            $"{name} installs both numbered views and the comparison before file navigation returns");
+                        await WaitFor(() => complete);
+                        times.Add($"{pass + 1} {name} {timer.Elapsed.TotalMilliseconds:F1}");
+                        Check(partialFrame == null, $"{name} first appears with both text surfaces and both gutters in the same frame {partialFrame}");
+                    } finally { Microsoft.UI.Xaml.Media.CompositionTarget.Rendered -= Frame; }
+                }
+            }
+            File.WriteAllLines(FrontendSmokeTests.ReportPath + ".diff-switch-ms.txt", times);
+            // Hold an open just before publication. The old pair must remain
+            // usable, and a later selection must win even if the old load finishes last.
+            var paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var resume = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var previous = folder.ActivePane!.Document;
+            var previousBase = folder.diffLeft!.Document;
+            folder.BeforePublishOpenForTesting = async () => {
+                folder.BeforePublishOpenForTesting = null;
+                paused.SetResult(); await resume.Task;
+            };
+            var superseded = folder.SelectDiffFile(0);
+            try {
+                await paused.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                Check(folder.ActivePane.Document == previous && folder.diffLeft.Document == previousBase
+                    && folder.comparison != null, "A pending file keeps the previous comparison visible and editable");
+                await folder.SelectDiffFile(1);
+            } finally { resume.TrySetResult(); }
+            try { await superseded; } catch (OperationCanceledException) { }
+            Check(SamePath(folder.ActivePane.Document.FilePath!, b) && folder.deletedSide
+                && folder.diffLeft.Document.FormattedText() == "old b", "An older file switch cannot replace the newer comparison");
             string chosen = Path.Combine(directory, ".basis");
             await File.WriteAllTextAsync(chosen, "chosen");
             await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, chosen));

@@ -95,6 +95,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         UpdatePointerCursor();
     }
 #if DEBUG
+    internal ulong PaintedDocumentForTesting { get; private set; }
     internal string PointerCursorForTesting => ReferenceEquals(ProtectedCursor, gutterCursor) ? "row"
         : ReferenceEquals(ProtectedCursor, columnCursor) ? "column"
         : ReferenceEquals(ProtectedCursor, textInsertionCursor) ? "text" : "arrow";
@@ -158,6 +159,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
             if (disposed) return;
             using (Diagnostics.StartupPerformance.Measure("editor.draw")) Draw(args.DrawingSession);
             scrollbarPaint.Invalidate();
+#if DEBUG
+            PaintedDocumentForTesting = snapshot?.Info.identity.document_id ?? 0;
+#endif
             if (snapshot != null && View is { } currentView && Diagnostics.StartupPerformance.Enabled)
                 Diagnostics.StartupPerformance.FirstDraw(DispatcherQueue, Document.FilePath, new() {
                     width = Canvas.ActualWidth, height = Canvas.ActualHeight, top = viewport.top,
@@ -194,7 +198,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         };
         Canvas.AllowDrop = true;
         Canvas.DragOver += (_, e) => { if (e.DataView.Contains(StandardDataFormats.StorageItems) || e.DataView.Contains(StandardDataFormats.Text)) e.AcceptedOperation = DataPackageOperation.Copy; };
-        Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } else if (e.DataView.Contains(StandardDataFormats.Text)) { var text = await e.DataView.GetTextAsync(); View?.DropText(text); } } catch (Exception error) { Report(error); } };
+        Canvas.Drop += async (_, e) => { try { if (e.DataView.Contains(StandardDataFormats.StorageItems)) { var items = await e.DataView.GetStorageItemsAsync(); foreach (var item in items) if (File.Exists(item.Path)) await window.OpenNative(item.Path); } else if (e.DataView.Contains(StandardDataFormats.Text)) { var origin = View; var text = await e.DataView.GetTextAsync(); if (View == origin) origin?.DropText(text); } } catch (Exception error) { Report(error); } };
         input.GotFocus += (_, _) => {
             // WinUI queues focus events. A previous pane can receive GotFocus
             // after native focus already belongs to a newer pane or control.
@@ -266,7 +270,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         ready.TrySetResult(View);
         if (!diffBasePane) window.PaneReady(this);
     }
-    internal CoreView? PrepareReplacement(CoreDocument document)
+    internal CoreView? PrepareReplacement(CoreDocument document, bool newFile = false)
     {
         if (View == null) return null;
         var padding = new ViemLayoutInsetsV1 { top = preferences.Margin("top"), left = preferences.Margin("left"), bottom = preferences.Margin("bottom"), right = preferences.Margin("right") };
@@ -274,33 +278,50 @@ internal sealed partial class EditorPane : Grid, IDisposable
         try
         {
             var viewport = View.Viewport;
-            prepared.Wrap((viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0);
-            prepared.Zoom(viewport.scale);
-            // A replacement of another format chooses its own line mode.
-            if (!prepared.LineModeState.Fixed) prepared.LineMode(View.CurrentLineMode);
-            prepared.Number(View.NumberEnabled);
+            if (!newFile) prepared.Wrap((viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0);
+            float scale = newFile ? preferences.ZoomScale : viewport.scale;
+            if (scale != prepared.Viewport.scale) prepared.Zoom(scale);
+            if (!newFile) {
+                if (!prepared.LineModeState.Fixed) prepared.LineMode(View.CurrentLineMode);
+                prepared.Number(View.NumberEnabled);
+            } else if (preferences.ScriptScrollOff is { } rows) {
+                float margin = Math.Min(1000, rows * prepared.DefaultLineHeight);
+                prepared.Padding(margin, padding.left, margin, padding.right);
+            }
             prepared.MarkdownAutodetect(preferences.MarkdownAutodetect);
             prepared.SmartQuotes(preferences.SmartQuotes);
             prepared.SmartHome(preferences.SmartHome);
             prepared.ClipboardText = View.ClipboardText;
             prepared.ClipboardFragment = View.ClipboardFragment;
             prepared.ClipboardGeneration = View.ClipboardGeneration;
-            prepared.RestorePosition(View);
+            if (!newFile) prepared.RestorePosition(View);
             return prepared;
         }
         catch { prepared.Dispose(); throw; }
     }
-    internal void InstallReplacement(CoreDocument document, CoreView? prepared)
+    private bool installingDocument;
+    internal void InstallReplacement(CoreDocument document, CoreView? prepared, bool deferPresentation = false)
     {
+        installingDocument = true;
         DismissCodeBlockLanguageMenu();
         DismissLinkPopup(suppress: false); DismissImagePopup(suppress: false); ResetImagePreviews();
+        DismissCommandOutput(restoreFocus: false);
+        pressedPointer = null; gutterSelectionDragging = dragging = wordSelectionDragging = false;
+        Canvas.ReleasePointerCaptures(); lineNumberCanvas.ReleasePointerCaptures();
         Document.Changed -= DocumentChanged;
         if (View != null) { View.Changed -= Refresh; View.Effects -= ApplyEffects; View.ZoomChanged -= RememberZoom; View.Dispose(); }
         Document = document; View = prepared; View?.SetHostRegister(35, AlternatePath ?? "");
         Document.Changed += DocumentChanged;
-        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom; Run(() => View.TakeStartupEffects(false)); }
+        if (View != null) { View.Changed += Refresh; View.Effects += ApplyEffects; View.ZoomChanged += RememberZoom; }
         mapping.Stop(); compositionRejected = composing; composing = false; ClearInput();
-        snapshot = null; InvalidateDrawingCache(); Refresh();
+        snapshot = null; lineNumbers = null; InvalidateDrawingCache();
+        if (!deferPresentation) FinishReplacement();
+    }
+    internal void FinishReplacement()
+    {
+        if (View != null) Run(() => View.TakeStartupEffects(false));
+        installingDocument = false;
+        Refresh();
     }
     private void DocumentChanged() { if (View != null) Run(() => { View.Refresh(); }); }
     private void RememberZoom(float scale)
@@ -414,10 +435,11 @@ internal sealed partial class EditorPane : Grid, IDisposable
         && (view.Presentation.flags & (VIEM_VIEW_PRESENTATION_COMMAND_INPUT_PENDING | VIEM_VIEW_PRESENTATION_HAS_COMMAND_LINE)) == 0;
     private void Enqueue(Func<Task> action)
     {
+        var origin = View;
         async Task Next(Task previous)
         {
             await previous;
-            if (disposed) return;
+            if (disposed || View != origin) return;
             try { message.Text = ""; DismissCommandOutput(false); await action(); ResetBlink(); if (View?.HasPendingMapping == true) { mapping.Stop(); if (preferences.ScriptTimeout) { mapping.Interval = TimeSpan.FromMilliseconds(Math.Max(1, preferences.ScriptTimeoutLength)); mapping.Start(); } } }
             catch (Exception e) { Report(e); }
         }
@@ -429,10 +451,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
     private async void ClipboardChanged(object? sender, object e) { await RefreshClipboard(false); }
     private async Task<bool> RefreshClipboard(bool reportFailure = true)
     {
-        if (View == null) return false;
+        if (View is not { } origin) return false;
         try {
             var data = await ClipboardFormats.Read();
-            if (View == null) return false; View.ClipboardText = data.Text; View.ClipboardFragment = data.Fragment; View.ClipboardGeneration++;
+            if (View != origin) return false; View.ClipboardText = data.Text; View.ClipboardFragment = data.Fragment; View.ClipboardGeneration++;
             return true;
         } catch (Exception e) { if (reportFailure) SetMessage("Clipboard unavailable: " + e.Message); return false; }
     }
@@ -611,7 +633,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     public void Refresh()
     {
         using var measurement = Diagnostics.InputPerformance.Measure("refresh");
-        if (View == null || disposed) return;
+        if (View == null || disposed || installingDocument) return;
         if (refreshing) { refreshPending = true; return; }
         refreshing = true;
         try

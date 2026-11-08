@@ -20,10 +20,12 @@ internal sealed partial class EditorWindow
     private bool diffEnabled, diffAligned, diffGit, mirroring, deletedSide, originalNumbers;
     private bool enteredDiff, changingNumbers;
     private ulong syncedRevision;
-    private CancellationTokenSource? diffRequest, folderRequest, branchRequest;
+    private DiffRequest? diffRequest;
+    private CancellationTokenSource? folderRequest, branchRequest;
     private long diffGeneration;
     private readonly Dictionary<(DiffBase, string), byte[]> diffBytes = [];
     private long cachedBytes;
+    private readonly Dictionary<(DiffBase, string), (CancellationTokenSource Cancel, Task<byte[]> Bytes)> prefetches = [];
     private int CurrentDiffFile => Array.FindIndex(diffFiles, f => SamePath(f.Path, ActivePane?.Document.FilePath));
     private static bool SamePath(string a, string? b) => b != null && StringComparer.OrdinalIgnoreCase.Equals(Path.GetFullPath(a), Path.GetFullPath(b));
     private static string[] UnsavedPaths() => App.Instance.Windows.SelectMany(w => w.Panes).Select(p => p.Document)
@@ -124,126 +126,273 @@ internal sealed partial class EditorWindow
         DetachDiff();
     }
 
-    private void ClearDiffCache() { diffBytes.Clear(); cachedBytes = 0; }
+    private void ClearDiffCache()
+    {
+        foreach (var pending in prefetches.Values.ToArray()) pending.Cancel.Cancel();
+        prefetches.Clear();
+        diffBytes.Clear();
+        cachedBytes = 0;
+    }
+
+    private void CacheDiffBytes((DiffBase, string) key, byte[] bytes)
+    {
+        const int limit = 64 * 1024 * 1024;
+        if (bytes.Length > limit || diffBytes.ContainsKey(key)) return;
+        while (diffBytes.Count >= 8 || cachedBytes + bytes.Length > limit) {
+            var oldest = diffBytes.First();
+            diffBytes.Remove(oldest.Key);
+            cachedBytes -= oldest.Value.Length;
+        }
+        diffBytes.Add(key, bytes);
+        cachedBytes += bytes.Length;
+    }
+
+    private async Task<byte[]> LoadDiffBytes(DiffBase basis, string path, CancellationToken token)
+    {
+        var key = (basis, path);
+        if (diffBytes.TryGetValue(key, out var cached)) return cached;
+        var bytes = prefetches.TryGetValue(key, out var pending)
+            ? await pending.Bytes.WaitAsync(token)
+            : await Task.Run(() => DiffSources.Load(basis, path, token), token);
+        token.ThrowIfCancellationRequested();
+        CacheDiffBytes(key, bytes);
+        return bytes;
+    }
+
+    private void PrefetchDiffNeighbours()
+    {
+        int index = CurrentDiffFile;
+        if (!diffBase.IsGit || index < 0 || diffFiles.Length < 2) return;
+        foreach (int step in new[] { 1, -1 }) {
+            var neighbour = diffFiles[(index + step + diffFiles.Length) % diffFiles.Length];
+            var key = (diffBase, neighbour.BasePath);
+            if (prefetches.Count < 2 && !diffBytes.ContainsKey(key) && !prefetches.ContainsKey(key))
+                _ = Prefetch(key);
+        }
+    }
+    private async Task Prefetch((DiffBase Basis, string Path) key)
+    {
+        using var cancel = new CancellationTokenSource();
+        var loading = Task.Run(() => DiffSources.Load(key.Basis, key.Path, cancel.Token), cancel.Token);
+        prefetches.Add(key, (cancel, loading));
+        try {
+            var bytes = await loading;
+            if (!cancel.IsCancellationRequested) CacheDiffBytes(key, bytes);
+        } catch (Exception) { /* A foreground request reports a base that cannot be read. */ }
+        finally {
+            if (prefetches.TryGetValue(key, out var pending) && pending.Bytes == loading) prefetches.Remove(key);
+        }
+    }
+
+    private sealed class DiffRequest(EditorWindow owner, CancellationToken cancellation) : IDisposable
+    {
+        private readonly CancellationTokenSource source = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+        internal CancellationToken Token => source.Token;
+        internal void Cancel() => source.Cancel();
+        public void Dispose()
+        {
+            if (owner.diffRequest == this) owner.diffRequest = null;
+            source.Dispose();
+        }
+    }
+    private DiffRequest StartDiffRequest(CancellationToken cancellation = default)
+    {
+        ++diffGeneration;
+        branchRequest?.Cancel();
+        diffRequest?.Cancel();
+        return diffRequest = new(this, cancellation);
+    }
+
+    // A private base core may be constructed on a worker. Its view and native
+    // drawing resources are created on the dispatcher only after validation.
+    private sealed class PreparedDiff(CoreDocument document, DiffBase basis, DiffFile[] files, bool git, bool deleted) : IDisposable
+    {
+        internal readonly CoreDocument Document = document;
+        internal readonly DiffBase Basis = basis;
+        internal readonly DiffFile[] Files = files;
+        internal readonly bool Git = git, Deleted = deleted;
+        internal bool Installed;
+        public void Dispose() { if (!Installed) Document.Dispose(); }
+    }
+
+    private async Task<PreparedDiff> PrepareDiff(string? path, DiffBase basis, DiffFile[]? listedFiles,
+        Func<byte[]?>? savedSource, bool detectRepository, bool probeAvailability, CancellationToken token)
+    {
+        bool git = diffGit;
+        var files = listedFiles ?? [];
+        if (listedFiles != null) git = true;
+        else if (detectRepository || probeAvailability || basis.IsGit) {
+            var gitBase = basis.IsGit ? basis : new DiffBase(VIEM_DIFF_BASE_UNSTAGED);
+            if (path == null) { git = false; if (basis.IsGit) basis = new(VIEM_DIFF_BASE_LAST_SAVED); }
+            else {
+                var scope = diffScope;
+                var unsaved = UnsavedPaths();
+                try {
+                    files = await Task.Run(() => DiffSources.Files(gitBase, path, scope, unsaved, token), token);
+                    git = true;
+                    if (detectRepository) basis = gitBase;
+                } catch (IOException) when ((detectRepository || probeAvailability) && !token.IsCancellationRequested) {
+                    git = false;
+                    if (basis.IsGit) basis = new(VIEM_DIFF_BASE_LAST_SAVED);
+                }
+            }
+        }
+        token.ThrowIfCancellationRequested();
+        if (!basis.IsGit) files = basis.Kind == VIEM_DIFF_BASE_LAST_SAVED && path != null ? [new(path, path, VIEM_DIFF_FILE_MODIFIED)] : [];
+        var entry = files.FirstOrDefault(f => SamePath(f.Path, path));
+        string basePath = basis.Kind == VIEM_DIFF_BASE_FILE ? basis.Argument : entry?.BasePath ?? path ?? "";
+        byte[] bytes;
+        if (basis.Kind == VIEM_DIFF_BASE_LAST_SAVED && savedSource?.Invoke() is { } saved) bytes = saved;
+        else if (basePath.Length == 0) bytes = [];
+        else bytes = await LoadDiffBytes(basis, basePath, token);
+
+        var document = await Task.Run(() => new CoreDocument(bytes, path, VIEM_FORMAT_CODE), token);
+        try {
+            token.ThrowIfCancellationRequested();
+            document.FilePath = null;
+            document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
+            preferences.AttachThemeDocument(document);
+            document.SetReadOnly(true);
+            document.SetModifiable(false);
+            return new(document, basis, files, git, entry?.Change == VIEM_DIFF_FILE_DELETED);
+        } catch { document.Dispose(); throw; }
+    }
 
     private async Task LoadDiff(bool detectRepository = false, bool refresh = false, DiffBase? requested = null,
         DiffFile[]? listedFiles = null, bool probeAvailability = false)
     {
         if (!diffEnabled || ActivePane is not { } live) return;
-        ++diffGeneration;
-        branchRequest?.Cancel();
-        diffRequest?.Cancel();
-        using var request = new CancellationTokenSource();
-        diffRequest = request;
+        using var request = StartDiffRequest();
         var token = request.Token;
-        var document = live.Document;
-        string? path = document.FilePath;
-        var basis = requested ?? diffBase;
-        bool git = diffGit;
-        DiffFile[] files = listedFiles ?? [];
-        string? scope = diffScope;
-        string[] unsaved = UnsavedPaths();
         try {
             if (diffLive != live) {
                 DetachDiff();
                 diffLive = live;
             }
             UpdateDiffToolbar();
+            var basis = requested ?? diffBase;
+            Func<byte[]?>? saved = refresh ? null : live.Document.SavedSource;
+            using var prepared = await PrepareDiff(live.Document.FilePath, basis, listedFiles, saved, detectRepository, probeAvailability, token);
             await live.Ready.WaitAsync(token);
-            if (listedFiles != null) git = true;
-            else if (detectRepository || probeAvailability || basis.IsGit) {
-                var gitBase = basis.IsGit ? basis : new DiffBase(VIEM_DIFF_BASE_UNSTAGED);
-                if (path == null) { git = false; if (basis.IsGit) basis = new(VIEM_DIFF_BASE_LAST_SAVED); }
-                else {
-                    try {
-                        var listed = await Task.Run(() => DiffSources.Files(gitBase, path, scope, unsaved, token), token);
-                        token.ThrowIfCancellationRequested();
-                        files = listed; git = true;
-                        if (detectRepository) basis = gitBase;
-                    } catch (IOException) when ((detectRepository || probeAvailability) && !token.IsCancellationRequested) {
-                        git = false;
-                        if (basis.IsGit) basis = new(VIEM_DIFF_BASE_LAST_SAVED);
-                    }
-                }
-            }
             token.ThrowIfCancellationRequested();
-            if (!basis.IsGit) files = basis.Kind == VIEM_DIFF_BASE_LAST_SAVED && path != null ? [new(path, path, VIEM_DIFF_FILE_MODIFIED)] : [];
-            var entry = files.FirstOrDefault(f => SamePath(f.Path, path));
-            string basePath = basis.Kind == VIEM_DIFF_BASE_FILE ? basis.Argument : entry?.BasePath ?? path ?? "";
-            var key = (basis, basePath);
-            byte[] bytes;
-            if (basis.Kind == VIEM_DIFF_BASE_LAST_SAVED && !refresh && document.SavedSource() is { } saved) bytes = saved;
-            else if (basePath.Length == 0) bytes = [];
-            else if (diffBytes.TryGetValue(key, out var cached)) bytes = cached;
-            else {
-                bytes = await Task.Run(() => DiffSources.Load(basis, basePath, token), token);
-                token.ThrowIfCancellationRequested();
-                const int limit = 64 * 1024 * 1024;
-                if (diffBytes.Count >= 8 || cachedBytes + bytes.Length > limit) ClearDiffCache();
-                if (bytes.Length <= limit) { diffBytes[key] = bytes; cachedBytes += bytes.Length; }
-            }
-            await InstallDiff(live, bytes, entry?.Change == VIEM_DIFF_FILE_DELETED && !document.IsDirty, token);
-            token.ThrowIfCancellationRequested();
-            diffFiles = files;
-            diffBase = basis;
-            diffGit = git;
+            await InstallDiff(live, prepared, token);
         } catch when (token.IsCancellationRequested) { }
         catch {
             if (comparison == null) EndDiff();
             throw;
         } finally {
-            if (diffRequest == request) diffRequest = null;
             if (!closed && !token.IsCancellationRequested) UpdateDiffToolbar();
         }
     }
 
-    private async Task InstallDiff(EditorPane live, byte[] bytes, bool deleted, CancellationToken token)
+    private void AttachFirstBase(PreparedDiff prepared, bool numbers)
+    {
+        var left = new EditorPane(this, prepared.Document, preferences, diffBasePane: true) { InitialNumber = numbers, Opacity = 0 };
+        diffLeft = left;
+        prepared.Installed = true;
+        AutomationProperties.SetName(left, "Diff base");
+        root.ColumnDefinitions[0].Width = new(1, GridUnitType.Star);
+        Grid.SetRow(left, 4);
+        root.Children.Add(left);
+    }
+
+    private async Task InstallDiff(EditorPane live, PreparedDiff prepared, CancellationToken token)
     {
         var view = live.View!;
-        // Retain the live view and its mode across Refresh and base changes.
+        bool numbers = preferences.Get("diff", "lineNumbers", true);
         comparison?.Dispose();
         comparison = null;
+        if (diffLeft == null) {
+            AttachFirstBase(prepared, numbers);
+        } else {
+            var old = diffLeft.Document;
+            diffLeft.InstallReplacement(prepared.Document, diffLeft.PrepareReplacement(prepared.Document));
+            prepared.Installed = true;
+            old.Dispose();
+        }
+        var leftView = await diffLeft!.Ready.WaitAsync(token);
+        token.ThrowIfCancellationRequested();
         if (!enteredDiff) {
             originalNumbers = view.NumberEnabled;
             live.Document.EnterDiff(view);
             enteredDiff = true;
         }
+        bool deleted = prepared.Deleted && !live.Document.IsDirty;
         if (deletedSide != deleted) {
             live.Document.ProtectDeletedSide(deleted);
             deletedSide = deleted;
         }
-        var document = new CoreDocument(bytes, live.Document.FilePath, VIEM_FORMAT_CODE);
-        try {
-            // The filename selects syntax only. A diff base owns no disk file or recovery claim.
-            document.FilePath = null;
-            document.ConfigureEditingDefaults(preferences.Indentation, preferences.Whitespace, preferences.TextWidth, preferences.Associations);
-            preferences.AttachThemeDocument(document);
-            document.SetReadOnly(true);
-            document.SetModifiable(false);
-            if (diffLeft == null) {
-                diffLeft = new EditorPane(this, document, preferences, diffBasePane: true);
-                AutomationProperties.SetName(diffLeft, "Diff base");
-                root.ColumnDefinitions[0].Width = new(1, GridUnitType.Star);
-                Grid.SetRow(diffLeft, 4);
-                root.Children.Add(diffLeft);
-            } else {
-                var old = diffLeft.Document;
-                diffLeft.InstallReplacement(document, diffLeft.PrepareReplacement(document));
-                old.Dispose();
-            }
-        } catch {
-            if (diffLeft?.Document != document) document.Dispose();
-            throw;
-        }
-        var leftView = await diffLeft.Ready.WaitAsync(token);
-        token.ThrowIfCancellationRequested();
-        bool numbers = preferences.Get("diff", "lineNumbers", true);
         if (leftView.NumberEnabled != numbers) leftView.Number(numbers);
         if (view.NumberEnabled != numbers) view.Number(numbers);
         comparison = new(leftView, view, diffAligned);
         SyncDiff();
         if (diffAligned) MirrorDiff(true);
+        diffLeft.Opacity = 1;
+        diffBase = prepared.Basis; diffFiles = prepared.Files; diffGit = prepared.Git;
+        PrefetchDiffNeighbours();
         live.FocusEditor();
+    }
+
+    // All native views, diff geometry and number settings are ready before either
+    // existing canvas changes documents. No dispatcher yield separates the swaps.
+    private void SwitchDiffFile(EditorPane live, CoreDocument document, PreparedDiff prepared)
+    {
+        var left = diffLeft!;
+        var oldBase = left.Document;
+        var oldLive = live.Document;
+        var oldView = live.View!;
+        var liveView = live.PrepareReplacement(document, newFile: true)!;
+        CoreView? baseView = null;
+        DiffComparison? next = null;
+        bool entered = false, protectedFile = false;
+        bool restoreNumbers = liveView.NumberEnabled;
+        bool numbers = preferences.Get("diff", "lineNumbers", true);
+        try {
+            baseView = prepared.Installed ? left.View! : left.PrepareReplacement(prepared.Document, newFile: true)!;
+            document.EnterDiff(liveView);
+            entered = true;
+            if (prepared.Deleted && !document.IsDirty) { document.ProtectDeletedSide(true); protectedFile = true; }
+            if (liveView.NumberEnabled != numbers) liveView.Number(numbers);
+            if (baseView.NumberEnabled != numbers) baseView.Number(numbers);
+            next = new(baseView, liveView, diffAligned);
+            next.Sync();
+            if (diffAligned) next.Mirror(true);
+        } catch {
+            next?.Dispose();
+            if (protectedFile) document.ProtectDeletedSide(false);
+            if (entered) document.LeaveDiff(liveView);
+            if (!prepared.Installed) baseView?.Dispose();
+            liveView.Dispose();
+            throw;
+        }
+
+        comparison?.RetireWithViews();
+        comparison = null;
+        if (deletedSide) oldLive.ProtectDeletedSide(false);
+        if (enteredDiff) oldLive.LeaveDiff(oldView, closingDocument: oldLive != document && !HasSurvivingView(oldLive, live));
+        live.AlternatePath = oldLive.FilePath ?? live.AlternatePath;
+        live.InstallReplacement(document, liveView, deferPresentation: true);
+        bool firstBase = prepared.Installed;
+        if (!firstBase) {
+            left.InstallReplacement(prepared.Document, baseView, deferPresentation: true);
+            prepared.Installed = true;
+        }
+        diffLive = live;
+        originalNumbers = restoreNumbers;
+        enteredDiff = true; deletedSide = protectedFile;
+        comparison = next;
+        syncedRevision = document.State.document_revision;
+        diffFiles = prepared.Files; diffBase = prepared.Basis; diffGit = prepared.Git;
+        live.ClearDiffMarks(); left.ClearDiffMarks();
+        if (firstBase) left.Refresh(); else left.FinishReplacement();
+        live.FinishReplacement();
+        left.Opacity = 1;
+        if (!firstBase) oldBase.Dispose();
+        ReleaseDetachedDocument(oldLive);
+        TrackExternalFile(document);
+        PaneReady(live);
+        UpdateDiffToolbar();
+        PrefetchDiffNeighbours();
     }
 
     private void SyncDiff()
@@ -362,6 +511,7 @@ internal sealed partial class EditorWindow
         if ((uint)index >= (uint)diffFiles.Length || index == CurrentDiffFile || ActivePane is not { } pane) return;
         long generation = diffGeneration;
         var entries = diffFiles;
+        UpdateDiffToolbar(); // The selected label follows the pair actually on screen.
         try {
             if (!await ConfirmDiscard(pane, alwaysReview: true) || !diffEnabled || entries != diffFiles || pane != ActivePane) return;
             await OpenPath(entries[index].Path, targetPane: pane, force: true, compareHere: true, diffGenerationAtOpen: generation);
@@ -389,14 +539,21 @@ internal sealed partial class EditorWindow
                 && pane.Document.State.source_byte_count == 0
                 && (pane.Document.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0;
             var target = pristine ? this : NewWindow(null);
+            long generation = target.diffGeneration;
             try {
-                await target.OpenPath(files[0].Path, compareHere: true, cancellation: request.Token);
+                await target.ActivePane!.Ready.WaitAsync(request.Token);
                 if (target.diffEnabled) target.EndDiff();
                 target.BeginDiff();
                 target.windowPlacement.ApplyDiffFrame(target, cascade: !pristine);
                 target.diffScope = path;
-                await target.LoadDiff(requested: basis, listedFiles: files);
+                target.diffBase = basis;
+                target.diffLive = target.ActivePane;
+                var opening = target.OpenPath(files[0].Path, compareHere: true, cancellation: request.Token, initialDiffFiles: files);
+                generation = target.diffGeneration;
+                await opening;
             } catch {
+                if (generation != target.diffGeneration) throw;
+                if (target.diffEnabled && target.comparison == null && target.diffScope == path) target.EndDiff();
                 if (!pristine && target.ActivePane is { } empty && empty.Document.FilePath == null && !empty.Document.IsDirty)
                     await target.ClosePane(empty, force: true);
                 throw;

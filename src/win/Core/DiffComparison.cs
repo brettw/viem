@@ -51,12 +51,12 @@ internal sealed unsafe partial class CoreDocument
         }
         ++diffViews;
     }
-    internal void LeaveDiff(CoreView view)
+    internal void LeaveDiff(CoreView view, bool closingDocument = false)
     {
         if (--diffViews != 0) return;
         var prior = priorDiffMode;
         priorDiffMode = null;
-        if (prior != null && State.format == VIEM_FORMAT_CODE)
+        if (!closingDocument && prior != null && State.format == VIEM_FORMAT_CODE)
             SetDiffMode(view, prior.Format == "markdown" ? VIEM_DOCUMENT_MODE_MARKDOWN : VIEM_DOCUMENT_MODE_PLAIN_TEXT,
                 "", DocumentModes.Read(this));
     }
@@ -115,10 +115,18 @@ internal sealed unsafe class DiffComparison : IDisposable
         Check(viem_diff_line_colors(&added, &removed), "Read diff colors");
         return (marks, extent, added, removed);
     }
+    // A retiring view will discard its own presentation. Clearing it first
+    // would synchronously lay out the departing file without diff styles.
+    internal void RetireWithViews()
+    {
+        if (handle == 0) return;
+        viem_diff_session_destroy(handle);
+        handle = 0;
+    }
     public void Dispose()
     {
         if (handle == 0) return;
         try { Check(viem_diff_clear_view(live.Document.Handle, live.Id), "Clear comparison"); }
-        finally { viem_diff_session_destroy(handle); handle = 0; }
+        finally { RetireWithViews(); }
     }
 }

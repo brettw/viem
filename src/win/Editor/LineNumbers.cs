@@ -22,6 +22,7 @@ internal sealed partial class EditorPane
     private int numberDigits;
     internal double GutterWidth => lineNumberCanvas.Width;
 #if DEBUG
+    internal ulong PaintedNumberDocumentForTesting { get; private set; }
     internal int NumeralMeasurements { get; private set; }
     internal LineNumberSnapshot? LineNumbersForTesting => lineNumbers;
     internal readonly record struct DrawnLineNumber(ulong Line, Rect Available, Rect Text, float FontSize);
@@ -165,6 +166,7 @@ internal sealed partial class EditorPane
     private void DrawLineNumbers(CanvasDrawingSession drawing)
     {
 #if DEBUG
+        PaintedNumberDocumentForTesting = 0;
         DrawnLineNumbers.Clear();
 #endif
         drawing.Clear(Microsoft.UI.Colors.Transparent);
@@ -194,6 +196,7 @@ internal sealed partial class EditorPane
                 bounds.Y + style.Border.Top + style.Padding.Top, availableWidth, availableHeight));
             drawing.DrawTextLayout(layout, (float)(left - layout.LayoutBounds.X), (float)(y - layout.LayoutBounds.Y), style.Foreground);
 #if DEBUG
+            PaintedNumberDocumentForTesting = lineNumbers.Info.identity.document_id;
             DrawnLineNumbers.Add(new(region.source_line,
                 new(bounds.X + style.Border.Left + style.Padding.Left, bounds.Y + style.Border.Top + style.Padding.Top, availableWidth, availableHeight),
                 new(left, y, textWidth, layout.LayoutBounds.Height), glyph.FontSize));

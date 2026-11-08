@@ -525,11 +525,25 @@ context), built in this order:
   - The base buffer, its surface and the split view are reused: the base
     backend is refilled in place (`makeDiffBase(source:reusing:)` calls
     `read`, which swaps a new core under the existing surface).
-  - Measured on a 28 KB Rust file: about 66 ms from choosing a prefetched
+  - On macOS, measured on a 28 KB Rust file: about 66 ms from choosing a prefetched
     file until both sides show it, all on the main thread, of which about
     35 ms is building the base buffer's new core, 16 ms starting the
     comparison (diff plus layout of both sides) and 8 ms ending the
     previous one. Syntax colours for the base arrive asynchronously.
+  - Windows retains the two Win2D panes and their gutter surfaces. It opens
+    the live document and prepares the base concurrently, configures both
+    replacement views, then installs the pair with its diff styles and line
+    numbers in one dispatcher turn. The previous pair remains visible while
+    loading. Each window caches at most eight bases totaling 64 MiB and can
+    prefetch two neighbouring bases. Live views and file contents are reopened
+    through the normal document, recovery and unsaved-change paths.
+  - The Windows `DiffMode` test switches twice through three changed 650-line
+    Rust files. It records milliseconds to a completed frame in
+    `*.diff-switch-ms.txt` next to the test report and checks that the first
+    frame showing either file includes the text and gutters on both sides.
+    On the Windows x64 test machine, the six-switch median for these 23 KB
+    files went from 486 ms to 226 ms. The first Rust file still took 485 ms
+    on the updated build. These are observed timings, not test thresholds.
 
 - Code projections publish one block per hard line, so a diff line style can
   replace that line's paragraph style in the cascade without touching source.

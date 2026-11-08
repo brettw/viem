@@ -14,6 +14,8 @@ internal sealed partial class DiffToolbar : EditorToolbar
     private readonly Button previousFile, nextFile, previousChange, nextChange;
     private bool updating;
     private readonly List<DiffBase> choices = [];
+    private (DiffBase Basis, bool Git, string[] Branches)? displayedBases;
+    private DiffFile[]? displayedFiles;
 
     internal event Action<DiffBase>? BaseSelected;
     internal event Action<int>? FileSelected;
@@ -71,35 +73,42 @@ internal sealed partial class DiffToolbar : EditorToolbar
     {
         updating = true;
         try {
-            bases.Items.Clear();
-            choices.Clear();
-            void Add(DiffBase choice) {
-                choices.Add(choice);
-                bases.Items.Add(choice.ToString());
-                if (choice == basis) bases.SelectedIndex = choices.Count - 1;
+            if (displayedBases != (basis, git, branches)) {
+                displayedBases = (basis, git, branches);
+                bases.Items.Clear();
+                choices.Clear();
+                void Add(DiffBase choice) {
+                    choices.Add(choice);
+                    bases.Items.Add(choice.ToString());
+                }
+                Add(new(Interop.Native.VIEM_DIFF_BASE_LAST_SAVED));
+                if (git) {
+                    Add(new(Interop.Native.VIEM_DIFF_BASE_UNSTAGED));
+                    Add(new(Interop.Native.VIEM_DIFF_BASE_HEAD));
+                    foreach (string branch in branches) Add(new(Interop.Native.VIEM_DIFF_BASE_BRANCH, branch));
+                    Add(new(Interop.Native.VIEM_DIFF_BASE_BRANCH));
+                }
+                if (basis.Kind == Interop.Native.VIEM_DIFF_BASE_FILE) Add(basis);
             }
-            Add(new(Interop.Native.VIEM_DIFF_BASE_LAST_SAVED));
-            if (git) {
-                Add(new(Interop.Native.VIEM_DIFF_BASE_UNSTAGED));
-                Add(new(Interop.Native.VIEM_DIFF_BASE_HEAD));
-                foreach (string branch in branches) Add(new(Interop.Native.VIEM_DIFF_BASE_BRANCH, branch));
-                Add(new(Interop.Native.VIEM_DIFF_BASE_BRANCH));
+            bases.SelectedIndex = choices.IndexOf(basis);
+            if (displayedFiles != entries) {
+                displayedFiles = entries;
+                files.Items.Clear();
+                var duplicates = entries.GroupBy(file => Path.GetFileName(file.Path), StringComparer.OrdinalIgnoreCase)
+                    .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                string? shared = entries.Length == 0 ? null : Path.GetDirectoryName(entries[0].Path);
+                foreach (var entry in entries) {
+                    while (shared != null && Path.GetRelativePath(shared, entry.Path).StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+                        shared = Path.GetDirectoryName(shared);
+                }
+                foreach (var file in entries) {
+                    string title = file.Title;
+                    if (duplicates.Contains(Path.GetFileName(file.Path)) && shared != null)
+                        title += " — " + Path.GetRelativePath(shared, Path.GetDirectoryName(file.Path)!);
+                    files.Items.Add(title);
+                }
             }
-            if (basis.Kind == Interop.Native.VIEM_DIFF_BASE_FILE) Add(basis);
-            files.Items.Clear();
-            var duplicates = entries.GroupBy(file => Path.GetFileName(file.Path), StringComparer.OrdinalIgnoreCase)
-                .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            string? shared = entries.Length == 0 ? null : Path.GetDirectoryName(entries[0].Path);
-            foreach (var entry in entries) {
-                while (shared != null && Path.GetRelativePath(shared, entry.Path).StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-                    shared = Path.GetDirectoryName(shared);
-            }
-            foreach (var file in entries) {
-                string title = file.Title;
-                if (duplicates.Contains(Path.GetFileName(file.Path)) && shared != null)
-                    title += " — " + Path.GetRelativePath(shared, Path.GetDirectoryName(file.Path)!);
-                files.Items.Add(title);
-            }
+            if (files.Items.Count > entries.Length) files.Items.RemoveAt(entries.Length);
             if (current < 0) files.Items.Add(documentName + (entries.Length > 0 ? " (not in this diff)" : ""));
             files.SelectedIndex = current < 0 ? entries.Length : current;
             files.IsEnabled = previousFile.IsEnabled = nextFile.IsEnabled = entries.Length != 0;

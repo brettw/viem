@@ -80,16 +80,17 @@ internal sealed class TestEditor : IAsyncDisposable
     internal CoreDocument Document { get; private set; }
     internal string Source => Encoding.UTF8.GetString(Document.Source(Document.State.document_revision));
 
-    private TestEditor(Preferences preferences, string source, uint format)
+    private TestEditor(Preferences preferences, string source, uint format, DocumentWindowPlacement? placement)
     {
         Document = new CoreDocument(Encoding.UTF8.GetBytes(source), format: format);
-        Window = new EditorWindow(preferences, Document);
+        Window = new EditorWindow(preferences, Document, placement);
         App.Instance.Windows.Add(Window);
     }
 
-    internal static async Task<TestEditor> Open(Preferences preferences, string source, uint format = VIEM_FORMAT_MARKDOWN)
+    internal static async Task<TestEditor> Open(Preferences preferences, string source, uint format = VIEM_FORMAT_MARKDOWN,
+        DocumentWindowPlacement? placement = null)
     {
-        var editor = new TestEditor(preferences, source, format);
+        var editor = new TestEditor(preferences, source, format, placement);
         try
         {
             editor.Window.Activate();

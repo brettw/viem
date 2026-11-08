@@ -218,14 +218,8 @@ internal sealed partial class EditorWindow : Window
         OnPaneReady(pane);
     }
     partial void OnPaneReady(EditorPane pane);
-    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false, bool focusNewPane = true)
+    private void AttachPaneDocument(CoreDocument doc)
     {
-        using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
-        // Pane indexes below refer to committed views only.
-        paneGrid.EndDrag();
-        // Include any visible toolbar before attaching a canvas that can start
-        // its native resources and first document layout immediately.
-        if (focusNewPane) PrepareFormattingToolbar(doc);
         if (!savedSources.ContainsKey(doc))
         {
             var owner = App.Instance.Windows.FirstOrDefault(w => !w.closed
@@ -236,6 +230,21 @@ internal sealed partial class EditorWindow : Window
             .FirstOrDefault(p => p.Document == doc)?.Report(error));
         GlobalSelectionOptions.Attach(doc, preferences.DirectoryPath);
         preferences.AttachThemeDocument(doc, initialize: false);
+    }
+    private void ReleaseDetachedDocument(CoreDocument doc)
+    {
+        if (App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == doc)) return;
+        savedSources.Remove(doc); App.Instance.BlockingEdits.Released(doc); doc.Dispose();
+    }
+    internal EditorPane AddPane(CoreDocument doc, int? position = null, int? splitIndex = null, bool vertical = false, EditorPane? replacing = null, bool splitBefore = false, bool focusNewPane = true)
+    {
+        using var startup = Diagnostics.StartupPerformance.Measure("pane.construct");
+        // Pane indexes below refer to committed views only.
+        paneGrid.EndDrag();
+        // Include any visible toolbar before attaching a canvas that can start
+        // its native resources and first document layout immediately.
+        if (focusNewPane) PrepareFormattingToolbar(doc);
+        AttachPaneDocument(doc);
         var pane = new EditorPane(this, doc, preferences); pane.Focused += SetActive;
         pane.RememberedArgument = ActivePane?.RememberedArgument ?? ulong.MaxValue;
         // A split keeps its source pane's alternate file, as Vim's windows do.
@@ -248,7 +257,7 @@ internal sealed partial class EditorWindow : Window
             pane.AlternatePath = replacing.Document.FilePath ?? replacing.AlternatePath;
             paneGrid.ReplacePane(replacing, pane); replacing.Focused -= SetActive; replacing.Dispose();
             if (lastPane == replacing) lastPane = null;
-            if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == replacing.Document)) { savedSources.Remove(replacing.Document); App.Instance.BlockingEdits.Released(replacing.Document); replacing.Document.Dispose(); }
+            ReleaseDetachedDocument(replacing.Document);
         }
         else { Panes.Insert(position ?? Panes.Count, pane); RebuildPanes(splitIndex, vertical, splitBefore); }
         if (focusNewPane) SetActive(pane);
@@ -381,10 +390,17 @@ internal sealed partial class EditorWindow : Window
     }
     internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null,
         bool vertical = false, EditorPane? targetPane = null, bool newWindow = false, string? linkFragment = null, bool reuseOpenDocument = false, bool splitBefore = true,
-        bool compareHere = false, long? diffGenerationAtOpen = null, CancellationToken cancellation = default)
+        bool compareHere = false, long? diffGenerationAtOpen = null, CancellationToken cancellation = default, DiffFile[]? initialDiffFiles = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         var old = targetPane ?? ActivePane;
+        if (diffGenerationAtOpen.HasValue && diffGeneration != diffGenerationAtOpen) throw new OperationCanceledException();
+        using var diffOpen = !split && !newWindow && old == ActivePane && (initialDiffFiles != null || comparison != null && old == diffLive)
+            ? StartDiffRequest(cancellation) : null;
+        if (diffOpen != null) {
+            cancellation = diffOpen.Token;
+            diffGenerationAtOpen = diffGeneration;
+        }
         var expected = old?.Document.State;
         string? originalPath = old?.Document.FilePath;
         bool? originalDirty = old?.Document.IsDirty;
@@ -474,15 +490,37 @@ internal sealed partial class EditorWindow : Window
                 else if (canDelete && choices.SelectedIndex == 1) retireCandidates = candidates;
             }
         }
+        byte[] source = recovered?.source ?? bytes;
+        bool markdownFormattedView = preferences.MarkdownFormattedView;
+        var existingDocument = existing.Pane?.Document;
+        var opening = existingDocument == null
+            ? Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0, markdownFormattedView), cancellation)
+            : null;
+        var preparing = diffOpen == null ? null : PrepareDiff(path, diffBase,
+            initialDiffFiles ?? (diffBase.IsGit && diffFiles.Any(f => SamePath(f.Path, path)) ? diffFiles : null),
+            () => existingDocument is { Handle: not 0 } ? existingDocument.SavedSource() : bytes,
+            detectRepository: false, probeAvailability: true, cancellation);
+        try {
+            await Task.WhenAll((Task?)opening ?? Task.CompletedTask, (Task?)preparing ?? Task.CompletedTask);
+            ValidateTarget();
+            if (initialDiffFiles != null) {
+                AttachFirstBase(preparing!.Result, preferences.Get("diff", "lineNumbers", true));
+                await diffLeft!.Ready.WaitAsync(cancellation);
+                ValidateTarget();
+            }
+            if (existingDocument != null && FindExisting().Pane?.Document != existingDocument)
+                throw new OperationCanceledException("The selected file was closed or replaced while its comparison was loading.");
+        } catch {
+            if (opening?.IsCompletedSuccessfully == true) opening.Result.Dispose();
+            if (preparing?.IsCompletedSuccessfully == true) preparing.Result.Dispose();
+            throw;
+        }
+        using var preparedDiff = preparing?.Result;
         CoreDocument doc;
-        if (existing.Pane != null) doc = existing.Pane.Document;
+        if (opening == null) doc = existingDocument!;
         else
         {
-            byte[] source = recovered?.source ?? bytes;
-            bool markdownFormattedView = preferences.MarkdownFormattedView;
-            // Parsing a newly opened source needs no view or native shaper.
-            // Keep the shell responsive while constructing that private core.
-            doc = await Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0, markdownFormattedView));
+            doc = opening.Result;
 #if DEBUG
             if (BeforePublishOpenForTesting is { } beforePublish) await beforePublish();
 #endif
@@ -523,6 +561,10 @@ internal sealed partial class EditorWindow : Window
             window.ActivePane!.RememberedArgument = old?.RememberedArgument ?? ulong.MaxValue;
             if (reuseOpenDocument || !string.IsNullOrEmpty(linkFragment))
                 await window.ShowLinkedPane(window.ActivePane!, linkFragment);
+        }
+        else if (preparedDiff != null) {
+            try { AttachPaneDocument(doc); SwitchDiffFile(old!, doc, preparedDiff); }
+            catch { if (existing.Pane == null && old!.Document != doc) ReleaseDetachedDocument(doc); throw; }
         }
         else
         {
@@ -652,7 +694,7 @@ internal sealed partial class EditorWindow : Window
         DiffPaneLeaving(pane);
         pane.Dispose(); Panes.Remove(pane);
         if (lastPane == pane) lastPane = null;
-        if (!App.Instance.Windows.SelectMany(w => w.Panes).Any(p => p.Document == pane.Document)) { savedSources.Remove(pane.Document); App.Instance.BlockingEdits.Released(pane.Document); pane.Document.Dispose(); }
+        ReleaseDetachedDocument(pane.Document);
         if (ActivePane == pane) ActivePane = Panes.FirstOrDefault();
     }
 
