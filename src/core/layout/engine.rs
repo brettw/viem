@@ -212,6 +212,22 @@ impl LayoutWorkStatistics {
     pub fn maximum_position_checkpoint_clusters(self) -> usize {
         self.maximum_position_checkpoint_clusters
     }
+
+    /// The work of two independently computed parts of one result.
+    pub(crate) fn merged(self, other: Self) -> Self {
+        Self {
+            table_measured_cells: self.table_measured_cells + other.table_measured_cells,
+            table_measured_text_bytes: self.table_measured_text_bytes + other.table_measured_text_bytes,
+            segmented_text_bytes: self.segmented_text_bytes + other.segmented_text_bytes,
+            shaping_fragment_count: self.shaping_fragment_count + other.shaping_fragment_count,
+            maximum_shaping_fragment_bytes: self.maximum_shaping_fragment_bytes.max(other.maximum_shaping_fragment_bytes),
+            wrapped_cluster_count: self.wrapped_cluster_count + other.wrapped_cluster_count,
+            maximum_wrap_checkpoint_clusters: self.maximum_wrap_checkpoint_clusters.max(other.maximum_wrap_checkpoint_clusters),
+            positioned_cluster_count: self.positioned_cluster_count + other.positioned_cluster_count,
+            maximum_position_checkpoint_clusters: self.maximum_position_checkpoint_clusters
+                .max(other.maximum_position_checkpoint_clusters),
+        }
+    }
 }
 
 /// A cheap cooperative cancellation query used by interruptible snapshot
@@ -398,6 +414,9 @@ pub enum DecorationKind {
     AlertIcon { kind: crate::document::AlertKind },
     /// A GitHub alert's title text, drawn natively in the system UI font.
     AlertTitle { kind: crate::document::AlertKind },
+    /// Diff mode's divider for collapsed unchanged lines: its band, or one of
+    /// the thin rules along its top and bottom.
+    CollapsedContext { rule: bool },
 }
 
 /// Drawable block furniture. It has no formatted text range or caret stops.
@@ -640,6 +659,10 @@ pub struct RegionalHardLineLayout {
     /// Style inputs this result was computed from. A cached line survives a
     /// document revision only while its freshly resolved inputs still match.
     inputs: LineLayoutInputs,
+    /// Diff mode's collapsed context: this record stands for that many hidden
+    /// hard lines from `hard_line_index`, with no rows and no height. Zero for
+    /// an ordinary line.
+    elided: usize,
 }
 
 /// Every non-text, non-configuration input to one hard line's layout,
@@ -702,7 +725,8 @@ pub(super) fn line_layout_inputs(
         paragraph_len,
         marker_offset,
         is_first_hard_line: paragraph.is_first_hard_line,
-        next: next.map(|next| (starts_new_paragraph(paragraph, next), block_box::between(&paragraph.style, &next.style))),
+        next: next.filter(|_| !ends_document(&paragraph.style))
+            .map(|next| (starts_new_paragraph(paragraph, next), block_box::between(&paragraph.style, &next.style))),
         runs,
         inline_images: images_for_shaping_span(&document_styles.inline_images, line).1,
     }
@@ -797,11 +821,22 @@ impl RegionalHardLineLayout {
             diagnostics,
             render_run_policy: self.render_run_policy,
             inputs: self.inputs.clone(),
+            elided: self.elided,
         })
     }
 
     pub fn hard_line_index(&self) -> usize {
         self.hard_line_index
+    }
+
+    /// The hard lines this record covers: one, or a hidden run's length.
+    pub fn hard_line_span(&self) -> usize {
+        self.elided.max(1)
+    }
+
+    /// Whether this record stands for hidden collapsed-context lines.
+    pub fn is_elided(&self) -> bool {
+        self.elided > 0
     }
 
     pub fn hard_line_range(&self) -> Range<usize> {
@@ -953,6 +988,60 @@ impl RegionalLayoutSnapshot {
 
     pub fn work_statistics(&self) -> LayoutWorkStatistics {
         self.work_statistics
+    }
+
+    pub(crate) fn set_work_statistics(&mut self, statistics: LayoutWorkStatistics) {
+        self.work_statistics = statistics;
+    }
+
+    /// Hidden collapsed-context lines between independently laid out
+    /// neighbours: one zero-height record with no rows, sharing `template`'s
+    /// identities so the regions join. Nothing is shaped, captured or cached.
+    pub(crate) fn elided_run(template: &Self, lines: Range<usize>, text: Range<usize>) -> Self {
+        let inputs = template.lines.first().expect("a laid out region has lines").inputs.clone();
+        let record = RegionalHardLineLayout {
+            layout_revision: template.revision,
+            hard_line_index: lines.start,
+            hard_line_range: text.clone(),
+            text_coverage: text,
+            rows: Vec::new(),
+            height: 0.0,
+            height_is_exact: true,
+            next_checkpoint: None,
+            diagnostics: Vec::new(),
+            render_run_policy: None,
+            inputs,
+            elided: lines.len(),
+        };
+        Self {
+            whitespace_unit: template.whitespace_unit,
+            default_row_advance: template.default_row_advance,
+            default_font_metrics: template.default_font_metrics.clone(),
+            revision: template.revision,
+            document_id: template.document_id,
+            document_revision: template.document_revision,
+            configuration_generation: template.configuration_generation,
+            measurement_environment_id: template.measurement_environment_id,
+            metrics_generation: template.metrics_generation,
+            hard_lines: lines,
+            document_hard_line_count: template.document_hard_line_count,
+            document_text_len: template.document_text_len,
+            viewport_width: template.viewport_width,
+            viewport_height: template.viewport_height,
+            usable_width: template.usable_width,
+            content_insets: template.content_insets,
+            document_insets: template.document_insets,
+            document_style_revision: template.document_style_revision,
+            canvas_background: template.canvas_background,
+            canvas_background_is_default: template.canvas_background_is_default,
+            default_paint: template.default_paint.clone(),
+            paint_runs: Vec::new(),
+            lines: vec![Arc::new(record)],
+            diagnostics: Vec::new(),
+            grapheme_boundaries: Vec::new(),
+            work_statistics: LayoutWorkStatistics::default(),
+            horizontal_materialization: None,
+        }
     }
 
     pub(crate) fn covers_horizontal_viewport(&self, left: f32, width: f32) -> bool {
@@ -1497,7 +1586,8 @@ impl LayoutSnapshot {
                 let rank = if let Some(owner) = decoration.owner {
                     *owners.entry(owner).or_insert_with(|| { let rank = next_owner; next_owner += 1; rank })
                 } else { let rank = next_owner; next_owner += 1; rank };
-                let layer = usize::from(decoration.kind != DecorationKind::BlockBackground);
+                let layer = usize::from(!matches!(decoration.kind,
+                    DecorationKind::BlockBackground | DecorationKind::CollapsedContext { rule: false }));
                 ordered.push((rank, layer, row_index, decoration));
             }
         }
@@ -2079,6 +2169,14 @@ pub struct ViewLayout {
     /// Diff mode's presentation of this view's side, bound to the exact
     /// snapshot it was built for.
     diff_presentation: Option<(DocumentId, Revision, std::sync::Arc<super::style::DiffLayoutInput>)>,
+    /// Diff mode's collapsed context: sorted, disjoint hard-line runs hidden
+    /// from layout. Each is one exact zero-height interval of the height
+    /// index, never captured, shaped or cached. Local edits shift the runs
+    /// and drop any they touch; other document changes clear them.
+    elided: Vec<Range<usize>>,
+    /// Hidden runs the caret opened since diff mode last took them, so the
+    /// session opens them on the other side too.
+    opened_elided: Vec<Range<usize>>,
     /// Visible paragraphs' resolved appearance, reused by the next viewport
     /// capture while their inputs are unchanged.
     paragraph_styles: super::style::ParagraphStyleCache,
@@ -2151,6 +2249,8 @@ impl ViewLayout {
         Self {
             search_matches: None,
             diff_presentation: None,
+            elided: Vec::new(),
+            opened_elided: Vec::new(),
             paragraph_styles: Default::default(),
             whitespace: WhitespaceConfiguration::default(),
             whitespace_bounds: Default::default(),
@@ -2238,6 +2338,23 @@ impl ViewLayout {
             self.discard_for_document_change();
             return;
         }
+        // Hidden runs after the edit move with their lines. A run the edit
+        // touched is shown again: its surviving lines return to estimates,
+        // like the spliced lines, rather than keeping their zero height.
+        let shift = |line: usize| usize::try_from(line as i128 + line_delta).ok();
+        let mut shown = Vec::new();
+        self.elided = std::mem::take(&mut self.elided).into_iter().filter_map(|run| {
+            if run.end <= old_invalidated.start { Some(run) }
+            else if run.start >= old_invalidated.end { Some(shift(run.start)?..shift(run.end)?) }
+            else {
+                let end = shift(run.end).unwrap_or(0).max(invalidated_lines.end);
+                shown.push(run.start.min(invalidated_lines.start)..end.min(*new_line_count));
+                None
+            }
+        }).collect();
+        for lines in shown {
+            let _ = self.height_index.invalidate(lines);
+        }
         let identity_matches = self.regional_cache.identity.is_some_and(|identity| {
             identity.document_revision == *old_revision
                 && identity.document_hard_line_count == *old_line_count
@@ -2293,6 +2410,7 @@ impl ViewLayout {
     }
 
     fn discard_for_document_change(&mut self) {
+        self.elided.clear();
         self.invalidate_all_heights();
         self.regional_cache = self.regional_cache.replacement(None);
         self.rebased_document_revision = None;
@@ -2820,14 +2938,18 @@ impl ViewLayout {
     }
 
     /// Hard lines with complete cached geometry.
+    /// Lines with cached geometry, counting hidden lines as cached.
     pub(crate) fn regional_cached_line_count(&self) -> usize {
-        self.regional_cache.lines.len()
+        let hidden: usize = self.elided.iter().map(Range::len).sum();
+        let cached_hidden: usize = self.elided.iter().map(|run| self.regional_cache.lines.range(run.clone()).count()).sum();
+        self.regional_cache.lines.len() - cached_hidden + hidden
     }
 
     /// Whether `hard_line` has complete cached geometry. A pending rebase
-    /// shift still counts: it is applied on the next hit.
+    /// shift still counts: it is applied on the next hit. A hidden line needs
+    /// no geometry.
     pub(crate) fn regional_line_is_cached(&self, hard_line: usize) -> bool {
-        self.regional_cache.lines.contains_key(&hard_line)
+        self.regional_cache.lines.contains_key(&hard_line) || self.elided_run_at(hard_line).is_some()
     }
 
     /// Whether `hard_line` is retained whole with exact geometry for these
@@ -2859,7 +2981,18 @@ impl ViewLayout {
 
     /// First hard line in `range`, scanning forward or backward, without
     /// cached geometry. Iterates only cached keys.
-    pub(crate) fn first_uncached_regional_line(&self, range: Range<usize>, forward: bool) -> Option<usize> {
+    /// Hidden collapsed-context lines need no geometry and count as cached;
+    /// each run is skipped whole.
+    pub(crate) fn first_uncached_regional_line(&self, mut range: Range<usize>, forward: bool) -> Option<usize> {
+        loop {
+            let line = self.first_uncached_unhidden_line(range.clone(), forward)?;
+            let Some(run) = self.elided_run_at(line) else { return Some(line) };
+            if forward { range.start = run.end.max(range.start); } else { range.end = run.start.min(range.end); }
+            if range.is_empty() { return None; }
+        }
+    }
+
+    fn first_uncached_unhidden_line(&self, range: Range<usize>, forward: bool) -> Option<usize> {
         if range.is_empty() { return None; }
         let cache = &self.regional_cache;
         if forward {
@@ -2953,6 +3086,7 @@ impl ViewLayout {
     pub fn invalidate_text_metrics(&mut self) {
         self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
             .expect("retiring certainty preserves valid measurements");
+        self.restore_elided_heights(None);
         self.regional_cache = self.regional_cache.replacement(None);
     }
 
@@ -2979,6 +3113,7 @@ impl ViewLayout {
         if geometry_changed || identity.is_some_and(|identity| identity.measurement_environment_id != environment) {
             self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
                 .expect("retiring certainty preserves valid measurements");
+            self.restore_elided_heights(None);
         }
         self.regional_cache = self.regional_cache.replacement(identity.map(|mut identity| {
             identity.measurement_environment_id = environment;
@@ -3014,6 +3149,7 @@ impl ViewLayout {
             self.bump_configuration(true);
             return;
         }
+        self.restore_elided_heights(Some(lines.clone()));
         self.invalidate_syntax_presentation(false);
         // Results computed before this publication may hold the old metrics.
         self.advance_geometry(Some(lines.clone()));
@@ -3036,7 +3172,18 @@ impl ViewLayout {
         hard_line_count: usize,
         invalidate_exact: bool,
     ) -> Result<(), ViewHeightIndexError> {
+        let count_changed = self.height_index.hard_line_count() != hard_line_count;
         reconcile_height_index_count(&mut self.height_index, hard_line_count)?;
+        if invalidate_exact || count_changed {
+            // Without a local rebase the runs no longer name the same lines;
+            // show them again with estimated heights.
+            for run in std::mem::take(&mut self.elided) {
+                let lines = run.start.min(hard_line_count)..run.end.min(hard_line_count);
+                if !lines.is_empty() {
+                    let _ = self.height_index.invalidate(lines);
+                }
+            }
+        }
         if invalidate_exact {
             self.invalidate_all_heights();
             self.regional_cache = self.regional_cache.replacement(None);
@@ -3329,17 +3476,18 @@ impl ViewLayout {
             reconcile_height_index_count(&mut next_index, region.document_hard_line_count)?;
         }
 
-        if region
-            .lines
-            .iter()
-            .enumerate()
-            .any(|(offset, line)| line.hard_line_index != region.hard_lines.start + offset)
-        {
-            return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-                "regional hard-line records are not contiguous and ordered",
-            ));
+        // Records are ordered and contiguous; a hidden run's one record spans
+        // all of its lines.
+        let mut expected = region.hard_lines.start;
+        for line in &region.lines {
+            if line.hard_line_index != expected {
+                return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
+                    "regional hard-line records are not contiguous and ordered",
+                ));
+            }
+            expected += line.hard_line_span();
         }
-        if region.lines.len() != region.hard_lines.end - region.hard_lines.start {
+        if expected != region.hard_lines.end {
             return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
                 "regional result count does not match its hard-line range",
             ));
@@ -3349,9 +3497,12 @@ impl ViewLayout {
         let mut exact_start = 0;
         let mut exact = Vec::with_capacity(region.lines.len());
         for line in &region.lines {
-            if !line.height_is_exact {
+            if !line.height_is_exact || line.is_elided() {
                 next_index.set_exact_heights_with_extents(exact_start, &exact)?;
                 exact.clear();
+                if line.is_elided() {
+                    next_index.set_hidden_range(line.hard_line_index..line.hard_line_index + line.hard_line_span())?;
+                }
                 continue;
             }
             if exact.is_empty() {
@@ -3362,6 +3513,9 @@ impl ViewLayout {
             exact.push((line.height, extent));
         }
         next_index.set_exact_heights_with_extents(exact_start, &exact)?;
+        // A region captured before lines were hidden cannot give them height.
+        let changed = (!reset_cache).then(|| region.hard_lines.clone());
+        restore_elided_heights(&mut next_index, &self.elided, changed);
         Ok(PreparedRegionalInstall {
             installed_revision,
             region,
@@ -3380,7 +3534,7 @@ impl ViewLayout {
         }
         let region = &prepared.region;
         if region.horizontal_materialization.is_none() {
-            for line in &region.lines {
+            for line in region.lines.iter().filter(|line| !line.is_elided()) {
                 if line.text_coverage == line.hard_line_range {
                     self.regional_cache.insert_arc(Arc::clone(line));
                 }
@@ -3425,6 +3579,108 @@ impl ViewLayout {
         self.height_index
             .invalidate(0..count)
             .expect("an index can always be reset to its validated estimate");
+        self.restore_elided_heights(None);
+    }
+
+    /// Hidden runs are exact zero height whatever else was invalidated;
+    /// `within` limits the work to the runs a change touched.
+    fn restore_elided_heights(&mut self, within: Option<Range<usize>>) {
+        restore_elided_heights(&mut self.height_index, &self.elided, within);
+    }
+
+    /// Install diff mode's collapsed context, a sorted, disjoint list of hidden
+    /// hard-line runs. Newly shown lines return to estimates; hidden ones become
+    /// exact zero height without visiting their lines. Returns whether the set
+    /// changed, after which the visible snapshot must be rebuilt.
+    pub(crate) fn set_elided_lines(&mut self, runs: Vec<Range<usize>>) -> bool {
+        let count = self.height_index.hard_line_count();
+        let runs: Vec<Range<usize>> = runs.into_iter()
+            .map(|run| run.start.min(count)..run.end.min(count))
+            .filter(|run| !run.is_empty())
+            .collect();
+        if runs == self.elided {
+            return false;
+        }
+        for shown in self.elided.iter().filter(|run| !runs.contains(run)) {
+            let _ = self.height_index.invalidate(shown.clone());
+        }
+        self.elided = runs;
+        self.restore_elided_heights(None);
+        self.bump_configuration(false);
+        true
+    }
+
+    pub(crate) fn elided_lines(&self) -> &[Range<usize>] {
+        &self.elided
+    }
+
+    /// Show the hidden run `run` because the caret moved onto it, without
+    /// waiting for diff mode to reinstall this side, and drop the divider
+    /// drawn in the margin of the paragraph at `divider` (its hard line and
+    /// start offset). The run is kept for [`Self::take_opened_elided`].
+    pub(crate) fn open_elided_run(&mut self, run: Range<usize>, divider: Option<(usize, usize)>) {
+        let runs = self.elided.iter().filter(|hidden| **hidden != run).cloned().collect();
+        if !self.set_elided_lines(runs) {
+            return;
+        }
+        if let (Some((line, offset)), Some((document, revision, input))) = (divider, self.diff_presentation.clone()) {
+            let mut next = (*input).clone();
+            next.dividers.retain(|(at, ..)| *at != offset);
+            if next != *input {
+                self.set_diff_presentation(document, revision, Some(std::sync::Arc::new(next)), Some(&[line..line + 1]));
+            }
+        }
+        self.opened_elided.push(run);
+    }
+
+    pub(crate) fn has_opened_elided(&self) -> bool {
+        !self.opened_elided.is_empty()
+    }
+
+    /// The runs the caret opened since the last call.
+    pub(crate) fn take_opened_elided(&mut self) -> Vec<Range<usize>> {
+        std::mem::take(&mut self.opened_elided)
+    }
+
+    /// The hidden run containing `hard_line`, if any.
+    pub(crate) fn elided_run_at(&self, hard_line: usize) -> Option<Range<usize>> {
+        let index = self.elided.partition_point(|run| run.end <= hard_line);
+        self.elided.get(index).filter(|run| run.start <= hard_line).cloned()
+    }
+
+    /// Hidden runs intersecting `range`, clipped to it.
+    pub(crate) fn elided_within(&self, range: Range<usize>) -> Vec<Range<usize>> {
+        let first = self.elided.partition_point(|run| run.end <= range.start);
+        self.elided[first..].iter()
+            .take_while(|run| run.start < range.end)
+            .map(|run| run.start.max(range.start)..run.end.min(range.end))
+            .collect()
+    }
+
+    /// The number of lines of `range` that are not hidden.
+    pub(crate) fn visible_line_count(&self, range: Range<usize>) -> usize {
+        range.len() - self.elided_within(range).iter().map(Range::len).sum::<usize>()
+    }
+
+    /// Move from `line` by `count` visible lines in either direction, stopping
+    /// at the document's edges; hidden runs are crossed without counting.
+    pub(crate) fn step_visible_lines(&self, line: usize, count: usize, forward: bool) -> usize {
+        let total = self.height_index.hard_line_count();
+        let mut at = line.min(total);
+        let mut remaining = count;
+        while remaining > 0 {
+            if forward {
+                if at >= total { break; }
+                if let Some(run) = self.elided_run_at(at) { at = run.end; continue; }
+                at += 1;
+            } else {
+                if at == 0 { break; }
+                if let Some(run) = self.elided_run_at(at - 1) { at = run.start; continue; }
+                at -= 1;
+            }
+            remaining -= 1;
+        }
+        at
     }
 
     fn height_index_for_snapshot(
@@ -3488,6 +3744,19 @@ impl LayoutSnapshot {
     }
 }
 
+/// Make every hidden run of `elided` intersecting `within` (all, for none)
+/// one exact zero-height interval of `index`.
+fn restore_elided_heights(index: &mut ViewHeightIndex, elided: &[Range<usize>], within: Option<Range<usize>>) {
+    let count = index.hard_line_count();
+    for run in elided {
+        if within.as_ref().is_some_and(|within| run.end <= within.start || within.end <= run.start) { continue; }
+        let run = run.start.min(count)..run.end.min(count);
+        if !run.is_empty() {
+            let _ = index.set_hidden_range(run);
+        }
+    }
+}
+
 fn partial_snapshot_from_region(
     region: &RegionalLayoutSnapshot,
     height_index: &ViewHeightIndex,
@@ -3500,7 +3769,7 @@ fn partial_snapshot_from_region(
         let line_top =
             height_as_layout_unit(height_index.prefix_height(line.hard_line_index)?.height())?;
         if line.rows.first().is_some_and(|row| row.table_cell.is_none()) {
-            let before = if line.hard_line_index == 0 {
+            let before = if starts_document(line.hard_line_index, &line.inputs.paragraph) {
                 block_box::editable_flow_position(None,
                     region.content_insets.top + block_box::before(&line.inputs.paragraph) * scale, scale).0
             } else { 0. };
@@ -4898,13 +5167,14 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 else { cached_line(line_offset, line_slice) };
             if let Some(context) = document_styles.table_context.as_ref().filter(|_| !reused_table_lines[line_offset]) {
                 let paragraph = &line_paragraphs[line_offset];
-                let origin = if hard_line_index == 0 {
+                let origin = if starts_document(hard_line_index, &paragraph.style) {
                     (content_insets.top + block_box::before(&paragraph.style) * view.scale).max(0.)
                 } else { 0. };
                 if let Some((mut rows, height)) = self.table_line(context, &line_slice.full_range, document_id,
                     document_revision, view, hard_line_index, layout_revision, content_insets, &paragraph.style,
                     origin, false, &control)? {
-                    let next = line_paragraphs.get(line_offset + 1).or(following_paragraph.as_ref());
+                    let next = line_paragraphs.get(line_offset + 1).or(following_paragraph.as_ref())
+                        .filter(|_| !ends_document(&paragraph.style));
                     let (height, gap) = table_line_flow_height(height + origin, &rows, paragraph,
                         next, content_insets.bottom, view.scale);
                     if let Some(row) = rows.first_mut().filter(|row| row.table_cell.is_some()) {
@@ -4915,7 +5185,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     lines.push(RegionalHardLineLayout { layout_revision, hard_line_index,
                         hard_line_range: line_slice.full_range.clone(), text_coverage: line_slice.full_range.clone(),
                         rows, height: f64::from(height), height_is_exact: true, next_checkpoint: None,
-                        diagnostics: Vec::new(), render_run_policy, inputs: line_inputs[line_offset].clone() }.into_retained());
+                        diagnostics: Vec::new(), render_run_policy, inputs: line_inputs[line_offset].clone(), elided: 0 }.into_retained());
                     continue;
                 }
             }
@@ -5081,7 +5351,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 .as_ref()
                 .map_or(0, |checkpoint| checkpoint.completed_visual_rows);
             let (hard_line_origin, limited_origin) = block_box::editable_flow_position(None,
-                if hard_line_index == 0 { content_insets.top + block_box::before(&paragraph.style) * view.scale } else { 0. }, view.scale);
+                if starts_document(hard_line_index, &paragraph.style) { content_insets.top + block_box::before(&paragraph.style) * view.scale } else { 0. }, view.scale);
             if limited_origin && line_slice.checkpoint.is_none() {
                 diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() });
             }
@@ -5214,7 +5484,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
 
             let next_paragraph = line_paragraphs
                 .get(line_offset + 1)
-                .or(following_paragraph.as_ref());
+                .or(following_paragraph.as_ref())
+                .filter(|_| !ends_document(&paragraph.style));
             let mut resolved_gap = 0.;
             if !extends_past_work {
                 if let Some(next) = next_paragraph {
@@ -5287,6 +5558,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             });
             lines.push(RegionalHardLineLayout {
                 render_run_policy,
+                elided: 0,
                 diagnostics: diagnostics.iter().filter(|diagnostic| {
                     (diagnostic.text_range.start < text_coverage_end
                         && line_range.start < diagnostic.text_range.end)
@@ -7247,6 +7519,9 @@ struct BlockDecorationPlan {
     top: Vec<f32>,
     bottom: Vec<f32>,
     scale: f32,
+    /// The canvas's left and right edges, which a collapsed-context divider
+    /// spans.
+    canvas: (f32, f32),
     /// Box index with its left and right edges after margin and indent.
     painting: Vec<(usize, f32, f32)>,
 }
@@ -7270,7 +7545,7 @@ impl BlockDecorationPlan {
             left += (style.border.left + style.padding.left) * scale;
             right -= (style.border.right + style.padding.right) * scale;
         }
-        Self { top, bottom, scale, painting }
+        Self { top, bottom, scale, canvas: (canvas_left, canvas_left + canvas_width), painting }
     }
 }
 
@@ -7359,7 +7634,49 @@ fn decorate_block_row_with(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle
             push_box_rectangle(row, owner, kind, bounds, paint.clone());
         }
     }
+    if let Some(divider) = &paragraph.block_box.collapsed_divider {
+        if (divider.after && last) || (!divider.after && first) {
+            push_collapsed_divider(row, paragraph, divider, plan,
+                if divider.after { end_y } else { start_y - divider.height * scale });
+        }
+    }
     row.decorations.append(&mut child_decorations);
+}
+
+/// The divider band fills the margin that stands for collapsed lines, across
+/// the whole canvas, with its rules inside its top and bottom edges.
+fn push_collapsed_divider(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle,
+    divider: &block_box::CollapsedDivider, plan: &BlockDecorationPlan, y: f32) {
+    let owner = DecorationOwner::Paragraph(paragraph.block_id);
+    let (left, right) = plan.canvas;
+    let height = divider.height * plan.scale;
+    let band = LayoutRect { x: left, y, width: (right - left).max(0.), height };
+    let mut paint = ResolvedTextPaint::default();
+    if let Some(color) = divider.background {
+        paint.foreground = color;
+        paint.foreground_is_default = false;
+        push_box_rectangle(row, owner, DecorationKind::CollapsedContext { rule: false }, band, paint.clone());
+    }
+    for (index, (width, color)) in divider.rules.iter().enumerate() {
+        let weight = (width * plan.scale).min(height * 0.5);
+        if !(weight > 0.) { continue; }
+        paint.foreground = color.unwrap_or(paragraph.block_box.foreground);
+        paint.foreground_is_default = color.is_none() && paragraph.block_box.foreground_is_default;
+        let rule = LayoutRect { y: if index == 0 { y } else { y + height - weight }, height: weight, ..band };
+        push_box_rectangle(row, owner, DecorationKind::CollapsedContext { rule: true }, rule, paint.clone());
+    }
+}
+
+/// Whether a hard line begins the laid-out document: the first line, or the
+/// first shown line after diff mode collapses the lines before it.
+pub(crate) fn starts_document(hard_line_index: usize, paragraph: &ParagraphLayoutStyle) -> bool {
+    hard_line_index == 0 || paragraph.block_box.collapsed_divider.as_ref().is_some_and(|divider| !divider.after)
+}
+
+/// Whether a paragraph ends the laid-out document although lines follow it:
+/// diff mode collapses every one of them.
+pub(crate) fn ends_document(paragraph: &ParagraphLayoutStyle) -> bool {
+    paragraph.block_box.collapsed_divider.as_ref().is_some_and(|divider| divider.after && divider.document_edge)
 }
 
 /// The icon is one title em square, vertically centered in the band, in the

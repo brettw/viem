@@ -2409,9 +2409,24 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
         tables.beginDrag(at: local)
     }
 
+    /// Diff mode's divider for collapsed context opens it on both sides
+    /// when clicked.
+    private func openCollapsedContext(for event: NSEvent) -> Bool {
+        guard !event.modifierFlags.contains(.control), let surface, let open = surface.diffOpenCollapsedContext,
+              surface.refreshGeometryBeforeInteraction(), let snapshot = surface.layoutSnapshot else { return false }
+        let point = convert(event.locationInWindow, from: nil)
+        guard let item = snapshot.decorations.first(where: {
+            $0.flags & UInt32(VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT) != 0
+                && viewRect($0.typographic_bounds).contains(point)
+        }), let row = snapshot.rows.first(where: { $0.row_index == item.row_index }) else { return false }
+        window?.makeFirstResponder(self)
+        return open(row.hard_line_index)
+    }
+
     override func mouseDown(with event: NSEvent) {
         checkboxPress = nil
         if toggleCheckbox(for: event) { return }
+        if openCollapsedContext(for: event) { return }
         if showCodeBlockLanguageMenu(for: event) { return }
         setCaretHoverRect(nil)
         surface?.dismissCommandOutput()

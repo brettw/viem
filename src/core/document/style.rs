@@ -60,6 +60,12 @@ impl StyleId {
         Self("Builtin diff removed line".into())
     }
 
+    /// Diff mode's block style for the divider that replaces collapsed
+    /// unchanged lines on both sides.
+    pub fn diff_collapsed_context() -> Self {
+        Self("Builtin diff collapsed context".into())
+    }
+
     /// Diff mode's presentation-only character overlay for added text.
     pub fn diff_added_text() -> Self {
         Self("* Diff added text".into())
@@ -129,6 +135,7 @@ impl StyleId {
             "Status bar command" => Some("Status bar command"),
             "Builtin diff added line" => Some("Added line"),
             "Builtin diff removed line" => Some("Removed line"),
+            "Builtin diff collapsed context" => Some("Collapsed context"),
             _ => None,
         }
     }

@@ -1,11 +1,12 @@
 //! Diff mode's coordinator side. A [`DiffSession`] compares a read-only base
 //! core with the live core of the document being edited, keeps the line diff
 //! current as the live document changes, and installs each side's
-//! presentation (changed lines, changed spans and aligned filler) in its view.
+//! presentation (changed lines, changed spans, aligned filler and collapsed
+//! context) in its view.
 //! See `docs/diff_mode.md`.
 
 use super::*;
-use crate::diff::{DiffLimits, DiffState, Hunk, LineEdit, LineSource, Side, SidePresentation, DIFF_CONTEXT_LINES};
+use crate::diff::{CollapsibleRun, DiffLimits, DiffState, Hunk, LineEdit, LineSource, Side, SidePresentation, DIFF_CONTEXT_LINES};
 use crate::layout::DiffLayoutInput;
 use std::borrow::Cow;
 use std::ops::Range;
@@ -76,7 +77,8 @@ struct InstalledSide {
     document: Option<(DocumentId, Revision)>,
     presentation: SidePresentation,
     aligned: bool,
-    filler_points: f32,
+    /// One default row, unscaled: a filler line and a divider's height.
+    row_points: f32,
 }
 
 /// One diff mode comparison. Hosts keep it beside the two cores and call
@@ -89,6 +91,16 @@ pub struct DiffSession {
     new_document: DocumentId,
     new_revision: Revision,
     aligned: bool,
+    /// Whether unchanged runs collapse behind dividers.
+    collapsed: bool,
+    /// Base-side ranges of the collapsible runs the user opened. Keyed by
+    /// the read-only base, they survive edits that leave the lines equal.
+    opened: Vec<Range<usize>>,
+    /// The runs collapsed at the last install.
+    runs: Vec<CollapsibleRun>,
+    /// Until the first install, a caret inside a collapsed run moves beside
+    /// it; afterwards a caret there keeps its run open.
+    relocate_carets: bool,
     installed: [InstalledSide; 2],
 }
 
@@ -107,6 +119,10 @@ impl DiffSession {
             new_document: new.id(),
             new_revision: new.revision(),
             aligned,
+            collapsed: false,
+            opened: Vec::new(),
+            runs: Vec::new(),
+            relocate_carets: true,
             installed: Default::default(),
         }
     }
@@ -122,6 +138,88 @@ impl DiffSession {
     /// Change whether the sides are aligned; the next install applies it.
     pub fn set_aligned(&mut self, aligned: bool) {
         self.aligned = aligned;
+    }
+
+    pub fn collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    /// Change whether unchanged runs collapse; the next install applies it.
+    /// Either way every opened run closes again.
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        self.collapsed = collapsed;
+        self.opened.clear();
+    }
+
+    /// The collapsed runs as of the last install.
+    pub fn collapsed_runs(&self) -> &[CollapsibleRun] {
+        &self.runs
+    }
+
+    /// Open the collapsed run whose divider borders `line` on `side`: the
+    /// run just after it, or a run at the start of the file just before it.
+    /// The next sync shows it on both sides. Returns whether a run opened.
+    pub fn open_collapsed_beside(&mut self, side: Side, line: usize) -> bool {
+        let Some(run) = self.runs.iter().find(|run| {
+            let own = run.side(side);
+            own.start == line + 1 || (own.start == 0 && own.end == line) || own.contains(&line)
+        }) else {
+            return false;
+        };
+        self.opened.push(run.base.clone());
+        true
+    }
+
+    /// The runs to collapse now: the state's collapsible runs except those
+    /// that overlap an opened run.
+    fn current_runs(&self) -> Vec<CollapsibleRun> {
+        if !self.collapsed {
+            return Vec::new();
+        }
+        self.state.collapsible_runs(DIFF_CONTEXT_LINES).into_iter()
+            .filter(|run| !self.opened.iter().any(|open| open.start < run.base.end && run.base.start < open.end))
+            .collect()
+    }
+
+    /// Record the runs a side's caret opened since the last sync.
+    fn take_opened<P: TextMeasurementProvider>(&mut self, core: &mut Core<P>, view: ViewId, side: Side) {
+        for lines in core.take_opened_collapsed(view) {
+            let base = match side {
+                Side::Base => lines,
+                Side::New => {
+                    let start = self.state.corresponding_line(true, lines.start);
+                    start..start + lines.len()
+                }
+            };
+            if !base.is_empty() {
+                self.opened.push(base);
+            }
+        }
+    }
+
+    /// A caret inside a run about to collapse: before the first install it
+    /// moves beside the run; afterwards (toggling, or an edit that makes
+    /// its lines equal) the run stays open. Returns whether a run opened.
+    fn keep_caret_visible<P: TextMeasurementProvider>(&mut self, core: &mut Core<P>, view: ViewId, side: Side,
+        runs: &[CollapsibleRun]) -> Result<bool, CoreError> {
+        let Some(line) = core.diff_caret_line(view)? else { return Ok(false) };
+        let installed = &self.installed[usize::from(side == Side::New)].presentation.collapsed;
+        let Some(run) = runs.iter().find(|run| run.side(side).contains(&line)) else { return Ok(false) };
+        let own = run.side(side).clone();
+        if installed.contains(&own) {
+            return Ok(false);
+        }
+        let count = core.document().line_count();
+        let beside = if own.start == 0 || (own.end < count && own.end - line <= line + 1 - own.start) {
+            own.end
+        } else {
+            own.start - 1
+        };
+        if self.relocate_carets && beside < count && core.place_diff_caret(view, beside)? {
+            return Ok(false);
+        }
+        self.opened.push(run.base.clone());
+        Ok(true)
     }
 
     /// The line on the other side corresponding to `line`.
@@ -214,6 +312,17 @@ impl DiffSession {
                 Some(crate::diff::Filler { before_line, ..filler })
             })
             .collect();
+        presentation.collapsed = presentation
+            .collapsed
+            .drain(..)
+            .filter_map(|run| if run.end <= edit.start {
+                Some(run)
+            } else if run.start >= edit.old_end {
+                Some(map(run.start)?..map(run.end - 1)? + 1)
+            } else {
+                None
+            })
+            .collect();
     }
 
     /// The viewport top for `to_view` that shows the text corresponding to
@@ -255,28 +364,43 @@ impl DiffSession {
         new_view: ViewId,
     ) -> Result<DiffSync, CoreError> {
         let sync = self.update(base.document(), new.document());
-        self.install(base, base_view, Side::Base)?;
-        self.install(new, new_view, Side::New)?;
+        self.take_opened(base, base_view, Side::Base);
+        self.take_opened(new, new_view, Side::New);
+        let mut runs = self.current_runs();
+        if !runs.is_empty() {
+            let opened = self.keep_caret_visible(base, base_view, Side::Base, &runs)?
+                | self.keep_caret_visible(new, new_view, Side::New, &runs)?;
+            if opened {
+                runs = self.current_runs();
+            }
+        }
+        self.relocate_carets = false;
+        self.install(base, base_view, Side::Base, &runs)?;
+        self.install(new, new_view, Side::New, &runs)?;
+        self.runs = runs;
         Ok(sync)
     }
 
-    fn install<P: TextMeasurementProvider>(&mut self, core: &mut Core<P>, view: ViewId, side: Side) -> Result<(), CoreError> {
+    fn install<P: TextMeasurementProvider>(&mut self, core: &mut Core<P>, view: ViewId, side: Side,
+        runs: &[CollapsibleRun]) -> Result<(), CoreError> {
         let index = usize::from(side == Side::New);
-        let filler_points = if self.aligned { core.diff_filler_line_height(view)? } else { 0.0 };
-        let presentation = self.state.presentation(side, self.aligned);
+        let row_points = core.diff_filler_line_height(view)?;
+        let mut presentation = self.state.presentation(side, self.aligned);
+        presentation.collapsed = runs.iter().map(|run| run.side(side).clone()).collect();
         let document = (core.document().id(), core.document().revision());
         let installed = &self.installed[index];
         let comparable = installed.view == Some(view)
             && installed.aligned == self.aligned
-            && installed.filler_points == filler_points
+            && installed.row_points == row_points
             && installed.document.is_some_and(|(id, _)| id == document.0);
         if comparable && installed.document == Some(document) && installed.presentation == presentation {
             return Ok(());
         }
         let changed = comparable.then(|| changed_lines(&installed.presentation, &presentation));
-        let input = layout_input(core.document(), side, &presentation, filler_points);
-        core.install_diff_presentation(view, Some(Arc::new(input)), changed.as_deref())?;
-        self.installed[index] = InstalledSide { view: Some(view), document: Some(document), presentation, aligned: self.aligned, filler_points };
+        let filler_points = if self.aligned { row_points } else { 0.0 };
+        let input = layout_input(core.document(), side, &presentation, filler_points, row_points);
+        core.install_diff_presentation(view, Some(Arc::new(input)), changed.as_deref(), &presentation.collapsed)?;
+        self.installed[index] = InstalledSide { view: Some(view), document: Some(document), presentation, aligned: self.aligned, row_points };
         Ok(())
     }
 
@@ -435,7 +559,7 @@ impl DiffSession {
 
     /// Remove diff presentation from a view, for leaving diff mode.
     pub fn clear<P: TextMeasurementProvider>(core: &mut Core<P>, view: ViewId) -> Result<(), CoreError> {
-        core.install_diff_presentation(view, None, None)
+        core.install_diff_presentation(view, None, None, &[])
     }
 }
 
@@ -493,7 +617,8 @@ fn edit_fits(state: &DiffState, new: &Document, edit: LineEdit) -> bool {
 }
 
 /// Convert one side's presentation from hard lines to formatted offsets.
-fn layout_input(document: &Document, side: Side, presentation: &SidePresentation, filler_points: f32) -> DiffLayoutInput {
+fn layout_input(document: &Document, side: Side, presentation: &SidePresentation, filler_points: f32,
+    divider_points: f32) -> DiffLayoutInput {
     let projection = document.projection();
     let count = document.line_count();
     let line = |index: usize| projection.hard_line_range(index.min(count.saturating_sub(1)));
@@ -524,7 +649,27 @@ fn layout_input(document: &Document, side: Side, presentation: &SidePresentation
             input.fillers.push((range.start, points));
         }
     }
+    for run in &presentation.collapsed {
+        if let Some((line, after)) = divider_line(run, count) {
+            if let Some(range) = projection.hard_line_range(line) {
+                input.dividers.push((range.start, after, !after || run.end >= count));
+            }
+        }
+    }
+    input.dividers.sort_unstable();
+    input.divider_points = divider_points;
     input
+}
+
+/// The hard line whose margin draws a collapsed run's divider, and whether
+/// the divider follows it: the line before the run, or for a run at the
+/// start of the file the line after it.
+fn divider_line(run: &Range<usize>, count: usize) -> Option<(usize, bool)> {
+    if run.start > 0 {
+        Some((run.start - 1, true))
+    } else {
+        (run.end < count).then_some((run.end, false))
+    }
 }
 
 /// Hard lines whose diff appearance differs between two presentations of
@@ -587,6 +732,15 @@ fn changed_lines(old: &SidePresentation, new: &SidePresentation) -> Vec<Range<us
             lines.push(line.saturating_sub(1)..line + 1);
         }
     }
+    // Lines whose divider differs. Lines that become hidden or shown need
+    // nothing here: hiding visits no lines and showing invalidates them.
+    let count = usize::MAX;
+    for run in old.collapsed.iter().filter(|run| !new.collapsed.contains(run))
+        .chain(new.collapsed.iter().filter(|run| !old.collapsed.contains(run))) {
+        if let Some((line, _)) = divider_line(run, count) {
+            lines.push(line..line + 1);
+        }
+    }
     lines.sort_by_key(|range| range.start);
     let mut merged: Vec<Range<usize>> = Vec::new();
     for range in lines {
@@ -607,15 +761,103 @@ impl<P: TextMeasurementProvider> Core<P> {
         view_id: ViewId,
         presentation: Option<Arc<DiffLayoutInput>>,
         changed_lines: Option<&[Range<usize>]>,
+        collapsed: &[Range<usize>],
     ) -> Result<(), CoreError> {
         let (id, revision) = (self.document.id(), self.document.revision());
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
-        if !view.layout.set_diff_presentation(id, revision, presentation, changed_lines) {
+        let presented = view.layout.set_diff_presentation(id, revision, presentation, changed_lines);
+        let hidden = view.layout.set_elided_lines(collapsed.to_vec());
+        if !presented && !hidden {
             return Ok(());
         }
         cancel_active_layout_work(view);
+        if hidden {
+            self.anchor_viewport_beside_hidden_lines(view_id)?;
+        }
         self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)?;
         Ok(())
+    }
+
+    /// Collapsing can hide the line the viewport is anchored to. Anchor it to
+    /// the first line shown after those lines instead, with their divider
+    /// just above the top, or for lines that reach the end of the file to the
+    /// last line shown before them.
+    fn anchor_viewport_beside_hidden_lines(&mut self, view_id: ViewId) -> Result<(), CoreError> {
+        let divider = self.diff_default_row(view_id)?.0;
+        let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        let Some(anchor) = view.viewport_anchor else { return Ok(()) };
+        let projection = self.document.projection();
+        let Some(run) = projection.presentation_line_at_offset(anchor.anchor.offset())
+            .and_then(|line| view.layout.elided_run_at(line)) else { return Ok(()) };
+        let count = projection.presentation_line_count();
+        let (line, offset_from_reference) = if run.end < count {
+            (run.end, -divider)
+        } else if run.start > 0 {
+            (run.start - 1, 0.0)
+        } else {
+            view.viewport_anchor = None;
+            return Ok(());
+        };
+        let start = projection.presentation_line_range(line).map_or(0, |range| range.start);
+        view.viewport_anchor = self.document.text_point(start).ok()
+            .and_then(|point| self.document.text_anchor(point, Association::AfterInsertion,
+                BoundaryAffinity::Downstream, DeletionRecovery::PreferFollowingThenPreceding).ok())
+            .map(|anchor| ViewportTextAnchor { anchor, offset_from_reference, reference: ViewportAnchorReference::RowTop });
+        Ok(())
+    }
+
+    /// Diff mode: a caret that moved onto collapsed context opens its run
+    /// in this view before any caret geometry is requested, and records it
+    /// so the session opens it on the other side too. Returns whether a run
+    /// opened.
+    pub(super) fn open_collapsed_at_caret(&mut self, view_id: ViewId) -> Result<bool, CoreError> {
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        if view.layout.elided_lines().is_empty() {
+            return Ok(false);
+        }
+        let caret = view.search_preview_destination(&self.document).unwrap_or_else(|| view
+            .commands
+            .visual_position()
+            .map_or(view.commands.cursor(), |position| position.text_offset));
+        let projection = self.document.projection();
+        let Some(line) = projection.presentation_line_at_offset(caret) else { return Ok(false) };
+        let Some(run) = view.layout.elided_run_at(line) else { return Ok(false) };
+        let divider = divider_line(&run, projection.presentation_line_count())
+            .and_then(|(line, _)| projection.presentation_line_range(line).map(|range| (line, range.start)));
+        let view = self.views.get_mut(&view_id).expect("validated view");
+        view.layout.open_elided_run(run, divider);
+        cancel_active_layout_work(view);
+        Ok(true)
+    }
+
+    /// Whether this view's caret opened collapsed context that a diff
+    /// session has not taken yet, so the host must sync to open it on the
+    /// other side.
+    pub fn has_opened_collapsed(&self, view_id: ViewId) -> Result<bool, CoreError> {
+        Ok(self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?.layout.has_opened_elided())
+    }
+
+    /// The runs this view's caret opened since the last call.
+    pub(crate) fn take_opened_collapsed(&mut self, view_id: ViewId) -> Vec<Range<usize>> {
+        self.views.get_mut(&view_id).map_or_else(Vec::new, |view| view.layout.take_opened_elided())
+    }
+
+    /// The hard line of this view's caret.
+    pub(crate) fn diff_caret_line(&self, view_id: ViewId) -> Result<Option<usize>, CoreError> {
+        let view = self.views.get(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        Ok(self.document.hard_line_at_offset(view.commands.cursor()))
+    }
+
+    /// Move a Normal-mode caret to the start of `line` without any other
+    /// effect, so it is not left inside a run that is about to collapse.
+    /// Returns false, moving nothing, in any other mode.
+    pub(crate) fn place_diff_caret(&mut self, view_id: ViewId, line: usize) -> Result<bool, CoreError> {
+        let Some(range) = self.document.projection().hard_line_range(line) else { return Ok(false) };
+        let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        if view.commands.mode() != Mode::Normal {
+            return Ok(false);
+        }
+        Ok(view.commands.set_cursor(&self.document, range.start))
     }
 
     /// Set the buffer-local `modifiable` policy, as `:set nomodifiable` does.

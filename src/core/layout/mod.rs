@@ -77,7 +77,7 @@ pub use style::{
     DocumentLayoutStyles, DocumentStyleError, DocumentStyleInput, PaintStyleRun,
     ParagraphLayoutStyle, ResolvedTextPaint,
 };
-pub use block_box::{AlertHeading, BlockBoxStyle, ContainerLayoutStyle};
+pub use block_box::{AlertHeading, BlockBoxStyle, CollapsedDivider, ContainerLayoutStyle};
 
 #[cfg(test)]
 mod images_tests;

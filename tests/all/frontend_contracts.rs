@@ -292,6 +292,9 @@ fn application_config_preserves_unknowns_and_sparse_styles_with_shared_defaults(
     // Code's shared word wrap is absent (off) until first set explicitly.
     assert!(value["code"].get("wordWrap").is_none());
     assert_eq!(normalize(br#"{"version":1,"code":{"wordWrap":true}}"#).unwrap()["code"]["wordWrap"], true);
+    // Diff mode collapses unchanged context until it is turned off explicitly.
+    assert_eq!(value["diff"]["collapseContext"], true);
+    assert_eq!(normalize(br#"{"version":1,"diff":{"collapseContext":false}}"#).unwrap()["diff"]["collapseContext"], false);
     for invalid in [
         r#"{"version":true}"#,
         r#"{"version":1,"editing":{"textWidth":false}}"#,
@@ -302,6 +305,7 @@ fn application_config_preserves_unknowns_and_sparse_styles_with_shared_defaults(
         r#"{"version":1,"editing":{"indentation":{"tabstop":0}}}"#,
         r#"{"version":1,"code":{"filenameAssociations":[{"pattern":"*","language":"bad/"}]}}"#,
         r#"{"version":1,"code":{"wordWrap":"off"}}"#,
+        r#"{"version":1,"diff":{"collapseContext":1}}"#,
     ] {
         assert!(normalize(invalid.as_bytes()).is_err(), "{invalid}");
     }

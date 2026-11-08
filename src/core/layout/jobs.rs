@@ -177,6 +177,19 @@ pub enum LayoutJobRegion {
 }
 
 impl LayoutJobRegion {
+    /// The same request for a contiguous part of its lines.
+    fn with_hard_lines(&self, lines: Range<usize>) -> Result<Self, LayoutJobError> {
+        Ok(match self {
+            Self::HardLines(_) => Self::HardLines(HardLineLayoutRegion::new(lines)?),
+            Self::Viewport(viewport) => {
+                if lines.is_empty() {
+                    return Err(LayoutJobError::InvalidRegion("viewport hard-line range must be non-empty and ordered"));
+                }
+                Self::Viewport(ViewportLayoutRegion { hard_lines: lines, ..viewport.clone() })
+            }
+        })
+    }
+
     fn hard_lines(&self) -> Range<usize> {
         match self {
             Self::HardLines(region) => region.range(),
@@ -318,6 +331,70 @@ enum CapturedLayoutInput {
         following_line_range: Option<Range<usize>>,
         styles: Arc<DocumentLayoutStyles>,
     },
+    /// Visible segments between diff mode's hidden collapsed-context runs.
+    Segmented { parts: Vec<CapturedSegment> },
+}
+
+#[derive(Clone, Debug)]
+enum CapturedSegment {
+    Visible {
+        region: LayoutJobRegion,
+        input: Box<CapturedLayoutInput>,
+        captured_view: Box<LayoutJobViewConfiguration>,
+    },
+    /// Hidden hard lines and their text, which nothing captures.
+    Hidden { lines: Range<usize>, text: Range<usize> },
+}
+
+impl CapturedLayoutInput {
+    fn captured_text_len(&self) -> usize {
+        match self {
+            Self::UnwrappedViewport { .. } | Self::StreamingOverflowSlice { .. } => 0,
+            Self::Regional { text, .. } | Self::LongHardLineSlice { text, .. } => text.len(),
+            Self::Segmented { parts } => parts.iter().map(|part| match part {
+                CapturedSegment::Visible { input, .. } => input.captured_text_len(),
+                CapturedSegment::Hidden { .. } => 0,
+            }).sum(),
+        }
+    }
+
+    fn capture_statistics(&self, captured_view: &LayoutJobViewConfiguration) -> LayoutJobCaptureStatistics {
+        let styles = |styles: &DocumentLayoutStyles, text: usize| LayoutJobCaptureStatistics {
+            regional_text_bytes: text,
+            document_shaping_style_runs: styles.shaping_runs.len(),
+            document_paint_style_runs: styles.paint_runs.len(),
+            document_paragraph_styles: styles.paragraphs.len(),
+            view_override_style_runs: captured_view.retained_override_style_run_count(),
+            retained_regional_cache_lines: captured_view.cached_lines.len(),
+            retained_positioned_rows: captured_view.cached_lines.values().map(|line| line.rows().len()).sum(),
+        };
+        match self {
+            Self::UnwrappedViewport { styles: style, .. } | Self::StreamingOverflowSlice { styles: style, .. } => styles(style, 0),
+            Self::Regional { text, styles: style, .. } | Self::LongHardLineSlice { text, styles: style, .. } => styles(style, text.len()),
+            Self::Segmented { parts } => parts.iter().fold(LayoutJobCaptureStatistics::default(), |total, part| {
+                let CapturedSegment::Visible { input, captured_view, .. } = part else { return total };
+                let part = input.capture_statistics(captured_view);
+                LayoutJobCaptureStatistics {
+                    regional_text_bytes: total.regional_text_bytes + part.regional_text_bytes,
+                    document_shaping_style_runs: total.document_shaping_style_runs + part.document_shaping_style_runs,
+                    document_paint_style_runs: total.document_paint_style_runs + part.document_paint_style_runs,
+                    document_paragraph_styles: total.document_paragraph_styles + part.document_paragraph_styles,
+                    view_override_style_runs: total.view_override_style_runs + part.view_override_style_runs,
+                    retained_positioned_rows: total.retained_positioned_rows + part.retained_positioned_rows,
+                    retained_regional_cache_lines: total.retained_regional_cache_lines + part.retained_regional_cache_lines,
+                }
+            }),
+        }
+    }
+
+    /// A cache fill materializes every table column in each visible part.
+    fn complete_table_columns(&mut self) {
+        if let Self::Segmented { parts } = self {
+            for part in parts {
+                if let CapturedSegment::Visible { captured_view, .. } = part { captured_view.complete_table_columns = true; }
+            }
+        }
+    }
 }
 
 /// Owned input package safe to move to a provider-compatible executor.
@@ -443,43 +520,11 @@ impl LayoutJobRequest {
     /// Bytes copied into this request's owned text buffer. Streaming requests
     /// share the immutable formatted tree instead and therefore report zero.
     pub fn captured_text_len(&self) -> usize {
-        match &self.input {
-            CapturedLayoutInput::UnwrappedViewport { .. }
-            | CapturedLayoutInput::StreamingOverflowSlice { .. } => 0,
-            CapturedLayoutInput::Regional { text, .. }
-            | CapturedLayoutInput::LongHardLineSlice { text, .. } => text.len(),
-        }
+        self.input.captured_text_len()
     }
 
     pub fn capture_statistics(&self) -> LayoutJobCaptureStatistics {
-        let mut statistics = match &self.input {
-            CapturedLayoutInput::UnwrappedViewport { styles, .. }
-            | CapturedLayoutInput::StreamingOverflowSlice { styles, .. } => LayoutJobCaptureStatistics {
-                regional_text_bytes: 0,
-                document_shaping_style_runs: styles.shaping_runs.len(),
-                document_paint_style_runs: styles.paint_runs.len(),
-                document_paragraph_styles: styles.paragraphs.len(),
-                view_override_style_runs: self.captured_view.retained_override_style_run_count(),
-                ..Default::default()
-            },
-            CapturedLayoutInput::Regional { text, styles, .. }
-            | CapturedLayoutInput::LongHardLineSlice { text, styles, .. } => {
-                LayoutJobCaptureStatistics {
-                    regional_text_bytes: text.len(),
-                    document_shaping_style_runs: styles.shaping_runs.len(),
-                    document_paint_style_runs: styles.paint_runs.len(),
-                    document_paragraph_styles: styles.paragraphs.len(),
-                    view_override_style_runs: self
-                        .captured_view
-                        .retained_override_style_run_count(),
-                    ..Default::default()
-                }
-            }
-        };
-        statistics.retained_regional_cache_lines = self.captured_view.cached_lines.len();
-        statistics.retained_positioned_rows = self.captured_view.cached_lines.values()
-            .map(|line| line.rows().len()).sum();
-        statistics
+        self.input.capture_statistics(&self.captured_view)
     }
 }
 
@@ -728,6 +773,7 @@ pub(crate) fn prepare_cache_layout_job(
     // table row materializes every column; callers bound each line's text,
     // including a giant line that a cache fill lays out whole.
     request.captured_view.complete_table_columns = true;
+    request.input.complete_table_columns();
     Ok(request)
 }
 
@@ -773,7 +819,109 @@ where
         return Err(LayoutJobError::RegionOutsideDocument { hard_line_count });
     }
 
-    let range = requested_lines;
+    let (input, captured_view) = capture_layout_input_segments(document, view, provider_requirements,
+        &region, &cancellation, complete_lines, hard_line_count)?;
+    before_registration();
+    // This CAS is the preparation acceptance point. If cancellation happened
+    // while capture was running, it wins the token's atomic modification order
+    // and the existing view job remains current. Once registration wins, a
+    // later cancellation legitimately applies to this accepted request.
+    cancellation.try_register().map_err(|error| match error {
+        CancellationRegistrationError::Cancelled => LayoutJobError::Cancelled,
+        CancellationRegistrationError::AlreadyRegistered => {
+            LayoutJobError::CancellationTokenAlreadyRegistered
+        }
+    })?;
+    let registered = !register_viewport_job || view.begin_layout_job(job_id);
+    debug_assert!(
+        registered,
+        "the serial view job precondition was validated before capture"
+    );
+    if !registered {
+        return Err(LayoutJobError::NonMonotonicJobId {
+            requested: job_id,
+            newest: newest_job,
+        });
+    }
+    after_registration();
+
+    Ok(LayoutJobRequest {
+        job_id,
+        priority,
+        document_id: document.id(),
+        document_revision: document.revision(),
+        configuration_generation: view.configuration_generation(),
+        geometry_generation: view.geometry_generation(),
+        provider_requirements,
+        region,
+        cancellation,
+        projection_text_len: document.projection().text_tree().byte_len(),
+        input,
+        captured_view,
+        table_measurements: None,
+        indent_projection: (view.whitespace_presentation().align_indents_to_previous_line && document.format().is_code()).then(|| Arc::new(document.projection().clone())),
+        indent_index: view.indent_index.clone(),
+    })
+}
+
+/// Capture one request's input. A range crossing diff mode's hidden
+/// collapsed-context runs captures each visible segment on its own, and
+/// computation joins them across zero-height stand-ins, so hidden lines
+/// contribute no text, styles or shaping however many there are.
+fn capture_layout_input_segments(
+    document: &Document,
+    view: &mut ViewLayout,
+    provider_requirements: LayoutProviderRequirements,
+    region: &LayoutJobRegion,
+    cancellation: &LayoutCancellationToken,
+    complete_lines: bool,
+    hard_line_count: usize,
+) -> Result<(CapturedLayoutInput, LayoutJobViewConfiguration), LayoutJobError> {
+    let range = region.hard_lines();
+    let hidden = view.elided_within(range.clone());
+    let continuation = matches!(region, LayoutJobRegion::Viewport(viewport) if viewport.long_line_checkpoint().is_some());
+    if hidden.is_empty() || continuation {
+        return capture_layout_input(document, view, provider_requirements, region, cancellation, complete_lines, hard_line_count);
+    }
+    let mut segments = Vec::new();
+    let mut at = range.start;
+    for run in hidden {
+        if at < run.start { segments.push((at..run.start, false)); }
+        at = run.end;
+        segments.push((run, true));
+    }
+    if at < range.end { segments.push((at..range.end, false)); }
+    let mut parts = Vec::with_capacity(segments.len());
+    let mut first_view = None;
+    for (lines, hidden) in segments {
+        if hidden {
+            let first = document_line_range(document, lines.start)?;
+            let last = document_line_range(document, lines.end - 1)?;
+            parts.push(CapturedSegment::Hidden { lines, text: first.start..last.end });
+            continue;
+        }
+        let part_region = region.with_hard_lines(lines)?;
+        let (input, captured_view) = capture_layout_input(document, view, provider_requirements, &part_region,
+            cancellation, complete_lines, hard_line_count)?;
+        first_view.get_or_insert_with(|| captured_view.clone());
+        parts.push(CapturedSegment::Visible { region: part_region, input: Box::new(input), captured_view: Box::new(captured_view) });
+    }
+    let captured_view = first_view.ok_or(LayoutJobError::InvalidRegion("every requested hard line is hidden"))?;
+    Ok((CapturedLayoutInput::Segmented { parts }, captured_view))
+}
+
+/// Capture the text, styles and cached lines one contiguous region needs.
+fn capture_layout_input(
+    document: &Document,
+    view: &mut ViewLayout,
+    provider_requirements: LayoutProviderRequirements,
+    region: &LayoutJobRegion,
+    cancellation: &LayoutCancellationToken,
+    complete_lines: bool,
+    hard_line_count: usize,
+) -> Result<(CapturedLayoutInput, LayoutJobViewConfiguration), LayoutJobError> {
+    let cancellation = cancellation.clone();
+    let range = region.hard_lines();
     let line_ranges = (range.clone())
         .map(|hard_line| {
             if cancellation.is_cancelled() {
@@ -979,6 +1127,7 @@ where
         | CapturedLayoutInput::StreamingOverflowSlice { styles, .. }
         | CapturedLayoutInput::Regional { styles, .. }
         | CapturedLayoutInput::LongHardLineSlice { styles, .. } => styles,
+        CapturedLayoutInput::Segmented { .. } => unreachable!("a contiguous capture is never segmented"),
     };
     captured_view.default_font_metrics = view.snapshot().filter(|snapshot| {
         snapshot.document_id == document.id()
@@ -1002,47 +1151,7 @@ where
         captured_view.horizontal_desired_x = viewport.horizontal_desired_x;
         captured_view.complete_horizontal_geometry = viewport.complete_horizontal_geometry;
     }
-    before_registration();
-    // This CAS is the preparation acceptance point. If cancellation happened
-    // while capture was running, it wins the token's atomic modification order
-    // and the existing view job remains current. Once registration wins, a
-    // later cancellation legitimately applies to this accepted request.
-    cancellation.try_register().map_err(|error| match error {
-        CancellationRegistrationError::Cancelled => LayoutJobError::Cancelled,
-        CancellationRegistrationError::AlreadyRegistered => {
-            LayoutJobError::CancellationTokenAlreadyRegistered
-        }
-    })?;
-    let registered = !register_viewport_job || view.begin_layout_job(job_id);
-    debug_assert!(
-        registered,
-        "the serial view job precondition was validated before capture"
-    );
-    if !registered {
-        return Err(LayoutJobError::NonMonotonicJobId {
-            requested: job_id,
-            newest: newest_job,
-        });
-    }
-    after_registration();
-
-    Ok(LayoutJobRequest {
-        job_id,
-        priority,
-        document_id: document.id(),
-        document_revision: document.revision(),
-        configuration_generation: view.configuration_generation(),
-        geometry_generation: view.geometry_generation(),
-        provider_requirements,
-        region,
-        cancellation,
-        projection_text_len: document.projection().text_tree().byte_len(),
-        input,
-        captured_view,
-        table_measurements: None,
-        indent_projection: (view.whitespace_presentation().align_indents_to_previous_line && document.format().is_code()).then(|| Arc::new(document.projection().clone())),
-        indent_index: view.indent_index.clone(),
-    })
+    Ok((input, captured_view))
 }
 
 /// The worker products are intentionally distinct so a hard-line cache fill
@@ -1225,82 +1334,7 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
     engine.prepare_indent_alignment(request.indent_projection.clone(), request.indent_index.clone(), request.captured_view.whitespace.tabstop);
     engine.reuse_captured_font_metrics(&request.captured_view);
     if let Some(cache) = &request.table_measurements { engine.install_table_measurements(cache.clone()); }
-    let snapshot = match &request.input {
-        CapturedLayoutInput::UnwrappedViewport { text, line_ranges, following_line_range, document_hard_line_count, styles } => {
-            match engine.layout_unwrapped_viewport_cancellable(request.document_id, request.document_revision, text, line_ranges,
-                request.region.hard_lines().start, *document_hard_line_count, following_line_range.clone(), styles,
-                &request.captured_view, &request.cancellation) {
-                Ok(snapshot) => snapshot,
-                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
-                Err(LayoutComputationError::Layout(error)) => return Err(LayoutJobError::Layout(error)),
-            }
-        }
-        CapturedLayoutInput::StreamingOverflowSlice { tree, line_slice, document_hard_line_count, following_line_range, styles } => {
-            match engine.layout_overflow_slice_cancellable(request.document_id, request.document_revision, tree, line_slice,
-                *document_hard_line_count, following_line_range.clone(), styles, &request.captured_view, &request.cancellation) {
-                Ok(snapshot) => snapshot,
-                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
-                Err(LayoutComputationError::Layout(error)) => return Err(LayoutJobError::Layout(error)),
-            }
-        }
-        CapturedLayoutInput::Regional {
-            text,
-            text_origin,
-            line_ranges,
-            following_line_range,
-            document_hard_line_count,
-            styles,
-        } => {
-            match engine.layout_hard_line_region_cancellable(
-                request.document_id,
-                request.document_revision,
-                text,
-                *text_origin,
-                line_ranges,
-                request.region.hard_lines().start,
-                *document_hard_line_count,
-                request.projection_text_len,
-                following_line_range.clone(),
-                styles,
-                &request.captured_view,
-                &request.cancellation,
-            ) {
-                Ok(snapshot) => snapshot,
-                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
-                Err(LayoutComputationError::Layout(error)) => {
-                    return Err(LayoutJobError::Layout(error));
-                }
-            }
-        }
-        CapturedLayoutInput::LongHardLineSlice {
-            text,
-            text_origin,
-            line_slice,
-            document_hard_line_count,
-            following_line_range,
-            styles,
-        } => {
-            match engine.layout_hard_line_slices_cancellable(
-                request.document_id,
-                request.document_revision,
-                text,
-                *text_origin,
-                std::slice::from_ref(line_slice),
-                *document_hard_line_count,
-                request.projection_text_len,
-                following_line_range.clone(),
-                styles,
-                &request.captured_view,
-                &request.cancellation,
-            ) {
-                Ok(snapshot) => snapshot,
-                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
-                Err(LayoutComputationError::Layout(error)) => {
-                    return Err(LayoutJobError::Layout(error));
-                }
-            }
-        }
-    };
+    let snapshot = compute_input(engine, request, &request.input, &request.region, &request.captured_view)?;
     if snapshot.measurement_environment_id()
         != request.provider_requirements.measurement_environment_id
     {
@@ -1344,6 +1378,120 @@ pub fn compute_layout_job<P: TextMeasurementProvider>(
         product,
         table_measurements: engine.table_measurements(),
         indent_index: engine.indent_alignment.snapshot.clone(),
+    })
+}
+
+/// Compute one captured input. Segments are computed in order and joined
+/// across zero-height stand-ins for the hidden runs between them.
+fn compute_input<P: TextMeasurementProvider>(
+    engine: &mut LayoutEngine<P>,
+    request: &LayoutJobRequest,
+    input: &CapturedLayoutInput,
+    region: &LayoutJobRegion,
+    captured_view: &LayoutJobViewConfiguration,
+) -> Result<super::engine::RegionalLayoutSnapshot, LayoutJobError> {
+    if let CapturedLayoutInput::Segmented { parts } = input {
+        let mut visible = Vec::with_capacity(parts.len());
+        for part in parts {
+            if let CapturedSegment::Visible { region, input, captured_view } = part {
+                visible.push(compute_input(engine, request, input, region, captured_view)?);
+            }
+        }
+        let template = visible.first().cloned().ok_or(LayoutJobError::InvalidRegion("every requested hard line is hidden"))?;
+        let statistics = visible.iter().fold(Default::default(), |total: super::engine::LayoutWorkStatistics, part| total.merged(part.work_statistics()));
+        let mut visible = visible.into_iter();
+        let mut joined: Option<super::engine::RegionalLayoutSnapshot> = None;
+        for part in parts {
+            let next = match part {
+                CapturedSegment::Visible { .. } => visible.next().expect("one result per visible part"),
+                CapturedSegment::Hidden { lines, text } =>
+                    super::engine::RegionalLayoutSnapshot::elided_run(&template, lines.clone(), text.clone()),
+            };
+            match &mut joined {
+                Some(joined) => joined.append_adjacent_region(&next),
+                None => joined = Some(next),
+            }
+        }
+        let mut joined = joined.expect("a segmented capture has parts");
+        joined.set_work_statistics(statistics);
+        return Ok(joined);
+    }
+    Ok(match input {
+        CapturedLayoutInput::Segmented { .. } => unreachable!("handled above"),
+        CapturedLayoutInput::UnwrappedViewport { text, line_ranges, following_line_range, document_hard_line_count, styles } => {
+            match engine.layout_unwrapped_viewport_cancellable(request.document_id, request.document_revision, text, line_ranges,
+                region.hard_lines().start, *document_hard_line_count, following_line_range.clone(), styles,
+                captured_view, &request.cancellation) {
+                Ok(snapshot) => snapshot,
+                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
+                Err(LayoutComputationError::Layout(error)) => return Err(LayoutJobError::Layout(error)),
+            }
+        }
+        CapturedLayoutInput::StreamingOverflowSlice { tree, line_slice, document_hard_line_count, following_line_range, styles } => {
+            match engine.layout_overflow_slice_cancellable(request.document_id, request.document_revision, tree, line_slice,
+                *document_hard_line_count, following_line_range.clone(), styles, captured_view, &request.cancellation) {
+                Ok(snapshot) => snapshot,
+                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
+                Err(LayoutComputationError::Layout(error)) => return Err(LayoutJobError::Layout(error)),
+            }
+        }
+        CapturedLayoutInput::Regional {
+            text,
+            text_origin,
+            line_ranges,
+            following_line_range,
+            document_hard_line_count,
+            styles,
+        } => {
+            match engine.layout_hard_line_region_cancellable(
+                request.document_id,
+                request.document_revision,
+                text,
+                *text_origin,
+                line_ranges,
+                region.hard_lines().start,
+                *document_hard_line_count,
+                request.projection_text_len,
+                following_line_range.clone(),
+                styles,
+                captured_view,
+                &request.cancellation,
+            ) {
+                Ok(snapshot) => snapshot,
+                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
+                Err(LayoutComputationError::Layout(error)) => {
+                    return Err(LayoutJobError::Layout(error));
+                }
+            }
+        }
+        CapturedLayoutInput::LongHardLineSlice {
+            text,
+            text_origin,
+            line_slice,
+            document_hard_line_count,
+            following_line_range,
+            styles,
+        } => {
+            match engine.layout_hard_line_slices_cancellable(
+                request.document_id,
+                request.document_revision,
+                text,
+                *text_origin,
+                std::slice::from_ref(line_slice),
+                *document_hard_line_count,
+                request.projection_text_len,
+                following_line_range.clone(),
+                styles,
+                captured_view,
+                &request.cancellation,
+            ) {
+                Ok(snapshot) => snapshot,
+                Err(LayoutComputationError::Cancelled) => return Err(LayoutJobError::Cancelled),
+                Err(LayoutComputationError::Layout(error)) => {
+                    return Err(LayoutJobError::Layout(error));
+                }
+            }
+        }
     })
 }
 

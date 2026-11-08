@@ -150,6 +150,14 @@ public final class EVConfigurationStore {
   public func setDiffAlignSides(_ aligned: Bool) throws {
     try update(section: "diff", values: ["alignSides": aligned], notify: false)
   }
+  /// Diff mode's Collapse context default for new diff views (last explicit
+  /// choice).
+  public var diffCollapseContext: Bool {
+    (root["diff"] as? [String: Any])?["collapseContext"] as? Bool ?? true
+  }
+  public func setDiffCollapseContext(_ collapsed: Bool) throws {
+    try update(section: "diff", values: ["collapseContext": collapsed], notify: false)
+  }
   /// Diff mode's saved line-number setting (last explicit choice in diff mode).
   public var diffLineNumbers: Bool { (root["diff"] as? [String: Any])?["lineNumbers"] as? Bool ?? true }
   public func setDiffLineNumbers(_ shows: Bool) throws {

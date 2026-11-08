@@ -69,6 +69,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     /// Diff mode refreshes this side's scrollbar marks after each verified
     /// frame, since layout can refine the heights they are measured in.
     var diffPresentationDidRefresh: (() -> Void)?
+    /// Diff mode opens the collapsed context whose divider borders this hard
+    /// line when it is clicked; returns whether a run opened.
+    var diffOpenCollapsedContext: ((UInt64) -> Bool)?
     private(set) var documentState = ViemDocumentStateV1()
     private(set) var presentationRefreshCount: UInt64 = 0
     private var isRefreshingPresentation = false

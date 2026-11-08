@@ -1507,6 +1507,11 @@ typedef struct ViemPositionedClusterV1 {
 #define VIEM_LAYOUT_DECORATION_ALERT_TITLE (1u << 9)
 #define VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT 10u
 #define VIEM_LAYOUT_DECORATION_ALERT_KIND_MASK (7u << 10)
+/* Diff mode's divider for collapsed unchanged lines: a band (with
+ * BLOCK_BACKGROUND) or one of its top and bottom rules (with BLOCK_BORDER),
+ * painted like those, across the whole row width of its paragraph's first or
+ * last row. */
+#define VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT (1u << 13)
 /* Noneditable block furniture; label offsets address only the separate label
  * byte blob. No decoration creates formatted offsets, caret or selection stops. */
 typedef struct ViemLayoutDecorationV1 {
@@ -3296,6 +3301,8 @@ typedef uint64_t ViemDiffResultHandle;
 typedef uint64_t ViemDiffCancellationHandle;
 
 #define VIEM_DIFF_SESSION_ALIGNED (1u << 0)
+/* Unchanged runs collapse behind a divider (see docs/diff_mode.md). */
+#define VIEM_DIFF_SESSION_COLLAPSED (1u << 1)
 
 #define VIEM_DIFF_SYNC_UNCHANGED 0u
 #define VIEM_DIFF_SYNC_INCREMENTAL 1u
@@ -3411,6 +3418,16 @@ ViemStatus viem_diff_session_create(ViemCoreHandle base_core, ViemCoreHandle new
     uint32_t flags, ViemDiffSessionHandle *out_session);
 ViemStatus viem_diff_session_destroy(ViemDiffSessionHandle session);
 ViemStatus viem_diff_session_set_aligned(ViemDiffSessionHandle session, uint32_t aligned);
+/* Collapse unchanged runs, or show them all; either way every run the user
+ * opened closes again. The next sync applies it. */
+ViemStatus viem_diff_session_set_collapsed(ViemDiffSessionHandle session, uint32_t collapsed);
+/* Open the collapsed run whose divider borders the zero-based hard `line` on
+ * one side, as a click on a VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT
+ * decoration of that line's row does: the run after it, or a run at the start
+ * of the file before it. out_opened is 1 when a run opened; sync next to show
+ * it on both sides. */
+ViemStatus viem_diff_session_open_collapsed(ViemDiffSessionHandle session,
+    uint32_t from_new, uint64_t line, uint32_t *out_opened);
 /* Update the diff after any change to either core and install both sides'
  * presentations; out_sync is a VIEM_DIFF_SYNC_* value. */
 ViemStatus viem_diff_session_sync(ViemDiffSessionHandle session,
@@ -3448,6 +3465,10 @@ ViemStatus viem_diff_session_scrollbar_marks(ViemDiffSessionHandle session,
 ViemStatus viem_core_set_modifiable(ViemCoreHandle core, uint32_t modifiable);
 /* Remove diff presentation from a view when leaving diff mode. */
 ViemStatus viem_diff_clear_view(ViemCoreHandle core, ViemViewId view);
+/* out_opened is 1 when the view's caret moved onto collapsed context, which
+ * opened in that view, since the last sync: sync now to open it on the other
+ * side too. */
+ViemStatus viem_diff_view_opened_context(ViemCoreHandle core, ViemViewId view, uint32_t *out_opened);
 /* Two-pass copy of the source as last loaded or saved (the Last saved base).
  * out_available is zero when it is unknown, such as after recovery. */
 ViemStatus viem_core_copy_saved_source(ViemCoreHandle core, uint8_t *output,

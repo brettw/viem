@@ -1952,6 +1952,7 @@ internal static unsafe partial class Native
     public const uint VIEM_LAYOUT_DECORATION_ALERT_TITLE = (1u << 9);
     public const uint VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT = 10u;
     public const uint VIEM_LAYOUT_DECORATION_ALERT_KIND_MASK = (7u << 10);
+    public const uint VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT = (1u << 13);
     public static readonly uint VIEM_LAYOUT_DECORATION_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationV1));
     public static readonly uint VIEM_LAYOUT_DECORATIONS_INFO_V1_SIZE = ((uint)sizeof(ViemLayoutDecorationsInfoV1));
     public static readonly uint VIEM_POSITIONED_CARET_V1_SIZE = ((uint)sizeof(ViemPositionedCaretV1));
@@ -2148,6 +2149,7 @@ internal static unsafe partial class Native
     public const uint VIEM_DOCUMENT_MODE_CODE = 3u;
     public static readonly uint VIEM_SET_DOCUMENT_MODE_V1_SIZE = ((uint)sizeof(ViemSetDocumentModeV1));
     public const uint VIEM_DIFF_SESSION_ALIGNED = (1u << 0);
+    public const uint VIEM_DIFF_SESSION_COLLAPSED = (1u << 1);
     public const uint VIEM_DIFF_SYNC_UNCHANGED = 0u;
     public const uint VIEM_DIFF_SYNC_INCREMENTAL = 1u;
     public const uint VIEM_DIFF_SYNC_FULL = 2u;
@@ -2632,6 +2634,10 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_session_set_aligned(ulong @session, uint @aligned);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_set_collapsed(ulong @session, uint @collapsed);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_session_open_collapsed(ulong @session, uint @from_new, ulong @line, uint* @out_opened);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_session_sync(ulong @session, ulong @base_core, ulong @base_view, ulong @new_core, ulong @new_view, uint* @out_sync);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_session_corresponding_line(ulong @session, uint @from_new, ulong @line, ulong* @out_line);
@@ -2649,6 +2655,8 @@ internal static unsafe partial class Native
     public static extern uint viem_core_set_modifiable(ulong @core, uint @modifiable);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_clear_view(ulong @core, ulong @view);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_view_opened_context(ulong @core, ulong @view, uint* @out_opened);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_copy_saved_source(ulong @core, byte* @output, ulong @output_capacity, ulong* @out_required, uint* @out_available);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

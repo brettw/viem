@@ -19,10 +19,27 @@ pub struct BlockBoxStyle {
     pub alert: Option<AlertHeading>,
     pub inline_start: f32,
     pub inline_end: f32,
+    /// Diff mode's divider for collapsed context in this paragraph's margin.
+    pub collapsed_divider: Option<CollapsedDivider>,
 }
 impl Default for BlockBoxStyle {
     fn default() -> Self { Self { margin: EdgeInsets::default(), padding: EdgeInsets::default(), border: EdgeInsets::default(),
-        border_colors: [None; 4], background: None, foreground: Color { red: 0., green: 0., blue: 0., alpha: 1. }, foreground_is_default: true, language_label: None, language_picker_disabled: false, alert: None, inline_start: 0., inline_end: 0. } }
+        border_colors: [None; 4], background: None, foreground: Color { red: 0., green: 0., blue: 0., alpha: 1. }, foreground_is_default: true, language_label: None, language_picker_disabled: false, alert: None, inline_start: 0., inline_end: 0., collapsed_divider: None } }
+}
+
+/// The divider that replaces collapsed unchanged lines: one band of the
+/// Collapsed context style, `height` unscaled points tall, filling the top
+/// (`after` false) or bottom margin of the paragraph beside the hidden lines.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CollapsedDivider {
+    pub after: bool,
+    /// The hidden lines reach the start (before) or end (after) of the file,
+    /// so this paragraph lays out as the document's first or last.
+    pub document_edge: bool,
+    pub height: f32,
+    pub background: Option<Color>,
+    /// Top and bottom rule widths and colors; a missing color is the text's.
+    pub rules: [(f32, Option<Color>); 2],
 }
 
 /// Noneditable alert furniture: an icon and title on one row above the first
@@ -52,6 +69,7 @@ impl BlockBoxStyle {
             foreground: style.character.foreground,
             foreground_is_default: style.character.foreground_is_default,
             language_label: None, language_picker_disabled: false, alert: None, inline_start: 0., inline_end: 0.,
+            collapsed_divider: None,
         }
     }
     pub fn top(&self) -> f32 { self.padding.top + self.border.top + self.alert.as_ref().map_or(0., AlertHeading::height) }

@@ -72,6 +72,7 @@ static ViemStatus (*toggle_checkbox)(ViemCoreHandle, ViemViewId, const ViemLayou
 _Static_assert(VIEM_LAYOUT_DECORATION_ALERT_ICON == {alert_icon}, "alert icon decoration flag");
 _Static_assert(VIEM_LAYOUT_DECORATION_ALERT_TITLE == {alert_title}, "alert title decoration flag");
 _Static_assert(VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT == {alert_kind_shift}, "alert decoration kind shift");
+_Static_assert(VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT == {collapsed_context}, "collapsed context decoration flag");
 _Static_assert(VIEM_ALERT_CAUTION == {alert_caution}, "last alert kind");
 static ViemStatus (*set_alert)(ViemCoreHandle, ViemViewId, const ViemSetAlertV1 *, ViemCoreOutcomeV1 *) = viem_core_view_set_alert;
 _Static_assert(VIEM_FORMATTING_BOLD == {formatting_bold}, "first formatting action");
@@ -114,6 +115,7 @@ _Static_assert(VIEM_STYLE_DEFINITION_LINE_NUMBER == {line_number_style_flag}, "l
 _Static_assert(VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER == {current_line_number_style_flag}, "current line number definition flag");
 _Static_assert(VIEM_LINE_NUMBER_REGION_CURRENT == {current_line_number_region_flag}, "current line number region flag");
 _Static_assert(VIEM_DIFF_SESSION_ALIGNED == {diff_aligned}, "diff aligned flag");
+_Static_assert(VIEM_DIFF_SESSION_COLLAPSED == {diff_collapsed}, "diff collapsed flag");
 _Static_assert(VIEM_DIFF_SYNC_INCREMENTAL == {diff_sync_incremental} && VIEM_DIFF_SYNC_FULL == {diff_sync_full}, "diff sync results");
 _Static_assert(VIEM_DIFF_BASE_UNSTAGED == {diff_base_unstaged} && VIEM_DIFF_BASE_BRANCH == {diff_base_branch} && VIEM_DIFF_BASE_FILE == {diff_base_file}, "diff base kinds");
 _Static_assert(VIEM_DIFF_RESULT_UNAVAILABLE == {diff_result_unavailable} && VIEM_DIFF_RESULT_COMMAND_FAILED == {diff_result_command}, "diff result codes");
@@ -570,6 +572,11 @@ static void typecheck(void) {{
       ViemViewId, uint32_t, ViemDiffNavigationV1 *) = viem_diff_session_navigate;
   ViemStatus (*diff_marks)(ViemDiffSessionHandle, ViemCoreHandle, ViemViewId, uint32_t,
       ViemDiffScrollbarMarkV1 *, uint64_t, uint64_t *, float *) = viem_diff_session_scrollbar_marks;
+  ViemStatus (*diff_set_collapsed)(ViemDiffSessionHandle, uint32_t) = viem_diff_session_set_collapsed;
+  ViemStatus (*diff_open_collapsed)(ViemDiffSessionHandle, uint32_t, uint64_t, uint32_t *) =
+      viem_diff_session_open_collapsed;
+  ViemStatus (*diff_opened_context)(ViemCoreHandle, ViemViewId, uint32_t *) = viem_diff_view_opened_context;
+  (void)diff_set_collapsed; (void)diff_open_collapsed; (void)diff_opened_context;
   (void)diff_create; (void)diff_sync; (void)diff_line; (void)diff_load; (void)diff_item; (void)saved_source;
   ViemStatus (*diff_colors)(ViemRgbaV1 *, ViemRgbaV1 *) = viem_diff_line_colors;
   (void)diff_navigate; (void)diff_marks; (void)diff_colors;
@@ -749,6 +756,7 @@ static void typecheck(void) {{
         current_line_number_style_flag = VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER,
         current_line_number_region_flag = VIEM_LINE_NUMBER_REGION_CURRENT,
         diff_aligned = VIEM_DIFF_SESSION_ALIGNED,
+        diff_collapsed = VIEM_DIFF_SESSION_COLLAPSED,
         diff_sync_incremental = VIEM_DIFF_SYNC_INCREMENTAL,
         diff_sync_full = VIEM_DIFF_SYNC_FULL,
         diff_base_unstaged = VIEM_DIFF_BASE_UNSTAGED,
@@ -777,6 +785,7 @@ static void typecheck(void) {{
         alert_icon = VIEM_LAYOUT_DECORATION_ALERT_ICON,
         alert_title = VIEM_LAYOUT_DECORATION_ALERT_TITLE,
         alert_kind_shift = VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT,
+        collapsed_context = VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT,
         alert_caution = VIEM_ALERT_CAUTION,
         formatting_bold = VIEM_FORMATTING_BOLD,
         formatting_alert_note = VIEM_FORMATTING_ALERT_NOTE,

@@ -317,6 +317,25 @@ fn install_diff_styles(sheet: &mut StyleSheet) {
             block: BlockProperties { background: Some(color), ..Default::default() },
         });
     }
+    let id = StyleId::diff_collapsed_context();
+    let tint = |alpha| Color { red: 0.5, green: 0.5, blue: 0.55, alpha };
+    sheet.block_metadata.insert(id.clone(), StyleDefinitionMetadata::generated(
+        id.builtin_block_display_name().expect("the collapsed context style has a fixed display name")));
+    sheet.block_styles.insert(id.clone(), BlockStyle {
+        id,
+        based_on: Some(sheet.base_paragraph.clone()),
+        next_paragraph_style: None,
+        role: BlockRole::Paragraph,
+        character: CharacterProperties::default(),
+        block: BlockProperties {
+            background: Some(tint(0.10)),
+            border_top_width: Some(1.0),
+            border_top_color: Some(tint(0.45)),
+            border_bottom_width: Some(1.0),
+            border_bottom_color: Some(tint(0.45)),
+            ..Default::default()
+        },
+    });
     for (id, color) in [(StyleId::diff_added_text(), green(0.40)), (StyleId::diff_removed_text(), red(0.40))] {
         let name = id.internal_character_display_name().expect("diff text styles have fixed display names");
         sheet.character_metadata.insert(id.clone(), StyleDefinitionMetadata::generated(name));

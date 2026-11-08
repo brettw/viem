@@ -473,6 +473,8 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         diffMenu = menu
         menu.delegate = self
         menu.addItem(responderItem("Align Sides", action: #selector(EVDocumentWindowController.toggleDiffAlignSides(_:))))
+        menu.addItem(responderItem("Collapse Context",
+                                   action: #selector(EVDocumentWindowController.toggleDiffCollapseContext(_:))))
         menu.addItem(responderItem("Refresh Base", action: #selector(EVDocumentWindowController.refreshDiffBase(_:))))
         menu.addItem(responderItem("Choose Base File…", action: #selector(EVDocumentWindowController.chooseDiffBaseFile(_:))))
         menu.addItem(.separator())

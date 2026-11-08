@@ -344,6 +344,21 @@ impl ViewHeightIndex {
         self.replace_range(range, replacement)
     }
 
+    /// Make `range` one exact run of zero height: lines hidden from layout,
+    /// such as diff mode's collapsed context. Lookups by y never land on
+    /// them, and their prefix is the height of the lines before them. O(log n)
+    /// however many lines the range holds.
+    pub fn set_hidden_range(&mut self, range: Range<usize>) -> Result<(), ViewHeightIndexError> {
+        self.validate_range(&range)?;
+        if range.is_empty() {
+            return Ok(());
+        }
+        let line_count = range.end - range.start;
+        self.validate_replacement(&range, line_count, 0.0)?;
+        let replacement = Some(Node::new(HeightRun { line_count, height: 0.0, extent: 0.0, exact: true }));
+        self.replace_range(range, replacement)
+    }
+
     /// Batch exact heights are compacted into equal adjacent runs before one
     /// structural replacement. Work is O(k + log n) for `k` supplied lines.
     pub fn set_exact_heights(

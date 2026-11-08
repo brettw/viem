@@ -136,24 +136,26 @@ impl<P: TextMeasurementProvider> Core<P> {
         // band using the observed wrapping density, then let exact demands
         // retry if it falls short. Treating rows as hard lines shaped several
         // unnecessary screens and could outrun the entire pre-layout band.
+        // Diff mode's collapsed context hides zero-height runs, which these
+        // counts cross without including.
+        let layout = &view.layout;
         let additional_lines = demand.minimum_additional_visual_rows()
-            .saturating_mul(visible_lines.as_ref().map_or(1, Range::len))
+            .saturating_mul(visible_lines.map_or(1, |lines| layout.visible_line_count(lines)))
             .div_ceil(visible_rows.max(1));
-        let extension = needed
-            .len()
+        let extension = layout.visible_line_count(needed.clone())
             .max(additional_lines)
             .clamp(MIN_OVERSCAN_LINES, MAX_EXTENSION_LINES);
         let materialized = demand.materialized_hard_lines();
         let count = snapshot.coverage.document_hard_line_count();
-        let mut requested = needed.start.saturating_sub(MIN_OVERSCAN_LINES)
-            ..needed.end.saturating_add(MIN_OVERSCAN_LINES).min(count);
+        let mut requested = layout.step_visible_lines(needed.start, MIN_OVERSCAN_LINES, false)
+            ..layout.step_visible_lines(needed.end.min(count), MIN_OVERSCAN_LINES, true).min(count);
         if matches!(
             demand.edge(),
             LayoutDemandEdge::Before | LayoutDemandEdge::Both
         ) {
             requested.start = requested
                 .start
-                .min(materialized.start.saturating_sub(extension));
+                .min(layout.step_visible_lines(materialized.start, extension, false));
         }
         if matches!(
             demand.edge(),
@@ -161,12 +163,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         ) {
             requested.end = requested
                 .end
-                .max(materialized.end.saturating_add(extension).min(count));
+                .max(layout.step_visible_lines(materialized.end.min(count), extension, true).min(count));
         }
         // A viewport scrolled far from its caret or an extreme counted motion
         // can require two distant bands. Report the structured layout error
         // instead of capturing their whole hull on a synchronous host turn.
-        Ok((requested.len() <= MAX_INPUT_LAYOUT_LINES).then_some(requested))
+        Ok((layout.visible_line_count(requested.clone()) <= MAX_INPUT_LAYOUT_LINES).then_some(requested))
     }
 
     pub(super) fn satisfy_input_layout_demand(

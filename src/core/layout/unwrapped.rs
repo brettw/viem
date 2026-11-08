@@ -1095,7 +1095,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                 }
             }
             let bands = merge_bands(bands);
-            let (y, limited_origin) = block_box::editable_flow_position(None, if hard_line_index == 0 {
+            let (y, limited_origin) = block_box::editable_flow_position(None, if starts_document(hard_line_index, &paragraph.style) {
                 content_insets.top + block_box::before(&paragraph.style) * view.scale
             } else {
                 0.0
@@ -1276,7 +1276,8 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                         styles.table_context.as_ref(),
                     )
                 })
-                .transpose()?;
+                .transpose()?
+                .filter(|_| !ends_document(&paragraph.style));
             let inputs = super::line_layout_inputs(
                 &line_range, &paragraph, next.as_ref(), style_runs, styles,
             );
@@ -1305,6 +1306,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
             horizontal_rows.push((hard_line_index, 0, bands));
             lines.push(RegionalHardLineLayout {
                 render_run_policy: self.provider.render_run_policy(),
+                elided: 0,
                 diagnostics: Vec::new(), // Sparse horizontal results are not cached.
                 layout_revision,
                 hard_line_index,

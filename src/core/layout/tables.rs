@@ -1608,6 +1608,7 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
                     next_checkpoint: None,
                     diagnostics: Vec::new(),
                     render_run_policy: self.provider.render_run_policy(),
+                    elided: 0,
                     inputs: line_layout_inputs(
                         range,
                         &paragraph,

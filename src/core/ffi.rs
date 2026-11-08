@@ -1873,6 +1873,8 @@ pub const VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND: u32 = 1 << 2;
 pub const VIEM_LAYOUT_DECORATION_BLOCK_BORDER: u32 = 1 << 3;
 pub const VIEM_LAYOUT_DECORATION_CODE_LANGUAGE: u32 = 1 << 4;
 pub const VIEM_LAYOUT_DECORATION_LANGUAGE_PICKER_DISABLED: u32 = 1 << 5;
+/// Diff mode's collapsed-context divider, with the background or border bit.
+pub const VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT: u32 = 1 << 13;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ViemLayoutDecorationsInfoV1 {
@@ -8588,6 +8590,8 @@ pub unsafe extern "C" fn viem_core_view_copy_layout_decorations(
                                     | kind.ordinal() << VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT,
                                 crate::layout::DecorationKind::AlertTitle { kind } => VIEM_LAYOUT_DECORATION_ALERT_TITLE
                                     | kind.ordinal() << VIEM_LAYOUT_DECORATION_ALERT_KIND_SHIFT,
+                                crate::layout::DecorationKind::CollapsedContext { rule } => VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT
+                                    | if rule { VIEM_LAYOUT_DECORATION_BLOCK_BORDER } else { VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND },
                                 _ => 0,
                             },
                             row_index: checked_export_count(row_index)?,

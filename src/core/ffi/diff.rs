@@ -18,6 +18,8 @@ pub type ViemDiffResultHandle = u64;
 pub type ViemDiffCancellationHandle = u64;
 
 pub const VIEM_DIFF_SESSION_ALIGNED: u32 = 1 << 0;
+/// Unchanged runs collapse behind a divider.
+pub const VIEM_DIFF_SESSION_COLLAPSED: u32 = 1 << 1;
 
 pub const VIEM_DIFF_SYNC_UNCHANGED: u32 = 0;
 pub const VIEM_DIFF_SYNC_INCREMENTAL: u32 = 1;
@@ -199,16 +201,17 @@ pub unsafe extern "C" fn viem_diff_session_create(
     ffi_boundary(|| {
         typed_pointer_region(out_session, 1)?;
         unsafe { out_session.write(0) };
-        if flags & !VIEM_DIFF_SESSION_ALIGNED != 0 || base_core == new_core {
+        if flags & !(VIEM_DIFF_SESSION_ALIGNED | VIEM_DIFF_SESSION_COLLAPSED) != 0 || base_core == new_core {
             return Err(ViemStatus::InvalidArgument);
         }
         let base = checkout_core(base_core)?;
         let new = checkout_core(new_core)?;
-        let session = crate::coordinator::DiffSession::new(
+        let mut session = crate::coordinator::DiffSession::new(
             base.core().document(),
             new.core().document(),
             flags & VIEM_DIFF_SESSION_ALIGNED != 0,
         );
+        session.set_collapsed(flags & VIEM_DIFF_SESSION_COLLAPSED != 0);
         drop((base, new));
         let mut registry = lock()?;
         let handle = allocate(&mut registry)?;
@@ -262,6 +265,45 @@ pub extern "C" fn viem_diff_session_set_aligned(session: ViemDiffSessionHandle, 
             session.set_aligned(aligned != 0);
             Ok(())
         })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn viem_diff_session_set_collapsed(session: ViemDiffSessionHandle, collapsed: u32) -> ViemStatus {
+    ffi_boundary(|| {
+        if collapsed > 1 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        with_session(session, |session| {
+            session.set_collapsed(collapsed != 0);
+            Ok(())
+        })
+    })
+}
+
+/// Open the collapsed run whose divider borders `line` on one side. The next
+/// sync shows it on both sides.
+///
+/// # Safety
+/// `out_opened` must point to one aligned, writable value.
+#[no_mangle]
+pub unsafe extern "C" fn viem_diff_session_open_collapsed(
+    session: ViemDiffSessionHandle,
+    from_new: u32,
+    line: u64,
+    out_opened: *mut u32,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_opened, 1)?;
+        unsafe { out_opened.write(0) };
+        if from_new > 1 {
+            return Err(ViemStatus::InvalidArgument);
+        }
+        let line = usize::try_from(line).map_err(|_| ViemStatus::InvalidArgument)?;
+        let side = if from_new != 0 { crate::diff::Side::New } else { crate::diff::Side::Base };
+        let opened = with_session(session, |session| Ok(session.open_collapsed_beside(side, line)))?;
+        unsafe { out_opened.write(u32::from(opened)) };
+        Ok(())
     })
 }
 
@@ -511,7 +553,8 @@ pub unsafe extern "C" fn viem_diff_session_info(
         let info = with_session(session, |session| {
             Ok(ViemDiffSessionInfoV1 {
                 struct_size: VIEM_DIFF_SESSION_INFO_V1_SIZE,
-                flags: if session.aligned() { VIEM_DIFF_SESSION_ALIGNED } else { 0 },
+                flags: if session.aligned() { VIEM_DIFF_SESSION_ALIGNED } else { 0 }
+                    | if session.collapsed() { VIEM_DIFF_SESSION_COLLAPSED } else { 0 },
                 hunk_count: session.state().hunk_count() as u64,
                 base_line_count: session.state().base_line_count() as u64,
                 new_line_count: session.state().new_line_count() as u64,
@@ -534,6 +577,23 @@ pub extern "C" fn viem_core_set_modifiable(core: ViemCoreHandle, modifiable: u32
             core.set_modifiable(modifiable != 0);
             Ok(())
         })
+    })
+}
+
+/// Whether the view's caret opened collapsed context since the last sync, so
+/// the host syncs to open it on the other side too.
+///
+/// # Safety
+/// `out_opened` must point to one aligned, writable value.
+#[no_mangle]
+pub unsafe extern "C" fn viem_diff_view_opened_context(core: ViemCoreHandle, view: ViemViewId,
+    out_opened: *mut u32) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_opened, 1)?;
+        unsafe { out_opened.write(0) };
+        let opened = with_core(core, |core| core.has_opened_collapsed(ViewId(view)).map_err(core_status))?;
+        unsafe { out_opened.write(u32::from(opened)) };
+        Ok(())
     })
 }
 

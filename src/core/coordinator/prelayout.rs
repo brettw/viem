@@ -70,7 +70,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         let coverage = snapshot.coverage.hard_lines();
         // Observed hard lines per screen is more useful than estimated heights
         // for prose: an unmeasured paragraph can wrap into many visual rows.
-        let near = (last.hard_line_index + 1 - first.hard_line_index).saturating_mul(NEAR_PAGES).max(1);
+        // Diff mode's collapsed context hides runs that are not counted.
+        let near = view.layout.visible_line_count(first.hard_line_index..last.hard_line_index + 1)
+            .saturating_mul(NEAR_PAGES).max(1);
         let window = if view.layout.regional_cache_retains_document() {
             0..line_count
         } else {

@@ -48,15 +48,16 @@ extension EVCoreDocumentBackend: EVDiffBackend {
     }
 
     public func beginDiff(base: any EVDocumentBackend, baseSurface: any EVEditorSurface,
-                          surface: any EVEditorSurface, aligned: Bool, editable: Bool) throws -> any EVDiffSessionControlling {
+                          surface: any EVEditorSurface, aligned: Bool, collapsed: Bool,
+                          editable: Bool) throws -> any EVDiffSessionControlling {
         guard let base = base as? EVCoreDocumentBackend,
               let baseSurface = baseSurface as? EVEditorSurfaceController,
               let surface = surface as? EVEditorSurfaceController,
               surface.backend === self else {
             throw EVCoreFrontendError.core(operation: "Start diff mode", status: UInt32(VIEM_STATUS_INVALID_ARGUMENT))
         }
-        let session = try EVCoreDiffSession(document: self, base: base, baseSurface: baseSurface,
-                                            surface: surface, aligned: aligned, editable: editable)
+        let session = try EVCoreDiffSession(document: self, base: base, baseSurface: baseSurface, surface: surface,
+                                            aligned: aligned, collapsed: collapsed, editable: editable)
         diffSessions.removeAll { $0.value == nil }
         diffSessions.append(WeakDiffSession(session))
         return session
@@ -64,8 +65,9 @@ extension EVCoreDocumentBackend: EVDiffBackend {
 }
 
 /// One comparison between a base buffer and a live document. It shows the
-/// document in Code, keeps the core diff current after every source change,
-/// and mirrors vertical scrolling while the sides are aligned.
+/// document in Code, keeps the core diff current after every source change
+/// and every collapsed run a caret or click opens, and mirrors vertical
+/// scrolling while the sides are aligned.
 @MainActor
 final class EVCoreDiffSession: EVDiffSessionControlling {
     private weak var document: EVCoreDocumentBackend?
@@ -75,6 +77,7 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
     private weak var surface: EVEditorSurfaceController?
     private var handle: ViemDiffSessionHandle = 0
     private var aligned: Bool
+    private var collapsed: Bool
     private var restoreMode: EVDocumentModeChoice?
     private var restoreModifiable = false
     private var mirroring = false
@@ -83,12 +86,13 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
     private var markKeys: [ObjectIdentifier: (layout: ViemLayoutSnapshotIdentityV1, maximum: CGFloat)] = [:]
 
     init(document: EVCoreDocumentBackend, base: EVCoreDocumentBackend, baseSurface: EVEditorSurfaceController,
-         surface: EVEditorSurfaceController, aligned: Bool, editable: Bool) throws {
+         surface: EVEditorSurfaceController, aligned: Bool, collapsed: Bool, editable: Bool) throws {
         self.document = document
         self.base = base
         self.baseSurface = baseSurface
         self.surface = surface
         self.aligned = aligned
+        self.collapsed = collapsed
         // The live side is compared and edited as Code. Turning Preview off
         // (or Text into Code) reprojects the same source without converting it.
         if let mode = surface.currentDocumentMode(), mode.format != "code" {
@@ -100,14 +104,24 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
             restoreModifiable = true
         }
         var handle: ViemDiffSessionHandle = 0
-        try checkedDiff(viem_diff_session_create(base.core, document.core,
-                                                 aligned ? UInt32(VIEM_DIFF_SESSION_ALIGNED) : 0, &handle),
+        let flags = (aligned ? UInt32(VIEM_DIFF_SESSION_ALIGNED) : 0) | (collapsed ? UInt32(VIEM_DIFF_SESSION_COLLAPSED) : 0)
+        try checkedDiff(viem_diff_session_create(base.core, document.core, flags, &handle),
                         operation: "Compare with the diff base")
         self.handle = handle
         surface.diffViewportTopDidChange = { [weak self] _ in self?.mirror(fromNew: true) }
         baseSurface.diffViewportTopDidChange = { [weak self] _ in self?.mirror(fromNew: false) }
-        surface.diffPresentationDidRefresh = { [weak self] in self?.updateMarks(isNew: true) }
-        baseSurface.diffPresentationDidRefresh = { [weak self] in self?.updateMarks(isNew: false) }
+        surface.diffPresentationDidRefresh = { [weak self] in
+            self?.updateMarks(isNew: true)
+            self?.syncOpenedContext(isNew: true)
+        }
+        baseSurface.diffPresentationDidRefresh = { [weak self] in
+            self?.updateMarks(isNew: false)
+            self?.syncOpenedContext(isNew: false)
+        }
+        surface.diffOpenCollapsedContext = { [weak self] line in self?.openCollapsedContext(isNew: true, line: line) ?? false }
+        baseSurface.diffOpenCollapsedContext = { [weak self] line in
+            self?.openCollapsedContext(isNew: false, line: line) ?? false
+        }
         // Both sides are Code and share its remembered wrapping; a change on
         // either side applies to the other.
         let wrap = document.configuration.codeWordWrap
@@ -130,6 +144,38 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         _ = viem_diff_session_set_aligned(handle, aligned ? 1 : 0)
         sync(force: true)
         if aligned { mirror(fromNew: true) }
+    }
+
+    func setCollapsed(_ collapsed: Bool) {
+        guard collapsed != self.collapsed, handle != 0 else { return }
+        self.collapsed = collapsed
+        _ = viem_diff_session_set_collapsed(handle, collapsed ? 1 : 0)
+        sync(force: true)
+        mirror(fromNew: true)
+    }
+
+    /// Open the collapsed run whose divider, drawn at `line` of one side, was
+    /// clicked, on both sides. False when no run borders that line.
+    func openCollapsedContext(isNew: Bool, line: UInt64) -> Bool {
+        guard handle != 0 else { return false }
+        var opened: UInt32 = 0
+        guard viem_diff_session_open_collapsed(handle, isNew ? 1 : 0, line, &opened) == UInt32(VIEM_STATUS_OK),
+              opened != 0 else { return false }
+        sync(force: true)
+        mirror(fromNew: isNew)
+        return true
+    }
+
+    /// A caret that moved onto collapsed context opened it in its own view;
+    /// sync so the other side opens it too, in the same turn.
+    private func syncOpenedContext(isNew: Bool) {
+        guard handle != 0, let side = isNew ? surface : baseSurface,
+              let core = isNew ? document?.core : base?.core, let view = side.session?.viewID else { return }
+        var opened: UInt32 = 0
+        guard viem_diff_view_opened_context(core, view, &opened) == UInt32(VIEM_STATUS_OK), opened != 0 else { return }
+        sync()
+        if !isNew { surface?.refreshPresentation() }
+        mirror(fromNew: isNew)
     }
 
     /// Update the diff for the document's current revision and redraw.
@@ -219,6 +265,8 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         baseSurface?.diffViewportTopDidChange = nil
         surface?.diffPresentationDidRefresh = nil
         baseSurface?.diffPresentationDidRefresh = nil
+        surface?.diffOpenCollapsedContext = nil
+        baseSurface?.diffOpenCollapsedContext = nil
         surface?.codeWordWrapDidChange = nil
         baseSurface?.codeWordWrapDidChange = nil
         surface?.editorView.documentScrollbars.setChangeMarks([], extent: 0)

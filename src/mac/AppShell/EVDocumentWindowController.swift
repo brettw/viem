@@ -2126,6 +2126,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
 
   @objc func toggleDiffMode(_ sender: Any?) { diffController.toggle() }
   @objc func toggleDiffAlignSides(_ sender: Any?) { diffMode?.toggleAlign() }
+  @objc func toggleDiffCollapseContext(_ sender: Any?) { diffMode?.toggleCollapse() }
   @objc func refreshDiffBase(_ sender: Any?) { diffMode?.refresh() }
   @objc func chooseDiffBaseFile(_ sender: Any?) { diffMode?.chooseBaseFile() }
   @objc func showPreviousDiffFile(_ sender: Any?) { diffMode?.moveFile(by: -1) }
@@ -2277,6 +2278,9 @@ extension EVDocumentWindowController: NSMenuItemValidation {
       return activeDocument != nil
     case #selector(toggleDiffAlignSides(_:)):
       menuItem.state = (diffMode?.isAligned ?? configuration.diffAlignSides) ? .on : .off
+      return enabled
+    case #selector(toggleDiffCollapseContext(_:)):
+      menuItem.state = (diffMode?.isCollapsed ?? configuration.diffCollapseContext) ? .on : .off
       return enabled
     case #selector(refreshDiffBase(_:)), #selector(chooseDiffBaseFile(_:)):
       return enabled

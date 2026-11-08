@@ -17,9 +17,11 @@ public protocol EVDiffBackend: AnyObject {
   func makeDiffBase(source: Data, reusing: (any EVDocumentBackend)?) throws -> any EVDocumentBackend
   /// Compare `base` (shown by `baseSurface`) with this document (shown by
   /// `surface`). The session shows the document in Code until it ends.
-  /// `editable` is false for a file deleted since the base.
+  /// `editable` is false for a file deleted since the base. `collapsed`
+  /// hides unchanged runs from the start, moving a caret out of them.
   func beginDiff(base: any EVDocumentBackend, baseSurface: any EVEditorSurface,
-                 surface: any EVEditorSurface, aligned: Bool, editable: Bool) throws -> any EVDiffSessionControlling
+                 surface: any EVEditorSurface, aligned: Bool, collapsed: Bool,
+                 editable: Bool) throws -> any EVDiffSessionControlling
 }
 
 extension EVDiffBackend {
@@ -32,6 +34,9 @@ extension EVDiffBackend {
 @MainActor
 public protocol EVDiffSessionControlling: AnyObject {
   func setAligned(_ aligned: Bool)
+  /// Collapse unchanged context, or show it all; either closes every run
+  /// the user opened.
+  func setCollapsed(_ collapsed: Bool)
   /// Move both sides to the next or previous change, wrapping within the file.
   func navigateChange(next: Bool)
   /// Remove the presentation and restore the document's previous mode.
@@ -400,6 +405,7 @@ final class EVDiffToolbar: NSObject {
   let filePopup = NSPopUpButton(frame: .zero, pullsDown: false)
   let nextButton = NSButton()
   let alignButton = NSButton()
+  let collapseButton = NSButton()
   let previousChangeButton = NSButton()
   let nextChangeButton = NSButton()
   var selectBase: ((Int) -> Void)?
@@ -409,6 +415,7 @@ final class EVDiffToolbar: NSObject {
   var next: (() -> Void)?
   var selectFile: ((Int) -> Void)?
   var toggleAlign: (() -> Void)?
+  var toggleCollapse: (() -> Void)?
   var previousChange: (() -> Void)?
   var nextChange: (() -> Void)?
 
@@ -455,6 +462,29 @@ final class EVDiffToolbar: NSObject {
     return image
   }
 
+  /// Chevrons closing on a line: unchanged lines folded into a divider.
+  static func collapseIcon() -> NSImage {
+    let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { _ in
+      NSColor.black.setStroke()
+      let path = NSBezierPath()
+      path.lineWidth = 1.2
+      path.lineCapStyle = .round
+      path.lineJoinStyle = .round
+      for (edge, tip) in [(CGFloat(1.5), CGFloat(5)), (14.5, 11)] {
+        path.move(to: NSPoint(x: 4.5, y: edge))
+        path.line(to: NSPoint(x: 8, y: tip))
+        path.line(to: NSPoint(x: 11.5, y: edge))
+      }
+      path.move(to: NSPoint(x: 1.5, y: 8))
+      path.line(to: NSPoint(x: 14.5, y: 8))
+      path.stroke()
+      return true
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = "Collapse Context"
+    return image
+  }
+
   override init() {
     super.init()
     accessory.layoutAttribute = .bottom
@@ -489,6 +519,10 @@ final class EVDiffToolbar: NSObject {
     alignButton.setButtonType(.pushOnPushOff)
     alignButton.bezelStyle = .accessoryBar
     alignButton.image = Self.alignIcon()
+    configure(collapseButton, symbol: "circle", label: "Collapse Context", action: #selector(collapseClicked(_:)))
+    collapseButton.setButtonType(.pushOnPushOff)
+    collapseButton.bezelStyle = .accessoryBar
+    collapseButton.image = Self.collapseIcon()
     for (button, next) in [(previousChangeButton, false), (nextChangeButton, true)] {
       let label = next ? "Next Change" : "Previous Change"
       configure(button, symbol: "circle", label: label,
@@ -498,7 +532,7 @@ final class EVDiffToolbar: NSObject {
     filePopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
     filePopup.widthAnchor.constraint(greaterThanOrEqualToConstant: 220).isActive = true
     for view in [basePopup, chooseFileButton, refreshButton, previousButton, filePopup, nextButton, alignButton,
-                 previousChangeButton, nextChangeButton] as [NSView] {
+                 collapseButton, previousChangeButton, nextChangeButton] as [NSView] {
       stack.addArrangedSubview(view)
     }
     stack.frame = NSRect(x: 0, y: 0, width: 800, height: 34)
@@ -515,6 +549,7 @@ final class EVDiffToolbar: NSObject {
   @objc private func nextClicked(_ sender: Any?) { next?() }
   @objc private func fileChanged(_ sender: NSPopUpButton) { selectFile?(sender.indexOfSelectedItem) }
   @objc private func alignClicked(_ sender: Any?) { toggleAlign?() }
+  @objc private func collapseClicked(_ sender: Any?) { toggleCollapse?() }
   @objc private func previousChangeClicked(_ sender: Any?) { previousChange?() }
   @objc private func nextChangeClicked(_ sender: Any?) { nextChange?() }
 }
@@ -580,6 +615,7 @@ final class EVDiffModeController: NSObject {
   private(set) var files: [EVDiffFile] = []
   private(set) var branches: [String] = []
   private(set) var isAligned: Bool
+  private(set) var isCollapsed: Bool
   /// The folder a folder diff lists; nil lists the whole repository.
   private(set) var scope: URL?
   private var baseChoices: [EVDiffBase] = []
@@ -607,6 +643,7 @@ final class EVDiffModeController: NSObject {
     self.host = host
     self.configuration = configuration
     isAligned = configuration.diffAlignSides
+    isCollapsed = configuration.diffCollapseContext
     super.init()
     toolbar.selectBase = { [weak self] index in self?.selectBase(at: index) }
     toolbar.chooseFile = { [weak self] in self?.chooseBaseFile() }
@@ -615,6 +652,7 @@ final class EVDiffModeController: NSObject {
     toolbar.next = { [weak self] in self?.moveFile(by: 1) }
     toolbar.selectFile = { [weak self] index in self?.selectFile(at: index) }
     toolbar.toggleAlign = { [weak self] in self?.toggleAlign() }
+    toolbar.toggleCollapse = { [weak self] in self?.toggleCollapse() }
     toolbar.previousChange = { [weak self] in self?.navigateChange(next: false) }
     toolbar.nextChange = { [weak self] in self?.navigateChange(next: true) }
   }
@@ -642,6 +680,7 @@ final class EVDiffModeController: NSObject {
     isChoosingBase = true
     isEnabled = true
     isAligned = configuration.diffAlignSides
+    isCollapsed = configuration.diffCollapseContext
     if !window.titlebarAccessoryViewControllers.contains(where: { $0 === toolbar.accessory }) {
       window.addTitlebarAccessoryViewController(toolbar.accessory)
     }
@@ -856,7 +895,7 @@ final class EVDiffModeController: NSObject {
       pane.setDiffBaseStatus(title: Self.baseStatusTitle(version), fileURL: baseStatusFileURL(for: document, base: version))
       pane.view.layoutSubtreeIfNeeded()
       pair.session = try backend.beginDiff(base: baseBackend, baseSurface: baseSurface, surface: surface,
-                                           aligned: isAligned, editable: editable)
+                                           aligned: isAligned, collapsed: isCollapsed, editable: editable)
       let numbers = configuration.diffLineNumbers
       (baseSurface as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(numbers)
       (surface as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(numbers)
@@ -994,6 +1033,14 @@ final class EVDiffModeController: NSObject {
     refreshToolbar()
   }
 
+  /// Collapse context, or show it, in every pair; saved for new diff views.
+  func toggleCollapse() {
+    isCollapsed.toggle()
+    try? configuration.setDiffCollapseContext(isCollapsed)
+    for pair in pairs { pair.session?.setCollapsed(isCollapsed) }
+    refreshToolbar()
+  }
+
   /// Move both sides of the active pair to the next or previous change.
   func navigateChange(next: Bool) {
     guard isEnabled else { return }
@@ -1108,6 +1155,7 @@ final class EVDiffModeController: NSObject {
     toolbar.previousButton.isEnabled = !files.isEmpty
     toolbar.nextButton.isEnabled = !files.isEmpty
     toolbar.alignButton.state = isAligned ? .on : .off
+    toolbar.collapseButton.state = isCollapsed ? .on : .off
     toolbar.previousChangeButton.isEnabled = activePair?.session != nil
     toolbar.nextChangeButton.isEnabled = activePair?.session != nil
   }

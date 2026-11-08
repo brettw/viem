@@ -2545,6 +2545,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(), CoreError> {
         self.poll_syntax();
         self.synchronize_whitespace(view_id)?;
+        let _ = self.open_collapsed_at_caret(view_id)?;
         // Font registration may advance metrics synchronously during shaping.
         // Retry only disposable layout work, never the input/source transaction.
         for attempt in 0..3 {
@@ -2736,7 +2737,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 // screens. Start small and let the exact coverage loop extend
                 // only as far as the first viewport needs. Speculation can fill
                 // the neighboring pages after the first correct presentation.
-                (focus_line, focus_line.saturating_add(4).min(hard_line_count))
+                (focus_line, view.layout.step_visible_lines(focus_line, 4, true))
             } else if let Some(previous) = previous_visible {
                 previous
             } else {
@@ -2754,9 +2755,13 @@ impl<P: TextMeasurementProvider> Core<P> {
         // Nothing is cached after a first layout or a Preview/Code switch:
         // lay out only what is visible and let speculation prepare the
         // neighboring screens afterwards.
-        let overscan = if initial_layout || fresh_projection { 0 } else { (visible_end - visible_start).max(MIN_OVERSCAN_LINES) };
-        let mut start = visible_start.saturating_sub(overscan);
-        let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
+        // Diff mode's collapsed context hides runs of zero height, which
+        // overscan and growth cross without counting.
+        let layout = &self.views[&view_id].layout;
+        let overscan = if initial_layout || fresh_projection { 0 }
+            else { layout.visible_line_count(visible_start..visible_end).max(MIN_OVERSCAN_LINES) };
+        let mut start = layout.step_visible_lines(visible_start, overscan, false);
+        let mut end = layout.step_visible_lines(visible_end.min(hard_line_count), overscan, true);
         if let Some((anchor, active)) = visual_block_endpoints {
             let anchor_line = self
                 .document
@@ -2820,13 +2825,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             if !extend_before && !extend_after {
                 return Ok(());
             }
-            let growth = (end - start).max(1);
+            let layout = &self.views[&view_id].layout;
+            let growth = layout.visible_line_count(start..end).max(1);
             let previous = start..end;
             if extend_before {
-                start = start.saturating_sub(growth);
+                start = layout.step_visible_lines(start, growth, false);
             }
             if extend_after {
-                end = end.saturating_add(growth).min(hard_line_count);
+                end = layout.step_visible_lines(end, growth, true).min(hard_line_count);
             }
             if start == previous.start && end == previous.end {
                 return Ok(());
@@ -3431,9 +3437,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             let visible_start = staged_layout.first_line_reaching_y(f64::from(estimated_target_top))
                 .map_err(LayoutError::from)?.unwrap_or(target_line).min(target_line);
             let visible_end = visible_end.max(target_line.saturating_add(1));
-            let overscan = (visible_end - visible_start).max(MIN_OVERSCAN_LINES);
-            let mut start = visible_start.saturating_sub(overscan);
-            let mut end = visible_end.saturating_add(overscan).min(hard_line_count);
+            let overscan = staged_layout.visible_line_count(visible_start..visible_end).max(MIN_OVERSCAN_LINES);
+            let mut start = staged_layout.step_visible_lines(visible_start, overscan, false);
+            let mut end = staged_layout.step_visible_lines(visible_end.min(hard_line_count), overscan, true);
             let mut next_requested_top = estimated_target_top;
 
             loop {
@@ -3489,13 +3495,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if !extend_before && !extend_after {
                     break;
                 }
-                let growth = (end - start).max(1);
+                let growth = staged_layout.visible_line_count(start..end).max(1);
                 let previous = start..end;
                 if extend_before {
-                    start = start.saturating_sub(growth);
+                    start = staged_layout.step_visible_lines(start, growth, false);
                 }
                 if extend_after {
-                    end = end.saturating_add(growth).min(hard_line_count);
+                    end = staged_layout.step_visible_lines(end, growth, true).min(hard_line_count);
                 }
                 if start == previous.start && end == previous.end {
                     break;
@@ -4185,7 +4191,8 @@ impl<P: TextMeasurementProvider> Core<P> {
         // materialization path, including its checkpoint and viewport policy.
         self.poll_syntax();
         self.synchronize_whitespace(view_id)?;
-        let reuse_visible = {
+        let opened_collapsed = self.open_collapsed_at_caret(view_id)?;
+        let reuse_visible = !opened_collapsed && {
             let view = &self.views[&view_id];
             let requirements = inspect_layout_provider(&view.engine);
             current_snapshot_for_layout(&self.document, &view.layout, requirements)
@@ -6784,6 +6791,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     } else { Ok(()) }
                 } else if option_layout_changed || command_requests_relayout {
                     self.materialize_immediate_viewport(view_id, command_presentation_intent)
+                } else if command_requests_reveal && self.open_collapsed_at_caret(view_id).unwrap_or(false) {
+                    // The caret moved onto collapsed context, which is now shown.
+                    self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)
                 } else if command_requests_reveal {
                     let reveal = {
                         let view = self

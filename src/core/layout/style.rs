@@ -265,6 +265,12 @@ pub(crate) struct DiffLayoutInput {
     pub(crate) fillers: Vec<(usize, f32)>,
     /// Filler after the last line, in unscaled points.
     pub(crate) trailing_filler: f32,
+    /// Collapsed-context dividers, sorted by the start offset of the hard
+    /// line whose bottom (`true`) or top margin each fills, and whether the
+    /// hidden lines reach the start or end of the file.
+    pub(crate) dividers: Vec<(usize, bool, bool)>,
+    /// One divider's height in unscaled points.
+    pub(crate) divider_points: f32,
     /// Formatted text length the presentation was built for.
     pub(crate) text_len: usize,
 }
@@ -287,6 +293,17 @@ impl DiffLayoutInput {
         if block.range.end == self.text_len { self.trailing_filler } else { 0.0 }
     }
 
+    /// Whether a divider fills this paragraph's bottom (`true`) or top
+    /// margin, and whether its hidden lines reach the file's edge.
+    fn divider(&self, block: &Block) -> Option<(bool, bool)> {
+        let index = self.dividers.partition_point(|(offset, ..)| *offset < block.range.start);
+        self.dividers.get(index).filter(|(offset, ..)| *offset == block.range.start).map(|(_, after, edge)| (*after, *edge))
+    }
+
+    fn divider_margin(&self, block: &Block, after: bool) -> f32 {
+        if self.divider(block).is_some_and(|divider| divider.0 == after) { self.divider_points } else { 0.0 }
+    }
+
     fn text_in(&self, range: &Range<usize>) -> &[Range<usize>] {
         let first = self.text.partition_point(|span| span.end <= range.start);
         let last = self.text.partition_point(|span| span.start < range.end);
@@ -300,8 +317,8 @@ impl DiffLayoutInput {
         DiffParagraphKey {
             added: self.added,
             line: self.line_style(block).is_some(),
-            filler_before: self.filler_before(block).to_bits(),
-            filler_after: self.filler_after(block).to_bits(),
+            filler_before: (self.filler_before(block) + self.divider_margin(block, false)).to_bits(),
+            filler_after: (self.filler_after(block) + self.divider_margin(block, true)).to_bits(),
             text: self.text_in(&block.range).iter()
                 .map(|span| span.start.max(block.range.start) - start..span.end.min(block.range.end) - start)
                 .collect(),
@@ -316,6 +333,21 @@ struct DiffParagraphKey {
     filler_before: u32,
     filler_after: u32,
     text: Vec<Range<usize>>,
+}
+
+/// The divider band from the sheet's Collapsed context block style.
+fn collapsed_divider(sheet: &StyleSheet, after: bool, document_edge: bool, height: f32) -> super::CollapsedDivider {
+    let block = sheet.block_style(&StyleId::diff_collapsed_context()).map(|style| style.block.clone()).unwrap_or_default();
+    super::CollapsedDivider {
+        after,
+        document_edge,
+        height,
+        background: block.background,
+        rules: [
+            (block.border_top_width.unwrap_or(0.0), block.border_top_color),
+            (block.border_bottom_width.unwrap_or(0.0), block.border_bottom_color),
+        ],
+    }
 }
 
 /// The paragraph style a block resolves with: its own, or diff mode's line
@@ -764,13 +796,16 @@ impl DocumentLayoutStyles {
                         value.language_label = Some(block.language_label());
                         value.language_picker_disabled = !block.code_kind.language_editable();
                     }
+                    if let Some((diff, (after, edge))) = input.diff.and_then(|diff| diff.divider(block).map(|divider| (diff, divider))) {
+                        value.collapsed_divider = Some(collapsed_divider(input.style_sheet, after, edge, diff.divider_points));
+                    }
                     value
                 },
                 containers: containers.into(),
                 margin_top: (if container_body { 0.0 } else if block.list_loose { paragraph.margin_top.max(7.0) } else { paragraph.margin_top })
-                    + input.diff.map_or(0.0, |diff| diff.filler_before(block)),
+                    + input.diff.map_or(0.0, |diff| diff.filler_before(block) + diff.divider_margin(block, false)),
                 margin_bottom: (if container_body { 0.0 } else if block.list_loose { paragraph.margin_bottom.max(7.0) } else { paragraph.margin_bottom })
-                    + input.diff.map_or(0.0, |diff| diff.filler_after(block)),
+                    + input.diff.map_or(0.0, |diff| diff.filler_after(block) + diff.divider_margin(block, true)),
                 line_spacing: paragraph.line_spacing,
                 first_line_indent: if matches!(
                     block.kind,

@@ -1,7 +1,8 @@
 # Diff mode
 
 The macOS and Windows frontends share the comparison engine and Git base sources.
-Collapsed context remains planned.
+Collapsed context is available on macOS; the Windows frontend does not offer it
+yet.
 
 Diff mode shows a document beside an earlier version of itself so the writer
 can review and edit their changes.
@@ -81,7 +82,8 @@ Changing one view's state does not change other open views.
 
 ### Collapsed context
 
-A **Collapse context** toggle in the diff toolbar hides unchanged lines that
+A **Collapse context** toggle, in both the diff toolbar (chevrons closing on a
+line, left of the change buttons) and the Diff menu, hides unchanged lines that
 are the same on both sides. It is on by default; like Align sides, each diff
 view has its own state and an explicit change is saved in settings for new
 diff views.
@@ -107,6 +109,11 @@ toggled, the base is refreshed or another file is shown, when:
 
 Editing reflows the collapsed regions around the changed hunks; regions that
 were opened stay open while their lines remain equal.
+
+When a diff view starts (including after Refresh or another file), a caret
+inside a region that collapses moves to the nearest line beside it. Turning
+collapsing on later, or an edit that makes the caret's lines equal, leaves the
+caret's own region open instead.
 
 ## Styles
 
@@ -134,10 +141,10 @@ Removed line with no Removed text, since nothing in it was deleted. Aligned
 filler is blank and takes no diff style.
 
 A fifth built-in Code block style, **Collapsed context**, draws the divider
-that replaces collapsed lines. The divider is one empty row in that style:
-its character properties set the row height and its margins, padding,
-borders and background draw the divider. By default it is a lightly tinted
-band with thin top and bottom rules.
+that replaces collapsed lines. The divider is one default Code row tall,
+across the whole width; the style's background and top and bottom borders
+draw it. By default it is a lightly tinted band with 1-point top and bottom
+rules.
 
 Diff mode is an exception to the rule that at most one named character style
 applies at a point: Added text and Removed text apply on top of the named
@@ -482,51 +489,61 @@ context), built in this order:
   base changes and Refresh. Tests: `EVFolderDiffTests` (temporary git
   repositories; documents open through `folderDiffDocumentOpener` because
   the test host registers no document types).
-- [ ] 9. Collapsed context (not started; the spec above is settled). This
-  needs a new layout capability, elided hard-line ranges per view, and is
-  the largest remaining change. Plan:
-  - Core diff (`src/core/diff/presentation.rs`): each side's collapsible
-    runs, the equal chunks minus `DIFF_CONTEXT_LINES` of context next to each
-    change, kept only when they hide more than `DIFF_CONTEXT_LINES` lines.
-    `DiffSession` keeps the opened runs (keyed by their base-line range, so
-    they survive edits that leave the run equal) and clears them on toggle,
-    Refresh and file changes.
-  - Layout (`src/core/layout`): `DiffLayoutInput` gains `elided:
-    Vec<Range<usize>>` (hard lines) and the divider height. Elided lines are
-    one exact zero-height run in `ViewHeightIndex` (`hard_line_at_y` already
-    skips zero-height runs), never shaped, never given rows, and never
-    visited one by one: today a `RegionalLayoutSnapshot` holds one
-    `RegionalHardLineLayout` per line of a contiguous `hard_lines` range,
-    and about 35 sites in `engine.rs` index `lines` by
-    `hard_line - hard_lines.start`. Either let a snapshot's `lines` skip
-    elided ranges (a small sorted gap list with a `line_index(hard_line)`
-    helper replacing those sites) or split viewport and speculative regions
-    at elided ranges. The coordinator's viewport range
-    (`materialize_immediate_viewport`, around `first_line_reaching_y`) and
-    prelayout must skip elided lines in O(log n). Rows stay continuous in y
-    because hidden lines have no height.
-  - The divider is margin on the neighbouring visible line, like filler
-    (`margin_bottom` of the last context line before the run, or
-    `margin_top` of the first line after a run at the start of the file),
-    painted by a new `DecorationKind::CollapsedContext` from the Collapsed
-    context block style (a new internal Code block style beside the diff
-    line styles; default: a lightly tinted band with 1 px top and bottom
-    rules, one default row tall).
-  - Caret entry: after each handled event, if a diff view's cursor is on an
-    elided line, the core removes that run from the view's elided set before
-    reveal and layout and records it as opened, so no caret geometry is ever
-    requested for a hidden line. Change navigation opens the run first.
-  - Click: frontends hit-test `CollapsedContext` decorations and call a new
-    `viem_diff_session_open_collapsed(session, …, line)`; the session opens
-    the run on both sides.
-  - Settings `diff.collapseContext` (default true) in `application_config.rs`
-    and `EVConfigurationStore`; session flag `VIEM_DIFF_SESSION_COLLAPSED`;
-    a Collapse Context toggle in the toolbar, left of the change buttons.
-  - Tests: zero layout work for hidden lines (work counters) in a
-    million-line document, aligned and unaligned, both sides collapse the
-    same runs, divider geometry, caret entry from `j`, search and `:N`,
-    click, typing beside a collapsed run, incremental versus fresh, and
-    scrollbar marks against the collapsed extent.
+- [x] 9. Collapsed context, in the core and the macOS frontend; the
+  Windows frontend does not offer it yet (see Next steps).
+  - Core diff: `DiffState::collapsible_runs` (`src/core/diff/presentation.rs`)
+    lists the equal runs less `DIFF_CONTEXT_LINES` of context beside each
+    change. `DiffSession` keeps `collapsed`, the opened runs by base range
+    (they survive edits that leave the lines equal) and the runs collapsed at
+    the last install; `set_collapsed` and a new session close every opened
+    run. `SidePresentation::collapsed` holds each side's hidden ranges.
+  - Layout: `ViewLayout` keeps the hidden runs (`elided`), shifted through
+    local edits and cleared by other document changes. Each is one exact
+    zero-height run of `ViewHeightIndex` (`set_hidden_range`), restored after
+    every height invalidation. A layout job whose region crosses hidden runs
+    captures each shown segment separately (`CapturedLayoutInput::Segmented`)
+    and joins the results across one zero-height `RegionalHardLineLayout`
+    stand-in per run (`elided`), which the regional cache never stores, so
+    hidden lines are never copied, styled, shaped or visited one by one.
+    Viewport overscan and growth, input layout and prelayout count shown
+    lines (`visible_line_count`, `step_visible_lines`).
+  - The divider is margin on the neighbouring shown line, like filler: the
+    bottom margin of the line before the run, or the top margin of the line
+    after a run at the start of the file, which then lays out as the
+    document's first line (`starts_document`); a line before a run reaching
+    the end lays out as the last (`ends_document`). `DiffLayoutInput`
+    carries the dividers and their height (one default row), and
+    `BlockBoxStyle::collapsed_divider` the band from the **Collapsed
+    context** style (`StyleId::diff_collapsed_context`), drawn as
+    `DecorationKind::CollapsedContext` and exported with
+    `VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT` beside the background or
+    border bit, so frontends paint it like any block box.
+  - Caret entry: every immediate layout and direct caret reveal first opens
+    a hidden run under the caret (or a search preview's destination) in that
+    view and drops its divider (`Core::open_collapsed_at_caret`), so no
+    caret geometry is requested for a hidden line; the session takes those
+    runs on its next sync and opens them on both sides. On a session's first
+    install a Normal-mode caret inside a collapsing run moves to the nearest
+    line beside it instead; later (toggling, or an edit that makes the
+    caret's lines equal) the caret's run stays open. A viewport anchored in
+    a newly hidden run is anchored after it, with its divider just above.
+  - ABI: `VIEM_DIFF_SESSION_COLLAPSED` (create flag and info),
+    `viem_diff_session_set_collapsed`, `viem_diff_session_open_collapsed`
+    (the run whose divider borders a line) and
+    `viem_diff_view_opened_context` (whether a caret opened a run since the
+    last sync). Settings: `diff.collapseContext`, default true.
+  - macOS: a Collapse Context toggle (`EVDiffToolbar.collapseIcon`) left of
+    the change buttons and in the Diff menu, applied to every pair and
+    saved; `EVCoreDiffSession` syncs after a frame whose caret opened a run
+    and after divider clicks, which `EVEditorView` hit-tests.
+  - Tests: `src/core/diff/presentation.rs` (runs) and
+    `src/core/coordinator/diff_tests.rs` (both sides, aligned, unaligned and
+    unwrapped; divider geometry and scrollbar marks; clicks and toggling;
+    `j`, `:N`, search and base-side carets; caret placement; typing beside a
+    run against a fresh diff; edits and undo reaching hidden lines; a
+    million-line document caching and capturing only shown lines);
+    `EVDiffModeTests` on macOS (both sides, divider clicks, caret entry and
+    the toolbar toggle).
 
 ### Next steps
 
@@ -544,7 +561,13 @@ context), built in this order:
    (a font-registry XPC reply that never arrived); later full runs of both a
    clean HEAD checkout and this branch completed, so that stall was
    environmental rather than caused by diff mode.
-2. Collapsed context: step 9 above.
+2. Windows: collapsed context (step 9). Add the toolbar toggle and Diff menu
+   item backed by `diff.collapseContext`, create sessions with
+   `VIEM_DIFF_SESSION_COLLAPSED`, call `viem_diff_session_set_collapsed`,
+   open a clicked `VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT` divider with
+   `viem_diff_session_open_collapsed`, and sync after any frame for which
+   `viem_diff_view_opened_context` reports a caret-opened run. The divider
+   already draws, since it carries the background and border bits.
 3. Apply the saved `code.lineNumbers` when a view enters Code outside diff
    mode (today it is applied when leaving diff mode and saved on explicit
    toggles).

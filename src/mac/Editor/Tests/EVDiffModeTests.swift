@@ -52,14 +52,15 @@ final class EVDiffModeTests: XCTestCase {
         String(decoding: try backend.recoverySnapshot().source, as: UTF8.self)
     }
 
-    private func begin(_ new: EVCoreDocumentBackend, base source: String, aligned: Bool = true, editable: Bool = true)
+    private func begin(_ new: EVCoreDocumentBackend, base source: String, aligned: Bool = true, collapsed: Bool = false,
+                       editable: Bool = true)
         throws -> (EVEditorSurfaceController, EVCoreDocumentBackend, EVEditorSurfaceController, any EVDiffSessionControlling)
     {
         let surface = try surface(new)
         let base = try XCTUnwrap(try new.makeDiffBase(source: Data(source.utf8)) as? EVCoreDocumentBackend)
         let baseSurface = try self.surface(base)
         let session = try new.beginDiff(base: base, baseSurface: baseSurface, surface: surface,
-                                        aligned: aligned, editable: editable)
+                                        aligned: aligned, collapsed: collapsed, editable: editable)
         return (surface, base, baseSurface, session)
     }
 
@@ -214,6 +215,93 @@ final class EVDiffModeTests: XCTestCase {
         XCTAssertEqual(align.state, .on, "a click toggles the button's own state")
     }
 
+    /// Hard lines that have rows.
+    private func shownLines(_ surface: EVEditorSurfaceController) throws -> Set<UInt64> {
+        Set(try XCTUnwrap(surface.layoutSnapshot).rows.map(\.hard_line_index))
+    }
+
+    /// Hard lines whose rows draw a collapsed-context divider band.
+    private func dividerLines(_ surface: EVEditorSurfaceController) throws -> Set<UInt64> {
+        let snapshot = try XCTUnwrap(surface.layoutSnapshot)
+        let rows = Dictionary(uniqueKeysWithValues: snapshot.rows.map { ($0.row_index, $0.hard_line_index) })
+        let band = UInt32(VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT | VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND)
+        return Set(snapshot.decorations.filter { $0.flags & band == band }.compactMap { rows[$0.row_index] })
+    }
+
+    /// Base lines 0..<40; the new side changes lines 10 and 30, so lines
+    /// 0..<7, 14..<27 and 34..<40 collapse.
+    private func beginCollapsed() throws
+        -> (EVEditorSurfaceController, EVEditorSurfaceController, any EVDiffSessionControlling, EVCoreDocumentBackend)
+    {
+        var lines = (0..<40).map { "line \($0)" }
+        let base = lines.joined(separator: "\n")
+        lines[10] = "changed 10"
+        lines[30] = "changed 30"
+        let new = try backend(lines.joined(separator: "\n"))
+        let (surface, _, baseSurface, session) = try begin(new, base: base, collapsed: true)
+        return (surface, baseSurface, session, new)
+    }
+
+    private func send(_ text: String, to surface: EVEditorSurfaceController) {
+        let session = surface.session
+        surface.performInput {
+            for scalar in text.unicodeScalars {
+                _ = try XCTUnwrap(session).sendKey(kind: UInt32(VIEM_KEY_CHARACTER), codepoint: scalar.value)
+            }
+        }
+    }
+
+    private func enter(_ surface: EVEditorSurfaceController) {
+        surface.performInput { _ = try XCTUnwrap(surface.session).sendKey(kind: UInt32(VIEM_KEY_ENTER)) }
+    }
+
+    func testCollapsedContextHidesTheSameUnchangedLinesOnBothSidesUntilItsDividerIsClicked() throws {
+        let (surface, baseSurface, session, _) = try beginCollapsed()
+        let hidden = Set<UInt64>((0..<7).map(UInt64.init) + (14..<27).map(UInt64.init))
+        for side in [surface, baseSurface] {
+            let shown = try shownLines(side)
+            XCTAssertTrue(shown.isDisjoint(with: hidden), "hidden lines have no rows")
+            XCTAssertTrue(shown.isSuperset(of: [7, 13, 27]))
+            XCTAssertTrue(try dividerLines(side).isSuperset(of: [7, 13]))
+        }
+        XCTAssertEqual(surface.layoutSnapshot?.rows.first { $0.hard_line_index == 27 }?.y,
+                       baseSurface.layoutSnapshot?.rows.first { $0.hard_line_index == 27 }?.y, "the sides stay level")
+        // A click on the divider after line 13 opens 14..<27 on both sides.
+        XCTAssertFalse(surface.diffOpenCollapsedContext?(9) ?? true, "no divider borders line 9")
+        XCTAssertTrue(surface.diffOpenCollapsedContext?(13) ?? false)
+        XCTAssertTrue(try shownLines(surface).contains(20))
+        XCTAssertTrue(try shownLines(baseSurface).contains(20))
+        XCTAssertFalse(try dividerLines(baseSurface).contains(13))
+        session.setCollapsed(false)
+        XCTAssertTrue(try shownLines(surface).contains(0))
+        XCTAssertTrue(try dividerLines(surface).isEmpty)
+    }
+
+    func testACaretMovingOntoCollapsedContextOpensItOnBothSides() throws {
+        let (surface, baseSurface, session, new) = try beginCollapsed()
+        defer { withExtendedLifetime(session) {} }
+        let text = try source(new)
+        let offset = { (needle: String) in try XCTUnwrap(text.range(of: needle)).lowerBound.utf16Offset(in: text) }
+        XCTAssertEqual(Int(surface.viewPresentation.cursor_utf8_offset), try offset("line 7"),
+                       "the starting caret moves beside the collapsed first lines")
+        send(":14", to: surface)
+        enter(surface)
+        send("j", to: surface)
+        XCTAssertEqual(Int(surface.viewPresentation.cursor_utf8_offset), try offset("line 14"))
+        XCTAssertTrue(try shownLines(surface).contains(14))
+        XCTAssertTrue(try shownLines(baseSurface).contains(14), "the base opens in the same turn")
+    }
+
+    func testCollapseContextIsAnIconToggle() {
+        let collapse = EVDiffToolbar().collapseButton
+        XCTAssertEqual(collapse.title, "")
+        XCTAssertTrue(collapse.image?.isTemplate ?? false)
+        XCTAssertEqual(collapse.toolTip, "Collapse Context")
+        collapse.state = .off
+        collapse.performClick(nil)
+        XCTAssertEqual(collapse.state, .on)
+    }
+
     func testCodeRemembersOneWordWrapForNewViews() throws {
         let configuration = try configuration()
         let code = EVCoreDocumentBackend(configuration: configuration)
@@ -240,7 +328,8 @@ final class EVDiffModeTests: XCTestCase {
         XCTAssertTrue(surface.wrapEnabled, "Markdown wraps")
         let base = try XCTUnwrap(try new.makeDiffBase(source: Data("# Title\n".utf8)) as? EVCoreDocumentBackend)
         let baseSurface = try self.surface(base)
-        let session = try new.beginDiff(base: base, baseSurface: baseSurface, surface: surface, aligned: true, editable: true)
+        let session = try new.beginDiff(base: base, baseSurface: baseSurface, surface: surface, aligned: true,
+                                        collapsed: false, editable: true)
         XCTAssertFalse(surface.wrapEnabled, "the compared side uses Code's choice, off by default")
         XCTAssertFalse(baseSurface.wrapEnabled)
         baseSurface.perform(menuCommand: .wordWrap, sender: nil)

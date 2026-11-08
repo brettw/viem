@@ -16,5 +16,5 @@ pub mod state;
 pub const DIFF_CONTEXT_LINES: usize = 3;
 
 pub use inline::InlineSpans;
-pub use presentation::{Filler, Side, SidePresentation};
+pub use presentation::{CollapsibleRun, Filler, Side, SidePresentation};
 pub use state::{DiffLimits, DiffState, Hunk, LineEdit, LinePair, LineSource, TextLines};
