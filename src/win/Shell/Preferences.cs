@@ -85,6 +85,13 @@ internal sealed partial class Preferences
     public JsonObject Editing => root["editing"] is JsonObject value ? (JsonObject)value.DeepClone() : new();
     public float Margin(string edge) { try { return Math.Clamp(root["view"]?["margins"]?[edge]?.GetValue<float>() ?? 10, 0, 1000); } catch { return 10; } }
     public float ZoomScale => Get("view", "zoomScale", 1f);
+    /// Code's and diff mode's shared word wrapping, the last state set
+    /// explicitly in either; off until first set.
+    public bool CodeWordWrap => Get("code", "wordWrap", false);
+    public void SetCodeWordWrap(bool wraps) => Update(candidate => {
+        if (candidate["code"] is not JsonObject) candidate["code"] = new JsonObject();
+        candidate["code"]!["wordWrap"] = wraps;
+    }, notify: false, skipUnchanged: true);
     public void SetZoomScale(float scale)
     {
         if (!float.IsFinite(scale) || scale < .25f || scale > 5f)

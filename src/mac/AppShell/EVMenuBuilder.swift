@@ -63,10 +63,10 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         let mainMenu = NSMenu(title: "Main Menu")
         mainMenu.addItem(topLevelItem("Viem", submenu: makeApplicationMenu(for: application)))
         mainMenu.addItem(topLevelItem("File", submenu: makeFileMenu()))
+        mainMenu.addItem(topLevelItem("Diff", submenu: makeDiffMenu()))
         mainMenu.addItem(topLevelItem("Edit", submenu: makeEditMenu()))
         mainMenu.addItem(topLevelItem("Insert", submenu: makeInsertMenu()))
         mainMenu.addItem(topLevelItem("Format", submenu: makeFormatMenu()))
-        mainMenu.addItem(topLevelItem("Diff", submenu: makeDiffMenu()))
         mainMenu.addItem(topLevelItem("View", submenu: makeViewMenu()))
 
         let windowMenu = makeWindowMenu(for: application)

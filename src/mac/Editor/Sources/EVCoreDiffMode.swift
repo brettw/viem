@@ -108,6 +108,13 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         baseSurface.diffViewportTopDidChange = { [weak self] _ in self?.mirror(fromNew: false) }
         surface.diffPresentationDidRefresh = { [weak self] in self?.updateMarks(isNew: true) }
         baseSurface.diffPresentationDidRefresh = { [weak self] in self?.updateMarks(isNew: false) }
+        // Both sides are Code and share its remembered wrapping; a change on
+        // either side applies to the other.
+        let wrap = document.configuration.codeWordWrap
+        surface.setWordWrap(wrap)
+        baseSurface.setWordWrap(wrap)
+        surface.codeWordWrapDidChange = { [weak baseSurface] wrap in baseSurface?.setWordWrap(wrap) }
+        baseSurface.codeWordWrapDidChange = { [weak surface] wrap in surface?.setWordWrap(wrap) }
         sync(force: true)
         mirror(fromNew: true)
     }
@@ -200,10 +207,20 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
 
     func end() {
         guard handle != 0 else { return }
+        // Pairs in other panes may still compare this document. The format and
+        // protection are buffer-wide, so the last comparison restores them.
+        if let heir = document?.diffSessions.compactMap(\.value).first(where: { $0 !== self && $0.handle != 0 }) {
+            heir.restoreMode = heir.restoreMode ?? restoreMode
+            heir.restoreModifiable = heir.restoreModifiable || restoreModifiable
+            restoreMode = nil
+            restoreModifiable = false
+        }
         surface?.diffViewportTopDidChange = nil
         baseSurface?.diffViewportTopDidChange = nil
         surface?.diffPresentationDidRefresh = nil
         baseSurface?.diffPresentationDidRefresh = nil
+        surface?.codeWordWrapDidChange = nil
+        baseSurface?.codeWordWrapDidChange = nil
         surface?.editorView.documentScrollbars.setChangeMarks([], extent: 0)
         markKeys = [:]
         if let document, let view = surface?.session?.viewID {

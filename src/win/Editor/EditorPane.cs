@@ -666,7 +666,8 @@ internal sealed partial class EditorPane : Grid, IDisposable
             try { RefreshTableInteraction(); }
             catch (CoreException error) { PresentationWarning("table controls", error); }
             if (CurrentPointerLocation() is { } pointer) UpdatePointerRegion(pointer);
-            mode.Text = presentation.recording_register != 0 ? $"Recording @{char.ConvertFromUtf32((int)presentation.recording_register)}" : presentation.mode switch {
+            mode.Text = diffBasePane && diffBaseTitle != null ? diffBaseTitle
+                : presentation.recording_register != 0 ? $"Recording @{char.ConvertFromUtf32((int)presentation.recording_register)}" : presentation.mode switch {
                 VIEM_MODE_INSERT => "INSERT", VIEM_MODE_REPLACE => "REPLACE",
                 VIEM_MODE_VISUAL_CHARACTER => "VISUAL", VIEM_MODE_VISUAL_LINE => "V-LINE", VIEM_MODE_VISUAL_BLOCK => "V-BLOCK",
                 VIEM_MODE_SELECTION_CHARACTER or VIEM_MODE_SELECTION_LINE or VIEM_MODE_SELECTION_BLOCK => "SELECTION",
@@ -722,6 +723,42 @@ internal sealed partial class EditorPane : Grid, IDisposable
             refreshing = false; scrollUpdating = false;
             if (refreshPending) { refreshPending = false; DispatcherQueue.TryEnqueue(Refresh); }
         }
+        FollowCodeWordWrap();
+    }
+
+    // Code views share one remembered word-wrap choice with diff mode, off
+    // until first set: a view takes it when it starts showing Code, and its
+    // changes there become the choice. Text and Markdown keep this view's
+    // own wrapping, which resumes when the view leaves Code.
+    private bool? presentedCode;
+    private bool presentedWrap = true, proseWrap = true;
+    private void FollowCodeWordWrap()
+    {
+        if (View == null || disposed || installingDocument) return;
+        bool code = Document.State.format == VIEM_FORMAT_CODE;
+        bool wrap = (viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0;
+        bool? previous = presentedCode;
+        bool before = presentedWrap;
+        presentedCode = code;
+        presentedWrap = wrap;
+        bool target;
+        if (previous == true && code) {
+            if (wrap == before) return;
+            try { preferences.SetCodeWordWrap(wrap); } catch (Exception error) { SetMessage("Could not remember word wrap. " + error.Message); }
+            window.DiffWrapChanged(this, wrap);
+            return;
+        }
+        if (previous == true) target = proseWrap;
+        else if (code) { proseWrap = wrap; target = preferences.CodeWordWrap; }
+        else { proseWrap = wrap; return; }
+        if (target != wrap) Run(() => View!.Wrap(target));
+    }
+
+    /// Give this view `wrap`; in Code, that is also the remembered choice.
+    internal void SetWordWrap(bool wrap)
+    {
+        if (View == null || ((viewport.flags & VIEM_VIEWPORT_STATE_WRAP) != 0) == wrap) return;
+        Run(() => View!.Wrap(wrap));
     }
     private void PresentationWarning(string name, CoreException error)
     {

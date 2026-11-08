@@ -336,6 +336,59 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     }
 
     func refreshPresentation(advancingSearch: Bool = true) {
+        guard session != nil, !isRefreshingPresentation else { return }
+        installPresentation(advancingSearch: advancingSearch)
+        followCodeWordWrap()
+    }
+
+    /// Reports a word-wrap change this Code view made, so diff mode can give
+    /// the other side the same wrapping.
+    var codeWordWrapDidChange: ((Bool) -> Void)?
+    private var presentedCode: Bool?
+    private var presentedWrap = true
+    private var proseWrap = true
+
+    /// Code views share one remembered word-wrap choice with diff mode, off
+    /// until first set: a view takes it when it starts showing Code, and its
+    /// changes there become the choice. Text and Markdown keep this view's
+    /// own wrapping, which resumes when the view leaves Code.
+    private func followCodeWordWrap() {
+        guard let session, documentState.document_id != 0, viewportState.document_id == documentState.document_id
+        else { return }
+        let isCode = documentState.format == UInt32(VIEM_FORMAT_CODE)
+        let wrap = wrapEnabled
+        let previous = presentedCode
+        presentedCode = isCode
+        defer { presentedWrap = wrapEnabled }
+        let target: Bool
+        switch (previous, isCode) {
+        case (true?, true):
+            guard wrap != presentedWrap else { return }
+            do { try backend.configuration.setCodeWordWrap(wrap) }
+            catch { publishHostMessage("Could not remember word wrap. \(error.localizedDescription)") }
+            codeWordWrapDidChange?(wrap)
+            return
+        case (true?, false):
+            target = proseWrap
+        case (_, true):
+            proseWrap = wrap
+            target = backend.configuration.codeWordWrap
+        case (_, false):
+            proseWrap = wrap
+            return
+        }
+        guard target != wrap else { return }
+        do { _ = try session.setWrap(target) } catch { report(error); return }
+        installPresentation(advancingSearch: false)
+    }
+
+    /// Give this view `wrap`; in Code, that is also the remembered choice.
+    func setWordWrap(_ wrap: Bool) {
+        guard let session, wrapEnabled != wrap else { return }
+        performInput { _ = try session.setWrap(wrap) }
+    }
+
+    private func installPresentation(advancingSearch: Bool) {
         guard let session, !isRefreshingPresentation else { return }
         speculativeExtentRefresh?.cancel(); speculativeExtentRefresh = nil
         isRefreshingPresentation = true

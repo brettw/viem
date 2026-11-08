@@ -10,8 +10,6 @@ final class EVPaneContainer: NSViewController {
   private let geometry = EVPaneLayout()
   private var ids: [ObjectIdentifier: UInt64] = [:]
   private var splitters: [UInt64: EVVerticalSplitter] = [:]
-  /// The narrowest width that fits every pane and splitter, as last laid out.
-  private(set) var minimumContentWidth: CGFloat = 0
   private var applyingLayout = false
   private var adjustingGutterWindow = false
   private var placementGutters: [ObjectIdentifier: CGFloat] = [:]
@@ -292,7 +290,6 @@ final class EVPaneContainer: NSViewController {
     }
     geometry.update(size:stack.bounds.size,chrome:panes.map { ViemPaneChrome(id:id($0),status_height:$0.statusBarHeight) })
     let snapshot = geometry.snapshot()
-    minimumContentWidth = snapshot.minimum.width
     if let window = view.window { window.contentMinSize = NSSize(width:max(480,snapshot.minimum.width),height:max(280,snapshot.minimum.height)) }
     var next: [EVDocumentContentViewController] = []
     var visibleSplitters = Set<UInt64>()

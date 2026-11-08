@@ -34,4 +34,20 @@ final class EVStatusBarStateTests: XCTestCase {
         location.performClick(nil)
         XCTAssertEqual(options, [.lineMode(.physicalSource), .lineMode(.visual)])
     }
+
+    @MainActor
+    func testDiffBaseSegmentShowsItsWholeTitleFileAndPosition() throws {
+        let bar = EVStatusBarView(frame: NSRect(x: 0, y: 0, width: 800, height: EVStatusBarView.preferredHeight))
+        bar.diffBase = .init(title: "BASE @ HEAD", fileURL: URL(fileURLWithPath: "/tmp/old.txt"),
+                             location: "Ln 23, Col 14", width: 400)
+        bar.apply(EVStatusBarState(mode: "NORMAL", location: "Ln 1, Col 1"))
+        bar.layoutSubtreeIfNeeded()
+        func descendants(_ view: NSView) -> [NSView] { view.subviews.flatMap { [$0] + descendants($0) } }
+        let labels = descendants(bar).compactMap { $0 as? NSTextField }.filter { !$0.isHidden }
+        for text in ["BASE @ HEAD", "/tmp/old.txt", "Ln 23, Col 14"] {
+            let label = try XCTUnwrap(labels.first { $0.stringValue == text }, text)
+            XCTAssertGreaterThanOrEqual(label.frame.width, ceil(label.intrinsicContentSize.width), "\(text) is not clipped")
+            XCTAssertLessThanOrEqual(label.frame.maxX, 400, "\(text) stays over the base side")
+        }
+    }
 }

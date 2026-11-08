@@ -41,7 +41,7 @@ internal sealed partial class EditorWindow
                 var window = editor.Window;
                 var menu = window.Menu.Items.Single(m => m.Title == "Diff");
                 var mode = (ToggleMenuFlyoutItem)menu.Items[0];
-                Check(mode.Text == "Diff Mode" && window.Menu.Items[window.Menu.Items.IndexOf(menu) + 1].Title == "View", "Diff Mode heads the Diff menu immediately before View");
+                Check(mode.Text == "Diff Mode" && window.Menu.Items[window.Menu.Items.IndexOf(menu) - 1].Title == "File", "Diff Mode heads the Diff menu immediately after File");
                 var peer = new MenuBarItemAutomationPeer(menu);
                 await MenuTestHelpers.Transition(true, () => { peer.Expand(); return Task.CompletedTask; }, mode);
                 mode.Focus(FocusState.Programmatic);

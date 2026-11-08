@@ -87,9 +87,10 @@ pub fn normalize(bytes: &[u8]) -> Result<Value, String> {
         ("windows", &["showMenu"][..]),
         ("formattingToolbar", &["plainText", "code", "markdown"][..]),
         // Diff mode and Code each save the last line-number state set
-        // explicitly in that mode; Code's is absent until first set.
+        // explicitly in that mode; Code's is absent until first set. They
+        // share one word-wrap state, off until first set.
         ("diff", &["alignSides", "lineNumbers"][..]),
-        ("code", &["lineNumbers"][..]),
+        ("code", &["lineNumbers", "wordWrap"][..]),
     ] {
         for key in keys {
             if value[section].get(key).is_some_and(|v| !v.is_boolean()) {

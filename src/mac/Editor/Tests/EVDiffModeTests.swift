@@ -201,6 +201,60 @@ final class EVDiffModeTests: XCTestCase {
         XCTAssertNotEqual(next.tiffRepresentation, previous.tiffRepresentation)
     }
 
+    func testAlignSidesIsAnIconToggleLikeWindows() {
+        let toolbar = EVDiffToolbar()
+        let align = toolbar.alignButton
+        XCTAssertEqual(align.title, "")
+        XCTAssertTrue(align.image?.isTemplate ?? false)
+        XCTAssertEqual(align.image?.size, NSSize(width: 18, height: 16))
+        XCTAssertEqual(align.toolTip, "Align Sides")
+        XCTAssertEqual(align.accessibilityLabel(), "Align Sides")
+        align.state = .off
+        align.performClick(nil)
+        XCTAssertEqual(align.state, .on, "a click toggles the button's own state")
+    }
+
+    func testCodeRemembersOneWordWrapForNewViews() throws {
+        let configuration = try configuration()
+        let code = EVCoreDocumentBackend(configuration: configuration)
+        try code.read(source: Data("let x = 1\n".utf8), typeName: EVDocument.codeType,
+                      origin: .file(path: "/tmp/viem-wrap.rs", automaticCode: true))
+        let first = try surface(code)
+        XCTAssertFalse(first.wrapEnabled, "Code starts unwrapped until a choice is remembered")
+        first.perform(menuCommand: .wordWrap, sender: nil)
+        XCTAssertTrue(first.wrapEnabled)
+        XCTAssertTrue(configuration.codeWordWrap)
+        XCTAssertTrue(try surface(code).wrapEnabled, "a new Code view uses the last choice")
+        try configuration.setCodeWordWrap(false)
+        let text = EVCoreDocumentBackend(configuration: configuration)
+        try text.read(source: Data("words\n".utf8), typeName: EVDocument.plainTextType, origin: .untitled)
+        XCTAssertTrue(try surface(text).wrapEnabled, "Text keeps its own wrapping")
+    }
+
+    func testBothDiffSidesShareCodesWordWrapAndProseResumesAfterwards() throws {
+        let configuration = try configuration()
+        let new = EVCoreDocumentBackend(configuration: configuration)
+        try new.read(source: Data("# Title\n\ntext\n".utf8), typeName: try XCTUnwrap(EVDocument.markdownType),
+                     origin: .file(path: "/tmp/viem-wrap.md", automaticCode: true))
+        let surface = try surface(new)
+        XCTAssertTrue(surface.wrapEnabled, "Markdown wraps")
+        let base = try XCTUnwrap(try new.makeDiffBase(source: Data("# Title\n".utf8)) as? EVCoreDocumentBackend)
+        let baseSurface = try self.surface(base)
+        let session = try new.beginDiff(base: base, baseSurface: baseSurface, surface: surface, aligned: true, editable: true)
+        XCTAssertFalse(surface.wrapEnabled, "the compared side uses Code's choice, off by default")
+        XCTAssertFalse(baseSurface.wrapEnabled)
+        baseSurface.perform(menuCommand: .wordWrap, sender: nil)
+        XCTAssertTrue(baseSurface.wrapEnabled)
+        XCTAssertTrue(surface.wrapEnabled, "the other side follows")
+        XCTAssertTrue(configuration.codeWordWrap, "diff mode and Code share the choice")
+        surface.perform(menuCommand: .wordWrap, sender: nil)
+        XCTAssertFalse(baseSurface.wrapEnabled)
+        XCTAssertFalse(configuration.codeWordWrap)
+        session.end()
+        XCTAssertEqual(new.sourceFormat, .markdown)
+        XCTAssertTrue(surface.wrapEnabled, "Markdown resumes its own wrapping")
+    }
+
     func testLastSavedSourceComesFromMemory() throws {
         let new = try backend("saved\n")
         XCTAssertEqual(new.diffSavedSource(), Data("saved\n".utf8))

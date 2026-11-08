@@ -125,9 +125,9 @@ public final class EVDocumentWindowController: NSWindowController, EVDocumentHos
       return pane
     }
     paneContainer.closePaneRequest = { [weak self] pane in self?.closePane(pane) }
-    firstPane.editorMenuCommandDidPerform = { [weak self, weak firstPane] command in
+    firstPane.editorMenuCommandDidPerform = { [weak self, weak firstPane] command, surface in
       guard let self, let firstPane else { return }
-      self.editorMenuCommandDidPerform(command, in: firstPane)
+      self.editorMenuCommandDidPerform(command, on: surface, in: firstPane)
     }
     paneContainer.panesDidChange = { [weak self] in self?.updateActiveDocumentChrome() }
     window.delegate = self
@@ -620,25 +620,30 @@ extension EVDocumentWindowController {
     guard pane.document === document, let navigation = request.argumentNavigation else {
       completion(.failure(EVDocumentHostError.staleRequest)); return
     }
-    guard let list = pane.argumentList else { completion(.failure(EVArgumentListError.empty)); return }
+    // In diff mode the argument commands step through the diff's files.
+    let diffFiles = diffMode?.isEnabled == true ? diffMode?.files.map(\.url) : nil
+    guard let urls = diffFiles ?? pane.argumentList?.urls, diffFiles?.isEmpty != true else {
+      completion(.failure(EVArgumentListError.empty)); return
+    }
     guard let resolve = EVArgumentListPolicy.resolve else {
       completion(.failure(EVDocumentHostError.unsupportedRequest)); return
     }
     let expected = document.editorBackend.persistenceState
-    let currentIndex = list.index(of: document.fileURL, preferring: pane.argumentIndex)
-    let resolved = resolve(list.urls.count, currentIndex, pane.argumentIndex, navigation)
+    let preferred = diffFiles == nil ? pane.argumentIndex : diffMode?.currentFileIndex
+    let currentIndex = diffFiles == nil ? pane.argumentList?.index(of: document.fileURL, preferring: preferred) : preferred
+    let resolved = resolve(urls.count, currentIndex, preferred, navigation)
 
     func openTarget() {
       do {
         guard canReplace(pane, document: document, expected: expected) else { throw EVDocumentHostError.staleRequest }
         let index = try resolved.get()
-        guard list.urls.indices.contains(index) else { throw EVArgumentListError.invalidIndex }
-        let url = list.urls[index]
+        guard urls.indices.contains(index) else { throw EVArgumentListError.invalidIndex }
+        let url = urls[index]
         let sameDocument = document.fileURL.map { EVDocumentIdentity.sameFile($0, url) } ?? false
         guard sameDocument || request.force || !document.editorBackend.persistenceState.isDirty
           || hasOtherView(of: document, excluding: pane) else { throw EVDocumentHostError.documentModified }
         if sameDocument {
-          pane.argumentIndex = index
+          if diffFiles == nil { pane.argumentIndex = index }
           if let line = navigation.line { pane.editorSurface.goToLine(line == 0 ? UInt64.max : line) }
           completion(.success(nil)); return
         }
@@ -654,7 +659,7 @@ extension EVDocumentWindowController {
             completion(.failure(EVDocumentHostError.documentModified)); return
           }
           self.replacePane(pane, with: opened)
-          self.documentContentController.argumentIndex = index
+          if diffFiles == nil { self.documentContentController.argumentIndex = index }
           self.closeIfUnrepresented(document)
           if let line = navigation.line { self.editorSurface.goToLine(line == 0 ? UInt64.max : line) }
           completion(.success(nil))
@@ -1514,9 +1519,9 @@ extension EVDocumentWindowController {
       pane.argumentIndex = matched
     }
     (surface as? any EVDocumentHostAttachable)?.documentHostEffectHandler = self
-    pane.editorMenuCommandDidPerform = { [weak self, weak pane] command in
+    pane.editorMenuCommandDidPerform = { [weak self, weak pane] command, surface in
       guard let self, let pane else { return }
-      self.editorMenuCommandDidPerform(command, in: pane)
+      self.editorMenuCommandDidPerform(command, on: surface, in: pane)
     }
     return pane
   }
@@ -1775,9 +1780,9 @@ final class EVDocumentContentViewController: NSViewController,
   let editorSurface: any EVEditorSurface
   private let configuration: EVConfigurationStore
   let statusBar = EVStatusBarView()
-  /// Runs after an editor menu command, so the window can follow settings
-  /// that diff mode and Code remember.
-  var editorMenuCommandDidPerform: ((EVMenuCommand) -> Void)?
+  /// Runs after an editor menu command on either side of the pane, so the
+  /// window can follow settings that diff mode and Code remember.
+  var editorMenuCommandDidPerform: ((EVMenuCommand, any EVEditorSurface) -> Void)?
   var statusBarHeightDidChange: (() -> Void)?
   private var showsStatusBar: Bool
 
@@ -1788,33 +1793,16 @@ final class EVDocumentContentViewController: NSViewController,
     showsStatusBar = configuration.scriptOptions.showStatusBar ?? configuration.showStatusBar
     super.init(nibName: nil, bundle: nil)
 
-    editorSurface.statusBarStateDidChange = { [weak self] state in
-      guard let self else { return }
-      let outputHadFocus = self.statusBar.isCommandOutputFocused
-      self.statusBar.apply(state)
-      if outputHadFocus, state.commandOutput == nil || state.commandLine != nil {
-        self.viewIfLoaded?.window?.makeFirstResponder(self.editorSurface.viewController.view)
-      }
-      // The command line lives in the status line, so a hidden status line
-      // still has to appear while one is active.
-      let needed = self.showsStatusBar || state.commandLine != nil || state.commandOutput != nil || state.requiresInteraction
-      if self.statusBar.isHidden == needed {
-        self.statusBar.isHidden = !needed
-        self.layoutContent()
-        self.statusBarHeightDidChange?()
-      }
-      (self.viewIfLoaded?.window?.windowController as? EVDocumentWindowController)?
-        .updateActiveDocumentChrome()
-    }
+    editorSurface.statusBarStateDidChange = { [weak self] _ in self?.statusStateDidChange() }
     statusBar.preferredHeightDidChange = { [weak self] in
       self?.layoutContent()
       self?.statusBarHeightDidChange?()
     }
     statusBar.optionDidChange = { [weak self] option in
       guard let self else { return }
-      self.editorSurface.perform(statusOption: option)
-      self.statusBar.apply(self.editorSurface.statusBarState)
-      self.view.window?.makeFirstResponder(self.editorSurface.viewController.view)
+      self.statusSurface.perform(statusOption: option)
+      self.statusBar.apply(self.statusSurface.statusBarState)
+      self.view.window?.makeFirstResponder(self.statusSurface.viewController.view)
     }
     statusBar.changeDirectory = { [weak self] _ in
       guard let self, let document = self.document,
@@ -1834,14 +1822,114 @@ final class EVDocumentContentViewController: NSViewController,
     // is reported from there and routed back to this pane's surface.
     statusBar.commandLineDidSelect = { [weak self] offset, extending in
       guard let self else { return }
-      self.editorSurface.selectCommandLine(atUTF8Offset: offset, extending: extending)
+      self.statusSurface.selectCommandLine(atUTF8Offset: offset, extending: extending)
     }
     statusBar.commandOutputDidDismiss = { [weak self] in
-      self?.editorSurface.dismissCommandOutput()
+      self?.statusSurface.dismissCommandOutput()
     }
     statusBar.commandOutputDidReceiveKey = { [weak self] event in
-      self?.editorSurface.handleStatusMessageKey(event)
+      self?.statusSurface.handleStatusMessageKey(event)
     }
+  }
+
+  /// The surface whose state the status bar shows: a diff base while it has
+  /// a command line, output or interaction of its own, otherwise the editor.
+  private var statusSurface: any EVEditorSurface {
+    if let base = diffBaseSurface {
+      let state = base.statusBarState
+      if state.commandLine != nil || state.commandOutput != nil || state.requiresInteraction { return base }
+    }
+    return editorSurface
+  }
+
+  private func statusStateDidChange() {
+    let surface = statusSurface
+    let state = surface.statusBarState
+    let outputHadFocus = statusBar.isCommandOutputFocused
+    statusBar.apply(state)
+    updateDiffBaseStatus()
+    if outputHadFocus, state.commandOutput == nil || state.commandLine != nil {
+      viewIfLoaded?.window?.makeFirstResponder(surface.viewController.view)
+    }
+    // The command line lives in the status line, so a hidden status line
+    // still has to appear while one is active.
+    let needed = showsStatusBar || state.commandLine != nil || state.commandOutput != nil || state.requiresInteraction
+    if statusBar.isHidden == needed {
+      statusBar.isHidden = !needed
+      layoutContent()
+      statusBarHeightDidChange?()
+    }
+    (viewIfLoaded?.window?.windowController as? EVDocumentWindowController)?
+      .updateActiveDocumentChrome()
+  }
+
+  // MARK: Diff pair
+
+  /// In diff mode the base sits left of the editor above one status bar that
+  /// spans both, so pane splits and status drags move the pair together.
+  private var diffSplit: EVDiffSplitView?
+  private(set) var diffBaseSurface: (any EVEditorSurface)?
+  private var diffBaseTitle = ""
+  private var diffBaseFileURL: URL?
+
+  func attachDiffBase(_ base: any EVEditorSurface, baseFraction: CGFloat,
+                      baseFractionDidChange: @escaping (CGFloat) -> Void) {
+    loadViewIfNeeded()
+    guard diffBaseSurface !== base else { return }
+    detachDiffBase()
+    diffBaseSurface = base
+    addChild(base.viewController)
+    let split = EVDiffSplitView(base: base.viewController.view, document: editorSurface.viewController.view,
+                                baseFraction: baseFraction)
+    split.translatesAutoresizingMaskIntoConstraints = true
+    split.autoresizingMask = []
+    split.baseFractionDidChange = baseFractionDidChange
+    split.didLayout = { [weak self] in self?.updateDiffBaseStatus() }
+    view.addSubview(split, positioned: .below, relativeTo: statusBar)
+    diffSplit = split
+    base.statusBarStateDidChange = { [weak self] _ in self?.statusStateDidChange() }
+    layoutContent()
+    statusStateDidChange()
+  }
+
+  func setDiffBaseStatus(title: String, fileURL: URL?) {
+    diffBaseTitle = title
+    diffBaseFileURL = fileURL
+    updateDiffBaseStatus()
+  }
+
+  func detachDiffBase() {
+    guard let split = diffSplit, let base = diffBaseSurface else { return }
+    let baseView = base.viewController.view
+    let baseHadFocus = (view.window?.firstResponder as? NSView)?.isDescendant(of: baseView) == true
+    base.statusBarStateDidChange = nil
+    diffSplit = nil
+    diffBaseSurface = nil
+    let editorView = editorSurface.viewController.view
+    view.addSubview(editorView, positioned: .below, relativeTo: statusBar)
+    baseView.removeFromSuperview()
+    base.viewController.removeFromParent()
+    split.removeFromSuperview()
+    statusBar.diffBase = nil
+    layoutContent()
+    statusStateDidChange()
+    if baseHadFocus { view.window?.makeFirstResponder(editorView) }
+  }
+
+  private func updateDiffBaseStatus() {
+    guard let split = diffSplit, let base = diffBaseSurface else {
+      if statusBar.diffBase != nil { statusBar.diffBase = nil }
+      return
+    }
+    statusBar.diffBase = EVStatusBarView.DiffBase(title: diffBaseTitle, fileURL: diffBaseFileURL,
+      location: base.statusBarState.location, width: split.document.frame.minX)
+  }
+
+  /// Editor commands go to the side of a diff pair that holds the focus.
+  var commandSurface: any EVEditorSurface {
+    if let base = diffBaseSurface, let responder = view.window?.firstResponder as? NSView,
+       responder.isDescendant(of: base.viewController.view) { return base }
+    return editorSurface
   }
 
   @available(*, unavailable)
@@ -1896,7 +1984,7 @@ final class EVDocumentContentViewController: NSViewController,
     loadViewIfNeeded()
     let bounds = view.bounds
     let statusHeight = statusBarHeight
-    let editorView = editorSurface.viewController.view
+    let editorView: NSView = diffSplit ?? editorSurface.viewController.view
     statusBar.frame = NSRect(
       x: bounds.minX,
       y: bounds.minY,
@@ -1931,8 +2019,9 @@ final class EVDocumentContentViewController: NSViewController,
     if command == .newWindowForDocument {
       document?.showAdditionalWindow()
     } else {
-      editorSurface.perform(menuCommand: command, sender: sender)
-      editorMenuCommandDidPerform?(command)
+      let surface = commandSurface
+      surface.perform(menuCommand: command, sender: sender)
+      editorMenuCommandDidPerform?(command, surface)
     }
   }
 
@@ -1969,7 +2058,7 @@ final class EVDocumentContentViewController: NSViewController,
       return document != nil
     }
 
-    let presentation = editorSurface.presentation(for: command)
+    let presentation = commandSurface.presentation(for: command)
     menuItem.state = presentation.state
     if let title = presentation.title {
       menuItem.title = title
@@ -1983,34 +2072,28 @@ final class EVDocumentContentViewController: NSViewController,
 @MainActor
 extension EVDocumentWindowController: EVDiffModeHost {
   var diffWindow: NSWindow? { window }
-  var diffActiveDocument: EVDocument? { activeDocument }
-  var diffActiveSurface: (any EVEditorSurface)? { isClosed ? nil : editorSurface }
-  var diffDocumentContentView: NSView { paneContainer.view }
-  var diffDocumentMinimumWidth: CGFloat { max(EVDiffSplitView.minimumWidth, paneContainer.minimumContentWidth) }
+  var diffPanes: [EVDocumentContentViewController] { isClosed ? [] : paneContainer.panes }
+  var diffActivePane: EVDocumentContentViewController? { isClosed ? nil : documentContentController }
   var diffOpenPanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)? {
     openFilePanelPresenter
   }
 
-  func installDiffContent(_ view: NSView?) {
-    guard let window else { return }
-    let content = view ?? paneContainer.view
-    guard window.contentView !== content else { return }
-    content.frame = NSRect(origin: .zero, size: window.contentLayoutRect.size)
-    content.translatesAutoresizingMaskIntoConstraints = false
-    if view == nil { paneContainer.view.removeFromSuperview() }
-    window.contentView = content
-    content.layoutSubtreeIfNeeded()
-    paneContainer.layoutPanes()
-  }
-
   func openDiffFile(_ url: URL, completion: @escaping @MainActor (Error?) -> Void) {
-    guard let document = activeDocument else { completion(EVDocumentHostError.staleRequest); return }
-    // The caller has already shown the window-close save review.
-    edit(document, in: documentContentController, path: url.path, force: true) { result in
-      switch result {
-      case .success: completion(nil)
-      case let .failure(error): completion(error)
+    let pane = documentContentController
+    guard let document = pane.document else { completion(EVDocumentHostError.staleRequest); return }
+    let expected = document.editorBackend.persistenceState
+    // The caller has already shown the window-close save review. Moving
+    // between diff files opens through the argument commands' boundary.
+    loadArgumentDocument(url) { [weak self] opened, error in
+      guard let self, let opened else { completion(error ?? EVDocumentHostError.unsupportedRequest); return }
+      guard self.canReplace(pane, document: document, expected: expected) else {
+        self.closeIfUnrepresented(opened)
+        completion(EVDocumentHostError.staleRequest)
+        return
       }
+      self.replacePane(pane, with: opened)
+      self.closeIfUnrepresented(document)
+      completion(nil)
     }
   }
 
@@ -2029,12 +2112,14 @@ extension EVDocumentWindowController: EVDiffModeHost {
     return controller
   }
 
-  fileprivate func editorMenuCommandDidPerform(_ command: EVMenuCommand, in pane: EVDocumentContentViewController) {
+  fileprivate func editorMenuCommandDidPerform(
+    _ command: EVMenuCommand, on surface: any EVEditorSurface, in pane: EVDocumentContentViewController
+  ) {
     guard command == .showLineNumbers else { return }
     if diffMode?.isEnabled == true {
-      diffMode?.lineNumbersDidToggle(on: pane.editorSurface)
+      diffMode?.lineNumbersDidToggle(on: surface)
     } else if pane.document?.editorBackend.sourceFormat == .code,
-      let shows = (pane.editorSurface as? any EVDiffLineNumberControlling)?.showsLineNumbers {
+      let shows = (surface as? any EVDiffLineNumberControlling)?.showsLineNumbers {
       try? configuration.setCodeLineNumbers(shows)
     }
   }
@@ -2079,26 +2164,45 @@ extension EVDocumentWindowController: EVDiffModeHost {
 
   /// Show the first file `git diff -- <folder>` lists in diff mode, in the
   /// given window when it holds only a pristine untitled buffer, otherwise
-  /// in a new window. A folder outside a repository, or one without changes,
-  /// is reported instead.
+  /// in a new window. A folder without changes shows an empty buffer there;
+  /// a folder outside a repository is reported instead.
   static func diffFolder(_ folder: URL, from controller: EVDocumentWindowController?) {
     let unsaved = (controller?.unsavedDocumentURLs() ?? []).map(\.path)
     Task { @MainActor in
       let listed = await EVDiffBaseLoader.listFiles(.unstaged, path: folder.path, unsaved: unsaved, scope: folder.path)
       let files: [EVDiffFile]
       switch listed {
-      case let .success(found) where !found.isEmpty:
+      case let .success(found):
         files = found
-      case .success:
-        reportDiffFolder("There are no changes in \(folder.path).", in: controller)
-        return
       case let .failure(error):
         reportDiffFolder(error.localizedDescription, in: controller)
         return
       }
       let replacement = controller?.captureUntitledReplacement()
+      guard let first = files.first else {
+        let target: EVDocumentWindowController
+        if let controller, replacement != nil {
+          // The pristine untitled buffer is already the empty buffer to show.
+          target = controller
+          controller.adoptDiffPlacement()
+        } else {
+          guard let empty = folderDiffUntitledDocument?() ?? makeUntitledDiffDocument() else {
+            reportDiffFolder("There are no changes in \(folder.path).", in: controller)
+            return
+          }
+          target = EVDocumentWindowController(document: empty, editorSurface: empty.editorBackend.makeEditorSurface(),
+                                              diffPlacement: folderDiffPlacement)
+          target.argumentDocumentOpener = controller?.argumentDocumentOpener
+          target.opensForDiff = true
+          empty.addWindowController(target)
+          target.showWindow(nil)
+        }
+        target.diffController.enable(folder: folder, files: [])
+        folderDiffDidOpen?(target)
+        return
+      }
       let open = folderDiffDocumentOpener ?? { url, completion in openPaneDocument(url, completion: completion) }
-      open(files[0].url) { opened, error in
+      open(first.url) { opened, error in
         guard let opened else {
           reportDiffFolder(error?.localizedDescription ?? "The file could not be opened.", in: controller)
           return
@@ -2131,8 +2235,17 @@ extension EVDocumentWindowController: EVDiffModeHost {
     window.setFrame(diffPlacement.fittedFrame(frame), display: true)
   }
 
+  private static func makeUntitledDiffDocument() -> EVDocument? {
+    guard let document = try? NSDocumentController.shared.makeUntitledDocument(ofType: EVDocument.plainTextType)
+      as? EVDocument else { return nil }
+    NSDocumentController.shared.addDocument(document)
+    return document
+  }
+
   /// Tests inject the placement new diff windows use.
   static var folderDiffPlacement: EVDocumentWindowPlacement?
+  /// Tests make the empty buffer a folder without changes shows.
+  static var folderDiffUntitledDocument: (() -> EVDocument?)?
   /// Tests open documents without registered document types.
   static var folderDiffDocumentOpener: ((URL, @escaping @MainActor (EVDocument?, Error?) -> Void) -> Void)?
   /// Tests observe the window a folder diff opened in.

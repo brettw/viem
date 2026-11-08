@@ -94,6 +94,7 @@ internal sealed partial class EditorWindow
             Sub("Text Encoding", "T", new[] { (Name: "UTF-8", Key: "8"), (Name: "Latin-1", Key: "1"), (Name: "UTF-16 LE", Key: "L"), (Name: "UTF-16 BE", Key: "B") }.Select((s, i) => ActionItem(s.Name, s.Key, () => View?.SetEncoding((uint)i + 1))).ToArray()),
             Sub("Line Endings", "L", ActionItem("Unix (LF)", "U", () => View?.FileFormat(1)), ActionItem("Windows (CRLF)", "W", () => View?.FileFormat(2)), ActionItem("Classic Mac (CR)", "M", () => View?.FileFormat(3))),
             Separator(), Item("Settings…", "I", ShowSettings), Separator(), Item("Exit", "X", RequestClose));
+        BuildDiffMenu();
         undoItem = ActionItem("Undo", "U", () => View?.Undo(), "Ctrl+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_UNDO) != 0);
         redoItem = ActionItem("Redo", "R", () => View?.Redo(), "Ctrl+Shift+Z", enabled: () => ActivePane != null && (ActivePane.Document.State.flags & VIEM_DOCUMENT_STATE_CAN_REDO) != 0);
         Top("Edit", "E", undoItem, redoItem, Separator(),
@@ -158,7 +159,6 @@ internal sealed partial class EditorWindow
                 preferences.ReloadCurrentTheme();
                 ActivePane?.SetMessage("Reloaded theme " + preferences.ThemeDisplayName);
             }), Separator(), wrapItem, alignIndentsItem);
-        BuildDiffMenu();
         var lineNumbersItem = Toggle("Show line numbers", "N", SetLineNumbers, () => View?.NumberEnabled == true);
         validation.Add((lineNumbersItem, () => View != null));
         Top("View", "V", Toggle("Show Status Bar", "S", b => preferences.Set("appearance", "showStatusBar", b), () => preferences.ShowStatus), Toggle("Show Menu Bar", "B", b => preferences.Set("windows", "showMenu", b), () => preferences.ShowMenu), Separator(),

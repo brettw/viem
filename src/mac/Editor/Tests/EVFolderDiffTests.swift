@@ -28,9 +28,15 @@ final class EVFolderDiffTests: XCTestCase {
                 completion(nil, error)
             }
         }
+        EVDocumentWindowController.folderDiffUntitledDocument = { [weak self] in
+            let document = EVDocument(editorBackend: EVCoreDocumentBackend())
+            self?.documents.append(document)
+            return document
+        }
     }
 
     override func tearDown() {
+        EVDocumentWindowController.folderDiffUntitledDocument = nil
         EVDocumentWindowController.folderDiffDidOpen = nil
         EVDocumentWindowController.folderDiffReport = nil
         EVDocumentWindowController.folderDiffDocumentOpener = nil
@@ -83,6 +89,7 @@ final class EVFolderDiffTests: XCTestCase {
         documents.append(document)
         document.makeWindowControllers()
         let window = try XCTUnwrap(document.windowControllers.first as? EVDocumentWindowController)
+        window.argumentDocumentOpener = EVDocumentWindowController.folderDiffDocumentOpener
         window.showWindow(nil)
         windows.append(window)
         return window
@@ -168,25 +175,42 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertEqual(window.frame.maxY, top, accuracy: 1, "the top edge stays put")
     }
 
-    func testFoldersWithoutChangesOrARepositoryReportInsteadOfOpening() throws {
+    func testAFolderWithoutChangesShowsAnEmptyBufferListingNoChanges() throws {
         let root = try repository()
+        for text in [nil, "content"] {
+            let source = try window(text: text)
+            let target = try XCTUnwrap(diff(root.appendingPathComponent("clean"), from: source))
+            XCTAssertEqual(target === source, text == nil, "a pristine window is reused, otherwise a new one opens")
+            let mode = try XCTUnwrap(target.diffMode)
+            XCTAssertTrue(mode.isEnabled)
+            XCTAssertTrue(mode.files.isEmpty)
+            XCTAssertNil(target.activeDocument?.fileURL)
+            XCTAssertEqual(target.activeDocument?.editorBackend.persistenceState.sourceByteCount, 0)
+            let popup = mode.toolbar.filePopup
+            XCTAssertFalse(popup.isEnabled)
+            XCTAssertEqual(popup.titleOfSelectedItem, "no changes")
+            let title = try XCTUnwrap(popup.selectedItem?.attributedTitle)
+            let font = try XCTUnwrap(title.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+            XCTAssertTrue(NSFontManager.shared.traits(of: font).contains(.italicFontMask))
+            mode.disable()
+        }
+    }
+
+    func testAFolderOutsideARepositoryIsReportedInsteadOfOpening() throws {
         let placeholder = try window(text: nil)
         var reports: [String] = []
         let reported = expectation(description: "reported")
-        reported.expectedFulfillmentCount = 2
         EVDocumentWindowController.folderDiffReport = { message in
             reports.append(message)
             reported.fulfill()
         }
         EVDocumentWindowController.folderDiffDidOpen = { _ in XCTFail("no window opens") }
-        EVDocumentWindowController.diffFolder(root.appendingPathComponent("clean"), from: placeholder)
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent("viem-no-repo-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: outside) }
         EVDocumentWindowController.diffFolder(outside, from: placeholder)
         wait(for: [reported], timeout: 20)
-        XCTAssertTrue(reports.contains { $0.contains("no changes") })
-        XCTAssertEqual(reports.count, 2)
+        XCTAssertEqual(reports.count, 1)
         XCTAssertFalse(placeholder.diffMode?.isEnabled ?? false)
     }
 

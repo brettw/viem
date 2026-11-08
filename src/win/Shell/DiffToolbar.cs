@@ -68,8 +68,11 @@ internal sealed partial class DiffToolbar : EditorToolbar
         return button;
     }
 
+    /// The file list's entry for a folder without changes.
+    internal const string NoChangesTitle = "no changes";
+
     internal void Update(DiffBase basis, bool git, string[] branches, DiffFile[] entries, int current,
-        string documentName, bool aligned, bool comparing)
+        string documentName, bool aligned, bool comparing, bool noChanges = false)
     {
         updating = true;
         try {
@@ -109,7 +112,8 @@ internal sealed partial class DiffToolbar : EditorToolbar
                 }
             }
             if (files.Items.Count > entries.Length) files.Items.RemoveAt(entries.Length);
-            if (current < 0) files.Items.Add(documentName + (entries.Length > 0 ? " (not in this diff)" : ""));
+            if (current < 0) files.Items.Add(noChanges ? NoChangesTitle : documentName + (entries.Length > 0 ? " (not in this diff)" : ""));
+            files.FontStyle = noChanges && current < 0 ? global::Windows.UI.Text.FontStyle.Italic : global::Windows.UI.Text.FontStyle.Normal;
             files.SelectedIndex = current < 0 ? entries.Length : current;
             files.IsEnabled = previousFile.IsEnabled = nextFile.IsEnabled = entries.Length != 0;
             previousChange.IsEnabled = nextChange.IsEnabled = comparing;

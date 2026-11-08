@@ -117,6 +117,89 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     }
   }
   private let locationLabel = EVStatusButton(title: "", target: nil, action: nil)
+
+  /// Diff mode's base side of a pair, shown in this bar's leading `width`
+  /// points so that one bar spans both sides. A command line or command
+  /// output still uses the whole bar.
+  public struct DiffBase: Equatable {
+    public var title: String
+    /// The base's own file when it differs from the document's; nil omits it.
+    public var fileURL: URL?
+    public var location: String
+    public var width: CGFloat
+    public init(title: String, fileURL: URL?, location: String, width: CGFloat) {
+      self.title = title
+      self.fileURL = fileURL
+      self.location = location
+      self.width = width
+    }
+  }
+  public var diffBase: DiffBase? {
+    didSet {
+      guard diffBase != oldValue else { return }
+      applyDiffBaseText()
+      needsLayout = true
+    }
+  }
+  /// Created for the first diff base; ordinary bars keep no extra labels.
+  private var diffBaseLabelViews: (title: NSTextField, file: NSTextField, location: NSTextField)?
+  private var diffBaseLabels: [NSTextField] { diffBaseLabelViews.map { [$0.title, $0.file, $0.location] } ?? [] }
+  private var showsDiffBase: Bool {
+    diffBase != nil && currentState.commandLine == nil && currentState.commandOutput == nil
+  }
+  private var diffBaseWidth: CGFloat { showsDiffBase ? min(diffBase?.width ?? 0, bounds.width) : 0 }
+
+  private func applyDiffBaseText() {
+    if diffBaseLabelViews == nil, diffBase != nil {
+      let labels = (title: NSTextField(labelWithString: ""), file: NSTextField(labelWithString: ""),
+                    location: NSTextField(labelWithString: ""))
+      for label in [labels.title, labels.file, labels.location] {
+        label.lineBreakMode = .byClipping
+        label.maximumNumberOfLines = 1
+        label.isHidden = true
+        addSubview(label, positioned: .below, relativeTo: commandCaret)
+      }
+      diffBaseLabelViews = labels
+    }
+    guard let labels = diffBaseLabelViews else { return }
+    let file = diffBase?.fileURL.map { EVStatusFilePath.display($0) } ?? ""
+    for (label, text) in [(labels.title, diffBase?.title ?? ""), (labels.file, file),
+                          (labels.location, diffBase?.location ?? "")] {
+      label.attributedStringValue = NSAttributedString(string: text, attributes: barTextAttributes)
+    }
+    labels.title.setAccessibilityLabel("Diff base: \(diffBase?.title ?? "")")
+    labels.file.setAccessibilityLabel("Base file: \(file)")
+    labels.location.setAccessibilityLabel("Base position: \(diffBase?.location ?? "")")
+  }
+
+  /// The title and base file from the leading edge, and the base view's
+  /// position against the editor side, mirroring the bar's own layout.
+  private func layoutDiffBaseLabels() {
+    guard let (diffBaseTitleLabel, diffBaseFileLabel, diffBaseLocationLabel) = diffBaseLabelViews else { return }
+    func measure(_ text: String) -> CGFloat { ceil((text as NSString).size(withAttributes: barTextAttributes).width) }
+    // A label's cell pads its text, so a frame only as wide as the text
+    // clips its final characters (the column number of the position).
+    func cellWidth(_ label: NSTextField) -> CGFloat { ceil(label.cell?.cellSize.width ?? label.intrinsicContentSize.width) }
+    let padding = max(0, cellWidth(diffBaseLocationLabel) - measure(diffBaseLocationLabel.stringValue))
+    let style = barStyle
+    let width = diffBaseWidth
+    let height = ceil(style.fontHeight)
+    let y = floor(commandTextCenterY - height / 2)
+    let locationWidth = cellWidth(diffBaseLocationLabel)
+    let locationX = max(style.padding.left, width - style.padding.right - locationWidth)
+    diffBaseLocationLabel.frame = NSRect(x: locationX, y: y, width: locationWidth, height: height)
+    let limit = locationX - Self.positionGap
+    let titleWidth = min(cellWidth(diffBaseTitleLabel), max(0, limit - style.padding.left))
+    diffBaseTitleLabel.frame = NSRect(x: style.padding.left, y: y, width: titleWidth, height: height)
+    let fileX = diffBaseTitleLabel.frame.maxX + leftGroup.spacing
+    let path = diffBase?.fileURL.map { EVStatusFilePath.display($0) } ?? ""
+    let fitted = EVStatusFilePath.fitting(path, width: max(0, limit - fileX - padding), measure: measure)
+    if diffBaseFileLabel.stringValue != fitted {
+      diffBaseFileLabel.attributedStringValue = NSAttributedString(string: fitted, attributes: barTextAttributes)
+    }
+    diffBaseFileLabel.toolTip = fitted == path || path.isEmpty ? nil : path
+    diffBaseFileLabel.frame = NSRect(x: fileX, y: y, width: max(0, min(cellWidth(diffBaseFileLabel), limit - fileX)), height: height)
+  }
   public var optionDidChange: ((EVStatusBarOption) -> Void)?
   /// A click inside the command area, as a UTF-8 offset into its text.
   public var commandLineDidSelect: ((Int, Bool) -> Void)?
@@ -297,10 +380,11 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     locationLabel.font = font
     locationLabel.contentTintColor = style.foreground
     applyLabelAttributes()
+    applyDiffBaseText()
     updateLocationTitle()
     applyOutputTheme()
     heightConstraint.constant = visiblePreferredHeight
-    leftInsetConstraint.constant = style.padding.left
+    leftInsetConstraint.constant = style.padding.left + diffBaseWidth
     rightInsetConstraint.constant = -style.padding.right
     // AppKit's Auto Layout vertical constants increase toward the bottom,
     // even though this view's drawing coordinates increase upward.
@@ -620,7 +704,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   /// selection retain their usual hover cursors.
   var resizeCursorRects: [NSRect] {
     guard dragDidMove != nil, !isHiddenOrHasHiddenAncestor else { return [] }
-    var controls: [NSView] = [modeLabel, filePathLabel, messageLabel, locationLabel]
+    var controls: [NSView] = [modeLabel, filePathLabel, messageLabel, locationLabel] + diffBaseLabels
     if let outputControls { controls += [outputControls.close, outputControls.scroll] }
     var exclusions = controls.filter { !$0.isHiddenOrHasHiddenAncestor }.map { control in
       var rect = control.bounds
@@ -661,6 +745,9 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
     locationLabel.invalidateIntrinsicContentSize()
     let hideLabels = currentState.commandLine != nil || currentState.commandOutput != nil || statusTextWidth <= 0
     setLeftGroupHidden(hideLabels)
+    leftInsetConstraint.constant = barStyle.padding.left + diffBaseWidth
+    for label in diffBaseLabels where label.isHidden == showsDiffBase { label.isHidden = !showsDiffBase }
+    if showsDiffBase { layoutDiffBaseLabels() }
     if !hideLabels { layoutStatusLabels() }
     super.layout()
     if let controls = outputControls, !controls.scroll.isHidden {
@@ -704,7 +791,7 @@ public final class EVStatusBarView: NSView, NSMenuItemValidation {
   static let positionGap: CGFloat = 10
 
   private var statusTextWidth: CGFloat {
-    max(0, bounds.width - barStyle.padding.left - barStyle.padding.right
+    max(0, bounds.width - diffBaseWidth - barStyle.padding.left - barStyle.padding.right
       - locationLabel.intrinsicContentSize.width - Self.positionGap)
   }
 

@@ -155,6 +155,13 @@ public final class EVConfigurationStore {
   public func setDiffLineNumbers(_ shows: Bool) throws {
     try update(section: "diff", values: ["lineNumbers": shows], notify: false)
   }
+  /// Code's and diff mode's shared word-wrap setting, the last state set
+  /// explicitly in either; off until first set.
+  public var codeWordWrap: Bool { (root["code"] as? [String: Any])?["wordWrap"] as? Bool ?? false }
+  public func setCodeWordWrap(_ wraps: Bool) throws {
+    guard wraps != codeWordWrap || (root["code"] as? [String: Any])?["wordWrap"] == nil else { return }
+    try update(section: "code", values: ["wordWrap": wraps], notify: false)
+  }
   /// Code's saved line-number setting, absent until first set explicitly.
   public var codeLineNumbers: Bool? { (root["code"] as? [String: Any])?["lineNumbers"] as? Bool }
   public func setCodeLineNumbers(_ shows: Bool) throws {

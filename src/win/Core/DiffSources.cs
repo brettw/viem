@@ -24,6 +24,12 @@ internal sealed record DiffBase(uint Kind, string Argument = "")
         _ => "File: " + Path.GetFileName(Argument)
     };
     public bool IsGit => Kind is VIEM_DIFF_BASE_UNSTAGED or VIEM_DIFF_BASE_HEAD or VIEM_DIFF_BASE_BRANCH;
+    /// "BASE @ <version>" in the base side's status, in place of its mode.
+    public string StatusTitle => Kind switch {
+        VIEM_DIFF_BASE_LAST_SAVED => "BASE @ saved", VIEM_DIFF_BASE_UNSTAGED => "BASE @ index",
+        VIEM_DIFF_BASE_HEAD => "BASE @ HEAD", VIEM_DIFF_BASE_BRANCH => "BASE @ " + Argument,
+        _ => "BASE"
+    };
 }
 
 // Blocking Git and filesystem requests own their inputs and result for the worker's lifetime.

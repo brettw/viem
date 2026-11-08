@@ -140,6 +140,11 @@ with a saved version, the Git index, HEAD, a branch, or a chosen file.
 files, moves between changes, and controls aligned scrolling.
 See [Diff mode](../../docs/diff_mode.md) for the comparison behavior.
 
+Known gap: Windows still shows one base column for the whole window rather
+than one pair per split view, and its base side keeps its own status bar
+(showing `BASE @ <version>`, a renamed file's original name and the base
+view's position) beside the live pane's.
+
 ## Windows behavior
 
 The title-bar menu button sits immediately left of the window controls.

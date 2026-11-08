@@ -18,9 +18,25 @@ Diff mode is side by side:
 
 The sides start at equal widths, separated by the same splitter as vertical
 split views. Dragging it moves the boundary, stopping at each side's minimum
-width (that of a view, or more when the live side holds vertical splits).
-The base keeps its share of the width while the window resizes and while
-that window shows other files or bases.
+width (that of a view). The base keeps its share of the width while the
+window resizes and while that window shows other files or bases.
+
+Every split view in a diff window is such a pair. Splitting a view, either
+horizontally or vertically, splits the pair: the new view gets its own base
+beside it, compared with the same base version, and each pair keeps its own
+alignment and scrolling. Closing a view ends its pair; a format switched to
+Code for the comparison is restored when the last pair showing that document
+ends.
+
+One status bar runs under both sides of a pair, and the splitter between the
+sides ends at its top. Over the new side it shows the usual status. Over the
+base side it shows `BASE @ <version>` in place of the mode (`saved`, `index`,
+`HEAD` or the branch name; a chosen base file shows only `BASE`), then the
+base's own file name where it differs from the document's (a chosen file, or
+a renamed file's original name), then that view's own line and column.
+Dragging the status bar resizes the pair as one view. While the base view
+has a command line or command output of its own, the status bar shows that
+instead.
 
 Showing the new side in Code reprojects the buffer as Code, as turning
 Preview off does. It never converts the source (see
@@ -32,11 +48,23 @@ Each view has its own line-number state. Diff mode and Code each keep an
 application-wide saved setting, which records the last state set explicitly
 in that mode. Entering diff mode uses the saved diff-mode setting, or shows
 line numbers on both sides if none has been saved. Leaving diff mode uses the
-saved Code setting.
+saved Code setting. A line-number toggle on either side of any pair applies
+to every pair.
+
+### Word wrap
+
+Code and diff mode share one remembered word-wrap setting (`code.wordWrap`),
+the last state set explicitly in a Code view or on either side of a diff. It
+is off until first set. A view takes it when it starts showing Code
+(opening a Code file, turning Preview off, or entering diff mode), on both
+sides of every pair, and a change on either side of a pair applies to the
+other. Text and Markdown keep each view's own wrapping, which resumes when
+the view leaves Code.
 
 ### Alignment
 
-An **Align sides** toggle, in both the diff toolbar and the Diff menu, controls
+An **Align sides** toggle, in both the diff toolbar (an icon of two panes
+sharing a row) and the Diff menu, controls
 whether the two sides line up. Each diff view (a pair of sides) has its own
 Align sides state. Changing it explicitly also saves that state in settings,
 and new diff views start with the saved state, or on if none has been saved.
@@ -126,7 +154,7 @@ registers, dirty state or undo.
 
 ## Diff menu
 
-A new top-level **Diff** menu sits immediately before **View**. Its first item,
+A new top-level **Diff** menu sits immediately after **File**. Its first item,
 **Diff Mode**, is a checkmark item that turns diff mode on and off for the
 current window. Diff mode is per window: each window has its own on/off
 state, base and file list.
@@ -156,8 +184,10 @@ regular window's frame at twice the width; later diff windows cascade from
 it. A window records its frame as a diff frame while it shows a diff,
 including when it closes. The folder stays the scope of the
 window's file list when the base changes to HEAD or a branch. A folder
-outside a git repository, or one with no changes, reports that instead of
-opening a window.
+without changes still opens its window, with an empty untitled buffer; the
+file dropdown is disabled and says *no changes* in italics. Choosing HEAD or
+a branch then lists that folder's changes. A folder outside a git repository
+is reported instead of opening a window.
 
 ## Diff toolbar
 
@@ -204,6 +234,12 @@ previous and next file in the list, wrapping around at either end. Moving
 away from a file with unsaved changes first shows the same native save prompt
 as closing the window (Save, Don't Save, Cancel); Cancel stays on the current
 file. Choosing a file from the dropdown behaves the same way.
+
+In diff mode the argument-list commands (`:next`, `:Next`/`:previous`,
+`:first`/`:rewind`, `:last`, `:argument N`, `:wnext` and their counts) move
+the active pair through this list instead of the argument list, without
+wrapping. They keep Vim's rules for a modified buffer: without `!` they fail
+with E37 unless another view shows the document; `:wnext` saves first.
 
 A file deleted since the base is listed like any other. Its base side shows
 the base version and its new side is blank and not editable.
@@ -398,7 +434,7 @@ Layers are built bottom-up; each has focused tests before the next starts.
   - `EVDocumentWindowController.swift`: `EVDiffModeHost` conformance, Diff
     menu actions and validation, active-document hook, line-number toggles
     saved to `diff.lineNumbers` or `code.lineNumbers`.
-    `EVMenuBuilder.swift`: the Diff menu before View.
+    `EVMenuBuilder.swift`: the Diff menu right after File.
     `EVConfigurationStore.swift`: diff and Code line-number settings.
   - `src/mac/Editor/Sources/EVCoreDiffMode.swift`: backend conformance
     (`makeDiffBase` builds a read-only, non-modifiable Code buffer with the

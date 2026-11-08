@@ -350,18 +350,33 @@ internal sealed partial class EditorPane
         filePath.FontFamily = statusMeasure.FontFamily = mode.FontFamily;
         filePath.FontSize = statusMeasure.FontSize = mode.FontSize;
         mode.Width = Math.Ceiling(new[] { "Recording @W", "NORMAL", "INSERT", "REPLACE", "VISUAL", "V-LINE", "V-BLOCK",
-            "SELECTION", "SELECT", "S-LINE", "S-BLOCK", "COMMAND" }.Max(MeasureStatusText));
+            "SELECTION", "SELECT", "S-LINE", "S-BLOCK", "COMMAND", diffBaseTitle ?? "" }.Max(MeasureStatusText));
         UpdateFilePathText();
         UpdateStatusPresentation();
         statusBox.Invalidate(); statusTextCanvas.Invalidate(); prompt.Refresh();
     }
 
+    // Diff mode's base side shows where its version came from in place of the
+    // mode, and its own file only when that differs (a chosen file or a
+    // renamed file's original).
+    private string? diffBaseTitle, diffBaseFile;
+    internal void SetDiffBaseStatus(string title, string? file)
+    {
+        if (diffBaseTitle == title && diffBaseFile == file) return;
+        diffBaseTitle = title; diffBaseFile = file;
+        mode.Width = Math.Ceiling(Math.Max(mode.Width, MeasureStatusText(title)));
+        filePathIdentity = null;
+        RefreshStatusFilePath();
+        Refresh();
+    }
+
     internal void RefreshStatusFilePath()
     {
-        var identity = (Document.FilePath, Environment.CurrentDirectory);
+        var identity = (diffBasePane && diffBaseTitle != null ? diffBaseFile : Document.FilePath, Environment.CurrentDirectory);
         if (filePathIdentity == identity) return;
         filePathIdentity = identity;
-        fullStatusFilePath = StatusFilePath.Display(identity.Item1, identity.Item2);
+        fullStatusFilePath = diffBasePane && diffBaseTitle != null && identity.Item1 == null ? ""
+            : StatusFilePath.Display(identity.Item1, identity.Item2);
         AutomationProperties.SetName(filePath, "File: " + fullStatusFilePath);
         UpdateNormalStatusLayout();
     }

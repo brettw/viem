@@ -396,6 +396,9 @@ internal sealed partial class EditorWindow
         if (diffAligned) MirrorDiff(true);
         diffLeft.Opacity = 1;
         diffBase = prepared.Basis; diffFiles = prepared.Files; diffGit = prepared.Git;
+        bool wrap = preferences.CodeWordWrap;
+        live.SetWordWrap(wrap); diffLeft.SetWordWrap(wrap);
+        UpdateDiffBaseStatus();
         PrefetchDiffNeighbours();
         live.FocusEditor();
     }
@@ -458,6 +461,9 @@ internal sealed partial class EditorWindow
         ReleaseDetachedDocument(oldLive);
         TrackExternalFile(document);
         PaneReady(live);
+        bool wrap = preferences.CodeWordWrap;
+        live.SetWordWrap(wrap); left.SetWordWrap(wrap);
+        UpdateDiffBaseStatus();
         UpdateDiffToolbar();
         PrefetchDiffNeighbours();
     }
@@ -530,11 +536,31 @@ internal sealed partial class EditorWindow
     {
         if (!changingNumbers && comparison != null && (pane == diffLeft || pane == diffLive)) SetLineNumbers(enabled);
     }
+
+    /// Both sides are Code and share its remembered wrapping; a change on
+    /// either side applies to the other.
+    internal void DiffWrapChanged(EditorPane pane, bool wrap)
+    {
+        if (comparison == null) return;
+        if (pane == diffLeft) diffLive?.SetWordWrap(wrap);
+        else if (pane == diffLive) diffLeft?.SetWordWrap(wrap);
+    }
+
+    /// The base side's status names its version and, for a chosen file or a
+    /// renamed file, the base's own file.
+    private void UpdateDiffBaseStatus()
+    {
+        if (diffLeft == null || diffLive == null) return;
+        string? file = diffBase.Kind == VIEM_DIFF_BASE_FILE ? diffBase.Argument
+            : diffLive.Document.FilePath is { } path && diffFiles.FirstOrDefault(f => SamePath(f.Path, path)) is { } entry
+              && !SamePath(entry.BasePath, entry.Path) ? entry.BasePath : null;
+        diffLeft.SetDiffBaseStatus(diffBase.StatusTitle, file);
+    }
     private void UpdateDiffToolbar()
     {
         menusDirty = true;
         if (diffEnabled) diffToolbar?.Update(diffBase, diffGit, diffBranches, diffFiles, CurrentDiffFile,
-            ActivePane?.Document.Name ?? "Untitled", diffAligned, comparison != null);
+            ActivePane?.Document.Name ?? "Untitled", diffAligned, comparison != null, noChanges: diffScope != null && diffFiles.Length == 0);
     }
 
     private Task RefreshDiff() { ClearDiffCache(); return LoadDiff(refresh: true); }
@@ -601,7 +627,6 @@ internal sealed partial class EditorWindow
             var basis = new DiffBase(VIEM_DIFF_BASE_UNSTAGED);
             var files = await Task.Run(() => DiffSources.Files(basis, path, path, unsaved, request.Token));
             request.Token.ThrowIfCancellationRequested();
-            if (files.Length == 0) { ActivePane?.SetMessage("There are no changes in " + path + "."); return; }
             bool pristine = Panes.Count == 1 && ActivePane is { } pane && pane.Document.FilePath == null && !pane.Document.IsDirty
                 && pane.Document.State.source_byte_count == 0
                 && (pane.Document.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0;
@@ -615,7 +640,9 @@ internal sealed partial class EditorWindow
                 target.diffScope = path;
                 target.diffBase = basis;
                 target.diffLive = target.ActivePane;
-                var opening = target.OpenPath(files[0].Path, compareHere: true, cancellation: request.Token, initialDiffFiles: files);
+                // A folder without changes shows an empty buffer and lists none.
+                var opening = files.Length == 0 ? target.LoadDiff(requested: basis, listedFiles: files)
+                    : target.OpenPath(files[0].Path, compareHere: true, cancellation: request.Token, initialDiffFiles: files);
                 generation = target.diffGeneration;
                 await opening;
             } catch {

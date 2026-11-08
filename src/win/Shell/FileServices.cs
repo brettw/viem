@@ -22,6 +22,19 @@ internal sealed partial class EditorWindow
     {
         var r = request.Value;
         if ((r.flags & VIEM_EX_FRONTEND_WRITE_FIRST) != 0) { if (!await Save(pane) || pane.Document.IsDirty) throw new OperationCanceledException(); }
+        // In diff mode the argument commands step through the diff's files.
+        if (diffEnabled && pane == ActivePane) {
+            if (diffFiles.Length == 0) throw new InvalidOperationException("The argument list is empty.");
+            int target = checked((int)ResolveArgument(diffFiles.Select(f => f.Path).ToList(), CurrentDiffFile,
+                CurrentDiffFile < 0 ? ulong.MaxValue : (ulong)CurrentDiffFile, r.argument_command, r.argument_count));
+            if (target != CurrentDiffFile) {
+                if ((r.flags & VIEM_EX_FRONTEND_FORCE) == 0 && pane.Document.IsDirty && !HasSurvivingView(pane.Document, pane))
+                    throw new InvalidOperationException("E37: No write since last change (add ! to override)");
+                await OpenPath(diffFiles[target].Path, targetPane: pane, force: true, compareHere: true, diffGenerationAtOpen: diffGeneration);
+            }
+            if ((r.flags & VIEM_EX_FRONTEND_HAS_LINE) != 0) ActivePane?.View?.GoToLine(r.argument_line == 0 ? ulong.MaxValue : r.argument_line);
+            return;
+        }
         ulong index = ResolveArgument(pane, r.argument_command, r.argument_count);
         await OpenPath(App.Instance.Arguments[checked((int)index)], false, (r.flags & VIEM_EX_FRONTEND_FORCE) != 0);
         var opened = App.Instance.Windows.SelectMany(w => w.Panes).FirstOrDefault(p => p.Document.FilePath is string file && FileIdentity.Same(file, App.Instance.Arguments[(int)index]));
@@ -51,11 +64,15 @@ internal sealed partial class EditorWindow
         foreach (var window in App.Instance.Windows.Where(w => w.Panes.Any(p => p.Document == doc))) window.savedSources[doc] = baseline;
         doc.RedetectLanguage(); doc.NotifyChanged();
     }
-    private static unsafe ulong ResolveArgument(EditorPane pane, uint command, ulong count)
+    private static ulong ResolveArgument(EditorPane pane, uint command, ulong count)
     {
         var args = App.Instance.Arguments;
         int current = args.FindIndex(p => string.Equals(p, pane.Document.FilePath, StringComparison.OrdinalIgnoreCase));
-        var result = viem_argument_list_resolve((ulong)args.Count, current < 0 ? ulong.MaxValue : (ulong)current, pane.RememberedArgument, command, Math.Max(1, count));
+        return ResolveArgument(args, current, pane.RememberedArgument, command, count);
+    }
+    private static unsafe ulong ResolveArgument(IReadOnlyList<string> args, int current, ulong remembered, uint command, ulong count)
+    {
+        var result = viem_argument_list_resolve((ulong)args.Count, current < 0 ? ulong.MaxValue : (ulong)current, remembered, command, Math.Max(1, count));
         if (result.status != VIEM_ARGUMENT_RESOLVE_OK) throw new InvalidOperationException(result.status switch { VIEM_ARGUMENT_RESOLVE_EMPTY => "The argument list is empty.", VIEM_ARGUMENT_RESOLVE_BEFORE_FIRST => "Already at the first file.", VIEM_ARGUMENT_RESOLVE_AFTER_LAST => "Already at the last file.", _ => "Invalid argument index." });
         return result.index;
     }

@@ -334,10 +334,10 @@ final class EVDiffSplitView: NSView {
   let splitter = EVVerticalSplitter(frame: .zero)
   /// The base's share of the width beside the splitter.
   private(set) var baseFraction: CGFloat
-  /// The document side's minimum width, which its own vertical splits raise.
-  var documentMinimumWidth: () -> CGFloat = { EVDiffSplitView.minimumWidth }
   /// Reports each dragged share, so a replacement split can keep it.
   var baseFractionDidChange: ((CGFloat) -> Void)?
+  /// Runs after each layout, so a status bar spanning both sides can follow.
+  var didLayout: (() -> Void)?
 
   init(base: NSView, document: NSView, baseFraction: CGFloat = 0.5) {
     self.base = base
@@ -360,7 +360,7 @@ final class EVDiffSplitView: NSView {
   /// narrow for both divides its width evenly.
   private func clampedBaseWidth(_ width: CGFloat) -> CGFloat {
     let available = availableWidth
-    let upper = available - max(Self.minimumWidth, documentMinimumWidth())
+    let upper = available - Self.minimumWidth
     guard upper >= Self.minimumWidth else { return available / 2 }
     return min(max(width, Self.minimumWidth), upper)
   }
@@ -385,6 +385,7 @@ final class EVDiffSplitView: NSView {
     splitter.frame = NSRect(x: width, y: 0, width: Self.splitterWidth, height: bounds.height)
     document.frame = NSRect(x: splitter.frame.maxX, y: 0, width: max(0, bounds.width - splitter.frame.maxX),
                             height: bounds.height)
+    didLayout?()
   }
 }
 
@@ -432,6 +433,28 @@ final class EVDiffToolbar: NSObject {
     return image
   }
 
+  /// Two panes whose shared middle row crosses between them, as on Windows.
+  static func alignIcon() -> NSImage {
+    let image = NSImage(size: NSSize(width: 18, height: 16), flipped: true) { _ in
+      NSColor.black.setStroke()
+      let path = NSBezierPath()
+      path.lineWidth = 1
+      for x in [CGFloat(1.5), 10.5] {
+        path.appendRect(NSRect(x: x, y: 2.5, width: 6, height: 11))
+      }
+      for (from, to, y) in [(CGFloat(3.5), CGFloat(5.5), CGFloat(5.5)), (12.5, 14.5, 5.5), (3.5, 14.5, 8),
+                            (3.5, 5.5, 10.5), (12.5, 14.5, 10.5)] {
+        path.move(to: NSPoint(x: from, y: y))
+        path.line(to: NSPoint(x: to, y: y))
+      }
+      path.stroke()
+      return true
+    }
+    image.isTemplate = true
+    image.accessibilityDescription = "Align Sides"
+    return image
+  }
+
   override init() {
     super.init()
     accessory.layoutAttribute = .bottom
@@ -462,11 +485,10 @@ final class EVDiffToolbar: NSObject {
     filePopup.action = #selector(fileChanged(_:))
     filePopup.toolTip = "Files in this diff"
     filePopup.setAccessibilityLabel("Files in this diff")
-    alignButton.setButtonType(.switch)
-    alignButton.title = "Align Sides"
-    alignButton.target = self
-    alignButton.action = #selector(alignClicked(_:))
-    alignButton.refusesFirstResponder = true
+    configure(alignButton, symbol: "circle", label: "Align Sides", action: #selector(alignClicked(_:)))
+    alignButton.setButtonType(.pushOnPushOff)
+    alignButton.bezelStyle = .accessoryBar
+    alignButton.image = Self.alignIcon()
     for (button, next) in [(previousChangeButton, false), (nextChangeButton, true)] {
       let label = next ? "Next Change" : "Previous Change"
       configure(button, symbol: "circle", label: label,
@@ -514,14 +536,10 @@ enum EVDiffFolder {
 @MainActor
 protocol EVDiffModeHost: AnyObject {
   var diffWindow: NSWindow? { get }
-  var diffActiveDocument: EVDocument? { get }
-  var diffActiveSurface: (any EVEditorSurface)? { get }
-  var diffDocumentContentView: NSView { get }
-  /// The narrowest the document side may be, including its vertical splits.
-  var diffDocumentMinimumWidth: CGFloat { get }
+  /// Every pane shows one side-by-side pair in diff mode.
+  var diffPanes: [EVDocumentContentViewController] { get }
+  var diffActivePane: EVDocumentContentViewController? { get }
   var diffOpenPanelPresenter: ((NSOpenPanel, NSWindow, @escaping @MainActor (URL?) -> Void) -> Void)? { get }
-  /// Show `view` as the window's content; nil restores the pane container.
-  func installDiffContent(_ view: NSView?)
   /// Replace the active pane's document with `url`, discarding unsaved
   /// changes the caller has already reviewed.
   func openDiffFile(_ url: URL, completion: @escaping @MainActor (Error?) -> Void)
@@ -529,11 +547,29 @@ protocol EVDiffModeHost: AnyObject {
   func unsavedDocumentURLs() -> [URL]
 }
 
-extension EVDiffModeHost {
-  var diffDocumentMinimumWidth: CGFloat { EVDiffSplitView.minimumWidth }
+/// One pane's comparison: the base buffer beside the pane's editor and the
+/// core session between them. Splitting a pane splits the pair.
+@MainActor
+private final class EVDiffPair {
+  weak var pane: EVDocumentContentViewController?
+  /// The document and editor the pair last presented.
+  weak var document: EVDocument?
+  weak var surface: AnyObject?
+  var baseBackend: (any EVDocumentBackend)?
+  var baseSurface: (any EVEditorSurface)?
+  var session: (any EVDiffSessionControlling)?
+  /// Retires base loads a newer request for this pane superseded.
+  var generation = 0
+
+  init(pane: EVDocumentContentViewController) { self.pane = pane }
+
+  var isPresentingPane: Bool {
+    guard let pane else { return false }
+    return pane.document === document && pane.editorSurface as AnyObject === surface
+  }
 }
 
-/// One window's diff mode: its base, file list, toolbar and comparison.
+/// One window's diff mode: its base, file list, toolbar and comparisons.
 @MainActor
 final class EVDiffModeController: NSObject {
   private weak var host: (any EVDiffModeHost)?
@@ -547,20 +583,22 @@ final class EVDiffModeController: NSObject {
   /// The folder a folder diff lists; nil lists the whole repository.
   private(set) var scope: URL?
   private var baseChoices: [EVDiffBase] = []
-  private var baseBackend: (any EVDocumentBackend)?
-  private var baseSurface: (any EVEditorSurface)?
-  private var split: EVDiffSplitView?
-  /// The base's share of the window, kept while the window lives.
+  private var pairs: [EVDiffPair] = []
+  /// A replaced pane's base buffer and view, which the next pair refills so
+  /// moving between files keeps the base view.
+  private var spareBase: (backend: any EVDocumentBackend, surface: any EVEditorSurface)?
+  /// The base's share of each pair, kept while the window lives.
   private(set) var splitFraction: CGFloat = 0.5
   private let baseCache = EVDiffBaseCache()
-  private var session: (any EVDiffSessionControlling)?
-  private weak var presentedDocument: EVDocument?
-  private weak var presentedSurface: AnyObject?
-  /// Retires asynchronous loads that a newer request superseded.
+  /// The document the toolbar describes.
+  private weak var toolbarDocument: EVDocument?
+  /// Retires file listings that a newer request superseded.
   private var generation = 0
   /// Layout during an install can report an active-document change; the
-  /// document being installed is already the presented one.
+  /// pair being installed already presents its pane.
   private var isInstalling = false
+  /// Pairs wait while diff mode starts and chooses its base.
+  private var isChoosingBase = false
   private(set) var lastMessage: String?
   /// Tests await this after a change to know the async work is installed.
   var didPresent: (() -> Void)?
@@ -581,6 +619,17 @@ final class EVDiffModeController: NSObject {
     toolbar.nextChange = { [weak self] in self?.navigateChange(next: true) }
   }
 
+  private var activeDocument: EVDocument? { host?.diffActivePane?.document }
+  private var activePair: EVDiffPair? {
+    guard let pane = host?.diffActivePane else { return nil }
+    return pairs.first { $0.pane === pane }
+  }
+
+  /// Both sides of every pair, for settings diff mode applies to all of them.
+  private var pairSurfaces: [any EVEditorSurface] {
+    pairs.flatMap { pair in [pair.pane?.editorSurface, pair.baseSurface].compactMap { $0 } }
+  }
+
   // MARK: Entering and leaving
 
   func toggle() {
@@ -589,7 +638,8 @@ final class EVDiffModeController: NSObject {
 
   /// Turn diff mode on and show the toolbar; false when it cannot start.
   private func begin() -> Bool {
-    guard !isEnabled, let host, let window = host.diffWindow, host.diffActiveDocument != nil else { return false }
+    guard !isEnabled, let host, let window = host.diffWindow, activeDocument != nil else { return false }
+    isChoosingBase = true
     isEnabled = true
     isAligned = configuration.diffAlignSides
     if !window.titlebarAccessoryViewControllers.contains(where: { $0 === toolbar.accessory }) {
@@ -607,18 +657,20 @@ final class EVDiffModeController: NSObject {
     base = .unstaged
     self.files = files
     generation += 1
+    isChoosingBase = false
     present()
   }
 
   func enable() {
-    guard let host, begin() else { return }
+    guard begin() else { return }
     scope = nil
-    let url = host.diffActiveDocument?.fileURL
+    let url = activeDocument?.fileURL
     generation += 1
     let current = generation
     // Default to `git diff`, falling back to Last saved outside a repository.
     guard let url else {
       base = .lastSaved
+      isChoosingBase = false
       present()
       return
     }
@@ -633,6 +685,7 @@ final class EVDiffModeController: NSObject {
         self.base = .lastSaved
         self.files = [EVDiffFile(url: url, baseURL: url, change: UInt32(VIEM_DIFF_FILE_MODIFIED))]
       }
+      self.isChoosingBase = false
       self.present()
     }
   }
@@ -640,40 +693,59 @@ final class EVDiffModeController: NSObject {
   func disable() {
     guard isEnabled else { return }
     isEnabled = false
+    isChoosingBase = false
     generation += 1
-    tearDownComparison()
+    let panes = pairs.compactMap(\.pane)
+    for pair in pairs { end(pair) }
+    pairs = []
+    spareBase = nil
     baseCache.removeAll()
-    if let surface = host?.diffActiveSurface as? any EVDiffLineNumberControlling,
-       let code = configuration.codeLineNumbers {
-      surface.setShowsLineNumbers(code)
+    if let code = configuration.codeLineNumbers {
+      for pane in panes { (pane.editorSurface as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(code) }
     }
-    host?.installDiffContent(nil)
     if let window = host?.diffWindow,
        let index = window.titlebarAccessoryViewControllers.firstIndex(where: { $0 === toolbar.accessory }) {
       window.removeTitlebarAccessoryViewController(at: index)
     }
     files = []
     scope = nil
-    presentedDocument = nil
+    toolbarDocument = nil
   }
 
-  private func tearDownComparison() {
-    session?.end()
-    session = nil
-    baseSurface = nil
-    baseBackend = nil
-    split = nil
-    presentedSurface = nil
-  }
-
-  /// The active document changed by another route (`:e`, a link, a pane
-  /// switch): compare it with the same base.
-  func activeDocumentDidChange() {
-    guard isEnabled, !isInstalling, let host else { return }
-    if host.diffActiveDocument !== presentedDocument || host.diffActiveSurface as AnyObject? !== presentedSurface {
-      present()
+  /// End a pair's comparison and remove its base from the pane. A pane that
+  /// is closing leaves its base buffer and view for the next pair to refill.
+  private func end(_ pair: EVDiffPair, keepingBase: Bool = false) {
+    pair.generation += 1
+    pair.session?.end()
+    pair.session = nil
+    pair.pane?.detachDiffBase()
+    if keepingBase, let backend = pair.baseBackend, let surface = pair.baseSurface {
+      spareBase = (backend, surface)
     }
+    pair.baseBackend = nil
+    pair.baseSurface = nil
   }
+
+  /// Panes were added, removed or replaced, or a pane's document changed by
+  /// another route (`:e`, a link, a split): compare every pane with the same
+  /// base, each in its own pair.
+  func panesDidChange() {
+    guard isEnabled, !isInstalling, !isChoosingBase else { return }
+    syncPairs()
+    for pair in pairs where !pair.isPresentingPane { present(pair) }
+    if toolbarDocument !== activeDocument { refreshToolbar() }
+  }
+
+  /// One pair per pane, in pane order; a closed pane's base is kept spare.
+  private func syncPairs() {
+    guard let host else { return }
+    let panes = host.diffPanes.filter { $0.document != nil }
+    for pair in pairs where !panes.contains(where: { $0 === pair.pane }) { end(pair, keepingBase: true) }
+    pairs = panes.map { pane in pairs.first { $0.pane === pane } ?? EVDiffPair(pane: pane) }
+  }
+
+  /// The active pane or its document changed.
+  func activeDocumentDidChange() { panesDidChange() }
 
   // MARK: Presenting
 
@@ -682,16 +754,46 @@ final class EVDiffModeController: NSObject {
     return files.first(where: { $0.url.standardizedFileURL == url.standardizedFileURL })?.baseURL.path ?? url.path
   }
 
-  /// Load the base for the active document and show the comparison.
+  /// "BASE @ <version>" names where a pair's base came from.
+  static func baseStatusTitle(_ base: EVDiffBase) -> String {
+    switch base {
+    case .lastSaved: "BASE @ saved"
+    case .unstaged: "BASE @ index"
+    case .head: "BASE @ HEAD"
+    case let .branch(name): "BASE @ \(name)"
+    case .file: "BASE"
+    }
+  }
+
+  /// The base's file where it differs from the document's: a chosen file, or
+  /// a renamed file's original name.
+  private func baseStatusFileURL(for document: EVDocument, base: EVDiffBase) -> URL? {
+    if case let .file(url) = base { return url }
+    guard let url = document.fileURL?.standardizedFileURL,
+          let file = files.first(where: { $0.url.standardizedFileURL == url }),
+          file.baseURL.standardizedFileURL != url else { return nil }
+    return file.baseURL
+  }
+
+  /// Load the base for every pane's document and show the comparisons.
   func present(readingDisk: Bool = false) {
-    guard isEnabled, let host, let document = host.diffActiveDocument else { return }
-    generation += 1
-    let current = generation
+    guard isEnabled, !isChoosingBase else { return }
+    if readingDisk { baseCache.removeAll() }
+    syncPairs()
     refreshToolbar()
+    for pair in pairs { present(pair, readingDisk: readingDisk) }
+  }
+
+  private func present(_ pair: EVDiffPair, readingDisk: Bool = false) {
+    guard isEnabled, let pane = pair.pane, let document = pane.document else { return }
+    pair.generation += 1
+    let current = pair.generation
+    pair.document = document
+    pair.surface = pane.editorSurface as AnyObject
     let base = self.base
     if base == .lastSaved, !readingDisk,
        let saved = (document.editorBackend as? any EVDiffBackend)?.diffSavedSource() {
-      install(base: saved, for: document)
+      install(base: saved, from: base, in: pair)
       return
     }
     let path: String
@@ -701,79 +803,69 @@ final class EVDiffModeController: NSObject {
       path = documentPath
     } else {
       // An untitled document's Last saved base is empty.
-      install(base: Data(), for: document)
+      install(base: Data(), from: base, in: pair)
       return
     }
     let deleted = files.contains { $0.isDeleted && $0.url.path == document.fileURL?.path }
     let key = EVDiffBaseCache.Key(base: base, path: path)
-    if readingDisk { baseCache.removeAll() }
     if let cached = baseCache.cached(key) {
-      install(base: cached.bytes, for: document, editable: !deleted)
+      install(base: cached.bytes, from: base, in: pair, editable: !deleted)
       return
     }
     let loading = baseCache.load(key)
     Task { @MainActor in
       let loaded = await loading.value
-      guard current == self.generation, self.isEnabled, host.diffActiveDocument === document else { return }
+      guard current == pair.generation, self.isEnabled, self.pairs.contains(where: { $0 === pair }),
+            pair.pane?.document === document else { return }
       switch loaded {
-      case let .success(result): self.install(base: result.bytes, for: document, editable: !deleted)
+      case let .success(result): self.install(base: result.bytes, from: base, in: pair, editable: !deleted)
       case let .failure(error):
         self.lastMessage = error.localizedDescription
-        host.diffActiveSurface?.showDocumentMessage(error.localizedDescription)
-        self.install(base: Data(), for: document, editable: !deleted)
+        pair.pane?.editorSurface.showDocumentMessage(error.localizedDescription)
+        self.install(base: Data(), from: base, in: pair, editable: !deleted)
       }
     }
   }
 
-  private func install(base bytes: Data, for document: EVDocument, editable: Bool = true) {
-    guard !isInstalling, let host, let surface = host.diffActiveSurface,
+  private func install(base bytes: Data, from version: EVDiffBase, in pair: EVDiffPair, editable: Bool = true) {
+    guard !isInstalling, let pane = pair.pane, let document = pane.document,
           let backend = document.editorBackend as? any EVDiffBackend else { return }
+    let surface = pane.editorSurface
     isInstalling = true
     defer { isInstalling = false }
-    // The previous base buffer, surface and split stay: refilling the buffer
-    // keeps its view, so the window layout does not change between files.
-    let reusable = (baseBackend, baseSurface, split)
-    session?.end()
-    session = nil
-    presentedDocument = document
-    presentedSurface = surface
+    // Refilling a previous base buffer keeps its view, so the pane's layout
+    // does not change between files.
+    pair.session?.end()
+    pair.session = nil
+    let previous = pair.baseBackend.map { ($0, pair.baseSurface) } ?? spareBase.map { ($0.backend, Optional($0.surface)) }
+    if pair.baseBackend == nil { spareBase = nil }
     do {
       let baseBackend: any EVDocumentBackend
-      if let previous = reusable.0, let made = try? backend.makeDiffBase(source: bytes, reusing: previous) {
+      if let reusing = previous?.0, let made = try? backend.makeDiffBase(source: bytes, reusing: reusing) {
         baseBackend = made
       } else {
         baseBackend = try backend.makeDiffBase(source: bytes, reusing: nil)
       }
-      let reused = reusable.0 === baseBackend
-      let baseSurface = (reused ? reusable.1 : nil) ?? baseBackend.makeEditorSurface()
-      let split: EVDiffSplitView
-      if reused, let previous = reusable.2, previous.base === baseSurface.viewController.view,
-         previous.document === host.diffDocumentContentView, host.diffWindow?.contentView === previous {
-        split = previous
-      } else {
-        split = EVDiffSplitView(base: baseSurface.viewController.view, document: host.diffDocumentContentView,
-                                baseFraction: splitFraction)
-        split.documentMinimumWidth = { [weak host] in host?.diffDocumentMinimumWidth ?? EVDiffSplitView.minimumWidth }
-        split.baseFractionDidChange = { [weak self] fraction in self?.splitFraction = fraction }
-        host.installDiffContent(split)
+      let reused = previous?.0 === baseBackend
+      let baseSurface = (reused ? previous?.1 : nil) ?? baseBackend.makeEditorSurface()
+      pair.baseBackend = baseBackend
+      pair.baseSurface = baseSurface
+      pane.attachDiffBase(baseSurface, baseFraction: splitFraction) { [weak self] fraction in
+        self?.splitFraction = fraction
       }
-      self.split = split
-      split.layoutSubtreeIfNeeded()
-      session = try backend.beginDiff(base: baseBackend, baseSurface: baseSurface, surface: surface,
-                                      aligned: isAligned, editable: editable)
+      pane.setDiffBaseStatus(title: Self.baseStatusTitle(version), fileURL: baseStatusFileURL(for: document, base: version))
+      pane.view.layoutSubtreeIfNeeded()
+      pair.session = try backend.beginDiff(base: baseBackend, baseSurface: baseSurface, surface: surface,
+                                           aligned: isAligned, editable: editable)
       let numbers = configuration.diffLineNumbers
       (baseSurface as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(numbers)
       (surface as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(numbers)
-      self.baseBackend = baseBackend
-      self.baseSurface = baseSurface
-      presentedDocument = document
-      presentedSurface = surface
       lastMessage = nil
     } catch {
       lastMessage = error.localizedDescription
       surface.showDocumentMessage(error.localizedDescription)
     }
-    refreshToolbar()
+    if pane === host?.diffActivePane { refreshToolbar() }
     prefetchNeighbours()
     didPresent?()
   }
@@ -801,25 +893,28 @@ final class EVDiffModeController: NSObject {
   // MARK: Toolbar and menu actions
 
   func refresh() {
-    guard isEnabled, let host, let document = host.diffActiveDocument else { return }
+    guard isEnabled, let document = activeDocument else { return }
     baseCache.removeAll()
+    for pair in pairs { pair.generation += 1 }
     reloadFiles(for: document) { [weak self] in self?.present(readingDisk: true) }
   }
 
   private func reloadFiles(for document: EVDocument, then: @escaping @MainActor () -> Void) {
     let base = self.base
-    guard let url = document.fileURL else { files = []; then(); return }
+    let url = document.fileURL
     switch base {
     case .file:
       files = []
       then()
     case .lastSaved:
-      files = [EVDiffFile(url: url, baseURL: url, change: UInt32(VIEM_DIFF_FILE_MODIFIED))]
+      files = url.map { [EVDiffFile(url: $0, baseURL: $0, change: UInt32(VIEM_DIFF_FILE_MODIFIED))] } ?? []
       then()
     default:
+      // A folder diff's empty buffer finds the repository from its folder.
+      guard let path = url?.path ?? scope?.path else { files = []; then(); return }
       let current = generation
       Task { @MainActor in
-        let listed = await EVDiffBaseLoader.listFiles(base, path: url.path, unsaved: self.unsavedPaths(),
+        let listed = await EVDiffBaseLoader.listFiles(base, path: path, unsaved: self.unsavedPaths(),
                                                       scope: self.scope?.path)
         guard current == self.generation, self.isEnabled else { return }
         switch listed {
@@ -827,7 +922,7 @@ final class EVDiffModeController: NSObject {
         case let .failure(error):
           self.files = []
           self.lastMessage = error.localizedDescription
-          self.host?.diffActiveSurface?.showDocumentMessage(error.localizedDescription)
+          self.host?.diffActivePane?.editorSurface.showDocumentMessage(error.localizedDescription)
         }
         then()
       }
@@ -835,10 +930,11 @@ final class EVDiffModeController: NSObject {
   }
 
   func setBase(_ next: EVDiffBase) {
-    guard isEnabled, let document = host?.diffActiveDocument else { return }
+    guard isEnabled, let document = activeDocument else { return }
     base = next
     baseCache.removeAll()
     generation += 1
+    for pair in pairs { pair.generation += 1 }
     reloadFiles(for: document) { [weak self] in self?.present() }
   }
 
@@ -853,7 +949,7 @@ final class EVDiffModeController: NSObject {
   }
 
   private func chooseBranch() {
-    guard let path = host?.diffActiveDocument?.fileURL?.path else { return }
+    guard let path = activeDocument?.fileURL?.path else { return }
     Task { @MainActor in
       let listed = await EVDiffBaseLoader.listBranches(path: path)
       switch listed {
@@ -862,7 +958,7 @@ final class EVDiffModeController: NSObject {
         self.refreshToolbar()
         self.toolbar.basePopup.performClick(nil)
       case let .failure(error):
-        self.host?.diffActiveSurface?.showDocumentMessage(error.localizedDescription)
+        self.host?.diffActivePane?.editorSurface.showDocumentMessage(error.localizedDescription)
         self.refreshToolbar()
       }
     }
@@ -894,26 +990,26 @@ final class EVDiffModeController: NSObject {
   func toggleAlign() {
     isAligned.toggle()
     try? configuration.setDiffAlignSides(isAligned)
-    session?.setAligned(isAligned)
+    for pair in pairs { pair.session?.setAligned(isAligned) }
     refreshToolbar()
   }
 
-  /// Move both sides to the next or previous change in this file.
+  /// Move both sides of the active pair to the next or previous change.
   func navigateChange(next: Bool) {
     guard isEnabled else { return }
-    session?.navigateChange(next: next)
+    activePair?.session?.navigateChange(next: next)
   }
 
-  /// A line-number toggle on either side applies to both and is saved.
+  /// A line-number toggle on either side of any pair applies to every pair
+  /// and is saved.
   func lineNumbersDidToggle(on surface: any EVEditorSurface) {
     guard isEnabled, let shows = (surface as? any EVDiffLineNumberControlling)?.showsLineNumbers else { return }
     try? configuration.setDiffLineNumbers(shows)
-    (baseSurface as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(shows)
-    (host?.diffActiveSurface as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(shows)
+    for side in pairSurfaces { (side as? any EVDiffLineNumberControlling)?.setShowsLineNumbers(shows) }
   }
 
   var currentFileIndex: Int? {
-    guard let url = host?.diffActiveDocument?.fileURL?.standardizedFileURL else { return nil }
+    guard let url = activeDocument?.fileURL?.standardizedFileURL else { return nil }
     return files.firstIndex { $0.url.standardizedFileURL == url }
   }
 
@@ -929,7 +1025,7 @@ final class EVDiffModeController: NSObject {
   }
 
   private func selectFile(at index: Int) {
-    guard isEnabled, files.indices.contains(index), let host, let document = host.diffActiveDocument else { return }
+    guard isEnabled, files.indices.contains(index), let host, let document = activeDocument else { return }
     let target = files[index].url
     guard target.standardizedFileURL != document.fileURL?.standardizedFileURL else { return }
     reviewUnsavedChanges(of: document) { [weak self] proceed in
@@ -937,8 +1033,9 @@ final class EVDiffModeController: NSObject {
       // Load the base while the document opens.
       self.prefetch(self.files[index])
       host.openDiffFile(target) { error in
-        if let error { host.diffActiveSurface?.showDocumentMessage(error.localizedDescription) }
-        self.present()
+        if let error { host.diffActivePane?.editorSurface.showDocumentMessage(error.localizedDescription) }
+        self.panesDidChange()
+        self.refreshToolbar()
       }
     }
   }
@@ -966,8 +1063,12 @@ final class EVDiffModeController: NSObject {
 
   // MARK: Toolbar state
 
+  /// The file popup's entry for a folder without changes.
+  static let noChangesTitle = "no changes"
+
   func refreshToolbar() {
-    let fileURL = host?.diffActiveDocument?.fileURL
+    toolbarDocument = activeDocument
+    let fileURL = activeDocument?.fileURL
     var choices: [EVDiffBase] = [.lastSaved]
     if fileURL != nil { choices += [.unstaged, .head] }
     choices += branches.map { .branch($0) }
@@ -989,6 +1090,14 @@ final class EVDiffModeController: NSObject {
     fill(filePopup, with: EVDiffFile.menuTitles(for: files))
     if let index = currentFileIndex {
       filePopup.selectItem(at: index)
+    } else if files.isEmpty, scope != nil {
+      // A folder without changes shows an empty buffer.
+      let item = NSMenuItem(title: Self.noChangesTitle, action: nil, keyEquivalent: "")
+      let font = filePopup.font ?? .systemFont(ofSize: NSFont.systemFontSize)
+      item.attributedTitle = NSAttributedString(string: Self.noChangesTitle,
+        attributes: [.font: NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)])
+      filePopup.menu?.addItem(item)
+      filePopup.selectItem(at: filePopup.numberOfItems - 1)
     } else {
       // The current file is not one of the listed files.
       let name = fileURL?.lastPathComponent ?? "Untitled"
@@ -999,7 +1108,7 @@ final class EVDiffModeController: NSObject {
     toolbar.previousButton.isEnabled = !files.isEmpty
     toolbar.nextButton.isEnabled = !files.isEmpty
     toolbar.alignButton.state = isAligned ? .on : .off
-    toolbar.previousChangeButton.isEnabled = session != nil
-    toolbar.nextChangeButton.isEnabled = session != nil
+    toolbar.previousChangeButton.isEnabled = activePair?.session != nil
+    toolbar.nextChangeButton.isEnabled = activePair?.session != nil
   }
 }

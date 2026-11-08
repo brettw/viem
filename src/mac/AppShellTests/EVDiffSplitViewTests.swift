@@ -40,13 +40,6 @@ final class EVDiffSplitViewTests: XCTestCase {
     XCTAssertEqual(reported.count, 4)
   }
 
-  func testTheDocumentSidesOwnMinimumLimitsTheSplitter() {
-    let view = split()
-    view.documentMinimumWidth = { 300 }
-    view.splitter.dragDidMove?(1000)
-    XCTAssertEqual(view.document.frame.width, 300)
-  }
-
   func testTheBaseKeepsItsShareWhileTheWindowResizes() {
     let view = split()
     view.splitter.dragDidMove?(-200)

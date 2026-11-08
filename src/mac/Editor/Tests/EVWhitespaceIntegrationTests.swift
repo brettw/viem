@@ -144,6 +144,9 @@ final class EVWhitespaceIntegrationTests: XCTestCase {
         second.viewDidLayout()
         _ = try XCTUnwrap(second.session).resize(width: 500, height: 240)
         second.refreshPresentation()
+        // Code starts unwrapped; wrapping either view becomes Code's choice.
+        first.setWordWrap(true)
+        second.setWordWrap(true)
         var options = preferences.whitespacePresentation
         options.visibleWhitespace.listchars = "tab:>-,space:·,trail:*"
         XCTAssertTrue(preferences.setWhitespacePresentation(options))

@@ -289,6 +289,9 @@ fn application_config_preserves_unknowns_and_sparse_styles_with_shared_defaults(
             .is_none_or(|v| v.is_null())
     );
     assert_eq!(value["formattingToolbar"]["plainText"], true);
+    // Code's shared word wrap is absent (off) until first set explicitly.
+    assert!(value["code"].get("wordWrap").is_none());
+    assert_eq!(normalize(br#"{"version":1,"code":{"wordWrap":true}}"#).unwrap()["code"]["wordWrap"], true);
     for invalid in [
         r#"{"version":true}"#,
         r#"{"version":1,"editing":{"textWidth":false}}"#,
@@ -298,6 +301,7 @@ fn application_config_preserves_unknowns_and_sparse_styles_with_shared_defaults(
         r#"{"version":1,"recentDocuments":["relative"]}"#,
         r#"{"version":1,"editing":{"indentation":{"tabstop":0}}}"#,
         r#"{"version":1,"code":{"filenameAssociations":[{"pattern":"*","language":"bad/"}]}}"#,
+        r#"{"version":1,"code":{"wordWrap":"off"}}"#,
     ] {
         assert!(normalize(invalid.as_bytes()).is_err(), "{invalid}");
     }
