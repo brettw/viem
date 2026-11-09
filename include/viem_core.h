@@ -3446,11 +3446,12 @@ ViemStatus viem_diff_session_sync(ViemDiffSessionHandle session,
 /* The zero-based hard line on the other side corresponding to `line`. */
 ViemStatus viem_diff_session_corresponding_line(ViemDiffSessionHandle session,
     uint32_t from_new, uint64_t line, uint64_t *out_line);
-/* The viewport top for to_view showing the text corresponding to the top of
- * from_view, for scrolling aligned sides together. */
-ViemStatus viem_diff_session_corresponding_top(ViemDiffSessionHandle session,
-    ViemCoreHandle from_core, ViemViewId from_view, uint32_t from_new,
-    ViemCoreHandle to_core, ViemViewId to_view, float *out_top);
+/* Refresh the shared vertical range and mirror the leading pane's origin. */
+#define VIEM_DIFF_SCROLL_BASE_CHANGED 1u
+#define VIEM_DIFF_SCROLL_NEW_CHANGED 2u
+ViemStatus viem_diff_session_sync_scroll(ViemDiffSessionHandle session,
+    ViemCoreHandle base_core, ViemViewId base_view, ViemCoreHandle new_core,
+    ViemViewId new_view, uint32_t from_new, uint32_t *out_changed);
 ViemStatus viem_diff_session_info(ViemDiffSessionHandle session,
     ViemDiffSessionInfoV1 *out_info);
 /* Move both sides to the next or previous change (a VIEM_DIFF_NAVIGATE_*

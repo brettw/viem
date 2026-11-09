@@ -64,11 +64,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var visualSelection: EVVisualSelectionExport?
     private(set) var viewPresentation = ViemViewPresentationV1()
     private(set) var viewportState = ViemViewportStateV1()
-    /// Diff mode mirrors the aligned sides' vertical scrolling through this.
-    var diffViewportTopDidChange: ((CGFloat) -> Void)?
     /// Diff mode refreshes this side's scrollbar marks after each verified
     /// frame, since layout can refine the heights they are measured in.
-    var diffPresentationDidRefresh: (() -> Void)?
+    var diffPresentationDidRefresh: ((Bool) -> Void)?
     /// Diff mode opens the collapsed context whose divider borders this hard
     /// line when it is clicked; returns whether a run opened.
     var diffOpenCollapsedContext: ((UInt64) -> Bool)?
@@ -396,7 +394,13 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         speculativeExtentRefresh?.cancel(); speculativeExtentRefresh = nil
         isRefreshingPresentation = true
         EVStartupPerformance.mark("surface.refresh.begin")
-        defer { isRefreshingPresentation = false; EVStartupPerformance.mark("surface.refresh.end") }
+        var installed = false
+        let previousTop = viewportState.top
+        defer {
+            isRefreshingPresentation = false
+            EVStartupPerformance.mark("surface.refresh.end")
+            if installed { diffPresentationDidRefresh?(previousTop != viewportState.top) }
+        }
         do {
             session.provider.imageRastersDidChange = { [weak self] in
                 MainActor.assumeIsolated { self?.imageRastersDidChange() }
@@ -603,9 +607,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             viewPresentation = nextPresentation
             selectionPresentationViewID = session.viewID
             selectionCharacterContextGeneration = session.characterContextGeneration
-            let previousTop = viewportState.top
             viewportState = nextViewport
-            if previousTop != nextViewport.top { diffViewportTopDidChange?(CGFloat(nextViewport.top)) }
             layoutSnapshot = nextLayoutSnapshot
             layoutPaint = nextLayoutPaint
             layoutTextSlices = nextLayoutTextSlices
@@ -640,7 +642,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
             session.tableWidthRefinement.update()
             session.backgroundLayout.update()
             updateStatusBar()
-            diffPresentationDidRefresh?()
+            installed = true
             if isViewLoaded {
                 editorView.updateLineNumberPresentation()
                 editorView.applyPresentation()

@@ -156,7 +156,9 @@ fn corresponding_tops_follow_lines_through_the_diff() {
     new.handle(new_view, CoreEvent::SetViewportOrigin { left: 0., top: Some(row_top(&new, new_view, 0) + 1_000.) }).unwrap();
     let top = new.viewport_state(new_view).unwrap().top();
     let new_line = new.layout(new_view).unwrap().hard_line_at_y(f64::from(top)).unwrap().unwrap().hard_line();
-    let mirrored = session.corresponding_top(&new, new_view, true, &base, base_view).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, true).unwrap();
+    let mirrored = base.viewport_state(base_view).unwrap().top();
+    assert_eq!(mirrored, top);
     let base_line = base.layout(base_view).unwrap().hard_line_at_y(f64::from(mirrored)).unwrap().unwrap().hard_line();
     assert!(new_line > 10);
     assert_eq!(base_line, new_line + 1);
@@ -164,6 +166,48 @@ fn corresponding_tops_follow_lines_through_the_diff() {
 
 fn lines(count: usize, edit: impl Fn(usize) -> Option<String>) -> String {
     (0..count).filter_map(|line| edit(line)).map(|line| line + "\n").collect()
+}
+
+#[test]
+fn aligned_scrollbars_share_the_wrapped_tail_from_either_side() {
+    let long = "common\n".to_owned() + &"several words on a wrapped line ".repeat(30) + &"\nextra".repeat(85);
+    for reverse in [false, true] {
+        let (older, newer) = if reverse { (long.as_str(), "common") } else { ("common", long.as_str()) };
+        let (mut base, bv) = core(older);
+        let (mut new, nv) = core(newer);
+        for (core, view) in [(&mut base, bv), (&mut new, nv)] {
+            core.handle(view, CoreEvent::Resize { width: 120., height: 80. }).unwrap();
+            core.handle(view, CoreEvent::SetWrap(true)).unwrap();
+        }
+        let mut session = DiffSession::new(base.document(), new.document(), true);
+        session.sync(&mut base, bv, &mut new, nv).unwrap();
+        for (from_new, top) in [(reverse, 300.), (!reverse, 770.), (reverse, 605.), (reverse, 0.), (!reverse, 470.), (reverse, f32::MAX)] {
+            let (leader, id) = if from_new { (&mut new, nv) } else { (&mut base, bv) };
+            leader.handle(id, CoreEvent::SetViewportOrigin { left: 0., top: Some(top) }).unwrap();
+            session.sync_scroll(&mut base, bv, &mut new, nv, from_new).unwrap();
+            let a = base.viewport_state(bv).unwrap();
+            let b = new.viewport_state(nv).unwrap();
+            assert_eq!(a.estimated_maximum_top(), b.estimated_maximum_top());
+            assert_eq!(a.top(), b.top());
+            assert_eq!(a.top(), top.min(a.estimated_maximum_top()));
+            assert!(a.estimated_maximum_top() > 770.);
+        }
+        let (short, view) = if reverse { (&mut new, nv) } else { (&mut base, bv) };
+        let own_end = short.layout(view).unwrap().own_vertical_bound().maximum;
+        let shared_end = short.viewport_state(view).unwrap().estimated_maximum_top();
+        assert!(shared_end > own_end + 2.);
+        let blank = (own_end + shared_end) / 2.;
+        short.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(blank) }).unwrap();
+        session.sync_scroll(&mut base, bv, &mut new, nv, reverse).unwrap();
+        let (short, view) = if reverse { (&mut new, nv) } else { (&mut base, bv) };
+        short.handle(view, CoreEvent::Resize { width: 110., height: 79. }).unwrap();
+        assert_eq!(short.viewport_state(view).unwrap().top(), blank);
+        session.set_aligned(false);
+        session.sync(&mut base, bv, &mut new, nv).unwrap();
+        let short = if reverse { new.viewport_state(nv) } else { base.viewport_state(bv) }.unwrap();
+        assert_eq!(short.estimated_maximum_top(), 0.);
+        assert_eq!(short.top(), 0.);
+    }
 }
 
 fn cursor_line(core: &TestCore, view: ViewId) -> usize {

@@ -110,13 +110,13 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         try checkedDiff(viem_diff_session_create(base.core, document.core, flags, &handle),
                         operation: "Compare with the diff base")
         self.handle = handle
-        surface.diffViewportTopDidChange = { [weak self] _ in self?.mirror(fromNew: true) }
-        baseSurface.diffViewportTopDidChange = { [weak self] _ in self?.mirror(fromNew: false) }
-        surface.diffPresentationDidRefresh = { [weak self] in
+        surface.diffPresentationDidRefresh = { [weak self] scrolled in
+            self?.mirror(fromNew: scrolled)
             self?.updateMarks(isNew: true)
             self?.syncOpenedContext(isNew: true)
         }
-        baseSurface.diffPresentationDidRefresh = { [weak self] in
+        baseSurface.diffPresentationDidRefresh = { [weak self] scrolled in
+            self?.mirror(fromNew: !scrolled)
             self?.updateMarks(isNew: false)
             self?.syncOpenedContext(isNew: false)
         }
@@ -218,8 +218,7 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
             document.configuration.scriptOptions.beep()
             return
         }
-        // The core placed both sides; mirroring would re-derive the base
-        // from the new side's top line instead.
+        // The core has already positioned both sides.
         mirroring = true
         defer { mirroring = false }
         surface.refreshPresentation()
@@ -269,8 +268,6 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
             restoreMode = nil
             restoreModifiable = false
         }
-        surface?.diffViewportTopDidChange = nil
-        baseSurface?.diffViewportTopDidChange = nil
         surface?.diffPresentationDidRefresh = nil
         baseSurface?.diffPresentationDidRefresh = nil
         surface?.diffOpenCollapsedContext = nil
@@ -299,25 +296,23 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         base = nil
     }
 
-    /// Aligned sides scroll together: the other side shows the line that
-    /// corresponds to this side's top line, at the same fraction of it.
+    /// Reconcile both scrollbars after scrolling or layout refinement.
     private func mirror(fromNew: Bool) {
         guard aligned, !mirroring, handle != 0, let document, let base, let surface, let baseSurface,
               let newView = surface.session?.viewID, let baseView = baseSurface.session?.viewID else { return }
-        let (fromCore, fromView, toCore, toView, other) = fromNew
-            ? (document.core, newView, base.core, baseView, baseSurface)
-            : (base.core, baseView, document.core, newView, surface)
-        var top: Float = 0
-        guard viem_diff_session_corresponding_top(handle, fromCore, fromView, fromNew ? 1 : 0,
-                                                  toCore, toView, &top) == UInt32(VIEM_STATUS_OK),
-              let session = other.session, other.viewportState.top != top else { return }
         mirroring = true
         defer { mirroring = false }
-        do {
-            _ = try session.setViewportOrigin(left: CGFloat(other.viewportState.left), top: CGFloat(top))
-            other.refreshPresentation()
-        } catch {
-            other.report(error)
+        // Refreshing a side can publish newly measured row heights.
+        for _ in 0..<3 {
+            var changed: UInt32 = 0
+            let status = viem_diff_session_sync_scroll(handle, base.core, baseView, document.core, newView, fromNew ? 1 : 0, &changed)
+            guard status == UInt32(VIEM_STATUS_OK) else {
+                surface.report(EVCoreFrontendError.core(operation: "Align diff scroll positions", status: status))
+                return
+            }
+            if changed == 0 { break }
+            if changed & UInt32(VIEM_DIFF_SCROLL_BASE_CHANGED) != 0 { baseSurface.refreshPresentation() }
+            if changed & UInt32(VIEM_DIFF_SCROLL_NEW_CHANGED) != 0 { surface.refreshPresentation() }
         }
     }
 }

@@ -98,6 +98,7 @@ internal sealed partial class EditorWindow
             new("SelectionFind", () => SelectionFindTests.Run(preferences)),
             new("DocumentModeMenu", () => DocumentModeMenuTests.Run(preferences)),
             new("DiffMode", () => TestDiffMode(preferences)),
+            new("DiffAlignedScroll", () => TestAlignedDiffScroll(preferences)),
             new("DiffCollapsedContext", () => TestCollapsedDiff(preferences)),
             ListInteractionTests.Group(preferences),
             new("CodeStyles", () => StyleAndSettingsTests.CodeStyleChecks(pane, preferences)),

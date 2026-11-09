@@ -100,6 +100,49 @@ internal sealed partial class EditorWindow
             && Shown(live, 0) && !Shown(live, 15), "The toolbar recollapses context while keeping the live caret visible");
     }
 
+    private static async Task TestAlignedDiffScroll(Preferences preferences)
+    {
+        var profile = new Preferences(Path.Combine(preferences.DirectoryPath, "aligned-scroll"));
+        string basePath = Path.Combine(profile.DirectoryPath, "short.md");
+        await File.WriteAllTextAsync(basePath, "common\nshort");
+        string live = "common\n" + string.Join("\n", Enumerable.Range(1, 96)
+            .Select(n => $"{n} " + string.Concat(Enumerable.Repeat("a long wrapped addition ", 12))));
+        await using var editor = await TestEditor.Open(profile, live, VIEM_FORMAT_CODE);
+        var window = editor.Window;
+        await window.SetDiffMode(true);
+        await window.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, basePath));
+        window.SetDiffAlignment(true);
+        var left = window.diffLeft!;
+        var right = editor.Pane;
+        right.SetWordWrap(true);
+        window.root.UpdateLayout();
+        await InputRoutingTests.Settle();
+        void CheckPair(double fraction, EditorPane driver) {
+            double maximum = driver.VerticalScrollControl.Maximum;
+            CheckDiff(maximum > driver.Canvas.ActualHeight, "The aligned track includes the long addition");
+            driver.ScrollVerticallyFromScrollbar(fraction * maximum);
+            var a = left.View!.Viewport;
+            var b = right.View!.Viewport;
+            double expected = fraction == 1 ? a.maximum_top : Math.Min(fraction * maximum, a.maximum_top);
+            CheckDiff(Math.Abs(a.top - expected) < .1 && a.top == b.top && a.maximum_top == b.maximum_top
+                && left.VerticalScrollControl.Maximum == a.maximum_top && right.VerticalScrollControl.Maximum == b.maximum_top
+                && left.VerticalScrollControl.Value == a.top && right.VerticalScrollControl.Value == b.top,
+                $"Dragging the {(driver == left ? "base" : "live")} thumb to {fraction:P0} synchronizes both ranges, origins and thumbs"
+                + $" (expected {expected:F1}, base {a.top:F1}/{a.maximum_top:F1}, live {b.top:F1}/{b.maximum_top:F1},"
+                + $" thumbs {left.VerticalScrollControl.Value:F1}/{left.VerticalScrollControl.Maximum:F1}"
+                + $" and {right.VerticalScrollControl.Value:F1}/{right.VerticalScrollControl.Maximum:F1})");
+        }
+        CheckPair(.55, left);
+        CheckPair(.72, right);
+        CheckPair(1, left);
+        CheckPair(.95, left);
+        CheckPair(.4, right);
+        CheckPair(0, left);
+        window.SetDiffAlignment(false);
+        CheckDiff(left.VerticalScrollControl.Maximum == 0 && right.VerticalScrollControl.Maximum > right.Canvas.ActualHeight,
+            "Disabling alignment restores the short and long files' independent scroll ranges");
+    }
+
     private static async Task TestDiffMode(Preferences preferences)
     {
         static void Check(bool condition, string name) => CheckDiff(condition, name);

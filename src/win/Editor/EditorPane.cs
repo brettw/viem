@@ -660,9 +660,10 @@ internal sealed partial class EditorPane : Grid, IDisposable
         if (View == null || disposed || installingDocument) return;
         if (refreshing) { refreshPending = true; return; }
         refreshing = true;
+        float previousTop = viewport.top;
+        bool installed = false;
         try
         {
-            float previousTop = viewport.top;
             window.BeforeDiffLayout(this);
             // The command/status surface must update even when document
             // geometry is temporarily unavailable (for example after scrolling).
@@ -721,7 +722,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             Microsoft.UI.Xaml.Controls.Canvas.SetTop(input, Math.Clamp(caretRect.Y, 0, Math.Max(0, Canvas.ActualHeight - 24)));
             input.Height = Math.Max(16, caretRect.Height);
             Canvas.Invalidate(); window.UpdateTitle();
-            window.DiffLayoutUpdated(this, previousTop != viewport.top);
+            installed = true;
             if (previousNumbers is { } prior && lineNumbers is { } current && prior != current.Enabled)
                 window.DiffNumbersChanged(this, current.Enabled);
             if (snapshot.Diagnostics != lastLayoutWarning) {
@@ -746,6 +747,12 @@ internal sealed partial class EditorPane : Grid, IDisposable
         finally {
             refreshing = false; scrollUpdating = false;
             if (refreshPending) { refreshPending = false; DispatcherQueue.TryEnqueue(Refresh); }
+        }
+        // Mirroring can refine this pane's range as well as its peer's.
+        // Both can now publish the refined values in the same UI event.
+        if (installed) {
+            try { window.DiffLayoutUpdated(this, previousTop != viewport.top); }
+            catch (Exception error) { Report(error); }
         }
         FollowCodeWordWrap();
     }

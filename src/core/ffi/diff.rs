@@ -376,36 +376,36 @@ pub unsafe extern "C" fn viem_diff_session_corresponding_line(
     })
 }
 
-/// The viewport top for `to_view` showing the text that corresponds to the
-/// top of `from_view`, for scrolling aligned sides together. `from_new` is
-/// one when `from_view` shows the live document.
+pub const VIEM_DIFF_SCROLL_BASE_CHANGED: u32 = 1;
+pub const VIEM_DIFF_SCROLL_NEW_CHANGED: u32 = 2;
+
+/// Update the aligned pair's common scroll range and vertical position.
 ///
 /// # Safety
-/// `out_top` must point to one aligned, writable value.
+/// `out_changed` must point to one aligned, writable value.
 #[no_mangle]
-pub unsafe extern "C" fn viem_diff_session_corresponding_top(
+pub unsafe extern "C" fn viem_diff_session_sync_scroll(
     session: ViemDiffSessionHandle,
-    from_core: ViemCoreHandle,
-    from_view: ViemViewId,
+    base_core: ViemCoreHandle,
+    base_view: ViemViewId,
+    new_core: ViemCoreHandle,
+    new_view: ViemViewId,
     from_new: u32,
-    to_core: ViemCoreHandle,
-    to_view: ViemViewId,
-    out_top: *mut f32,
+    out_changed: *mut u32,
 ) -> ViemStatus {
     ffi_boundary(|| {
-        typed_pointer_region(out_top, 1)?;
-        unsafe { out_top.write(0.0) };
-        if from_new > 1 || from_core == to_core {
+        typed_pointer_region(out_changed, 1)?;
+        unsafe { out_changed.write(0) };
+        if from_new > 1 || base_core == new_core {
             return Err(ViemStatus::InvalidArgument);
         }
-        let from = checkout_core(from_core)?;
-        let to = checkout_core(to_core)?;
-        let top = with_session(session, |session| {
-            session
-                .corresponding_top(from.core(), ViewId(from_view), from_new != 0, to.core(), ViewId(to_view))
-                .map_err(core_status)
+        let mut base = checkout_core(base_core)?;
+        let mut new = checkout_core(new_core)?;
+        let (left, right) = with_session(session, |session| {
+            session.sync_scroll(base.core_mut(), ViewId(base_view), new.core_mut(), ViewId(new_view), from_new != 0).map_err(core_status)
         })?;
-        unsafe { out_top.write(top) };
+        let changed = (if left { VIEM_DIFF_SCROLL_BASE_CHANGED } else { 0 }) | (if right { VIEM_DIFF_SCROLL_NEW_CHANGED } else { 0 });
+        unsafe { out_changed.write(changed) };
         Ok(())
     })
 }

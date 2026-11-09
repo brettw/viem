@@ -113,14 +113,12 @@ internal sealed unsafe class DiffComparison : IDisposable
         Check(viem_diff_view_opened_context(view.Document.Handle, view.Id, &opened), "Check for opened diff context");
         return opened != 0;
     }
-    internal void Mirror(bool fromLive)
+    internal uint Mirror(bool fromLive)
     {
-        var (from, to) = fromLive ? (live, basis) : (basis, live);
-        float top = 0;
-        Check(viem_diff_session_corresponding_top(handle, from.Document.Handle, from.Id, fromLive ? 1u : 0u,
-            to.Document.Handle, to.Id, &top), "Align scroll positions");
-        var viewport = to.Viewport;
-        if (viewport.top != top) to.Scroll(viewport.left, top);
+        uint changed = 0;
+        Check(viem_diff_session_sync_scroll(handle, basis.Document.Handle, basis.Id, live.Document.Handle, live.Id,
+            fromLive ? 1u : 0u, &changed), "Align vertical scroll range and position");
+        return changed;
     }
     internal (ViemDiffScrollbarMarkV1[] Marks, float Extent, ViemRgbaV1 Added, ViemRgbaV1 Removed) Marks(bool newSide)
     {

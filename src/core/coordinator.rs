@@ -3165,6 +3165,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         context: LayoutExecutionContext,
         target_line: usize,
         offset: f64,
+        requested_top: f32,
         horizontal_focus: Option<(usize, Option<f32>)>,
     ) -> Result<Option<Vec<LongLineLayoutCheckpoint>>, CoreError> {
         let projection = self.document.projection();
@@ -3187,7 +3188,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             let target_prefix = staged_layout.hard_line_prefix_height(target_line).map_err(LayoutError::from)?.height();
             let target_height = staged_layout.hard_line_range_height(target_line..target_line + 1).map_err(LayoutError::from)?;
             let effective_offset = if target_height.is_exact() { offset.min(target_height.height()) } else { offset };
-            let top = (target_prefix + effective_offset).min(f64::from(f32::MAX)) as f32;
+            let top = if staged_layout.has_shared_scroll_range() { requested_top }
+                else { (target_prefix + effective_offset).min(f64::from(f32::MAX)) as f32 };
             let line_prefix = staged_layout.hard_line_prefix_height(line).map_err(LayoutError::from)?.height() as f32;
             let relative_top = top - line_prefix;
             let work_start = checkpoint.as_ref().map(LongLineLayoutCheckpoint::next_text_offset);
@@ -3241,7 +3243,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             let target_prefix = staged_layout.hard_line_prefix_height(target_line).map_err(LayoutError::from)?.height();
             let target_height = staged_layout.hard_line_range_height(target_line..target_line + 1).map_err(LayoutError::from)?;
             let effective_offset = if target_height.is_exact() { offset.min(target_height.height()) } else { offset };
-            staged_layout.set_viewport_top((target_prefix + effective_offset).min(f64::from(f32::MAX)) as f32)?;
+            let top = if staged_layout.has_shared_scroll_range() { requested_top }
+                else { (target_prefix + effective_offset).min(f64::from(f32::MAX)) as f32 };
+            staged_layout.set_viewport_top(top)?;
             let snapshot = staged_layout.snapshot().ok_or(LayoutError::NoRows)?;
             let missing = snapshot.missing_viewport_edges(staged_layout.viewport_top(), height);
             if !missing.0 && !missing.1 { return Ok(Some(checkpoints)); }
@@ -3407,9 +3411,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 immediate_layout_context,
                 horizontal_focus,
             )?;
+            if staged_layout.has_shared_scroll_range() {
+                staged_layout.set_viewport_top(requested_top)?;
+            }
         } else if let Some(checkpoints) = self.materialize_long_line_requested_viewport(
             view_id, &mut staged_layout, requirements, immediate_layout_context,
-            target_line, offset_from_target_line, horizontal_focus,
+            target_line, offset_from_target_line, requested_top, horizontal_focus,
         )? {
             new_checkpoints = checkpoints;
         } else {
@@ -3488,7 +3495,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .height();
                 let anchored_top =
                     refined_line_top + offset_from_target_line.min(refined_line_height);
-                staged_layout.set_viewport_top(anchored_top.min(f64::from(f32::MAX)) as f32)?;
+                let top = if staged_layout.has_shared_scroll_range() { requested_top } else { anchored_top.min(f64::from(f32::MAX)) as f32 };
+                staged_layout.set_viewport_top(top)?;
 
                 let (extend_before, extend_after) =
                     viewport_layout_extension_needed(&staged_layout);
@@ -6038,7 +6046,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             requirements.metrics_generation)
                         && view.layout.snapshot().is_some_and(|snapshot|
                             snapshot.metrics_generation != requirements.metrics_generation);
-                    let at_top = view.layout.viewport_top() == 0.0;
+                    let top = view.layout.viewport_top();
                     let at_end = !image_resource_refresh && view.layout.snapshot().is_some_and(|snapshot| {
                         snapshot.document_id == self.document.id()
                             && snapshot.document_revision == self.document.revision()
@@ -6055,15 +6063,24 @@ impl<P: TextMeasurementProvider> Core<P> {
                         view.layout.viewport_left(),
                         view.layout.configuration_generation(),
                     );
+                    // The shorter pane's last row can be on screen anywhere
+                    // in the shared track. Resize against the pair's extent.
+                    let resize_origin = if view.layout.has_shared_scroll_range() {
+                        let at_shared_end = top > 0.0 && view.layout.maximum_viewport_top()
+                            .is_some_and(|maximum| (maximum - top).abs() <= 0.5);
+                        Some(if at_shared_end { f32::MAX } else { top })
+                    } else {
+                        at_end.then_some(if top == 0.0 { 0.0 } else { f32::MAX })
+                    };
                     view.layout.resize(width, height);
                     if view.layout.configuration_generation() != before {
                         cancel_active_layout_work(view);
                     }
-                    if at_end {
+                    if let Some(origin) = resize_origin {
                         self.materialize_requested_viewport_with_focus(
                             view_id,
                             left,
-                            if at_top { 0.0 } else { f32::MAX },
+                            origin,
                             horizontal_focus,
                         )?;
                         if horizontal_focus.is_some() {
@@ -6281,6 +6298,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 };
                 if let Some(top) = top {
                     self.materialize_requested_viewport(view_id, left, top)?;
+                    let layout = &mut self.views.get_mut(&view_id).expect("validated view").layout;
+                    layout.diff_scroll_request = layout.has_shared_scroll_range().then_some(top.max(0.0));
                 } else {
                     let sparse = self.views[&view_id].layout.snapshot().is_some_and(|snapshot| snapshot.has_horizontal_materialization());
                     if sparse {

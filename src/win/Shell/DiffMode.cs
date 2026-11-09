@@ -515,7 +515,7 @@ internal sealed partial class EditorWindow
             return;
         }
         pane.UpdateDiffMarks(comparison, fromLive);
-        if (scrolled && diffAligned) MirrorDiff(fromLive);
+        if (diffAligned) MirrorDiff(scrolled ? fromLive : !fromLive);
     }
     internal bool OpenCollapsedContext(EditorPane pane, ulong line)
     {
@@ -529,7 +529,15 @@ internal sealed partial class EditorWindow
     {
         if (mirroring || comparison == null) return;
         mirroring = true;
-        try { comparison.Mirror(fromLive); }
+        try {
+            // A refreshed pane may publish newly measured row heights.
+            for (int pass = 0; pass < 3; ++pass) {
+                uint changed = comparison.Mirror(fromLive);
+                if (changed == 0) break;
+                if ((changed & VIEM_DIFF_SCROLL_BASE_CHANGED) != 0) diffLeft?.Refresh();
+                if ((changed & VIEM_DIFF_SCROLL_NEW_CHANGED) != 0) diffLive?.Refresh();
+            }
+        }
         finally { mirroring = false; }
     }
     private void NavigateChange(bool next)

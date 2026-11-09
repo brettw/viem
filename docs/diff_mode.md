@@ -73,7 +73,9 @@ Align sides state. Changing it explicitly also saves that state in settings,
 and new diff views start with the saved state, or on if none has been saved.
 Changing one view's state does not change other open views.
 
-- **On:** the two sides scroll together. Corresponding lines on the left and
+- **On:** the two sides share a vertical scroll position and the larger of
+  their scroll ranges, including space beyond the shorter file. Either
+  scrollbar can scroll continuously through that space. Corresponding lines on the left and
   right start at the same height. Where one side has lines the other lacks,
   or a line takes more rows on one side (for example because it wraps), the
   other side gets blank filler space to keep them level. Filler is drawn by layout only: it is not source, cannot
@@ -406,7 +408,7 @@ Layers are built bottom-up; each has focused tests before the next starts.
    style, and aligned filler becomes paragraph margin. New Code styles in the
    default sheet and packaged themes.
 4. **C ABI** (`include/viem_core.h`, `src/core/ffi/diff.rs`): diff sessions,
-   base loading, file lists and line correspondence for scroll sync.
+   base loading, file lists and shared vertical scrolling.
 5. **macOS frontend**: Diff menu, diff toolbar, side-by-side panes, save
    prompt on navigation, settings persistence.
 6. **Windows frontend**: the same behavior in WinUI.
@@ -441,7 +443,7 @@ Layers are built bottom-up; each has focused tests before the next starts.
     cache keys on `DiffParagraphKey`. `ViewLayout::set_diff_presentation`
     invalidates only changed lines when told which.
   - Coordinator: `coordinator/diff.rs` `DiffSession` (`new`, `update`,
-    `sync`, `set_aligned`, `corresponding_line`, `corresponding_top`,
+    `sync`, `set_aligned`, `corresponding_line`, `sync_scroll`,
     `clear`),
     `DocumentLines`, `Core::install_diff_presentation`,
     `Core::diff_filler_line_height`. `Document::layout_change_chain` feeds
@@ -449,7 +451,7 @@ Layers are built bottom-up; each has focused tests before the next starts.
     `coordinator/diff_tests.rs`.
 - [x] 4. C ABI: `src/core/ffi/diff.rs` and the "Diff mode" block at the end
   of `include/viem_core.h`. Sessions (`viem_diff_session_create`, `_sync`,
-  `_set_aligned`, `_corresponding_line`, `_corresponding_top`, `_info`,
+  `_set_aligned`, `_corresponding_line`, `_sync_scroll`, `_info`,
   `_destroy`),
   `viem_diff_clear_view`, `viem_core_copy_saved_source`; owned results for
   worker-thread loads (`viem_diff_load_base`, `viem_diff_list_files`,
@@ -477,9 +479,8 @@ Layers are built bottom-up; each has focused tests before the next starts.
     document's language; `beginDiff`), `EVCoreDiffSession` (switches Preview
     or Text to Code and back, protects a deleted file's blank side, syncs in
     `noteSourceChange`, mirrors vertical scrolling while aligned). Mirroring
-    asks the core for the other side's top (`_corresponding_top`: the line
-    that corresponds to this side's top line, at the same fraction of it),
-    because offscreen row heights are estimates and raw offsets drift.
+    uses `viem_diff_session_sync_scroll` to reconcile the shared range and
+    vertical offset as either view scrolls or refines its layout.
     Ending a session restores the document's format through any open view
     of the document, since the compared pane may already have closed.
   - Tests: `src/mac/Editor/Tests/EVDiffModeTests.swift`;
@@ -654,7 +655,8 @@ context), built in this order:
 - Filler height is the measured default Code row (`default_line_height` with
   the base paragraph's line spacing), so it is exact for uniform Code lines.
   A line that wraps to more rows on one side does not yet get extra filler on
-  the other; scroll sync uses line correspondence to stay level instead.
+  the other. With different wrapping, corresponding text can sit at different
+  heights within the shared scroll range.
 - A session is created synchronously from both cores' current documents,
   so a very large initial diff blocks the calling thread within the work
   budget. Moving the first diff to a worker needs a snapshot-based create.

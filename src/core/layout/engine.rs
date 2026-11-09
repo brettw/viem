@@ -2163,6 +2163,12 @@ impl LayoutJobViewConfiguration {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct VerticalScrollBound {
+    pub(crate) maximum: f32,
+    pub(crate) exact: bool,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewLayout {
     search_matches: Option<(DocumentId, Revision, Vec<Range<usize>>)>,
@@ -2191,6 +2197,11 @@ pub struct ViewLayout {
     // scroll origin. Retain real blank tail/right space until scrolling returns
     // inside the ordinary bounds; this supplies no text or caret geometry.
     preserved_scroll_origin: (f32, f32),
+    // The other aligned pane's own vertical range, excluding this pane.
+    diff_peer_bound: Option<VerticalScrollBound>,
+    // Retain the initiating gesture across any intervening syntax/layout
+    // refresh until both sides have consumed the same requested coordinate.
+    pub(crate) diff_scroll_request: Option<f32>,
     insets: EdgeInsets,
     wrap: bool,
     scale: f32,
@@ -2260,6 +2271,8 @@ impl ViewLayout {
             viewport_left: 0.0,
             viewport_top: 0.0,
             preserved_scroll_origin: (0.0, 0.0),
+            diff_peer_bound: None,
+            diff_scroll_request: None,
             insets: EdgeInsets::default(),
             wrap: true,
             scale: 1.0,
@@ -2722,18 +2735,36 @@ impl ViewLayout {
         self.viewport_top
     }
 
+    pub(crate) fn own_vertical_bound(&self) -> VerticalScrollBound {
+        let snapshot = self.snapshot.as_ref().filter(|s| s.configuration_generation == self.configuration_generation);
+        let exact = snapshot.and_then(|s| s.maximum_viewport_top(self.height));
+        let maximum = exact.unwrap_or_else(|| snapshot.map_or(self.viewport_top, |s| s.estimated_maximum_viewport_top(self.height)));
+        VerticalScrollBound { maximum: maximum.max(self.preserved_scroll_origin.1), exact: exact.is_some() }
+    }
+
+    pub(crate) fn set_diff_peer_bound(&mut self, bound: Option<VerticalScrollBound>) {
+        let leaving = self.diff_peer_bound.is_some() && bound.is_none();
+        self.diff_peer_bound = bound;
+        if bound.is_none() { self.diff_scroll_request = None; }
+        if leaving { self.viewport_top = self.clamp_viewport_top(self.viewport_top); }
+    }
+
+    pub(crate) fn has_shared_scroll_range(&self) -> bool { self.diff_peer_bound.is_some() }
+
+    fn vertical_bound(&self) -> VerticalScrollBound {
+        let own = self.own_vertical_bound();
+        self.diff_peer_bound.map_or(own, |peer| VerticalScrollBound {
+            maximum: own.maximum.max(peer.maximum), exact: own.exact && peer.exact,
+        })
+    }
+
     pub fn maximum_viewport_top(&self) -> Option<f32> {
-        self.snapshot.as_ref()
-            .filter(|snapshot| snapshot.configuration_generation == self.configuration_generation)
-            .and_then(|snapshot| snapshot.maximum_viewport_top(self.height))
-            .map(|maximum| maximum.max(self.preserved_scroll_origin.1))
+        let bound = self.vertical_bound();
+        bound.exact.then_some(bound.maximum)
     }
 
     pub fn estimated_maximum_viewport_top(&self) -> f32 {
-        self.snapshot.as_ref()
-            .filter(|snapshot| snapshot.configuration_generation == self.configuration_generation)
-            .map_or(self.viewport_top, |snapshot| snapshot.estimated_maximum_viewport_top(self.height))
-            .max(self.preserved_scroll_origin.1)
+        self.vertical_bound().maximum
     }
 
     pub fn set_viewport_top(&mut self, top: f32) -> Result<(), LayoutError> {
@@ -3704,6 +3735,12 @@ impl ViewLayout {
     }
 
     fn clamp_viewport_top(&self, requested: f32) -> f32 {
+        if self.has_shared_scroll_range() {
+            let bound = self.vertical_bound();
+            // An end gesture first refines each document's own end. Never
+            // install its sentinel as a coordinate while waiting for the peer.
+            return if bound.exact || requested == f32::MAX { requested.clamp(0.0, bound.maximum) } else { requested.max(0.0) };
+        }
         self.snapshot.as_ref().map_or(requested.max(0.0), |snapshot| {
             snapshot.clamp_viewport_top(requested, self.height)
         }).max(requested.max(0.0).min(self.preserved_scroll_origin.1))

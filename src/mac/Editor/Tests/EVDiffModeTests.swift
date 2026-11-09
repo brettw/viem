@@ -170,6 +170,22 @@ final class EVDiffModeTests: XCTestCase {
         XCTAssertEqual(baseSurface.viewportState.top, baseTop, "unaligned sides scroll independently")
     }
 
+    func testAlignedPanesScrollContinuouslyThroughTrailingFiller() throws {
+        let new = try backend("common\n" + String(repeating: "a long addition\n", count: 160))
+        let (live, _, base, comparison) = try begin(new, base: "common\nshort")
+        defer { comparison.end() }
+        for (driver, fraction) in [(base, 0.6), (live, 0.8), (base, 1.0), (base, 0.95), (live, 0.0)] {
+            let maximum = CGFloat(driver.viewportState.maximum_top)
+            XCTAssertGreaterThan(maximum, 0)
+            let requested = fraction == 1 ? CGFloat(Float.greatestFiniteMagnitude) : maximum * fraction
+            driver.performInput { _ = try XCTUnwrap(driver.session).setViewportOrigin(left: 0, top: requested) }
+            driver.refreshPresentation()
+            XCTAssertEqual(base.viewportState.top, live.viewportState.top)
+            XCTAssertEqual(base.viewportState.maximum_top, live.viewportState.maximum_top)
+            XCTAssertEqual(CGFloat(live.viewportState.top), fraction == 1 ? CGFloat(live.viewportState.maximum_top) : requested, accuracy: 0.1)
+        }
+    }
+
     func testNextChangeMovesTheCaretAndScrollsBothSidesToTheChange() throws {
         var lines = (0..<300).map { "line \($0)" }
         let base = lines.joined(separator: "\n")

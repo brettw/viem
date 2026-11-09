@@ -341,34 +341,62 @@ impl DiffSession {
             .collect();
     }
 
-    /// The viewport top for `to_view` that shows the text corresponding to
-    /// the top of `from_view`: the same line (through the diff) at the same
-    /// fraction of its height. Raw offsets are not enough while either side's
-    /// offscreen heights are still estimates.
-    pub fn corresponding_top<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
-        &self,
-        from: &Core<P>,
-        from_view: ViewId,
-        from_new: bool,
-        to: &Core<Q>,
-        to_view: ViewId,
-    ) -> Result<f32, CoreError> {
-        let top = from.viewport_state(from_view)?.top();
-        let from_layout = from.layout(from_view).ok_or(CoreError::UnknownView(from_view))?;
-        let to_layout = to.layout(to_view).ok_or(CoreError::UnknownView(to_view))?;
-        let Some(hit) = from_layout.hard_line_at_y(f64::from(top)).map_err(LayoutError::from)? else {
-            return Ok(top);
-        };
-        let fraction = if hit.line_height() > 0.0 {
-            ((f64::from(top) - hit.line_top()) / hit.line_height()).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let count = to.document().line_count().max(1);
-        let line = self.corresponding_line(from_new, hit.hard_line()).min(count - 1);
-        let line_top = to_layout.hard_line_prefix_height(line).map_err(LayoutError::from)?.height();
-        let line_height = to_layout.hard_line_range_height(line..line + 1).map_err(LayoutError::from)?.height();
-        Ok((line_top + fraction * line_height) as f32)
+    /// Publish each pane's own bound to its peer. Reading only natural bounds
+    /// lets a shared range shrink again after an edit, collapse or rewrap.
+    fn share_scroll_bounds<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
+        &self, base: &mut Core<P>, base_view: ViewId, new: &mut Core<Q>, new_view: ViewId,
+    ) -> Result<(), CoreError> {
+        let left = &mut base.views.get_mut(&base_view).ok_or(CoreError::UnknownView(base_view))?.layout;
+        let right = &mut new.views.get_mut(&new_view).ok_or(CoreError::UnknownView(new_view))?.layout;
+        let left_bound = left.own_vertical_bound();
+        left.set_diff_peer_bound(self.aligned.then(|| right.own_vertical_bound()));
+        right.set_diff_peer_bound(self.aligned.then_some(left_bound));
+        Ok(())
+    }
+
+    /// Synchronize vertical layout coordinates, including blank space. A
+    /// filler spanning hundreds of rows has no meaningful text-line fraction.
+    /// Returns which views need to republish geometry or scrollbar state.
+    pub fn sync_scroll<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
+        &self, base: &mut Core<P>, base_view: ViewId, new: &mut Core<Q>, new_view: ViewId, from_new: bool,
+    ) -> Result<(bool, bool), CoreError> {
+        if !self.aligned || self.installed[0].view != Some(base_view) || self.installed[1].view != Some(new_view)
+            || self.installed[0].document != Some((base.document().id(), base.document().revision()))
+            || self.installed[1].document != Some((new.document().id(), new.document().revision())) {
+            return Ok((false, false));
+        }
+        let before_base = base.viewport_state(base_view)?;
+        let before_new = new.viewport_state(new_view)?;
+        let leader = if from_new { before_new } else { before_base };
+        let new_request = new.views[&new_view].layout.diff_scroll_request;
+        let base_request = base.views[&base_view].layout.diff_scroll_request;
+        let request = if from_new { new_request.or(base_request) } else { base_request.or(new_request) };
+        let requested_top = request.unwrap_or(leader.top());
+        let end = requested_top == f32::MAX;
+        if end {
+            // The shorter pane can reach its EOF before its peer knows the
+            // height of its last row. A thumb drag to the end refines both.
+            if new_request == Some(f32::MAX) && !base.views[&base_view].layout.own_vertical_bound().exact {
+                base.materialize_requested_viewport(base_view, before_base.left(), f32::MAX)?;
+            } else if base_request == Some(f32::MAX) && !new.views[&new_view].layout.own_vertical_bound().exact {
+                new.materialize_requested_viewport(new_view, before_new.left(), f32::MAX)?;
+            }
+        }
+        for _ in 0..3 {
+            self.share_scroll_bounds(base, base_view, new, new_view)?;
+            let range = &base.views[&base_view].layout;
+            let top = if end { range.estimated_maximum_viewport_top() }
+                else { range.maximum_viewport_top().map_or(requested_top, |max| requested_top.min(max)) };
+            let move_base = base.views[&base_view].layout.viewport_top() != top;
+            let move_new = new.views[&new_view].layout.viewport_top() != top;
+            if !move_base && !move_new { break; }
+            if move_base { base.materialize_requested_viewport(base_view, before_base.left(), top)?; }
+            if move_new { new.materialize_requested_viewport(new_view, before_new.left(), top)?; }
+        }
+        self.share_scroll_bounds(base, base_view, new, new_view)?;
+        base.views.get_mut(&base_view).unwrap().layout.diff_scroll_request = None;
+        new.views.get_mut(&new_view).unwrap().layout.diff_scroll_request = None;
+        Ok((before_base != base.viewport_state(base_view)?, before_new != new.viewport_state(new_view)?))
     }
 
     /// Update the diff and install both sides' presentations in their views.
@@ -393,6 +421,7 @@ impl DiffSession {
         self.relocate_carets = false;
         self.install(base, base_view, Side::Base, &runs)?;
         self.install(new, new_view, Side::New, &runs)?;
+        self.share_scroll_bounds(base, base_view, new, new_view)?;
         self.runs = runs;
         Ok(sync)
     }
@@ -463,6 +492,7 @@ impl DiffSession {
             },
         )?;
         let scrolled = self.position_change(base, base_view, new, new_view, hunk, caret_line)?;
+        self.sync_scroll(base, base_view, new, new_view, true)?;
         Ok(Some(ChangeNavigation { change: index, change_count: hunks.len(), caret_line, scrolled }))
     }
 
@@ -515,6 +545,8 @@ impl DiffSession {
                 break;
             }
         }
+        // Aligned navigation uses the live pane's origin in both views.
+        if self.aligned { return Ok(true); }
         for _ in 0..3 {
             let block = side_block(new, new_view, new_side, hunk.new.clone(), new_row)?;
             let other = side_block(base, base_view, base_side, hunk.base.clone(), base_row)?;
@@ -543,6 +575,9 @@ impl DiffSession {
         let layout = core.layout(view).ok_or(CoreError::UnknownView(view))?;
         let count = core.document().line_count();
         let extent = layout.hard_line_prefix_height(count).map_err(LayoutError::from)?.height();
+        let extent = if layout.has_shared_scroll_range() && layout.estimated_maximum_viewport_top() > 0.0 {
+            f64::from(layout.estimated_maximum_viewport_top() + layout.height())
+        } else { extent };
         if installed.view != Some(view) || installed.document.is_none() {
             return Ok((Vec::new(), extent as f32));
         }
@@ -781,6 +816,7 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(), CoreError> {
         let (id, revision) = (self.document.id(), self.document.revision());
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        if presentation.is_none() { view.layout.set_diff_peer_bound(None); }
         let presented = view.layout.set_diff_presentation(id, revision, presentation, changed_lines);
         let hidden = view.layout.set_elided_lines(collapsed.to_vec());
         if !presented && !hidden {
