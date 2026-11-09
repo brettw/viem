@@ -566,7 +566,7 @@ fn stylesheet_identity_matches_export_without_changing_document() {
     let mut identity = ViemStyleSheetIdentityV1::default();
     let mut info = ViemStyleSheetInfoV1::default();
     assert_eq!(unsafe { viem_core_style_sheet_identity(core.handle, &mut identity) }, ViemStatus::Ok);
-    assert_eq!(unsafe { viem_core_style_sheet_info(core.handle, &mut info) }, ViemStatus::Ok);
+    assert_eq!(unsafe { viem_core_style_sheet_info(core.handle, 0, &mut info) }, ViemStatus::Ok);
     assert_eq!(identity.document_id, info.identity.document_id);
     assert_eq!(identity.document_revision, info.identity.document_revision);
     assert_eq!(identity.style_sheet_revision, info.identity.style_sheet_revision);

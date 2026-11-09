@@ -114,10 +114,12 @@ _Static_assert(VIEM_EX_OPTION_NUMBER == {number_option}, "number option");
 _Static_assert(VIEM_STYLE_DEFINITION_LINE_NUMBER == {line_number_style_flag}, "line number definition flag");
 _Static_assert(VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER == {current_line_number_style_flag}, "current line number definition flag");
 _Static_assert(VIEM_LINE_NUMBER_REGION_CURRENT == {current_line_number_region_flag}, "current line number region flag");
+_Static_assert(VIEM_LINE_NUMBER_DIFF_ADDED == {gutter_added} && VIEM_LINE_NUMBER_DIFF_REMOVED == {gutter_removed}, "diff line number underlays");
 _Static_assert(VIEM_DIFF_SESSION_ALIGNED == {diff_aligned}, "diff aligned flag");
 _Static_assert(VIEM_DIFF_SESSION_COLLAPSED == {diff_collapsed}, "diff collapsed flag");
 _Static_assert(VIEM_DIFF_SYNC_INCREMENTAL == {diff_sync_incremental} && VIEM_DIFF_SYNC_FULL == {diff_sync_full}, "diff sync results");
 _Static_assert(VIEM_DIFF_BASE_UNSTAGED == {diff_base_unstaged} && VIEM_DIFF_BASE_BRANCH == {diff_base_branch} && VIEM_DIFF_BASE_FILE == {diff_base_file}, "diff base kinds");
+_Static_assert(VIEM_DIFF_BASE_COMMIT == {diff_base_commit}, "commit base kind");
 _Static_assert(VIEM_DIFF_RESULT_UNAVAILABLE == {diff_result_unavailable} && VIEM_DIFF_RESULT_COMMAND_FAILED == {diff_result_command}, "diff result codes");
 _Static_assert(VIEM_DIFF_RESULT_BASE_EXISTS == {diff_base_exists}, "diff base exists flag");
 _Static_assert(VIEM_DIFF_FILE_RENAMED == {diff_file_renamed} && VIEM_DIFF_FILE_UNSAVED == {diff_file_unsaved}, "diff file changes");
@@ -582,9 +584,9 @@ static void typecheck(void) {{
   (void)diff_navigate; (void)diff_marks; (void)diff_colors;
   ViemStatus (*import_clipboard)(uint32_t, const uint8_t *, uint64_t,
       uint8_t *, uint64_t, uint64_t *) = viem_import_clipboard_json;
-  ViemStatus (*style_sheet_info)(ViemCoreHandle, ViemStyleSheetInfoV1 *) =
+  ViemStatus (*style_sheet_info)(ViemCoreHandle, uint32_t, ViemStyleSheetInfoV1 *) =
       viem_core_style_sheet_info;
-  ViemStatus (*copy_style_sheet)(ViemCoreHandle,
+  ViemStatus (*copy_style_sheet)(ViemCoreHandle, uint32_t,
       const ViemStyleSheetIdentityV1 *, ViemStyleDefinitionV1 *, uint64_t,
       ViemStylePropertyV1 *, uint64_t, ViemStyleValueItemV1 *, uint64_t,
       ViemStyleDependencyV1 *, uint64_t, uint8_t *, uint64_t,
@@ -755,12 +757,15 @@ static void typecheck(void) {{
         line_number_style_flag = VIEM_STYLE_DEFINITION_LINE_NUMBER,
         current_line_number_style_flag = VIEM_STYLE_DEFINITION_CURRENT_LINE_NUMBER,
         current_line_number_region_flag = VIEM_LINE_NUMBER_REGION_CURRENT,
+        gutter_added = VIEM_LINE_NUMBER_DIFF_ADDED,
+        gutter_removed = VIEM_LINE_NUMBER_DIFF_REMOVED,
         diff_aligned = VIEM_DIFF_SESSION_ALIGNED,
         diff_collapsed = VIEM_DIFF_SESSION_COLLAPSED,
         diff_sync_incremental = VIEM_DIFF_SYNC_INCREMENTAL,
         diff_sync_full = VIEM_DIFF_SYNC_FULL,
         diff_base_unstaged = VIEM_DIFF_BASE_UNSTAGED,
         diff_base_branch = VIEM_DIFF_BASE_BRANCH,
+        diff_base_commit = VIEM_DIFF_BASE_COMMIT,
         diff_base_file = VIEM_DIFF_BASE_FILE,
         diff_result_unavailable = VIEM_DIFF_RESULT_UNAVAILABLE,
         diff_result_command = VIEM_DIFF_RESULT_COMMAND_FAILED,

@@ -13,6 +13,7 @@ pub struct LineNumberRegion {
     /// This band owns the installed presentation row containing the caret.
     /// The displayed ordinal can differ from the caret's physical source line.
     pub current: bool,
+    pub diff_side: Option<crate::diff::Side>,
 }
 
 #[cfg(test)]
@@ -639,6 +640,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .ok()
             .map(|geometry| geometry.row_index);
         let mut bands = BTreeMap::<usize, LineNumberRegion>::new();
+        let diff = layout.presentation_overlays(self.document.id(), self.document.revision()).diff;
         let source_line_count = self.document.presented_source_line_number_count();
         let has_horizontal_materialization = snapshot.has_horizontal_materialization();
         let mut hard_lines = BTreeMap::<usize, PartialHardLineNumbers>::new();
@@ -733,6 +735,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 bottom: bounds.end,
                 estimated: false,
                 current: false,
+                diff_side: diff.filter(|d| d.changes_line_at(row.hard_line_range.start))
+                    .map(|d| if d.added { crate::diff::Side::New } else { crate::diff::Side::Base }),
             });
             entry.top = entry.top.min(bounds.start);
             entry.bottom = entry.bottom.max(bounds.end);

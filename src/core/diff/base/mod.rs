@@ -28,13 +28,15 @@ pub enum BaseKind {
     Head,
     /// The version at a branch tip, as `git diff <branch>` compares.
     Branch(String),
+    /// An immutable full object ID resolved by the commit picker.
+    Commit(String),
     /// An explicitly chosen file.
     File(PathBuf),
 }
 
 impl BaseKind {
     pub fn is_git(&self) -> bool {
-        matches!(self, Self::Unstaged | Self::Head | Self::Branch(_))
+        matches!(self, Self::Unstaged | Self::Head | Self::Branch(_) | Self::Commit(_))
     }
 }
 
@@ -64,6 +66,8 @@ pub struct ChangedFile {
     pub path: PathBuf,
     pub base_path: PathBuf,
     pub change: FileChange,
+    pub added: u64,
+    pub removed: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,7 +117,7 @@ pub fn read_file_base(path: &Path) -> Result<BaseText, BaseError> {
 pub fn include_unsaved(files: &mut Vec<ChangedFile>, unsaved: impl IntoIterator<Item = PathBuf>) {
     for path in unsaved {
         if !files.iter().any(|file| file.path == path) {
-            files.push(ChangedFile { base_path: path.clone(), path, change: FileChange::Unsaved });
+            files.push(ChangedFile { base_path: path.clone(), path, change: FileChange::Unsaved, added: 0, removed: 0 });
         }
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));

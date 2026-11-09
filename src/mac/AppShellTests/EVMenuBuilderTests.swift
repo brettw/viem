@@ -32,6 +32,18 @@ final class EVMenuBuilderTests: XCTestCase {
         func currentStyleMenuCatalogue() -> EVStyleMenuCatalogue? { catalogue }
     }
 
+    func testDiffNavigationDisplaysExCommandsWithoutRegisteringKeyEquivalents() throws {
+        let owner = Owner()
+        let menu = EVMenuBuilder(owner: owner).buildMainMenu(for: NSApplication.shared)
+        let diff = try XCTUnwrap(menu.item(withTitle: "Diff")?.submenu)
+        for (action, label) in [(#selector(EVDocumentWindowController.showPreviousDiffFile(_:)), "Previous File\t:N"),
+                                (#selector(EVDocumentWindowController.showNextDiffFile(_:)), "Next File\t:n")] {
+            let item = try XCTUnwrap(diff.items.first { $0.action == action })
+            XCTAssertEqual(item.attributedTitle?.string, label)
+            XCTAssertEqual(item.keyEquivalent, "")
+        }
+    }
+
     func testTopLevelMenuOrderMatchesSpecification() throws {
         let owner = Owner()
         let application = NSApplication.shared

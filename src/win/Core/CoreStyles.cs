@@ -35,6 +35,8 @@ internal sealed record StyleSheet(ViemStyleSheetIdentityV1 Identity, StyleDefini
 internal sealed unsafe partial class CoreView
 {
     private StyleSheet? cachedStyles;
+    private StyleSheet? cachedGutterStyles;
+    private uint cachedGutterLayer;
     public StyleDefinition[] ParentCandidates(StyleSheet sheet, StyleDefinition child)
     {
         using var arena = new NativeArena();
@@ -137,28 +139,31 @@ internal sealed unsafe partial class CoreView
 #if DEBUG
     internal int StyleExports { get; private set; }
 #endif
-    public StyleSheet Styles(ViemStyleSheetIdentityV1? expected = null)
+    public StyleSheet Styles(ViemStyleSheetIdentityV1? expected = null, uint gutterUnderlay = 0)
     {
+        ref var cache = ref (gutterUnderlay == 0 ? ref cachedStyles : ref cachedGutterStyles);
+        if (gutterUnderlay != 0 && cachedGutterLayer != gutterUnderlay) {
+            cache = null;
+            cachedGutterLayer = gutterUnderlay;
+        }
         // Toolbar callers already queried the exact identity with selected styles.
         // Avoid exporting and allocating the catalogue on every cursor move.
-        if (expected is { } identityKey && cachedStyles is { } cached && cached.Identity.Equals(identityKey)) return cached;
+        if (expected is { } identityKey && cache is { } cached && cached.Identity.Equals(identityKey)) return cached;
         var actual = StyleIdentity();
-        if (cachedStyles is { } retained && retained.Identity.Equals(actual)) return retained;
+        if (cache is { } retained && retained.Identity.Equals(actual)) return retained;
 #if DEBUG
         StyleExports++;
 #endif
-        bool global = UsesGlobalStyles;
-        var info = New<ViemStyleSheetInfoV1>(); Check(global ? viem_code_style_sheet_info(&info) : viem_core_style_sheet_info(Document.Handle, &info), "Read styles");
-        if (cachedStyles is { } current && current.Identity.Equals(info.identity)) return current;
+        ulong handle = UsesGlobalStyles ? 0 : Document.Handle;
+        var info = New<ViemStyleSheetInfoV1>(); Check(viem_core_style_sheet_info(handle, gutterUnderlay, &info), "Read styles");
         var definitions = new ViemStyleDefinitionV1[checked((int)info.definition_count)];
         var properties = new ViemStylePropertyV1[checked((int)info.property_count)];
         var items = new ViemStyleValueItemV1[checked((int)info.value_item_count)];
         var dependencies = new ViemStyleDependencyV1[checked((int)info.dependency_count)];
         var strings = new byte[checked((int)info.string_bytes)]; var identity = info.identity;
         fixed (ViemStyleDefinitionV1* d = definitions) fixed (ViemStylePropertyV1* p = properties) fixed (ViemStyleValueItemV1* v = items) fixed (ViemStyleDependencyV1* r = dependencies) fixed (byte* s = strings)
-            Check(global ? viem_code_copy_style_sheet(&identity, d, (ulong)definitions.Length, p, (ulong)properties.Length, v, (ulong)items.Length, r, (ulong)dependencies.Length, s, (ulong)strings.Length, &info)
-                : viem_core_copy_style_sheet(Document.Handle, &identity, d, (ulong)definitions.Length, p, (ulong)properties.Length, v, (ulong)items.Length, r, (ulong)dependencies.Length, s, (ulong)strings.Length, &info), "Copy styles");
-        return cachedStyles = new(identity, definitions.Select(d => new StyleDefinition(d, Abi.Text(strings, d.stable_id), Abi.Text(strings, d.display_name), Abi.Text(strings, d.parent_id), Abi.Text(strings, d.next_style_id),
+            Check(viem_core_copy_style_sheet(handle, gutterUnderlay, &identity, d, (ulong)definitions.Length, p, (ulong)properties.Length, v, (ulong)items.Length, r, (ulong)dependencies.Length, s, (ulong)strings.Length, &info), "Copy styles");
+        return cache = new(identity, definitions.Select(d => new StyleDefinition(d, Abi.Text(strings, d.stable_id), Abi.Text(strings, d.display_name), Abi.Text(strings, d.parent_id), Abi.Text(strings, d.next_style_id),
             properties.Skip(checked((int)d.first_property)).Take(checked((int)d.property_count)).ToDictionary(p => p.property))).ToArray(), strings, items);
     }
     public void EditStyle(StyleDefinition style, uint operation, uint property, ViemStyleEditValueV1 value, ViemStyleEditGroupV1? group = null)

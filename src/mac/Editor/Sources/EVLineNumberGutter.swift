@@ -9,6 +9,7 @@ struct EVLineNumberBand {
     let top: CGFloat
     let bottom: CGFloat
     var isCurrent = false
+    var isChanged = false
 }
 
 @MainActor
@@ -42,7 +43,8 @@ extension EVCoreViewSession {
             throw EVCoreFrontendError.core(operation: "Read line numbers", status: UInt32(VIEM_STATUS_STALE_REVISION))
         }
         return rows.map { EVLineNumberBand(line: $0.source_line, top: CGFloat($0.top), bottom: CGFloat($0.bottom),
-            isCurrent: $0.flags & UInt32(VIEM_LINE_NUMBER_REGION_CURRENT) != 0) }
+            isCurrent: $0.flags & UInt32(VIEM_LINE_NUMBER_REGION_CURRENT) != 0,
+            isChanged: $0.flags & UInt32(VIEM_LINE_NUMBER_DIFF_ADDED | VIEM_LINE_NUMBER_DIFF_REMOVED) != 0) }
     }
     private func lineNumberCheck(_ status: UInt32) throws {
         guard status == UInt32(VIEM_STATUS_OK) else {
@@ -74,6 +76,7 @@ final class EVLineNumberGutter: NSView {
         let metricsGeneration: UInt64
         let scale: CGFloat
         let themeForeground: EVThemeColor
+        let diffUnderlay: UInt32
     }
     private struct NumeralKey: Equatable {
         let font: NSFont
@@ -88,10 +91,14 @@ final class EVLineNumberGutter: NSView {
     private var widthKey: WidthKey?
     private var normalMeasurement: NumeralMeasurement?
     private var currentMeasurement: NumeralMeasurement?
+    private var diffNormalMeasurement: NumeralMeasurement?
+    private var diffCurrentMeasurement: NumeralMeasurement?
     private(set) var columnWidth: CGFloat = 0
     private(set) var digitMeasurementCount = 0
     private(set) var normal = EVChromeStyle()
     private(set) var current = EVChromeStyle()
+    private var changedNormal = EVChromeStyle()
+    private var changedCurrent = EVChromeStyle()
     private(set) var bands: [EVLineNumberBand] = []
     private var viewportTop: CGFloat = 0
 
@@ -106,11 +113,19 @@ final class EVLineNumberGutter: NSView {
 
     func width(lineCount: UInt64, sheet: EVStyleSheetSnapshot, scale: CGFloat,
                metricsGeneration: UInt64, themeForeground: EVThemeColor? = nil) -> CGFloat {
+        width(lineCount: lineCount, sheet: sheet, scale: scale, metricsGeneration: metricsGeneration,
+              themeForeground: themeForeground, diffUnderlay: 0) { nil }
+    }
+
+    func width(lineCount: UInt64, sheet: EVStyleSheetSnapshot, scale: CGFloat,
+               metricsGeneration: UInt64, themeForeground: EVThemeColor? = nil, diffUnderlay: UInt32,
+               diffStyles: () throws -> EVStyleSheetSnapshot?) rethrows -> CGFloat {
         let foreground = themeForeground ?? EVThemeStore.shared.theme.foreground
         let key = WidthKey(digits: Self.digits(for: lineCount), styleRevision: sheet.identity.styleSheetRevision,
             documentID: sheet.identity.documentID, metricsGeneration: metricsGeneration, scale: scale,
-            themeForeground: foreground)
+            themeForeground: foreground, diffUnderlay: diffUnderlay)
         if key == widthKey { return columnWidth }
+        let diffSheet = try diffStyles()
         let normalDefinition = sheet.lineNumberDefinition(current: false)
         normal = Self.style(normalDefinition, scale: scale, themeForeground: foreground.color)
         current = Self.style(sheet.lineNumberDefinition(current: true) ?? normalDefinition,
@@ -139,6 +154,15 @@ final class EVLineNumberGutter: NSView {
         let normalWidth = measuredWidth(normal, cache: &normalMeasurement)
         let currentWidth = measuredWidth(current, cache: &currentMeasurement, shared: normalMeasurement)
         columnWidth = ceil(max(normalWidth, currentWidth))
+        if let diffSheet {
+            changedNormal = Self.style(diffSheet.lineNumberDefinition(current: false), scale: scale, themeForeground: foreground.color)
+            changedCurrent = Self.style(diffSheet.lineNumberDefinition(current: true), scale: scale, themeForeground: foreground.color)
+            let changedWidth = measuredWidth(changedNormal, cache: &diffNormalMeasurement, shared: normalMeasurement)
+            let caretWidth = measuredWidth(changedCurrent, cache: &diffCurrentMeasurement,
+                shared: changedNormal.font == changedCurrent.font && changedNormal.letterSpacing == changedCurrent.letterSpacing
+                    ? diffNormalMeasurement : currentMeasurement)
+            columnWidth = max(columnWidth, ceil(max(changedWidth, caretWidth)))
+        }
         widthKey = key
         return columnWidth
     }
@@ -148,10 +172,15 @@ final class EVLineNumberGutter: NSView {
         needsDisplay = true
     }
 
+    private func style(for band: EVLineNumberBand) -> EVChromeStyle {
+        if band.isChanged { return band.isCurrent ? changedCurrent : changedNormal }
+        return band.isCurrent ? current : normal
+    }
+
     /// Full physical-line bounds are retained even when only their edge is on
     /// screen. Wrapping and clipping cannot recenter a number while scrolling.
     func numberLayout(_ band: EVLineNumberBand) -> (line: CTLine, rect: NSRect, baseline: CGPoint)? {
-        let style = band.isCurrent ? current : normal
+        let style = style(for: band)
         let box = numberBox(band, style: style)
         let content = NSRect(x: box.minX + style.leftBorder.width + style.padding.left,
             y: box.minY + style.topBorder.width + style.padding.top,
@@ -198,7 +227,7 @@ final class EVLineNumberGutter: NSView {
         context.setShouldAntialias(false)
         context.clip(to: base)
         for band in bands {
-            let style = band.isCurrent ? current : normal
+            let style = style(for: band)
             let hole = paintRect(numberBox(band, style: style), context: context, coverCanvasEdges: true).intersection(base)
             if !hole.isNull, !hole.isEmpty {
                 // Subtract separately: overlapping boxes from negative margins
@@ -212,7 +241,7 @@ final class EVLineNumberGutter: NSView {
         drawBorders(normal, rawBox: rawBase, box: base, context: context, verticalOnly: true)
         context.restoreGState()
         for band in bands {
-            let style = band.isCurrent ? current : normal
+            let style = style(for: band)
             let rawBox = numberBox(band, style: style)
             let box = paintRect(rawBox, context: context, coverCanvasEdges: true)
             guard box.intersects(dirtyRect) else { continue }

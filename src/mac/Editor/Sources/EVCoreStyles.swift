@@ -602,11 +602,10 @@ enum EVCoreStyleBridge {
         try check(viem_core_view_end_style_edit_group(core, view, &value))
     }
 
-    static func copyStyleSheet(core: ViemCoreHandle?) throws -> EVStyleSheetSnapshot {
+    static func copyStyleSheet(core: ViemCoreHandle?, gutterUnderlay: UInt32 = 0) throws -> EVStyleSheetSnapshot {
         var info = ViemStyleSheetInfoV1()
         info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
-        if let core { try check(viem_core_style_sheet_info(core, &info)) }
-        else { try check(viem_code_style_sheet_info(&info)) }
+        try check(viem_core_style_sheet_info(core ?? 0, gutterUnderlay, &info))
 
         guard info.definition_count <= UInt64(Int.max),
               info.property_count <= UInt64(Int.max),
@@ -629,8 +628,8 @@ enum EVCoreStyleBridge {
                 items.withUnsafeMutableBufferPointer { itemsBuffer in
                     dependencies.withUnsafeMutableBufferPointer { dependenciesBuffer in
                         strings.withUnsafeMutableBufferPointer { stringsBuffer in
-                            if let core { return viem_core_copy_style_sheet(
-                                core,
+                            return viem_core_copy_style_sheet(
+                                core ?? 0, gutterUnderlay,
                                 &expected,
                                 definitionsBuffer.baseAddress,
                                 UInt64(definitionsBuffer.count),
@@ -642,15 +641,6 @@ enum EVCoreStyleBridge {
                                 UInt64(dependenciesBuffer.count),
                                 stringsBuffer.baseAddress,
                                 UInt64(stringsBuffer.count),
-                                &copiedInfo
-                            ) }
-                            return viem_code_copy_style_sheet(
-                                &expected,
-                                definitionsBuffer.baseAddress, UInt64(definitionsBuffer.count),
-                                propertiesBuffer.baseAddress, UInt64(propertiesBuffer.count),
-                                itemsBuffer.baseAddress, UInt64(itemsBuffer.count),
-                                dependenciesBuffer.baseAddress, UInt64(dependenciesBuffer.count),
-                                stringsBuffer.baseAddress, UInt64(stringsBuffer.count),
                                 &copiedInfo
                             )
                         }

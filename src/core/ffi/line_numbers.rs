@@ -5,6 +5,8 @@ pub const VIEM_LINE_NUMBER_SNAPSHOT_ENABLED: u32 = 1;
 pub const VIEM_LINE_NUMBER_REGION_ESTIMATED: u32 = 1;
 /// The displayed representative owns the visual row containing the caret.
 pub const VIEM_LINE_NUMBER_REGION_CURRENT: u32 = 1 << 1;
+pub const VIEM_LINE_NUMBER_DIFF_ADDED: u32 = 1 << 2;
+pub const VIEM_LINE_NUMBER_DIFF_REMOVED: u32 = 1 << 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -157,10 +159,13 @@ pub unsafe extern "C" fn viem_core_view_line_number_snapshot_info(
         let info = with_core(handle, |core| {
             let id = ViewId(view);
             let snapshot = current_ffi_layout_snapshot(core, id)?;
+            let diff = core.presentation_layout(id).ok_or(ViemStatus::InvalidView)?
+                .presentation_overlays(core.document().id(), core.document().revision()).diff;
             Ok(ViemLineNumberSnapshotInfoV1 {
                 struct_size: VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE,
                 flags: if core.number(id).map_err(core_status)? {
-                    VIEM_LINE_NUMBER_SNAPSHOT_ENABLED
+                    VIEM_LINE_NUMBER_SNAPSHOT_ENABLED | diff.map_or(0, |d|
+                        if d.added { VIEM_LINE_NUMBER_DIFF_ADDED } else { VIEM_LINE_NUMBER_DIFF_REMOVED })
                 } else {
                     0
                 },
@@ -216,7 +221,12 @@ pub unsafe extern "C" fn viem_core_view_copy_line_number_regions(
                     Ok(ViemLineNumberRegionV1 {
                         source_line: checked_export_count(region.source_line)?,
                         flags: (if region.estimated { VIEM_LINE_NUMBER_REGION_ESTIMATED } else { 0 })
-                            | (if region.current { VIEM_LINE_NUMBER_REGION_CURRENT } else { 0 }),
+                            | (if region.current { VIEM_LINE_NUMBER_REGION_CURRENT } else { 0 })
+                            | match region.diff_side {
+                                Some(crate::diff::Side::New) => VIEM_LINE_NUMBER_DIFF_ADDED,
+                                Some(crate::diff::Side::Base) => VIEM_LINE_NUMBER_DIFF_REMOVED,
+                                None => 0,
+                            },
                         reserved: 0,
                         top: region.top,
                         bottom: region.bottom,

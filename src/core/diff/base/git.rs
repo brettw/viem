@@ -34,6 +34,13 @@ pub struct GitRepository {
     limits: ProcessLimits,
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct GitCommit {
+    pub hash: String,
+    pub short: String,
+    pub title: String,
+}
+
 impl GitRepository {
     /// Find the repository containing `file`, or the folder `file` names.
     /// `program` is the git executable, normally `git` resolved through
@@ -128,6 +135,7 @@ impl GitRepository {
             BaseKind::Unstaged => "",
             BaseKind::Head => "HEAD",
             BaseKind::Branch(branch) => validated_revision(branch)?,
+            BaseKind::Commit(hash) => full_hash(hash)?,
             _ => return Err(BaseError::Unavailable("not a git base".into())),
         };
         let directory = existing_ancestor(file.parent().unwrap_or(file))
@@ -193,6 +201,7 @@ impl GitRepository {
             BaseKind::Unstaged => self.index_object(&relative, cancellation)?,
             BaseKind::Head => self.tree_object("HEAD", &relative, cancellation)?,
             BaseKind::Branch(branch) => self.tree_object(validated_revision(branch)?, &relative, cancellation)?,
+            BaseKind::Commit(hash) => self.tree_object(full_hash(hash)?, &relative, cancellation)?,
             _ => return Err(BaseError::Unavailable("not a git base".into())),
         };
         let Some(object) = object else {
@@ -220,11 +229,12 @@ impl GitRepository {
         cancellation: &CancellationToken,
     ) -> Result<Vec<ChangedFile>, BaseError> {
         let folder = scope.map(|folder| self.relative_folder(folder)).transpose()?.flatten();
-        let mut arguments = vec!["diff", "--name-status", "-z", "--no-ext-diff", "--no-textconv"];
+        let mut arguments = vec!["diff", "--raw", "--numstat", "-z", "--no-ext-diff", "--no-textconv"];
         match kind {
             BaseKind::Unstaged => {}
             BaseKind::Head => arguments.push("HEAD"),
             BaseKind::Branch(branch) => arguments.push(validated_revision(branch)?),
+            BaseKind::Commit(hash) => arguments.push(full_hash(hash)?),
             _ => return Err(BaseError::Unavailable("not a git base".into())),
         }
         arguments.push("--");
@@ -236,7 +246,48 @@ impl GitRepository {
         if !output.success {
             return Err(command_error(output));
         }
-        Ok(parse_name_status(&output.stdout, &self.root))
+        parse_file_stats(&output.stdout, &self.root)
+    }
+
+    /// Recent history from HEAD, or exactly one commit matching a pasted hash.
+    pub fn commits(&self, hash: Option<&str>, cancellation: &CancellationToken) -> Result<Vec<GitCommit>, BaseError> {
+        let mut args = vec!["log", "--no-show-signature", "--no-notes", "--no-decorate", "--encoding=UTF-8",
+                            "-z", "--abbrev=7", "--format=%H%x00%h%x00%s"];
+        let revision;
+        if let Some(hash) = hash {
+            if !(4..=64).contains(&hash.len()) || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(BaseError::Unavailable("Enter a hexadecimal commit hash.".into()));
+            }
+            revision = format!("{hash}^{{commit}}");
+            args.extend(["-1", "--no-walk", &revision]);
+        } else {
+            args.extend(["-50", "HEAD"]);
+        }
+        args.push("--");
+        let output = self.git(&args, cancellation)?;
+        if !output.success {
+            if hash.is_none() && !self.git(&["rev-parse", "--verify", "--quiet", "HEAD"], cancellation)?.success {
+                return Ok(Vec::new());
+            }
+            return Err(command_error(output));
+        }
+        let mut commits = Vec::new();
+        let mut fields = output.stdout.split_inclusive(|&b| b == 0).map(|field| field.strip_suffix(b"\0").unwrap_or(field));
+        while let Some(id) = fields.next() {
+            let malformed = || BaseError::Io("Invalid Git commit record".into());
+            let id = std::str::from_utf8(id).map_err(|_| malformed())?;
+            full_hash(id)?;
+            let short = std::str::from_utf8(fields.next().ok_or_else(malformed)?).map_err(|_| malformed())?;
+            let title = String::from_utf8_lossy(fields.next().ok_or_else(malformed)?);
+            if !id.starts_with(short) || short.is_empty() { return Err(malformed()); }
+            commits.push(GitCommit { hash: id.into(), short: short.into(), title: title.into_owned() });
+        }
+        if let Some(hash) = hash {
+            if !commits.first().is_some_and(|c| c.hash.starts_with(&hash.to_ascii_lowercase())) {
+                return Err(BaseError::Unavailable("The hash does not identify a commit.".into()));
+            }
+        }
+        Ok(commits)
     }
 
     /// Local and remote branch names for the Branch base.
@@ -402,6 +453,14 @@ fn validated_revision(name: &str) -> Result<&str, BaseError> {
     Ok(name)
 }
 
+fn full_hash(hash: &str) -> Result<&str, BaseError> {
+    if matches!(hash.len(), 40 | 64) && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Ok(hash)
+    } else {
+        Err(BaseError::Unavailable("Expected a full Git commit hash.".into()))
+    }
+}
+
 fn existing_ancestor(path: &Path) -> Option<PathBuf> {
     path.ancestors().find(|ancestor| ancestor.is_dir()).map(Path::to_owned)
 }
@@ -424,38 +483,44 @@ fn canonical_through_ancestors(path: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Parse `git diff --name-status -z`: a status field, then one path, or two
-/// for renames and copies.
-fn parse_name_status(output: &[u8], root: &Path) -> Vec<ChangedFile> {
-    let mut fields = output.split(|&byte| byte == 0).filter(|field| !field.is_empty());
-    let mut files = Vec::new();
-    let path = |field: &[u8]| root.join(String::from_utf8_lossy(field).as_ref());
-    while let Some(status) = fields.next() {
-        let Some(&letter) = status.first() else { continue };
-        match letter {
-            b'R' | b'C' => {
-                let (Some(old), Some(new)) = (fields.next(), fields.next()) else { break };
-                let change = if letter == b'R' { FileChange::Renamed } else { FileChange::Added };
-                files.push(ChangedFile { path: path(new), base_path: path(old), change });
-            }
-            _ => {
-                let Some(field) = fields.next() else { break };
-                let change = match letter {
-                    b'A' => FileChange::Added,
-                    b'D' => FileChange::Deleted,
-                    _ => FileChange::Modified,
-                };
-                files.push(ChangedFile { path: path(field), base_path: path(field), change });
-            }
-        }
+/// One Git invocation describes the same patch in two NUL-delimited sections:
+/// raw status/path records, then per-file line counts. Tabs inside a path are literal.
+pub(super) fn parse_file_stats(output: &[u8], root: &Path) -> Result<Vec<ChangedFile>, BaseError> {
+    let invalid = || BaseError::Io("Invalid Git diff statistics".into());
+    let mut fields = output.split(|b| *b == 0).filter(|field| !field.is_empty()).peekable();
+    let mut files = std::collections::BTreeMap::new();
+    let path = |bytes: &[u8]| root.join(String::from_utf8_lossy(bytes).as_ref());
+    while fields.peek().is_some_and(|field| field.starts_with(b":")) {
+        let header = fields.next().ok_or_else(invalid)?;
+        let status = header.rsplit(|b| *b == b' ').next().and_then(|s| s.first()).ok_or_else(invalid)?;
+        let old = fields.next().ok_or_else(invalid)?;
+        let new = if matches!(status, b'R' | b'C') { fields.next().ok_or_else(invalid)? } else { old };
+        let change = match status {
+            b'R' => FileChange::Renamed,
+            b'A' | b'C' => FileChange::Added,
+            b'D' => FileChange::Deleted,
+            _ => FileChange::Modified,
+        };
+        files.insert(new, ChangedFile { path: path(new), base_path: path(old), change, added: 0, removed: 0 });
     }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    files
-}
-
-#[cfg(test)]
-pub(super) fn parse_name_status_for_tests(output: &[u8], root: &Path) -> Vec<ChangedFile> {
-    parse_name_status(output, root)
+    while let Some(record) = fields.next() {
+        let mut parts = record.splitn(3, |b| *b == b'\t');
+        let count = |field: &[u8]| {
+            if field == b"-" { Ok(0) } // Binary files contribute no lines to Git's shortstat.
+            else { std::str::from_utf8(field).ok().and_then(|s| s.parse::<u64>().ok()).ok_or_else(invalid) }
+        };
+        let added = count(parts.next().ok_or_else(invalid)?)?;
+        let removed = count(parts.next().ok_or_else(invalid)?)?;
+        let mut name = parts.next().ok_or_else(invalid)?;
+        if name.is_empty() {
+            fields.next().ok_or_else(invalid)?; // A rename or copy carries both paths.
+            name = fields.next().ok_or_else(invalid)?;
+        }
+        let file = files.get_mut(name).ok_or_else(invalid)?;
+        file.added = file.added.checked_add(added).ok_or_else(invalid)?;
+        file.removed = file.removed.checked_add(removed).ok_or_else(invalid)?;
+    }
+    Ok(files.into_values().collect())
 }
 
 #[cfg(test)]

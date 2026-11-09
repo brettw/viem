@@ -83,6 +83,22 @@ final class EVLaunchArgumentsTests: XCTestCase {
         }
     }
 
+    func testDiffLaunchCreatesOneComparisonWindowPerFile() throws {
+        let fixture = try LaunchFixture()
+        defer { fixture.close() }
+        let first = try fixture.write("first.txt")
+        let second = try fixture.write("--diff")
+        let arguments = try EVLaunchArguments.parse(["--diff", "first.txt", "--", "--diff"])
+        fixture.process(arguments)
+        let firstWindow = try fixture.window(for: fixture.document(at: first))
+        let secondWindow = try fixture.window(for: fixture.document(at: second))
+        XCTAssertFalse(firstWindow === secondWindow)
+        for window in [firstWindow, secondWindow] {
+            XCTAssertTrue(window.diffMode?.isEnabled == true)
+            XCTAssertTrue(window.diffMode?.toolbar.fileCountGroup.isHidden == true)
+        }
+    }
+
     func testInitialLineUsesPhysicalLinesAndClampsWithoutEditing() throws {
         let source = "first\n  βeta\nlast"
         for (line, expected) in [(UInt64(2), UInt64(8)), (0, 0), (999, 14), (UInt64.max, 14)] {

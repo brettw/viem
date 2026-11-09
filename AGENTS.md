@@ -770,6 +770,9 @@ text, excludes editor furniture, and needs no network resources.
   open, the first directory shows the `:e {directory}` file chooser, whose
   selection replaces a blank window or otherwise opens in a new window; later
   directories are ignored. Blocking edits still reject directories.
+  With `--diff`, each file opens in its own single-file comparison and each
+  directory in its own scoped Git comparison. With no operands, compare the
+  caller's working directory.
 - Save As adopts the new path only after the write succeeds. No format switch
   or native action renames or deletes the original. Reject symlink and
   case-only aliases that would overwrite the original. Failed writes keep the

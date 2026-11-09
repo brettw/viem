@@ -23,6 +23,7 @@ internal sealed partial class EditorWindow
     private DiffFile[] diffFiles = [];
     private string[] diffBranches = [];
     private string? diffScope;
+    private bool singleFileDiff;
     private bool diffEnabled, diffAligned, diffCollapsed, diffGit, mirroring, deletedSide, originalNumbers;
     private bool enteredDiff, changingNumbers;
     private ulong syncedRevision;
@@ -55,8 +56,8 @@ internal sealed partial class EditorWindow
         Top("Diff", "D", mode, Separator(), folder, Item("Diff Folder…", "F", ChooseDiffFolder), Separator(), align, collapse,
             Item("Refresh Base", "R", RefreshDiff, enabled: () => diffEnabled),
             Item("Choose Base File…", "B", ChooseDiffFile, enabled: () => diffEnabled), Separator(),
-            Item("Previous File", "P", () => MoveDiffFile(-1), enabled: () => diffEnabled && diffFiles.Length > 0),
-            Item("Next File", "N", () => MoveDiffFile(1), enabled: () => diffEnabled && diffFiles.Length > 0));
+            Item("Previous File", "P", () => MoveDiffFile(-1), ":N", enabled: () => diffEnabled && diffFiles.Length > 0),
+            Item("Next File", "N", () => MoveDiffFile(1), ":n", enabled: () => diffEnabled && diffFiles.Length > 0));
     }
 
     private void BeginDiff()
@@ -95,6 +96,7 @@ internal sealed partial class EditorWindow
         DetachDiff();
         if (diffToolbar != null) diffToolbar.Visibility = Visibility.Collapsed;
         diffFiles = []; diffBranches = []; diffScope = null; diffGit = false;
+        singleFileDiff = false;
         diffBase = new(VIEM_DIFF_BASE_LAST_SAVED);
         ClearDiffCache();
         menusDirty = true;
@@ -233,12 +235,13 @@ internal sealed partial class EditorWindow
         if (listedFiles != null) git = true;
         else if (detectRepository || probeAvailability || basis.IsGit) {
             var gitBase = basis.IsGit ? basis : new DiffBase(VIEM_DIFF_BASE_UNSTAGED);
-            if (path == null) { git = false; if (basis.IsGit) basis = new(VIEM_DIFF_BASE_LAST_SAVED); }
+            var repositoryPath = path ?? diffScope;
+            if (repositoryPath == null) { git = false; if (basis.IsGit) basis = new(VIEM_DIFF_BASE_LAST_SAVED); }
             else {
                 var scope = diffScope;
                 var unsaved = UnsavedPaths();
                 try {
-                    files = await Task.Run(() => DiffSources.Files(gitBase, path, scope, unsaved, token), token);
+                    files = await Task.Run(() => DiffSources.Files(gitBase, repositoryPath, scope, unsaved, token), token);
                     git = true;
                     if (detectRepository) basis = gitBase;
                 } catch (IOException) when ((detectRepository || probeAvailability) && !token.IsCancellationRequested) {
@@ -249,6 +252,7 @@ internal sealed partial class EditorWindow
         }
         token.ThrowIfCancellationRequested();
         if (!basis.IsGit) files = basis.Kind == VIEM_DIFF_BASE_LAST_SAVED && path != null ? [new(path, path, VIEM_DIFF_FILE_MODIFIED)] : [];
+        if (singleFileDiff) files = files.Where(file => SamePath(file.Path, path)).ToArray();
         var entry = files.FirstOrDefault(f => SamePath(f.Path, path));
         string basePath = basis.Kind == VIEM_DIFF_BASE_FILE ? basis.Argument : entry?.BasePath ?? path ?? "";
         byte[] bytes;
@@ -399,6 +403,11 @@ internal sealed partial class EditorWindow
         SyncDiff();
         diffLeft.Opacity = 1;
         diffBase = prepared.Basis; diffFiles = prepared.Files; diffGit = prepared.Git;
+        if (diffBase.Kind == VIEM_DIFF_BASE_FILE) {
+            diffScope = null;
+            singleFileDiff = true;
+            if (live.Document.FilePath == null) diffGit = false;
+        }
         bool wrap = preferences.CodeWordWrap;
         live.SetWordWrap(wrap); diffLeft.SetWordWrap(wrap);
         UpdateDiffBaseStatus();
@@ -492,6 +501,8 @@ internal sealed partial class EditorWindow
         if (comparison != null && diffLive == pane && pane.Document.State.document_revision != syncedRevision) {
             comparison.Sync();
             syncedRevision = pane.Document.State.document_revision;
+            if (UseLiveTotals) diffToolbar?.ShowLineTotals(comparison.LineTotals);
+            else if (singleFileDiff) UpdateDiffToolbar();
             diffLeft!.Refresh();
         }
     }
@@ -592,12 +603,29 @@ internal sealed partial class EditorWindow
     {
         menusDirty = true;
         if (diffEnabled) diffToolbar?.Update(diffBase, diffGit, diffBranches, diffFiles, CurrentDiffFile,
-            ActivePane?.Document.Name ?? "Untitled", diffAligned, diffCollapsed, comparison != null, noChanges: diffScope != null && diffFiles.Length == 0);
+            ActivePane?.Document.Name ?? "Untitled", diffAligned, diffCollapsed, comparison != null, comparison?.LineTotals ?? default,
+            UseLiveTotals, noChanges: diffBase.IsGit && diffScope != null && diffFiles.Length == 0);
     }
+
+    private bool UseLiveTotals => !diffBase.IsGit || singleFileDiff && (ActivePane?.Document.IsDirty == true || diffFiles.Length == 0);
 
     private Task RefreshDiff() { ClearDiffCache(); return LoadDiff(refresh: true); }
     private async Task ChooseDiffBase(DiffBase choice)
     {
+        if (choice.Kind == VIEM_DIFF_BASE_COMMIT && choice.Argument.Length == 0) {
+            UpdateDiffToolbar();
+            if ((ActivePane?.Document.FilePath ?? diffScope) is not { } path) return;
+            branchRequest?.Cancel();
+            using var request = new CancellationTokenSource();
+            branchRequest = request;
+            DiffCommit? commit;
+            try {
+                commit = await PickDiffCommit(path, request.Token);
+                request.Token.ThrowIfCancellationRequested();
+            } finally { if (branchRequest == request) branchRequest = null; }
+            if (commit == null) return;
+            choice = new(VIEM_DIFF_BASE_COMMIT, commit.Hash, commit.Short);
+        }
         if (choice.Kind == VIEM_DIFF_BASE_BRANCH && choice.Argument.Length == 0) {
             if (ActivePane?.Document.FilePath is not { } path) return;
             branchRequest?.Cancel();
@@ -618,11 +646,24 @@ internal sealed partial class EditorWindow
     private async Task ChooseDiffFile()
     {
         long generation = diffGeneration;
+        var document = ActivePane?.Document;
+        UpdateDiffToolbar();
+        var path = await PickDiffBaseFile();
+        if (path != null && diffEnabled && generation == diffGeneration && ActivePane?.Document == document)
+            await ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, path));
+    }
+#if DEBUG
+    private Func<Task<string?>>? PickDiffBaseFileForTesting;
+#endif
+    private async Task<string?> PickDiffBaseFile()
+    {
+#if DEBUG
+        if (PickDiffBaseFileForTesting is { } pick) return await pick();
+#endif
         var picker = new FileOpenPicker();
         WinRT.Interop.InitializeWithWindow.Initialize(picker, Hwnd);
         picker.FileTypeFilter.Add("*");
-        if (await picker.PickSingleFileAsync() is { } file && diffEnabled && generation == diffGeneration)
-            await ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, file.Path));
+        return (await picker.PickSingleFileAsync())?.Path;
     }
     private Task MoveDiffFile(int delta)
     {
@@ -649,6 +690,25 @@ internal sealed partial class EditorWindow
         picker.FileTypeFilter.Add("*");
         if (await picker.PickSingleFolderAsync() is { } folder) await DiffFolder(folder.Path);
     }
+    private bool CanReuseForDiff => !diffEnabled && Panes.Count == 1 && ActivePane is { } pane && IsPristine(pane.Document);
+
+    private async Task OpenLaunchDiffFile(string path, ulong? line)
+    {
+        var target = CanReuseForDiff ? this : NewWindow(null);
+        try {
+            await target.ActivePane!.Ready;
+            await target.OpenPath(path, compareHere: true);
+            target.singleFileDiff = true;
+            target.windowPlacement.ApplyDiffFrame(target, cascade: target != this);
+            await target.SetDiffMode(true);
+            if (line.HasValue) target.View?.GoToLine(line.Value);
+        } catch {
+            if (target != this && target.ActivePane is { } empty && IsPristine(empty.Document))
+                await target.ClosePane(empty, force: true);
+            throw;
+        }
+    }
+
     internal async Task DiffFolder(string path)
     {
         folderRequest?.Cancel();
@@ -659,9 +719,7 @@ internal sealed partial class EditorWindow
             var basis = new DiffBase(VIEM_DIFF_BASE_UNSTAGED);
             var files = await Task.Run(() => DiffSources.Files(basis, path, path, unsaved, request.Token));
             request.Token.ThrowIfCancellationRequested();
-            bool pristine = Panes.Count == 1 && ActivePane is { } pane && pane.Document.FilePath == null && !pane.Document.IsDirty
-                && pane.Document.State.source_byte_count == 0
-                && (pane.Document.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0;
+            bool pristine = CanReuseForDiff;
             var target = pristine ? this : NewWindow(null);
             long generation = target.diffGeneration;
             try {

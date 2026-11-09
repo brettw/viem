@@ -85,6 +85,7 @@ struct InstalledSide {
 /// [`DiffSession::sync`] after every event that may change either side.
 pub struct DiffSession {
     state: DiffState,
+    line_totals: (usize, usize),
     limits: DiffLimits,
     base_document: DocumentId,
     base_revision: Revision,
@@ -111,8 +112,10 @@ impl DiffSession {
     }
 
     pub fn with_limits(base: &Document, new: &Document, aligned: bool, limits: DiffLimits) -> Self {
+        let state = DiffState::compute(&DocumentLines(base), &DocumentLines(new), limits);
         Self {
-            state: DiffState::compute(&DocumentLines(base), &DocumentLines(new), limits),
+            line_totals: Self::count_lines(&state, base, new),
+            state,
             limits,
             base_document: base.id(),
             base_revision: base.revision(),
@@ -129,6 +132,17 @@ impl DiffSession {
 
     pub fn state(&self) -> &DiffState {
         &self.state
+    }
+
+    fn count_lines(state: &DiffState, base: &Document, new: &Document) -> (usize, usize) {
+        let ends_empty = |doc: &Document| {
+            doc.projection().hard_line_range(doc.line_count().saturating_sub(1)).is_none_or(|line| line.is_empty())
+        };
+        state.line_totals(ends_empty(base), ends_empty(new))
+    }
+
+    pub fn line_totals(&self) -> (usize, usize) {
+        self.line_totals
     }
 
     pub fn aligned(&self) -> bool {
@@ -245,6 +259,7 @@ impl DiffSession {
         match edit {
             Some(edit) if edit_fits(&self.state, new, edit) => {
                 self.state.apply_edit(&DocumentLines(base), &DocumentLines(new), edit);
+                self.line_totals = Self::count_lines(&self.state, base, new);
                 self.new_revision = new.revision();
                 self.remap_installed_new_side(edit);
                 DiffSync::Incremental
@@ -258,6 +273,7 @@ impl DiffSession {
 
     fn recompute(&mut self, base: &Document, new: &Document) {
         self.state = DiffState::compute(&DocumentLines(base), &DocumentLines(new), self.limits);
+        self.line_totals = Self::count_lines(&self.state, base, new);
         self.base_document = base.id();
         self.base_revision = base.revision();
         self.new_document = new.id();

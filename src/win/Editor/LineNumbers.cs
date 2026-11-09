@@ -14,12 +14,13 @@ internal sealed partial class EditorPane
     private readonly CanvasControl lineNumberCanvas = new() { Width = 0, Visibility = Visibility.Collapsed };
     private LineNumberSnapshot? lineNumbers;
     private ChromeStyle? lineNumberStyle, currentLineNumberStyle;
-    private ChromeStyle? measuredNumberStyle, measuredCurrentNumberStyle;
-    private ulong numberMetrics, currentNumberMetrics;
+    private ChromeStyle? diffNumberStyle, currentDiffNumberStyle;
+    private sealed record NumeralMeasurement(ChromeStyle Style, float Width);
+    private readonly NumeralMeasurement?[] numberMeasurements = new NumeralMeasurement?[4];
+    private ulong numberMetrics;
     private sealed record NumberGlyphLayout(CanvasTextLayout Layout, float FontSize);
-    private readonly Dictionary<(ulong Line, bool Current, float Height), NumberGlyphLayout> numberLayouts = [];
-    private float numeralWidth, currentNumeralWidth;
-    private int numberDigits;
+    private readonly Dictionary<(ulong Line, uint StyleFlags, float Height), NumberGlyphLayout> numberLayouts = [];
+    private const uint DiffMask = Interop.Native.VIEM_LINE_NUMBER_DIFF_ADDED | Interop.Native.VIEM_LINE_NUMBER_DIFF_REMOVED;
     internal double GutterWidth => lineNumberCanvas.Width;
 #if DEBUG
     internal ulong PaintedNumberDocumentForTesting { get; private set; }
@@ -42,7 +43,7 @@ internal sealed partial class EditorPane
         AutomationProperties.SetName(lineNumberCanvas, "Physical source line numbers");
         lineNumberCanvas.Draw += (_, args) => Run(() => DrawLineNumbers(args.DrawingSession));
         lineNumberCanvas.CreateResources += (_, _) => {
-            measuredNumberStyle = measuredCurrentNumberStyle = null;
+            Array.Clear(numberMeasurements);
             ClearNumberLayouts();
             if (View != null) Run(Refresh);
         };
@@ -116,20 +117,33 @@ internal sealed partial class EditorPane
         var current = ChromeStyle.ResolveLineNumber(sheet, current: true, normal);
         lineNumberStyle = normal.Scaled(viewport.scale);
         currentLineNumberStyle = current.Scaled(viewport.scale);
+        uint side = lineNumbers.Info.flags & DiffMask;
+        diffNumberStyle = currentDiffNumberStyle = null;
+        if (side != 0) {
+            var diffSheet = View.Styles(sheet.Identity, gutterUnderlay: side);
+            var changed = ChromeStyle.ResolveLineNumber(diffSheet, current: false, fallback);
+            diffNumberStyle = changed.Scaled(viewport.scale);
+            currentDiffNumberStyle = ChromeStyle.ResolveLineNumber(diffSheet, current: true, changed).Scaled(viewport.scale);
+        }
         ulong metrics = View.Provider.Generation;
-        bool numberChanged = measuredNumberStyle?.FontIdentity != lineNumberStyle.FontIdentity || numberMetrics != metrics;
-        bool currentChanged = measuredCurrentNumberStyle?.FontIdentity != currentLineNumberStyle.FontIdentity || currentNumberMetrics != metrics;
-        if (numberChanged || currentChanged) ClearNumberLayouts();
-        if (numberChanged) { numeralWidth = MaxNumeralWidth(lineNumberStyle); measuredNumberStyle = lineNumberStyle; numberMetrics = metrics; }
-        if (currentChanged) {
-            currentNumeralWidth = lineNumberStyle.FontIdentity == currentLineNumberStyle.FontIdentity ? numeralWidth : MaxNumeralWidth(currentLineNumberStyle);
-            measuredCurrentNumberStyle = currentLineNumberStyle; currentNumberMetrics = metrics;
+        if (numberMetrics != metrics) {
+            Array.Clear(numberMeasurements);
+            numberMetrics = metrics;
         }
         int digits = DecimalDigits(lineNumbers.Info.source_line_count);
-        if (numberDigits != digits) numberDigits = digits;
-        static float Width(ChromeStyle style, float maxNumeral, int digits) => Math.Max(0,
-            digits * maxNumeral + style.Margin.Horizontal + style.Padding.Horizontal + style.Border.Horizontal);
-        SetGutterWidth(Math.Ceiling(Math.Max(Width(lineNumberStyle, numeralWidth, numberDigits), Width(currentLineNumberStyle, currentNumeralWidth, numberDigits))));
+        float Width(ChromeStyle? style, int slot) {
+            if (style == null) return 0;
+            var measurement = numberMeasurements[slot];
+            if (measurement == null || measurement.Style.FontIdentity != style.FontIdentity) {
+                ClearNumberLayouts();
+                measurement = Array.Find(numberMeasurements, m => m?.Style.FontIdentity == style.FontIdentity)
+                    ?? new NumeralMeasurement(style, MaxNumeralWidth(style));
+                numberMeasurements[slot] = measurement;
+            }
+            return digits * measurement.Width + style.Margin.Horizontal + style.Padding.Horizontal + style.Border.Horizontal;
+        }
+        SetGutterWidth(Math.Ceiling(Math.Max(Math.Max(Width(lineNumberStyle, 0), Width(currentLineNumberStyle, 1)),
+            Math.Max(Width(diffNumberStyle, 2), Width(currentDiffNumberStyle, 3)))));
         lineNumberCanvas.Invalidate();
     }
 
@@ -173,9 +187,9 @@ internal sealed partial class EditorPane
         if (lineNumbers?.Enabled != true || lineNumberStyle == null || currentLineNumberStyle == null || View == null
             || !View.LineNumbersAreCurrent(lineNumbers.Info)) return;
         PaintNumberBoxes(drawing, GutterWidth, lineNumberCanvas.ActualHeight, lineNumbers.Info.viewport.y,
-            lineNumbers.Regions, lineNumberStyle, currentLineNumberStyle);
+            lineNumbers.Regions, lineNumberStyle, currentLineNumberStyle, diffNumberStyle, currentDiffNumberStyle);
         foreach (var region in lineNumbers.Regions) {
-            var style = IsCurrentNumber(region) ? currentLineNumberStyle : lineNumberStyle;
+            var style = NumberStyle(region, lineNumberStyle, currentLineNumberStyle, diffNumberStyle, currentDiffNumberStyle);
             // Typography uses the exact full physical band, independently of the
             // paint-only pixel partition used for backgrounds and borders.
             var bounds = NumberBox(region, style, GutterWidth, lineNumbers.Info.viewport.y);
@@ -183,7 +197,7 @@ internal sealed partial class EditorPane
             double availableHeight = Math.Max(0, bounds.Height - style.Border.Vertical - style.Padding.Vertical);
             double availableWidth = Math.Max(0, bounds.Width - style.Border.Horizontal - style.Padding.Horizontal);
             if (availableHeight <= 0 || availableWidth <= 0) continue;
-            var glyph = NumberLayout(region.source_line, IsCurrentNumber(region), style, (float)availableHeight);
+            var glyph = NumberLayout(region.source_line, region.flags & (Interop.Native.VIEM_LINE_NUMBER_REGION_CURRENT | DiffMask), style, (float)availableHeight);
             var layout = glyph.Layout;
             double textWidth = layout.LayoutBounds.Width;
             double left = bounds.X + style.Border.Left + style.Padding.Left;
@@ -205,7 +219,8 @@ internal sealed partial class EditorPane
     }
 
     private static void PaintNumberBoxes(CanvasDrawingSession drawing, double width, double height, float viewportTop,
-        IReadOnlyList<Viem.Windows.Interop.ViemLineNumberRegionV1> regions, ChromeStyle normal, ChromeStyle current)
+        IReadOnlyList<Viem.Windows.Interop.ViemLineNumberRegionV1> regions, ChromeStyle normal, ChromeStyle current,
+        ChromeStyle? diffNormal = null, ChromeStyle? diffCurrent = null)
     {
         // Fill the ordinary column through the gaps, then each line box once.
         // Partition on one device-pixel grid before subtraction, clipping, or
@@ -216,7 +231,7 @@ internal sealed partial class EditorPane
         var gaps = new List<Rect> { baseBox };
         var boxes = new List<(ChromeStyle Style, Rect Raw, Rect Paint)>(regions.Count);
         foreach (var region in regions) {
-            var style = IsCurrentNumber(region) ? current : normal;
+            var style = NumberStyle(region, normal, current, diffNormal, diffCurrent);
             var raw = NumberBox(region, style, width, viewportTop);
             var hole = NumberPaintBounds(raw, drawing.Dpi, width, height);
             boxes.Add((style, raw, hole));
@@ -258,6 +273,11 @@ internal sealed partial class EditorPane
     private static bool IsCurrentNumber(Viem.Windows.Interop.ViemLineNumberRegionV1 region)
         => (region.flags & Viem.Windows.Interop.Native.VIEM_LINE_NUMBER_REGION_CURRENT) != 0;
 
+    private static ChromeStyle NumberStyle(Interop.ViemLineNumberRegionV1 region, ChromeStyle normal, ChromeStyle current,
+        ChromeStyle? diffNormal, ChromeStyle? diffCurrent) => (region.flags & DiffMask) == 0
+        ? (IsCurrentNumber(region) ? current : normal)
+        : (IsCurrentNumber(region) ? diffCurrent ?? current : diffNormal ?? normal);
+
     private static double NumberPaintEdge(double value, float dpi)
         => Math.Round(value * dpi / 96, MidpointRounding.AwayFromZero) * 96 / dpi;
 
@@ -296,9 +316,9 @@ internal sealed partial class EditorPane
             drawing.FillRectangle(new Rect(left, bottom, right - left, bounds.Bottom - bottom), style.BottomBorder);
     }
 
-    private NumberGlyphLayout NumberLayout(ulong line, bool current, ChromeStyle style, float height)
+    private NumberGlyphLayout NumberLayout(ulong line, uint styleFlags, ChromeStyle style, float height)
     {
-        var key = (line, current, height);
+        var key = (line, styleFlags, height);
         if (numberLayouts.TryGetValue(key, out var retained)) return retained;
         if (numberLayouts.Count >= 512) ClearNumberLayouts();
         string text = line.ToString(System.Globalization.CultureInfo.InvariantCulture);

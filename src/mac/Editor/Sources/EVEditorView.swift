@@ -332,8 +332,14 @@ class EVEditorView: NSView, @preconcurrency NSTextInputClient {
             let info = try session.lineNumberInfo()
             let sheet = try surface.backend.styleSheetSnapshot()
             let viewport = try session.viewportState()
-            width = lineNumberGutter.width(lineCount: info.source_line_count, sheet: sheet,
-                scale: CGFloat(viewport.scale), metricsGeneration: session.provider.metricsGeneration)
+            let underlay = info.flags & UInt32(VIEM_LINE_NUMBER_DIFF_ADDED | VIEM_LINE_NUMBER_DIFF_REMOVED)
+            width = try lineNumberGutter.width(lineCount: info.source_line_count, sheet: sheet,
+                scale: CGFloat(viewport.scale), metricsGeneration: session.provider.metricsGeneration, diffUnderlay: underlay) {
+                guard underlay != 0 else { return nil }
+                let styles = try EVCoreStyleBridge.copyStyleSheet(core: sheet.core, gutterUnderlay: underlay)
+                guard styles.identity == sheet.identity else { throw EVStyleBridgeError.core(status: UInt32(VIEM_STATUS_STALE_REVISION)) }
+                return styles
+            }
         } else { width = 0 }
         lineNumberGutter.isHidden = !enabled
         guard width != lineNumberGutterWidth else { return false }

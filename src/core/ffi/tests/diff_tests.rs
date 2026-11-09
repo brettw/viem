@@ -13,7 +13,7 @@ fn request(kind: u32, path: &str) -> ViemDiffBaseRequestV1 {
         struct_size: VIEM_DIFF_BASE_REQUEST_V1_SIZE,
         kind,
         file_path: ViemUtf8Slice { data: path.as_ptr(), length: path.len() as u64 },
-        branch: ViemUtf8Slice::default(),
+        revision: ViemUtf8Slice::default(),
         git_program: ViemUtf8Slice::default(),
         cancellation: 0,
         unsaved_paths: ptr::null(),

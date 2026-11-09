@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Data;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Viem.Windows.Shell;
 
@@ -74,15 +75,29 @@ internal partial class EditorToolbar : UserControl
 
     // Text and FontIcon inherit the presenter's state-specific foreground.
     // Strokes and borders need an explicit brush from the same presenter.
+    // WinUI creates this part from its native template. Keep its concrete
+    // C#/WinRT projection when NativeAOT trims the release executable.
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ContentPresenter))]
     internal static void BindIconBrush(FrameworkElement icon, DependencyProperty brush)
     {
+        ContentPresenter? source = null;
+        long token = 0;
         icon.Loaded += (_, _) => {
             for (var parent = VisualTreeHelper.GetParent(icon); parent != null; parent = VisualTreeHelper.GetParent(parent)) {
                 if (parent is ContentPresenter presenter) {
-                    icon.SetBinding(brush, new Binding { Source = presenter, Path = new PropertyPath("Foreground") });
+                    // Use the native property directly, including in trimmed NativeAOT builds.
+                    if (source != null) source.UnregisterPropertyChangedCallback(ContentPresenter.ForegroundProperty, token);
+                    source = presenter;
+                    icon.SetValue(brush, presenter.Foreground);
+                    token = presenter.RegisterPropertyChangedCallback(ContentPresenter.ForegroundProperty,
+                        (_, _) => icon.SetValue(brush, presenter.Foreground));
                     break;
                 }
             }
+        };
+        icon.Unloaded += (_, _) => {
+            source?.UnregisterPropertyChangedCallback(ContentPresenter.ForegroundProperty, token);
+            source = null;
         };
     }
 

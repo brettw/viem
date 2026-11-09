@@ -276,12 +276,13 @@ pub(crate) struct DiffLayoutInput {
 }
 
 impl DiffLayoutInput {
+    pub(crate) fn changes_line_at(&self, start: usize) -> bool {
+        let index = self.lines.partition_point(|range| range.end < start);
+        self.lines.get(index).is_some_and(|range| range.start <= start)
+    }
+
     fn line_style(&self, block: &Block) -> Option<StyleId> {
-        let index = self.lines.partition_point(|range| range.end < block.range.start);
-        self.lines
-            .get(index)
-            .filter(|range| range.start <= block.range.start)
-            .map(|_| if self.added { StyleId::diff_added_line() } else { StyleId::diff_removed_line() })
+        self.changes_line_at(block.range.start).then(|| if self.added { StyleId::diff_added_line() } else { StyleId::diff_removed_line() })
     }
 
     fn filler_before(&self, block: &Block) -> f32 {

@@ -1409,7 +1409,7 @@ internal unsafe struct ViemDiffBaseRequestV1
     public uint @struct_size;
     public uint @kind;
     public ViemUtf8Slice @file_path;
-    public ViemUtf8Slice @branch;
+    public ViemUtf8Slice @revision;
     public ViemUtf8Slice @git_program;
     public ulong @cancellation;
     public ViemUtf8Slice* @unsaved_paths;
@@ -1436,6 +1436,8 @@ internal unsafe struct ViemDiffListItemV1
     public uint @change;
     public ulong @path_bytes;
     public ulong @base_path_bytes;
+    public ulong @added;
+    public ulong @removed;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -1444,6 +1446,8 @@ internal unsafe struct ViemDiffSessionInfoV1
     public uint @struct_size;
     public uint @flags;
     public ulong @hunk_count;
+    public ulong @added;
+    public ulong @removed;
     public ulong @base_line_count;
     public ulong @new_line_count;
 }
@@ -2099,6 +2103,8 @@ internal static unsafe partial class Native
     public const uint VIEM_LINE_NUMBER_SNAPSHOT_ENABLED = 1u;
     public const uint VIEM_LINE_NUMBER_REGION_ESTIMATED = 1u;
     public const uint VIEM_LINE_NUMBER_REGION_CURRENT = (1u << 1);
+    public const uint VIEM_LINE_NUMBER_DIFF_ADDED = (1u << 2);
+    public const uint VIEM_LINE_NUMBER_DIFF_REMOVED = (1u << 3);
     public static readonly uint VIEM_LINE_NUMBER_SNAPSHOT_INFO_V1_SIZE = ((uint)sizeof(ViemLineNumberSnapshotInfoV1));
     public const uint VIEM_LINE_MODE_VISUAL = 0u;
     public const uint VIEM_LINE_MODE_PHYSICAL_SOURCE = 1u;
@@ -2163,6 +2169,8 @@ internal static unsafe partial class Native
     public const uint VIEM_DIFF_BASE_HEAD = 2u;
     public const uint VIEM_DIFF_BASE_BRANCH = 3u;
     public const uint VIEM_DIFF_BASE_FILE = 4u;
+    public const uint VIEM_DIFF_BASE_COMMIT = 5u;
+    public const uint VIEM_DIFF_FILE_PICKER_LIMIT = 256u;
     public const uint VIEM_DIFF_RESULT_OK = 0u;
     public const uint VIEM_DIFF_RESULT_UNAVAILABLE = 1u;
     public const uint VIEM_DIFF_RESULT_CANCELLED = 2u;
@@ -2250,9 +2258,9 @@ internal static unsafe partial class Native
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_style_sheet_identity(ulong @core, ViemStyleSheetIdentityV1* @out_identity);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_style_sheet_info(ulong @core, ViemStyleSheetInfoV1* @out_info);
+    public static extern uint viem_core_style_sheet_info(ulong @core, uint @gutter_underlay, ViemStyleSheetInfoV1* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    public static extern uint viem_core_copy_style_sheet(ulong @core, ViemStyleSheetIdentityV1* @expected, ViemStyleDefinitionV1* @definitions, ulong @definition_capacity, ViemStylePropertyV1* @properties, ulong @property_capacity, ViemStyleValueItemV1* @value_items, ulong @value_item_capacity, ViemStyleDependencyV1* @dependencies, ulong @dependency_capacity, byte* @string_bytes, ulong @string_capacity, ViemStyleSheetInfoV1* @out_info);
+    public static extern uint viem_core_copy_style_sheet(ulong @core, uint @gutter_underlay, ViemStyleSheetIdentityV1* @expected, ViemStyleDefinitionV1* @definitions, ulong @definition_capacity, ViemStylePropertyV1* @properties, ulong @property_capacity, ViemStyleValueItemV1* @value_items, ulong @value_item_capacity, ViemStyleDependencyV1* @dependencies, ulong @dependency_capacity, byte* @string_bytes, ulong @string_capacity, ViemStyleSheetInfoV1* @out_info);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_core_view_add(ulong @core, ViemViewOptionsV1* @options, ViemTextMeasurementProviderV1* @provider, ulong* @out_view, ViemCoreOutcomeV1* @out_outcome);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -2669,6 +2677,8 @@ internal static unsafe partial class Native
     public static extern uint viem_diff_load_base(ViemDiffBaseRequestV1* @request, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_list_files(ViemDiffBaseRequestV1* @request, ulong* @out_result);
+    [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    public static extern uint viem_diff_query_commits(ViemDiffBaseRequestV1* @request, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     public static extern uint viem_diff_list_branches(ViemDiffBaseRequestV1* @request, ulong* @out_result);
     [DllImport("viem_core", CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

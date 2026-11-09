@@ -215,6 +215,26 @@ impl DiffState {
         self.new_lines = new.line_count();
     }
 
+    /// Count physical lines. The layout diff compares delimiter-free lines and
+    /// includes the empty insertion boundary at EOF. Neither convention applies
+    /// to patch statistics: even a change to the final LF replaces a line.
+    pub fn line_totals(&self, base_ends_empty: bool, new_ends_empty: bool) -> (usize, usize) {
+        let base_lines = self.base_lines.saturating_sub(usize::from(base_ends_empty));
+        let new_lines = self.new_lines.saturating_sub(usize::from(new_ends_empty));
+        let (mut base, mut new, mut equal) = (0, 0, 0);
+        for chunk in &self.chunks {
+            if chunk.equal {
+                let matched = chunk.base.min(base_lines.saturating_sub(base)).min(new_lines.saturating_sub(new));
+                let base_unterminated = !base_ends_empty && base + matched == base_lines;
+                let new_unterminated = !new_ends_empty && new + matched == new_lines;
+                equal += matched.saturating_sub(usize::from(base_unterminated != new_unterminated));
+            }
+            base += chunk.base;
+            new += chunk.new;
+        }
+        (new_lines - equal, base_lines - equal)
+    }
+
     /// The changed regions in order.
     pub fn hunks(&self) -> impl Iterator<Item = Hunk> + '_ {
         let (mut base, mut new) = (0, 0);

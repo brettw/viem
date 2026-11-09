@@ -69,7 +69,7 @@ enum EVChromeStyleResolver {
     }
     var info = ViemStyleSheetInfoV1()
     info.struct_size = UInt32(MemoryLayout<ViemStyleSheetInfoV1>.size)
-    guard viem_core_style_sheet_info(core, &info) == UInt32(VIEM_STATUS_OK),
+    guard viem_core_style_sheet_info(core, 0, &info) == UInt32(VIEM_STATUS_OK),
           info.definition_count <= 4096, info.property_count <= 200_000,
           info.value_item_count <= 200_000, info.dependency_count <= 200_000,
           info.string_bytes <= 4 * 1024 * 1024 else { return emergency }
@@ -86,7 +86,7 @@ enum EVChromeStyleResolver {
         items.withUnsafeMutableBufferPointer { i in
           dependencies.withUnsafeMutableBufferPointer { deps in
             strings.withUnsafeMutableBufferPointer { s in
-              viem_core_copy_style_sheet(core, &expected, d.baseAddress, UInt64(d.count),
+              viem_core_copy_style_sheet(core, 0, &expected, d.baseAddress, UInt64(d.count),
                 p.baseAddress, UInt64(p.count), i.baseAddress, UInt64(i.count),
                 deps.baseAddress, UInt64(deps.count), s.baseAddress, UInt64(s.count), &copied)
             }

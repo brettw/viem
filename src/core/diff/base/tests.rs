@@ -1,4 +1,4 @@
-use super::git::parse_name_status_for_tests;
+use super::git::parse_file_stats;
 use super::*;
 use std::process::Command;
 
@@ -56,17 +56,17 @@ fn repository(name: &str) -> Option<(TempDirectory, GitRepository)> {
 }
 
 #[test]
-fn name_status_parsing_handles_renames_and_paths_with_spaces() {
+fn git_statistics_preserve_rename_paths_binary_files_and_line_counts() {
     let root = Path::new("/repo");
-    let output = b"M\0dir/a b.txt\0R087\0old.txt\0new.txt\0D\0gone.txt\0A\0added.txt\0";
-    let files = parse_name_status_for_tests(output, root);
+    let output = b":a M\0dir/a b.txt\0:a R087\0old.txt\0new.txt\0:a D\0gone.txt\0:a A\0added.txt\0-\t-\tadded.txt\02\t3\tdir/a b.txt\00\t4\tgone.txt\01\t2\t\0old.txt\0new.txt\0";
+    let files = parse_file_stats(output, root).unwrap();
     assert_eq!(
         files,
         vec![
-            ChangedFile { path: root.join("added.txt"), base_path: root.join("added.txt"), change: FileChange::Added },
-            ChangedFile { path: root.join("dir/a b.txt"), base_path: root.join("dir/a b.txt"), change: FileChange::Modified },
-            ChangedFile { path: root.join("gone.txt"), base_path: root.join("gone.txt"), change: FileChange::Deleted },
-            ChangedFile { path: root.join("new.txt"), base_path: root.join("old.txt"), change: FileChange::Renamed },
+            ChangedFile { path: root.join("added.txt"), base_path: root.join("added.txt"), change: FileChange::Added, added: 0, removed: 0 },
+            ChangedFile { path: root.join("dir/a b.txt"), base_path: root.join("dir/a b.txt"), change: FileChange::Modified, added: 2, removed: 3 },
+            ChangedFile { path: root.join("gone.txt"), base_path: root.join("gone.txt"), change: FileChange::Deleted, added: 0, removed: 4 },
+            ChangedFile { path: root.join("new.txt"), base_path: root.join("old.txt"), change: FileChange::Renamed, added: 1, removed: 2 },
         ]
     );
 }
@@ -83,7 +83,7 @@ fn file_bases_read_bytes_and_report_missing_files_as_absent() {
 
 #[test]
 fn unsaved_buffers_join_the_list_once() {
-    let mut files = vec![ChangedFile { path: "/r/b".into(), base_path: "/r/b".into(), change: FileChange::Modified }];
+    let mut files = vec![ChangedFile { path: "/r/b".into(), base_path: "/r/b".into(), change: FileChange::Modified, added: 2, removed: 3 }];
     include_unsaved(&mut files, [PathBuf::from("/r/b"), PathBuf::from("/r/a")]);
     assert_eq!(files.iter().map(|file| (file.path.clone(), file.change)).collect::<Vec<_>>(), vec![
         (PathBuf::from("/r/a"), FileChange::Unsaved),
@@ -126,6 +126,44 @@ fn a_folder_outside_any_repository_is_unavailable() {
     // discovery never fails with anything but unavailability.
     if let Err(error) = result {
         assert!(matches!(error, BaseError::Unavailable(_)), "{error:?}");
+    }
+}
+
+#[test]
+fn commit_picker_lists_fifty_from_head_and_resolves_an_older_hash() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let Some((directory, repo)) = repository("commits") else { return };
+    let root = &directory.0;
+    let token = CancellationToken::new();
+    let original = repo.commits(None, &token).unwrap().remove(0);
+    let mut history = String::new();
+    for i in 1..=52 {
+        let title = format!("revision {i}");
+        history.push_str(&format!("commit refs/heads/history\ncommitter Test <t@example.invalid> {i} +0000\ndata {}\n{title}\n", title.len()));
+        if i == 1 { history.push_str(&format!("from {}\n", original.hash)); }
+        history.push('\n');
+    }
+    let mut import = Command::new("git").args(["fast-import", "--quiet"]).current_dir(root).stdin(Stdio::piped()).spawn().unwrap();
+    import.stdin.take().unwrap().write_all(history.as_bytes()).unwrap();
+    assert!(import.wait().unwrap().success());
+    assert_eq!(repo.commits(None, &token).unwrap().len(), 1, "unmerged branches are excluded");
+    git(root, &["checkout", "-q", "history"]);
+    let recent = repo.commits(None, &token).unwrap();
+    assert_eq!(recent.len(), 50);
+    assert_eq!(recent[0].title, "revision 52");
+    assert_eq!(recent[49].title, "revision 3");
+    for hash in [&original.hash, &original.short] {
+        let resolved = repo.commits(Some(hash), &token).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].hash, original.hash);
+    }
+    let base = BaseKind::Commit(original.hash);
+    std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+    assert_eq!(repo.changed_files(&base, None, &token).unwrap().len(), 1);
+    assert_eq!(repo.load(&base, &root.join("a.txt"), &token).unwrap().bytes, b"one\ntwo\n");
+    for invalid in ["HEAD", "--all", "123", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"] {
+        assert!(repo.commits(Some(invalid), &token).is_err());
     }
 }
 

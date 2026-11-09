@@ -44,6 +44,19 @@ fn has_text_background(core: &TestCore, view: ViewId, offset: usize) -> bool {
 }
 
 #[test]
+fn line_totals_count_physical_lines_and_final_terminators() {
+    for (old, live, expected) in [
+        ("", "", (0, 0)), ("", "\n", (1, 0)), ("one\n", "", (0, 1)),
+        ("a", "a\n", (1, 1)), ("a\n", "a", (1, 1)), ("a\n", "a\nb\n", (1, 0)),
+        ("a", "a\nb", (2, 1)), ("x\ny\n", "z\n", (1, 2)),
+    ] {
+        let (base, _) = core(old);
+        let (new, _) = core(live);
+        assert_eq!(DiffSession::new(base.document(), new.document(), true).line_totals(), expected, "{old:?} -> {live:?}");
+    }
+}
+
+#[test]
 fn sessions_mark_changed_lines_on_both_sides() {
     let (mut base, base_view) = core("a\nb\nc\n");
     let (mut new, new_view) = core("a\nB\nc\n");
@@ -51,11 +64,18 @@ fn sessions_mark_changed_lines_on_both_sides() {
     assert_eq!(session.sync(&mut base, base_view, &mut new, new_view).unwrap(), DiffSync::Unchanged);
     assert_eq!(background_lines(&base, base_view), vec![1]);
     assert_eq!(background_lines(&new, new_view), vec![1]);
+    for (core, view, side) in [(&mut base, base_view, Side::Base), (&mut new, new_view, Side::New)] {
+        core.set_number(view, true).unwrap();
+        let bands = core.line_number_regions(view).unwrap();
+        let changed: Vec<_> = bands.iter().filter_map(|band| band.diff_side.map(|side| (band.source_line, side))).collect();
+        assert_eq!(changed, [(2, side)]);
+    }
     // Source, history and dirty state are untouched by presentation.
     assert_eq!(new.document().source_bytes(), b"a\nB\nc\n");
     assert!(!new.document().is_dirty());
     DiffSession::clear(&mut new, new_view).unwrap();
     assert!(background_lines(&new, new_view).is_empty());
+    assert!(new.line_number_regions(new_view).unwrap().iter().all(|band| band.diff_side.is_none()));
 }
 
 #[test]

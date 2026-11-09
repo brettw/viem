@@ -4,16 +4,18 @@ import Foundation
 /// launch working directory and supplies files to the window's argument list.
 public struct EVLaunchArguments: Decodable, Equatable, Sendable {
     public var filenames: [String]
+    public var diff: Bool
     /// nil opens one pane; zero opens a stacked pane for each filename.
     public var splitCount: Int?
     public var verticalSplits: Bool
     /// One-based first-file line; UInt64.max requests the last line.
     public var initialLine: UInt64?
 
-    var isEmpty: Bool { filenames.isEmpty && splitCount == nil && initialLine == nil }
+    var isEmpty: Bool { filenames.isEmpty && splitCount == nil && initialLine == nil && !diff }
 
-    public init(filenames: [String] = [], splitCount: Int? = nil, initialLine: UInt64? = nil, verticalSplits: Bool = false) {
+    public init(filenames: [String] = [], splitCount: Int? = nil, initialLine: UInt64? = nil, verticalSplits: Bool = false, diff: Bool = false) {
         self.filenames = filenames
+        self.diff = diff
         self.splitCount = splitCount
         self.initialLine = initialLine
         self.verticalSplits = verticalSplits

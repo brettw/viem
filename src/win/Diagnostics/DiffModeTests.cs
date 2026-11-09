@@ -1,5 +1,6 @@
 #if DEBUG
 using System.Diagnostics;
+using Microsoft.Graphics.Canvas;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
@@ -85,7 +86,8 @@ internal sealed partial class EditorWindow
         await InputRoutingTests.Key(global::Windows.System.VirtualKey.Space);
         CheckDiff(button.IsChecked == false && !HasDivider(left) && !HasDivider(live)
             && !new Preferences(profile.DirectoryPath).Get("diff", "collapseContext", true), "The menu expands both sides and saves the choice");
-        CheckDiff(((SolidColorBrush)face.Background).Color != checkedFill, "Turning collapse off removes the checked fill");
+        CheckDiff(((SolidColorBrush)face.Background).Color != checkedFill && glyph.Stroke == face.Foreground
+            && ((SolidColorBrush)glyph.Stroke).Color.A != 0, "Turning collapse off keeps the icon visible on the neutral background");
         await WindowCapture.SaveElement(button, live.Canvas.Device, FrontendSmokeTests.ReportPath + ".collapse-off.png");
         await window.SetDiffMode(false);
         await window.SetDiffMode(true);
@@ -160,6 +162,9 @@ internal sealed partial class EditorWindow
                 Check(editor.View.Layout().Decorations.Any(d => (d.flags & VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0),
                     "The live layout paints changed lines after navigating");
                 var toolbar = window.diffToolbar!;
+                Check(toolbar.AddedLines.Text == "+1" && toolbar.RemovedLines.Text == "–1"
+                    && ((UIElement)toolbar.FileCount.Parent).Visibility == Visibility.Collapsed,
+                    "A live single-file edit shows one addition and one removal without a file count");
                 var align = toolbar.Align;
                 var markdownToggle = window.Toolbar.FormattedView;
                 Check(toolbar.ActualHeight == window.Toolbar.Height && align.ActualWidth == markdownToggle.Width
@@ -182,6 +187,7 @@ internal sealed partial class EditorWindow
                 Check(!left.View.NumberEnabled && !editor.View.NumberEnabled, "The diff line-number choice reaches both views");
                 editor.View.Undo();
                 Check(editor.Source == original && window.comparison.Marks(true).Marks.Length == 0, "Undo restores the exact source and clears diff marks");
+                Check(toolbar.AddedLines.Text == "+0" && toolbar.RemovedLines.Text == "–0", "Undo restores the live line totals");
                 await window.SetDiffMode(false);
                 Check(editor.Document.State.format == VIEM_FORMAT_MARKDOWN && editor.Source == original && window.diffLeft == null,
                     "Leaving the comparison restores Markdown Preview and removes the base");
@@ -200,15 +206,118 @@ internal sealed partial class EditorWindow
             await File.WriteAllTextAsync(Path.Combine(directory, "outside"), "modified");
             await using var empty = await TestEditor.Open(preferences, "", VIEM_FORMAT_PLAIN_TEXT, placement);
             var folder = empty.Window;
-            await folder.DiffFolder(scoped);
+            await folder.OpenArgumentsForTesting(new(["--diff"], scoped));
             Check(folder.diffFiles.Length == 2 && SamePath(folder.ActivePane!.Document.FilePath!, a)
                 && folder.diffLeft?.Document.FormattedText() == "index a", "Folder diff reuses a pristine window, scopes the file list, and reads the Git index");
+            var folderToolbar = folder.diffToolbar!;
+            Check(folderToolbar.FileCount.Text == "2" && ((UIElement)folderToolbar.FileCount.Parent).Visibility == Visibility.Visible
+                && folderToolbar.AddedLines.Text == "+1" && folderToolbar.RemovedLines.Text == "–2",
+                "Bare --diff shows totals for all changes under the launch working directory");
+            folder.SetLineNumbers(true);
+            foreach (var (pane, underlay, styleId) in new[] {
+                (folder.diffLeft!, VIEM_LINE_NUMBER_DIFF_REMOVED, "Builtin diff removed line"),
+                (folder.ActivePane!, VIEM_LINE_NUMBER_DIFF_ADDED, "Builtin diff added line") }) {
+                await WaitFor(() => pane.DrawnLineNumbers.Any(n => n.Line == 1));
+                var lineStyle = ChromeStyle.Resolve(pane.View!.Styles(), styleId,
+                    ChromeStyle.Fallback(preferences.Theme.Foreground, preferences.Theme.Background));
+                var band = pane.LineNumbersForTesting!.Regions[0];
+                int y = (int)((band.top + band.bottom) / 2 - pane.LineNumbersForTesting.Info.viewport.y);
+                using var target = new CanvasRenderTarget(pane.Canvas.Device, (float)pane.GutterWidth, y + 2, 96);
+                using (var drawing = target.CreateDrawingSession()) pane.DrawLineNumbersForTesting(drawing);
+                byte[] pixel = target.GetPixelBytes(1, y, 1, 1);
+                var color = lineStyle.Background;
+                Check((band.flags & underlay) != 0 && pixel[3] == color.A && color.A > 0
+                    && Math.Abs(pixel[2] - color.R * color.A / 255f) <= 1 && Math.Abs(pixel[1] - color.G * color.A / 255f) <= 1
+                    && Math.Abs(pixel[0] - color.B * color.A / 255f) <= 1,
+                    $"{styleId} colors the displayed number on its side of the comparison");
+            }
+            var priorWindows = App.Instance.Windows.ToHashSet();
+            try {
+                string? launchError = null;
+                try { await folder.OpenArgumentsForTesting(new(["--diff", ".git", "outside", "sub/a", "sub", "."], directory)); }
+                catch (IOException error) { launchError = error.Message; }
+                Check(launchError?.Contains(Path.Combine(directory, ".git")) == true,
+                    "A directory outside the working tree reports its path while the other diff arguments open");
+                var opened = App.Instance.Windows.Where(w => !priorWindows.Contains(w)).ToArray();
+                var fileWindows = opened.Where(w => w.singleFileDiff).ToArray();
+                Check(opened.Length == 4 && opened.All(w => w.comparison != null)
+                    && fileWindows.Length == 2 && fileWindows.All(w => w.diffFiles.Length == 1
+                        && ((UIElement)w.diffToolbar!.FileCount.Parent).Visibility == Visibility.Collapsed
+                        && w.diffToolbar.AddedLines.Text == "+1" && w.diffToolbar.RemovedLines.Text == "–1")
+                    && fileWindows.Any(w => SamePath(w.diffFiles[0].Path, a))
+                    && fileWindows.Any(w => SamePath(w.diffFiles[0].Path, Path.Combine(directory, "outside")))
+                    && opened.Any(w => w.diffScope != null && SamePath(w.diffScope, scoped) && w.diffFiles.Length == 2)
+                    && opened.Any(w => w.diffScope != null && SamePath(w.diffScope, directory) && w.diffFiles.Length == 3),
+                    "Mixed --diff arguments open two single-file windows and two independently scoped folder windows");
+            } finally {
+                foreach (var w in App.Instance.Windows.Where(w => !priorWindows.Contains(w)).ToArray())
+                    await w.ClosePane(w.ActivePane!, force: true);
+                folder.Activate();
+            }
             await WindowCapture.SaveElement(folder.diffToolbar!, folder.ActivePane!.Canvas.Device, FrontendSmokeTests.ReportPath + ".diff-toolbar.png");
             await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
             Check(folder.diffLeft?.Document.FormattedText() == "old a" && folder.diffFiles.Length == 2,
                 "HEAD uses committed bytes and retains the folder scope");
             await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_BRANCH, "main"));
             Check(folder.diffLeft?.Document.FormattedText() == "old a", "A branch base reads its tip");
+            var bases = FormattingToolbarTests.Descendants<ComboBox>(folderToolbar).Single(box => AutomationProperties.GetName(box) == "Diff base");
+            var files = FormattingToolbarTests.Descendants<ComboBox>(folderToolbar).Single(box => AutomationProperties.GetName(box) == "Files in this diff");
+            var arrows = FormattingToolbarTests.Descendants<Button>(folderToolbar)
+                .Where(button => AutomationProperties.GetName(button) is "Previous File" or "Next File")
+                .ToDictionary(AutomationProperties.GetName);
+            double Left(FrameworkElement control) => control.TransformToVisual(folderToolbar).TransformPoint(default).X;
+            var previousFile = arrows["Previous File"];
+            var nextFile = arrows["Next File"];
+            var fileMenu = folder.Menu.Items.Single(m => m.Title == "Diff").Items.OfType<MenuFlyoutItem>();
+            foreach (var (button, name, command) in new[] { (previousFile, "Previous File", ":N"), (nextFile, "Next File", ":n") }) {
+                var menuItem = fileMenu.Single(item => item.Text == name);
+                Check(Equals(ToolTipService.GetToolTip(button), $"{name} ({command})")
+                    && menuItem.KeyboardAcceleratorTextOverride == command && menuItem.KeyboardAccelerators.Count == 0,
+                    $"{name} displays {command} as a hint without registering a keyboard accelerator");
+            }
+            folder.root.UpdateLayout();
+            double previousX = Left(previousFile), nextX = Left(nextFile), pickerWidth = files.ActualWidth;
+            files.Width = pickerWidth < files.MaxWidth - 50 ? pickerWidth + 50 : pickerWidth - 50;
+            folder.root.UpdateLayout();
+            Check(previousX + previousFile.ActualWidth <= nextX && nextX + nextFile.ActualWidth <= Left(files)
+                && Math.Abs(files.ActualWidth - pickerWidth) > 45 && Left(previousFile) == previousX && Left(nextFile) == nextX,
+                "Both file arrows stay in place before the picker when its width changes");
+            files.ClearValue(FrameworkElement.WidthProperty);
+            var recent = await Task.Run(() => DiffSources.Commits(scoped, null, CancellationToken.None));
+            var commit = recent.Single();
+            Check(commit.Title == "base" && (string)bases.Items[^2] == "Commit…" && (string)bases.Items[^1] == "Choose File…",
+                "Choose File… follows Commit… at the bottom of the base picker");
+            ContentDialog? CommitDialog() => VisualTreeHelper.GetOpenPopupsForXamlRoot(folder.root.XamlRoot)
+                .Where(p => p.Child != null).SelectMany(p => FormattingToolbarTests.Descendants<ContentDialog>(p.Child)).FirstOrDefault();
+            for (int pass = 0; pass < 2; pass++) {
+                bases.SelectedIndex = bases.Items.IndexOf("Commit…");
+                await WaitFor(() => CommitDialog() != null);
+                var dialog = CommitDialog()!;
+                var content = (StackPanel)dialog.Content;
+                var list = content.Children.OfType<ListBox>().Single();
+                var input = content.Children.OfType<TextBox>().Single();
+                Button? CompareButton() => FormattingToolbarTests.Descendants<Button>(dialog).FirstOrDefault(button => button.Name == "PrimaryButton");
+                await WaitFor(() => CompareButton()?.IsLoaded == true);
+                var compare = CompareButton()!;
+                if (pass == 0) {
+                    list.SelectedIndex = 0;
+                    Check((string)list.Items[0] == $"{commit.Short}  base" && input.Text == commit.Hash, "Selecting a commit title fills in its full hash");
+                } else {
+                    input.Text = "--all";
+                    await WaitFor(() => compare.IsEnabled);
+                    new ButtonAutomationPeer(compare).Invoke();
+                    await WaitFor(() => FormattingToolbarTests.Descendants<TextBlock>(dialog).Any(block => block.Text.Contains("hexadecimal")));
+                    Check(folder.diffBase.Kind == VIEM_DIFF_BASE_HEAD, "An invalid pasted commit keeps the previous comparison and picker");
+                    input.Text = commit.Short;
+                }
+                await WaitFor(() => compare.IsEnabled);
+                new ButtonAutomationPeer(compare).Invoke();
+                await WaitFor(() => folder.diffBase.Kind == VIEM_DIFF_BASE_COMMIT && CommitDialog() == null);
+                Check(folder.diffBase.Argument == commit.Hash && Equals(bases.SelectedItem, $"Commit {commit.Short}")
+                    && folder.diffLeft!.Document.FormattedText() == "old a" && folder.diffFiles.Length == 2,
+                    $"The {(pass == 0 ? "listed" : "pasted")} commit compares against the pinned tree under the folder");
+                if (pass == 0) await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
+            }
             var first = folder.ActivePane!;
             first.View!.Command("i"); first.View.Text("edit "); first.View.Key(VIEM_KEY_ESCAPE);
             folder.CloseReviewDecisionForTesting = _ => Task.FromResult(ContentDialogResult.None);
@@ -219,6 +328,8 @@ internal sealed partial class EditorWindow
             await WaitFor(() => folder.comparison != null);
             Check(SamePath(folder.ActivePane!.Document.FilePath!, b) && folder.deletedSide && folder.diffLeft!.Document.FormattedText() == "old b",
                 "Next File opens a deleted file with a protected empty live side");
+            Check(folderToolbar.AddedLines.Text == "+1" && folderToolbar.RemovedLines.Text == "–2",
+                "Navigating to a deletion preserves the full patch totals");
             await folder.MoveDiffFile(1);
             await WaitFor(() => folder.comparison != null);
             Check(SamePath(folder.ActivePane!.Document.FilePath!, a), "Next File wraps from the last file to the first");
@@ -288,9 +399,35 @@ internal sealed partial class EditorWindow
             Check(SamePath(folder.ActivePane.Document.FilePath!, b) && folder.deletedSide
                 && folder.diffLeft.Document.FormattedText() == "old b", "An older file switch cannot replace the newer comparison");
             string chosen = Path.Combine(directory, ".basis");
+            int extra = 256 - folder.diffFiles.Length;
+            for (int i = 0; i < extra; i++) File.WriteAllText(Path.Combine(scoped, $"z{i:D3}"), "new");
+            await Git("add", "--", "sub/z*");
+            await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
+            Check(files.Items.Count == 256 && folder.diffFiles.Length == 256 && files.Items[^1] is string, "Exactly 256 files fit without a clipping notice");
+            File.WriteAllText(Path.Combine(scoped, "zzz"), "last");
+            await Git("add", "sub/zzz");
+            await folder.RefreshDiff();
+            Check(files.Items.Count == 257 && files.Items[^1] is ComboBoxItem { IsEnabled: false, Content: "1 files clipped" }
+                && folderToolbar.FileCount.Text == "257", "The disabled footer counts omitted files while totals cover the set");
+            await folder.SelectDiffFile(255);
+            await folder.MoveDiffFile(1);
+            Check(files.SelectedIndex == 255 && Equals(files.SelectedItem, "zzz (added)")
+                && SamePath(folder.ActivePane!.Document.FilePath!, Path.Combine(scoped, "zzz")),
+                "Next File reaches the clipped file and the capped popup names it");
             await File.WriteAllTextAsync(chosen, "chosen");
-            await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, chosen));
-            Check(folder.diffFiles.Length == 0 && folder.diffLeft!.Document.FormattedText() == "chosen", "An explicit base accepts a dotfile and clears file navigation");
+            var comparedDocument = folder.ActivePane!.Document;
+            int picks = 0;
+            folder.PickDiffBaseFileForTesting = () => Task.FromResult(++picks == 1 ? null : chosen);
+            bases.SelectedIndex = bases.Items.Count - 1;
+            await WaitFor(() => picks == 1 && Equals(bases.SelectedItem, "HEAD"));
+            Check(folder.diffFiles.Length == 257 && folder.diffScope == scoped && folder.ActivePane.Document == comparedDocument,
+                "Canceling Choose File… preserves the folder comparison and current file");
+            bases.SelectedIndex = bases.Items.Count - 1;
+            await WaitFor(() => folder.diffBase.Argument == chosen);
+            folder.PickDiffBaseFileForTesting = null;
+            Check(folder.diffScope == null && folder.diffFiles.Length == 0 && !files.IsEnabled && files.PlaceholderText == comparedDocument.Name
+                && folder.ActivePane.Document == comparedDocument && folder.diffLeft!.Document.FormattedText() == "chosen",
+                "Choosing a dotfile as base compares it with the current document and clears folder navigation");
             await File.WriteAllTextAsync(chosen, "refreshed");
             await folder.RefreshDiff();
             Check(folder.diffLeft!.Document.FormattedText() == "refreshed", "Refresh reloads the chosen file from disk");
@@ -298,6 +435,9 @@ internal sealed partial class EditorWindow
             catch (IOException) { }
             Check(folder.diffBase.Argument == chosen && folder.comparison != null && folder.diffLeft.Document.FormattedText() == "refreshed",
                 "A failed base load retains the current file and comparison");
+            await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
+            Check(folder.diffFiles.Length == 1 && SamePath(folder.diffFiles[0].Path, comparedDocument.FilePath),
+                "Returning to a Git base keeps the comparison scoped to the current file");
             var pending = folder.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
             await folder.SetDiffMode(false);
             await pending;

@@ -43,6 +43,10 @@ Preview off does. It never converts the source (see
 
 ### Line numbers
 
+Changed rows use the **Added line** or **Removed line** style in the gutter.
+**Line number** declarations apply on top, followed by **Current line number**
+on the caret row. Unchanged rows use their ordinary gutter styles.
+
 Each view has its own line-number state. Diff mode and Code each keep an
 application-wide saved setting, which records the last state set explicitly
 in that mode. Entering diff mode uses the saved diff-mode setting, or shows
@@ -196,6 +200,20 @@ is reported instead of opening a window.
 
 ## Diff toolbar
 
+Launch with `viem --diff` to compare the caller's working directory against
+the Git index. Pass files or directories in any order to open one comparison
+window per path. A file inside a Git working tree compares against the index.
+A file outside a working tree uses Last saved. A directory scopes the Git
+comparison to that subtree.
+
+After Refresh, the toolbar shows the changed-file icon and count, then the
+green `+N` and red `–N` line totals, followed by the file navigation controls.
+Single-file comparisons omit the file icon and count. Git sets use the
+on-disk totals for the selected base and scope, including when navigating
+between files. Binary changes count as files and contribute zero lines.
+Refresh Base updates the Git totals. An explicit file comparison includes
+edits to the live buffer.
+
 A new diff toolbar selects the base:
 
 | Base | Compares the buffer with | Git equivalent |
@@ -204,13 +222,20 @@ A new diff toolbar selects the base:
 | Unstaged | The file's staged version (the index) | `git diff` |
 | HEAD | The file in the current commit | `git diff HEAD` |
 | Branch… | The file on a chosen branch | `git diff <branch>` |
-| File… | Any file chosen in a file picker | — |
+| Commit… | The file at a specific commit | `git diff <hash>` |
+| Choose File… | Any file chosen in a file picker | — |
+
+**Commit…** opens a hash field and the latest 50 commits reachable from the
+current branch tip. Choose a row by its short hash and title, or paste a full
+or unambiguous abbreviated commit hash. The selected base reads **Commit
+\<short hash\>** and stays pinned to that commit.
 
 "Unstaged" is a working name for the `git diff` base. Branch compares with the
 branch tip, as `git diff main` does, not with the merge base.
 
-A **Choose base file** button in the toolbar opens the native file picker and
-makes the chosen file the base, so any two files can be compared explicitly.
+**Choose File…** at the bottom of the base popup opens the native file picker.
+Choosing a file compares it with the current document and clears any folder
+scope and file navigation. Canceling keeps the current comparison.
 The picker accepts every file, including extensionless files and dotfiles.
 The base side shows the chosen file read-only; it is not opened as a document
 and gains no buffer, history or dirty state.
@@ -222,7 +247,10 @@ while diff mode is open.
 ### Files
 
 A diff can cover many files; for example, many files may differ from `main`.
-The toolbar has a file dropdown listing the files in the current diff.
+The file dropdown lists up to 256 files. A disabled final row counts any
+omitted files. Previous File, Next File and argument-list commands navigate the
+full set. When one of those commands reaches an omitted file, the dropdown
+uses its last file slot to show the current file.
 Choosing one shows that file in diff mode against the same base. Entries show
 file names; a name that several listed files share is followed by each one's
 folder, relative to the folder the whole list shares (`tests.rs — diff/base`).
@@ -234,11 +262,14 @@ file. With a chosen base file the comparison is explicit, so the list is
 empty and the arrows do nothing. Opening another document keeps the chosen
 base file, so the new document is compared with it.
 
-Left and right arrow buttons on either side of the dropdown move to the
+The paired left and right arrow buttons before the dropdown move to the
 previous and next file in the list, wrapping around at either end. Moving
 away from a file with unsaved changes first shows the same native save prompt
 as closing the window (Save, Don't Save, Cancel); Cancel stays on the current
 file. Choosing a file from the dropdown behaves the same way.
+
+The button tooltips and Diff menu display the corresponding Ex commands,
+`:N` for Previous File and `:n` for Next File.
 
 In diff mode the argument-list commands (`:next`, `:Next`/`:previous`,
 `:first`/`:rewind`, `:last`, `:argument N`, `:wnext` and their counts) move
@@ -433,7 +464,7 @@ Layers are built bottom-up; each has focused tests before the next starts.
     `EVDiffSessionControlling`, `EVDiffLineNumberControlling`), `EVDiffBase`,
     `EVDiffFile`, `EVDiffBaseLoader` (worker-thread C ABI calls),
     `EVDiffSplitView`, `EVDiffToolbar` (title-bar accessory: base popup,
-    Choose Base File, Refresh, previous/next arrows around the file popup,
+    Refresh, paired previous/next arrows before the file popup,
     Align Sides) and `EVDiffModeController` (per window: default base, file
     list, save review before moving files, line-number settings).
   - `EVDocumentWindowController.swift`: `EVDiffModeHost` conformance, Diff

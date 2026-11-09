@@ -132,7 +132,7 @@ public enum EVApplication {
             return (parsed, nil, try launchEndpoint.map { try EVBlockingEditCompletion.connect(endpoint: $0) })
         }
         catch {
-            throw EVLaunchArgumentError("\(error.localizedDescription)\nUsage: Viem [-o[count]] [+line] [--] [file ...]")
+            throw EVLaunchArgumentError("\(error.localizedDescription)\nUsage: Viem [--diff] [-o[count]] [-O[count]] [+line] [--] [path ...]")
         }
     }
 }
@@ -388,6 +388,36 @@ final class EVApplicationDelegate: NSObject,
         }
         var urls = arguments.filenames.map {
             URL(fileURLWithPath: $0, relativeTo: workingDirectory).absoluteURL
+        }
+        if arguments.diff {
+            let targets = urls.isEmpty ? [workingDirectory] : urls
+            var index = 0
+            var initialLine = arguments.initialLine
+            func openNextDiff(after lastWindow: NSWindow?) {
+                var window = lastWindow
+                while index < targets.count {
+                    let url = targets[index]
+                    index += 1
+                    var isFolder: ObjCBool = false
+                    if FileManager.default.fileExists(atPath: url.path, isDirectory: &isFolder), isFolder.boolValue {
+                        let previousWindow = window
+                        EVDocumentWindowController.diffFolder(url, from: nil) { target in
+                            openNextDiff(after: target?.window ?? previousWindow)
+                        }
+                        return
+                    }
+                    do {
+                        let document = try loadLaunchDocument(at: url)
+                        window = EVDocumentWindowController.openFileDiff(document, initialLine: initialLine).window
+                        initialLine = nil
+                    } catch {
+                        if (error as? CocoaError)?.code != .userCancelled { NSApplication.shared.presentError(error) }
+                    }
+                }
+                finish(in: window)
+            }
+            openNextDiff(after: nil)
+            return
         }
         // Directories open the `:e {directory}` chooser after the files are
         // installed. Only the first directory is used; the rest are ignored.

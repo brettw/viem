@@ -2539,7 +2539,7 @@ impl StyleSheet {
         character_style: Option<&StyleId>, direct_character: &CharacterProperties,
     ) -> Result<ResolvedStyle<ResolvedParagraphStyle>, StyleError> {
         self.resolve_assigned_paragraph_style_in_container_with_contributions(document, paragraph_style, direct_paragraph,
-            &CharacterProperties::default(), paragraph_default_character, character_style, direct_character)
+            &CharacterProperties::default(), paragraph_default_character, character_style, direct_character, None)
     }
 
     pub fn resolve_assigned_paragraph_style_in_container_with_contributions(
@@ -2551,6 +2551,7 @@ impl StyleSheet {
         paragraph_default_character: &CharacterProperties,
         character_style: Option<&StyleId>,
         direct_character: &CharacterProperties,
+        line_number_underlay: Option<&StyleId>,
     ) -> Result<ResolvedStyle<ResolvedParagraphStyle>, StyleError> {
         validate_character_properties(&document.style, &document.direct_default_character)?;
         validate_block_property_values(&document.style, &document.direct_canvas)?;
@@ -2570,7 +2571,14 @@ impl StyleSheet {
         let document_chain = self.document_chain(&document.style)?;
         let role = self.block_style(paragraph_style).ok_or_else(|| StyleError::UnknownStyle(paragraph_style.clone()))?.role;
         if role == BlockRole::Document { return Err(StyleError::IncompatibleBlockRole { style: paragraph_style.clone(), role, parent_role: BlockRole::Paragraph }); }
-        let paragraph_chain = self.block_chain(paragraph_style, role)?;
+        let mut paragraph_chain = self.block_chain(paragraph_style, role)?;
+        if let Some(underlay) = line_number_underlay {
+            // Replace the common paragraph ancestry once. The normal and
+            // current gutter declarations then cascade over the changed line.
+            if let Some(first_number) = paragraph_chain.iter().position(|s| s.id.0 == "Builtin line number") {
+                paragraph_chain.splice(..first_number, self.block_chain(underlay, BlockRole::Paragraph)?);
+            }
+        }
         let mut value = ResolvedParagraphStyle::default();
         let mut contributions = emergency_contributions(
             PARAGRAPH_STYLE_PROPERTIES
@@ -4950,6 +4958,27 @@ mod variable_font_tests {
 #[cfg(test)]
 mod chrome_tests {
     use super::*;
+
+    #[test]
+    fn diff_gutter_cascades_the_line_then_the_normal_and_current_number() {
+        let mut sheet = code::default_sheet();
+        let added = StyleId::diff_added_line();
+        let removed = StyleId::diff_removed_line();
+        let normal = StyleId::from("Builtin line number");
+        let current = StyleId::from("Builtin current line number");
+        sheet.block_styles.get_mut(&added).unwrap().character.size = Some(FontSize::Points(20.0));
+        sheet.block_styles.get_mut(&normal).unwrap().character.size = Some(FontSize::Percentage(50));
+        sheet.block_styles.get_mut(&current).unwrap().block.background = Some(Color { red: 0., green: 0., blue: 0., alpha: 0. });
+        let resolve = |id, underlay| sheet.resolve_assigned_paragraph_style_in_container_with_contributions(
+            &DocumentStyleAssignment::new(sheet.base_paragraph.clone()), id, &Default::default(),
+            &Default::default(), &Default::default(), None, &Default::default(), Some(underlay)).unwrap().value;
+        for diff in [&added, &removed] {
+            assert_eq!(resolve(&normal, diff).background, sheet.block_style(diff).unwrap().block.background);
+            assert_eq!(resolve(&current, diff).background.unwrap().alpha, 0.);
+        }
+        assert_eq!(resolve(&normal, &added).character.size, 10.);
+        assert_eq!(resolve(&current, &added).character.size, 10.);
+    }
 
     #[test]
     fn chrome_styles_are_available_in_every_format_with_fixed_sparse_inheritance() {

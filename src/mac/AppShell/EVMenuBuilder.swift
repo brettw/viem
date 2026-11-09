@@ -478,8 +478,17 @@ public final class EVMenuBuilder: NSObject, NSMenuDelegate {
         menu.addItem(responderItem("Refresh Base", action: #selector(EVDocumentWindowController.refreshDiffBase(_:))))
         menu.addItem(responderItem("Choose Base File…", action: #selector(EVDocumentWindowController.chooseDiffBaseFile(_:))))
         menu.addItem(.separator())
-        menu.addItem(responderItem("Previous File", action: #selector(EVDocumentWindowController.showPreviousDiffFile(_:))))
-        menu.addItem(responderItem("Next File", action: #selector(EVDocumentWindowController.showNextDiffFile(_:))))
+        // These are Ex commands entered in the editor. Leave AppKit's key equivalents empty.
+        let hintColumn = NSMutableParagraphStyle()
+        hintColumn.tabStops = [NSTextTab(textAlignment: .right, location: 148, options: [:])]
+        for (title, command, action) in [
+            ("Previous File", ":N", #selector(EVDocumentWindowController.showPreviousDiffFile(_:))),
+            ("Next File", ":n", #selector(EVDocumentWindowController.showNextDiffFile(_:)))
+        ] {
+            let item = responderItem(title, action: action)
+            item.attributedTitle = NSAttributedString(string: "\(title)\t\(command)", attributes: [.paragraphStyle: hintColumn])
+            menu.addItem(item)
+        }
         return menu
     }
 

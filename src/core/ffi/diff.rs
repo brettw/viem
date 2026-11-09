@@ -41,6 +41,7 @@ pub const VIEM_DIFF_BASE_UNSTAGED: u32 = 1;
 pub const VIEM_DIFF_BASE_HEAD: u32 = 2;
 pub const VIEM_DIFF_BASE_BRANCH: u32 = 3;
 pub const VIEM_DIFF_BASE_FILE: u32 = 4;
+pub const VIEM_DIFF_BASE_COMMIT: u32 = 5;
 
 pub const VIEM_DIFF_RESULT_OK: u32 = 0;
 pub const VIEM_DIFF_RESULT_UNAVAILABLE: u32 = 1;
@@ -67,8 +68,8 @@ pub struct ViemDiffBaseRequestV1 {
     /// The document's absolute path; for VIEM_DIFF_BASE_FILE, the chosen
     /// base file. For a renamed file's git base, its base path.
     pub file_path: ViemUtf8Slice,
-    /// VIEM_DIFF_BASE_BRANCH only.
-    pub branch: ViemUtf8Slice,
+    /// Branch name or commit hash, according to the base kind.
+    pub revision: ViemUtf8Slice,
     /// The git executable; empty means `git` found through PATH.
     pub git_program: ViemUtf8Slice,
     /// Zero for none.
@@ -110,6 +111,8 @@ pub struct ViemDiffListItemV1 {
     /// back to back into the caller's text buffer.
     pub path_bytes: u64,
     pub base_path_bytes: u64,
+    pub added: u64,
+    pub removed: u64,
 }
 pub const VIEM_DIFF_LIST_ITEM_V1_SIZE: u32 = size_of::<ViemDiffListItemV1>() as u32;
 
@@ -119,6 +122,8 @@ pub struct ViemDiffSessionInfoV1 {
     pub struct_size: u32,
     pub flags: u32,
     pub hunk_count: u64,
+    pub added: u64,
+    pub removed: u64,
     pub base_line_count: u64,
     pub new_line_count: u64,
 }
@@ -152,6 +157,7 @@ enum DiffResult {
     Base(Result<BaseText, BaseError>),
     Files(Result<Vec<ChangedFile>, BaseError>),
     Branches(Result<Vec<String>, BaseError>),
+    Commits(Result<Vec<u8>, BaseError>),
 }
 
 struct DiffRegistry {
@@ -551,7 +557,9 @@ pub unsafe extern "C" fn viem_diff_session_info(
             return Err(ViemStatus::InvalidArgument);
         }
         let info = with_session(session, |session| {
+            let (added, removed) = session.line_totals();
             Ok(ViemDiffSessionInfoV1 {
+                added: added as u64, removed: removed as u64,
                 struct_size: VIEM_DIFF_SESSION_INFO_V1_SIZE,
                 flags: if session.aligned() { VIEM_DIFF_SESSION_ALIGNED } else { 0 }
                     | if session.collapsed() { VIEM_DIFF_SESSION_COLLAPSED } else { 0 },
@@ -712,7 +720,8 @@ unsafe fn base_request(request: *const ViemDiffBaseRequestV1) -> Result<BaseRequ
         VIEM_DIFF_BASE_LAST_SAVED => BaseKind::LastSaved,
         VIEM_DIFF_BASE_UNSTAGED => BaseKind::Unstaged,
         VIEM_DIFF_BASE_HEAD => BaseKind::Head,
-        VIEM_DIFF_BASE_BRANCH => BaseKind::Branch(unsafe { utf8_input(request.branch)? }.to_owned()),
+        VIEM_DIFF_BASE_BRANCH => BaseKind::Branch(unsafe { utf8_input(request.revision)? }.to_owned()),
+        VIEM_DIFF_BASE_COMMIT => BaseKind::Commit(unsafe { utf8_input(request.revision)? }.to_owned()),
         VIEM_DIFF_BASE_FILE => BaseKind::File(path.clone()),
         _ => return Err(ViemStatus::InvalidArgument),
     };
@@ -800,7 +809,7 @@ pub unsafe extern "C" fn viem_diff_list_files(
             BaseKind::LastSaved => Ok(vec![ChangedFile {
                 path: request.path.clone(),
                 base_path: request.path.clone(),
-                change: FileChange::Modified,
+                change: FileChange::Modified, added: 0, removed: 0,
             }]),
             BaseKind::File(_) => Ok(Vec::new()),
             kind => repository(&request).and_then(|repository| {
@@ -843,6 +852,30 @@ fn result(handle: ViemDiffResultHandle) -> Result<Arc<DiffResult>, ViemStatus> {
     lock()?.results.get(&handle).cloned().ok_or(ViemStatus::InvalidHandle)
 }
 
+/// Return recent commits for HEAD, or resolve a commit hash for COMMIT.
+/// # Safety
+/// As for [`viem_diff_load_base`].
+#[no_mangle]
+pub unsafe extern "C" fn viem_diff_query_commits(
+    request: *const ViemDiffBaseRequestV1,
+    out_result: *mut ViemDiffResultHandle,
+) -> ViemStatus {
+    ffi_boundary(|| {
+        typed_pointer_region(out_result, 1)?;
+        unsafe { out_result.write(0) };
+        let request = unsafe { base_request(request)? };
+        let hash = match &request.kind {
+            BaseKind::Head => None,
+            BaseKind::Commit(hash) => Some(hash.as_str()),
+            _ => return Err(ViemStatus::InvalidArgument),
+        };
+        let commits = repository(&request)
+            .and_then(|repo| repo.commits(hash, &request.cancellation))
+            .and_then(|rows| serde_json::to_vec(&rows).map_err(|e| BaseError::Io(e.to_string())));
+        publish(DiffResult::Commits(commits), out_result)
+    })
+}
+
 fn error_code(error: &BaseError) -> u32 {
     match error {
         BaseError::Unavailable(_) => VIEM_DIFF_RESULT_UNAVAILABLE,
@@ -859,6 +892,7 @@ fn result_error(result: &DiffResult) -> Option<&BaseError> {
         DiffResult::Base(Err(error)) => Some(error),
         DiffResult::Files(Err(error)) => Some(error),
         DiffResult::Branches(Err(error)) => Some(error),
+        DiffResult::Commits(Err(error)) => Some(error),
         _ => None,
     }
 }
@@ -888,6 +922,7 @@ pub unsafe extern "C" fn viem_diff_result_info(handle: ViemDiffResultHandle, out
             }
             DiffResult::Files(Ok(files)) => info.item_count = files.len() as u64,
             DiffResult::Branches(Ok(branches)) => info.item_count = branches.len() as u64,
+            DiffResult::Commits(Ok(json)) => info.byte_count = json.len() as u64,
             _ => {}
         }
         unsafe { out_info.write(info) };
@@ -915,11 +950,13 @@ pub unsafe extern "C" fn viem_diff_result_copy_bytes(
         ])?;
         unsafe { out_required.write(0) };
         let result = result(handle)?;
-        let DiffResult::Base(Ok(base)) = result.as_ref() else {
-            return Err(ViemStatus::InvalidArgument);
+        let bytes = match result.as_ref() {
+            DiffResult::Base(Ok(base)) => &base.bytes,
+            DiffResult::Commits(Ok(json)) => json,
+            _ => return Err(ViemStatus::InvalidArgument),
         };
-        unsafe { out_required.write(base.bytes.len() as u64) };
-        copy_out(&base.bytes, output, capacity)
+        unsafe { out_required.write(bytes.len() as u64) };
+        copy_out(bytes, output, capacity)
     })
 }
 
@@ -978,7 +1015,7 @@ pub unsafe extern "C" fn viem_diff_result_copy_item(
         unsafe { out_required.write(0) };
         let index = usize::try_from(index).map_err(|_| ViemStatus::InvalidRange)?;
         let result = result(handle)?;
-        let (change, path, base_path) = match result.as_ref() {
+        let (change, path, base_path, added, removed) = match result.as_ref() {
             DiffResult::Files(Ok(files)) => {
                 let file = files.get(index).ok_or(ViemStatus::InvalidRange)?;
                 let change = match file.change {
@@ -990,17 +1027,17 @@ pub unsafe extern "C" fn viem_diff_result_copy_item(
                 };
                 let path = file.path.to_str().ok_or(ViemStatus::InvalidUtf8)?.to_owned();
                 let base_path = file.base_path.to_str().ok_or(ViemStatus::InvalidUtf8)?.to_owned();
-                (change, path, base_path)
+                (change, path, base_path, file.added, file.removed)
             }
             DiffResult::Branches(Ok(branches)) => {
-                (0, branches.get(index).ok_or(ViemStatus::InvalidRange)?.clone(), String::new())
+                (0, branches.get(index).ok_or(ViemStatus::InvalidRange)?.clone(), String::new(), 0, 0)
             }
             _ => return Err(ViemStatus::InvalidArgument),
         };
         unsafe {
             out_item.write(ViemDiffListItemV1 {
                 struct_size: VIEM_DIFF_LIST_ITEM_V1_SIZE,
-                change,
+                change, added, removed,
                 path_bytes: path.len() as u64,
                 base_path_bytes: base_path.len() as u64,
             });

@@ -2167,7 +2167,8 @@ extension EVDocumentWindowController: EVDiffModeHost {
   /// given window when it holds only a pristine untitled buffer, otherwise
   /// in a new window. A folder without changes shows an empty buffer there;
   /// a folder outside a repository is reported instead.
-  static func diffFolder(_ folder: URL, from controller: EVDocumentWindowController?) {
+  static func diffFolder(_ folder: URL, from controller: EVDocumentWindowController?,
+                         completion: ((EVDocumentWindowController?) -> Void)? = nil) {
     let unsaved = (controller?.unsavedDocumentURLs() ?? []).map(\.path)
     Task { @MainActor in
       let listed = await EVDiffBaseLoader.listFiles(.unstaged, path: folder.path, unsaved: unsaved, scope: folder.path)
@@ -2177,6 +2178,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
         files = found
       case let .failure(error):
         reportDiffFolder(error.localizedDescription, in: controller)
+        completion?(nil)
         return
       }
       let replacement = controller?.captureUntitledReplacement()
@@ -2189,6 +2191,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
         } else {
           guard let empty = folderDiffUntitledDocument?() ?? makeUntitledDiffDocument() else {
             reportDiffFolder("There are no changes in \(folder.path).", in: controller)
+            completion?(nil)
             return
           }
           target = EVDocumentWindowController(document: empty, editorSurface: empty.editorBackend.makeEditorSurface(),
@@ -2200,12 +2203,14 @@ extension EVDocumentWindowController: EVDiffModeHost {
         }
         target.diffController.enable(folder: folder, files: [])
         folderDiffDidOpen?(target)
+        completion?(target)
         return
       }
       let open = folderDiffDocumentOpener ?? { url, completion in openPaneDocument(url, completion: completion) }
       open(first.url) { opened, error in
         guard let opened else {
           reportDiffFolder(error?.localizedDescription ?? "The file could not be opened.", in: controller)
+          completion?(nil)
           return
         }
         let target: EVDocumentWindowController
@@ -2222,8 +2227,20 @@ extension EVDocumentWindowController: EVDiffModeHost {
         }
         target.diffController.enable(folder: folder, files: files)
         folderDiffDidOpen?(target)
+        completion?(target)
       }
     }
+  }
+
+  static func openFileDiff(_ document: EVDocument, initialLine: UInt64?) -> EVDocumentWindowController {
+    let target = EVDocumentWindowController(document: document, editorSurface: document.editorBackend.makeEditorSurface(),
+                                            diffPlacement: folderDiffPlacement)
+    target.opensForDiff = true
+    document.addWindowController(target)
+    target.showWindow(nil)
+    target.diffController.enable(singleFile: true)
+    if let initialLine { target.editorSurface.goToLine(initialLine) }
+    return target
   }
 
   /// A reused placeholder window becomes a diff window: give it the last

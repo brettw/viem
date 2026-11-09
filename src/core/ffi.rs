@@ -5274,22 +5274,21 @@ fn validate_code_style_identity(expected: ViemStyleSheetIdentityV1, sheet: &crat
     Ok(())
 }
 fn export_code_style_snapshot(sheet: &crate::document::StyleSheet) -> Result<StyleSheetExport, ViemStatus> {
-    export_style_sheet_snapshot(sheet, code_style_identity(sheet), Format::Code)
+    export_style_sheet_snapshot(sheet, code_style_identity(sheet), Format::Code, None)
 }
-fn export_code_style_sheet() -> Result<StyleSheetExport, ViemStatus> { export_code_style_snapshot(&crate::document::code_style::snapshot()) }
 
 /// # Safety
 /// Output must be one writable aligned style-info record.
 #[no_mangle]
 pub unsafe extern "C" fn viem_code_style_sheet_info(output: *mut ViemStyleSheetInfoV1) -> ViemStatus {
-    unsafe { viem_core_style_sheet_info(0, output) }
+    unsafe { viem_core_style_sheet_info(0, 0, output) }
 }
 
 /// # Safety
 /// Same bounded, disjoint output-array contract as viem_core_copy_style_sheet.
 #[no_mangle]
 pub unsafe extern "C" fn viem_code_copy_style_sheet(expected: *const ViemStyleSheetIdentityV1, definitions: *mut ViemStyleDefinitionV1, definition_capacity:u64, properties:*mut ViemStylePropertyV1, property_capacity:u64, value_items:*mut ViemStyleValueItemV1, value_item_capacity:u64, dependencies:*mut ViemStyleDependencyV1, dependency_capacity:u64, string_bytes:*mut u8, string_capacity:u64, out_info:*mut ViemStyleSheetInfoV1) -> ViemStatus {
-    unsafe { viem_core_copy_style_sheet(0,expected,definitions,definition_capacity,properties,property_capacity,value_items,value_item_capacity,dependencies,dependency_capacity,string_bytes,string_capacity,out_info) }
+    unsafe { viem_core_copy_style_sheet(0, 0,expected,definitions,definition_capacity,properties,property_capacity,value_items,value_item_capacity,dependencies,dependency_capacity,string_bytes,string_capacity,out_info) }
 }
 
 /// # Safety
@@ -5951,11 +5950,32 @@ fn generated_style_capabilities(
     capabilities
 }
 
-fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatus> {
-    export_style_sheet_snapshot(document.projection().style_sheet(), style_sheet_identity(document), document.format())
+fn style_sheet_export_for(handle: ViemCoreHandle, expected: Option<ViemStyleSheetIdentityV1>, gutter: u32) -> Result<StyleSheetExport, ViemStatus> {
+    let underlay = match gutter {
+        0 => None,
+        VIEM_LINE_NUMBER_DIFF_ADDED => Some(StyleId::diff_added_line()),
+        VIEM_LINE_NUMBER_DIFF_REMOVED => Some(StyleId::diff_removed_line()),
+        _ => return Err(ViemStatus::InvalidArgument),
+    };
+    if handle == 0 {
+        let sheet = crate::document::code_style::snapshot();
+        if let Some(identity) = expected { validate_code_style_identity(identity, &sheet)?; }
+        export_style_sheet_snapshot(&sheet, code_style_identity(&sheet), Format::Code, underlay.as_ref())
+    } else {
+        with_core(handle, |core| {
+            let doc = core.document();
+            if let Some(identity) = expected { validate_style_sheet_identity(identity, doc)?; }
+            export_style_sheet_snapshot(doc.projection().style_sheet(), style_sheet_identity(doc), doc.format(), underlay.as_ref())
+        })
+    }
 }
 
-fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: ViemStyleSheetIdentityV1, format: Format) -> Result<StyleSheetExport, ViemStatus> {
+#[cfg(test)]
+fn export_style_sheet(document: &Document) -> Result<StyleSheetExport, ViemStatus> {
+    export_style_sheet_snapshot(document.projection().style_sheet(), style_sheet_identity(document), document.format(), None)
+}
+
+fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: ViemStyleSheetIdentityV1, format: Format, underlay: Option<&StyleId>) -> Result<StyleSheetExport, ViemStatus> {
     let assignment = DocumentStyleAssignment::new(sheet.base_paragraph.clone());
     let mut definitions = Vec::new();
     let mut properties = Vec::new();
@@ -5963,10 +5983,11 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
     let mut dependencies = Vec::new();
     let mut strings = Vec::new();
     definitions
-        .try_reserve(sheet.block_style_count() + sheet.character_style_count())
+        .try_reserve(if underlay.is_some() { 2 } else { sheet.block_style_count() + sheet.character_style_count() })
         .map_err(|_| ViemStatus::ResourceExhausted)?;
 
     for style in sheet.block_styles().filter(|style| style.role != BlockRole::Document) {
+        if underlay.is_some() && sheet.builtin_line_number_kind(style).is_none() { continue; }
         let metadata = sheet
             .block_style_metadata(&style.id)
             .ok_or(ViemStatus::CoreFailure)?;
@@ -6010,13 +6031,15 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
             }
             BlockRole::Paragraph | BlockRole::Quote | BlockRole::CodeBlock | BlockRole::List | BlockRole::ListItem | BlockRole::Table | BlockRole::Container => {
                 let resolved = sheet
-                    .resolve_assigned_paragraph_style_with_contributions(
+                    .resolve_assigned_paragraph_style_in_container_with_contributions(
                         &assignment,
                         &style.id,
                         &BlockProperties::default(),
                         &CharacterProperties::default(),
+                        &CharacterProperties::default(),
                         None,
                         &CharacterProperties::default(),
+                        underlay,
                     )
                     .map_err(style_error_status)?;
                 for property in property_keys.iter().copied() {
@@ -6090,7 +6113,7 @@ fn export_style_sheet_snapshot(sheet: &crate::document::StyleSheet, identity: Vi
         });
     }
 
-    for style in sheet.character_styles() {
+    for style in sheet.character_styles().take(if underlay.is_some() { 0 } else { usize::MAX }) {
         let metadata = sheet
             .character_style_metadata(&style.id)
             .ok_or(ViemStatus::CoreFailure)?;
@@ -8322,12 +8345,13 @@ pub unsafe extern "C" fn viem_core_style_sheet_identity(
 #[no_mangle]
 pub unsafe extern "C" fn viem_core_style_sheet_info(
     handle: ViemCoreHandle,
+    gutter_underlay: u32,
     out_info: *mut ViemStyleSheetInfoV1,
 ) -> ViemStatus {
     ffi_boundary(|| {
         typed_pointer_region(out_info, 1)?;
         unsafe { out_info.write(ViemStyleSheetInfoV1::default()) };
-        let info = if handle == 0 { export_code_style_sheet()?.info } else { with_core(handle, |core| Ok(export_style_sheet(core.document())?.info))? };
+        let info = style_sheet_export_for(handle, None, gutter_underlay)?.info;
         unsafe { out_info.write(info) };
         Ok(())
     })
@@ -8347,6 +8371,7 @@ pub unsafe extern "C" fn viem_core_style_sheet_info(
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn viem_core_copy_style_sheet(
     handle: ViemCoreHandle,
+    gutter_underlay: u32,
     expected: *const ViemStyleSheetIdentityV1,
     definitions: *mut ViemStyleDefinitionV1,
     definition_capacity: u64,
@@ -8373,14 +8398,7 @@ pub unsafe extern "C" fn viem_core_copy_style_sheet(
         validate_disjoint_regions(&regions)?;
         let expected = unsafe { read_style_sheet_identity(expected)? };
         unsafe { out_info.write(ViemStyleSheetInfoV1::default()) };
-        let export = if handle == 0 {
-            let sheet = crate::document::code_style::snapshot();
-            validate_code_style_identity(expected, &sheet)?;
-            export_code_style_snapshot(&sheet)?
-        } else { with_core(handle, |core| {
-            validate_style_sheet_identity(expected, core.document())?;
-            export_style_sheet(core.document())
-        })? };
+        let export = style_sheet_export_for(handle, Some(expected), gutter_underlay)?;
         unsafe { out_info.write(export.info) };
         let fits = definition_capacity >= export.info.definition_count
             && property_capacity >= export.info.property_count
@@ -11597,7 +11615,7 @@ mod tests {
         let handle = register_core(Core::new(document)).unwrap();
         let mut info = ViemStyleSheetInfoV1::default();
         assert_eq!(
-            unsafe { viem_core_style_sheet_info(handle, &mut info) },
+            unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
         );
         assert_eq!(info.definition_count, 29);
@@ -11608,7 +11626,7 @@ mod tests {
         assert_eq!(
             unsafe {
                 viem_core_copy_style_sheet(
-                    handle,
+                    handle, 0,
                     &info.identity,
                     ptr::null_mut(),
                     0,
@@ -11638,7 +11656,7 @@ mod tests {
         assert_eq!(
             unsafe {
                 viem_core_copy_style_sheet(
-                    handle,
+                    handle, 0,
                     &info.identity,
                     definitions.as_mut_ptr(),
                     definitions.len() as u64,
@@ -11764,7 +11782,7 @@ mod tests {
         assert_eq!(
             unsafe {
                 viem_core_copy_style_sheet(
-                    handle,
+                    handle, 0,
                     &info.identity,
                     definitions.as_mut_ptr(),
                     definitions.len() as u64,
@@ -11794,7 +11812,7 @@ mod tests {
         assert_eq!(
             unsafe {
                 viem_core_copy_style_sheet(
-                    handle,
+                    handle, 0,
                     &stale,
                     ptr::null_mut(),
                     0,
@@ -12117,7 +12135,7 @@ mod tests {
     fn current_style_identity(handle: super::ViemCoreHandle) -> super::ViemStyleSheetIdentityV1 {
         let mut info = ViemStyleSheetInfoV1::default();
         assert_eq!(
-            unsafe { viem_core_style_sheet_info(handle, &mut info) },
+            unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
         );
         info.identity
@@ -13007,7 +13025,7 @@ mod tests {
 
         let mut info = ViemStyleSheetInfoV1::default();
         assert_eq!(
-            unsafe { viem_core_style_sheet_info(handle, &mut info) },
+            unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
         );
         let heading = b"Heading1";
@@ -13067,7 +13085,7 @@ mod tests {
         );
 
         assert_eq!(
-            unsafe { viem_core_style_sheet_info(handle, &mut info) },
+            unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
         );
         let bad_role = style_float_request(
@@ -13197,7 +13215,7 @@ mod tests {
         // Display names are editable metadata; the opaque stable ID does not
         // change and the rename participates in the same history protocol.
         assert_eq!(
-            unsafe { viem_core_style_sheet_info(handle, &mut info) },
+            unsafe { viem_core_style_sheet_info(handle, 0, &mut info) },
             ViemStatus::Ok
         );
         let begin_composition = super::ViemCompositionBeginV1 {

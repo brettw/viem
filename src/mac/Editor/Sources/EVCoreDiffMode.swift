@@ -82,6 +82,8 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
     private var restoreModifiable = false
     private var mirroring = false
     private(set) var lastSync: UInt32 = UInt32(VIEM_DIFF_SYNC_UNCHANGED)
+    private(set) var lineTotals: (added: UInt64, removed: UInt64) = (0, 0)
+    var lineTotalsDidChange: (() -> Void)?
     /// The layout and extent each side's scrollbar marks were measured with.
     private var markKeys: [ObjectIdentifier: (layout: ViemLayoutSnapshotIdentityV1, maximum: CGFloat)] = [:]
 
@@ -189,6 +191,12 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
             return
         }
         lastSync = result
+        var info = ViemDiffSessionInfoV1()
+        info.struct_size = UInt32(MemoryLayout<ViemDiffSessionInfoV1>.size)
+        if viem_diff_session_info(handle, &info) == UInt32(VIEM_STATUS_OK), lineTotals != (info.added, info.removed) {
+            lineTotals = (info.added, info.removed)
+            lineTotalsDidChange?()
+        }
         baseSurface.refreshPresentation()
         if force { surface.refreshPresentation() }
     }

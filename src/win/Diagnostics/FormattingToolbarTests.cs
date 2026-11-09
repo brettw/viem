@@ -22,7 +22,7 @@ internal static class FormattingToolbarTests
         if (!condition) throw new InvalidOperationException(details == null ? name : $"{name} ({details})");
         FrontendSmokeTests.UiChecks.Add(name);
     }
-    private static IEnumerable<T> Descendants<T>(DependencyObject root) where T : DependencyObject
+    internal static IEnumerable<T> Descendants<T>(DependencyObject root) where T : DependencyObject
     {
         if (root is T match) yield return match;
         for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)

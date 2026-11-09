@@ -18,7 +18,7 @@ internal sealed partial class EditorWindow
         if (Diagnostics.FrontendSmokeTests.ReportPath != null) return false;
 #endif
         var arguments = ParseArguments(App.Instance.LaunchInvocation.Arguments);
-        return arguments.Error == null && arguments.Filenames.Length > 0;
+        return arguments.Error == null && !arguments.Diff && arguments.Filenames.Length > 0;
     }
     private void BeginFileLaunch()
     {
@@ -120,12 +120,29 @@ internal sealed partial class EditorWindow
 
     private async Task OpenArguments(OpenInvocation request)
     {
-        var args = ParseArguments(request.Arguments);
+        var args = ParseArguments(request.CompletionPipe == null ? request.Arguments : ["--", .. request.Arguments]);
         if (args.Error != null) throw new InvalidOperationException(args.Error);
         if (request.Arguments.Length == 0) return;
-        // Directories open the `:e {directory}` picker after the files are
-        // installed. Only the first directory is used; the rest are ignored.
         string[] resolved = args.Filenames.Select(p => ResolvePath(p, request.Directory)).ToArray();
+        if (args.Diff) {
+            ActivateLaunchWindow();
+            ulong? line = args.InitialLine;
+            var errors = new List<string>();
+            foreach (string path in resolved.Length == 0 ? new[] { request.Directory } : resolved) {
+                try {
+                    if (Directory.Exists(path)) await DiffFolder(path);
+                    else {
+                        await OpenLaunchDiffFile(path, line);
+                        line = null;
+                    }
+                } catch (Exception error) when (error is IOException or UnauthorizedAccessException) {
+                    errors.Add($"{path}: {error.Message}");
+                }
+            }
+            if (errors.Count != 0) throw new IOException(string.Join(Environment.NewLine, errors));
+            return;
+        }
+        // Ordinary launches open the first directory with the :e picker.
         string? directory = resolved.FirstOrDefault(Directory.Exists);
         string[] paths = resolved.Where(p => !Directory.Exists(p)).ToArray();
         if (paths.Length == 0 && directory != null)
@@ -178,7 +195,7 @@ internal sealed partial class EditorWindow
     }
     private static bool IsPristine(CoreDocument document) => document.FilePath == null && document.State.source_byte_count == 0 && !document.IsDirty
         && (document.State.flags & (VIEM_DOCUMENT_STATE_CAN_UNDO | VIEM_DOCUMENT_STATE_CAN_REDO)) == 0;
-    private sealed record LaunchArguments(string[] Filenames, int? SplitCount, ulong? InitialLine, bool VerticalSplits, string? Error);
+    private sealed record LaunchArguments(string[] Filenames, int? SplitCount, ulong? InitialLine, bool VerticalSplits, bool Diff, string? Error);
     private static unsafe LaunchArguments ParseArguments(string[] args)
     {
         using var timing = Diagnostics.StartupPerformance.Measure("arguments.parse");
@@ -187,10 +204,11 @@ internal sealed partial class EditorWindow
         using var document = JsonDocument.Parse(output);
         var root = document.RootElement;
         string? error = root.GetProperty("error").ValueKind == JsonValueKind.Null ? null : root.GetProperty("error").GetString();
-        if (error != null) return new([], null, null, false, error);
+        if (error != null) return new([], null, null, false, false, error);
         var arguments = root.GetProperty("arguments");
         return new(arguments.GetProperty("filenames").EnumerateArray().Select(p => p.GetString()!).ToArray(),
             arguments.GetProperty("splitCount").ValueKind == JsonValueKind.Null ? null : arguments.GetProperty("splitCount").GetInt32(),
-            arguments.GetProperty("initialLine").ValueKind == JsonValueKind.Null ? null : arguments.GetProperty("initialLine").GetUInt64(), arguments.GetProperty("verticalSplits").GetBoolean(), null);
+            arguments.GetProperty("initialLine").ValueKind == JsonValueKind.Null ? null : arguments.GetProperty("initialLine").GetUInt64(),
+            arguments.GetProperty("verticalSplits").GetBoolean(), arguments.GetProperty("diff").GetBoolean(), null);
     }
 }

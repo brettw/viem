@@ -125,10 +125,14 @@ Examples:
 & $exe README.md
 & $exe +123 first.md second.md
 & $exe -o2 first.md second.md
+& $exe --diff
+& $exe --diff README.md src\win src\mac
 ```
 
-Here `$exe` is the executable path above. Without `-o`, only the first file is
-opened; `:next` and `:previous` navigate deferred arguments. A second launch
+Here `$exe` is the executable path above. Ordinary launches open the first
+file by default. Use `:next` and `:previous` to navigate deferred arguments.
+With `--diff`, each file and directory opens in its own comparison window.
+With no paths, `--diff` opens the caller's working directory. A second launch
 forwards its arguments and working directory to the existing process for the
 same user/profile.
 

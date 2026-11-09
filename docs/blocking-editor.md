@@ -2,7 +2,7 @@
 
 On macOS, `viem-cli` starts Viem or switches to its existing process in the
 foreground. It accepts the GUI's ordinary arguments, including filenames,
-`+line`, `-o`, and `-O`, and preserves the caller's working directory. With no
+`+line`, `-o`, `-O`, and `--diff`, and preserves the caller's working directory. With no
 arguments, it activates an existing window or creates a blank one. Use `--help`
 to display launcher usage.
 
@@ -10,6 +10,7 @@ For an app installed in `/Applications`:
 
 ```sh
 /Applications/Viem.app/Contents/MacOS/viem-cli +12 "notes.md"
+/Applications/Viem.app/Contents/MacOS/viem-cli --diff
 ```
 
 The launcher returns once the GUI accepts the request, without waiting for

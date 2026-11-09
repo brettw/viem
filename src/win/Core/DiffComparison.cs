@@ -66,6 +66,7 @@ internal sealed unsafe class DiffComparison : IDisposable
 {
     private readonly CoreView basis, live;
     private ulong handle;
+    internal (ulong Added, ulong Removed) LineTotals { get; private set; }
     internal DiffComparison(CoreView basis, CoreView live, bool aligned, bool collapsed)
     {
         this.basis = basis;
@@ -79,6 +80,9 @@ internal sealed unsafe class DiffComparison : IDisposable
     {
         uint result = 0;
         Check(viem_diff_session_sync(handle, basis.Document.Handle, basis.Id, live.Document.Handle, live.Id, &result), "Update comparison");
+        var info = New<ViemDiffSessionInfoV1>();
+        Check(viem_diff_session_info(handle, &info), "Read comparison totals");
+        LineTotals = (info.added, info.removed);
     }
     internal void Align(bool aligned)
     {

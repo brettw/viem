@@ -2298,10 +2298,12 @@ ViemStatus viem_core_mark_saved(ViemCoreHandle core,
 /* Identity only: does not resolve or serialize styles. core=0 selects Code. */
 ViemStatus viem_core_style_sheet_identity(ViemCoreHandle core,
                                           ViemStyleSheetIdentityV1 *out_identity);
-ViemStatus viem_core_style_sheet_info(ViemCoreHandle core,
+/* gutter_underlay=0 exports the full sheet. VIEM_LINE_NUMBER_DIFF_ADDED
+ * or REMOVED exports only the two gutter styles over that diff line. */
+ViemStatus viem_core_style_sheet_info(ViemCoreHandle core, uint32_t gutter_underlay,
                                       ViemStyleSheetInfoV1 *out_info);
 ViemStatus viem_core_copy_style_sheet(
-    ViemCoreHandle core, const ViemStyleSheetIdentityV1 *expected,
+    ViemCoreHandle core, uint32_t gutter_underlay, const ViemStyleSheetIdentityV1 *expected,
     ViemStyleDefinitionV1 *definitions, uint64_t definition_capacity,
     ViemStylePropertyV1 *properties, uint64_t property_capacity,
     ViemStyleValueItemV1 *value_items, uint64_t value_item_capacity,
@@ -2734,6 +2736,8 @@ ViemStatus viem_core_view_line_location(ViemCoreHandle handle, ViemViewId view, 
 #define VIEM_LINE_NUMBER_REGION_ESTIMATED 1u
 /* This displayed representative owns the visual row containing the caret. */
 #define VIEM_LINE_NUMBER_REGION_CURRENT (1u << 1)
+#define VIEM_LINE_NUMBER_DIFF_ADDED (1u << 2)
+#define VIEM_LINE_NUMBER_DIFF_REMOVED (1u << 3)
 typedef struct ViemLineNumberSnapshotInfoV1 {
   uint32_t struct_size;
   uint32_t flags;
@@ -3325,6 +3329,8 @@ typedef uint64_t ViemDiffCancellationHandle;
 #define VIEM_DIFF_BASE_HEAD 2u
 #define VIEM_DIFF_BASE_BRANCH 3u
 #define VIEM_DIFF_BASE_FILE 4u
+#define VIEM_DIFF_BASE_COMMIT 5u
+#define VIEM_DIFF_FILE_PICKER_LIMIT 256u
 
 #define VIEM_DIFF_RESULT_OK 0u
 #define VIEM_DIFF_RESULT_UNAVAILABLE 1u
@@ -3348,8 +3354,8 @@ typedef struct ViemDiffBaseRequestV1 {
   /* Absolute UTF-8 path of the document, the chosen base file, or a renamed
    * file's base path. */
   ViemUtf8Slice file_path;
-  /* VIEM_DIFF_BASE_BRANCH only. */
-  ViemUtf8Slice branch;
+  /* Branch name or full commit hash. A commit query also accepts a prefix. */
+  ViemUtf8Slice revision;
   /* Empty means `git` found through PATH. */
   ViemUtf8Slice git_program;
   /* Zero for none. */
@@ -3382,6 +3388,8 @@ typedef struct ViemDiffListItemV1 {
   uint32_t change;
   uint64_t path_bytes;
   uint64_t base_path_bytes;
+  uint64_t added;
+  uint64_t removed;
 } ViemDiffListItemV1;
 #define VIEM_DIFF_LIST_ITEM_V1_SIZE ((uint32_t)sizeof(ViemDiffListItemV1))
 
@@ -3389,6 +3397,8 @@ typedef struct ViemDiffSessionInfoV1 {
   uint32_t struct_size;
   uint32_t flags;
   uint64_t hunk_count;
+  uint64_t added;
+  uint64_t removed;
   uint64_t base_line_count;
   uint64_t new_line_count;
 } ViemDiffSessionInfoV1;
@@ -3485,6 +3495,10 @@ ViemStatus viem_diff_load_base(const ViemDiffBaseRequestV1 *request,
  * the repository; Last saved lists only the document; FILE lists nothing. */
 ViemStatus viem_diff_list_files(const ViemDiffBaseRequestV1 *request,
     ViemDiffResultHandle *out_result);
+/* Returns UTF-8 JSON via result_copy_bytes: [{hash, short, title}].
+ * HEAD lists up to 50 commits. COMMIT resolves one hexadecimal hash. */
+ViemStatus viem_diff_query_commits(const ViemDiffBaseRequestV1 *request,
+                                  ViemDiffResultHandle *out_result);
 ViemStatus viem_diff_list_branches(const ViemDiffBaseRequestV1 *request,
     ViemDiffResultHandle *out_result);
 ViemStatus viem_diff_result_info(ViemDiffResultHandle result, ViemDiffResultInfoV1 *out_info);

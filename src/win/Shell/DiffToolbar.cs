@@ -1,4 +1,5 @@
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Controls;
@@ -10,6 +11,9 @@ internal sealed partial class DiffToolbar : EditorToolbar
 {
     private readonly ComboBox bases = Selector(new ComboBox { MinWidth = 118, MaxWidth = 220 }, "Diff base");
     private readonly ComboBox files = Selector(new ComboBox { MinWidth = 140, MaxWidth = 360 }, "Files in this diff");
+    private readonly StackPanel fileCountGroup = Group(3);
+    internal readonly TextBlock FileCount = new(), AddedLines = new(), RemovedLines = new();
+    private (ulong Added, ulong Removed) gitTotals;
     internal readonly ToggleButton Align = IconButton(new ToggleButton(), "Align Sides");
     internal readonly ToggleButton Collapse = IconButton(new ToggleButton(), "Collapse Context");
     private readonly Button previousFile, nextFile, previousChange, nextChange;
@@ -17,6 +21,8 @@ internal sealed partial class DiffToolbar : EditorToolbar
     private readonly List<DiffBase> choices = [];
     private (DiffBase Basis, bool Git, string[] Branches)? displayedBases;
     private DiffFile[]? displayedFiles;
+    private const int FileLimit = (int)Interop.Native.VIEM_DIFF_FILE_PICKER_LIMIT;
+    private int lastFileIndex = -1;
 
     internal event Action<DiffBase>? BaseSelected;
     internal event Action<int>? FileSelected;
@@ -31,14 +37,26 @@ internal sealed partial class DiffToolbar : EditorToolbar
         var sources = Group();
         row.Children.Add(sources);
         sources.Children.Add(bases);
-        AddButton(sources, "Choose Base File…", ((char)Symbol.OpenFile).ToString(), choose);
         AddButton(sources, "Refresh Base", ((char)Symbol.Refresh).ToString(), refresh);
 
+        sources.Margin = new(0, 0, 2 * row.Spacing, 0);
+        fileCountGroup.Children.Add(new PathIcon { Width = 14, Height = 17,
+            Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(typeof(Geometry),
+                "F0 M0,6 L6,0 H14 V17 H0 Z M1.5,7.5 V15.5 H12.5 V1.5 H7.5 V7.5 Z M2.1,6 H6 V2.1 Z") });
+        fileCountGroup.Children.Add(FileCount);
+        row.Children.Add(fileCountGroup);
+        var totals = Group(5);
+        AddedLines.Style = (Style)Resources["DiffAddedLines"];
+        RemovedLines.Style = (Style)Resources["DiffRemovedLines"];
+        totals.Children.Add(AddedLines);
+        totals.Children.Add(RemovedLines);
+        row.Children.Add(totals);
         var navigation = Group();
+        navigation.Margin = new(0, 0, 2 * row.Spacing, 0);
         row.Children.Add(navigation);
-        previousFile = AddButton(navigation, "Previous File", "\uE76B", () => move(-1));
+        previousFile = AddButton(navigation, "Previous File", "\uE76B", () => move(-1), ":N");
+        nextFile = AddButton(navigation, "Next File", "\uE76C", () => move(1), ":n");
         navigation.Children.Add(files);
-        nextFile = AddButton(navigation, "Next File", "\uE76C", () => move(1));
 
         // Two panes with a shared middle row convey vertical alignment at toolbar size.
         SetIcon(Align,
@@ -56,10 +74,14 @@ internal sealed partial class DiffToolbar : EditorToolbar
         previousChange = AddButton(changes, "Previous Change", "\uE70E", () => navigate(false));
         nextChange = AddButton(changes, "Next Change", "\uE70D", () => navigate(true));
         bases.SelectionChanged += (_, _) => {
-            if (!updating && (uint)bases.SelectedIndex < (uint)choices.Count) BaseSelected?.Invoke(choices[bases.SelectedIndex]);
+            if (updating || bases.SelectedIndex < 0) return;
+            if (bases.SelectedIndex == choices.Count) choose();
+            else BaseSelected?.Invoke(choices[bases.SelectedIndex]);
         };
         files.SelectionChanged += (_, _) => {
-            if (!updating && files.SelectedIndex >= 0) FileSelected?.Invoke(files.SelectedIndex);
+            int slot = files.SelectedIndex;
+            if (!updating && slot >= 0 && slot < FileLimit && slot < displayedFiles?.Length)
+                FileSelected?.Invoke(slot == FileLimit - 1 ? lastFileIndex : slot);
         };
     }
 
@@ -71,9 +93,9 @@ internal sealed partial class DiffToolbar : EditorToolbar
         button.Content = icon;
     }
 
-    private static Button AddButton(Panel group, string name, string glyph, Action action)
+    private static Button AddButton(Panel group, string name, string glyph, Action action, string shortcut = "")
     {
-        var button = IconButton(new Button(), name, Glyph(glyph));
+        var button = IconButton(new Button(), name, Glyph(glyph), shortcut: shortcut);
         button.Click += (_, _) => action();
         group.Children.Add(button);
         return button;
@@ -83,7 +105,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     internal const string NoChangesTitle = "no changes";
 
     internal void Update(DiffBase basis, bool git, string[] branches, DiffFile[] entries, int current,
-        string documentName, bool aligned, bool collapsed, bool comparing, bool noChanges = false)
+        string documentName, bool aligned, bool collapsed, bool comparing, (ulong Added, ulong Removed) liveTotals, bool useLiveTotals, bool noChanges = false)
     {
         updating = true;
         try {
@@ -103,34 +125,64 @@ internal sealed partial class DiffToolbar : EditorToolbar
                     Add(new(Interop.Native.VIEM_DIFF_BASE_BRANCH));
                 }
                 if (basis.Kind == Interop.Native.VIEM_DIFF_BASE_FILE) Add(basis);
+                if (basis.Kind == Interop.Native.VIEM_DIFF_BASE_COMMIT) Add(basis);
+                if (git) Add(new(Interop.Native.VIEM_DIFF_BASE_COMMIT));
+                bases.Items.Add("Choose File…");
             }
             bases.SelectedIndex = choices.IndexOf(basis);
-            if (displayedFiles != entries) {
+            bool changed = displayedFiles != entries;
+            if (changed) {
+                gitTotals = default;
+                foreach (var entry in entries) {
+                    gitTotals.Added += entry.Added;
+                    gitTotals.Removed += entry.Removed;
+                }
+                FileCount.Text = entries.Length.ToString();
+                AutomationProperties.SetName(FileCount, $"{entries.Length} changed files");
+            }
+            int visible = Math.Min(FileLimit, entries.Length);
+            int last = Math.Max(visible - 1, current);
+            if (changed || last != lastFileIndex) {
                 displayedFiles = entries;
+                lastFileIndex = last;
                 files.Items.Clear();
-                var duplicates = entries.GroupBy(file => Path.GetFileName(file.Path), StringComparer.OrdinalIgnoreCase)
+                var shown = entries[..visible];
+                if (visible > 0) shown[^1] = entries[last];
+                var duplicates = shown.GroupBy(file => Path.GetFileName(file.Path), StringComparer.OrdinalIgnoreCase)
                     .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
                 string? shared = entries.Length == 0 ? null : Path.GetDirectoryName(entries[0].Path);
-                foreach (var entry in entries) {
+                foreach (var entry in shown) {
                     while (shared != null && Path.GetRelativePath(shared, entry.Path).StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
                         shared = Path.GetDirectoryName(shared);
                 }
-                foreach (var file in entries) {
+                foreach (var file in shown) {
                     string title = file.Title;
                     if (duplicates.Contains(Path.GetFileName(file.Path)) && shared != null)
                         title += " — " + Path.GetRelativePath(shared, Path.GetDirectoryName(file.Path)!);
                     files.Items.Add(title);
                 }
+                if (entries.Length > visible) files.Items.Add(new ComboBoxItem {
+                    Content = $"{entries.Length - visible} files clipped", IsEnabled = false
+                });
             }
-            if (files.Items.Count > entries.Length) files.Items.RemoveAt(entries.Length);
-            if (current < 0) files.Items.Add(noChanges ? NoChangesTitle : documentName + (entries.Length > 0 ? " (not in this diff)" : ""));
+            files.PlaceholderText = noChanges ? NoChangesTitle : documentName + (entries.Length > 0 ? " (not in this diff)" : "");
             files.FontStyle = noChanges && current < 0 ? global::Windows.UI.Text.FontStyle.Italic : global::Windows.UI.Text.FontStyle.Normal;
-            files.SelectedIndex = current < 0 ? entries.Length : current;
+            fileCountGroup.Visibility = entries.Length > 1 || noChanges ? Visibility.Visible : Visibility.Collapsed;
+            files.SelectedIndex = Math.Min(current, FileLimit - 1);
             files.IsEnabled = previousFile.IsEnabled = nextFile.IsEnabled = entries.Length != 0;
             previousChange.IsEnabled = nextChange.IsEnabled = comparing;
             Align.IsChecked = aligned;
             Collapse.IsChecked = collapsed;
+            ShowLineTotals(useLiveTotals ? liveTotals : gitTotals);
         } finally { updating = false; }
+    }
+
+    internal void ShowLineTotals((ulong Added, ulong Removed) totals)
+    {
+        AddedLines.Text = $"+{totals.Added}";
+        RemovedLines.Text = $"–{totals.Removed}";
+        AutomationProperties.SetName(AddedLines, $"{totals.Added} added lines");
+        AutomationProperties.SetName(RemovedLines, $"{totals.Removed} removed lines");
     }
 
     internal void OpenBranches() => bases.IsDropDownOpen = true;

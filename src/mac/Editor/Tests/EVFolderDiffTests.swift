@@ -125,6 +125,31 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertEqual(mode.files.map { $0.url.resolvingSymlinksInPath() }, [root.appendingPathComponent("sub/b.txt")],
                        "only files under the folder are listed")
         XCTAssertEqual(mode.scope, root.appendingPathComponent("sub"))
+        XCTAssertEqual(mode.toolbar.previousButton.toolTip, "Previous File (:N)")
+        XCTAssertEqual(mode.toolbar.nextButton.toolTip, "Next File (:n)")
+        XCTAssertTrue(mode.toolbar.fileCountGroup.isHidden)
+        XCTAssertEqual(mode.toolbar.addedLines.stringValue, "+1")
+        XCTAssertEqual(mode.toolbar.removedLines.stringValue, "–1")
+    }
+
+    func testDiffLaunchUsesCallerDirectoryAndOpensEachDirectorySeparately() throws {
+        let root = try repository()
+        EVEditorComposition.install()
+        let delegate = EVApplicationDelegate()
+        var scopes: [String] = []
+        let opened = expectation(description: "three distinct folder comparisons")
+        opened.expectedFulfillmentCount = 3
+        EVDocumentWindowController.folderDiffDidOpen = { controller in
+            XCTAssertFalse(self.windows.contains { $0 === controller })
+            self.windows.append(controller)
+            if let scope = controller.diffMode?.scope { scopes.append(scope.standardizedFileURL.path) }
+            opened.fulfill()
+        }
+        let cwd = URL(fileURLWithPath: root.path, isDirectory: true)
+        delegate.processLaunchArguments(try EVLaunchArguments.parse(["--diff"]), workingDirectory: cwd)
+        delegate.processLaunchArguments(try EVLaunchArguments.parse(["--diff", "clean", "sub"]), workingDirectory: cwd)
+        wait(for: [opened], timeout: 20)
+        XCTAssertEqual(scopes, [root.path, root.appendingPathComponent("clean").path, root.appendingPathComponent("sub").path])
     }
 
     func testAWindowWithContentStaysAndTheDiffOpensInANewWindow() throws {
@@ -133,6 +158,11 @@ final class EVFolderDiffTests: XCTestCase {
         let target = try XCTUnwrap(diff(root, from: busy))
         XCTAssertFalse(target === busy)
         XCTAssertEqual(target.diffMode?.files.count, 2, "the repository root lists every changed file")
+        let toolbar = try XCTUnwrap(target.diffMode?.toolbar)
+        XCTAssertFalse(toolbar.fileCountGroup.isHidden)
+        XCTAssertEqual(toolbar.fileCount.stringValue, "2")
+        XCTAssertEqual(toolbar.addedLines.stringValue, "+2")
+        XCTAssertEqual(toolbar.removedLines.stringValue, "–2")
         XCTAssertEqual(busy.activeDocument?.fileURL, nil)
         XCTAssertFalse(busy.diffMode?.isEnabled ?? false)
     }
@@ -184,6 +214,10 @@ final class EVFolderDiffTests: XCTestCase {
             let mode = try XCTUnwrap(target.diffMode)
             XCTAssertTrue(mode.isEnabled)
             XCTAssertTrue(mode.files.isEmpty)
+            XCTAssertFalse(mode.toolbar.fileCountGroup.isHidden)
+            XCTAssertEqual(mode.toolbar.fileCount.stringValue, "0")
+            XCTAssertEqual(mode.toolbar.addedLines.stringValue, "+0")
+            XCTAssertEqual(mode.toolbar.removedLines.stringValue, "–0")
             XCTAssertNil(target.activeDocument?.fileURL)
             XCTAssertEqual(target.activeDocument?.editorBackend.persistenceState.sourceByteCount, 0)
             let popup = mode.toolbar.filePopup
@@ -244,6 +278,83 @@ final class EVFolderDiffTests: XCTestCase {
             XCTAssertEqual(mode.files[selected].url.resolvingSymlinksInPath(), shown,
                            "the popup names the shown file: \(popup.titleOfSelectedItem ?? "")")
         }
+    }
+
+    func testFilePopupCapsEntriesAndKeepsTheCurrentClippedFileSelected() throws {
+        let root = try repository()
+        let placeholder = try window(text: nil)
+        let target = try XCTUnwrap(diff(root, from: placeholder))
+        let mode = try XCTUnwrap(target.diffMode)
+        let current = try XCTUnwrap(mode.files.first)
+        let prefix = (0..<256).map { i in
+            let url = root.appendingPathComponent("other-\(i)")
+            return EVDiffFile(url: url, baseURL: url, change: current.change)
+        }
+        mode.enable(folder: root, files: Array(prefix.dropLast()) + [current])
+        let popup = mode.toolbar.filePopup
+        XCTAssertEqual(popup.numberOfItems, 256)
+        mode.enable(folder: root, files: prefix + [current])
+        XCTAssertEqual(mode.files.count, 257)
+        XCTAssertEqual(popup.numberOfItems, 257)
+        XCTAssertEqual(popup.indexOfSelectedItem, 255)
+        XCTAssertEqual(popup.selectedItem?.representedObject as? Int, 256)
+        XCTAssertEqual(popup.lastItem?.title, "1 files clipped")
+        XCTAssertEqual(popup.lastItem?.isEnabled, false)
+    }
+
+    func testCommitBaseUsesResolvedHashAndShowsItsAbbreviation() async throws {
+        let root = try repository()
+        let placeholder = try window(text: nil)
+        let target = try XCTUnwrap(diff(root, from: placeholder))
+        let mode = try XCTUnwrap(target.diffMode)
+        XCTAssertEqual(Array(mode.toolbar.basePopup.itemTitles.suffix(2)), ["Commit…", "Choose File…"])
+        let commits = try await EVDiffBaseLoader.commits(path: root.path)
+        let listed = try XCTUnwrap(commits.first)
+        XCTAssertEqual(listed.title, "base")
+        let resolved = try await EVDiffBaseLoader.commits(path: root.path, hash: listed.short)
+        XCTAssertEqual(resolved.first?.hash, listed.hash)
+        let presented = expectation(description: "commit base installed")
+        mode.didPresent = { presented.fulfill() }
+        mode.setBase(.commit(hash: listed.hash, short: listed.short))
+        await fulfillment(of: [presented], timeout: 20)
+        XCTAssertEqual(mode.toolbar.basePopup.titleOfSelectedItem, "Commit \(listed.short)")
+        XCTAssertEqual(mode.files.count, 2)
+    }
+
+    func testChooseFileFromTheBasePopupKeepsTheLiveDocumentAndClearsFolderNavigation() throws {
+        let root = try repository()
+        let placeholder = try window(text: nil)
+        let target = try XCTUnwrap(diff(root, from: placeholder))
+        let mode = try XCTUnwrap(target.diffMode)
+        let document = try XCTUnwrap(target.activeDocument)
+        let popup = mode.toolbar.basePopup
+        let chosen = root.appendingPathComponent(".basis")
+        try Data("chosen file".utf8).write(to: chosen)
+        var picks = 0
+        target.openFilePanelPresenter = { panel, _, complete in
+            XCTAssertTrue(panel.canChooseFiles && !panel.canChooseDirectories)
+            picks += 1
+            complete(picks == 1 ? nil : chosen)
+        }
+        func choose() {
+            popup.selectItem(at: popup.numberOfItems - 1)
+            popup.sendAction(popup.action!, to: popup.target)
+        }
+        choose()
+        XCTAssertEqual(picks, 1)
+        XCTAssertEqual(mode.scope, root)
+        XCTAssertEqual(mode.files.count, 2)
+        XCTAssertEqual(popup.titleOfSelectedItem, "Unstaged")
+        let applied = expectation(description: "chosen file installed")
+        mode.didPresent = { if mode.base == .file(chosen) { applied.fulfill() } }
+        choose()
+        wait(for: [applied], timeout: 20)
+        mode.didPresent = nil
+        XCTAssertTrue(target.activeDocument === document)
+        XCTAssertNil(mode.scope)
+        XCTAssertTrue(mode.files.isEmpty)
+        XCTAssertFalse(mode.toolbar.filePopup.isEnabled)
+        XCTAssertEqual(mode.toolbar.filePopup.titleOfSelectedItem, document.fileURL?.lastPathComponent)
     }
 
     func testTheMenuNamesTheDirectoryClippedFromTheLeft() {

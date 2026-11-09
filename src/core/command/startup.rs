@@ -5,6 +5,7 @@ use serde::Serialize;
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LaunchArguments {
+    pub diff: bool,
     pub filenames: Vec<String>,
     /// None opens one view; zero requests one stacked pane per argument.
     pub split_count: Option<usize>,
@@ -45,6 +46,8 @@ where
         let argument = argument.as_ref();
         if !literal && argument == "--" {
             literal = true;
+        } else if !literal && argument == "--diff" {
+            result.diff = true;
         } else if !literal && (argument.starts_with("-o") || argument.starts_with("-O")) {
             result.vertical_splits = argument.starts_with("-O");
             let digits = &argument[2..];
@@ -84,6 +87,14 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn diff_flag_respects_the_literal_separator() {
+        assert!(parse_launch_arguments(["--diff"]).unwrap().diff);
+        let parsed = parse_launch_arguments(["file", "--diff", "--", "--diff"]).unwrap();
+        assert!(parsed.diff);
+        assert_eq!(parsed.filenames, ["file", "--diff"]);
+        assert!(!parse_launch_arguments(["--", "--diff"]).unwrap().diff);
+    }
     #[test]
     fn files_preserve_order_spelling_duplicates_and_wildcards() {
         let parsed =
