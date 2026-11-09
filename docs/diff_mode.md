@@ -526,8 +526,10 @@ context), built in this order:
     (they survive edits that leave the lines equal) and the runs collapsed at
     the last install; `set_collapsed` and a new session close every opened
     run. `SidePresentation::collapsed` holds each side's hidden ranges.
-  - Layout: `ViewLayout` keeps the hidden runs (`elided`), shifted through
-    local edits and cleared by other document changes. Each is one exact
+  - Layout: `ViewLayout` keeps the hidden runs in an `ElidedLines`
+    (`src/core/layout/elided.rs`), shifted through local edits and cleared
+    by other document changes; every change that shows lines returns them
+    so they get estimated heights again. Each is one exact
     zero-height run of `ViewHeightIndex` (`set_hidden_range`), restored after
     every height invalidation. A layout job whose region crosses hidden runs
     captures each shown segment separately (`CapturedLayoutInput::Segmented`)
@@ -541,8 +543,9 @@ context), built in this order:
     after a run at the start of the file, which then lays out as the
     document's first line (`starts_document`); a line before a run reaching
     the end lays out as the last (`ends_document`). `DiffLayoutInput`
-    carries the dividers and their height (one default row), and
-    `BlockBoxStyle::collapsed_divider` the band from the **Collapsed
+    carries each line's filler and divider as one `DiffMargin`, and the
+    divider height (one default row); `BlockBoxStyle::collapsed_divider`
+    carries the band from the **Collapsed
     context** style (`StyleId::diff_collapsed_context`), drawn as
     `DecorationKind::CollapsedContext` and exported with
     `VIEM_LAYOUT_DECORATION_COLLAPSED_CONTEXT` beside the background or

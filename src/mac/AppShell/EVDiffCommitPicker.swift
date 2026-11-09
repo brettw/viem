@@ -58,17 +58,18 @@ final class EVDiffCommitPicker: NSObject, NSTableViewDataSource, NSTableViewDele
   }
 
   func controlTextDidChange(_ notification: Notification) {
-    alert.buttons[0].isEnabled = !hash.isEmpty
-    if commits.indices.contains(table.selectedRow), hash != commits[table.selectedRow].hash { table.deselectAll(nil) }
+    alert.buttons[0].isEnabled = !enteredHash.isEmpty
+    if commits.indices.contains(table.selectedRow), enteredHash != commits[table.selectedRow].hash { table.deselectAll(nil) }
   }
 
-  private var hash: String { input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
+  /// Named apart from `NSObject.hash`, which it would otherwise override.
+  private var enteredHash: String { input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) }
 
   func pick(in window: NSWindow) async -> String? {
-    alert.buttons[0].isEnabled = !hash.isEmpty
+    alert.buttons[0].isEnabled = !enteredHash.isEmpty
     let response = await withCheckedContinuation { continuation in
       alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
     }
-    return response == .alertFirstButtonReturn ? hash : nil
+    return response == .alertFirstButtonReturn ? enteredHash : nil
   }
 }

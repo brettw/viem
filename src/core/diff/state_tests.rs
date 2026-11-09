@@ -120,10 +120,10 @@ fn corresponding_lines_follow_equal_runs_and_clamp_in_hunks() {
     let new = lines("a\nx\ny\nz\nc\nd");
     let state = DiffState::compute(&base, &new, DiffLimits::default());
     assert_eq!(hunks(&state), vec![(1..2, 1..4)]);
-    assert_eq!(state.corresponding_line(true, 0), 0);
-    assert_eq!(state.corresponding_line(true, 3), 1);
-    assert_eq!(state.corresponding_line(true, 4), 2);
-    assert_eq!(state.corresponding_line(false, 3), 5);
+    assert_eq!(state.corresponding_line(Side::New, 0), 0);
+    assert_eq!(state.corresponding_line(Side::New, 3), 1);
+    assert_eq!(state.corresponding_line(Side::New, 4), 2);
+    assert_eq!(state.corresponding_line(Side::Base, 3), 5);
 }
 
 #[test]
@@ -160,4 +160,25 @@ fn random_edit_sequences_stay_exact() {
             }
         }
     }
+}
+
+#[test]
+fn an_edit_moves_lines_boundaries_and_ranges_outside_the_lines_it_replaces() {
+    // Lines 3..5 become 3..8.
+    let edit = LineEdit { start: 3, old_end: 5, new_end: 8 };
+    assert_eq!([2, 3, 4, 5].map(|line| edit.map_line(line)), [Some(2), None, None, Some(8)]);
+    assert_eq!([3, 4, 5].map(|line| edit.map_boundary(line)), [Some(3), None, Some(8)]);
+    assert_eq!(edit.map_range(1..3), Some(1..3));
+    assert_eq!(edit.map_range(5..7), Some(8..10));
+    assert_eq!(edit.map_range(2..4), None);
+    assert_eq!(edit.map_surviving(1..7).collect::<Vec<_>>(), [1..3, 8..10]);
+    assert_eq!(edit.map_surviving(3..5).count(), 0);
+    // An insertion's boundary moves with the following line.
+    let insertion = LineEdit { start: 3, old_end: 3, new_end: 5 };
+    assert_eq!(insertion.map_boundary(3), Some(5));
+    assert_eq!(insertion.map_range(1..3), Some(1..3));
+    assert_eq!(insertion.map_range(2..4), None);
+    assert!(edit.fits(10, 13));
+    assert!(!edit.fits(10, 12));
+    assert!(!edit.fits(4, 7));
 }

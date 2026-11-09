@@ -156,7 +156,7 @@ fn corresponding_tops_follow_lines_through_the_diff() {
     new.handle(new_view, CoreEvent::SetViewportOrigin { left: 0., top: Some(row_top(&new, new_view, 0) + 1_000.) }).unwrap();
     let top = new.viewport_state(new_view).unwrap().top();
     let new_line = new.layout(new_view).unwrap().hard_line_at_y(f64::from(top)).unwrap().unwrap().hard_line();
-    session.sync_scroll(&mut base, base_view, &mut new, new_view, true).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
     let mirrored = base.viewport_state(base_view).unwrap().top();
     assert_eq!(mirrored, top);
     let base_line = base.layout(base_view).unwrap().hard_line_at_y(f64::from(mirrored)).unwrap().unwrap().hard_line();
@@ -184,7 +184,7 @@ fn aligned_scrollbars_share_the_wrapped_tail_from_either_side() {
         for (from_new, top) in [(reverse, 300.), (!reverse, 770.), (reverse, 605.), (reverse, 0.), (!reverse, 470.), (reverse, f32::MAX)] {
             let (leader, id) = if from_new { (&mut new, nv) } else { (&mut base, bv) };
             leader.handle(id, CoreEvent::SetViewportOrigin { left: 0., top: Some(top) }).unwrap();
-            session.sync_scroll(&mut base, bv, &mut new, nv, from_new).unwrap();
+            session.sync_scroll(&mut base, bv, &mut new, nv, if from_new { Side::New } else { Side::Base }).unwrap();
             let a = base.viewport_state(bv).unwrap();
             let b = new.viewport_state(nv).unwrap();
             assert_eq!(a.estimated_maximum_top(), b.estimated_maximum_top());
@@ -198,7 +198,7 @@ fn aligned_scrollbars_share_the_wrapped_tail_from_either_side() {
         assert!(shared_end > own_end + 2.);
         let blank = (own_end + shared_end) / 2.;
         short.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(blank) }).unwrap();
-        session.sync_scroll(&mut base, bv, &mut new, nv, reverse).unwrap();
+        session.sync_scroll(&mut base, bv, &mut new, nv, if reverse { Side::New } else { Side::Base }).unwrap();
         let (short, view) = if reverse { (&mut new, nv) } else { (&mut base, bv) };
         short.handle(view, CoreEvent::Resize { width: 110., height: 79. }).unwrap();
         assert_eq!(short.viewport_state(view).unwrap().top(), blank);
@@ -298,7 +298,7 @@ fn tall_change(view_rows: f32) -> (TestCore, ViewId, TestCore, ViewId, DiffSessi
         40 => Some((0..60).map(|added| format!("added {added}")).collect::<Vec<_>>().join("\n")),
         _ => Some(format!("line {line}")),
     }));
-    let row = new.diff_default_row(new_view).unwrap().0;
+    let row = new.default_row_height(new_view).unwrap();
     new.handle(new_view, CoreEvent::Resize { width: 600., height: row * view_rows }).unwrap();
     base.handle(base_view, CoreEvent::Resize { width: 600., height: row * view_rows }).unwrap();
     let mut session = DiffSession::new(base.document(), new.document(), true);
@@ -521,7 +521,7 @@ fn collapsed_context_hides_the_same_equal_runs_on_both_sides_behind_one_divider_
 #[test]
 fn a_divider_is_one_default_row_in_the_margin_beside_the_hidden_lines() {
     let (mut base, base_view, mut new, new_view, mut session) = collapsing(true);
-    let row = new.diff_default_row(new_view).unwrap().0;
+    let row = new.default_row_height(new_view).unwrap();
     let collapsed = (row_top(&new, new_view, 7), row_top(&new, new_view, 13), row_top(&new, new_view, 27));
     session.set_collapsed(false);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
@@ -548,15 +548,15 @@ fn clicking_a_divider_opens_its_run_on_both_sides_until_collapsing_is_toggled() 
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
     for (core, view) in [(&base, base_view), (&new, new_view)] {
         assert_eq!(divider_lines(core, view), vec![33]);
-        assert_eq!(core.layout(view).unwrap().elided_lines(), [34..41]);
+        assert_eq!(core.layout(view).unwrap().elided().runs(), [34..41]);
     }
     session.set_collapsed(false);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
-    assert!(new.layout(new_view).unwrap().elided_lines().is_empty());
+    assert!(new.layout(new_view).unwrap().elided().runs().is_empty());
     assert!(divider_lines(&new, new_view).is_empty());
     session.set_collapsed(true);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..7, 14..27, 34..41], "opened runs closed again");
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 14..27, 34..41], "opened runs closed again");
 }
 
 #[test]
@@ -570,22 +570,22 @@ fn a_caret_moving_onto_collapsed_context_opens_it_on_both_sides() {
     for (index, (motion, opened)) in moves.into_iter().enumerate() {
         let (mut base, base_view, mut new, new_view, mut session) = collapsing(true);
         motion(&mut new, new_view);
-        assert!(!new.layout(new_view).unwrap().elided_lines().contains(&opened),
+        assert!(!new.layout(new_view).unwrap().elided().runs().contains(&opened),
             "motion {index} opened its run before any caret geometry: {:?}, caret {}",
-            new.layout(new_view).unwrap().elided_lines(), cursor_line(&new, new_view));
+            new.layout(new_view).unwrap().elided().runs(), cursor_line(&new, new_view));
         assert!(new.has_opened_collapsed(new_view).unwrap());
         session.sync(&mut base, base_view, &mut new, new_view).unwrap();
         assert!(!new.has_opened_collapsed(new_view).unwrap());
         let expected: Vec<_> = [0..7, 14..27, 34..41].into_iter().filter(|run| *run != opened).collect();
-        assert_eq!(new.layout(new_view).unwrap().elided_lines(), expected);
-        assert_eq!(base.layout(base_view).unwrap().elided_lines(), expected);
+        assert_eq!(new.layout(new_view).unwrap().elided().runs(), expected);
+        assert_eq!(base.layout(base_view).unwrap().elided().runs(), expected);
         assert!(shown_lines(&new, new_view).contains(&cursor_line(&new, new_view)));
     }
     // The base side's caret opens runs too.
     let (mut base, base_view, mut new, new_view, mut session) = collapsing(true);
     place(&mut base, base_view, 20);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..7, 34..41]);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 34..41]);
 }
 
 #[test]
@@ -603,7 +603,7 @@ fn a_starting_caret_moves_beside_collapsed_context_but_later_keeps_its_run_open(
     session.set_collapsed(true);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
     assert_eq!(cursor_line(&new, new_view), 20);
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [34..41]);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [34..41]);
 }
 
 #[test]
@@ -615,8 +615,8 @@ fn typing_beside_collapsed_context_reflows_it_incrementally_like_a_fresh_diff() 
     assert_eq!(session.sync(&mut base, base_view, &mut new, new_view).unwrap(), DiffSync::Incremental);
     // Line 13 changed, so 14..17 become its context.
     let expected = [0..7, 17..27, 34..41];
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), expected);
-    assert_eq!(base.layout(base_view).unwrap().elided_lines(), expected);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), expected);
+    assert_eq!(base.layout(base_view).unwrap().elided().runs(), expected);
     let (mut fresh_base, fresh_base_view) = core(&lines(40, |line| Some(format!("line {line}"))));
     let (mut fresh_new, fresh_new_view) = core(&String::from_utf8(new.document().source_bytes().to_vec()).unwrap());
     let mut fresh = DiffSession::new(fresh_base.document(), fresh_new.document(), true);
@@ -633,7 +633,7 @@ fn typing_beside_collapsed_context_reflows_it_incrementally_like_a_fresh_diff() 
     type_text(&mut new, new_view, "Ay");
     key(&mut new, new_view, Key::Escape);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..5, 34..41], "17..27 stays open beside the new change");
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..5, 34..41], "17..27 stays open beside the new change");
 }
 
 #[test]
@@ -647,7 +647,7 @@ fn collapsed_lines_cost_no_layout_work_in_a_million_line_document() {
     for (core, view) in [(&mut base, base_view), (&mut new, new_view)] {
         assert_eq!(shown_lines(core, view), ranges(&[499_997..500_004]));
         let layout = core.layout(view).unwrap();
-        assert_eq!(layout.elided_lines(), [0..499_997, 500_004..COUNT + 1], "the empty last line too");
+        assert_eq!(layout.elided().runs(), [0..499_997, 500_004..COUNT + 1], "the empty last line too");
         let cached: usize = layout.regional_cached_ranges().iter().map(Range::len).sum();
         assert!(cached <= 7, "only shown lines are cached: {cached}");
         // A region spanning the whole document captures only the shown text.
@@ -664,7 +664,7 @@ fn assert_only_hidden_lines_have_no_height(core: &TestCore, view: ViewId) {
     let count = core.document().projection().presentation_line_count();
     for line in 0..count {
         let height = layout.hard_line_range_height(line..line + 1).unwrap();
-        let hidden = layout.elided_run_at(line).is_some();
+        let hidden = layout.elided().run_at(line).is_some();
         assert_eq!(hidden, height.is_exact() && height.height() == 0.0, "line {line}: {height:?}");
     }
 }
@@ -678,7 +678,7 @@ fn long_collapse() -> (TestCore, ViewId, TestCore, ViewId, DiffSession) {
     let mut session = DiffSession::new(base.document(), new.document(), true);
     session.set_collapsed(true);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..7, 14..387, 394..401]);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 14..387, 394..401]);
     (base, base_view, new, new_view, session)
 }
 
@@ -691,16 +691,16 @@ fn hidden_lines_that_an_edit_reaches_are_shown_again_with_a_height() {
     let other = new.add_view(MockTextMeasurementProvider::new(), 600., 400.);
     type_text(&mut new, other, ":200s/line/LINE/");
     key(&mut new, other, Key::Enter);
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..7, 394..401]);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 394..401]);
     assert_only_hidden_lines_have_no_height(&new, new_view);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
     assert_eq!(cursor_line(&new, new_view), 7);
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..7, 14..196, 203..387, 394..401]);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 14..196, 203..387, 394..401]);
     assert_only_hidden_lines_have_no_height(&new, new_view);
     key(&mut new, other, Key::Char('u'));
     assert_only_hidden_lines_have_no_height(&new, new_view);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..7, 14..387, 394..401]);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 14..387, 394..401]);
     assert_only_hidden_lines_have_no_height(&new, new_view);
     assert_only_hidden_lines_have_no_height(&base, base_view);
     // The diff view's own edit moves its caret onto line 199, which opens
@@ -711,7 +711,7 @@ fn hidden_lines_that_an_edit_reaches_are_shown_again_with_a_height() {
     assert_only_hidden_lines_have_no_height(&new, new_view);
     session.sync(&mut base, base_view, &mut new, new_view).unwrap();
     assert_eq!(cursor_line(&new, new_view), 199);
-    assert_eq!(new.layout(new_view).unwrap().elided_lines(), [0..7, 394..401]);
-    assert_eq!(base.layout(base_view).unwrap().elided_lines(), [0..7, 394..401]);
+    assert_eq!(new.layout(new_view).unwrap().elided().runs(), [0..7, 394..401]);
+    assert_eq!(base.layout(base_view).unwrap().elided().runs(), [0..7, 394..401]);
     assert_only_hidden_lines_have_no_height(&base, base_view);
 }

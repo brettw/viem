@@ -302,11 +302,8 @@ pub unsafe extern "C" fn viem_diff_session_open_collapsed(
     ffi_boundary(|| {
         typed_pointer_region(out_opened, 1)?;
         unsafe { out_opened.write(0) };
-        if from_new > 1 {
-            return Err(ViemStatus::InvalidArgument);
-        }
+        let side = side_from_new(from_new)?;
         let line = usize::try_from(line).map_err(|_| ViemStatus::InvalidArgument)?;
-        let side = if from_new != 0 { crate::diff::Side::New } else { crate::diff::Side::Base };
         let opened = with_session(session, |session| Ok(session.open_collapsed_beside(side, line)))?;
         unsafe { out_opened.write(u32::from(opened)) };
         Ok(())
@@ -366,14 +363,21 @@ pub unsafe extern "C" fn viem_diff_session_corresponding_line(
     ffi_boundary(|| {
         typed_pointer_region(out_line, 1)?;
         unsafe { out_line.write(0) };
-        if from_new > 1 {
-            return Err(ViemStatus::InvalidArgument);
-        }
+        let side = side_from_new(from_new)?;
         let line = usize::try_from(line).map_err(|_| ViemStatus::LengthOverflow)?;
-        let other = with_session(session, |session| Ok(session.corresponding_line(from_new != 0, line)))?;
+        let other = with_session(session, |session| Ok(session.corresponding_line(side, line)))?;
         unsafe { out_line.write(other as u64) };
         Ok(())
     })
+}
+
+/// The side a `from_new` argument names: 1 for the new side, 0 for the base.
+fn side_from_new(from_new: u32) -> Result<crate::diff::Side, ViemStatus> {
+    match from_new {
+        0 => Ok(crate::diff::Side::Base),
+        1 => Ok(crate::diff::Side::New),
+        _ => Err(ViemStatus::InvalidArgument),
+    }
 }
 
 pub const VIEM_DIFF_SCROLL_BASE_CHANGED: u32 = 1;
@@ -396,13 +400,14 @@ pub unsafe extern "C" fn viem_diff_session_sync_scroll(
     ffi_boundary(|| {
         typed_pointer_region(out_changed, 1)?;
         unsafe { out_changed.write(0) };
-        if from_new > 1 || base_core == new_core {
+        let side = side_from_new(from_new)?;
+        if base_core == new_core {
             return Err(ViemStatus::InvalidArgument);
         }
         let mut base = checkout_core(base_core)?;
         let mut new = checkout_core(new_core)?;
         let (left, right) = with_session(session, |session| {
-            session.sync_scroll(base.core_mut(), ViewId(base_view), new.core_mut(), ViewId(new_view), from_new != 0).map_err(core_status)
+            session.sync_scroll(base.core_mut(), ViewId(base_view), new.core_mut(), ViewId(new_view), side).map_err(core_status)
         })?;
         let changed = (if left { VIEM_DIFF_SCROLL_BASE_CHANGED } else { 0 }) | (if right { VIEM_DIFF_SCROLL_NEW_CHANGED } else { 0 });
         unsafe { out_changed.write(changed) };

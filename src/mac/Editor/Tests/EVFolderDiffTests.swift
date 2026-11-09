@@ -95,7 +95,10 @@ final class EVFolderDiffTests: XCTestCase {
         return window
     }
 
-    private func diff(_ folder: URL, from window: EVDocumentWindowController) -> EVDocumentWindowController? {
+    /// Start a folder diff. The expectation is fulfilled when it opens or
+    /// reports; the closure then returns the window it opened.
+    private func beginDiff(_ folder: URL, from window: EVDocumentWindowController)
+        -> (XCTestExpectation, () -> EVDocumentWindowController?) {
         let opened = expectation(description: "folder diff opened")
         var target: EVDocumentWindowController?
         EVDocumentWindowController.folderDiffDidOpen = { controller in
@@ -107,9 +110,24 @@ final class EVFolderDiffTests: XCTestCase {
             opened.fulfill()
         }
         EVDocumentWindowController.diffFolder(folder, from: window)
+        return (opened, { [unowned self] in
+            if let target, !self.windows.contains(where: { $0 === target }) { self.windows.append(target) }
+            return target
+        })
+    }
+
+    private func diff(_ folder: URL, from window: EVDocumentWindowController) -> EVDocumentWindowController? {
+        let (opened, target) = beginDiff(folder, from: window)
         wait(for: [opened], timeout: 20)
-        if let target, !windows.contains(where: { $0 === target }) { windows.append(target) }
-        return target
+        return target()
+    }
+
+    /// For async tests, where `wait(for:)` would block the main actor that
+    /// the folder diff runs on until it times out.
+    private func diff(_ folder: URL, from window: EVDocumentWindowController) async -> EVDocumentWindowController? {
+        let (opened, target) = beginDiff(folder, from: window)
+        await fulfillment(of: [opened], timeout: 20)
+        return target()
     }
 
     func testAPristineWindowShowsTheFirstChangedFileUnderTheFolder() throws {
@@ -305,7 +323,8 @@ final class EVFolderDiffTests: XCTestCase {
     func testCommitBaseUsesResolvedHashAndShowsItsAbbreviation() async throws {
         let root = try repository()
         let placeholder = try window(text: nil)
-        let target = try XCTUnwrap(diff(root, from: placeholder))
+        let opened = await diff(root, from: placeholder)
+        let target = try XCTUnwrap(opened)
         let mode = try XCTUnwrap(target.diffMode)
         XCTAssertEqual(Array(mode.toolbar.basePopup.itemTitles.suffix(2)), ["Commit…", "Choose File…"])
         let commits = try await EVDiffBaseLoader.commits(path: root.path)

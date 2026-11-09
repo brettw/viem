@@ -878,7 +878,7 @@ fn capture_layout_input_segments(
     hard_line_count: usize,
 ) -> Result<(CapturedLayoutInput, LayoutJobViewConfiguration), LayoutJobError> {
     let range = region.hard_lines();
-    let hidden = view.elided_within(range.clone());
+    let hidden = view.elided().within(range.clone());
     let continuation = matches!(region, LayoutJobRegion::Viewport(viewport) if viewport.long_line_checkpoint().is_some());
     if hidden.is_empty() || continuation {
         return capture_layout_input(document, view, provider_requirements, region, cancellation, complete_lines, hard_line_count);
@@ -930,6 +930,12 @@ fn capture_layout_input(
             document_line_range(document, hard_line)
         })
         .collect::<Result<Vec<_>, LayoutJobError>>()?;
+    // The line after the region, whose paragraph decides its trailing spacing.
+    let following_line_range = if range.end < hard_line_count {
+        Some(document_line_range(document, range.end)?)
+    } else {
+        None
+    };
     let checkpoint = match &region {
         LayoutJobRegion::Viewport(viewport) => viewport.long_line_checkpoint().cloned(),
         LayoutJobRegion::HardLines(_) => None,
@@ -966,9 +972,6 @@ fn capture_layout_input(
     let (input, mut captured_view) = if use_unwrapped_viewport {
         let text_origin = line_ranges.first().unwrap().start;
         let text_end = line_ranges.last().unwrap().end;
-        let following_line_range = if range.end < hard_line_count {
-            Some(document_line_range(document, range.end)?)
-        } else { None };
         let style_end = following_style_end(document, following_line_range.as_ref(), text_end)?;
         let styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), text_origin..style_end, view.presentation_overlays(document.id(), document.revision()), document.format())?;
         let styles = retain_regional_styles(styles, &line_ranges, following_line_range.as_ref());
@@ -1009,11 +1012,7 @@ fn capture_layout_input(
         let text = if stream_overflow { None } else {
             Some(document.projection().text_tree().slice(capture_range.clone())?)
         };
-        let following_line_range = if (work_end == full_range.end || stream_overflow) && range.end < hard_line_count {
-            Some(document_line_range(document, range.end)?)
-        } else {
-            None
-        };
+        let following_line_range = following_line_range.filter(|_| work_end == full_range.end || stream_overflow);
         // The rare width-fit fallback can complete the remaining paragraph.
         // Retain its immutable style metadata, while the text stays in the tree.
         let indentation_tree = (checkpoint.is_none()
@@ -1083,11 +1082,6 @@ fn capture_layout_input(
             .projection()
             .text_tree()
             .slice(text_origin..text_end)?;
-        let following_line_range = if range.end < hard_line_count {
-            Some(document_line_range(document, range.end)?)
-        } else {
-            None
-        };
         // Resolve document-root values once, but visit only the requested
         // blocks, intersecting spans, and one following paragraph needed to
         // determine the requested region's trailing spacing.

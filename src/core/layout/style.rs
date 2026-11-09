@@ -260,19 +260,23 @@ pub(crate) struct DiffLayoutInput {
     pub(crate) lines: Vec<Range<usize>>,
     /// Sorted, disjoint changed spans.
     pub(crate) text: Vec<Range<usize>>,
-    /// Filler before the hard line starting at an offset, in unscaled
-    /// points, sorted by offset.
-    pub(crate) fillers: Vec<(usize, f32)>,
-    /// Filler after the last line, in unscaled points.
-    pub(crate) trailing_filler: f32,
-    /// Collapsed-context dividers, sorted by the start offset of the hard
-    /// line whose bottom (`true`) or top margin each fills, and whether the
-    /// hidden lines reach the start or end of the file.
-    pub(crate) dividers: Vec<(usize, bool, bool)>,
+    /// The margins diff mode adds to hard lines, sorted by `at`.
+    pub(crate) margins: Vec<DiffMargin>,
     /// One divider's height in unscaled points.
     pub(crate) divider_points: f32,
-    /// Formatted text length the presentation was built for.
-    pub(crate) text_len: usize,
+}
+
+/// The margins diff mode adds to the hard line starting at offset `at`:
+/// aligned filler above and below it, in unscaled points, and a
+/// collapsed-context divider.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct DiffMargin {
+    pub(crate) at: usize,
+    pub(crate) filler_before: f32,
+    pub(crate) filler_after: f32,
+    /// Whether a divider fills the line's bottom (`true`) or top margin,
+    /// and whether its hidden lines reach the start or end of the file.
+    pub(crate) divider: Option<(bool, bool)>,
 }
 
 impl DiffLayoutInput {
@@ -285,24 +289,27 @@ impl DiffLayoutInput {
         self.changes_line_at(block.range.start).then(|| if self.added { StyleId::diff_added_line() } else { StyleId::diff_removed_line() })
     }
 
-    fn filler_before(&self, block: &Block) -> f32 {
-        let index = self.fillers.partition_point(|(offset, _)| *offset < block.range.start);
-        self.fillers.get(index).filter(|(offset, _)| *offset == block.range.start).map_or(0.0, |(_, points)| *points)
+    fn margin_index(&self, at: usize) -> Option<usize> {
+        let index = self.margins.partition_point(|margin| margin.at < at);
+        self.margins.get(index).is_some_and(|margin| margin.at == at).then_some(index)
     }
 
-    fn filler_after(&self, block: &Block) -> f32 {
-        if block.range.end == self.text_len { self.trailing_filler } else { 0.0 }
+    fn margin(&self, block: &Block) -> DiffMargin {
+        self.margin_index(block.range.start).map_or_else(DiffMargin::default, |index| self.margins[index])
     }
 
-    /// Whether a divider fills this paragraph's bottom (`true`) or top
-    /// margin, and whether its hidden lines reach the file's edge.
-    fn divider(&self, block: &Block) -> Option<(bool, bool)> {
-        let index = self.dividers.partition_point(|(offset, ..)| *offset < block.range.start);
-        self.dividers.get(index).filter(|(offset, ..)| *offset == block.range.start).map(|(_, after, edge)| (*after, *edge))
+    /// The points this paragraph's bottom (`true`) or top margin grows by.
+    fn added_margin(&self, block: &Block, after: bool) -> f32 {
+        let margin = self.margin(block);
+        let divider = if margin.divider.is_some_and(|divider| divider.0 == after) { self.divider_points } else { 0.0 };
+        (if after { margin.filler_after } else { margin.filler_before }) + divider
     }
 
-    fn divider_margin(&self, block: &Block, after: bool) -> f32 {
-        if self.divider(block).is_some_and(|divider| divider.0 == after) { self.divider_points } else { 0.0 }
+    /// Stop drawing the divider in the margin of the hard line at `at`.
+    pub(crate) fn remove_divider(&mut self, at: usize) {
+        if let Some(index) = self.margin_index(at) {
+            self.margins[index].divider = None;
+        }
     }
 
     fn text_in(&self, range: &Range<usize>) -> &[Range<usize>] {
@@ -318,8 +325,9 @@ impl DiffLayoutInput {
         DiffParagraphKey {
             added: self.added,
             line: self.line_style(block).is_some(),
-            filler_before: (self.filler_before(block) + self.divider_margin(block, false)).to_bits(),
-            filler_after: (self.filler_after(block) + self.divider_margin(block, true)).to_bits(),
+            margin_top: self.added_margin(block, false).to_bits(),
+            margin_bottom: self.added_margin(block, true).to_bits(),
+            divider: self.margin(block).divider,
             text: self.text_in(&block.range).iter()
                 .map(|span| span.start.max(block.range.start) - start..span.end.min(block.range.end) - start)
                 .collect(),
@@ -331,8 +339,9 @@ impl DiffLayoutInput {
 struct DiffParagraphKey {
     added: bool,
     line: bool,
-    filler_before: u32,
-    filler_after: u32,
+    margin_top: u32,
+    margin_bottom: u32,
+    divider: Option<(bool, bool)>,
     text: Vec<Range<usize>>,
 }
 
@@ -797,16 +806,16 @@ impl DocumentLayoutStyles {
                         value.language_label = Some(block.language_label());
                         value.language_picker_disabled = !block.code_kind.language_editable();
                     }
-                    if let Some((diff, (after, edge))) = input.diff.and_then(|diff| diff.divider(block).map(|divider| (diff, divider))) {
+                    if let Some((diff, (after, edge))) = input.diff.and_then(|diff| diff.margin(block).divider.map(|divider| (diff, divider))) {
                         value.collapsed_divider = Some(collapsed_divider(input.style_sheet, after, edge, diff.divider_points));
                     }
                     value
                 },
                 containers: containers.into(),
                 margin_top: (if container_body { 0.0 } else if block.list_loose { paragraph.margin_top.max(7.0) } else { paragraph.margin_top })
-                    + input.diff.map_or(0.0, |diff| diff.filler_before(block) + diff.divider_margin(block, false)),
+                    + input.diff.map_or(0.0, |diff| diff.added_margin(block, false)),
                 margin_bottom: (if container_body { 0.0 } else if block.list_loose { paragraph.margin_bottom.max(7.0) } else { paragraph.margin_bottom })
-                    + input.diff.map_or(0.0, |diff| diff.filler_after(block) + diff.divider_margin(block, true)),
+                    + input.diff.map_or(0.0, |diff| diff.added_margin(block, true)),
                 line_spacing: paragraph.line_spacing,
                 first_line_indent: if matches!(
                     block.kind,

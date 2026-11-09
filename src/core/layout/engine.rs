@@ -1,4 +1,5 @@
 use super::direction::paragraph_is_right_to_left;
+use super::elided::ElidedLines;
 use super::block_box;
 use super::height_index::{
     HardLineHeightHit, HeightMeasurement, ViewHeightIndex, ViewHeightIndexError,
@@ -2175,14 +2176,11 @@ pub struct ViewLayout {
     /// Diff mode's presentation of this view's side, bound to the exact
     /// snapshot it was built for.
     diff_presentation: Option<(DocumentId, Revision, std::sync::Arc<super::style::DiffLayoutInput>)>,
-    /// Diff mode's collapsed context: sorted, disjoint hard-line runs hidden
-    /// from layout. Each is one exact zero-height interval of the height
-    /// index, never captured, shaped or cached. Local edits shift the runs
-    /// and drop any they touch; other document changes clear them.
-    elided: Vec<Range<usize>>,
-    /// Hidden runs the caret opened since diff mode last took them, so the
-    /// session opens them on the other side too.
-    opened_elided: Vec<Range<usize>>,
+    /// Diff mode's collapsed context: hard-line runs hidden from layout. Each
+    /// is one exact zero-height interval of the height index, never captured,
+    /// shaped or cached. Local edits shift the runs and show any they touch;
+    /// other document changes show them all.
+    elided: ElidedLines,
     /// Visible paragraphs' resolved appearance, reused by the next viewport
     /// capture while their inputs are unchanged.
     paragraph_styles: super::style::ParagraphStyleCache,
@@ -2260,8 +2258,7 @@ impl ViewLayout {
         Self {
             search_matches: None,
             diff_presentation: None,
-            elided: Vec::new(),
-            opened_elided: Vec::new(),
+            elided: ElidedLines::default(),
             paragraph_styles: Default::default(),
             whitespace: WhitespaceConfiguration::default(),
             whitespace_bounds: Default::default(),
@@ -2351,23 +2348,8 @@ impl ViewLayout {
             self.discard_for_document_change();
             return;
         }
-        // Hidden runs after the edit move with their lines. A run the edit
-        // touched is shown again: its surviving lines return to estimates,
-        // like the spliced lines, rather than keeping their zero height.
-        let shift = |line: usize| usize::try_from(line as i128 + line_delta).ok();
-        let mut shown = Vec::new();
-        self.elided = std::mem::take(&mut self.elided).into_iter().filter_map(|run| {
-            if run.end <= old_invalidated.start { Some(run) }
-            else if run.start >= old_invalidated.end { Some(shift(run.start)?..shift(run.end)?) }
-            else {
-                let end = shift(run.end).unwrap_or(0).max(invalidated_lines.end);
-                shown.push(run.start.min(invalidated_lines.start)..end.min(*new_line_count));
-                None
-            }
-        }).collect();
-        for lines in shown {
-            let _ = self.height_index.invalidate(lines);
-        }
+        let shown = self.elided.rebase(old_invalidated.clone(), invalidated_lines.clone());
+        self.show_elided_lines(shown);
         let identity_matches = self.regional_cache.identity.is_some_and(|identity| {
             identity.document_revision == *old_revision
                 && identity.document_hard_line_count == *old_line_count
@@ -2423,7 +2405,8 @@ impl ViewLayout {
     }
 
     fn discard_for_document_change(&mut self) {
-        self.elided.clear();
+        // Every height becomes an estimate below.
+        let _shown = self.elided.clear();
         self.invalidate_all_heights();
         self.regional_cache = self.regional_cache.replacement(None);
         self.rebased_document_revision = None;
@@ -2971,8 +2954,8 @@ impl ViewLayout {
     /// Hard lines with complete cached geometry.
     /// Lines with cached geometry, counting hidden lines as cached.
     pub(crate) fn regional_cached_line_count(&self) -> usize {
-        let hidden: usize = self.elided.iter().map(Range::len).sum();
-        let cached_hidden: usize = self.elided.iter().map(|run| self.regional_cache.lines.range(run.clone()).count()).sum();
+        let hidden: usize = self.elided.runs().iter().map(Range::len).sum();
+        let cached_hidden: usize = self.elided.runs().iter().map(|run| self.regional_cache.lines.range(run.clone()).count()).sum();
         self.regional_cache.lines.len() - cached_hidden + hidden
     }
 
@@ -2980,7 +2963,7 @@ impl ViewLayout {
     /// shift still counts: it is applied on the next hit. A hidden line needs
     /// no geometry.
     pub(crate) fn regional_line_is_cached(&self, hard_line: usize) -> bool {
-        self.regional_cache.lines.contains_key(&hard_line) || self.elided_run_at(hard_line).is_some()
+        self.regional_cache.lines.contains_key(&hard_line) || self.elided.run_at(hard_line).is_some()
     }
 
     /// Whether `hard_line` is retained whole with exact geometry for these
@@ -3017,7 +3000,7 @@ impl ViewLayout {
     pub(crate) fn first_uncached_regional_line(&self, mut range: Range<usize>, forward: bool) -> Option<usize> {
         loop {
             let line = self.first_uncached_unhidden_line(range.clone(), forward)?;
-            let Some(run) = self.elided_run_at(line) else { return Some(line) };
+            let Some(run) = self.elided.run_at(line) else { return Some(line) };
             if forward { range.start = run.end.max(range.start); } else { range.end = run.start.min(range.end); }
             if range.is_empty() { return None; }
         }
@@ -3206,14 +3189,9 @@ impl ViewLayout {
         let count_changed = self.height_index.hard_line_count() != hard_line_count;
         reconcile_height_index_count(&mut self.height_index, hard_line_count)?;
         if invalidate_exact || count_changed {
-            // Without a local rebase the runs no longer name the same lines;
-            // show them again with estimated heights.
-            for run in std::mem::take(&mut self.elided) {
-                let lines = run.start.min(hard_line_count)..run.end.min(hard_line_count);
-                if !lines.is_empty() {
-                    let _ = self.height_index.invalidate(lines);
-                }
-            }
+            // Without a local rebase the runs no longer name the same lines.
+            let shown = self.elided.clear();
+            self.show_elided_lines(shown);
         }
         if invalidate_exact {
             self.invalidate_all_heights();
@@ -3546,7 +3524,7 @@ impl ViewLayout {
         next_index.set_exact_heights_with_extents(exact_start, &exact)?;
         // A region captured before lines were hidden cannot give them height.
         let changed = (!reset_cache).then(|| region.hard_lines.clone());
-        restore_elided_heights(&mut next_index, &self.elided, changed);
+        self.elided.hide_in(&mut next_index, changed);
         Ok(PreparedRegionalInstall {
             installed_revision,
             region,
@@ -3616,7 +3594,18 @@ impl ViewLayout {
     /// Hidden runs are exact zero height whatever else was invalidated;
     /// `within` limits the work to the runs a change touched.
     fn restore_elided_heights(&mut self, within: Option<Range<usize>>) {
-        restore_elided_heights(&mut self.height_index, &self.elided, within);
+        self.elided.hide_in(&mut self.height_index, within);
+    }
+
+    /// Lines that are no longer hidden return to estimated heights.
+    fn show_elided_lines(&mut self, shown: Vec<Range<usize>>) {
+        let count = self.height_index.hard_line_count();
+        for lines in shown {
+            let lines = lines.start.min(count)..lines.end.min(count);
+            if !lines.is_empty() {
+                let _ = self.height_index.invalidate(lines);
+            }
+        }
     }
 
     /// Install diff mode's collapsed context, a sorted, disjoint list of hidden
@@ -3624,24 +3613,14 @@ impl ViewLayout {
     /// exact zero height without visiting their lines. Returns whether the set
     /// changed, after which the visible snapshot must be rebuilt.
     pub(crate) fn set_elided_lines(&mut self, runs: Vec<Range<usize>>) -> bool {
-        let count = self.height_index.hard_line_count();
-        let runs: Vec<Range<usize>> = runs.into_iter()
-            .map(|run| run.start.min(count)..run.end.min(count))
-            .filter(|run| !run.is_empty())
-            .collect();
-        if runs == self.elided {
-            return false;
-        }
-        for shown in self.elided.iter().filter(|run| !runs.contains(run)) {
-            let _ = self.height_index.invalidate(shown.clone());
-        }
-        self.elided = runs;
+        let Some(shown) = self.elided.replace(runs, self.height_index.hard_line_count()) else { return false };
+        self.show_elided_lines(shown);
         self.restore_elided_heights(None);
         self.bump_configuration(false);
         true
     }
 
-    pub(crate) fn elided_lines(&self) -> &[Range<usize>] {
+    pub(crate) fn elided(&self) -> &ElidedLines {
         &self.elided
     }
 
@@ -3650,68 +3629,34 @@ impl ViewLayout {
     /// drawn in the margin of the paragraph at `divider` (its hard line and
     /// start offset). The run is kept for [`Self::take_opened_elided`].
     pub(crate) fn open_elided_run(&mut self, run: Range<usize>, divider: Option<(usize, usize)>) {
-        let runs = self.elided.iter().filter(|hidden| **hidden != run).cloned().collect();
-        if !self.set_elided_lines(runs) {
+        if !self.elided.open(&run) {
             return;
         }
+        self.show_elided_lines(vec![run]);
+        self.bump_configuration(false);
         if let (Some((line, offset)), Some((document, revision, input))) = (divider, self.diff_presentation.clone()) {
             let mut next = (*input).clone();
-            next.dividers.retain(|(at, ..)| *at != offset);
+            next.remove_divider(offset);
             if next != *input {
                 self.set_diff_presentation(document, revision, Some(std::sync::Arc::new(next)), Some(&[line..line + 1]));
             }
         }
-        self.opened_elided.push(run);
-    }
-
-    pub(crate) fn has_opened_elided(&self) -> bool {
-        !self.opened_elided.is_empty()
     }
 
     /// The runs the caret opened since the last call.
     pub(crate) fn take_opened_elided(&mut self) -> Vec<Range<usize>> {
-        std::mem::take(&mut self.opened_elided)
-    }
-
-    /// The hidden run containing `hard_line`, if any.
-    pub(crate) fn elided_run_at(&self, hard_line: usize) -> Option<Range<usize>> {
-        let index = self.elided.partition_point(|run| run.end <= hard_line);
-        self.elided.get(index).filter(|run| run.start <= hard_line).cloned()
-    }
-
-    /// Hidden runs intersecting `range`, clipped to it.
-    pub(crate) fn elided_within(&self, range: Range<usize>) -> Vec<Range<usize>> {
-        let first = self.elided.partition_point(|run| run.end <= range.start);
-        self.elided[first..].iter()
-            .take_while(|run| run.start < range.end)
-            .map(|run| run.start.max(range.start)..run.end.min(range.end))
-            .collect()
+        self.elided.take_opened()
     }
 
     /// The number of lines of `range` that are not hidden.
     pub(crate) fn visible_line_count(&self, range: Range<usize>) -> usize {
-        range.len() - self.elided_within(range).iter().map(Range::len).sum::<usize>()
+        self.elided.visible_count(range)
     }
 
     /// Move from `line` by `count` visible lines in either direction, stopping
     /// at the document's edges; hidden runs are crossed without counting.
     pub(crate) fn step_visible_lines(&self, line: usize, count: usize, forward: bool) -> usize {
-        let total = self.height_index.hard_line_count();
-        let mut at = line.min(total);
-        let mut remaining = count;
-        while remaining > 0 {
-            if forward {
-                if at >= total { break; }
-                if let Some(run) = self.elided_run_at(at) { at = run.end; continue; }
-                at += 1;
-            } else {
-                if at == 0 { break; }
-                if let Some(run) = self.elided_run_at(at - 1) { at = run.start; continue; }
-                at -= 1;
-            }
-            remaining -= 1;
-        }
-        at
+        self.elided.step(line, count, forward, self.height_index.hard_line_count())
     }
 
     fn height_index_for_snapshot(
@@ -3777,19 +3722,6 @@ impl LayoutSnapshot {
             layout_revision: self.revision,
             text_offset: stop.text_offset,
             affinity: stop.affinity,
-        }
-    }
-}
-
-/// Make every hidden run of `elided` intersecting `within` (all, for none)
-/// one exact zero-height interval of `index`.
-fn restore_elided_heights(index: &mut ViewHeightIndex, elided: &[Range<usize>], within: Option<Range<usize>>) {
-    let count = index.hard_line_count();
-    for run in elided {
-        if within.as_ref().is_some_and(|within| run.end <= within.start || within.end <= run.start) { continue; }
-        let run = run.start.min(count)..run.end.min(count);
-        if !run.is_empty() {
-            let _ = index.set_hidden_range(run);
         }
     }
 }

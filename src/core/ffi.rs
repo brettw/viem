@@ -13602,13 +13602,8 @@ pub unsafe extern "C" fn viem_core_view_default_line_height(
         }
         let height = with_core(handle, |core| {
             let scale = core.viewport_state(ViewId(view)).map_err(core_status)?.scale();
-            let document = core.document();
-            let code_sheet;
-            let sheet = if document.format().is_code() {
-                code_sheet = crate::document::code_style::snapshot();
-                &code_sheet
-            } else { document.projection().style_sheet() };
-            sheet.default_line_height().map(|height| height * scale)
+            core.with_default_style_sheet(|sheet| sheet.default_line_height())
+                .map(|height| height * scale)
                 .map_err(|_| ViemStatus::CoreFailure)
         })?;
         unsafe { out_height.write(height); }

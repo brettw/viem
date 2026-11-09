@@ -2262,18 +2262,44 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// A Vim window-width column is the zoomed Base Paragraph `0` advance.
     /// This bounded metrics-only request never resolves or shapes document text.
     pub fn default_column_width(&mut self, view_id: ViewId) -> Result<f32, CoreError> {
-        let code_sheet;
-        let sheet = if self.document.format().is_code() {
-            code_sheet = crate::document::code_style::snapshot(); &code_sheet
-        } else { self.document.projection().style_sheet() };
-        let paragraph = sheet.default_paragraph_style()
-            .map_err(|_| CoreError::Layout(LayoutError::MalformedMeasurement("Invalid default paragraph style".into())))?;
-        let style = crate::layout::shaping_style(&paragraph.character).map_err(|_| CoreError::Layout(
-            LayoutError::MalformedMeasurement("Invalid default paragraph font".into())))?;
+        let (style, _) = self.default_paragraph_metrics()?;
+        let (document, revision) = (self.document.id(), self.document.revision());
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         let scale = view.layout.scale();
-        crate::layout::default_column_width(view.engine.provider_mut(),self.document.id(),
-            self.document.revision(),&style,scale).map_err(|e| CoreError::Layout(LayoutError::Measurement(e)))
+        crate::layout::default_column_width(view.engine.provider_mut(), document, revision, &style, scale)
+            .map_err(|error| CoreError::Layout(LayoutError::Measurement(error)))
+    }
+
+    /// The measured height of one default row in layout units, at the view's
+    /// scale, including the default paragraph's line spacing.
+    pub(crate) fn default_row_height(&mut self, view_id: ViewId) -> Result<f32, CoreError> {
+        let (style, spacing) = self.default_paragraph_metrics()?;
+        let (document, revision) = (self.document.id(), self.document.revision());
+        let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
+        let scale = view.layout.scale();
+        let height = crate::layout::default_line_height(view.engine.provider_mut(), document, revision, &style, scale)
+            .map_err(|error| CoreError::Layout(LayoutError::Measurement(error)))?;
+        Ok(crate::layout::line_advance(height, spacing))
+    }
+
+    /// Read the sheet that styles the default paragraph: the application's
+    /// Code sheet in Code, else the document's own.
+    pub(crate) fn with_default_style_sheet<R>(&self, read: impl FnOnce(&crate::document::StyleSheet) -> R) -> R {
+        if self.document.format().is_code() {
+            read(&crate::document::code_style::snapshot())
+        } else {
+            read(self.document.projection().style_sheet())
+        }
+    }
+
+    /// The default paragraph's shaping style and line spacing.
+    fn default_paragraph_metrics(&self) -> Result<(crate::layout::ResolvedTextStyle, crate::document::LineSpacing), CoreError> {
+        let malformed = |message: &'static str| CoreError::Layout(LayoutError::MalformedMeasurement(message.into()));
+        self.with_default_style_sheet(|sheet| {
+            let paragraph = sheet.default_paragraph_style().map_err(|_| malformed("Invalid default paragraph style"))?;
+            let style = crate::layout::shaping_style(&paragraph.character).map_err(|_| malformed("Invalid default paragraph font"))?;
+            Ok((style, paragraph.line_spacing))
+        })
     }
 
     /// Scheduling requirements for a view's provider. A frontend uses this

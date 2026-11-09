@@ -9,6 +9,7 @@
 //! new side.
 
 use super::inline::{inline_spans, similarity, InlineSpans};
+use super::presentation::Side;
 use super::sequence::{diff, Run, WorkBudget};
 use std::borrow::Cow;
 use std::hash::{Hash, Hasher};
@@ -106,6 +107,15 @@ pub struct Hunk {
     pub pairs: Arc<[LinePair]>,
 }
 
+impl Hunk {
+    pub fn side(&self, side: Side) -> &Range<usize> {
+        match side {
+            Side::Base => &self.base,
+            Side::New => &self.new,
+        }
+    }
+}
+
 /// Replace new-side lines `start..old_end` (numbered before the edit) with
 /// lines `start..new_end` (numbered after it).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -113,6 +123,66 @@ pub struct LineEdit {
     pub start: usize,
     pub old_end: usize,
     pub new_end: usize,
+}
+
+impl LineEdit {
+    /// Whether this edit turns a side of `old_count` lines into one of
+    /// `new_count` lines.
+    pub fn fits(self, old_count: usize, new_count: usize) -> bool {
+        self.start <= self.old_end
+            && self.start <= self.new_end
+            && self.old_end <= old_count
+            && old_count - (self.old_end - self.start) + (self.new_end - self.start) == new_count
+    }
+
+    fn shift(self, line: usize) -> usize {
+        line - self.old_end + self.new_end
+    }
+
+    /// Where a line moves: lines before the edit keep their number and
+    /// lines after it shift. A replaced line has none.
+    pub fn map_line(self, line: usize) -> Option<usize> {
+        if line < self.start {
+            Some(line)
+        } else if line >= self.old_end {
+            Some(self.shift(line))
+        } else {
+            None
+        }
+    }
+
+    /// Where the boundary before `line` moves. The edit's own start
+    /// boundary moves with the lines after the edit when it inserts there;
+    /// a boundary between replaced lines has none.
+    pub fn map_boundary(self, line: usize) -> Option<usize> {
+        if line >= self.old_end {
+            Some(self.shift(line))
+        } else if line <= self.start {
+            Some(line)
+        } else {
+            None
+        }
+    }
+
+    /// `lines` moved whole, or `None` when the edit replaces or splits any
+    /// of it.
+    pub fn map_range(self, lines: Range<usize>) -> Option<Range<usize>> {
+        if lines.end <= self.start {
+            Some(lines)
+        } else if lines.start >= self.old_end {
+            Some(self.shift(lines.start)..self.shift(lines.end))
+        } else {
+            None
+        }
+    }
+
+    /// The nonempty parts of `lines` before and after the replaced lines,
+    /// moved.
+    pub fn map_surviving(self, lines: Range<usize>) -> impl Iterator<Item = Range<usize>> {
+        let before = lines.start..lines.end.min(self.start);
+        let after = lines.start.max(self.old_end)..lines.end;
+        [before, after].into_iter().filter(|part| !part.is_empty()).filter_map(move |part| self.map_range(part))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -145,12 +215,7 @@ impl DiffState {
     /// treated as unknown and recomputes from scratch.
     pub fn apply_edit(&mut self, base: &dyn LineSource, new: &dyn LineSource, edit: LineEdit) {
         let LineEdit { start, old_end, new_end } = edit;
-        let valid = start <= old_end
-            && old_end <= self.new_lines
-            && start <= new_end
-            && self.new_lines - (old_end - start) + (new_end - start) == new.line_count()
-            && base.line_count() == self.base_lines;
-        if !valid {
+        if !edit.fits(self.new_lines, new.line_count()) || base.line_count() != self.base_lines {
             *self = Self::compute(base, new, self.limits);
             return;
         }
@@ -257,11 +322,13 @@ impl DiffState {
     /// The line on the other side that corresponds to `line`, for keeping
     /// the sides' scroll positions together. Inside a changed region the
     /// offset is kept, clamped to the other side's extent.
-    pub fn corresponding_line(&self, from_new: bool, line: usize) -> usize {
+    pub fn corresponding_line(&self, from: Side, line: usize) -> usize {
         let (mut base, mut new) = (0, 0);
         for chunk in &self.chunks {
-            let (own_start, own_len, other_start, other_len) =
-                if from_new { (new, chunk.new, base, chunk.base) } else { (base, chunk.base, new, chunk.new) };
+            let (own_start, own_len, other_start, other_len) = match from {
+                Side::New => (new, chunk.new, base, chunk.base),
+                Side::Base => (base, chunk.base, new, chunk.new),
+            };
             if line < own_start + own_len {
                 let offset = line - own_start;
                 return other_start + if chunk.equal { offset } else { offset.min(other_len.saturating_sub(1)) };
@@ -269,7 +336,7 @@ impl DiffState {
             base += chunk.base;
             new += chunk.new;
         }
-        let (own, other) = if from_new { (new, base) } else { (base, new) };
+        let (own, other) = match from { Side::New => (new, base), Side::Base => (base, new) };
         other + line.saturating_sub(own)
     }
 

@@ -8,6 +8,7 @@ mod composition;
 mod indent_projection;
 mod block_box;
 mod direction;
+mod elided;
 mod engine;
 mod height_index;
 mod indent_anchor_index;
@@ -72,7 +73,7 @@ pub use measurement::{
     TextMeasurementProvider, TextMetrics,
 };
 pub use mock::MockTextMeasurementProvider;
-pub(crate) use style::{shaping_style, DiffLayoutInput};
+pub(crate) use style::{shaping_style, DiffLayoutInput, DiffMargin};
 pub use style::{
     DocumentLayoutStyles, DocumentStyleError, DocumentStyleInput, PaintStyleRun,
     ParagraphLayoutStyle, ResolvedTextPaint,

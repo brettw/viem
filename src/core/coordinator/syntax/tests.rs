@@ -541,6 +541,8 @@ impl SyntaxProvider for RecordingProvider {
 
 #[test]
 fn complete_highlighting_is_requested_in_bounded_chunks_once_each() {
+    // A package registered by another test would reset this coverage.
+    let _registry = crate::document::syntax::treesitter::package_registry_test_guard();
     let text: String = (0..3000).map(|line| format!("fn function_{line}() {{}}\n")).collect();
     let len = text.len();
     assert!(len > 4 * COMPLETE_SYNTAX_CHUNK_BYTES);
@@ -577,13 +579,15 @@ fn complete_highlighting_is_requested_in_bounded_chunks_once_each() {
     unique.sort_by_key(|range| (range.start, range.end));
     unique.dedup();
     assert_eq!(unique.len(), ranges.len(), "no chunk is analyzed twice: {ranges:?}");
-    // Polling after completion requests nothing further.
-    let count = ranges.len();
+    // Polling after completion requests nothing further. Earlier requests
+    // can outnumber the analyzed ranges: while the shared workers are busy,
+    // a newer pending request replaces one no worker has started.
+    let requests = core.syntax.service.statistics.requests;
     for _ in 0..20 {
         core.poll_syntax();
         std::thread::sleep(Duration::from_millis(2));
     }
-    assert_eq!(core.syntax.service.statistics.requests as usize, count);
+    assert_eq!(core.syntax.service.statistics.requests, requests);
 }
 
 #[test]

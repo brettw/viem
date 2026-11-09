@@ -14,6 +14,15 @@ pub enum Side {
     New,
 }
 
+impl Side {
+    pub fn other(self) -> Self {
+        match self {
+            Self::Base => Self::New,
+            Self::New => Self::Base,
+        }
+    }
+}
+
 /// Blank, non-text space drawn before a hard line (or after the last line
 /// when `before_line` equals the line count), measured in default lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,6 +38,7 @@ pub struct SidePresentation {
     pub lines: Vec<Range<usize>>,
     /// Changed spans: a hard line and a byte range within it.
     pub text: Vec<(usize, Range<usize>)>,
+    /// Sorted by `before_line`.
     pub fillers: Vec<Filler>,
     /// Hidden runs of unchanged lines, each drawn as one divider.
     pub collapsed: Vec<Range<usize>>,
@@ -56,10 +66,7 @@ impl DiffState {
     pub fn presentation(&self, side: Side, aligned: bool) -> SidePresentation {
         let mut presentation = SidePresentation::default();
         for hunk in self.hunks() {
-            let (own, other) = match side {
-                Side::Base => (hunk.base.clone(), hunk.new.clone()),
-                Side::New => (hunk.new.clone(), hunk.base.clone()),
-            };
+            let (own, other) = (hunk.side(side).clone(), hunk.side(side.other()).clone());
             if !own.is_empty() {
                 presentation.lines.push(own.clone());
             }

@@ -1110,7 +1110,7 @@ final class EVDiffModeController: NSObject {
     commitPickerTask?.cancel()
     let current = generation
     commitPickerTask = Task { @MainActor in
-      func isCurrent() -> Bool {
+      @MainActor func isCurrent() -> Bool {
         !Task.isCancelled && self.isEnabled && self.generation == current && self.activeDocument === document
       }
       do {
