@@ -634,13 +634,13 @@ fn line_edit(document: &Document, change: &crate::document::LocalFormattedChange
 
 /// Convert one side's presentation from hard lines to formatted offsets.
 fn layout_input(document: &Document, side: Side, presentation: &SidePresentation, filler_points: f32,
-    divider_points: f32) -> DiffLayoutInput {
+    row_points: f32) -> DiffLayoutInput {
     let projection = document.projection();
     let count = document.line_count();
     let line = |index: usize| projection.hard_line_range(index.min(count.saturating_sub(1)));
     let mut input = DiffLayoutInput {
         added: side == Side::New,
-        divider_points,
+        row_points,
         ..Default::default()
     };
     for range in &presentation.lines {
@@ -660,6 +660,7 @@ fn layout_input(document: &Document, side: Side, presentation: &SidePresentation
     for (index, margin) in line_margins(presentation, count) {
         if let Some(range) = projection.hard_line_range(index) {
             input.margins.push(DiffMargin {
+                line: index,
                 at: range.start,
                 filler_before: margin.filler_before as f32 * filler_points,
                 filler_after: margin.filler_after as f32 * filler_points,

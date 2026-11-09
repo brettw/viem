@@ -412,6 +412,49 @@ impl ViewHeightIndex {
         self.replace_range(range, replacement)
     }
 
+    /// Estimate lines not yet measured at `height`: lines still at the old
+    /// estimate change, while measured lines, including retained estimates of
+    /// earlier measurements, keep their heights. Later invalidations and
+    /// insertions use `height` too. O(runs).
+    pub(crate) fn set_estimated_line_height(&mut self, height: f64) -> Result<(), ViewHeightIndexError> {
+        validate_height(height)?;
+        let old = self.estimated_line_height;
+        if old.to_bits() == height.to_bits() {
+            return Ok(());
+        }
+        let mut runs: Vec<HeightRun> = Vec::with_capacity(subtree_runs(&self.root));
+        collect_runs(&self.root, false, &mut runs);
+        let mut total = 0.0;
+        let mut merged: Vec<HeightRun> = Vec::with_capacity(runs.len());
+        for mut run in runs {
+            if !run.exact && run.height.to_bits() == old.to_bits() && run.extent.to_bits() == old.to_bits() {
+                run.height = height;
+                run.extent = height;
+            }
+            total = checked_height_sum(total, checked_height_product(run.height, run.line_count)?)
+                .ok_or(ViewHeightIndexError::HeightOverflow)?;
+            match merged.last_mut() {
+                Some(last) if last.can_merge(run) => last.line_count += run.line_count,
+                _ => merged.push(run),
+            }
+        }
+        self.root = balanced_tree_from_runs(&merged);
+        self.estimated_line_height = height;
+        Ok(())
+    }
+
+    /// Estimate one line not yet measured at `height`. A measured line keeps
+    /// its exact height. O(log n).
+    pub(crate) fn estimate_line(&mut self, hard_line: usize, height: f64) -> Result<(), ViewHeightIndexError> {
+        validate_height(height)?;
+        let range = hard_line..hard_line.checked_add(1).ok_or(ViewHeightIndexError::LineCountOverflow)?;
+        if self.range_height(range.clone())?.is_exact() {
+            return Ok(());
+        }
+        self.validate_replacement(&range, 1, height)?;
+        self.replace_range(range, Some(Node::new(HeightRun { line_count: 1, height, extent: height, exact: false })))
+    }
+
     /// Revert a range to this index's estimate in O(log n).
     pub fn invalidate(&mut self, range: Range<usize>) -> Result<(), ViewHeightIndexError> {
         self.validate_range(&range)?;
@@ -688,6 +731,18 @@ fn subtree_runs(tree: &Link) -> usize {
 
 fn subtree_depth(tree: &Link) -> usize {
     tree.as_ref().map_or(0, |node| node.subtree_depth)
+}
+
+/// Append the runs of `link` in order, as estimates below a node whose
+/// descendants were retired (`stale`).
+fn collect_runs(link: &Link, stale: bool, runs: &mut Vec<HeightRun>) {
+    let Some(node) = link else { return };
+    let stale_below = stale || node.stale_descendants;
+    collect_runs(&node.left, stale_below, runs);
+    let mut run = node.run;
+    run.exact &= !stale;
+    runs.push(run);
+    collect_runs(&node.right, stale_below, runs);
 }
 
 fn balanced_tree_from_runs(runs: &[HeightRun]) -> Link {
@@ -982,6 +1037,47 @@ fn checked_height_sum(left: f64, right: f64) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_estimate_changes_only_lines_not_yet_measured() {
+        let mut heights = ViewHeightIndex::new_estimated(10, 16.).unwrap();
+        heights.set_exact_heights(2, &[21., 21.]).unwrap();
+        heights.set_exact_heights(6, &[30.]).unwrap();
+        heights.invalidate_retaining_estimates(6..7).unwrap();
+        heights.set_estimated_line_height(20.).unwrap();
+        assert_eq!(heights.total_height().height(), 7. * 20. + 2. * 21. + 30.);
+        assert!(heights.range_height(2..4).unwrap().is_exact());
+        assert_eq!(heights.range_height(6..7).unwrap(), HeightMeasurement { height: 30., exact: false },
+            "a retained measurement is not the old estimate");
+        // Later estimates use the new height.
+        heights.invalidate(2..3).unwrap();
+        assert_eq!(heights.range_height(2..3).unwrap().height(), 20.);
+        heights.splice(10..10, 2).unwrap();
+        assert_eq!(heights.range_height(10..12).unwrap().height(), 40.);
+    }
+
+    #[test]
+    fn a_new_estimate_keeps_measurements_retired_across_the_whole_index() {
+        let mut heights = ViewHeightIndex::new_estimated(1_000, 16.).unwrap();
+        let measured: Vec<f64> = (0..500).map(|line| 20. + (line % 3) as f64).collect();
+        heights.set_exact_heights(0, &measured).unwrap();
+        heights.invalidate_retaining_estimates(0..1_000).unwrap();
+        heights.set_estimated_line_height(18.).unwrap();
+        assert_eq!(heights.prefix_height(500).unwrap().height(), measured.iter().sum::<f64>());
+        assert_eq!(heights.range_height(500..1_000).unwrap().height(), 500. * 18.);
+        assert!(!heights.range_height(0..1).unwrap().is_exact());
+    }
+
+    #[test]
+    fn a_line_estimate_never_replaces_a_measured_height() {
+        let mut heights = ViewHeightIndex::new_estimated(4, 16.).unwrap();
+        heights.set_exact_height(1, 21.).unwrap();
+        heights.estimate_line(1, 50.).unwrap();
+        heights.estimate_line(2, 50.).unwrap();
+        assert_eq!(heights.range_height(1..2).unwrap(), HeightMeasurement { height: 21., exact: true });
+        assert_eq!(heights.range_height(2..3).unwrap(), HeightMeasurement { height: 50., exact: false });
+        assert_eq!(heights.total_height().height(), 16. + 21. + 50. + 16.);
+    }
 
     #[test]
     fn resource_invalidation_retains_extents_lazily_and_remeasures_only_local_paths() {

@@ -260,17 +260,19 @@ pub(crate) struct DiffLayoutInput {
     pub(crate) lines: Vec<Range<usize>>,
     /// Sorted, disjoint changed spans.
     pub(crate) text: Vec<Range<usize>>,
-    /// The margins diff mode adds to hard lines, sorted by `at`.
+    /// The margins diff mode adds to hard lines, sorted by line.
     pub(crate) margins: Vec<DiffMargin>,
-    /// One divider's height in unscaled points.
-    pub(crate) divider_points: f32,
+    /// One measured default row in unscaled points: a divider's height, and
+    /// the estimate for a line not yet measured.
+    pub(crate) row_points: f32,
 }
 
-/// The margins diff mode adds to the hard line starting at offset `at`:
-/// aligned filler above and below it, in unscaled points, and a
+/// The margins diff mode adds to hard line `line`, which starts at offset
+/// `at`: aligned filler above and below it, in unscaled points, and a
 /// collapsed-context divider.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct DiffMargin {
+    pub(crate) line: usize,
     pub(crate) at: usize,
     pub(crate) filler_before: f32,
     pub(crate) filler_after: f32,
@@ -301,8 +303,13 @@ impl DiffLayoutInput {
     /// The points this paragraph's bottom (`true`) or top margin grows by.
     fn added_margin(&self, block: &Block, after: bool) -> f32 {
         let margin = self.margin(block);
-        let divider = if margin.divider.is_some_and(|divider| divider.0 == after) { self.divider_points } else { 0.0 };
+        let divider = if margin.divider.is_some_and(|divider| divider.0 == after) { self.row_points } else { 0.0 };
         (if after { margin.filler_after } else { margin.filler_before }) + divider
+    }
+
+    /// The points one margin adds to its line's height.
+    pub(crate) fn margin_points(&self, margin: &DiffMargin) -> f32 {
+        margin.filler_before + margin.filler_after + if margin.divider.is_some() { self.row_points } else { 0.0 }
     }
 
     /// Stop drawing the divider in the margin of the hard line at `at`.
@@ -807,7 +814,7 @@ impl DocumentLayoutStyles {
                         value.language_picker_disabled = !block.code_kind.language_editable();
                     }
                     if let Some((diff, (after, edge))) = input.diff.and_then(|diff| diff.margin(block).divider.map(|divider| (diff, divider))) {
-                        value.collapsed_divider = Some(collapsed_divider(input.style_sheet, after, edge, diff.divider_points));
+                        value.collapsed_divider = Some(collapsed_divider(input.style_sheet, after, edge, diff.row_points));
                     }
                     value
                 },

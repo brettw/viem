@@ -441,7 +441,14 @@ Layers are built bottom-up; each has focused tests before the next starts.
     character context), adds filler to `margin_top`/`margin_bottom`, and
     overlays diff text after syntax and before search. The paragraph style
     cache keys on `DiffParagraphKey`. `ViewLayout::set_diff_presentation`
-    invalidates only changed lines when told which.
+    invalidates only changed lines when told which. A shared scroll position
+    lines the sides up only if both views agree on the height of every line
+    above it, measured or not, so a diff view estimates an unmeasured line as
+    layout will measure it: one default row (`DiffLayoutInput::row_points`,
+    the filler unit) plus that line's filler and divider (`DiffMargin`).
+    These estimates are reapplied after every invalidation, including a
+    regional install that resets the index, and wait for the next
+    presentation while an edit has renumbered the lines.
   - Coordinator: `coordinator/diff.rs` `DiffSession` (`new`, `update`,
     `sync`, `set_aligned`, `corresponding_line`, `sync_scroll`,
     `clear`),
@@ -656,10 +663,13 @@ context), built in this order:
   session installs the new one. Rebasing the presentation through the edit
   inside the core would remove the second pass.
 - Filler height is the measured default Code row (`default_line_height` with
-  the base paragraph's line spacing), so it is exact for uniform Code lines.
-  A line that wraps to more rows on one side does not yet get extra filler on
-  the other. With different wrapping, corresponding text can sit at different
-  heights within the shared scroll range.
+  the base paragraph's line spacing), so it is exact for uniform Code lines,
+  and so are the estimates for lines not yet measured. A line that wraps to
+  more rows on one side does not yet get extra filler on the other. With
+  different wrapping, corresponding text can sit at different heights within
+  the shared scroll range; so can a wrapped line that only one side has
+  measured, until the other measures it (at once for a pre-rendered
+  document).
 - A session is created synchronously from both cores' current documents,
   so a very large initial diff blocks the calling thread within the work
   budget. Moving the first diff to a worker needs a snapshot-based create.

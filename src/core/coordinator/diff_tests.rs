@@ -715,3 +715,82 @@ fn hidden_lines_that_an_edit_reaches_are_shown_again_with_a_height() {
     assert_eq!(base.layout(base_view).unwrap().elided().runs(), [0..7, 394..401]);
     assert_only_hidden_lines_have_no_height(&base, base_view);
 }
+
+/// The top line of a view and how far into it the view starts.
+fn top_position(core: &TestCore, view: ViewId) -> (usize, f64) {
+    let layout = core.layout(view).unwrap();
+    let top = f64::from(layout.viewport_top());
+    let hit = layout.hard_line_at_y(top).unwrap().unwrap();
+    (hit.hard_line(), top - hit.line_top())
+}
+
+fn assert_level(base: &TestCore, base_view: ViewId, new: &TestCore, new_view: ViewId, session: &DiffSession) {
+    let (new_line, new_offset) = top_position(new, new_view);
+    let (base_line, base_offset) = top_position(base, base_view);
+    assert_eq!(base_line, session.corresponding_line(Side::New, new_line), "the base lines up with the new side");
+    assert!((base_offset - new_offset).abs() < 0.5, "base {base_offset} into its line, new {new_offset}");
+}
+
+#[test]
+fn aligned_sides_stay_level_whatever_each_side_has_measured() {
+    let mut text: Vec<String> = (0..2000).map(|line| format!("line {line}")).collect();
+    let (mut base, base_view) = core(&text.join("\n"));
+    text[1500] = "changed".into();
+    let (mut new, new_view) = core(&text.join("\n"));
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    // Only the new side measures the lines around 800.
+    let around = prefix(&new, new_view, 800) as f32;
+    new.materialize_requested_viewport(new_view, 0.0, around).unwrap();
+    session.navigate_change(&mut base, base_view, &mut new, new_view, ChangeDirection::Next).unwrap();
+    assert_eq!(cursor_line(&new, new_view), 1500);
+    assert_level(&base, base_view, &new, new_view, &session);
+}
+
+#[test]
+fn aligned_sides_stay_level_below_filler_neither_side_has_measured() {
+    let (mut base, base_view) = core(&lines(2000, |line| Some(format!("line {line}"))));
+    let (mut new, new_view) = core(&lines(2000, |line| match line {
+        500 => Some((0..40).map(|added| format!("added {added}\n")).collect::<String>() + "line 500"),
+        1500 => Some("changed".into()),
+        _ => Some(format!("line {line}")),
+    }));
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    // From the top, the last change is the previous one: the 40 added lines
+    // and the base's filler for them are never laid out.
+    session.navigate_change(&mut base, base_view, &mut new, new_view, ChangeDirection::Previous).unwrap();
+    assert_eq!(cursor_line(&new, new_view), 1540);
+    assert_level(&base, base_view, &new, new_view, &session);
+    // An edit far above renumbers the lines and gives the base's first line
+    // filler; the next presentation estimates both again.
+    type_text(&mut new, new_view, "ggOinserted");
+    key(&mut new, new_view, Key::Escape);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    session.navigate_change(&mut base, base_view, &mut new, new_view, ChangeDirection::Previous).unwrap();
+    assert_eq!(cursor_line(&new, new_view), 1541);
+    assert_level(&base, base_view, &new, new_view, &session);
+}
+
+#[test]
+fn aligned_sides_stay_level_when_an_edited_side_is_resized_before_its_next_presentation() {
+    let (mut base, base_view) = core(&lines(2000, |line| Some(format!("line {line}"))));
+    // The new side lacks base lines 300..340, so its line 300 carries filler.
+    let (mut new, new_view) = core(&lines(2000, |line| match line {
+        300..340 => None,
+        1500 => Some("changed".into()),
+        _ => Some(format!("line {line}")),
+    }));
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    // One edit renumbers the new side's lines, and a new width invalidates
+    // every estimate before diff mode installs the next presentation, which
+    // only re-lays out the lines whose appearance changed.
+    key(&mut new, new_view, Key::Char('O'));
+    key(&mut new, new_view, Key::Escape);
+    new.handle(new_view, CoreEvent::Resize { width: 500., height: 400. }).unwrap();
+    assert_eq!(session.sync(&mut base, base_view, &mut new, new_view).unwrap(), DiffSync::Incremental);
+    session.navigate_change(&mut base, base_view, &mut new, new_view, ChangeDirection::Previous).unwrap();
+    assert_eq!(cursor_line(&new, new_view), 1461);
+    assert_level(&base, base_view, &new, new_view, &session);
+}

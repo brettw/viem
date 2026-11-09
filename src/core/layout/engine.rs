@@ -2176,6 +2176,10 @@ pub struct ViewLayout {
     /// Diff mode's presentation of this view's side, bound to the exact
     /// snapshot it was built for.
     diff_presentation: Option<(DocumentId, Revision, std::sync::Arc<super::style::DiffLayoutInput>)>,
+    /// Whether the presentation's hard lines still name this view's lines, so
+    /// its margins can estimate them. An edit renumbers lines until diff mode
+    /// installs the next presentation.
+    diff_margins_current: bool,
     /// Diff mode's collapsed context: hard-line runs hidden from layout. Each
     /// is one exact zero-height interval of the height index, never captured,
     /// shaped or cached. Local edits shift the runs and show any they touch;
@@ -2258,6 +2262,7 @@ impl ViewLayout {
         Self {
             search_matches: None,
             diff_presentation: None,
+            diff_margins_current: false,
             elided: ElidedLines::default(),
             paragraph_styles: Default::default(),
             whitespace: WhitespaceConfiguration::default(),
@@ -2350,6 +2355,7 @@ impl ViewLayout {
         }
         let shown = self.elided.rebase(old_invalidated.clone(), invalidated_lines.clone());
         self.show_elided_lines(shown);
+        self.diff_margins_current = false;
         let identity_matches = self.regional_cache.identity.is_some_and(|identity| {
             identity.document_revision == *old_revision
                 && identity.document_hard_line_count == *old_line_count
@@ -2407,6 +2413,7 @@ impl ViewLayout {
     fn discard_for_document_change(&mut self) {
         // Every height becomes an estimate below.
         let _shown = self.elided.clear();
+        self.diff_margins_current = false;
         self.invalidate_all_heights();
         self.regional_cache = self.regional_cache.replacement(None);
         self.rebased_document_revision = None;
@@ -2469,16 +2476,35 @@ impl ViewLayout {
             return false;
         }
         self.diff_presentation = next;
+        // Margins left unapplied while an edit renumbered lines apply again.
+        let reestimate = !self.diff_margins_current;
+        self.diff_margins_current = self.diff_presentation.is_some();
+        self.apply_diff_row_estimate();
         match changed_lines {
             Some(lines) => {
                 for lines in lines {
                     self.invalidate_geometry_lines(lines.clone());
+                }
+                if reestimate {
+                    self.restore_diff_heights(None);
                 }
                 self.bump_configuration(false);
             }
             None => self.bump_configuration(true),
         }
         true
+    }
+
+    /// A diff view estimates a line it has not measured as one default row,
+    /// the unit its filler is measured in, so both sides of an aligned pair
+    /// agree on a line's position whatever each has measured. Other views
+    /// use a fixed estimate.
+    fn apply_diff_row_estimate(&mut self) {
+        let estimate = self.diff_presentation.as_ref()
+            .map(|(_, _, input)| f64::from(input.row_points * self.scale))
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(DEFAULT_ESTIMATED_HARD_LINE_HEIGHT);
+        let _ = self.height_index.set_estimated_line_height(estimate);
     }
 
     /// Search matches and diff presentation current for one snapshot.
@@ -2573,6 +2599,7 @@ impl ViewLayout {
         }
         if self.scale != scale {
             self.scale = scale;
+            self.apply_diff_row_estimate();
             self.bump_configuration(true);
         }
         Ok(())
@@ -3100,7 +3127,7 @@ impl ViewLayout {
     pub fn invalidate_text_metrics(&mut self) {
         self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
             .expect("retiring certainty preserves valid measurements");
-        self.restore_elided_heights(None);
+        self.restore_diff_heights(None);
         self.regional_cache = self.regional_cache.replacement(None);
     }
 
@@ -3127,7 +3154,7 @@ impl ViewLayout {
         if geometry_changed || identity.is_some_and(|identity| identity.measurement_environment_id != environment) {
             self.height_index.invalidate_retaining_estimates(0..self.height_index.hard_line_count())
                 .expect("retiring certainty preserves valid measurements");
-            self.restore_elided_heights(None);
+            self.restore_diff_heights(None);
         }
         self.regional_cache = self.regional_cache.replacement(identity.map(|mut identity| {
             identity.measurement_environment_id = environment;
@@ -3163,7 +3190,7 @@ impl ViewLayout {
             self.bump_configuration(true);
             return;
         }
-        self.restore_elided_heights(Some(lines.clone()));
+        self.restore_diff_heights(Some(lines.clone()));
         self.invalidate_syntax_presentation(false);
         // Results computed before this publication may hold the old metrics.
         self.advance_geometry(Some(lines.clone()));
@@ -3192,6 +3219,7 @@ impl ViewLayout {
             // Without a local rebase the runs no longer name the same lines.
             let shown = self.elided.clear();
             self.show_elided_lines(shown);
+            self.diff_margins_current = false;
         }
         if invalidate_exact {
             self.invalidate_all_heights();
@@ -3522,9 +3550,10 @@ impl ViewLayout {
             exact.push((line.height, extent));
         }
         next_index.set_exact_heights_with_extents(exact_start, &exact)?;
-        // A region captured before lines were hidden cannot give them height.
+        // A region captured before lines were hidden cannot give them height,
+        // and a reset index has lost diff mode's estimates.
         let changed = (!reset_cache).then(|| region.hard_lines.clone());
-        self.elided.hide_in(&mut next_index, changed);
+        self.restore_diff_heights_in(&mut next_index, changed);
         Ok(PreparedRegionalInstall {
             installed_revision,
             region,
@@ -3588,13 +3617,31 @@ impl ViewLayout {
         self.height_index
             .invalidate(0..count)
             .expect("an index can always be reset to its validated estimate");
-        self.restore_elided_heights(None);
+        self.restore_diff_heights(None);
     }
 
-    /// Hidden runs are exact zero height whatever else was invalidated;
-    /// `within` limits the work to the runs a change touched.
-    fn restore_elided_heights(&mut self, within: Option<Range<usize>>) {
-        self.elided.hide_in(&mut self.height_index, within);
+    /// Diff mode's heights for lines not yet measured, whatever else was
+    /// invalidated: a line with filler or a divider is estimated as one
+    /// default row plus that margin, and hidden lines are exact zero height.
+    /// `within` limits the work to the lines a change touched.
+    fn restore_diff_heights(&mut self, within: Option<Range<usize>>) {
+        // Clones share the tree's nodes.
+        let mut index = self.height_index.clone();
+        self.restore_diff_heights_in(&mut index, within);
+        self.height_index = index;
+    }
+
+    fn restore_diff_heights_in(&self, index: &mut ViewHeightIndex, within: Option<Range<usize>>) {
+        if let Some((_, _, input)) = self.diff_presentation.as_ref().filter(|_| self.diff_margins_current) {
+            let range = within.clone().unwrap_or(0..usize::MAX);
+            let end = range.end.min(index.hard_line_count());
+            let first = input.margins.partition_point(|margin| margin.line < range.start);
+            for margin in input.margins[first..].iter().take_while(|margin| margin.line < end) {
+                let height = (input.row_points + input.margin_points(margin)) * self.scale;
+                let _ = index.estimate_line(margin.line, f64::from(height));
+            }
+        }
+        self.elided.hide_in(index, within);
     }
 
     /// Lines that are no longer hidden return to estimated heights.
@@ -3615,7 +3662,7 @@ impl ViewLayout {
     pub(crate) fn set_elided_lines(&mut self, runs: Vec<Range<usize>>) -> bool {
         let Some(shown) = self.elided.replace(runs, self.height_index.hard_line_count()) else { return false };
         self.show_elided_lines(shown);
-        self.restore_elided_heights(None);
+        self.restore_diff_heights(None);
         self.bump_configuration(false);
         true
     }
