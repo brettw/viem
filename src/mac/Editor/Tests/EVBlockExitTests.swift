@@ -9,12 +9,21 @@ final class EVBlockExitTests: XCTestCase {
     private let codeBackground = EVStyleColor(red: 0.25, green: 0.5, blue: 0.75, alpha: 1)
     private let codeBottomPadding: CGFloat = 12
 
-    private func makeSurface(_ source: String) throws
-        -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("viem-block-exit-\(UUID().uuidString)")
-        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
-        let configuration = EVConfigurationStore(directory: directory, legacyDefaults: nil)
+    /// Every surface in these tests uses the same styles, and none of them
+    /// changes settings, so the class configures one profile. Each style
+    /// declaration is a full settings edit that rewrites the theme file.
+    nonisolated private static let profileDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("viem-block-exit-\(UUID().uuidString)")
+    private static var sharedConfiguration: EVConfigurationStore?
+
+    nonisolated override class func tearDown() {
+        try? FileManager.default.removeItem(at: profileDirectory)
+        super.tearDown()
+    }
+
+    private func configuration() throws -> EVConfigurationStore {
+        if let configuration = Self.sharedConfiguration { return configuration }
+        let configuration = EVConfigurationStore(directory: Self.profileDirectory, legacyDefaults: nil)
         try EVStyleTestFixtures.configure(configuration, declarations: [
             (.baseParagraph, .paragraphFirstLineIndent, .float(0)),
             (.baseParagraph, .paragraphLeadingIndent, .float(0)),
@@ -33,7 +42,13 @@ final class EVBlockExitTests: XCTestCase {
             (.baseParagraph, .characterSize, .float(14)),
             (.baseParagraph, .characterFontFamilies, .stringList(["system-ui"])),
         ])
-        let backend = EVCoreDocumentBackend(configuration: configuration)
+        Self.sharedConfiguration = configuration
+        return configuration
+    }
+
+    private func makeSurface(_ source: String) throws
+        -> (EVCoreDocumentBackend, EVEditorSurfaceController, EVCoreViewSession) {
+        let backend = EVCoreDocumentBackend(configuration: try configuration())
         try backend.readUntitled(source: Data(source.utf8), typeName: EVDocument.markdownType)
         let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
         surface.loadViewIfNeeded()

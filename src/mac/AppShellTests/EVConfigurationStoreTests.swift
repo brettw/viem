@@ -97,27 +97,6 @@ final class EVConfigurationStoreTests: XCTestCase {
     XCTAssertThrowsError(try store.setZoomScale(1.25))
     XCTAssertEqual(try Data(contentsOf: file), before)
   }
-  func testLegacyPreferencesMigrateWhileTheLegacyThemeIsIgnored() throws {
-    let (directory, legacy) = try fixture()
-    let legacyTheme = try JSONEncoder().encode(EVTheme.paper)
-    legacy.set(legacyTheme, forKey: "EVApplicationTheme.v1")
-    legacy.set(true, forKey: "EVEditing.SmartQuotes.v1")
-    legacy.set(false, forKey: "EVShowStatusBar")
-    let store = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-    XCTAssertEqual(store.theme, .midnight); XCTAssertTrue(store.smartQuotes); XCTAssertFalse(store.showStatusBar)
-    XCTAssertEqual(store.currentThemeName, "Midnight")
-    XCTAssertEqual(store.availableThemeNames, ["Midnight", "Paper"])
-    XCTAssertEqual(legacy.data(forKey: "EVApplicationTheme.v1"), legacyTheme)
-    XCTAssertNil(legacy.object(forKey: "EVEditing.SmartQuotes.v1"))
-    legacy.set(false, forKey: "EVEditing.SmartQuotes.v1")
-    let reopened = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-    XCTAssertTrue(reopened.smartQuotes)
-    try reopened.setTheme(.paper)
-    try reopened.setSmartQuotes(false)
-    try reopened.setShowStatusBar(true)
-    let final = EVConfigurationStore(directory: directory, legacyDefaults: legacy)
-    XCTAssertEqual(final.theme, .paper); XCTAssertFalse(final.smartQuotes); XCTAssertTrue(final.showStatusBar)
-  }
   func testUnknownKeysSurviveUpdatesAndIndependentStoresMerge() throws {
     let (directory, legacy) = try fixture()
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

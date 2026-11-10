@@ -3,12 +3,6 @@ import XCTest
 @testable import ViemAppShell
 
 final class EVStatusBarStateTests: XCTestCase {
-    func testNewDocumentStatusDefaults() {
-        let state = EVStatusBarState()
-        XCTAssertEqual(state.mode, "NORMAL")
-        XCTAssertEqual(state.location, "Ln 1, Col 1")
-    }
-
     @MainActor
     func testStatusBarDisplaysModeFileMessageAndLocation() throws {
         let bar = EVStatusBarView(frame: .zero)

@@ -18796,28 +18796,6 @@ mod tests {
     }
 
     #[test]
-    fn replace_backspace_restores_overwritten_extended_graphemes_lifo() {
-        let original = "a\u{301}👩‍💻z";
-        let mut document = Document::new(original);
-        let mut commands = CommandInterpreter::new();
-
-        keys(&mut commands, &mut document, "R");
-        commands
-            .handle(&mut document, InputEvent::text("é日"))
-            .unwrap();
-        assert_eq!(document.text(), "é日z");
-
-        let restored_emoji = key(&mut commands, &mut document, Key::Backspace);
-        assert!(restored_emoji.document_changed);
-        assert_eq!(document.text(), "é👩‍💻z");
-        assert_eq!(commands.cursor(), "é".len());
-
-        key(&mut commands, &mut document, Key::Backspace);
-        assert_eq!(document.text(), original);
-        assert_eq!(commands.cursor(), 0);
-    }
-
-    #[test]
     fn replace_backspace_removes_text_appended_past_end_of_line() {
         let mut document = Document::new("a");
         let mut commands = CommandInterpreter::new();

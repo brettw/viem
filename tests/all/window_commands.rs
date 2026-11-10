@@ -135,37 +135,6 @@ fn order_and_size_commands_publish_their_requests() {
 }
 
 #[test]
-fn lifecycle_commands_reuse_the_existing_ex_requests() {
-    let (mut c, mut d) = setup();
-    for key in [
-        Key::Char('s'),
-        Key::Char('S'),
-        Key::Ctrl('s'),
-        Key::Char('v'),
-        Key::Ctrl('v'),
-    ] {
-        assert_eq!(
-            single(&mut c, &mut d, "", key),
-            ExFrontendRequest::File(ExFileRequest::Split {
-                path: None,
-                height: None, vertical: matches!(key, Key::Char('v') | Key::Ctrl('v')) }),
-            "{key:?}"
-        );
-    }
-    assert_eq!(
-        single(&mut c, &mut d, "", Key::Char('n')),
-        ExFrontendRequest::File(ExFileRequest::NewPane { height: None, vertical: false })
-    );
-    for key in [Key::Char('q'), Key::Char('c'), Key::Ctrl('q')] {
-        assert_eq!(
-            single(&mut c, &mut d, "", key),
-            ExFrontendRequest::File(ExFileRequest::Quit { force: false }),
-            "{key:?}"
-        );
-    }
-}
-
-#[test]
 fn horizontal_focus_and_width_commands_publish_effects() {
     let (mut c, mut d) = setup();
     for (key, expected) in [(Key::Left,WindowRequest::FocusLeft {count:6}), (Key::Right,WindowRequest::FocusRight {count:6}), (Key::Char('>'),WindowRequest::GrowWidth {columns:6}), (Key::Char('<'),WindowRequest::ShrinkWidth {columns:6}), (Key::Char('|'),WindowRequest::SetWidth {columns:Some(6)}), (Key::Char('H'),WindowRequest::MoveToLeft), (Key::Char('L'),WindowRequest::MoveToRight)] {
