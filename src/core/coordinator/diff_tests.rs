@@ -100,6 +100,89 @@ fn typing_updates_the_diff_incrementally_and_marks_the_typed_text() {
 }
 
 #[test]
+fn typing_into_changed_lines_keeps_the_first_live_layout_with_verified_diff_styles() {
+    let live = "head\nchanged value\nkeep\nlater change\ntail";
+    for earlier in ["head\nkeep\nlater\ntail", "head\nchanged values\nkeep\nlater\ntail", "head\n!!!\nkeep\nlater\ntail"] {
+        let (mut base, base_view) = core(earlier);
+        let (mut new, new_view) = core(live);
+        place(&mut new, new_view, 1);
+        let mut session = DiffSession::new(base.document(), new.document(), true);
+        session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+        type_text(&mut new, new_view, "Ax");
+        let first = new.layout(new_view).unwrap().snapshot().unwrap().revision;
+        assert_eq!(background_lines(&new, new_view), vec![1, 3]);
+        assert_eq!(session.sync(&mut base, base_view, &mut new, new_view).unwrap(), DiffSync::Incremental);
+        assert_eq!(new.layout(new_view).unwrap().snapshot().unwrap().revision, first);
+        let fresh = DiffState::compute(&DocumentLines(base.document()), &DocumentLines(new.document()), DiffLimits::default());
+        assert_eq!(session.state(), &fresh);
+        for (line, span) in fresh.presentation(Side::New, true).text {
+            let start = new.document().projection().hard_line_range(line).unwrap().start;
+            assert!(has_text_background(&new, new_view, start + span.start));
+        }
+    }
+}
+
+#[test]
+fn a_same_count_replacement_across_lines_does_not_reuse_the_typing_line() {
+    let original = "first\nmiddle\nlast";
+    let (mut base, base_view) = core(original);
+    let (mut new, new_view) = core("first changed\nmiddle\nlast changed");
+    let mut session = DiffSession::new(base.document(), new.document(), false);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    assert!(new.views[&new_view].diff_typing_line.is_some());
+    type_text(&mut new, new_view, ":%s/ changed//");
+    key(&mut new, new_view, Key::Enter);
+    assert_eq!(new.document().source_bytes(), original.as_bytes());
+    assert!(new.layout(new_view).unwrap().presentation_overlays(new.document().id(), new.document().revision()).diff.is_none());
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    assert_eq!(session.state().hunk_count(), 0);
+}
+
+#[test]
+fn changing_the_base_replaces_the_typing_line_proof_and_leaving_diff_retires_it() {
+    let (mut previous, previous_view) = core("short");
+    let (mut new, new_view) = core("shorter");
+    let mut old = DiffSession::new(previous.document(), new.document(), false);
+    old.sync(&mut previous, previous_view, &mut new, new_view).unwrap();
+    let (mut base, base_view) = core("shorter!");
+    let mut session = DiffSession::new(base.document(), new.document(), false);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    type_text(&mut new, new_view, "A!");
+    assert!(background_lines(&new, new_view).is_empty());
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    assert_eq!(session.state().hunk_count(), 0);
+    key(&mut new, new_view, Key::Backspace);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    assert!(new.views[&new_view].diff_typing_line.is_some());
+    DiffSession::clear(&mut new, new_view).unwrap();
+    assert!(new.views[&new_view].diff_typing_line.is_none());
+}
+
+#[test]
+fn typing_on_a_new_row_between_replacement_pairs_reuses_layout_and_undo_restores_the_hunk() {
+    let (mut base, base_view) = core("value 1\nvalue 2\nvalue 3");
+    let initial = "value 1!\nvalue 2!\nvalue 3!";
+    let (mut new, new_view) = core(initial);
+    place(&mut new, new_view, 1);
+    let mut session = DiffSession::new(base.document(), new.document(), false);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    let before = session.state().clone();
+    key(&mut new, new_view, Key::Char('A'));
+    key(&mut new, new_view, Key::Enter);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    key(&mut new, new_view, Key::Char('x'));
+    let first_frame = new.layout(new_view).unwrap().snapshot().unwrap().revision;
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    assert_eq!(new.layout(new_view).unwrap().snapshot().unwrap().revision, first_frame);
+    assert_eq!(new.document().source_bytes(), b"value 1!\nvalue 2!\nx\nvalue 3!");
+    key(&mut new, new_view, Key::Escape);
+    key(&mut new, new_view, Key::Char('u'));
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    assert_eq!(new.document().source_bytes(), initial.as_bytes());
+    assert_eq!(session.state(), &before);
+}
+
+#[test]
 fn aligned_sides_keep_corresponding_lines_level() {
     let (mut base, base_view) = core("a\nx\ny\nz\nb\n");
     let (mut new, new_view) = core("a\nb\n");
@@ -744,6 +827,90 @@ fn top_position(core: &TestCore, view: ViewId) -> (usize, f64) {
     let top = f64::from(layout.viewport_top());
     let hit = layout.hard_line_at_y(top).unwrap().unwrap();
     (hit.hard_line(), top - hit.line_top())
+}
+
+#[test]
+fn opening_a_line_inside_an_addition_only_scrolls_to_reveal_the_live_caret() {
+    // The viewport starts in the addition. The base's first text below its
+    // filler moves down when the addition grows, but the live text above
+    // the edit stays put unless the next row is outside the viewport.
+    let base_text = "before\nafter\n2\n3\n4\n5\n6\n7";
+    let new_text = base_text.replace("before\n", "before\na\nb\nc\nd\ne\nf\ng\nh\n");
+    for collapsed in [false, true] {
+        for (edit_line, open_key, reveal) in [(3, Key::Char('o'), false), (3, Key::Enter, false), (6, Key::Enter, true)] {
+            let (mut base, bv) = core(base_text);
+            let (mut new, nv) = core(&new_text);
+            let height = 5. * new.default_row_height(nv).unwrap();
+            for (core, view) in [(&mut base, bv), (&mut new, nv)] {
+                core.handle(view, CoreEvent::Resize { width: 600., height }).unwrap();
+            }
+            let mut session = DiffSession::new(base.document(), new.document(), true);
+            session.set_collapsed(collapsed);
+            session.sync(&mut base, bv, &mut new, nv).unwrap();
+            place(&mut new, nv, edit_line);
+            if open_key == Key::Enter { key(&mut new, nv, Key::Char('A')); }
+            let anchor_line = 2;
+            let initial_top = row_top(&new, nv, anchor_line) + 1.;
+            new.handle(nv, CoreEvent::SetViewportOrigin { left: 0., top: Some(initial_top) }).unwrap();
+            session.sync_scroll(&mut base, bv, &mut new, nv, Side::New).unwrap();
+            let initial_anchor_y = row_top(&new, nv, anchor_line) - initial_top;
+
+            key(&mut new, nv, open_key);
+            session.sync(&mut base, bv, &mut new, nv).unwrap();
+            // Publishing the base first must not turn its reflow into a scroll.
+            session.sync_scroll(&mut base, bv, &mut new, nv, Side::Base).unwrap();
+            assert_eq!(cursor_line(&new, nv), edit_line + 1);
+            let layout = new.layout(nv).unwrap();
+            let caret_row = layout.snapshot().unwrap().rows.iter().find(|r| r.hard_line_index == edit_line + 1).unwrap();
+            let expected_top = initial_top.max(caret_row.reveal_bounds().end - height);
+            assert_eq!(expected_top > initial_top, reveal);
+            assert!((layout.viewport_top() - expected_top).abs() < 0.01, "collapsed {collapsed}, line {edit_line}");
+            assert_eq!(top(&base, bv), top(&new, nv));
+            if !reveal {
+                assert!((row_top(&new, nv, anchor_line) - layout.viewport_top() - initial_anchor_y).abs() < 0.01);
+            }
+        }
+    }
+}
+
+#[test]
+fn opening_a_line_below_deletion_filler_uses_the_viewport_before_the_edit() {
+    let live = lines(20, |line| Some(format!("line {line}")));
+    let removed = lines(12, |line| Some(format!("removed {line}")));
+    let older = live.replace("line 8\n", &format!("{removed}line 8\n"));
+    for scroll_after_input in [false, true] {
+        let (mut base, bv) = core(&older);
+        let (mut new, nv) = core(&live);
+        for (core, view) in [(&mut base, bv), (&mut new, nv)] {
+            core.handle(view, CoreEvent::Resize { width: 600., height: 120. }).unwrap();
+        }
+        let mut session = DiffSession::new(base.document(), new.document(), true);
+        session.set_collapsed(true);
+        session.sync(&mut base, bv, &mut new, nv).unwrap();
+        place(&mut new, nv, 10);
+        key(&mut new, nv, Key::Char('A'));
+        let start = prefix(&new, nv, 9) as f32;
+        new.handle(nv, CoreEvent::SetViewportOrigin { left: 0., top: Some(start) }).unwrap();
+        session.sync_scroll(&mut base, bv, &mut new, nv, Side::New).unwrap();
+        let screen_y = |core: &TestCore| row_top(core, nv, 9) - core.layout(nv).unwrap().viewport_top();
+        let before = screen_y(&new);
+
+        key(&mut new, nv, Key::Enter);
+        if scroll_after_input {
+            new.handle(nv, CoreEvent::SetViewportOrigin { left: 0., top: Some(0.) }).unwrap();
+        }
+        session.sync(&mut base, bv, &mut new, nv).unwrap();
+        assert_eq!(top(&base, bv), top(&new, nv));
+        if scroll_after_input {
+            assert_eq!(top(&new, nv), 0., "an explicit scroll supersedes the earlier typing viewport");
+        } else {
+            assert!((screen_y(&new) - before).abs() < 0.01, "the row beside the deletion stays fixed");
+            let layout = new.layout(nv).unwrap();
+            let caret_line = cursor_line(&new, nv);
+            let caret = layout.snapshot().unwrap().rows.iter().find(|r| r.hard_line_index == caret_line).unwrap();
+            assert!(caret.reveal_bounds().end <= layout.viewport_top() + layout.height() + 0.01);
+        }
+    }
 }
 
 fn assert_level(base: &TestCore, base_view: ViewId, new: &TestCore, new_view: ViewId, session: &DiffSession) {

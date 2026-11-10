@@ -93,10 +93,64 @@ struct Chunk {
     pairs: Arc<[LinePair]>,
 }
 
+/// The part of a changed chunk between its last unaffected line pair before
+/// an edit and its first unaffected pair after it, in chunk-local coordinates.
+struct PairWindow {
+    base: Range<usize>,
+    new: Range<usize>,
+    pairs: Range<usize>,
+}
+
 impl Chunk {
     fn equal(length: usize) -> Self {
         Self { base: length, new: length, equal: true, pairs: Arc::from([]) }
     }
+
+    /// An existing pair whose base line is the only candidate between its
+    /// surviving neighbours. A one-line edit can retain that correspondence.
+    fn bounded_pair(&self, offset: usize) -> Option<usize> {
+        let index = self.pairs.partition_point(|pair| pair.new < offset);
+        let pair = self.pairs.get(index).filter(|pair| pair.new == offset)?;
+        let preceding = index.checked_sub(1).map_or(0, |i| self.pairs[i].base + 1);
+        let following = self.pairs.get(index + 1).map_or(self.base, |next| next.base);
+        (preceding == pair.base && following == pair.base + 1).then_some(index)
+    }
+
+    fn pair_window(&self, edit: Range<usize>) -> Option<PairWindow> {
+        let first = self.pairs.partition_point(|pair| pair.new < edit.start);
+        let last = self.pairs.partition_point(|pair| pair.new < edit.end);
+        let before = first.checked_sub(1).map(|i| &self.pairs[i]);
+        let after = self.pairs.get(last);
+        if before.is_none() && after.is_none() { return None; }
+        Some(PairWindow {
+            base: before.map_or(0, |p| p.base + 1)..after.map_or(self.base, |p| p.base),
+            new: before.map_or(0, |p| p.new + 1)..after.map_or(self.new, |p| p.new),
+            pairs: first..last,
+        })
+    }
+
+    fn changed_part(base: Range<usize>, new: Range<usize>, pairs: &[LinePair]) -> Self {
+        Self {
+            base: base.len(), new: new.len(), equal: false,
+            pairs: pairs.iter().map(|pair| LinePair { base: pair.base - base.start,
+                new: pair.new - new.start, spans: pair.spans.clone() }).collect(),
+        }
+    }
+}
+
+/// Base context that proves a one-line edit can retain the surrounding diff.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DiffLineBasis<T> {
+    Added,
+    /// Exactly one base and one live line. Only equality changes the hunk.
+    Single(T),
+    Paired(T),
+}
+
+/// Inline spans for a retained changed-line pair. Equality can split the
+/// hunk; insufficient similarity can require a different correspondence.
+pub(crate) fn retained_pair_spans(base: &str, new: &str) -> Option<InlineSpans> {
+    (base != new && similarity(base, new) >= PAIR_SIMILARITY).then(|| inline_spans(base, new))
 }
 
 /// One changed region in both sides' line numbering.
@@ -210,6 +264,26 @@ impl DiffState {
         self.new_lines
     }
 
+    pub(crate) fn line_basis(&self, line: usize) -> Option<DiffLineBasis<usize>> {
+        let (mut x, mut y) = (0, 0);
+        for chunk in &self.chunks {
+            if line < y + chunk.new {
+                if chunk.equal { return None; }
+                if chunk.base == 0 { return Some(DiffLineBasis::Added); }
+                if chunk.base == 1 && chunk.new == 1 && self.limits.inline_lines > 0 { return Some(DiffLineBasis::Single(x)); }
+                let offset = line - y;
+                if chunk.pair_window(offset..offset + 1).is_some_and(|window| window.base.is_empty()) {
+                    return Some(DiffLineBasis::Added);
+                }
+                let index = chunk.bounded_pair(offset)?;
+                return Some(DiffLineBasis::Paired(x + chunk.pairs[index].base));
+            }
+            x += chunk.base;
+            y += chunk.new;
+        }
+        None
+    }
+
     /// Update the diff after one edit to the new side. `new` is the new side
     /// after the edit. An edit that doesn't fit the current line count is
     /// treated as unknown and recomputes from scratch.
@@ -223,14 +297,22 @@ impl DiffState {
         // changed chunk ending where the window begins (or starting where it
         // ends), so changed chunks never end up adjacent.
         let (mut window_start, mut window_end) = (start, old_end);
-        let mut position = 0;
-        for chunk in &self.chunks {
-            let end = position + chunk.new;
+        let (mut base_position, mut position) = (0, 0);
+        for index in 0..self.chunks.len() {
+            let end = position + self.chunks[index].new;
+            if !self.chunks[index].equal && position <= start && old_end <= end
+                && self.edit_in_hunk(index, (base_position, position), base, new, edit)
+            {
+                self.new_lines = new.line_count();
+                return;
+            }
+            let chunk = &self.chunks[index];
             if !chunk.equal && position <= window_end && window_start <= end {
                 window_start = window_start.min(position);
                 window_end = window_end.max(end);
             }
             position = end;
+            base_position += chunk.base;
         }
         // Map the window's edges to base lines and split the chunk list.
         let mut before = Vec::new();
@@ -278,6 +360,89 @@ impl DiffState {
         }
         self.chunks = chunks;
         self.new_lines = new.line_count();
+    }
+
+    /// Apply an edit within a single changed hunk when its surviving
+    /// correspondences bound the work. Otherwise re-diff the enclosing hunk.
+    fn edit_in_hunk(&mut self, index: usize, origin: (usize, usize), base: &dyn LineSource,
+        new: &dyn LineSource, edit: LineEdit) -> bool {
+        let (base_start, new_start) = origin;
+        let chunk = &mut self.chunks[index];
+        let removed = edit.old_end - edit.start;
+        let added = edit.new_end - edit.start;
+        let new_length = chunk.new - removed + added;
+        if chunk.base == 0 {
+            // Eliminating the entire addition needs the equal runs joined.
+            if new_length == 0 { return false; }
+            chunk.new = new_length;
+            return true;
+        }
+        if new_length > self.limits.inline_lines { return false; }
+        let start = edit.start - new_start;
+        if removed == 1 && added == 1 {
+            if chunk.base == 1 && chunk.new == 1 {
+                let a = base.line(base_start);
+                let b = new.line(edit.start);
+                if a != b {
+                    chunk.pairs = retained_pair_spans(&a, &b).map(|spans| LinePair { base: 0, new: 0, spans })
+                        .into_iter().collect();
+                    return true;
+                }
+            } else if let Some(index) = chunk.bounded_pair(start) {
+                let a = base.line(base_start + chunk.pairs[index].base);
+                let b = new.line(edit.start);
+                if let Some(spans) = retained_pair_spans(&a, &b) {
+                    Arc::make_mut(&mut chunk.pairs)[index].spans = spans;
+                    return true;
+                }
+            }
+        }
+        let Some(window) = chunk.pair_window(start..start + removed) else { return false };
+        // The text of both neighbouring pairs survived. Retain them as
+        // correspondences while rechecking possible equalities in the gap.
+        if !window.base.is_empty() || removed != added {
+            let new_end = new_start + window.new.end - removed + added;
+            let local = diff_region(base, base_start + window.base.start..base_start + window.base.end,
+                new, new_start + window.new.start..new_end, self.limits, true);
+            self.replace_pair_window(index, window, local);
+        }
+        true
+    }
+
+    /// An equal line rediscovered in the gap splits the hunk. Retained spans
+    /// follow their line pairs into the resulting left and right hunks.
+    fn replace_pair_window(&mut self, index: usize, window: PairWindow, middle: Vec<Chunk>) {
+        let chunk = &mut self.chunks[index];
+        if let [local] = middle.as_slice() {
+            if !local.equal && local.pairs.len() == window.pairs.len() {
+                // Splitting a paired line often just adds an unpaired row.
+                // Keep the allocations for every surviving pair and its spans.
+                let pairs = Arc::make_mut(&mut chunk.pairs);
+                for (slot, pair) in pairs[window.pairs.clone()].iter_mut().zip(local.pairs.iter()) {
+                    *slot = LinePair { base: window.base.start + pair.base, new: window.new.start + pair.new,
+                        spans: pair.spans.clone() };
+                }
+                if local.new != window.new.len() {
+                    for pair in &mut pairs[window.pairs.end..] {
+                        pair.new = pair.new - window.new.len() + local.new;
+                    }
+                    chunk.new = chunk.new - window.new.len() + local.new;
+                }
+                return;
+            }
+        }
+        let prefix = Chunk::changed_part(0..window.base.start, 0..window.new.start, &chunk.pairs[..window.pairs.start]);
+        let suffix = Chunk::changed_part(window.base.end..chunk.base, window.new.end..chunk.new, &chunk.pairs[window.pairs.end..]);
+        let mut replacement = Vec::with_capacity(middle.len() + 4);
+        // Include neighbouring equal runs so equalities at either edge merge.
+        let start = index.saturating_sub(1);
+        let end = (index + 2).min(self.chunks.len());
+        if start < index { push_chunk(&mut replacement, self.chunks[start].clone()); }
+        push_chunk(&mut replacement, prefix);
+        for chunk in middle { push_chunk(&mut replacement, chunk); }
+        push_chunk(&mut replacement, suffix);
+        if index + 1 < end { push_chunk(&mut replacement, self.chunks[index + 1].clone()); }
+        self.chunks.splice(start..end, replacement);
     }
 
     /// Count physical lines. The layout diff compares delimiter-free lines and
@@ -374,12 +539,16 @@ fn push_chunk(chunks: &mut Vec<Chunk>, chunk: Chunk) {
         return;
     }
     if let Some(last) = chunks.last_mut() {
-        if last.equal && chunk.equal {
+        if last.equal == chunk.equal {
+            if !last.equal && !chunk.pairs.is_empty() {
+                last.pairs = last.pairs.iter().cloned().chain(chunk.pairs.iter().map(|pair| LinePair {
+                    base: last.base + pair.base, new: last.new + pair.new, spans: pair.spans.clone(),
+                })).collect();
+            }
             last.base += chunk.base;
             last.new += chunk.new;
             return;
         }
-        debug_assert!(last.equal || chunk.equal, "changed chunks are never adjacent");
     }
     chunks.push(chunk);
 }
@@ -401,6 +570,11 @@ fn diff_region(
     limits: DiffLimits,
     edit_window: bool,
 ) -> Vec<Chunk> {
+    if base_range.is_empty() || new_range.is_empty() {
+        return if base_range.is_empty() && new_range.is_empty() { Vec::new() } else {
+            vec![Chunk { base: base_range.len(), new: new_range.len(), equal: false, pairs: Arc::from([]) }]
+        };
+    }
     let mut chunks = Vec::new();
     let runs = if edit_window && base_range.len() + new_range.len() > limits.window_lines {
         vec![Run::Change { base: base_range.len(), new: new_range.len() }]
@@ -457,6 +631,8 @@ fn diff_region(
     chunks
 }
 
+const PAIR_SIMILARITY: f32 = 0.5;
+
 /// Choose corresponding lines within a changed chunk and compute their spans.
 /// Small chunks pick the in-order pairing with the greatest total similarity;
 /// larger ones pair lines in order.
@@ -467,7 +643,6 @@ fn pair_lines(
     new_range: Range<usize>,
     limits: DiffLimits,
 ) -> Vec<LinePair> {
-    const THRESHOLD: f32 = 0.5;
     let (n, m) = (base_range.len(), new_range.len());
     if n == 0 || m == 0 || n > limits.inline_lines || m > limits.inline_lines {
         return Vec::new();
@@ -479,7 +654,7 @@ fn pair_lines(
         // Weighted in-order matching by dynamic programming.
         let score = |i: usize, j: usize| {
             let value = similarity(&base_text[i], &new_text[j]);
-            if value >= THRESHOLD { value } else { 0.0 }
+            if value >= PAIR_SIMILARITY { value } else { 0.0 }
         };
         let mut table = vec![vec![0f32; m + 1]; n + 1];
         for i in (0..n).rev() {
@@ -503,7 +678,7 @@ fn pair_lines(
             }
         }
     } else {
-        chosen.extend((0..n.min(m)).filter(|&i| similarity(&base_text[i], &new_text[i]) >= THRESHOLD).map(|i| (i, i)));
+        chosen.extend((0..n.min(m)).filter(|&i| similarity(&base_text[i], &new_text[i]) >= PAIR_SIMILARITY).map(|i| (i, i)));
     }
     chosen
         .into_iter()

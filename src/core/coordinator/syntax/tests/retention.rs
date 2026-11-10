@@ -98,10 +98,16 @@ fn edits_keep_mapped_highlighting_while_superseded_workers_are_blocked_until_emp
             (11..13, "syntax:Keyword".into())
         ]
     );
+    let prepare_frame = |core: &mut Core<MockTextMeasurementProvider>| {
+        let deadline = Instant::now() + crate::document::syntax::service::SYNTAX_PRESENTATION_WAIT;
+        core.prepare_view_syntax_wait(view, deadline).unwrap().1
+    };
+    assert!(prepare_frame(&mut core).is_none(), "the displayed source already has exact coverage");
     event(&mut core, view, Key::Char('i'));
     core.handle(view, CoreEvent::Input(InputEvent::text("XX")))
         .unwrap();
     gate.wait_for(2);
+    assert!(prepare_frame(&mut core).is_none(), "a visible edit can paint while replacement analysis is blocked");
     assert_eq!(
         spans(&core),
         [

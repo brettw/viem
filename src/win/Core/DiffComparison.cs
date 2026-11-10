@@ -88,6 +88,7 @@ internal sealed unsafe class DiffComparison : IDisposable
     internal void ReplaceLiveView(CoreView replacement) => live = replacement;
     internal void Sync()
     {
+        using var timing = Diagnostics.InputPerformance.Measure("diff.sync");
         uint result = 0;
         Check(viem_diff_session_sync(handle, basis.Document.Handle, basis.Id, live.Document.Handle, live.Id, &result), "Update comparison");
         var info = New<ViemDiffSessionInfoV1>();
@@ -125,6 +126,7 @@ internal sealed unsafe class DiffComparison : IDisposable
     }
     internal uint Mirror(bool fromLive)
     {
+        using var timing = Diagnostics.InputPerformance.Measure("diff.mirror");
         uint changed = 0;
         Check(viem_diff_session_sync_scroll(handle, basis.Document.Handle, basis.Id, live.Document.Handle, live.Id,
             fromLive ? 1u : 0u, &changed), "Align vertical scroll range and position");
@@ -132,6 +134,7 @@ internal sealed unsafe class DiffComparison : IDisposable
     }
     internal (ViemDiffScrollbarMarkV1[] Marks, float Extent, ViemRgbaV1 Added, ViemRgbaV1 Removed) Marks(bool newSide)
     {
+        using var timing = Diagnostics.InputPerformance.Measure(newSide ? "diff.marks.live" : "diff.marks.base");
         var view = newSide ? live : basis;
         ulong count = 0;
         float extent = 0;

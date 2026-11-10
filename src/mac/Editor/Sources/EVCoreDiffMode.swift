@@ -198,8 +198,25 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
             lineTotals = (info.added, info.removed)
             lineTotalsDidChange?()
         }
-        baseSurface.refreshPresentation()
+        // Unaligned insertions may add a scrollbar mark to an otherwise
+        // unchanged base. Redraw its editor only when its own frame changed.
+        if !aligned { markKeys.removeValue(forKey: ObjectIdentifier(baseSurface)) }
+        if force || baseFrameChanged(baseSurface) {
+            baseSurface.refreshPresentation()
+        } else {
+            updateMarks(isNew: false)
+        }
         if force { surface.refreshPresentation() }
+    }
+
+    private func baseFrameChanged(_ surface: EVEditorSurfaceController) -> Bool {
+        guard let session = surface.session, let displayed = surface.layoutSnapshot?.info.identity,
+              let layout = try? session.layoutSnapshotInfo(), displayed.isSameLayout(as: layout.identity),
+              let current = try? session.viewportState() else { return true }
+        let previous = surface.viewportState
+        return previous.left != current.left || previous.top != current.top
+            || previous.maximum_top != current.maximum_top || previous.maximum_left != current.maximum_left
+            || previous.flags != current.flags
     }
 
     /// The installed live view now owns the reloaded core. Sync before its
@@ -245,7 +262,6 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         let maximum = scrollbars.verticalState.maximum
         let key = ObjectIdentifier(side)
         if let previous = markKeys[key], previous.layout.isSameLayout(as: layout), previous.maximum == maximum { return }
-        markKeys[key] = (layout, maximum)
         var count: UInt64 = 0
         var extent: Float = 0
         var status = viem_diff_session_scrollbar_marks(handle, core, view, isNew ? 1 : 0, nil, 0, &count, &extent)
@@ -268,6 +284,7 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
             EVDocumentScrollbars.ChangeMark(top: CGFloat(mark.top), bottom: CGFloat(mark.bottom),
                 color: mark.flags & UInt32(VIEM_DIFF_MARK_ADDED) != 0 ? addedColor : removedColor)
         }, extent: CGFloat(extent))
+        markKeys[key] = (layout, maximum)
     }
 
     func end() {

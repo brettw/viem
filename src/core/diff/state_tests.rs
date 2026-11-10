@@ -100,6 +100,91 @@ fn an_inconsistent_edit_recomputes_from_scratch() {
 }
 
 #[test]
+fn editing_a_changed_line_reads_only_its_pair_or_no_lines_for_an_addition() {
+    struct Counted(TextLines, std::cell::Cell<usize>);
+    impl LineSource for Counted {
+        fn line_count(&self) -> usize { self.0.line_count() }
+        fn line(&self, index: usize) -> Cow<'_, str> {
+            self.1.set(self.1.get() + 1);
+            self.0.line(index)
+        }
+    }
+    let before = ["first", "value 1 old", "value 2 old", "value 3 old", "last"].join("\n");
+    let added = ["first", "last"].join("\n");
+    let changed = ["first", "value 1 new", "value 2 new", "value 3 new", "last"].join("\n");
+    let after = changed.replace("value 2 new", "value 2 newer");
+    for (original, reads) in [(added, 0), (before, 1)] {
+        let base = Counted(lines(&original), Default::default());
+        let mut state = DiffState::compute(&base, &lines(&changed), DiffLimits::default());
+        base.1.set(0);
+        let new = Counted(lines(&after), Default::default());
+        state.apply_edit(&base, &new, LineEdit { start: 2, old_end: 3, new_end: 3 });
+        assert_eq!((base.1.get(), new.1.get()), (reads, reads));
+        assert_eq!(state, DiffState::compute(&base, &new, DiffLimits::default()));
+    }
+}
+
+#[test]
+fn a_split_and_typing_between_surviving_pairs_read_only_the_gap() {
+    struct Window<'a>(&'a TextLines, Range<usize>);
+    impl LineSource for Window<'_> {
+        fn line_count(&self) -> usize { self.0.line_count() }
+        fn line(&self, index: usize) -> Cow<'_, str> {
+            assert!(self.1.contains(&index), "read line {index} outside {:?}", self.1);
+            self.0.line(index)
+        }
+    }
+    // The first square replacement larger than the usual weighted-pairing limit.
+    let original: Vec<_> = (0..21).map(|i| format!("let variable_{i} = 10;")).collect();
+    let mut current: Vec<_> = original.iter().map(|s| s.replace("10;", "20;")).collect();
+    let base = joined(&original);
+    let mut state = DiffState::compute(&base, &joined(&current), DiffLimits::default());
+    let before = state.clone();
+    let row = 10;
+    let changed_line = current[row].clone();
+    let change = edit(&mut current, row, row + 1, &[&changed_line, ""]);
+    let new = joined(&current);
+    state.apply_edit(&Window(&base, row..row + 1), &Window(&new, row..row + 2), change);
+    assert!(state.reproduces(&base, &new));
+    assert_eq!(state.line_basis(row + 1), Some(DiffLineBasis::Added));
+    let hunk = state.hunks().next().unwrap();
+    assert_eq!(hunk.pairs[row + 1].base, row + 1);
+    assert_eq!(hunk.pairs[row + 1].new, row + 2);
+
+    let change = edit(&mut current, row + 1, row + 2, &["x"]);
+    let new = joined(&current);
+    state.apply_edit(&Window(&base, 0..0), &Window(&new, 0..0), change);
+    assert!(state.reproduces(&base, &new));
+    // Reverse the split and the typing in it.
+    let change = edit(&mut current, row, row + 2, &[&changed_line]);
+    let new = joined(&current);
+    state.apply_edit(&Window(&base, row..row + 1), &Window(&new, row..row + 1), change);
+    assert_eq!(state, before);
+
+    // Restoring equality splits the hunk and re-bases all suffix pair offsets.
+    let change = edit(&mut current, row, row + 1, &[&original[row]]);
+    let new = joined(&current);
+    state.apply_edit(&Window(&base, row..row + 1), &Window(&new, row..row + 1), change);
+    assert_eq!(hunks(&state), vec![(0..row, 0..row), (row + 1..21, row + 1..21)]);
+    assert_eq!(state, DiffState::compute(&base, &new, DiffLimits::default()));
+    assert!(state.reproduces(&base, &new));
+}
+
+#[test]
+fn splitting_a_hunk_beyond_the_inline_limit_drops_its_pair_details() {
+    let original = lines("value A\nvalue B");
+    let mut current = vec![String::from("value A!"), String::from("value B!")];
+    let limits = DiffLimits { inline_lines: 2, ..DiffLimits::default() };
+    let mut state = DiffState::compute(&original, &joined(&current), limits);
+    assert_eq!(state.hunks().next().unwrap().pairs.len(), 2);
+    let change = edit(&mut current, 0, 1, &["value A!", ""]);
+    let new = joined(&current);
+    state.apply_edit(&original, &new, change);
+    assert!(state.hunks().next().unwrap().pairs.is_empty());
+    assert!(state.reproduces(&original, &new));
+}
+
+#[test]
 fn an_edit_larger_than_the_window_is_one_exact_hunk() {
     let base = lines(&(0..100).map(|n| n.to_string()).collect::<Vec<_>>().join("\n"));
     let mut current: Vec<String> = (0..100).map(|n| n.to_string()).collect();

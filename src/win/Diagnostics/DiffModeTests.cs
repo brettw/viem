@@ -199,7 +199,14 @@ internal sealed partial class EditorWindow
                 try { left.View!.Ex("1delete"); } catch (InvalidOperationException) { }
                 Check(left.Document.Source(left.Document.State.document_revision).SequenceEqual(source) && !left.Document.IsDirty,
                     "The diff base rejects a line deletion and stays clean");
-                editor.View.Command("i"); editor.View.Text("changed "); editor.View.Key(VIEM_KEY_ESCAPE);
+                editor.View.Command("i"); editor.View.Text("cha");
+                int gutterStyles = editor.Pane.GutterStyleResolutions;
+                int baseExports = 0;
+                left.View!.BeforePresentationExport = _ => ++baseExports;
+                try { editor.View.Text("nged "); } finally { left.View.BeforePresentationExport = null; }
+                Check(baseExports == 0, "Extending an insertion keeps the current base frame without exporting it again");
+                Check(editor.Pane.GutterStyleResolutions == gutterStyles, "Typing reuses the live gutter's normal and diff styles");
+                editor.View.Key(VIEM_KEY_ESCAPE);
                 Check(window.comparison!.Marks(true).Marks.Length > 0 && window.comparison.Marks(false).Marks.Length > 0,
                     "Typing updates both sides' change marks");
                 window.NavigateChange(true);

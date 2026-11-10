@@ -2507,6 +2507,23 @@ impl ViewLayout {
         true
     }
 
+    /// Advance the already installed live overlay through a verified change
+    /// within one changed hard line. The transaction invalidated that line's
+    /// geometry. All other lines retain their styles and margin ownership.
+    pub(crate) fn rebase_diff_line(&mut self, id: DocumentId, change: &DocumentLayoutChange,
+        line: Range<usize>, spans: Vec<Range<usize>>) {
+        let DocumentLayoutChange::Local { old_revision, new_revision, old_hull, new_hull, invalidated_lines, .. } = change
+            else { return };
+        let Some((document, revision, input)) = &mut self.diff_presentation else { return };
+        if *document != id || *revision != *old_revision || self.rebased_document_revision != Some(*new_revision)
+            || !input.added || !input.changes_line_at(line.start) { return; }
+        let old_end = line.end - new_hull.len() + old_hull.len();
+        Arc::make_mut(input).replace_line_spans(line, old_end, spans);
+        *revision = *new_revision;
+        self.diff_margins_current = true;
+        self.restore_diff_heights(Some(invalidated_lines.clone()));
+    }
+
     /// The lines whose heights changed since the last call, while diff mode
     /// presents this view.
     pub(crate) fn take_height_changes(&mut self) -> super::height_index::HeightChanges {
@@ -2538,6 +2555,10 @@ impl ViewLayout {
                 .filter(|(id, rev, _)| *id == document && *rev == revision)
                 .map(|(_, _, input)| input.as_ref()),
         }
+    }
+
+    pub(crate) fn awaits_live_diff(&self, document: DocumentId, revision: Revision) -> bool {
+        self.diff_presentation.as_ref().is_some_and(|(id, rev, diff)| *id == document && *rev != revision && diff.added)
     }
 
     pub(crate) fn search_matches(&self, document: DocumentId, revision: Revision) -> &[Range<usize>] {
@@ -3665,14 +3686,13 @@ impl ViewLayout {
             let insets = self.snapshot.as_ref().map_or(self.insets, |snapshot| snapshot.content_insets);
             let inset = |line: usize| f64::from(if Some(line) == first { insets.top } else { 0.0 })
                 + f64::from(if Some(line) == last { insets.bottom } else { 0.0 });
-            let mut bands = input.band_margins();
-            for line in [first, last].into_iter().flatten() {
+            let mut bands = input.band_margins(range.clone());
+            for line in [first, last].into_iter().flatten().filter(|line| range.contains(line)) {
                 if let Err(at) = bands.binary_search_by_key(&line, |(line, _)| *line) {
                     bands.insert(at, (line, 0.0));
                 }
             }
-            let start = bands.partition_point(|(line, _)| *line < range.start);
-            for &(line, points) in bands[start..].iter().take_while(|(line, _)| *line < range.end) {
+            for (line, points) in bands {
                 let height = f64::from((input.row_points + points) * self.scale) + inset(line);
                 let _ = index.estimate_line(line, height);
             }
@@ -4159,7 +4179,7 @@ fn snapshot_hard_line_count(snapshot: &LayoutSnapshot) -> usize {
 /// from `old` to `new`.
 fn margin_height_changes(old: &super::style::DiffLayoutInput, new: &super::style::DiffLayoutInput, scale: f32)
     -> Vec<(usize, f64)> {
-    let (old, new) = (old.band_margins(), new.band_margins());
+    let (old, new) = (old.band_margins(0..usize::MAX), new.band_margins(0..usize::MAX));
     let (mut i, mut j) = (0, 0);
     let mut changes = Vec::new();
     while i < old.len() || j < new.len() {
@@ -4758,6 +4778,19 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
 
     pub fn provider_mut(&mut self) -> &mut P {
         &mut self.provider
+    }
+
+    /// Use the same font measurement and cache as the rows being aligned.
+    pub(crate) fn measured_row_advance(&mut self, document: DocumentId, revision: Revision,
+        style: &ResolvedTextStyle, spacing: LineSpacing, scale: f32) -> Result<f32, LayoutError> {
+        let environment = self.provider.measurement_environment_id();
+        let generation = self.provider.metrics_generation();
+        match self.default_row_advance(document, revision, style, spacing, scale, environment, generation,
+            &LayoutRunControl::synchronous(&NeverCancelled)) {
+            Ok(height) => Ok(height),
+            Err(LayoutComputationError::Layout(error)) => Err(error),
+            Err(LayoutComputationError::Cancelled) => unreachable!("synchronous measurement never cancels"),
+        }
     }
 
     pub fn clear_caches(&mut self) {

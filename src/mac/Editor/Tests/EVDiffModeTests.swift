@@ -103,6 +103,18 @@ final class EVDiffModeTests: XCTestCase {
         XCTAssertFalse(base.persistenceState.isDirty)
     }
 
+    func testTypingInsideAddedTextKeepsTheCurrentBaseFrame() throws {
+        let new = try backend("one\nnew\ntwo")
+        let (live, _, left, comparison) = try begin(new, base: "one\ntwo")
+        defer { comparison.end() }
+        type("jA", into: live)
+        var exports = 0
+        left.beforePresentationExport = { _ in exports += 1 }
+        type("x", into: live)
+        XCTAssertEqual(try source(new), "one\nnewx\ntwo")
+        XCTAssertEqual(exports, 0)
+    }
+
     func testReloadUpdatesTheComparisonAgainstItsExistingBase() throws {
         let path = "/tmp/viem-diff.md"
         let original = "first\nsecond\nthird\n"

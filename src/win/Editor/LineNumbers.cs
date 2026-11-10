@@ -17,7 +17,10 @@ internal sealed partial class EditorPane
     private ChromeStyle? diffNumberStyle, currentDiffNumberStyle;
     private sealed record NumeralMeasurement(ChromeStyle Style, float Width);
     private readonly NumeralMeasurement?[] numberMeasurements = new NumeralMeasurement?[4];
-    private ulong numberMetrics;
+    private readonly record struct GutterStyleKey(ulong Document, ulong StyleRevision, ulong Environment, ulong Metrics,
+        float Scale, uint Underlay, int Digits, global::Windows.UI.Color Foreground, global::Windows.UI.Color Background);
+    private GutterStyleKey? gutterStyleKey;
+    private (ulong Environment, ulong Generation) numberMetrics;
     private sealed record NumberGlyphLayout(CanvasTextLayout Layout, float FontSize);
     private readonly Dictionary<(ulong Line, uint StyleFlags, float Height), NumberGlyphLayout> numberLayouts = [];
     private const uint DiffMask = Interop.Native.VIEM_LINE_NUMBER_DIFF_ADDED | Interop.Native.VIEM_LINE_NUMBER_DIFF_REMOVED;
@@ -25,6 +28,7 @@ internal sealed partial class EditorPane
 #if DEBUG
     internal ulong PaintedNumberDocumentForTesting { get; private set; }
     internal int NumeralMeasurements { get; private set; }
+    internal int GutterStyleResolutions { get; private set; }
     internal LineNumberSnapshot? LineNumbersForTesting => lineNumbers;
     internal readonly record struct DrawnLineNumber(ulong Line, Rect Available, Rect Text, float FontSize);
     internal List<DrawnLineNumber> DrawnLineNumbers { get; } = [];
@@ -44,6 +48,7 @@ internal sealed partial class EditorPane
         lineNumberCanvas.Draw += (_, args) => Run(() => DrawLineNumbers(args.DrawingSession));
         lineNumberCanvas.CreateResources += (_, _) => {
             Array.Clear(numberMeasurements);
+            gutterStyleKey = null;
             ClearNumberLayouts();
             if (View != null) Run(Refresh);
         };
@@ -110,14 +115,25 @@ internal sealed partial class EditorPane
     {
         if (View == null || snapshot == null) return;
         lineNumbers = View.LineNumbers(snapshot.Info.identity);
-        if (!lineNumbers.Enabled) { SetGutterWidth(0); return; }
-        var sheet = View.Styles();
-        var fallback = ChromeStyle.Fallback(preferences.Theme.Foreground, preferences.Theme.Background);
+        if (!lineNumbers.Enabled) { gutterStyleKey = null; SetGutterWidth(0); return; }
+        var identity = View.StyleIdentity();
+        var theme = preferences.Theme;
+        uint side = lineNumbers.Info.flags & DiffMask;
+        int digits = DecimalDigits(lineNumbers.Info.source_line_count);
+        ulong environment = snapshot.Info.identity.measurement_environment_id, metrics = View.Provider.Generation;
+        var key = new GutterStyleKey(identity.document_id, identity.style_sheet_revision, environment, metrics,
+            viewport.scale, side, digits, theme.Foreground, theme.Background);
+        if (gutterStyleKey == key) { lineNumberCanvas.Invalidate(); return; }
+
+#if DEBUG
+        GutterStyleResolutions++;
+#endif
+        var sheet = View.Styles(identity);
+        var fallback = ChromeStyle.Fallback(theme.Foreground, theme.Background);
         var normal = ChromeStyle.ResolveLineNumber(sheet, current: false, fallback);
         var current = ChromeStyle.ResolveLineNumber(sheet, current: true, normal);
         lineNumberStyle = normal.Scaled(viewport.scale);
         currentLineNumberStyle = current.Scaled(viewport.scale);
-        uint side = lineNumbers.Info.flags & DiffMask;
         diffNumberStyle = currentDiffNumberStyle = null;
         if (side != 0) {
             var diffSheet = View.Styles(sheet.Identity, gutterUnderlay: side);
@@ -125,12 +141,10 @@ internal sealed partial class EditorPane
             diffNumberStyle = changed.Scaled(viewport.scale);
             currentDiffNumberStyle = ChromeStyle.ResolveLineNumber(diffSheet, current: true, changed).Scaled(viewport.scale);
         }
-        ulong metrics = View.Provider.Generation;
-        if (numberMetrics != metrics) {
+        if (numberMetrics != (environment, metrics)) {
             Array.Clear(numberMeasurements);
-            numberMetrics = metrics;
+            numberMetrics = (environment, metrics);
         }
-        int digits = DecimalDigits(lineNumbers.Info.source_line_count);
         float Width(ChromeStyle? style, int slot) {
             if (style == null) return 0;
             var measurement = numberMeasurements[slot];
@@ -144,6 +158,7 @@ internal sealed partial class EditorPane
         }
         SetGutterWidth(Math.Ceiling(Math.Max(Math.Max(Width(lineNumberStyle, 0), Width(currentLineNumberStyle, 1)),
             Math.Max(Width(diffNumberStyle, 2), Width(currentDiffNumberStyle, 3)))));
+        gutterStyleKey = key;
         lineNumberCanvas.Invalidate();
     }
 

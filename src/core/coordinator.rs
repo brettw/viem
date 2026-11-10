@@ -834,6 +834,7 @@ struct View<P: TextMeasurementProvider> {
     search: search::SearchViewState,
     syntax_wait: crate::document::syntax::service::SyntaxWaitState,
     layout: ViewLayout,
+    diff_typing_line: Option<diff::DiffTypingLine>,
     engine: LayoutEngine<P>,
     composition: Option<CompositionSession>,
     completion: Option<crate::command::completion::CompletionSession>,
@@ -841,6 +842,7 @@ struct View<P: TextMeasurementProvider> {
     /// view layout remains intact so cancellation is an O(1) restoration.
     composition_layout: Option<ViewLayout>,
     viewport_anchor: Option<ViewportTextAnchor>,
+    diff_edit_viewport: Option<diff::DiffEditViewport>,
     /// The next immediate layout follows a Preview/Code projection switch:
     /// nothing is cached, so it lays out only visible rows.
     fresh_projection: bool,
@@ -1959,6 +1961,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 align_indents_override: None,
                 commands,
                 layout,
+                diff_typing_line: None,
                 engine,
                 composition: None,
                 completion: None,
@@ -1966,6 +1969,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 search: Default::default(),
                 syntax_wait: Default::default(),
                 viewport_anchor: None,
+                diff_edit_viewport: None,
                 fresh_projection: false,
                 immediate_layout_context,
                 observed_metrics_generation,
@@ -2215,9 +2219,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let (document, revision) = (self.document.id(), self.document.revision());
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
         let scale = view.layout.scale();
-        let height = crate::layout::default_line_height(view.engine.provider_mut(), document, revision, &style, scale)
-            .map_err(|error| CoreError::Layout(LayoutError::Measurement(error)))?;
-        Ok(crate::layout::line_advance(height, spacing))
+        Ok(view.engine.measured_row_advance(document, revision, &style, spacing, scale)?)
     }
 
     /// Read the sheet that styles the default paragraph: the application's
@@ -3601,6 +3603,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                 );
                 let indent_dirty = view.layout.synchronize_indent_projection(std::sync::Arc::new(self.document.projection().clone()));
                 view.layout.rebase_document_change(&change);
+                if self.document.format().is_code() {
+                    if let Some(local) = &local_change { view.syntax_wait.rebase_visible_edit(map, local); }
+                }
+                if let Some(typing) = &view.diff_typing_line {
+                    typing.rebase(&self.document, &change, &mut view.layout);
+                }
                 if !indent_dirty.is_empty() && view.layout.whitespace_presentation().align_indents_to_previous_line {
                     view.layout.invalidate_geometry_lines(indent_dirty);
                     view.long_line_checkpoints = LongLineCheckpointCache::default();
@@ -3649,9 +3657,16 @@ impl<P: TextMeasurementProvider> Core<P> {
             } else {
                 ImmediateLayoutIntent::PreserveViewport
             };
+            let view = &self.views[&view_id];
+            let diff_anchor = (intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret
+                && matches!(view.commands.mode(), Mode::Insert | Mode::Replace)
+                && view.layout.awaits_live_diff(self.document.id(), self.document.revision()))
+                .then_some(view.viewport_anchor).flatten();
             if let Err(error) = self.materialize_immediate_viewport(view_id, intent) {
                 self.record_presentation_error(view_id, error);
             }
+            let view = self.views.get_mut(&view_id).expect("attached view");
+            view.diff_edit_viewport = diff_anchor.and_then(|anchor| diff::DiffEditViewport::capture(view, anchor));
         }
     }
 
@@ -6275,8 +6290,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 self.rematerialize_active_composition(view_id, false)?;
                 let view = self
                     .views
-                    .get(&view_id)
+                    .get_mut(&view_id)
                     .expect("view existence checked above");
+                view.diff_edit_viewport = None;
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,

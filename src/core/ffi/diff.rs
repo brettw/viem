@@ -503,9 +503,16 @@ pub unsafe extern "C" fn viem_diff_session_scrollbar_marks(
             return Err(ViemStatus::InvalidArgument);
         }
         let side = if is_new != 0 { crate::diff::Side::New } else { crate::diff::Side::Base };
-        let mut core = checkout_core(core)?;
+        let core = checkout_core(core)?;
+        if capacity == 0 {
+            let (count, extent) = with_session(session, |session| {
+                session.scrollbar_mark_info(core.core(), ViewId(view), side).map_err(core_status)
+            })?;
+            unsafe { out_count.write(count as u64); out_extent.write(extent); }
+            return if count == 0 { Ok(()) } else { Err(ViemStatus::BufferTooSmall) };
+        }
         let (found, extent) = with_session(session, |session| {
-            session.scrollbar_marks(core.core_mut(), ViewId(view), side).map_err(core_status)
+            session.scrollbar_marks(core.core(), ViewId(view), side).map_err(core_status)
         })?;
         unsafe {
             out_count.write(found.len() as u64);

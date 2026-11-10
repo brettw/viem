@@ -14,6 +14,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     private readonly StackPanel fileCountGroup = Group(3);
     internal readonly TextBlock FileCount = new(), AddedLines = new(), RemovedLines = new();
     private (ulong Added, ulong Removed) gitTotals;
+    private (ulong Added, ulong Removed)? displayedTotals;
     internal readonly ToggleButton Align = IconButton(new ToggleButton(), "Align Sides");
     internal readonly ToggleButton Collapse = IconButton(new ToggleButton(), "Collapse Context");
     private readonly Button previousFile, nextFile, previousChange, nextChange;
@@ -180,6 +181,8 @@ internal sealed partial class DiffToolbar : EditorToolbar
 
     internal void ShowLineTotals((ulong Added, ulong Removed) totals)
     {
+        if (displayedTotals == totals) return;
+        displayedTotals = totals;
         AddedLines.Text = $"+{totals.Added}";
         RemovedLines.Text = $"–{totals.Removed}";
         AutomationProperties.SetName(AddedLines, $"{totals.Added} added lines");

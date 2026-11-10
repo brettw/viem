@@ -113,19 +113,20 @@ final class EVLineNumberGutter: NSView {
 
     func width(lineCount: UInt64, sheet: EVStyleSheetSnapshot, scale: CGFloat,
                metricsGeneration: UInt64, themeForeground: EVThemeColor? = nil) -> CGFloat {
-        width(lineCount: lineCount, sheet: sheet, scale: scale, metricsGeneration: metricsGeneration,
-              themeForeground: themeForeground, diffUnderlay: 0) { nil }
+        width(lineCount: lineCount, identity: sheet.identity, scale: scale, metricsGeneration: metricsGeneration,
+              themeForeground: themeForeground, diffUnderlay: 0) { _ in sheet }
     }
 
-    func width(lineCount: UInt64, sheet: EVStyleSheetSnapshot, scale: CGFloat,
+    func width(lineCount: UInt64, identity: EVStyleSheetIdentity, scale: CGFloat,
                metricsGeneration: UInt64, themeForeground: EVThemeColor? = nil, diffUnderlay: UInt32,
-               diffStyles: () throws -> EVStyleSheetSnapshot?) rethrows -> CGFloat {
+               styles: (UInt32) throws -> EVStyleSheetSnapshot) rethrows -> CGFloat {
         let foreground = themeForeground ?? EVThemeStore.shared.theme.foreground
-        let key = WidthKey(digits: Self.digits(for: lineCount), styleRevision: sheet.identity.styleSheetRevision,
-            documentID: sheet.identity.documentID, metricsGeneration: metricsGeneration, scale: scale,
+        let key = WidthKey(digits: Self.digits(for: lineCount), styleRevision: identity.styleSheetRevision,
+            documentID: identity.documentID, metricsGeneration: metricsGeneration, scale: scale,
             themeForeground: foreground, diffUnderlay: diffUnderlay)
         if key == widthKey { return columnWidth }
-        let diffSheet = try diffStyles()
+        let sheet = try styles(0)
+        let diffSheet = diffUnderlay == 0 ? nil : try styles(diffUnderlay)
         let normalDefinition = sheet.lineNumberDefinition(current: false)
         normal = Self.style(normalDefinition, scale: scale, themeForeground: foreground.color)
         current = Self.style(sheet.lineNumberDefinition(current: true) ?? normalDefinition,

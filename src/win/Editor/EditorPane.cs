@@ -96,6 +96,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
     }
 #if DEBUG
     internal ulong PaintedDocumentForTesting { get; private set; }
+    internal ulong PaintedRevisionForTesting { get; private set; }
     internal string PointerCursorForTesting => ReferenceEquals(ProtectedCursor, gutterCursor) ? "row"
         : ReferenceEquals(ProtectedCursor, columnCursor) ? "column"
         : ReferenceEquals(ProtectedCursor, textInsertionCursor) ? "text" : "arrow";
@@ -161,6 +162,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             scrollbarPaint.Invalidate();
 #if DEBUG
             PaintedDocumentForTesting = snapshot?.Info.identity.document_id ?? 0;
+            PaintedRevisionForTesting = snapshot?.Info.identity.document_revision ?? 0;
 #endif
             if (snapshot != null && View is { } currentView && Diagnostics.StartupPerformance.Enabled)
                 Diagnostics.StartupPerformance.FirstDraw(DispatcherQueue, Document.FilePath, new() {
@@ -886,7 +888,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
             ? Color(snapshot.Paint.canvas_background) : preferences.Theme.Background);
     internal void Draw(CanvasDrawingSession drawing)
     {
-        using var measurement = Diagnostics.InputPerformance.Measure("draw");
+        using var measurement = Diagnostics.InputPerformance.Measure(diffBasePane ? "draw.base" : "draw");
         var theme = preferences.Theme;
         ClearCanvasBackground(drawing);
         if (snapshot == null || View == null) return;

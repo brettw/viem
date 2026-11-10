@@ -84,6 +84,11 @@ Changing one view's state does not change other open views.
 - **Off:** each side is laid out as a normal file on its own, with additions
   and removals highlighted but no filler, and scrolls independently.
 
+When typing or opening a line, the live pane keeps its viewport anchor and
+scrolls only as far as needed to reveal the caret. In an aligned comparison,
+the base follows that position even when the edit changes the height of its
+filler.
+
 ### Collapsed context
 
 A **Collapse context** toggle, in both the diff toolbar (chevrons closing on a
@@ -687,12 +692,16 @@ context), built in this order:
 - Listing changed files runs `git diff`, which may run clean filters the user
   configured (such as Git LFS) when it compares working-tree content. Base
   contents never do: they are read with `git cat-file blob`.
-- Known cost: after an edit the core lays out the visible rows once without
-  diff presentation (it is keyed to the previous revision) and again when the
-  session installs the new one. Rebasing the presentation through the edit
-  inside the core would remove the second pass.
-- Filler height is the measured default Code row (`default_line_height` with
-  the base paragraph's line spacing), and balancing adds whatever wrapping
+- Typing within an added line or a line with a stable base pairing can reuse
+  the comparison in the first layout of the edited frame. The live view keeps
+  at most one paired base line, up to the inline comparison limit (16 KiB).
+  Splitting a line within a replacement rechecks the gap between surviving
+  pairs. A line that becomes equal again can split the replacement into two
+  hunks. A large replacement without established pairs can still require
+  comparing the whole changed block. The base pane refreshes when its own
+  geometry or viewport changes.
+- Filler height is the measured default Code row with the base paragraph's
+  line spacing, and balancing adds whatever wrapping
   needs beyond it. Balance follows the heights each side has now: a wrapped
   line one side has measured is balanced against the other side's estimate
   until that side measures it, which then moves the filler once. A change

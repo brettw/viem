@@ -552,7 +552,7 @@ internal sealed partial class EditorWindow
             syncedRevision = pane.Document.State.document_revision;
             if (UseLiveTotals) diffToolbar?.ShowLineTotals(comparison.LineTotals);
             else if (singleFileDiff) UpdateDiffToolbar();
-            diffLeft!.Refresh();
+            diffLeft!.RefreshDiffBaseAfterEdit(comparison, diffAligned);
         }
     }
     internal void DiffLayoutUpdated(EditorPane pane, bool scrolled)

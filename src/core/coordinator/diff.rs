@@ -8,6 +8,7 @@
 use super::*;
 use crate::diff::{CollapsibleRun, DiffLimits, DiffState, Hunk, LineEdit, LineSource, Side, SidePresentation, DIFF_CONTEXT_LINES};
 use crate::layout::{DiffLayoutInput, DiffMargin};
+use crate::diff::state::{DiffLineBasis, retained_pair_spans};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -123,6 +124,56 @@ struct InstalledSide {
     aligned: bool,
     /// One default row, unscaled: a filler line and a divider's height.
     row_points: f32,
+}
+
+/// The last synchronized caret line. An added line or an isolated pairing
+/// can be verified against the same frozen base before the edit's first
+/// layout. At most one bounded base line is retained per live diff view.
+pub(super) struct DiffTypingLine {
+    line: usize,
+    basis: DiffLineBasis<String>,
+}
+
+impl DiffTypingLine {
+    fn for_caret<P: TextMeasurementProvider>(base: &Document, new: &Core<P>, view: ViewId, diff: &DiffState) -> Option<Self> {
+        if !new.document().format().is_code() { return None; }
+        let line = new.document().hard_line_at_offset(new.views[&view].commands.cursor())?;
+        let base_text = |index| {
+            let projection = base.projection();
+            let range = projection.hard_line_range(index)?;
+            if range.len() > crate::diff::inline::MAX_INLINE_LINE_BYTES { return None; }
+            projection.text_tree().slice(range).ok()
+        };
+        let basis = match diff.line_basis(line)? {
+            DiffLineBasis::Added => DiffLineBasis::Added,
+            DiffLineBasis::Single(index) => DiffLineBasis::Single(base_text(index)?),
+            DiffLineBasis::Paired(index) => DiffLineBasis::Paired(base_text(index)?),
+        };
+        Some(Self { line, basis })
+    }
+
+    pub(super) fn rebase(&self, document: &Document, change: &DocumentLayoutChange, layout: &mut ViewLayout) {
+        let DocumentLayoutChange::Local { old_line_count, new_line_count, new_hull, .. } = change else { return };
+        if !document.format().is_code() || old_line_count != new_line_count { return; }
+        let projection = document.projection();
+        let Some(line) = projection.hard_line_range(self.line) else { return };
+        // A Code change is local to these bytes on both sides. No new break
+        // is inside the hull, and an old break would have changed the count.
+        if new_hull.start < line.start || new_hull.end > line.end { return; }
+        let spans = match &self.basis {
+            DiffLineBasis::Added => Vec::new(),
+            DiffLineBasis::Single(base) | DiffLineBasis::Paired(base) => {
+                if line.len() > crate::diff::inline::MAX_INLINE_LINE_BYTES { return; }
+                let Ok(text) = projection.text_tree().slice(line.clone()) else { return };
+                match retained_pair_spans(base, &text) {
+                    Some(spans) => spans.new,
+                    None if matches!(self.basis, DiffLineBasis::Single(_)) && base != &text => Vec::new(),
+                    None => return,
+                }
+            }
+        };
+        layout.rebase_diff_line(document.id(), change, line, spans);
+    }
 }
 
 /// One diff mode comparison. Hosts keep it beside the two cores and call
@@ -546,6 +597,8 @@ impl DiffSession {
         new: &mut Core<Q>,
         new_view: ViewId,
     ) -> Result<DiffSync, CoreError> {
+        new.views.get_mut(&new_view).ok_or(CoreError::UnknownView(new_view))?.diff_typing_line = None;
+        let live_changed = (self.new_document, self.new_revision) != (new.document().id(), new.document().revision());
         let sync = self.update(base.document(), new.document());
         self.take_opened(base, base_view, Side::Base);
         self.take_opened(new, new_view, Side::New);
@@ -562,7 +615,18 @@ impl DiffSession {
         self.install(new, new_view, Side::New, &runs)?;
         self.balance(base, base_view, new, new_view)?;
         self.share_scroll_bounds(base, base_view, new, new_view)?;
+        let base_layout = &base.views[&base_view].layout;
+        let live_layout = &new.views[&new_view].layout;
+        if self.aligned && live_changed && (base_layout.viewport_top() != live_layout.viewport_top()
+            || base_layout.diff_scroll_request.is_some() || live_layout.diff_scroll_request.is_some()) {
+            // A live edit has already preserved its text anchor and revealed
+            // the caret. The base may be anchored to text below growing
+            // filler: settle it from the live side before either pane draws.
+            self.sync_scroll(base, base_view, new, new_view, Side::New)?;
+        }
         self.runs = runs;
+        let typing = DiffTypingLine::for_caret(base.document(), new, new_view, &self.state);
+        new.views.get_mut(&new_view).expect("installed live view").diff_typing_line = typing;
         Ok(sync)
     }
 
@@ -653,9 +717,9 @@ impl DiffSession {
         hunk: &Hunk,
         caret_line: usize,
     ) -> Result<bool, CoreError> {
-        let new_row = f64::from(new.default_row_height(new_view)?);
-        let base_row = f64::from(base.default_row_height(base_view)?);
         let (new_side, base_side) = (self.installed(Side::New), self.installed(Side::Base));
+        let new_row = f64::from(new_side.row_points * new.views[&new_view].layout.scale());
+        let base_row = f64::from(base_side.row_points * base.views[&base_view].layout.scale());
         let new_block = side_block(new, new_view, new_side, hunk.new.clone(), new_row)?;
         let base_block = side_block(base, base_view, base_side, hunk.base.clone(), base_row)?;
         let shows = |core_view: (f64, f64), block: &Range<f64>| {
@@ -708,30 +772,44 @@ impl DiffSession {
         Ok(true)
     }
 
+    /// Size a scrollbar export without measuring the geometry of every mark.
+    pub(crate) fn scrollbar_mark_info<P: TextMeasurementProvider>(
+        &self, core: &Core<P>, view: ViewId, side: Side,
+    ) -> Result<(usize, f32), CoreError> {
+        let installed = self.installed(side);
+        let layout = core.layout(view).ok_or(CoreError::UnknownView(view))?;
+        let extent = if layout.has_shared_scroll_range() && layout.estimated_maximum_viewport_top() > 0.0 {
+            layout.estimated_maximum_viewport_top() + layout.height()
+        } else {
+            layout.hard_line_prefix_height(core.document().line_count()).map_err(LayoutError::from)?.height() as f32
+        };
+        if !self.is_current(side, view, core.document()) { return Ok((0, extent)); }
+        let other = if installed.aligned { installed.presentation.fillers.len() } else {
+            self.state.regions().filter(|(base, new, equal)| !equal && match side {
+                Side::Base => base.is_empty(), Side::New => new.is_empty(),
+            }).count()
+        };
+        Ok((installed.presentation.lines.len() + other, extent))
+    }
+
     /// The marks for one side's scrollbar track and the document extent they
     /// are measured against: that side's changed lines in its own colour,
     /// and the other side's changes where they line up, at its filler or,
     /// when unaligned, as an empty mark between lines.
     pub fn scrollbar_marks<P: TextMeasurementProvider>(
         &self,
-        core: &mut Core<P>,
+        core: &Core<P>,
         view: ViewId,
         side: Side,
     ) -> Result<(Vec<ScrollbarMark>, f32), CoreError> {
         let installed = self.installed(side);
-        let layout = core.layout(view).ok_or(CoreError::UnknownView(view))?;
         let count = core.document().line_count();
-        let extent = layout.hard_line_prefix_height(count).map_err(LayoutError::from)?.height();
-        let extent = if layout.has_shared_scroll_range() && layout.estimated_maximum_viewport_top() > 0.0 {
-            f64::from(layout.estimated_maximum_viewport_top() + layout.height())
-        } else { extent };
-        if installed.view != Some(view) || installed.document.is_none() {
-            return Ok((Vec::new(), extent as f32));
-        }
-        let row = f64::from(core.default_row_height(view)?);
+        let (mark_count, extent) = self.scrollbar_mark_info(core, view, side)?;
+        if mark_count == 0 { return Ok((Vec::new(), extent)); }
+        let row = f64::from(installed.row_points * core.layout(view).ok_or(CoreError::UnknownView(view))?.scale());
         let own = side == Side::New;
         let presentation = &installed.presentation;
-        let mut marks = Vec::new();
+        let mut marks = Vec::with_capacity(mark_count);
         for range in &presentation.lines {
             let block = side_block(core, view, installed, range.start..range.end, 0.0)?;
             marks.push(ScrollbarMark { top: block.start as f32, bottom: block.end as f32, added: own });
@@ -752,7 +830,7 @@ impl DiffSession {
             }
         }
         marks.sort_by(|a, b| a.top.total_cmp(&b.top));
-        Ok((marks, extent as f32))
+        Ok((marks, extent))
     }
 
     /// Remove diff presentation from a view, for leaving diff mode.
@@ -798,10 +876,8 @@ fn side_block<P: TextMeasurementProvider>(
         let balance = installed.balance.changes.get(&line).map_or(0.0, |points| f64::from(*points) * scale);
         (rows as f64 * row + balance).max(0.0)
     };
-    let total = prefix(count)?;
-    let trailing = filler(count);
-    let start = if lines.start < count { prefix(lines.start)? } else { (total - trailing).max(0.0) };
-    let end = if lines.end < count { prefix(lines.end)? + filler(lines.end) } else { total };
+    let start = if lines.start < count { prefix(lines.start)? } else { (prefix(count)? - filler(count)).max(0.0) };
+    let end = if lines.end < count { prefix(lines.end)? + filler(lines.end) } else { prefix(count)? };
     Ok(start..end.max(start))
 }
 
@@ -1071,6 +1147,15 @@ fn divider_line(run: &Range<usize>, count: usize) -> Option<(usize, bool)> {
     }
 }
 
+/// Trim entries that match on both sides of a local edit. A change to one
+/// span only needs to compare the remaining spans on that line.
+fn differing_entries<'a, T: PartialEq>(old: &'a [T], new: &'a [T]) -> (&'a [T], &'a [T]) {
+    let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let (old, new) = (&old[prefix..], &new[prefix..]);
+    let suffix = old.iter().rev().zip(new.iter().rev()).take_while(|(a, b)| a == b).count();
+    (&old[..old.len() - suffix], &new[..new.len() - suffix])
+}
+
 /// Hard lines whose diff appearance differs between two presentations of
 /// the same side of `count` lines, as sorted ranges.
 fn changed_lines(old_margins: Margins, new_margins: Margins, count: usize) -> Vec<Range<usize>> {
@@ -1078,11 +1163,12 @@ fn changed_lines(old_margins: Margins, new_margins: Margins, count: usize) -> Ve
     let mut lines: Vec<Range<usize>> = Vec::new();
     // Changed-line ranges: the symmetric difference of the two range sets.
     let mut edges: Vec<(usize, i32)> = Vec::new();
-    for range in &old.lines {
+    let (old_lines, new_lines) = differing_entries(&old.lines, &new.lines);
+    for range in old_lines {
         edges.push((range.start, 1));
         edges.push((range.end, -1));
     }
-    for range in &new.lines {
+    for range in new_lines {
         edges.push((range.start, 2));
         edges.push((range.end, -2));
     }
@@ -1107,37 +1193,55 @@ fn changed_lines(old_margins: Margins, new_margins: Margins, count: usize) -> Ve
         }
     }
     // Lines whose spans differ.
-    let spans = |presentation: &SidePresentation| {
-        let mut map: std::collections::BTreeMap<usize, Vec<Range<usize>>> = Default::default();
-        for (line, span) in &presentation.text {
-            map.entry(*line).or_default().push(span.clone());
+    let (mut before, mut after) = differing_entries(&old.text, &new.text);
+    while let Some(line) = before.first().into_iter().chain(after.first()).map(|entry| entry.0).min() {
+        let old_count = before.iter().take_while(|entry| entry.0 == line).count();
+        let new_count = after.iter().take_while(|entry| entry.0 == line).count();
+        if before[..old_count] != after[..new_count] {
+            lines.push(line..line + 1);
         }
-        map
-    };
-    let (old_spans, new_spans) = (spans(old), spans(new));
-    for line in old_spans.keys().chain(new_spans.keys()) {
-        if old_spans.get(line) != new_spans.get(line) {
-            lines.push(*line..*line + 1);
-        }
+        before = &before[old_count..];
+        after = &after[new_count..];
     }
     // Lines whose filler or divider differs. Lines that become hidden or
     // shown need nothing here: hiding visits no lines and showing
     // invalidates them.
-    let (old_margins, new_margins) = (old_margins.by_line(count), new_margins.by_line(count));
-    for line in old_margins.keys().chain(new_margins.keys()) {
-        if old_margins.get(line) != new_margins.get(line) {
-            lines.push(*line..*line + 1);
+    if old.fillers != new.fillers || old.collapsed != new.collapsed
+        || old_margins.filler_points != new_margins.filler_points || old_margins.balance != new_margins.balance {
+        let (old_margins, new_margins) = (old_margins.by_line(count), new_margins.by_line(count));
+        for line in old_margins.keys().chain(new_margins.keys()) {
+            if old_margins.get(line) != new_margins.get(line) {
+                lines.push(*line..*line + 1);
+            }
         }
     }
-    lines.sort_by_key(|range| range.start);
-    let mut merged: Vec<Range<usize>> = Vec::new();
-    for range in lines {
-        match merged.last_mut() {
-            Some(last) if last.end >= range.start => last.end = last.end.max(range.end),
-            _ => merged.push(range),
-        }
+    merge_ranges(lines)
+}
+
+/// The typing viewport before layout temporarily loses its diff margins.
+/// Apply it to the completed comparison only while that provisional frame
+/// and its editing location are still the ones the user is looking at.
+pub(super) struct DiffEditViewport {
+    anchor: ViewportTextAnchor,
+    provisional_layout: crate::layout::LayoutRevision,
+    origin: (f32, f32),
+    caret: usize,
+}
+
+impl DiffEditViewport {
+    pub(super) fn capture<P: TextMeasurementProvider>(view: &View<P>, anchor: ViewportTextAnchor) -> Option<Self> {
+        let snapshot = view.layout.snapshot()?;
+        (snapshot.document_id == anchor.anchor.document() && snapshot.document_revision == anchor.anchor.revision())
+            .then(|| Self { anchor, provisional_layout: snapshot.revision,
+                origin: (view.layout.viewport_left(), view.layout.viewport_top()), caret: view.commands.cursor() })
     }
-    merged
+
+    fn is_current<P: TextMeasurementProvider>(&self, view: &View<P>, document: &Document) -> bool {
+        self.anchor.anchor.document() == document.id() && self.anchor.anchor.revision() == document.revision()
+            && view.layout.snapshot().is_some_and(|snapshot| snapshot.revision == self.provisional_layout)
+            && (view.layout.viewport_left(), view.layout.viewport_top()) == self.origin
+            && view.commands.cursor() == self.caret && matches!(view.commands.mode(), Mode::Insert | Mode::Replace)
+    }
 }
 
 impl<P: TextMeasurementProvider> Core<P> {
@@ -1153,17 +1257,24 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(), CoreError> {
         let (id, revision) = (self.document.id(), self.document.revision());
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
-        if presentation.is_none() { view.layout.set_diff_peer_bound(None); }
+        let editing = view.diff_edit_viewport.take().filter(|edit| presentation.is_some() && edit.is_current(view, &self.document));
+        if presentation.is_none() {
+            view.layout.set_diff_peer_bound(None);
+            view.diff_typing_line = None;
+        }
         let presented = view.layout.set_diff_presentation(id, revision, presentation, changed_lines);
         let hidden = view.layout.set_elided_lines(collapsed.to_vec());
         if !presented && !hidden {
             return Ok(());
         }
         cancel_active_layout_work(view);
+        if let Some(edit) = &editing { view.viewport_anchor = Some(edit.anchor); }
         if hidden {
             self.anchor_viewport_beside_hidden_lines(view_id)?;
         }
-        self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::PreserveViewport)?;
+        let intent = if editing.is_some() { ImmediateLayoutIntent::PreserveViewportAndRevealCaret }
+            else { ImmediateLayoutIntent::PreserveViewport };
+        self.materialize_immediate_viewport(view_id, intent)?;
         Ok(())
     }
 

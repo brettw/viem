@@ -84,6 +84,16 @@ internal sealed partial class EditorPane
     private float diffMarkMaximum;
     private (ViemDiffScrollbarMarkV1[] Marks, float Extent, ViemRgbaV1 Added, ViemRgbaV1 Removed) diffMarks;
 
+    internal void RefreshDiffBaseAfterEdit(DiffComparison comparison, bool aligned)
+    {
+        using var timing = Diagnostics.InputPerformance.Measure("diff.refreshBaseAfterEdit");
+        // With alignment off, a pure addition can move a base-side scrollbar
+        // mark without changing the base text, layout or scroll range.
+        if (!aligned) diffMarkLayout = null;
+        if (View == null || snapshot == null || !viewport.Equals(View.Viewport)) Refresh();
+        else UpdateDiffMarks(comparison, newSide: false);
+    }
+
     internal void UpdateDiffMarks(DiffComparison comparison, bool newSide)
     {
         if (snapshot == null) return;

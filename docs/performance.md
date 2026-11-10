@@ -267,6 +267,53 @@ launches of newly built output from repeated launches, and do not add overlappin
 startup trace scopes. See the [Windows development guide](../src/win/README.md)
 for other scenarios and build/profile options.
 
+### Windows diff typing
+
+Run the same live file in Code and against a chosen base. Each run uses
+the file's extension for syntax detection and a new isolated profile.
+
+```powershell
+.\scripts\test-win.ps1 -Optimized -ProfileScenario typing -ProfileDocument live.rs
+.\scripts\test-win.ps1 -Optimized -NoBuild -ProfileScenario typing -ProfileDocument live.rs -ProfileBase base.rs
+```
+
+The profiler warms the editing path, undoes the warmup and starts on the
+middle source line. It sends nine individual character insertions and one
+Enter ten times, with both line numbers and the normal background workers
+enabled. The report separates synchronous input time from elapsed time
+through the WinUI rendered frame in which Win2D drew the new live revision.
+It also times the live and base draw callbacks individually. For a comparison
+of editing and layout alone, repeat with the same bytes in `.txt` files.
+
+The Windows x64 measurement used 8,192 lines (285,609 UTF-8 bytes, joined
+by LF, no final newline). Line `i`, starting at zero, was
+`pub fn row_00000() -> i32 { 0 }` with `i` as the five-digit function
+suffix and the unpadded integer in the function body. In the live file every 64th
+return type, starting at line zero, was `i64`. The scattered base kept
+all original `i32` types. The dense base copied the live file and replaced
+the return types on lines 3,968 through 4,223 with `u16`. Both diffs
+used the default alignment and collapsed context. The measured live canvas
+was 393 × 299 DIPs at 144 DPI in all six cases.
+
+On 2026-11-09, two runs per case compared commit `bd7291e` with the updated
+build using Release Rust and optimized managed Windows diagnostics. The second
+run reversed the order of the six cases. Values are milliseconds, before → after.
+Character turn is the average of the two run medians. Paint percentiles pool
+the two runs (180 character and 20 Enter samples per case).
+
+| Syntax | Comparison | Character turn | Character through paint p50 | Character through paint p95 | Enter through paint p50 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Rust | Regular Code | 47.1 → 5.3 | 75.5 → 24.5 | 118.4 → 51.6 | 80.6 → 25.0 |
+| Rust | Scattered changes | 46.6 → 7.0 | 79.1 → 28.9 | 121.2 → 51.0 | 93.6 → 61.5 |
+| Rust | Dense replacement | 48.8 → 5.5 | 82.7 → 25.8 | 125.6 → 51.0 | 105.4 → 47.6 |
+| None | Regular Code | 7.5 → 4.9 | 36.6 → 30.2 | 62.1 → 54.3 | 33.8 → 33.8 |
+| None | Scattered changes | 18.4 → 6.9 | 47.2 → 34.8 | 70.6 → 59.1 | 68.6 → 63.0 |
+| None | Dense replacement | 22.3 → 5.6 | 53.1 → 32.4 | 87.7 → 56.0 | 76.2 → 71.0 |
+
+The Rust diff cases drew the base surface 20–22 times per 100 inputs,
+down from 200. Adding a line can still change filler and both panes'
+geometry, and Enter through paint remained slower than in regular Code.
+
 ## Open work
 
 - **Native shaping throughput:** speculative layout of 95 KB of Markdown takes

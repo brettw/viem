@@ -642,6 +642,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         let mut bands = BTreeMap::<usize, LineNumberRegion>::new();
         let diff = layout.presentation_overlays(self.document.id(), self.document.revision()).diff;
         let source_line_count = self.document.presented_source_line_number_count();
+        // Text and Code project exactly one hard line per physical source
+        // line. An IME/completion overlay can insert temporary line breaks.
+        let literal_ordinals = self.document.format().is_literal() && overlay.is_none();
         let has_horizontal_materialization = snapshot.has_horizontal_materialization();
         let mut hard_lines = BTreeMap::<usize, PartialHardLineNumbers>::new();
         for (row_index, row) in snapshot.rows.iter().enumerate() {
@@ -666,7 +669,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             // line while retaining only local clusters. Query those contributors,
             // never the unseen logical hull between distant cached fragments.
             let mut indexes = std::collections::BTreeSet::new();
-            if row.clusters.is_empty() {
+            if literal_ordinals {
+                indexes.insert(row.hard_line_index);
+            } else if row.clusters.is_empty() {
                 indexes.extend(physical_indexes_for_presentation_range(
                     &self.document,
                     row.text_range.start..row.text_range.start,

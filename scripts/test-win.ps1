@@ -1,5 +1,6 @@
-param([switch]$NoBuild, [string[]]$Suite, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip', 'preview')][string]$ProfileScenario = 'drag', [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
+param([switch]$NoBuild, [string[]]$Suite, [switch]$PointerInput, [switch]$Optimized, [switch]$NativeAot, [string]$ProfileDocument, [ValidateSet('drag', 'resize', 'page', 'scroll', 'roundtrip', 'preview', 'typing')][string]$ProfileScenario = 'drag', [string]$ProfileBase, [switch]$DisablePrelayout, [ValidateRange(1, 1000)][int]$ProfileIntervalMs = 16, [string]$ConfigFile, [string]$Executable, [ValidateRange(1, 1800)][int]$TimeoutSeconds = 600)
 $ErrorActionPreference = 'Stop'
+if ($ProfileBase -and (!$ProfileDocument -or $ProfileScenario -ne 'typing')) { throw '-ProfileBase requires -ProfileDocument and -ProfileScenario typing.' }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $testOutput = Join-Path $projectRoot $(if ($NativeAot) { 'target/windows-native-tests' } elseif ($Optimized) { 'target/windows-profile' } else { 'target/windows-tests' })
 Push-Location $projectRoot
@@ -31,6 +32,7 @@ try {
     $oldProfile = $env:VIEM_CONFIG_DIR
     $oldPerformanceDocument = $env:VIEM_PERF_DOCUMENT
     $oldPerformanceScenario = $env:VIEM_PERF_SCENARIO
+    $oldPerformanceBase = $env:VIEM_PERF_BASE
     $oldPointerInput = $env:VIEM_TEST_POINTER_INPUT
     $oldPrelayout = $env:VIEM_TEST_DISABLE_PRELAYOUT
     $oldInterval = $env:VIEM_PERF_INTERVAL_MS
@@ -40,6 +42,7 @@ try {
     $env:VIEM_PERF_INTERVAL_MS = "$ProfileIntervalMs"
     $env:VIEM_TEST_POINTER_INPUT = if ($PointerInput) { '1' } else { $null }
     $env:VIEM_PERF_SCENARIO = $ProfileScenario
+    $env:VIEM_PERF_BASE = if ($ProfileBase) { (Resolve-Path -LiteralPath $ProfileBase).Path } else { $null }
     if ($ProfileDocument) { $env:VIEM_PERF_DOCUMENT = (Resolve-Path -LiteralPath $ProfileDocument).Path }
     $env:VIEM_CONFIG_DIR = $reportPath + '.profile'
     if ($ConfigFile) { New-Item -ItemType Directory -Path $env:VIEM_CONFIG_DIR -Force | Out-Null; Copy-Item -LiteralPath $ConfigFile -Destination (Join-Path $env:VIEM_CONFIG_DIR 'config.json') }
@@ -79,6 +82,6 @@ try {
         if ($ProfileDocument) { Write-Output "$ProfileScenario CPU benchmark completed. Report: $reportPath" }
         else { Write-Output "$($report.count) Windows integration checks passed in $([Math]::Round($testTimer.Elapsed.TotalSeconds, 1)) seconds. Report: $reportPath" }
     }
-    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval; $env:VIEM_TEST_SUITES = $oldSuites }
+    finally { $env:VIEM_CONFIG_DIR = $oldProfile; $env:VIEM_PERF_DOCUMENT = $oldPerformanceDocument; $env:VIEM_PERF_SCENARIO = $oldPerformanceScenario; $env:VIEM_PERF_BASE = $oldPerformanceBase; $env:VIEM_TEST_POINTER_INPUT = $oldPointerInput; $env:VIEM_TEST_DISABLE_PRELAYOUT = $oldPrelayout; $env:VIEM_PERF_INTERVAL_MS = $oldInterval; $env:VIEM_TEST_SUITES = $oldSuites }
 }
 finally { Pop-Location }

@@ -318,6 +318,33 @@ final class EVLineNumberGutterTests: XCTestCase {
         XCTAssertEqual(gutter.digitMeasurementCount, 60)
     }
 
+    func testEditingCodeReusesBothGutterStylesWithoutExportingTheSheet() throws {
+        let backend = EVCoreDocumentBackend()
+        try backend.readUntitled(source: Data("x".utf8), typeName: EVDocument.codeType)
+        let surface = try XCTUnwrap(backend.makeEditorSurface() as? EVEditorSurfaceController)
+        surface.loadViewIfNeeded()
+        let session = try XCTUnwrap(surface.session)
+        defer { session.detach() }
+        let gutter = EVLineNumberGutter()
+        var exports: [UInt32] = []
+        @MainActor func width() throws -> CGFloat {
+            let identity = try EVCoreStyleBridge.styleIdentity(core: backend.core)
+            return try gutter.width(lineCount: 1, identity: identity, scale: 1, metricsGeneration: 1,
+                diffUnderlay: UInt32(VIEM_LINE_NUMBER_DIFF_ADDED)) { layer in
+                exports.append(layer)
+                return try EVCoreStyleBridge.copyStyleSheet(core: backend.core, gutterUnderlay: layer)
+            }
+        }
+        let initial = try width()
+        let original = try EVCoreStyleBridge.styleIdentity(core: backend.core)
+        _ = try session.sendText("i")
+        _ = try session.sendText("x")
+        let edited = try EVCoreStyleBridge.styleIdentity(core: backend.core)
+        XCTAssertNotEqual(edited.documentRevision, original.documentRevision)
+        XCTAssertEqual(try width(), initial)
+        XCTAssertEqual(exports, [0, UInt32(VIEM_LINE_NUMBER_DIFF_ADDED)])
+    }
+
     func testThemeForegroundChangesRefreshPaintWithoutMeasuringDigits() throws {
         let (backend, _, session) = try makeSurface("x", declarations: [
             (.baseParagraph, .characterForeground, nil),

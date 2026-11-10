@@ -460,29 +460,6 @@ pub(crate) fn default_column_width<P: TextMeasurementProvider>(
     Ok(width)
 }
 
-/// The scaled natural height of one empty row in `style`, as the layout
-/// engine measures an empty line.
-pub(crate) fn default_line_height<P: TextMeasurementProvider>(
-    provider: &mut P, document_id: DocumentId, document_revision: Revision,
-    style: &ResolvedTextStyle, scale: f32,
-) -> Result<f32, MeasurementError> {
-    let environment = provider.measurement_environment_id();
-    let generation = provider.metrics_generation();
-    let request = ShapeRequest {
-        document_id, document_revision, measurement_environment_id: environment,
-        metrics_generation: generation, text_range: 0..0, text: "",
-        context_before: "", context_after: "", style_runs: &[], inline_images: &[], default_style: style,
-        paragraph_base_direction: TextDirection::LeftToRight, scale,
-        purpose: ShapePurpose::MetricsOnly, render_run_policy: None,
-    };
-    let shaped = super::recovery::shape_with_fallback(provider, &[request])?;
-    let height = shaped.first().map_or(0.0, |fragment| fragment.default_metrics.height());
-    if shaped.len() != 1 || !height.is_finite() || height <= 0.0 {
-        return Err(MeasurementError::Provider("Invalid default font line measurement".into()));
-    }
-    Ok(height)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

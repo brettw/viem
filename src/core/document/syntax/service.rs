@@ -143,10 +143,28 @@ pub struct SyntaxWaitState {
     target: Option<(SyntaxInputIdentity, SyntaxConfiguration, Range<usize>, Instant)>,
 }
 impl SyntaxWaitState {
+    /// Editing text already presented in this view does not expose a cold
+    /// viewport. The worker still receives the new revision; only the wait
+    /// is retired while the rebased, provisional colors are on screen.
+    pub(crate) fn rebase_visible_edit(&mut self, map: &crate::document::PositionMap,
+        change: &crate::document::LocalFormattedChange) {
+        let Some((input, _, range, deadline)) = &mut self.target else { return };
+        if input.document != map.document().0 || input.revision != map.source_revision().0
+            || change.old.start != change.new.start || change.old.start < range.start || change.old.end > range.end {
+            return;
+        }
+        range.end = range.end - change.old.len() + change.new.len();
+        input.revision = map.target_revision().0;
+        *deadline = Instant::now();
+    }
+
     fn deadline(&mut self, request: &SyntaxRequest, deadline: Instant) -> Instant {
-        if let Some((input, configuration, range, deadline)) = &self.target {
+        if let Some((input, configuration, range, deadline)) = &mut self.target {
             if *input == request.input.identity() && *configuration == request.configuration
-                && *range == request.range { return *deadline; }
+                && range.start <= request.range.start && request.range.end <= range.end {
+                *range = request.range.clone();
+                return *deadline;
+            }
         }
         let deadline = deadline.min(Instant::now() + SYNTAX_PRESENTATION_WAIT);
         self.target = Some((request.input.identity(), request.configuration.clone(), request.range.clone(), deadline));
@@ -594,12 +612,11 @@ impl SyntaxService {
         let range = Self::request_range(&input, range)?;
         if range.is_empty() || self.configuration.language.is_none() { return None; }
         self.request(input.clone(), range.clone());
-        if self.has_coverage(input.identity(), &range) { return None; }
         let request = SyntaxRequest {
             input, configuration: self.configuration.clone(), range,
         };
         let deadline = state.deadline(&request, deadline);
-        if Instant::now() >= deadline { return None; }
+        if Instant::now() >= deadline || self.has_coverage(request.input.identity(), &request.range) { return None; }
         let cancellation = self.mailbox.lock().unwrap_or_else(|e| e.into_inner()).cancellation.clone();
         Some(SyntaxWait { mailbox: self.mailbox.clone(), request, cancellation, deadline })
     }

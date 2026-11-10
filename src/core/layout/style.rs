@@ -282,6 +282,28 @@ pub(crate) struct DiffMargin {
 }
 
 impl DiffLayoutInput {
+    /// The edited line starts at the same byte. Following lines and spans
+    /// move by its byte delta, while within-line spans come from the new text.
+    pub(super) fn replace_line_spans(&mut self, line: Range<usize>, old_end: usize, spans: Vec<Range<usize>>) {
+        let start = self.text.partition_point(|span| span.end <= line.start);
+        let end = self.text.partition_point(|span| span.start < old_end);
+        let shift = |offset: usize| offset - old_end + line.end;
+        if old_end != line.end {
+            for range in &mut self.text[end..] {
+                range.start = shift(range.start);
+                range.end = shift(range.end);
+            }
+            let first = self.lines.partition_point(|range| range.end < old_end);
+            for range in &mut self.lines[first..] {
+                if range.start > old_end { range.start = shift(range.start); }
+                range.end = shift(range.end);
+            }
+            let first = self.margins.partition_point(|margin| margin.at <= old_end);
+            for margin in &mut self.margins[first..] { margin.at = shift(margin.at); }
+        }
+        self.text.splice(start..end, spans.into_iter().map(|span| line.start + span.start..line.start + span.end));
+    }
+
     pub(crate) fn changes_line_at(&self, start: usize) -> bool {
         let index = self.lines.partition_point(|range| range.end < start);
         self.lines.get(index).is_some_and(|range| range.start <= start)
@@ -311,10 +333,14 @@ impl DiffLayoutInput {
     /// line. A band runs from a line's first row to the next line's, so the
     /// filler above a line belongs to the line before it, unless the line
     /// begins the laid-out document.
-    pub(crate) fn band_margins(&self) -> Vec<(usize, f32)> {
-        let mut bands: Vec<(usize, f32)> = Vec::with_capacity(self.margins.len() + 1);
+    pub(crate) fn band_margins(&self, within: Range<usize>) -> Vec<(usize, f32)> {
+        // A margin on the line just after the range can fill its last band.
+        let start = self.margins.partition_point(|margin| margin.line < within.start);
+        let margins = &self.margins[start..];
+        let end = margins.partition_point(|margin| margin.line <= within.end);
+        let mut bands: Vec<(usize, f32)> = Vec::with_capacity(end);
         let mut add = |line: usize, points: f32| {
-            if points == 0.0 {
+            if points == 0.0 || !within.contains(&line) {
                 return;
             }
             match bands.last_mut() {
@@ -322,7 +348,7 @@ impl DiffLayoutInput {
                 _ => bands.push((line, points)),
             }
         };
-        for margin in &self.margins {
+        for margin in &margins[..end] {
             let own = margin.filler_after + if margin.divider.is_some() { self.row_points } else { 0.0 };
             if margin.line == 0 || margin.divider.is_some_and(|(after, _)| !after) {
                 add(margin.line, margin.filler_before + own);
@@ -349,18 +375,24 @@ impl DiffLayoutInput {
 
     /// Everything about this presentation that can change one paragraph's
     /// resolved appearance, relative to the paragraph's start.
-    fn paragraph_key(&self, block: &Block) -> DiffParagraphKey {
+    fn paragraph_key(&self, block: &Block) -> Option<DiffParagraphKey> {
         let start = block.range.start;
-        DiffParagraphKey {
+        let line = self.changes_line_at(start);
+        let margin = self.margin(block);
+        let text = self.text_in(&block.range);
+        if !line && margin.divider.is_none() && margin.filler_before == 0.0 && margin.filler_after == 0.0 && text.is_empty() {
+            return None;
+        }
+        Some(DiffParagraphKey {
             added: self.added,
-            line: self.line_style(block).is_some(),
+            line,
             margin_top: self.added_margin(block, false).to_bits(),
             margin_bottom: self.added_margin(block, true).to_bits(),
-            divider: self.margin(block).divider,
-            text: self.text_in(&block.range).iter()
+            divider: margin.divider,
+            text: text.iter()
                 .map(|span| span.start.max(block.range.start) - start..span.end.min(block.range.end) - start)
                 .collect(),
-        }
+        })
     }
 }
 
@@ -1204,7 +1236,7 @@ impl CachedParagraphStyle {
             spans: spans.map(|(range, application)| (range, application.clone())).collect(),
             images: images.collect(),
             search: search.collect(),
-            diff: input.diff.map(|diff| diff.paragraph_key(block)),
+            diff: input.diff.and_then(|diff| diff.paragraph_key(block)),
             paragraph,
             shaping_runs: shaping_runs.iter().map(|run| ShapeStyleRun {
                 text_range: run.text_range.start - start..run.text_range.end - start, style: run.style.clone() }).collect(),
@@ -1223,7 +1255,7 @@ impl CachedParagraphStyle {
         spans.eq(self.spans.iter().map(|(range, application)| (range.clone(), application)))
             && images.eq(self.images.iter().copied())
             && search.eq(self.search.iter().cloned())
-            && input.diff.map(|diff| diff.paragraph_key(block)) == self.diff
+            && input.diff.and_then(|diff| diff.paragraph_key(block)) == self.diff
     }
 }
 

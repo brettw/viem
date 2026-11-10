@@ -19,18 +19,28 @@ internal static class InputPerformance
         }
     }
 #if DEBUG
+    private static async Task WaitForPaint(Editor.EditorPane pane, ulong revision)
+    {
+        var rendered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Frame(object? sender, object args) {
+            if (pane.PaintedRevisionForTesting == revision) rendered.TrySetResult();
+        }
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendered += Frame;
+        try { await rendered.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
+        finally { Microsoft.UI.Xaml.Media.CompositionTarget.Rendered -= Frame; }
+    }
+
     internal static async Task Run(Editor.EditorPane pane, string report)
     {
         var view = await pane.Ready;
         await Task.Delay(300);
-        bool resize = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "resize";
-        bool page = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "page";
-        bool roundtrip = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "roundtrip";
-        bool scroll = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "scroll";
+        string scenario = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") ?? "drag";
+        bool resize = scenario == "resize", page = scenario == "page", roundtrip = scenario == "roundtrip";
+        bool scroll = scenario == "scroll", typing = scenario == "typing";
         // Markdown Preview on/off from a caret in the middle of the document,
         // as the toolbar and title-bar buttons do.
-        bool preview = Environment.GetEnvironmentVariable("VIEM_PERF_SCENARIO") == "preview";
-        string scenario = preview ? "preview" : roundtrip ? "roundtrip" : scroll ? "scroll" : page ? "page" : resize ? "resize" : "drag";
+        bool preview = scenario == "preview";
+        if (typing && Environment.GetEnvironmentVariable("VIEM_PERF_BASE") != null) scenario = "diff-typing";
         int count = preview ? 20 : roundtrip ? 120 : 100;
         var steps = new List<InputPerformanceStep>();
         float width = (float)pane.Canvas.ActualWidth, height = (float)pane.Canvas.ActualHeight;
@@ -42,9 +52,22 @@ internal static class InputPerformance
             else view.Place(50f + i * 10, 60f, true);
             using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing);
         }
-        if (page || scroll || roundtrip || preview) view.Key(Interop.Native.VIEM_KEY_ESCAPE);
-        if (preview) view.Command("50%");
-        if (page || scroll || roundtrip || preview) await BackgroundLayoutTests.Idle(view);
+        if (page || scroll || roundtrip || preview || typing) view.Key(Interop.Native.VIEM_KEY_ESCAPE);
+        if (preview || typing) view.Command("50%");
+        if (typing) {
+            view.Number(true);
+            view.Command("zzA");
+            view.Key(Interop.Native.VIEM_KEY_ENTER);
+            view.Text("warmup");
+            view.Key(Interop.Native.VIEM_KEY_ESCAPE);
+            view.Command("u50%zzA");
+            if (view.Document.IsDirty) throw new InvalidOperationException("Typing warmup did not restore the input file.");
+        }
+        if (page || scroll || roundtrip || preview || typing) await BackgroundLayoutTests.Idle(view);
+        if (typing) {
+            width = (float)pane.Canvas.ActualWidth;
+            height = (float)pane.Canvas.ActualHeight;
+        }
         int interval = int.TryParse(Environment.GetEnvironmentVariable("VIEM_PERF_INTERVAL_MS"), out var delay) ? delay : 16;
         samples.Clear(); Enabled = true;
         long shaped = view.Provider.ShapedCharacters;
@@ -58,22 +81,32 @@ internal static class InputPerformance
             var random = new Random(42);
             for (int i = 0; i < count; i++)
             {
-                string phase = preview ? (i % 2 == 0 ? "code" : "preview") : roundtrip ? new[] { "down.cold", "up.cached", "down.revisit", "up.revisit" }[i / 30] : (i < 75 ? "down" : "up");
+                string phase = scenario switch {
+                    "typing" or "diff-typing" => i % 10 == 9 ? "enter" : "character",
+                    "preview" => i % 2 == 0 ? "code" : "preview",
+                    "roundtrip" => new[] { "down.cold", "up.cached", "down.revisit", "up.revisit" }[i / 30],
+                    _ => i < 75 ? "down" : "up"
+                };
                 long started = Stopwatch.GetTimestamp(), beforeShape = view.Provider.ShapedCharacters;
                 var beforePause = GC.GetTotalPauseDuration();
                 long beforeAllocation = GC.GetAllocatedBytesForCurrentThread();
                 int beforeBuild = pane.DrawingCacheBuilds;
-                using (Measure(scenario + ".frame.cpu"))
+                using (Measure(scenario + (typing ? ".toPaint" : ".frame.cpu")))
                 {
-                    using (Measure(scenario + ".turn"))
+                    using (Measure(typing ? scenario + "." + phase + ".turn" : scenario + ".turn"))
                     {
-                        if (preview) view.SetMarkdownPreview(i % 2 != 0);
+                        if (typing) {
+                            if (phase == "enter") view.Key(Interop.Native.VIEM_KEY_ENTER);
+                            else view.Text("x");
+                        }
+                        else if (preview) view.SetMarkdownPreview(i % 2 != 0);
                         else if (scroll) { var origin = view.Viewport; view.Scroll(origin.left, Math.Max(0, origin.top + (i < 75 ? 60 : -60))); }
                         else if (page || roundtrip) view.Key((roundtrip ? (i / 30) % 2 == 0 : i < 75) ? Interop.Native.VIEM_KEY_PAGE_DOWN : Interop.Native.VIEM_KEY_PAGE_UP);
                         else if (resize) view.Resize(width - (i < 50 ? i : 99 - i) * 5, height);
                         else view.Place((float)(30 + random.NextDouble() * (pane.Canvas.ActualWidth - 60)), (float)(30 + random.NextDouble() * (pane.Canvas.ActualHeight - 60)), true);
                     }
-                    using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing);
+                    if (typing) await WaitForPaint(pane, view.Document.State.document_revision);
+                    else { using var drawing = surface.CreateDrawingSession(); pane.Draw(drawing); }
                 }
                 steps.Add(new(i, phase, Stopwatch.GetElapsedTime(started).TotalMilliseconds,
                     (GC.GetTotalPauseDuration() - beforePause).TotalMilliseconds,

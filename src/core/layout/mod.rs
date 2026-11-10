@@ -35,7 +35,7 @@ pub use whitespace::{ListChars, ListCharsError, VisibleWhitespaceOptions, Whites
     WhitespaceMarker, WhitespaceMarkerKind, WhitespacePresentationOptions};
 
 pub(crate) use composition::capture_range as capture_composition_range;
-pub(crate) use engine::{line_advance, affinity_rank, hard_line_ranges, nearest_caret, DocumentLayoutChange, HardLineLayoutSlice};
+pub(crate) use engine::{affinity_rank, hard_line_ranges, nearest_caret, DocumentLayoutChange, HardLineLayoutSlice};
 
 pub(crate) use jobs::ascii_indentation_end;
 pub(crate) use jobs::{install_layout_job_cache, prepare_cache_layout_job};
@@ -64,7 +64,7 @@ pub use jobs::{
     LayoutJobRegion, LayoutJobRequest, LayoutProviderRequirements, ViewportLayoutRegion,
     MAX_LONG_LINE_LAYOUT_SLICE_BYTES,
 };
-pub(crate) use measurement::{default_column_width, default_line_height};
+pub(crate) use measurement::default_column_width;
 pub use measurement::{
     BoundaryAffinity, ClusterCaretStop, FontSlant, MeasurementEnvironmentId, MeasurementError,
     MetricsGeneration, OpenTypeFeature, ProviderThreading, RenderRunHandle, RenderRunOwner,

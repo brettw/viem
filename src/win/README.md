@@ -421,6 +421,14 @@ report splits shaping font setup, native capture, cluster extraction and the
 Code syntax wait. Use `-Optimized`: Debug Rust is not representative.
 The default scenario is `drag`.
 
+Use `-Optimized -ProfileScenario typing -ProfileDocument <file>` to time
+90 single-character insertions and 10 Enter keys in a Code copy of the file.
+Add `-ProfileBase <base-file>` to repeat the same sequence in diff mode.
+The live pane has the same requested size and line numbers in both runs.
+The report records synchronous edit time, each pane's actual Win2D drawing
+time, and elapsed time through a rendered frame showing the new revision.
+Character and Enter samples are identified separately.
+
 To measure empty-editor startup, run `scripts/test-win-startup.ps1` (add
 `-NoBuild` to reuse the Release build). It launches three separate processes
 with isolated empty profiles, checks that startup loads no font-picker lists,
