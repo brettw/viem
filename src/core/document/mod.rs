@@ -1238,10 +1238,9 @@ impl Document {
     /// formatted-text transition into a single exact revision map.
     ///
     /// This is deliberately core-private: public callers should use explicit
-    /// prepared/committed model transactions. The compatibility command
-    /// interpreter still performs more than one model call for compound Vim
-    /// commands, so the coordinator uses this bridge until every command emits
-    /// one `CommandPlan`.
+    /// prepared/committed model transactions. The command interpreter
+    /// performs more than one model call for compound Vim commands, so the
+    /// coordinator composes their maps here.
     pub(crate) fn capture_position_maps<R, E>(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<R, E>,

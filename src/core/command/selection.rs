@@ -319,23 +319,6 @@ impl CommandInterpreter {
             self.selection_exclusive = true;
         }
     }
-    pub(super) fn selection_input_requires_legacy(&self, event: &InputEvent) -> bool {
-        self.is_text_selection()
-            || self.select_visual_once
-            || matches!(
-                event,
-                InputEvent::Key(Key::CopySelection | Key::ModifiedNavigation { .. } | Key::ParagraphStart | Key::ParagraphEnd | Key::NextParagraph | Key::Ctrl('g' | 'G'))
-            )
-            || (matches!(self.pending, Pending::G { .. })
-                && matches!(
-                    event,
-                    InputEvent::Key(Key::Char('h' | 'H') | Key::Ctrl('h' | 'H'))
-                ))
-            || (matches!(
-                self.mode,
-                Mode::VisualCharacter | Mode::VisualLine | Mode::VisualBlock
-            ) && matches!(event, InputEvent::Key(key) if NavigationKey::from_key(*key).is_some()))
-    }
     pub(crate) fn finish_select_mapping(&mut self) {
         self.selection_behavior = if matches!(
             self.mode,

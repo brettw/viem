@@ -101,10 +101,13 @@ automation within the host profile in [docs/vimscript.md](docs/vimscript.md).
 ### Ownership and transactions
 
 - `document` owns state, invariants and semantic mutations, and never depends
-  on command grammar. `command` reads through immutable public queries; it never
-  touches private storage, patches source directly, or mutates state while
-  resolving. `layout` consumes document snapshots. Native actions call the same
-  model transactions; they never synthesize Vim keys.
+  on command grammar. `command` reads through public queries and changes the
+  document only through model transactions; it never touches private storage
+  or patches source directly. One executor interprets every event against the
+  mutable document and rolls a failed event back through its command
+  checkpoint; don't add a second, planning path for the same commands.
+  `layout` consumes document snapshots. Native actions call the same model
+  transactions; they never synthesize Vim keys.
 - Every source change is a transaction: prepare, tentatively apply and
   reproject, verify, then atomically publish source, projection, history,
   registers, marks, cursor, selection, mode and invalidations. A failed,

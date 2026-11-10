@@ -88,7 +88,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::document::{
     Association, BoundaryAffinity, DeletionRecovery, Document, DocumentError, DocumentId,
     FileFormat, FormattedPayloadEdit, FormattedPayloadEditRequest, FormattedTextPayload,
-    HardLineSnapshot, HistoryNavigationRequest, HistoryRestorationSnapshot,
+    HardLineSnapshot, HistoryRestorationSnapshot,
     MappingOutcome, ModelRequest, ModelTransactionError, PositionError, PositionMap,
     PreparedModelTransaction, Revision, TextAnchor, TextEdit, UnresolvableAnchor,
 };
@@ -125,11 +125,10 @@ use visual_block::{
     resolve_block_selection_to_line_end, BlockSelection, ResolvedBlockSelection, VisualBlockError,
 };
 
-// Macro and `:normal` replay currently recurse through the compatibility
-// interpreter. Keep a conservative shared ceiling below the native stack
-// limit; a future iterative command-plan executor can raise this safely.
+// Headless macro and `:normal` replay recurse through the interpreter. Keep a
+// conservative shared ceiling below the native stack limit.
 pub(crate) const COMPOUND_REPLAY_LIMIT: usize = 32;
-/// Bounds synchronous compatibility-interpreter work in one macro command.
+/// Bounds synchronous interpreter work in one macro command.
 /// Large documents remain editable because this counts replayed input events,
 /// not document content inspected by one event.
 pub(crate) const MACRO_REPLAY_EVENT_LIMIT: usize = 100_000;
@@ -334,178 +333,6 @@ pub struct CommandOutput {
     /// Owned provider writes emitted by successful `+`/`*` register effects.
     /// The caller executes these only after the coordinator turn returns.
     pub clipboard_writes: Vec<ClipboardWriteRequest>,
-}
-
-/// Exact immutable inputs against which one Vim event is resolved.
-///
-/// This deliberately exposes document queries through an immutable reference;
-/// planning cannot retain or acquire mutable model state. Layout-dependent
-/// commands continue through the explicitly marked compatibility executor
-/// until their viewport effects are represented in [`CommandPlan`].
-#[derive(Clone, Copy)]
-pub struct CommandContext<'a> {
-    document: &'a Document,
-    clipboard: Option<&'a ClipboardCommandContext>,
-}
-
-impl<'a> CommandContext<'a> {
-    pub fn new(document: &'a Document) -> Self {
-        Self {
-            document,
-            clipboard: None,
-        }
-    }
-
-    pub fn with_clipboard(document: &'a Document, clipboard: &'a ClipboardCommandContext) -> Self {
-        Self {
-            document,
-            clipboard: Some(clipboard),
-        }
-    }
-
-    pub fn document(&self) -> &'a Document {
-        self.document
-    }
-
-    pub fn clipboard(&self) -> Option<&'a ClipboardCommandContext> {
-        self.clipboard
-    }
-
-    pub fn document_id(&self) -> DocumentId {
-        self.document.id()
-    }
-
-    pub fn document_revision(&self) -> Revision {
-        self.document.revision()
-    }
-}
-
-/// Model operation emitted by the command controller.
-///
-/// Structured text payloads preserve the distinction between a semantic hard
-/// break and a literal U+000A, which a flat `TextEdit` cannot express.
-#[derive(Clone, Debug, PartialEq)]
-pub enum CommandModelRequest {
-    Model(ModelRequest),
-    FormattedPayload(FormattedPayloadEditRequest),
-}
-
-impl CommandModelRequest {
-    pub fn document(&self) -> DocumentId {
-        match self {
-            Self::Model(request) => request.document(),
-            Self::FormattedPayload(request) => request.document(),
-        }
-    }
-
-    pub fn revision(&self) -> Revision {
-        match self {
-            Self::Model(request) => request.revision(),
-            Self::FormattedPayload(request) => request.revision(),
-        }
-    }
-
-    pub(crate) fn prepare(
-        &self,
-        document: &Document,
-    ) -> Result<PreparedModelTransaction, ModelTransactionError> {
-        match self {
-            Self::Model(request) => document.prepare_model_request(request.clone()),
-            Self::FormattedPayload(request) => {
-                document.prepare_formatted_payload_request(request.clone())
-            }
-        }
-    }
-}
-
-/// Command-layer ownership change requested at the publication boundary.
-/// `End` is used by time navigation; ordinary mutations preserve the group
-/// already established by their mode/coordinator context.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum UndoGroupDirective {
-    Preserve,
-    End,
-}
-
-/// Typed presentation work returned after controller/model publication.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CommandPresentationRequest {
-    PreserveViewport,
-    RevealCaret,
-    Relayout,
-}
-
-/// Why a command still requires the old combined interpreter/model executor.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LegacyCommandReason {
-    LayoutDependent,
-    CompoundOrUnmigrated,
-}
-
-/// Result of resolving an event at the command boundary.
-pub enum CommandResolution {
-    Planned(CommandPlan),
-    Legacy(LegacyCommandReason),
-}
-
-/// Revision-bound command result. The private controller images contain all
-/// success- and failure-dependent Vim state; callers can inspect only the
-/// typed preconditions and effects and must ask the coordinator to publish it.
-pub struct CommandPlan {
-    document: DocumentId,
-    revision: Revision,
-    model: Option<CommandModelRequest>,
-    success_controller: Box<CommandInterpreter>,
-    failure_controller: Box<CommandInterpreter>,
-    post_commit: PlannedPostCommit,
-    output: CommandOutput,
-    replay: Option<ReplayPlan>,
-    undo_group: UndoGroupDirective,
-    presentation: Vec<CommandPresentationRequest>,
-}
-
-impl std::fmt::Debug for CommandPlan {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("CommandPlan")
-            .field("document", &self.document)
-            .field("revision", &self.revision)
-            .field("model", &self.model)
-            .field("output", &self.output)
-            .field("undo_group", &self.undo_group)
-            .field("presentation", &self.presentation)
-            .finish_non_exhaustive()
-    }
-}
-
-impl CommandPlan {
-    pub fn document(&self) -> DocumentId {
-        self.document
-    }
-
-    pub fn revision(&self) -> Revision {
-        self.revision
-    }
-
-    pub fn model_request(&self) -> Option<&CommandModelRequest> {
-        self.model.as_ref()
-    }
-
-    pub fn undo_group_directive(&self) -> UndoGroupDirective {
-        self.undo_group
-    }
-
-    pub fn presentation_requests(&self) -> &[CommandPresentationRequest] {
-        &self.presentation
-    }
-}
-
-#[derive(Clone, Debug)]
-enum PlannedPostCommit {
-    None,
-    ReplaceJournal(Vec<ReplaceJournalEntry>),
-    NormalizeNormalCursor,
-    NormalizeTypingCursor,
 }
 
 /// Exact, short-lived layout state supplied by the core coordinator for one
@@ -1559,8 +1386,8 @@ pub struct CommandInterpreter {
     pub(crate) script_depth: u32,
     macro_recording_suppressed: bool,
     /// Core-facing dispatch asks compound commands to emit a replay plan.
-    /// Direct `CommandInterpreter` users retain the legacy headless executor
-    /// while the coordinator remains the product execution boundary.
+    /// Direct `CommandInterpreter` users replay recursively instead; the
+    /// coordinator remains the product execution boundary.
     plan_compound_replay: bool,
     tracking_positions: bool,
     pending_replay: Option<ReplayPlan>,
@@ -3596,458 +3423,6 @@ impl CommandInterpreter {
         }
     }
 
-    /// Resolve one non-layout event without mutating the authoritative
-    /// document or this interpreter.
-    ///
-    /// Direct Insert/Replace edits, Normal `x`/`X`/Delete, one-step history
-    /// navigation, and controller-only logical commands emit typed plans.
-    /// Source-changing compound commands and commands which consume exact
-    /// layout geometry retain the compatibility executor until all of their
-    /// effects have a typed representation.
-    pub fn resolve(
-        &self,
-        context: &CommandContext<'_>,
-        event: InputEvent,
-    ) -> Result<CommandResolution, DocumentError> {
-        if context.document_id() != context.document().id()
-            || context.document_revision() != context.document().revision()
-        {
-            return Err(DocumentError::WrongSnapshot {
-                expected: context.document().revision(),
-                actual: context.document_revision(),
-            });
-        }
-
-        if self.table_input_requires_legacy(context.document(), &event) {
-            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
-        }
-
-        if self.substitute_confirmation.is_some() || self.mapping_applies(&event) || self.selection_input_requires_legacy(&event)
-            || self.cmd_key_applies(&event) || self.abbreviation_applies(&event) {
-            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
-        }
-        let event = self.normalized_input_event(event);
-        if self.insert_session.as_ref().is_some_and(|session| session.source_destination.is_some()) {
-            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
-        }
-        if self.handles_literal_input(&event) || self.is_cancel_input(&event)
-            || (context.document().format() == Format::Markdown && self.markdown_autodetect()
-                && matches!(self.mode, Mode::Insert | Mode::Replace)
-                && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
-            || (context.document().format().is_markdown() && self.mode == Mode::Replace
-                && matches!(&event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))))
-            || self.insert_control_g_pending()
-            || (self.mode == Mode::Replace && matches!(&event, InputEvent::Key(Key::Ctrl('w' | 'W' | 'u' | 'U'))))
-            || matches!(&event, InputEvent::Key(Key::NativeAction(_) | Key::SelectAll | Key::PasteClipboard | Key::PasteClipboardMatchingStyle | Key::AltEnter)) {
-            return Ok(CommandResolution::Legacy(LegacyCommandReason::CompoundOrUnmigrated));
-        }
-        if (matches!(self.mode, Mode::Insert | Mode::Replace)
-            && (matches!(&event, InputEvent::Key(Key::Enter | Key::Tab | Key::BackTab | Key::Backspace | Key::Ctrl('t' | 'T' | 'd' | 'D')))
-                || matches!(&event, InputEvent::Key(Key::ShiftEnter))
-                    && context.document().literal_terminal_break_cursor(self.cursor, 0).is_some()
-                || self.generated_indent.is_some()))
-            || !self.typing_style.is_empty()
-            || self
-                .insert_session
-                .as_ref()
-                .and_then(|session| session.replace_journal.last())
-                .is_some_and(|entry| entry.source_record.is_some())
-        {
-            return Ok(CommandResolution::Legacy(
-                LegacyCommandReason::CompoundOrUnmigrated,
-            ));
-        }
-        if self.line_mode == LineMode::PhysicalSource
-            && matches!(&event,InputEvent::Key(key) if (self.mode==Mode::VisualLine||self.mode_line_key(*key)||matches!(key,Key::Char('p'|'P'))))
-        {
-            return Ok(CommandResolution::Legacy(
-                LegacyCommandReason::CompoundOrUnmigrated,
-            ));
-        }
-        if self.requires_layout_for_input(context.document(), &event, context.clipboard()) {
-            return Ok(CommandResolution::Legacy(
-                LegacyCommandReason::LayoutDependent,
-            ));
-        }
-
-        if let Some(plan) = self.plan_history_event(context, &event)? {
-            return Ok(CommandResolution::Planned(plan));
-        }
-        if let Some(plan) = self.plan_normal_delete_event(context, &event)? {
-            return Ok(CommandResolution::Planned(plan));
-        }
-        if let Some(plan) = self.plan_direct_edit_text(context, &event)? {
-            return Ok(CommandResolution::Planned(plan));
-        }
-        if let Some(plan) = self.plan_controller_only_event(context, &event) {
-            return Ok(CommandResolution::Planned(plan));
-        }
-        Ok(CommandResolution::Legacy(
-            LegacyCommandReason::CompoundOrUnmigrated,
-        ))
-    }
-
-    /// Resolve an event whose complete effect is confined to command state.
-    ///
-    /// [`Self::try_handle_controller_only_event`] is also the first dispatch
-    /// path used by the compatibility executor. Keeping the transition in one
-    /// place prevents the immutable planner and direct interpreter from
-    /// acquiring subtly different count, prefix, search, or Visual semantics.
-    fn plan_controller_only_event(
-        &self,
-        context: &CommandContext<'_>,
-        event: &InputEvent,
-    ) -> Option<CommandPlan> {
-        // A single Normal command entered through Insert Ctrl-O can close and
-        // reopen a model-owned edit group as it returns to Insert. That effect
-        // needs a typed undo-group directive before it can use this planner.
-        if self.insert_normal_once.is_some() || self.ctrl_o_just_started {
-            return None;
-        }
-
-        let document = context.document();
-        let mut next = self.clone();
-        next.record_event(event);
-        let previous_clipboard = (next.mode == Mode::CommandLine).then(|| std::mem::replace(
-            &mut next.clipboard_context, context.clipboard().cloned().unwrap_or_default(),
-        ));
-        let mut output = next.try_handle_controller_only_event(document, event)?;
-        if let Some(previous) = previous_clipboard { next.clipboard_context = previous; }
-        next.finish_non_layout_dispatch(&output);
-        next.finish_explicit_register_prefix(&output);
-        next.finish_clipboard_writes(&mut output);
-        Some(next.non_mutating_plan(document, output))
-    }
-
-    fn plan_history_event(
-        &self,
-        context: &CommandContext<'_>,
-        event: &InputEvent,
-    ) -> Result<Option<CommandPlan>, DocumentError> {
-        let redo = match event {
-            InputEvent::Key(Key::Char('u'))
-                if self.mode == Mode::Normal
-                    && self.pending == Pending::None
-                    && !self.register_pending =>
-            {
-                false
-            }
-            InputEvent::Key(Key::Ctrl('r' | 'R'))
-                if self.mode == Mode::Normal
-                    && self.pending == Pending::None
-                    && !self.register_pending =>
-            {
-                true
-            }
-            _ => return Ok(None),
-        };
-        if self.compound_replay_depth > 0 || self.count.unwrap_or(1).max(1) != 1 {
-            return Ok(None);
-        }
-
-        let document = context.document();
-        let mut next = self.clone();
-        next.record_event(event);
-        if let Some(output) = next.finish_overflowed_count() {
-            return Ok(Some(next.non_mutating_plan(document, output)));
-        }
-        next.count = None;
-
-        let available = if redo {
-            document.history_status().can_redo
-        } else {
-            document.history_status().can_undo
-        };
-        if !available {
-            let message = if redo {
-                "no preferred redo state is available"
-            } else {
-                "already at the oldest document state"
-            };
-            let output = CommandOutput {
-                status: CommandStatus::Error(message.to_owned()),
-                ..CommandOutput::complete()
-            };
-            next.finish_explicit_register_prefix(&output);
-            return Ok(Some(next.non_mutating_plan(document, output)));
-        }
-
-        let navigation = if redo {
-            HistoryNavigationRequest::Redo
-        } else {
-            HistoryNavigationRequest::Undo
-        };
-        let output = CommandOutput {
-            document_changed: true,
-            history_navigation: true,
-            ..CommandOutput::complete()
-        };
-        next.finish_non_layout_dispatch(&output);
-        next.finish_explicit_register_prefix(&output);
-        let failure_controller = self.failed_plan_controller(document.revision());
-        Ok(Some(CommandPlan {
-            document: document.id(),
-            revision: document.revision(),
-            model: Some(CommandModelRequest::Model(ModelRequest::NavigateHistory {
-                document: document.id(),
-                revision: document.revision(),
-                navigation,
-            })),
-            success_controller: Box::new(next),
-            failure_controller: Box::new(failure_controller),
-            post_commit: PlannedPostCommit::None,
-            output,
-            replay: None,
-            undo_group: UndoGroupDirective::End,
-            presentation: vec![
-                CommandPresentationRequest::Relayout,
-                CommandPresentationRequest::RevealCaret,
-            ],
-        }))
-    }
-
-    fn plan_normal_delete_event(
-        &self,
-        context: &CommandContext<'_>,
-        event: &InputEvent,
-    ) -> Result<Option<CommandPlan>, DocumentError> {
-        let backward = match event {
-            InputEvent::Key(Key::Char('x') | Key::Delete)
-                if self.mode == Mode::Normal
-                    && self.pending == Pending::None
-                    && !self.register_pending
-                    // Returning from Insert/Replace Ctrl-O also reopens the
-                    // edit group. That controller/model combination remains
-                    // on the compatibility path until plans can request a
-                    // typed Begin undo-group effect.
-                    && self.insert_normal_once.is_none() =>
-            {
-                false
-            }
-            InputEvent::Key(Key::Char('X'))
-                if self.mode == Mode::Normal
-                    && self.pending == Pending::None
-                    && !self.register_pending
-                    && self.insert_normal_once.is_none() =>
-            {
-                true
-            }
-            _ => return Ok(None),
-        };
-        let document = context.document();
-        let mut next = self.clone();
-        next.record_event(event);
-        if let Some(output) = next.finish_overflowed_count() {
-            return Ok(Some(next.non_mutating_plan(document, output)));
-        }
-        let count = next.count.take().unwrap_or(1).max(1);
-        let register = next.requested_register.take();
-        let previous_clipboard = std::mem::replace(
-            &mut next.clipboard_context,
-            context.clipboard().cloned().unwrap_or_default(),
-        );
-        if let Err(output) = next.require_register_write(register) {
-            next.clipboard_context = previous_clipboard;
-            next.finish_explicit_register_prefix(&output);
-            return Ok(Some(next.non_mutating_plan(document, output)));
-        }
-
-        let lines = document.hard_line_snapshot();
-        let range = normal_delete_range(&lines, self.cursor, count, backward);
-        if range.is_empty() {
-            next.clipboard_context = previous_clipboard;
-            let output = CommandOutput::complete();
-            next.finish_explicit_register_prefix(&output);
-            return Ok(Some(next.non_mutating_plan(document, output)));
-        }
-
-        let value = register_value(
-            document,
-            &lines,
-            &MotionExtent {
-                range: range.clone(),
-                kind: MotionKind::Characterwise,
-            },
-            register,
-        );
-        next.delete_register(register, value, DeletionClass::Small);
-        next.cursor = range.start;
-        if !next.replaying {
-            next.last_repeat = Some(if backward {
-                RepeatAction::DeleteBackward { count }
-            } else {
-                RepeatAction::DeleteForward { count }
-            });
-        }
-        let mut output = CommandOutput {
-            document_changed: true,
-            cursor_moved: true,
-            ..CommandOutput::complete()
-        };
-        next.finish_non_layout_dispatch(&output);
-        next.finish_explicit_register_prefix(&output);
-        next.finish_clipboard_writes(&mut output);
-        next.clipboard_context = previous_clipboard;
-
-        Ok(Some(self.edited_plan(
-            document,
-            next,
-            CommandModelRequest::Model(ModelRequest::ApplyTextEdits {
-                document: document.id(),
-                revision: document.revision(),
-                edits: vec![TextEdit::new(range, "")],
-            }),
-            output,
-            PlannedPostCommit::NormalizeNormalCursor,
-        )))
-    }
-
-    fn plan_direct_edit_text(
-        &self,
-        context: &CommandContext<'_>,
-        event: &InputEvent,
-    ) -> Result<Option<CommandPlan>, DocumentError> {
-        if !matches!(self.mode, Mode::Insert | Mode::Replace)
-            || self.pending != Pending::None
-            || self.register_pending
-            || self.visual_block_insert.is_some()
-        {
-            return Ok(None);
-        }
-        let document = context.document();
-        if let InputEvent::Key(key) = event {
-            if let Some(request) = self.paragraph_key_request(document, *key)? {
-                return self.plan_paragraph_key(document, event, *key, request).map(Some);
-            }
-        }
-        match event {
-            InputEvent::Key(Key::Backspace) => {
-                return self.plan_edit_mode_backspace(document, event).map(Some)
-            }
-            InputEvent::Key(Key::Delete) => {
-                return self.plan_edit_mode_delete(document, event).map(Some)
-            }
-            InputEvent::Key(Key::Ctrl('w' | 'W')) => {
-                return self
-                    .plan_edit_mode_delete_motion(document, event, EditSessionStep::DeleteWord)
-                    .map(Some)
-            }
-            InputEvent::Key(Key::Ctrl('u' | 'U')) => {
-                return self
-                    .plan_edit_mode_delete_motion(
-                        document,
-                        event,
-                        EditSessionStep::DeleteToLineStart,
-                    )
-                    .map(Some)
-            }
-            _ => {}
-        }
-        let list_enter =
-            if self.mode == Mode::Insert && matches!(event, InputEvent::Key(Key::Enter)) {
-                document.list_enter_edit(self.cursor)?
-            } else {
-                None
-            };
-        let value = match event {
-            InputEvent::Text(input) => external_text_register_value(document, input),
-            InputEvent::Key(Key::Char(character)) => {
-                RegisterValue::characterwise(character.to_string())
-            }
-            InputEvent::Key(Key::Enter) => RegisterValue::characterwise(
-                list_enter
-                    .as_ref()
-                    .map_or("\n", |edit| edit.replacement.as_str()),
-            ),
-            InputEvent::Key(Key::Tab) => RegisterValue::characterwise("\t"),
-            _ => return Ok(None),
-        };
-
-        let mut next = self.clone();
-        next.record_event(event);
-        if matches!(event, InputEvent::Key(Key::Enter)) {
-            next.invalidate_replace_restoration();
-        }
-        let intent = value;
-        let snapshot = document.hard_line_snapshot();
-        let start = list_enter.as_ref().map_or(self.cursor, |edit| edit.range.start);
-        let end = if self.mode == Mode::Replace {
-            replacement_payload_end(&snapshot, start, &intent)
-        } else {
-            list_enter.as_ref().map_or(start, |edit| edit.range.end)
-        };
-        let value = if matches!(event, InputEvent::Text(_) | InputEvent::Key(Key::Char(_))) {
-            self.assist_typing_input_payload(document, start..end, self.insertion_boundary_affinity(), &intent)?
-        } else {
-            intent.clone()
-        };
-        let input = value.text.as_str();
-        let structural_list_enter =
-            list_enter.is_some() && document.format().is_markdown();
-        if input.is_empty()
-            && !structural_list_enter
-            && list_enter
-                .as_ref()
-                .map_or(true, |edit| edit.range.is_empty())
-        {
-            return Ok(Some(
-                next.non_mutating_plan(document, CommandOutput::complete()),
-            ));
-        }
-
-        let (end, post_commit) = if self.mode == Mode::Insert {
-            (
-                list_enter.as_ref().map_or(start, |edit| edit.range.end),
-                PlannedPostCommit::NormalizeTypingCursor,
-            )
-        } else {
-            next.plan_replace_payload_state(document, &snapshot, &value)
-        };
-        let payload = FormattedTextPayload::new(
-            &snapshot,
-            value.text.clone(),
-            value.hard_break_offsets().to_vec(),
-        )
-        .expect("command register payload carries validated semantic hard breaks");
-        let edit =
-            FormattedPayloadEdit::new(start..end, payload)
-                .with_boundary_affinity(self.insertion_boundary_affinity());
-        document.validate_typing_payload(&edit)?;
-        let typing_caret = edit.range().start + edit.payload().text().len();
-        let model = if structural_list_enter {
-            CommandModelRequest::Model(ModelRequest::ContinueList {
-                document: document.id(),
-                revision: document.revision(),
-                at: self.cursor,
-            })
-        } else {
-            CommandModelRequest::FormattedPayload(FormattedPayloadEditRequest::new(
-                document.id(),
-                document.revision(),
-                vec![edit],
-            ))
-        };
-
-        next.cursor = if structural_list_enter {
-            start + input.len()
-        } else {
-            typing_caret
-        };
-        if let Some(session) = next.insert_session.as_mut() {
-            session.record_inserted_intent(&value, &intent, list_enter.as_ref().map(|_| EditSessionStep::ListEnter));
-        }
-        let mut output = CommandOutput {
-            document_changed: true,
-            cursor_moved: true,
-            ..CommandOutput::complete()
-        };
-        next.finish_non_layout_dispatch(&output);
-        next.finish_explicit_register_prefix(&output);
-        next.finish_clipboard_writes(&mut output);
-
-        Ok(Some(self.edited_plan(document, next, model, output, post_commit)))
-    }
-
     pub(crate) fn can_insert_list_paragraph(&self, document: &Document) -> bool {
         matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Replace)
             && !self.command_input_pending()
@@ -4172,38 +3547,6 @@ impl CommandInterpreter {
         }
     }
 
-    fn plan_paragraph_key(
-        &self,
-        document: &Document,
-        event: &InputEvent,
-        key: Key,
-        request: ModelRequest,
-    ) -> Result<CommandPlan, DocumentError> {
-        let mut next = self.clone();
-        next.record_event(event);
-        let Some(prepared) = Self::prepare_paragraph_key(document, key, request.clone())? else {
-            return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
-        };
-        next.cursor = if matches!(key, Key::ShiftEnter | Key::AltEnter)
-            || matches!(request, ModelRequest::ExitCodeBlock { .. }) {
-            prepared_cursor(document, &prepared, self.cursor, Association::AfterInsertion)?
-        } else {
-            prepared_cursor(document, &prepared, self.cursor, Association::BeforeInsertion)?
-        };
-        next.note_paragraph_key(key);
-        let mut output = CommandOutput { document_changed: !prepared.is_no_op(), cursor_moved: true, ..CommandOutput::complete() };
-        next.finish_non_layout_dispatch(&output);
-        next.finish_explicit_register_prefix(&output);
-        next.finish_clipboard_writes(&mut output);
-        Ok(self.edited_plan(
-            document,
-            next,
-            CommandModelRequest::Model(request),
-            output,
-            PlannedPostCommit::None,
-        ))
-    }
-
     fn apply_paragraph_key(
         &mut self,
         document: &mut Document,
@@ -4258,219 +3601,11 @@ impl CommandInterpreter {
         }
     }
 
-    fn plan_edit_mode_backspace(
-        &self,
-        document: &Document,
-        event: &InputEvent,
-    ) -> Result<CommandPlan, DocumentError> {
-        let mut next = self.clone();
-        next.record_event(event);
-        if self.mode == Mode::Replace {
-            let journal_entry = self
-                .insert_session
-                .as_ref()
-                .and_then(|session| session.replace_journal.last())
-                .filter(|entry| entry.start.checked_add(entry.inserted.len()) == Some(self.cursor))
-                .cloned();
-            if let Some(entry) = journal_entry {
-                next.cursor = entry.start;
-                if let Some(session) = next.insert_session.as_mut() {
-                    session.replace_journal.pop();
-                    session.record_deleted(&entry.inserted, EditSessionStep::Backspace);
-                }
-                return Ok(self.planned_flat_text_edit(
-                    document,
-                    next,
-                    entry.start..self.cursor,
-                    entry.original.unwrap_or_default(),
-                    true,
-                ));
-            }
-            next.invalidate_replace_restoration();
-            if let Some(start) = document.hard_line_snapshot().previous_grapheme_boundary(self.cursor) {
-                next.cursor = start;
-            }
-            let moved = next.cursor != self.cursor;
-            if moved {
-                if let Some(session) = next.insert_session.as_mut() { session.record_step(EditSessionStep::Backspace); }
-            }
-            return Ok(next.non_mutating_plan(document, CommandOutput {
-                cursor_moved: moved,
-                ..CommandOutput::complete()
-            }));
-        }
-        let Some(start) = document
-            .hard_line_snapshot()
-            .previous_grapheme_boundary(self.cursor)
-        else {
-            return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
-        };
-        let removed = document.hard_line_snapshot().slice_utf8(start..self.cursor).expect("validated backspace range");
-        next.cursor = start;
-        if let Some(session) = next.insert_session.as_mut() {
-            session.record_deleted(&removed, EditSessionStep::Backspace);
-        }
-        Ok(self.planned_flat_text_edit(document, next, start..self.cursor, "", true))
-    }
-
-    fn plan_edit_mode_delete(
-        &self,
-        document: &Document,
-        event: &InputEvent,
-    ) -> Result<CommandPlan, DocumentError> {
-        let mut next = self.clone();
-        next.record_event(event);
-        next.invalidate_replace_restoration();
-        let Some(end) = edit_mode_forward_delete_end(document, self.cursor)
-        else {
-            if let Some(session) = next.insert_session.as_mut() {
-                session.record_step(EditSessionStep::Delete);
-            }
-            return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
-        };
-        if let Some(session) = next.insert_session.as_mut() {
-            session.record_step(EditSessionStep::Delete);
-        }
-        Ok(self.planned_flat_text_edit(document, next, self.cursor..end, "", false))
-    }
-
-    fn plan_edit_mode_delete_motion(
-        &self,
-        document: &Document,
-        event: &InputEvent,
-        step: EditSessionStep,
-    ) -> Result<CommandPlan, DocumentError> {
-        let mut next = self.clone();
-        next.record_event(event);
-        next.invalidate_replace_restoration();
-        let range = match self.insert_delete_motion_range(document, &step) {
-            Ok(range) => range,
-            Err(output) => return Ok(next.non_mutating_plan(document, output)),
-        };
-        if range.is_empty() {
-            return Ok(next.non_mutating_plan(document, CommandOutput::complete()));
-        }
-        let removed = document.hard_line_snapshot().slice_utf8(range.clone()).expect("validated deletion motion range");
-        next.cursor = range.start;
-        if let Some(session) = next.insert_session.as_mut() {
-            session.unit_floor = session.unit_floor.min(next.cursor);
-            session.record_deleted(&removed, step);
-        }
-        Ok(self.planned_flat_text_edit(document, next, range, "", true))
-    }
-
-    fn planned_flat_text_edit(
-        &self,
-        document: &Document,
-        mut next: Self,
-        range: Range<usize>,
-        replacement: impl Into<String>,
-        cursor_moved: bool,
-    ) -> CommandPlan {
-        let mut output = CommandOutput {
-            document_changed: true,
-            cursor_moved,
-            ..CommandOutput::complete()
-        };
-        next.finish_non_layout_dispatch(&output);
-        next.finish_explicit_register_prefix(&output);
-        next.finish_clipboard_writes(&mut output);
-        self.edited_plan(
-            document,
-            next,
-            CommandModelRequest::Model(ModelRequest::ApplyTextEdits {
-                document: document.id(),
-                revision: document.revision(),
-                edits: vec![TextEdit::new(range, replacement)],
-            }),
-            output,
-            PlannedPostCommit::None,
-        )
-    }
-
-    fn edited_plan(
-        &self,
-        document: &Document,
-        next: Self,
-        model: CommandModelRequest,
-        output: CommandOutput,
-        post_commit: PlannedPostCommit,
-    ) -> CommandPlan {
-        CommandPlan {
-            document: document.id(),
-            revision: document.revision(),
-            model: Some(model),
-            success_controller: Box::new(next),
-            failure_controller: Box::new(self.failed_plan_controller(document.revision())),
-            post_commit,
-            output,
-            replay: None,
-            undo_group: UndoGroupDirective::Preserve,
-            presentation: vec![
-                CommandPresentationRequest::Relayout,
-                CommandPresentationRequest::RevealCaret,
-            ],
-        }
-    }
-
     fn replace_payload_is_journalable(&self, input: &str) -> bool {
         self.mode == Mode::Replace
             && !input.contains('\n')
             && self.insert_session.as_ref()
                 .is_some_and(|session| session.placement == InsertPlacement::Replace)
-    }
-
-    fn plan_replace_payload_state(
-        &mut self,
-        document: &Document,
-        lines: &HardLineSnapshot,
-        value: &RegisterValue,
-    ) -> (usize, PlannedPostCommit) {
-        let input = value.text.as_str();
-        let journalable = self.replace_payload_is_journalable(input);
-        if !journalable {
-            self.invalidate_replace_restoration();
-        }
-        let (end, journal_entries) = replacement_payload_targets(document, lines, self.cursor, value, journalable);
-        let post_commit = if journalable {
-            PlannedPostCommit::ReplaceJournal(journal_entries)
-        } else {
-            PlannedPostCommit::NormalizeTypingCursor
-        };
-        (end, post_commit)
-    }
-
-    fn failed_plan_controller(&self, revision: Revision) -> Self {
-        let mut failure = self.clone();
-        if self.pending != Pending::None || self.register_pending {
-            failure.clear_pending();
-        } else {
-            failure.requested_register = None;
-        }
-        failure.pending_clipboard_writes.clear();
-        failure.position_revision = Some(revision);
-        failure
-    }
-
-    fn non_mutating_plan(self, document: &Document, output: CommandOutput) -> CommandPlan {
-        let failure = self.clone();
-        let presentation = if output.cursor_moved {
-            vec![CommandPresentationRequest::RevealCaret]
-        } else {
-            Vec::new()
-        };
-        CommandPlan {
-            document: document.id(),
-            revision: document.revision(),
-            model: None,
-            success_controller: Box::new(self),
-            failure_controller: Box::new(failure),
-            post_commit: PlannedPostCommit::None,
-            output,
-            replay: None,
-            undo_group: UndoGroupDirective::Preserve,
-            presentation,
-        }
     }
 
     fn read_register_value(
@@ -4796,7 +3931,6 @@ impl CommandInterpreter {
     fn record_event(&mut self, event: &InputEvent) {
         self.record_status_input(event);
         // Ctrl-G U applies only to the immediately following horizontal key.
-        // This transition runs for typed plans as well as legacy execution.
         if !matches!(event, InputEvent::Key(Key::Left | Key::Right))
             && !matches!(event, InputEvent::Text(text) if text.is_empty())
         {
@@ -4827,22 +3961,6 @@ impl CommandInterpreter {
             InputEvent::Text(text) => self.handle_text(document, text),
             InputEvent::Key(key) => self.handle_key(document, key),
         }
-    }
-
-    /// Execute a command transition which is proven not to touch document
-    /// state. This is shared by immutable planning and the compatibility
-    /// executor so their observable parser/controller behavior stays exact.
-    fn try_handle_controller_only_event(
-        &mut self,
-        document: &Document,
-        event: &InputEvent,
-    ) -> Option<CommandOutput> {
-        let output = match event {
-            InputEvent::Text(input) => self.try_handle_controller_only_text(document, input),
-            InputEvent::Key(key) => self.try_handle_controller_only_key(document, *key),
-        };
-        self.invalidate_changed_incremental_navigation();
-        output
     }
 
     fn try_handle_controller_only_text(
@@ -16001,88 +15119,6 @@ impl CommandInterpreter {
     }
 }
 
-impl CommandPlan {
-
-    pub(crate) fn prepare_model(
-        &self,
-        document: &Document,
-    ) -> Result<Option<PreparedModelTransaction>, ModelTransactionError> {
-        if self.document != document.id() {
-            return Err(ModelTransactionError::WrongDocument {
-                expected: document.id(),
-                actual: self.document,
-            });
-        }
-        if self.revision != document.revision() {
-            return Err(ModelTransactionError::StaleRevision {
-                expected: self.revision,
-                actual: document.revision(),
-            });
-        }
-        self.model
-            .as_ref()
-            .map(|request| request.prepare(document))
-            .transpose()
-    }
-
-    pub(crate) fn publish_failure(self, interpreter: &mut CommandInterpreter, revision: Revision) {
-        let mut failure = *self.failure_controller;
-        failure.position_revision = Some(revision);
-        *interpreter = failure;
-    }
-
-    pub(crate) fn publish_success(
-        self,
-        interpreter: &mut CommandInterpreter,
-        document: &Document,
-        document_changed: bool,
-    ) -> CommandStep {
-        let mut next = *self.success_controller;
-        next.position_revision = Some(document.revision());
-        match self.post_commit {
-            PlannedPostCommit::None => {}
-            PlannedPostCommit::ReplaceJournal(entries) => {
-                next.finish_typing_caret(document)
-                    .expect("committed typing ends at a valid UTF-8 boundary");
-                if let Some(session) = next.insert_session.as_mut() {
-                    let continues_frontier = session.replace_journal.last().map_or(true, |entry| {
-                        entry.start.checked_add(entry.inserted.len())
-                            == entries.first().map(|entry| entry.start)
-                    });
-                    let lines = document.hard_line_snapshot();
-                    let has_legal_boundaries = entries.iter().all(|entry| {
-                        lines.is_grapheme_boundary(entry.start)
-                            && entry
-                                .start
-                                .checked_add(entry.inserted.len())
-                                .is_some_and(|end| lines.is_grapheme_boundary(end))
-                    });
-                    if continues_frontier && has_legal_boundaries {
-                        session.replace_journal.extend(entries);
-                    } else {
-                        session.replace_journal.clear();
-                    }
-                }
-            }
-            PlannedPostCommit::NormalizeNormalCursor => {
-                next.cursor =
-                    normalize_normal_cursor_document(document, &document.hard_line_snapshot(), next.cursor);
-            }
-            PlannedPostCommit::NormalizeTypingCursor => {
-                next.finish_typing_caret(document)
-                    .expect("committed typing ends at a valid UTF-8 boundary");
-            }
-        }
-        let mut output = self.output;
-        output.document_changed = document_changed;
-        *interpreter = next;
-        CommandStep {
-            output,
-            replay: self.replay,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RowEdge {
     Start,
@@ -16966,10 +16002,8 @@ fn command_document_error(error: ModelTransactionError) -> DocumentError {
             actual: expected,
         },
         ModelTransactionError::Style(_) => DocumentError::UnsupportedFormatting,
-        // The compatibility interpreter's public error type predates typed
-        // transaction failures. Planned coordinator execution preserves those
-        // through `CoreError::ModelTransaction`; this legacy bridge can only
-        // report a generic verification failure.
+        // The interpreter's public error type has no typed transaction
+        // failures, so the rest report a generic verification failure.
         _ => DocumentError::VerificationFailed,
     }
 }
@@ -18184,73 +17218,6 @@ mod tests {
     }
 
     #[test]
-    fn immutable_resolution_emits_a_revision_bound_normal_delete_plan() {
-        let document = Document::new("abc");
-        let commands = CommandInterpreter::new();
-        let context = CommandContext::new(&document);
-        let register_before = commands.register('"').cloned();
-
-        let plan = match commands.resolve(&context, InputEvent::key('x')).unwrap() {
-            CommandResolution::Planned(plan) => plan,
-            CommandResolution::Legacy(reason) => {
-                panic!("Normal x unexpectedly used legacy resolution: {reason:?}")
-            }
-        };
-
-        assert_eq!(plan.document(), document.id());
-        assert_eq!(plan.revision(), document.revision());
-        assert_eq!(plan.undo_group_directive(), UndoGroupDirective::Preserve);
-        assert_eq!(
-            plan.presentation_requests(),
-            &[
-                CommandPresentationRequest::Relayout,
-                CommandPresentationRequest::RevealCaret,
-            ]
-        );
-        assert!(matches!(
-            plan.model_request(),
-            Some(CommandModelRequest::Model(ModelRequest::ApplyTextEdits {
-                document: request_document,
-                revision,
-                edits,
-            })) if *request_document == document.id()
-                && *revision == document.revision()
-                && edits == &[TextEdit::new(0..1, "")]
-        ));
-
-        // Resolution only produced a value; neither the source nor controller
-        // success effects are visible until the coordinator publishes it.
-        assert_eq!(document.text(), "abc");
-        assert_eq!(document.revision(), Revision(0));
-        assert_eq!(commands.cursor(), 0);
-        assert_eq!(commands.register('"'), register_before.as_ref());
-    }
-
-    #[test]
-    fn stale_controller_only_plan_cannot_publish_its_controller_image() {
-        let mut document = Document::new("one two");
-        let commands = CommandInterpreter::new();
-        let plan = match commands
-            .resolve(&CommandContext::new(&document), InputEvent::key('w'))
-            .unwrap()
-        {
-            CommandResolution::Planned(plan) => plan,
-            CommandResolution::Legacy(reason) => panic!("word motion used legacy: {reason:?}"),
-        };
-
-        document.insert(0, "x ").unwrap();
-        assert!(matches!(
-            plan.prepare_model(&document),
-            Err(ModelTransactionError::StaleRevision {
-                expected: Revision(0),
-                actual: Revision(1)
-            })
-        ));
-        assert_eq!(commands.cursor(), 0);
-        assert_eq!(commands.position_revision(), None);
-    }
-
-    #[test]
     fn counts_and_unicode_motions_use_graphemes() {
         let mut document = Document::new("a\u{301}é日z");
         let mut commands = CommandInterpreter::new();
@@ -18744,39 +17711,21 @@ mod tests {
             ("🇨🇦", 'i', "🇫", "🇫🇨🇦", "🇫🇨".len()),
             ("x🇨🇦", 'R', "🇫", "🇫🇨🇦", "🇫🇨".len()),
         ] {
-            for planned in [false, true] {
-                let mut document = Document::new(original);
-                let mut commands = CommandInterpreter::new();
-                key(&mut commands, &mut document, Key::Char(mode));
-                if planned {
-                    let context = CommandContext::new(&document);
-                    let CommandResolution::Planned(plan) =
-                        commands.resolve(&context, InputEvent::text(input)).unwrap()
-                    else {
-                        panic!("ordinary typing should use the immutable plan");
-                    };
-                    let prepared = plan.prepare_model(&document).unwrap().unwrap();
-                    document.commit_model_transaction(prepared).unwrap();
-                    plan.publish_success(&mut commands, &document, true);
-                } else {
-                    commands
-                        .handle(&mut document, InputEvent::text(input))
-                        .unwrap();
-                }
-                assert_eq!(document.text(), expected);
-                assert_eq!(
-                    commands.cursor(),
-                    caret,
-                    "{original:?} {mode} {input:?}, planned={planned}"
-                );
-                assert!(document.text_point(commands.cursor()).is_ok());
-                key(&mut commands, &mut document, Key::Escape);
-                keys(&mut commands, &mut document, "u");
-                assert_eq!(document.text(), original);
-                key(&mut commands, &mut document, Key::Ctrl('r'));
-                assert_eq!(document.text(), expected);
-                assert!(document.text_point(commands.cursor()).is_ok());
-            }
+            let mut document = Document::new(original);
+            let mut commands = CommandInterpreter::new();
+            key(&mut commands, &mut document, Key::Char(mode));
+            commands
+                .handle(&mut document, InputEvent::text(input))
+                .unwrap();
+            assert_eq!(document.text(), expected);
+            assert_eq!(commands.cursor(), caret, "{original:?} {mode} {input:?}");
+            assert!(document.text_point(commands.cursor()).is_ok());
+            key(&mut commands, &mut document, Key::Escape);
+            keys(&mut commands, &mut document, "u");
+            assert_eq!(document.text(), original);
+            key(&mut commands, &mut document, Key::Ctrl('r'));
+            assert_eq!(document.text(), expected);
+            assert!(document.text_point(commands.cursor()).is_ok());
         }
     }
 

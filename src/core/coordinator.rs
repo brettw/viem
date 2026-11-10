@@ -11,8 +11,7 @@ use crate::command::ex_execute::{
 use crate::command::layout_motion::{LayoutDemand, LayoutMotionError, Viewport};
 use crate::command::{
     command_status_stops_compound, ex_normal_target_position, rebase_ex_normal_targets,
-    BufferCommandState, CommandContext, CommandInterpreter, CommandOutput, CommandPlan,
-    CommandPresentationRequest, CommandResolution, CommandStatus, CommandStep, CountError,
+    BufferCommandState, CommandInterpreter, CommandOutput, CommandStatus, CommandStep, CountError,
     ExNormalReplayPlan, ExNormalTarget, InputEvent, Key, LayoutCommandContext, MacroReplayPlan,
     Mode, ReplayPlan, COMPOUND_REPLAY_LIMIT, MACRO_REPLAY_EVENT_LIMIT,
 };
@@ -23,7 +22,7 @@ use crate::document::{
     ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, Encoding,
     FileFormat, Format, HardLineSourceRangeError, HistoryError, HistoryLocation,
     HistoryNavigationRequest, HistoryRestoration, HistoryRestorationSnapshot, MappingOutcome,
-    ModelRequest, ModelTransactionError, PersistenceError, PositionDomain, PositionError,
+    ModelRequest, ModelTransactionError, PersistenceError, PositionError,
     PositionMap, PreparedArtifactWrite, Revision, SemanticInlineStyle, StyleApplication,
     StyleDefinitionFieldEdit, StyleId, StyleModelIntent, StyleModelRequest, StyleNamespace,
     StyleSheetRevision, TextAnchor,
@@ -777,67 +776,6 @@ fn command_model_transaction_error(error: ModelTransactionError) -> CoreError {
         }
         error => CoreError::ModelTransaction(error),
     }
-}
-
-/// Prepare every fallible model operation before publishing either document
-/// or success-dependent controller state. A stale delayed plan is rejected
-/// before even its failure-cleanup image can overwrite newer controller state.
-fn execute_command_plan(
-    document: &mut Document,
-    interpreter: &mut CommandInterpreter,
-    plan: CommandPlan,
-) -> Result<(CommandStep, PositionMap, Vec<CommandPresentationRequest>), CoreError> {
-    if plan.document() != document.id() {
-        return Err(CoreError::Document(DocumentError::WrongDocument));
-    }
-    if plan.revision() != document.revision() {
-        return Err(CoreError::Document(DocumentError::WrongSnapshot {
-            expected: document.revision(),
-            actual: plan.revision(),
-        }));
-    }
-    let undo_group = plan.undo_group_directive();
-    let presentation = plan.presentation_requests().to_vec();
-
-    let prepared = match plan.prepare_model(document) {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            let error = command_model_transaction_error(error);
-            plan.publish_failure(interpreter, document.revision());
-            return Err(error);
-        }
-    };
-    let (changed, map) = match prepared {
-        Some(prepared) => {
-            let committed = match document.commit_model_transaction(prepared) {
-                Ok(committed) => committed,
-                Err(error) => {
-                    let error = command_model_transaction_error(error);
-                    plan.publish_failure(interpreter, document.revision());
-                    return Err(error);
-                }
-            };
-            (
-                committed.after_revision() != committed.before_revision(),
-                committed.text_position_map().clone(),
-            )
-        }
-        None => (
-            false,
-            PositionMap::identity(
-                document.id(),
-                PositionDomain::FormattedText,
-                document.revision(),
-                document.projection().text_tree().byte_len(),
-            ),
-        ),
-    };
-    match undo_group {
-        crate::command::UndoGroupDirective::Preserve => {}
-        crate::command::UndoGroupDirective::End => document.close_edit_group(),
-    }
-    let step = plan.publish_success(interpreter, document, changed);
-    Ok((step, map, presentation))
 }
 
 /// Translate one committed transaction's exact formatted change into the
@@ -6381,67 +6319,43 @@ impl<P: TextMeasurementProvider> Core<P> {
                 update_viewport_anchor(&self.document, target_view);
                 let before = self.document.revision();
                 let old_viewport_top = target_view.layout.viewport_top();
-                let resolution = if requires_layout || input.is_none() {
-                    CommandResolution::Legacy(crate::command::LegacyCommandReason::LayoutDependent)
-                } else {
-                    let context = clipboard_context.as_ref().map_or_else(
-                        || CommandContext::new(&self.document),
-                        |clipboard| CommandContext::with_clipboard(&self.document, clipboard),
-                    );
-                    target_view.commands.resolve(&context, input.as_ref().expect("keyboard input").clone())?
-                };
-                let (command_result, committed_position_map, planned_presentation) =
-                    match resolution {
-                        CommandResolution::Planned(plan) => {
-                            let (step, map, presentation) = execute_command_plan(
-                                &mut self.document,
-                                &mut target_view.commands,
-                                plan,
+                let (command_result, committed_position_map) = self.document.capture_position_maps(
+                    |document| -> Result<_, CoreError> {
+                        let Some(input) = input else {
+                            let step = target_view.commands.insert_list_paragraph_for_core(document)?;
+                            return Ok((step, old_viewport_top, false, None));
+                        };
+                        if requires_layout {
+                            let snapshot = target_view
+                                .layout
+                                .snapshot()
+                                .expect("required layout was just made exact");
+                            let viewport = Viewport::new(
+                                target_view.layout.viewport_top(),
+                                target_view.layout.height(),
                             )?;
-                            (Ok((step, old_viewport_top, false, None)), map, Some(presentation))
+                            let mut context = LayoutCommandContext::new(
+                                snapshot,
+                                target_view.layout.wrap(),
+                                viewport,
+                            ).with_viewport_left(target_view.layout.viewport_left());
+                            let step = target_view.commands.handle_with_layout_for_core(
+                                document,
+                                input,
+                                &mut context,
+                                clipboard_context.as_ref(),
+                            )?;
+                            Ok((step, context.viewport().top, context.viewport_command(), context.requested_viewport_left()))
+                        } else {
+                            let step = target_view.commands.handle_for_core(
+                                document,
+                                input,
+                                clipboard_context.as_ref(),
+                            )?;
+                            Ok((step, old_viewport_top, false, None))
                         }
-                        CommandResolution::Legacy(_) => {
-                            let (result, map) = self.document.capture_position_maps(
-                                |document| -> Result<_, CoreError> {
-                                    let Some(input) = input else {
-                                        let step = target_view.commands.insert_list_paragraph_for_core(document)?;
-                                        return Ok((step, old_viewport_top, false, None));
-                                    };
-                                    if requires_layout {
-                                        let snapshot = target_view
-                                            .layout
-                                            .snapshot()
-                                            .expect("required layout was just made exact");
-                                        let viewport = Viewport::new(
-                                            target_view.layout.viewport_top(),
-                                            target_view.layout.height(),
-                                        )?;
-                                        let mut context = LayoutCommandContext::new(
-                                            snapshot,
-                                            target_view.layout.wrap(),
-                                            viewport,
-                                        ).with_viewport_left(target_view.layout.viewport_left());
-                                        let step =
-                                            target_view.commands.handle_with_layout_for_core(
-                                                document,
-                                                input,
-                                                &mut context,
-                                                clipboard_context.as_ref(),
-                                            )?;
-                                        Ok((step, context.viewport().top, context.viewport_command(), context.requested_viewport_left()))
-                                    } else {
-                                        let step = target_view.commands.handle_for_core(
-                                            document,
-                                            input,
-                                            clipboard_context.as_ref(),
-                                        )?;
-                                        Ok((step, old_viewport_top, false, None))
-                                    }
-                                },
-                            );
-                            (result, map, None)
-                        }
-                    };
+                    },
+                );
                 // Always finish the capture before propagating a controller
                 // error. A failed model operation contributes no transition;
                 // a compound command which deliberately retains earlier
@@ -6504,14 +6418,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 // rectangle and its exact layout. Release dense geometry only
                 // when the command actually discards that selection.
                 let command_requests_relayout =
-                    planned_presentation.as_ref().is_some_and(|requests| {
-                        requests.contains(&CommandPresentationRequest::Relayout)
-                    }) || (was_visual_block && target_view.commands.visual_block().is_none());
-                let command_requests_reveal = command.revealed_search_match.is_some() || (!viewport_command || changed) && planned_presentation
-                    .as_ref()
-                    .map_or(changed || cursor_moved, |requests| {
-                        requests.contains(&CommandPresentationRequest::RevealCaret)
-                    });
+                    was_visual_block && target_view.commands.visual_block().is_none();
+                let command_requests_reveal = command.revealed_search_match.is_some()
+                    || (!viewport_command || changed) && (changed || cursor_moved);
                 let command_presentation_intent = if command_requests_reveal && changed {
                     ImmediateLayoutIntent::PreserveViewportAndRevealCaret
                 } else if command_requests_reveal {
@@ -12790,7 +12699,7 @@ mod tests {
     }
 
     #[test]
-    fn planned_insert_failure_publishes_no_model_or_success_controller_effects() {
+    fn insert_failure_publishes_no_model_or_controller_effects() {
         let document = Document::from_bytes_with_file_format(
             b"base".to_vec(),
             Encoding::Latin1,
@@ -12827,52 +12736,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_command_plan_is_rejected_before_controller_publication() {
-        let mut core = Core::new(Document::new("base"));
-        let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
-        core.handle(view, key('"')).unwrap();
-        core.handle(view, key('a')).unwrap();
-        let plan = {
-            let context = CommandContext::new(&core.document);
-            match core
-                .views
-                .get(&view)
-                .unwrap()
-                .commands
-                .resolve(&context, InputEvent::key('x'))
-                .unwrap()
-            {
-                CommandResolution::Planned(plan) => plan,
-                CommandResolution::Legacy(reason) => {
-                    panic!("Normal x unexpectedly used legacy path: {reason:?}")
-                }
-            }
-        };
-        let cursor_before = core.command_state(view).unwrap().cursor();
-        let mode_before = core.command_state(view).unwrap().mode();
-
-        core.document.insert(0, "z").unwrap();
-        let revision_after_newer_edit = core.document.revision();
-        let error = {
-            let view = core.views.get_mut(&view).unwrap();
-            execute_command_plan(&mut core.document, &mut view.commands, plan).unwrap_err()
-        };
-        assert!(matches!(
-            error,
-            CoreError::Document(DocumentError::WrongSnapshot {
-                expected,
-                actual
-            }) if expected == revision_after_newer_edit && actual == Revision(0)
-        ));
-        assert_eq!(core.document().text(), "zbase");
-        assert_eq!(core.document().revision(), revision_after_newer_edit);
-        assert_eq!(core.command_state(view).unwrap().mode(), mode_before);
-        assert_eq!(core.command_state(view).unwrap().cursor(), cursor_before);
-        assert!(core.command_state(view).unwrap().register('a').is_none());
-    }
-
-    #[test]
-    fn planned_normal_delete_publishes_register_repeat_and_model_together() {
+    fn normal_delete_publishes_register_repeat_and_model_together() {
         let mut core = Core::new(Document::new("abcd"));
         let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
         core.handle(view, key('2')).unwrap();
@@ -12892,7 +12756,7 @@ mod tests {
     }
 
     #[test]
-    fn insert_ctrl_o_delete_keeps_legacy_return_to_insert_semantics() {
+    fn insert_ctrl_o_delete_returns_to_insert() {
         let mut core = Core::new(Document::new("abc"));
         let view = core.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
         core.handle(view, key('i')).unwrap();
@@ -12955,7 +12819,7 @@ mod tests {
     }
 
     #[test]
-    fn planned_logical_motion_requests_caret_reveal_without_model_change() {
+    fn logical_motion_requests_caret_reveal_without_model_change() {
         let mut core = Core::new(Document::new("one two three"));
         let view = core.add_view(MockTextMeasurementProvider::new(), 40.0, 24.0);
         let revision = core.document().revision();
@@ -12969,7 +12833,7 @@ mod tests {
     }
 
     #[test]
-    fn planned_edit_keys_preserve_replace_journals_and_atomic_hard_breaks() {
+    fn edit_keys_preserve_replace_journals_and_atomic_hard_breaks() {
         let mut replace = Core::new(Document::new("abc"));
         let view = replace.add_view(MockTextMeasurementProvider::new(), 200.0, 48.0);
         replace.handle(view, key('R')).unwrap();

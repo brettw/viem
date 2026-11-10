@@ -238,35 +238,6 @@ impl CommandInterpreter {
         }
     }
 
-    pub(crate) fn table_input_requires_legacy(
-        &self,
-        document: &Document,
-        event: &InputEvent,
-    ) -> bool {
-        self.table_cells.is_some()
-            || self.table_tab_selection
-            || self.table_edge_key_is_no_op(document, event)
-            || (document.format() == Format::Markdown
-                && self.mode == Mode::Normal
-                && matches!(event, InputEvent::Key(Key::Char('p' | 'P')))
-                && document.projection().table_cell_at(self.cursor).is_some())
-            || (document.format() == Format::Markdown
-                && matches!(self.mode, Mode::Insert | Mode::Replace)
-                && document.projection().table_cell_at(self.cursor).is_some()
-                && matches!(
-                    event,
-                    InputEvent::Key(
-                        Key::Tab
-                            | Key::BackTab
-                            | Key::Enter
-                            | Key::ShiftEnter
-                            | Key::Backspace
-                            | Key::Delete
-                            | Key::Ctrl('w' | 'W' | 'u' | 'U')
-                    )
-                ))
-    }
-
     fn table_edge_key_is_no_op(&self, document: &Document, event: &InputEvent) -> bool {
         if document.format() != Format::Markdown
             || !matches!(self.mode, Mode::Insert | Mode::Replace)

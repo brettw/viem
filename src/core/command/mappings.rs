@@ -846,14 +846,6 @@ impl CommandInterpreter {
         }
     }
 
-    /// Whether `event` belongs to a `<Cmd>` mapping command line.
-    pub(super) fn cmd_key_applies(&self, event: &InputEvent) -> bool {
-        self.cmd_key.is_some()
-            || matches!(event, InputEvent::Key(Key::Char(character)) if [crate::vimscript::keys::SpecialKey::Cmd, crate::vimscript::keys::SpecialKey::ScriptCmd]
-                .iter()
-                .any(|key| char::from_u32(crate::vimscript::keys::SPECIAL_BASE + key.code()) == Some(*character)))
-    }
-
     /// `<Cmd>…<CR>` in a mapping runs the command line without changing
     /// mode and without remapping its text.
     pub(super) fn handle_cmd_key(&mut self, document: &mut Document, event: &InputEvent) -> Option<CommandOutput> {

@@ -135,7 +135,7 @@ fn selection_replacement_and_combining_suffix_keep_legal_grapheme_boundaries() {
 }
 
 #[test]
-fn clipboard_reads_are_captured_for_controller_only_plans_and_not_retained() {
+fn clipboard_reads_serve_one_command_line_event_and_are_not_retained() {
     for target in [ClipboardTarget::Clipboard, ClipboardTarget::Primary] {
         let mut document = Document::new("source");
         let mut commands = CommandInterpreter::new();
@@ -144,12 +144,10 @@ fn clipboard_reads_are_captured_for_controller_only_plans_and_not_retained() {
         let clipboard = ClipboardCommandContext::new().with_read(ClipboardSnapshot::new(
             target, ClipboardGeneration(1), ClipboardContent::from_plain_text("from clipboard"),
         ));
-        let context = CommandContext::with_clipboard(&document, &clipboard);
-        let CommandResolution::Planned(plan) = commands.resolve(&context, InputEvent::key(target.register_name())).unwrap() else { panic!("register insertion must remain controller-only"); };
-        assert!(plan.model_request().is_none());
-        assert_eq!(commands.command_line(), Some(""));
-        let result = plan.publish_success(&mut commands, &document, false);
-        assert!(result.output.clipboard_writes.is_empty());
+        let output = commands
+            .handle_with_clipboard_context(&mut document, InputEvent::key(target.register_name()), &clipboard)
+            .unwrap();
+        assert!(output.clipboard_writes.is_empty());
         assert_eq!(commands.command_line(), Some("from clipboard"));
         assert!(commands.clipboard_context.read(target).is_none());
         assert_eq!(document.revision(), Revision(0));

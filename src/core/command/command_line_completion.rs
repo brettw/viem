@@ -96,7 +96,7 @@ impl CommandLineBuffer {
 
 impl CommandInterpreter {
     /// Run before ordinary key handling so acceptance and its normal action
-    /// share one event in both planned and compatibility command paths.
+    /// share one event.
     pub(super) fn handle_filename_completion_key(&mut self, key: Key) -> Option<CommandOutput> {
         let state = self.command_line_state.as_mut()?;
         match key {
