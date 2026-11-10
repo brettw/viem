@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Microsoft.UI.Xaml.Media;
 using Viem.Windows.Core;
 using Viem.Windows.Diagnostics;
@@ -242,8 +243,45 @@ internal sealed partial class EditorWindow
             string a = Path.Combine(scoped, "a"), b = Path.Combine(scoped, "b");
             await File.WriteAllTextAsync(a, "old a"); await File.WriteAllTextAsync(b, "old b");
             await File.WriteAllTextAsync(Path.Combine(directory, "outside"), "old");
-            await Git("add", "sub", "outside");
+            string stagedFolder = Directory.CreateDirectory(Path.Combine(directory, "staged")).FullName;
+            string stagedFile = Path.Combine(stagedFolder, "first");
+            await File.WriteAllTextAsync(stagedFile, "committed");
+            await Git("add", "sub", "outside", "staged/first");
             await Git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "base");
+            await File.WriteAllTextAsync(stagedFile, "staged edit");
+            await Git("add", "staged/first");
+            await using (var stagedEditor = await TestEditor.Open(preferences, "", VIEM_FORMAT_PLAIN_TEXT, placement)) {
+                var staged = stagedEditor.Window;
+                await staged.DiffFolder(stagedFolder);
+                var pane = staged.ActivePane!;
+                var placeholder = pane.Document;
+                var initialComparison = staged.comparison;
+                var initialBase = staged.diffLeft!.Document;
+                Check(staged.diffFiles.Length == 0 && placeholder.FilePath == null, "A fully staged folder opens on its untitled Unstaged comparison");
+                pane.View!.Command("i"); pane.View.Text("keep"); pane.View.Key(VIEM_KEY_ESCAPE);
+                int reviews = 0;
+                staged.CloseReviewDecisionForTesting = document => {
+                    Check(document == placeholder, "The new base reviews the document it would replace");
+                    ++reviews;
+                    if (reviews == 2) {
+                        pane.View.Command("A"); pane.View.Text(" editing"); pane.View.Key(VIEM_KEY_ESCAPE);
+                    }
+                    return Task.FromResult(reviews == 1 ? ContentDialogResult.None : ContentDialogResult.Secondary);
+                };
+                await staged.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
+                Check(reviews == 1 && staged.diffBase.Kind == VIEM_DIFF_BASE_UNSTAGED && staged.diffFiles.Length == 0
+                    && pane.Document == placeholder && placeholder.IsDirty && placeholder.FormattedText() == "keep"
+                    && staged.comparison == initialComparison && staged.diffLeft.Document == initialBase,
+                    "Cancel keeps the dirty untitled file, file set, base and comparison");
+                await staged.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
+                Check(reviews == 2 && staged.comparison == initialComparison && pane.Document == placeholder
+                    && placeholder.FormattedText() == "keep editing", "Discard cannot abandon edits made while the save prompt was open");
+                await staged.ChooseDiffBase(new(VIEM_DIFF_BASE_HEAD));
+                Check(reviews == 3 && staged.diffBase.Kind == VIEM_DIFF_BASE_HEAD && staged.CurrentDiffFile == 0
+                    && SamePath(stagedFile, pane.Document.FilePath) && pane.Document.FormattedText() == "staged edit"
+                    && staged.diffLeft.Document.FormattedText() == "committed", "After discard the first file opens with the selected base");
+            }
+            await Git("restore", "--source=HEAD", "--staged", "--worktree", "--", "staged/first");
             await File.WriteAllTextAsync(a, "index a"); await Git("add", "sub/a");
             await File.WriteAllTextAsync(a, "live a"); File.Delete(b);
             await File.WriteAllTextAsync(Path.Combine(directory, "outside"), "modified");
@@ -311,6 +349,20 @@ internal sealed partial class EditorWindow
             double Left(FrameworkElement control) => control.TransformToVisual(folderToolbar).TransformPoint(default).X;
             var previousFile = arrows["Previous File"];
             var nextFile = arrows["Next File"];
+            var open = FormattingToolbarTests.Descendants<Button>(folderToolbar)
+                .Single(button => AutomationProperties.GetName(button) == "Open in New Editor Window");
+            var previousWindows = App.Instance.Windows.ToHashSet();
+            new ButtonAutomationPeer(open).Invoke();
+            await WaitFor(() => App.Instance.Windows.Any(w => !previousWindows.Contains(w)));
+            var regular = App.Instance.Windows.Single(w => !previousWindows.Contains(w));
+            try {
+                await regular.ActivePane!.Ready;
+                Check(!regular.diffEnabled && regular.ActivePane.Document == folder.ActivePane!.Document && folder.comparison != null,
+                    "Open in New Editor Window shares the live document and keeps its comparison open");
+            } finally {
+                await regular.ClosePane(regular.ActivePane!, force: true);
+                folder.Activate();
+            }
             var fileMenu = folder.Menu.Items.Single(m => m.Title == "Diff").Items.OfType<MenuFlyoutItem>();
             foreach (var (button, name, command) in new[] { (previousFile, "Previous File", ":N"), (nextFile, "Next File", ":n") }) {
                 var menuItem = fileMenu.Single(item => item.Text == name);
@@ -320,6 +372,14 @@ internal sealed partial class EditorWindow
             }
             folder.root.UpdateLayout();
             double previousX = Left(previousFile), nextX = Left(nextFile), pickerWidth = files.ActualWidth;
+            Check(Math.Abs(folderToolbar.ActualWidth - Left(open) - open.ActualWidth - 10) < 1,
+                "Open in New Editor Window is pinned to the toolbar's right inset");
+            string oldDirectory = Environment.CurrentDirectory;
+            try {
+                folder.ChangeDirectory(folder.ActivePane!, directory);
+                Check(Equals(files.SelectedItem, Path.Combine("sub", "a")) && files.Items.Contains(Path.Combine("sub", "b") + " (deleted)"),
+                    "Changing working directory updates full relative paths, including the selected file and deleted entries");
+            } finally { folder.ChangeDirectory(folder.ActivePane!, oldDirectory); }
             files.Width = pickerWidth < files.MaxWidth - 50 ? pickerWidth + 50 : pickerWidth - 50;
             folder.root.UpdateLayout();
             Check(previousX + previousFile.ActualWidth <= nextX && nextX + nextFile.ActualWidth <= Left(files)
@@ -344,7 +404,10 @@ internal sealed partial class EditorWindow
                 var compare = CompareButton()!;
                 if (pass == 0) {
                     list.SelectedIndex = 0;
-                    Check((string)list.Items[0] == $"{commit.Short}  base" && input.Text == commit.Hash, "Selecting a commit title fills in its full hash");
+                    var runs = ((TextBlock)list.Items[0]).Inlines.Cast<Run>().ToArray();
+                    Check(runs[0].Text == commit.Short && runs[0].FontFamily.Source == input.FontFamily.Source
+                        && runs[1].Text == "  base" && runs[1].ReadLocalValue(Run.FontFamilyProperty) == DependencyProperty.UnsetValue
+                        && input.Text == commit.Hash, "Commit rows use the hash field's monospace font and the list's title font, and select the full hash");
                 } else {
                     input.Text = "--all";
                     await WaitFor(() => compare.IsEnabled);
@@ -454,7 +517,8 @@ internal sealed partial class EditorWindow
                 && folderToolbar.FileCount.Text == "257", "The disabled footer counts omitted files while totals cover the set");
             await folder.SelectDiffFile(255);
             await folder.MoveDiffFile(1);
-            Check(files.SelectedIndex == 255 && Equals(files.SelectedItem, "zzz (added)")
+            string lastPath = Path.GetRelativePath(Environment.CurrentDirectory, Path.Combine(scoped, "zzz"));
+            Check(files.SelectedIndex == 255 && Equals(files.SelectedItem, lastPath + " (added)")
                 && SamePath(folder.ActivePane!.Document.FilePath!, Path.Combine(scoped, "zzz")),
                 "Next File reaches the clipped file and the capped popup names it");
             await File.WriteAllTextAsync(chosen, "chosen");
@@ -468,10 +532,23 @@ internal sealed partial class EditorWindow
             bases.SelectedIndex = bases.Items.Count - 1;
             await WaitFor(() => folder.diffBase.Argument == chosen);
             folder.PickDiffBaseFileForTesting = null;
-            Check(folder.diffScope == null && folder.diffFiles.Length == 0 && !files.IsEnabled && files.PlaceholderText == comparedDocument.Name
+            Check(folder.diffScope == null && folder.diffFiles.Length == 0 && !files.IsEnabled && files.PlaceholderText == lastPath
                 && folder.ActivePane.Document == comparedDocument && folder.diffLeft!.Document.FormattedText() == "chosen",
                 "Choosing a dotfile as base compares it with the current document and clears folder navigation");
             await File.WriteAllTextAsync(chosen, "refreshed");
+            var liveBeforeReload = folder.ActivePane;
+            var leftBeforeReload = folder.diffLeft;
+            var baseViewBeforeReload = leftBeforeReload!.View;
+            var splitterBeforeReload = folder.diffSplitter;
+            var comparisonBeforeReload = folder.comparison;
+            File.WriteAllText(comparedDocument.FilePath!, "chosen");
+            await folder.Reload(liveBeforeReload!, force: true);
+            comparedDocument = liveBeforeReload!.Document;
+            Check(folder.diffLive == liveBeforeReload && folder.diffLeft == leftBeforeReload &&
+                leftBeforeReload.View == baseViewBeforeReload && folder.diffSplitter == splitterBeforeReload &&
+                folder.comparison == comparisonBeforeReload && folder.comparison!.LineTotals == (0UL, 0UL) &&
+                leftBeforeReload.Document.FormattedText() == "chosen" && comparedDocument.FormattedText() == "chosen",
+                "Reload updates the live comparison in place while both panes, the splitter and the chosen base stay installed");
             await folder.RefreshDiff();
             Check(folder.diffLeft!.Document.FormattedText() == "refreshed", "Refresh reloads the chosen file from disk");
             try { await folder.ChooseDiffBase(new(VIEM_DIFF_BASE_FILE, scoped)); }

@@ -66,6 +66,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     private(set) var viewportState = ViemViewportStateV1()
     /// Diff mode refreshes this side's scrollbar marks after each verified
     /// frame, since layout can refine the heights they are measured in.
+    weak var liveDiffSession: EVCoreDiffSession?
     var diffPresentationDidRefresh: ((Bool) -> Void)?
     /// Diff mode opens the collapsed context whose divider borders this hard
     /// line when it is clicked; returns whether a run opened.
@@ -278,6 +279,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         }
         attachedSession.commandTurnHost = self
         session = attachedSession
+        liveDiffSession?.liveViewDidReload()
         do { try attachedSession.setHostRegister(35, text: alternateFilePath ?? "") } catch { report(error) }
         applyStartupHostEffects()
         appliedMargins = viewPreferences.margins

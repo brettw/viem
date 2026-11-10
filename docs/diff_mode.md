@@ -223,12 +223,13 @@ A new diff toolbar selects the base:
 | Last saved | The saved copy Viem keeps in memory; Refresh reads the file on disk | — |
 | Unstaged | The file's staged version (the index) | `git diff` |
 | HEAD | The file in the current commit | `git diff HEAD` |
-| Branch… | The file on a chosen branch | `git diff <branch>` |
+| Branch… | The file on a chosen local branch | `git diff <branch>` |
 | Commit… | The file at a specific commit | `git diff <hash>` |
 | Choose File… | Any file chosen in a file picker | — |
 
 **Commit…** opens a hash field and the latest 50 commits reachable from the
-current branch tip. Choose a row by its short hash and title, or paste a full
+current branch tip. Each row shows a monospaced short hash beside its title.
+Choose a row, or paste a full
 or unambiguous abbreviated commit hash. The selected base reads **Commit
 \<short hash\>** and stays pinned to that commit.
 
@@ -244,7 +245,9 @@ and gains no buffer, history or dirty state.
 
 A **Refresh** button reloads the selected base from its source; for Last
 saved, that means reading the file on disk. The base otherwise stays fixed
-while diff mode is open.
+while diff mode is open. Reloading an externally changed document updates
+the live side in the existing split. The comparison uses the same base
+snapshot, divider position and expanded context.
 
 ### Files
 
@@ -253,9 +256,13 @@ The file dropdown lists up to 256 files. A disabled final row counts any
 omitted files. Previous File, Next File and argument-list commands navigate the
 full set. When one of those commands reaches an omitted file, the dropdown
 uses its last file slot to show the current file.
-Choosing one shows that file in diff mode against the same base. Entries show
-file names; a name that several listed files share is followed by each one's
-folder, relative to the folder the whole list shares (`tests.rs — diff/base`).
+Choosing one shows that file in diff mode against the same base. The picker
+shows each file's full path relative to the current working directory, including
+both paths of a rename. Files on another Windows drive or share use an absolute
+path.
+
+**Open in New Editor Window** at the right edge of the toolbar opens another
+view of the live buffer, including its unsaved edits. The diff stays open.
 
 For the git bases the list holds tracked files that differ from the base,
 including files whose only differences are unsaved edits in an open buffer.
@@ -268,7 +275,10 @@ The paired left and right arrow buttons before the dropdown move to the
 previous and next file in the list, wrapping around at either end. Moving
 away from a file with unsaved changes first shows the same native save prompt
 as closing the window (Save, Don't Save, Cancel); Cancel stays on the current
-file. Choosing a file from the dropdown behaves the same way.
+file. Choosing a file from the dropdown behaves the same way. Entering diff
+mode or choosing a new base keeps the active file when the new set includes
+it. When a nonempty set excludes the active file, its first file opens after
+the same save prompt. Cancel keeps the previous file, base and file list.
 
 The button tooltips and Diff menu display the corresponding Ex commands,
 `:N` for Previous File and `:n` for Next File.

@@ -598,6 +598,27 @@ final class EVDocumentHostEffectsTests: XCTestCase {
         }
     }
 
+    func testDirectorySplitRejectsMissingFileAndDirectoryReturnedByPanel() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let backend = Backend(data: Data("source".utf8), dirty: false)
+        let (original, controller) = makeController(backend: backend)
+        defer { controller.openFilePanelPresenter = nil; controller.close() }
+        for selected in [directory, directory.appendingPathComponent("gone")] {
+            var presentations = 0
+            controller.openFilePanelPresenter = { _, _, choose in
+                presentations += 1
+                choose(presentations == 1 ? selected : nil)
+            }
+            assertFailure(.invalidPath(selected.path), from: controller, request: EVDocumentHostRequest(
+                kind: .split, documentID: backend.persistenceState.documentID,
+                documentRevision: backend.persistenceState.documentRevision, path: directory.path))
+            XCTAssertEqual(presentations, 1)
+            XCTAssertEqual(controller.paneCount, 1)
+            XCTAssertTrue(controller.activeDocument === original)
+        }
+    }
+
     func testDirectoryVerticalSplitKeepsOrientationAfterPickingFile() throws {
         let directory = temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

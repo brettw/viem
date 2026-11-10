@@ -1,6 +1,9 @@
 <ResourceDictionary
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <DataTemplate x:Key="DiffFilePath">
+    <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding}" />
+  </DataTemplate>
   <Style x:Key="DiffAddedLines" TargetType="TextBlock">
     <Setter Property="Foreground" Value="{ThemeResource SystemFillColorSuccessBrush}" />
   </Style>

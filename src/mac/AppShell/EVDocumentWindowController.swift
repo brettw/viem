@@ -761,6 +761,7 @@ extension EVDocumentWindowController {
   fileprivate func performDocumentHostRequest(
     _ request: EVDocumentHostRequest,
     in targetPane: EVDocumentContentViewController? = nil,
+    fileChosenInPanel: Bool = false,
     completion: @escaping @MainActor (Result<String?, Error>) -> Void
   ) {
     // Application settings requested by a script apply to every window.
@@ -811,7 +812,12 @@ extension EVDocumentWindowController {
       let path = request.path, let url = resolvedFileURL(path, relativeTo: nil)
     {
       var isDirectory: ObjCBool = false
-      if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+      let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+      if fileChosenInPanel && (!exists || isDirectory.boolValue) {
+        completion(.failure(EVDocumentHostError.invalidPath(path)))
+        return
+      }
+      if isDirectory.boolValue {
         chooseFile(in: url, document: document, pane: openingPane, request: request, completion: completion)
         return
       }
@@ -1012,6 +1018,7 @@ extension EVDocumentWindowController {
       }
       for controller in Self.instances.compactMap(\.value) where !controller.isClosed {
         for pane in controller.paneContainer.panes { pane.refreshStatusFilePath() }
+        if controller.diffMode?.isEnabled == true { controller.diffMode?.refreshToolbar() }
       }
       completion(.success(FileManager.default.currentDirectoryPath))
 
@@ -1146,7 +1153,7 @@ extension EVDocumentWindowController {
         kind: request.kind, documentID: request.documentID, documentRevision: request.documentRevision,
         force: request.force, path: url.path, initialHeightRows: request.initialHeightRows,
         verticalSplit: request.verticalSplit)
-      self.performDocumentHostRequest(selectedRequest, in: pane, completion: completion)
+      self.performDocumentHostRequest(selectedRequest, in: pane, fileChosenInPanel: true, completion: completion)
     }
     if let openFilePanelPresenter { openFilePanelPresenter(panel, window, selected) }
     else {
@@ -2078,7 +2085,8 @@ extension EVDocumentWindowController: EVDiffModeHost {
     openFilePanelPresenter
   }
 
-  func openDiffFile(_ url: URL, completion: @escaping @MainActor (Error?) -> Void) {
+  func openDiffFile(_ url: URL, beforeReplacing: @escaping @MainActor () -> Bool,
+                    completion: @escaping @MainActor (Error?) -> Void) {
     let pane = documentContentController
     guard let document = pane.document else { completion(EVDocumentHostError.staleRequest); return }
     let expected = document.editorBackend.persistenceState
@@ -2086,7 +2094,7 @@ extension EVDocumentWindowController: EVDiffModeHost {
     // between diff files opens through the argument commands' boundary.
     loadArgumentDocument(url) { [weak self] opened, error in
       guard let self, let opened else { completion(error ?? EVDocumentHostError.unsupportedRequest); return }
-      guard self.canReplace(pane, document: document, expected: expected) else {
+      guard self.canReplace(pane, document: document, expected: expected), beforeReplacing() else {
         self.closeIfUnrepresented(opened)
         completion(EVDocumentHostError.staleRequest)
         return

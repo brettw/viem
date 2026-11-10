@@ -51,6 +51,14 @@ internal sealed unsafe partial class CoreDocument
         }
         ++diffViews;
     }
+
+    // Reload replaces all views together and opens the new core in the old
+    // one's format. The last diff window still restores the pre-diff format.
+    internal void InheritDiffMode(CoreDocument previous)
+    {
+        diffViews = previous.diffViews;
+        priorDiffMode = previous.priorDiffMode;
+    }
     internal void LeaveDiff(CoreView view, bool closingDocument = false)
     {
         if (--diffViews != 0) return;
@@ -64,7 +72,8 @@ internal sealed unsafe partial class CoreDocument
 
 internal sealed unsafe class DiffComparison : IDisposable
 {
-    private readonly CoreView basis, live;
+    private readonly CoreView basis;
+    private CoreView live;
     private ulong handle;
     internal (ulong Added, ulong Removed) LineTotals { get; private set; }
     internal DiffComparison(CoreView basis, CoreView live, bool aligned, bool collapsed)
@@ -76,6 +85,7 @@ internal sealed unsafe class DiffComparison : IDisposable
         Check(viem_diff_session_create(basis.Document.Handle, live.Document.Handle, flags, &session), "Compare documents");
         handle = session;
     }
+    internal void ReplaceLiveView(CoreView replacement) => live = replacement;
     internal void Sync()
     {
         uint result = 0;

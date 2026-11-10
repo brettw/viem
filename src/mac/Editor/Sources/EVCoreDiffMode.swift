@@ -110,6 +110,7 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         try checkedDiff(viem_diff_session_create(base.core, document.core, flags, &handle),
                         operation: "Compare with the diff base")
         self.handle = handle
+        surface.liveDiffSession = self
         surface.diffPresentationDidRefresh = { [weak self] scrolled in
             self?.mirror(fromNew: scrolled)
             self?.updateMarks(isNew: true)
@@ -201,6 +202,17 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         if force { surface.refreshPresentation() }
     }
 
+    /// The installed live view now owns the reloaded core. Sync before its
+    /// first presentation, keeping the base view and the same comparison.
+    func liveViewDidReload() {
+        restoreModifiable = false
+        markKeys.removeAll(keepingCapacity: true)
+        mirroring = true
+        sync()
+        mirroring = false
+        mirror(fromNew: true)
+    }
+
     /// Move both sides to the next or previous change, wrapping within the
     /// file; beeps when the sides are identical.
     func navigateChange(next: Bool) {
@@ -268,6 +280,7 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
             restoreMode = nil
             restoreModifiable = false
         }
+        surface?.liveDiffSession = nil
         surface?.diffPresentationDidRefresh = nil
         baseSurface?.diffPresentationDidRefresh = nil
         surface?.diffOpenCollapsedContext = nil

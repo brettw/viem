@@ -8,19 +8,20 @@ namespace Viem.Windows.Core;
 
 internal sealed record DiffFile(string Path, string BasePath, uint Change, ulong Added = 0, ulong Removed = 0)
 {
-    internal string Title => Change switch {
-        VIEM_DIFF_FILE_RENAMED => $"{System.IO.Path.GetFileName(BasePath)} → {System.IO.Path.GetFileName(Path)}",
-        VIEM_DIFF_FILE_ADDED => System.IO.Path.GetFileName(Path) + " (added)",
-        VIEM_DIFF_FILE_DELETED => System.IO.Path.GetFileName(Path) + " (deleted)",
-        VIEM_DIFF_FILE_UNSAVED => System.IO.Path.GetFileName(Path) + " (unsaved)",
-        _ => System.IO.Path.GetFileName(Path)
-    };
+    internal string TitleRelativeTo(string directory)
+    {
+        string name = System.IO.Path.GetRelativePath(directory, Path);
+        return Change switch {
+            VIEM_DIFF_FILE_RENAMED => $"{System.IO.Path.GetRelativePath(directory, BasePath)} → {name}",
+            VIEM_DIFF_FILE_ADDED => name + " (added)",
+            VIEM_DIFF_FILE_DELETED => name + " (deleted)",
+            VIEM_DIFF_FILE_UNSAVED => name + " (unsaved)",
+            _ => name
+        };
+    }
 }
 
-internal sealed record DiffCommit(string Hash, string Short, string Title)
-{
-    public override string ToString() => $"{Short}  {Title}";
-}
+internal sealed record DiffCommit(string Hash, string Short, string Title);
 
 internal sealed record DiffBase(uint Kind, string Argument = "", string ShortHash = "")
 {

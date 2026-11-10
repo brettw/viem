@@ -8,10 +8,10 @@
 //! error dialog; only invalid arguments fail the call itself.
 use super::*;
 use crate::diff::base::{
-    include_unsaved, read_file_base, BaseError, BaseKind, BaseText, CancellationToken, ChangedFile, FileChange,
+    read_file_base, BaseError, BaseKind, BaseText, CancellationToken, ChangedFile, FileChange,
     GitRepository, ProcessLimits,
 };
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub type ViemDiffSessionHandle = u64;
 pub type ViemDiffResultHandle = u64;
@@ -817,25 +817,17 @@ pub unsafe extern "C" fn viem_diff_list_files(
                 change: FileChange::Modified, added: 0, removed: 0,
             }]),
             BaseKind::File(_) => Ok(Vec::new()),
-            kind => repository(&request).and_then(|repository| {
-                let mut files = repository.changed_files(kind, request.scope.as_deref(), &request.cancellation)?;
-                let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned());
-                let root = canonical(repository.root());
-                let scope = request.scope.as_deref().map(canonical);
-                let inside = |path: &Path| {
-                    std::fs::canonicalize(path.parent().unwrap_or(path)).is_ok_and(|parent| {
-                        parent.starts_with(&root) && scope.as_ref().is_none_or(|scope| parent.starts_with(scope))
-                    })
-                };
-                include_unsaved(&mut files, request.unsaved.iter().filter(|path| inside(path)).cloned());
-                Ok(files)
-            }),
+            kind => {
+                let scope = request.scope.as_deref();
+                GitRepository::discover(&request.git_program, scope.unwrap_or(&request.path), ProcessLimits::default(), &request.cancellation)
+                    .and_then(|repo| repo.files_for_document(kind, &request.path, &request.unsaved, scope, &request.cancellation))
+            }
         };
         publish(DiffResult::Files(result), out_result)
     })
 }
 
-/// List the repository's local and remote branches for the Branch base.
+/// List the repository's local branches for the Branch base.
 ///
 /// # Safety
 /// As for [`viem_diff_load_base`].

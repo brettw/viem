@@ -330,9 +330,12 @@ impl DiffSession {
         self.base_revision = base.revision();
         self.new_document = new.id();
         self.new_revision = new.revision();
-        // The previous presentation no longer describes these documents.
-        for side in &mut self.installed {
-            side.document = None;
+        // The live edit has no bounded line map. The base, however, is
+        // usually the very same revision. Its installed markings can still
+        // identify exactly which lines need reflow after a live reload.
+        self.installed[1].document = None;
+        if self.installed[0].document != Some((self.base_document, self.base_revision)) {
+            self.installed[0].document = None;
         }
     }
 

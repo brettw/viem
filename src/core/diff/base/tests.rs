@@ -174,6 +174,9 @@ fn git_bases_load_index_head_and_branch_versions() {
     git(root, &["branch", "old"]);
     std::fs::write(root.join("a.txt"), "one\ntwo\nthree\n").unwrap();
     git(root, &["commit", "-q", "-am", "three"]);
+    git(root, &["tag", "old"]);
+    git(root, &["branch", "topic/HEAD"]);
+    git(root, &["update-ref", "refs/remotes/origin/remote-only", "HEAD"]);
     std::fs::write(root.join("a.txt"), "staged\n").unwrap();
     git(root, &["add", "a.txt"]);
     std::fs::write(root.join("a.txt"), "worktree\n").unwrap();
@@ -186,7 +189,9 @@ fn git_bases_load_index_head_and_branch_versions() {
     std::fs::write(&added, "new\n").unwrap();
     assert_eq!(repository.load(&BaseKind::Head, &added, &token).unwrap(), BaseText { bytes: Vec::new(), exists: false });
     assert!(repository.load(&BaseKind::Branch("--output=x".into()), &file, &token).is_err());
-    assert!(repository.branches(&token).unwrap().contains(&"old".to_string()));
+    git(root, &["config", "branch.sort", "-refname"]);
+    git(root, &["checkout", "-q", "--detach"]);
+    assert_eq!(repository.branches(&token).unwrap(), ["topic/HEAD", "old", "main"]);
 }
 
 #[test]
@@ -210,6 +215,33 @@ fn git_file_lists_follow_git_diff_and_ignore_untracked_files() {
     let renamed = files.iter().find(|file| file.change == FileChange::Renamed).expect("rename detected");
     assert_eq!(canonical(&renamed.path), root.join("renamed.txt"));
     assert_eq!(canonical(&renamed.base_path), root.join("a.txt"));
+}
+
+#[test]
+fn listed_files_keep_the_current_buffer_name_through_a_directory_alias() {
+    let Some((directory, repository)) = repository("open-alias") else { return };
+    let root = &directory.0;
+    let link = root.join("alias");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root, &link).unwrap();
+    #[cfg(windows)]
+    let link = if std::os::windows::fs::symlink_dir(root, &link).is_ok() { link } else {
+        // A parent traversal also exercises path normalization without symlink privileges.
+        std::fs::create_dir(&link).unwrap();
+        link.join("..")
+    };
+    std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+    std::fs::remove_file(root.join("gone.txt")).unwrap();
+    let current = link.join("gone.txt");
+    let files = repository.files_for_document(
+        &BaseKind::Head, &current, &[link.join("a.txt")], Some(root), &CancellationToken::new(),
+    ).unwrap();
+    assert_eq!(files.len(), 2);
+    assert_eq!(files[0].path, link.join("a.txt"));
+    assert_eq!(files[0].change, FileChange::Modified);
+    assert_eq!(files[1].path, current);
+    assert_eq!(files[1].base_path, current);
+    assert_eq!(files[1].change, FileChange::Deleted);
 }
 
 #[test]

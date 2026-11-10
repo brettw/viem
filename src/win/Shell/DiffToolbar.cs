@@ -10,7 +10,7 @@ namespace Viem.Windows.Shell;
 internal sealed partial class DiffToolbar : EditorToolbar
 {
     private readonly ComboBox bases = Selector(new ComboBox { MinWidth = 118, MaxWidth = 220 }, "Diff base");
-    private readonly ComboBox files = Selector(new ComboBox { MinWidth = 140, MaxWidth = 360 }, "Files in this diff");
+    private readonly ComboBox files = Selector(new ComboBox { MinWidth = 140 }, "Files in this diff");
     private readonly StackPanel fileCountGroup = Group(3);
     internal readonly TextBlock FileCount = new(), AddedLines = new(), RemovedLines = new();
     private (ulong Added, ulong Removed) gitTotals;
@@ -21,6 +21,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     private readonly List<DiffBase> choices = [];
     private (DiffBase Basis, bool Git, string[] Branches)? displayedBases;
     private DiffFile[]? displayedFiles;
+    private string? displayedDirectory;
     private const int FileLimit = (int)Interop.Native.VIEM_DIFF_FILE_PICKER_LIMIT;
     private int lastFileIndex = -1;
 
@@ -29,10 +30,18 @@ internal sealed partial class DiffToolbar : EditorToolbar
     internal event Action<bool>? AlignmentChanged;
     internal event Action<bool>? CollapseChanged;
 
-    internal DiffToolbar(Action choose, Action refresh, Action<int> move, Action<bool> navigate) : base("Diff toolbar")
+    internal DiffToolbar(Action choose, Action refresh, Action<int> move, Action<bool> navigate, Action openWindow) : base("Diff toolbar")
     {
-        SetLayout(new ScrollViewer { Content = row, HorizontalScrollMode = ScrollMode.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        var open = IconButton(new Button(), "Open in New Editor Window");
+        open.Content = new PathIcon { Width = 16, Height = 18, Data = (Geometry)Microsoft.UI.Xaml.Markup.XamlBindingHelper.ConvertValue(
+            typeof(Geometry), "F0 M0,6 L6,0 H16 V18 H0 Z M1.5,7.5 V16.5 H14.5 V1.5 H7.5 V7.5 Z M2.1,6 H6 V2.1 Z " +
+            "M4.5,13 L9.8,7.7 H7.8 V5.5 H13 V10.7 H10.8 V9.3 L6.1,14.6 Z") };
+        open.Click += (_, _) => openWindow();
+        var viewport = new ScrollViewer { Content = row, HorizontalScrollMode = ScrollMode.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        viewport.SizeChanged += (_, e) => files.MaxWidth = Math.Max(files.MinWidth, e.NewSize.Width / 2);
+        files.ItemTemplate = (DataTemplate)Resources["DiffFilePath"];
+        SetLayout(viewport, open);
 
         var sources = Group();
         row.Children.Add(sources);
@@ -105,7 +114,7 @@ internal sealed partial class DiffToolbar : EditorToolbar
     internal const string NoChangesTitle = "no changes";
 
     internal void Update(DiffBase basis, bool git, string[] branches, DiffFile[] entries, int current,
-        string documentName, bool aligned, bool collapsed, bool comparing, (ulong Added, ulong Removed) liveTotals, bool useLiveTotals, bool noChanges = false)
+        string? documentPath, bool aligned, bool collapsed, bool comparing, (ulong Added, ulong Removed) liveTotals, bool useLiveTotals, bool noChanges = false)
     {
         updating = true;
         try {
@@ -142,33 +151,25 @@ internal sealed partial class DiffToolbar : EditorToolbar
             }
             int visible = Math.Min(FileLimit, entries.Length);
             int last = Math.Max(visible - 1, current);
-            if (changed || last != lastFileIndex) {
+            string directory = Environment.CurrentDirectory;
+            if (changed || last != lastFileIndex || directory != displayedDirectory) {
                 displayedFiles = entries;
+                displayedDirectory = directory;
                 lastFileIndex = last;
                 files.Items.Clear();
                 var shown = entries[..visible];
                 if (visible > 0) shown[^1] = entries[last];
-                var duplicates = shown.GroupBy(file => Path.GetFileName(file.Path), StringComparer.OrdinalIgnoreCase)
-                    .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
-                string? shared = entries.Length == 0 ? null : Path.GetDirectoryName(entries[0].Path);
-                foreach (var entry in shown) {
-                    while (shared != null && Path.GetRelativePath(shared, entry.Path).StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
-                        shared = Path.GetDirectoryName(shared);
-                }
-                foreach (var file in shown) {
-                    string title = file.Title;
-                    if (duplicates.Contains(Path.GetFileName(file.Path)) && shared != null)
-                        title += " — " + Path.GetRelativePath(shared, Path.GetDirectoryName(file.Path)!);
-                    files.Items.Add(title);
-                }
+                foreach (var file in shown) files.Items.Add(file.TitleRelativeTo(directory));
                 if (entries.Length > visible) files.Items.Add(new ComboBoxItem {
                     Content = $"{entries.Length - visible} files clipped", IsEnabled = false
                 });
             }
-            files.PlaceholderText = noChanges ? NoChangesTitle : documentName + (entries.Length > 0 ? " (not in this diff)" : "");
+            string name = documentPath == null ? "Untitled" : Path.GetRelativePath(directory, documentPath);
+            files.PlaceholderText = noChanges ? NoChangesTitle : name + (entries.Length > 0 ? " (not in this diff)" : "");
             files.FontStyle = noChanges && current < 0 ? global::Windows.UI.Text.FontStyle.Italic : global::Windows.UI.Text.FontStyle.Normal;
             fileCountGroup.Visibility = entries.Length > 1 || noChanges ? Visibility.Visible : Visibility.Collapsed;
             files.SelectedIndex = Math.Min(current, FileLimit - 1);
+            ToolTipService.SetToolTip(files, files.SelectedItem as string ?? files.PlaceholderText);
             files.IsEnabled = previousFile.IsEnabled = nextFile.IsEnabled = entries.Length != 0;
             previousChange.IsEnabled = nextChange.IsEnabled = comparing;
             Align.IsChecked = aligned;

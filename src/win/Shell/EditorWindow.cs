@@ -384,21 +384,22 @@ internal sealed partial class EditorWindow : Window
     }
     private async Task<string?> PickDirectoryFile(string directory)
     {
+        var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(AppWindow.Id) { SuggestedFolder = directory };
+        picker.FileTypeFilter.Add("*");
 #if DEBUG
         if (PickDirectoryFileForTesting is { } pick) return await pick(directory);
 #endif
-        var picker = new Microsoft.Windows.Storage.Pickers.FileOpenPicker(AppWindow.Id) { SuggestedFolder = directory };
-        picker.FileTypeFilter.Add("*");
         return (await picker.PickSingleFileAsync())?.Path;
     }
     internal async Task OpenPath(string path, bool split = false, bool force = false, ulong? splitLines = null,
         bool vertical = false, EditorPane? targetPane = null, bool newWindow = false, string? linkFragment = null, bool reuseOpenDocument = false, bool splitBefore = true,
-        bool compareHere = false, long? diffGenerationAtOpen = null, CancellationToken cancellation = default, DiffFile[]? initialDiffFiles = null)
+        bool compareHere = false, long? diffGenerationAtOpen = null, CancellationToken cancellation = default, DiffFileSet? selectedDiff = null)
     {
         using var startup = Diagnostics.StartupPerformance.Measure("document.open");
         var old = targetPane ?? ActivePane;
         if (diffGenerationAtOpen.HasValue && diffGeneration != diffGenerationAtOpen) throw new OperationCanceledException();
-        using var diffOpen = !split && !newWindow && old == ActivePane && (initialDiffFiles != null || comparison != null && old == diffLive)
+        // A new base owns its listing and this open as one cancellable request.
+        using var diffOpen = selectedDiff == null && !split && !newWindow && old == ActivePane && comparison != null && old == diffLive
             ? StartDiffRequest(cancellation) : null;
         if (diffOpen != null) {
             cancellation = diffOpen.Token;
@@ -424,13 +425,19 @@ internal sealed partial class EditorWindow : Window
                 throw new InvalidOperationException("E37: No write since last change (add ! to override).");
         }
         var splitSource = split ? old : null;
-        ValidateTarget();
-        if (split) RequireSplitRoom(splitSource, vertical);
         path = ResolvePath(path);
         bool pickedFile = Directory.Exists(path);
+        // Checking split room runs WinUI layout. The shell picker can also
+        // dispatch window events as it opens. Let the submitting input turn
+        // finish and queue its effect before either can run another command.
+        if (pickedFile || split) await Task.Yield();
+        ValidateTarget();
+        if (split) RequireSplitRoom(splitSource, vertical);
         if (pickedFile)
         {
-            path = await PickDirectoryFile(path) ?? throw new OperationCanceledException();
+            string? selection = null;
+            await DeferExternalFileReviews(async () => { selection = await PickDirectoryFile(path); });
+            path = selection ?? throw new OperationCanceledException();
             ValidateTarget();
             path = ResolvePath(path);
             if (!File.Exists(path)) throw new FileNotFoundException("The selected file could not be found.", path);
@@ -499,14 +506,18 @@ internal sealed partial class EditorWindow : Window
         var opening = existingDocument == null
             ? Task.Run(() => new CoreDocument(source, path, recovered?.Format, recovered?.encoding ?? 0, recovered?.fileFormat ?? 0, markdownFormattedView), cancellation)
             : null;
-        var preparing = diffOpen == null ? null : PrepareDiff(path, diffBase,
-            initialDiffFiles ?? (diffBase.IsGit && diffFiles.Any(f => SamePath(f.Path, path)) ? diffFiles : null),
-            () => existingDocument is { Handle: not 0 } ? existingDocument.SavedSource() : bytes,
-            detectRepository: false, probeAvailability: true, cancellation);
+        async Task<PreparedDiff> PrepareComparison()
+        {
+            var selection = selectedDiff ?? await ListDiffFiles(path, diffBase,
+                diffBase.IsGit && diffFiles.Any(f => SamePath(f.Path, path)) ? diffFiles : null,
+                detectRepository: false, probeAvailability: true, cancellation);
+            return await PrepareDiff(path, selection, () => existingDocument is { Handle: not 0 } ? existingDocument.SavedSource() : bytes, cancellation);
+        }
+        var preparing = diffOpen != null || selectedDiff != null ? PrepareComparison() : null;
         try {
             await Task.WhenAll((Task?)opening ?? Task.CompletedTask, (Task?)preparing ?? Task.CompletedTask);
             ValidateTarget();
-            if (initialDiffFiles != null) {
+            if (preparing != null && diffLeft == null) {
                 AttachFirstBase(preparing!.Result, preferences.Get("diff", "lineNumbers", true));
                 await diffLeft!.Ready.WaitAsync(cancellation);
                 ValidateTarget();
@@ -653,16 +664,19 @@ internal sealed partial class EditorWindow : Window
     }
     private async Task<bool> ConfirmDiscard(EditorPane pane, bool closingWindow = false, bool alwaysReview = false)
     {
-        if (!pane.Document.IsDirty || (!alwaysReview && HasSurvivingView(pane.Document, pane, closingWindow))) return true;
+        var document = pane.Document;
+        if (!document.IsDirty || (!alwaysReview && HasSurvivingView(document, pane, closingWindow))) return true;
+        var reviewed = document.State;
         ContentDialogResult result;
 #if DEBUG
         if (CloseReviewDecisionForTesting is { } decide) result = await decide(pane.Document);
         else
 #endif
         result = await Dialog("Save changes?", $"Save changes to {pane.Document.Name} before closing?", "Save", "Cancel", "Discard");
-        if (result == ContentDialogResult.Secondary) return true;
+        if (closed || !Panes.Contains(pane) || pane.Document != document || document.Handle == 0) return false;
+        if (result == ContentDialogResult.Secondary) return document.State.document_revision == reviewed.document_revision;
         if (result != ContentDialogResult.Primary) return false;
-        await Save(pane); return !pane.Document.IsDirty;
+        return await Save(pane) && pane.Document == document && document.Handle != 0 && !document.IsDirty;
     }
     private async Task RequestClose()
     {
@@ -730,7 +744,10 @@ internal sealed partial class EditorWindow : Window
     internal void ChangeDirectory(EditorPane pane, string path)
     {
         Environment.CurrentDirectory = path;
-        foreach (var openPane in App.Instance.Windows.SelectMany(w => w.Panes)) openPane.RefreshStatusFilePath();
+        foreach (var window in App.Instance.Windows) {
+            foreach (var openPane in window.Panes) openPane.RefreshStatusFilePath();
+            if (window.diffEnabled) window.UpdateDiffToolbar();
+        }
         pane.SetMessage(Environment.CurrentDirectory);
     }
 
@@ -866,12 +883,14 @@ internal sealed partial class EditorWindow : Window
         var expected = old.State;
         if (!force && old.IsDirty && await Dialog("Revert to saved file?", "Unsaved changes will be discarded.", "Revert", "Cancel") != ContentDialogResult.Primary) throw new OperationCanceledException();
         byte[] bytes = reviewedBytes ?? await File.ReadAllBytesAsync(path);
-        if (old.Handle == 0 || old.FilePath != path || old.State.document_revision != expected.document_revision) return;
+        if (closed || !Panes.Contains(pane) || pane.Document != old || old.Handle == 0 ||
+            old.FilePath != path || old.State.document_revision != expected.document_revision) return;
         var replacement = NewDocument(bytes, path, expected.format, reloading: old);
         var prepared = new List<(EditorWindow Window, EditorPane Pane, CoreView? View)>();
         try
         {
             if (old.IsReadOnly) replacement.SetReadOnly(true);
+            replacement.InheritDiffMode(old);
             preferences.ObserveMarkdownView(replacement, error => App.Instance.Windows.SelectMany(w => w.Panes)
                 .FirstOrDefault(p => p.Document == replacement)?.Report(error));
             foreach (var w in App.Instance.Windows.ToArray())
@@ -885,15 +904,14 @@ internal sealed partial class EditorWindow : Window
         }
         // All new views are ready before publishing; keep the panes themselves
         // so focus, split sizes, and argument-list positions remain unchanged.
-        foreach (var entry in prepared) {
-            entry.Window.DiffPaneLeaving(entry.Pane);
-            entry.Pane.InstallReplacement(replacement, entry.View);
-        }
+        foreach (var entry in prepared)
+            entry.Window.InstallReloadedPane(entry.Pane, replacement, entry.View);
+        var baseline = savedSources[replacement];
         foreach (var w in prepared.Select(entry => entry.Window).Distinct())
         {
-            w.savedSources.Remove(old); w.savedSources[replacement] = SHA256.HashData(bytes); w.UpdateTitle();
+            w.savedSources.Remove(old); w.savedSources[replacement] = baseline; w.UpdateTitle();
             w.TrackExternalFile(replacement);
-            if (w.diffEnabled && w.ActivePane?.Document == replacement) w.Safe(() => w.LoadDiff());
+            if (w.diffEnabled && w.comparison == null && w.ActivePane?.Document == replacement) w.Safe(() => w.LoadDiff());
         }
         App.Instance.BlockingEdits.Replace(old, replacement);
         old.Dispose();

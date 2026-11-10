@@ -1,6 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using Viem.Windows.Core;
 
 namespace Viem.Windows.Shell;
@@ -15,7 +16,14 @@ internal sealed partial class EditorWindow
             FontSize = 12, Text = diffBase.Kind == Interop.Native.VIEM_DIFF_BASE_COMMIT ? diffBase.Argument : "" };
         var list = new ListBox { MaxHeight = 280 };
         AutomationProperties.SetName(list, "Recent commits");
-        foreach (var commit in commits) list.Items.Add(commit.ToString());
+        int hashWidth = commits.Length == 0 ? 0 : commits.Max(c => c.Short.Length);
+        foreach (var commit in commits) {
+            var row = new TextBlock();
+            row.Inlines.Add(new Run { Text = commit.Short.PadRight(hashWidth), FontFamily = input.FontFamily });
+            row.Inlines.Add(new Run { Text = "  " + commit.Title });
+            AutomationProperties.SetName(row, $"{commit.Short}  {commit.Title}");
+            list.Items.Add(row);
+        }
         list.SelectionChanged += (_, _) => {
             if (list.SelectedIndex >= 0) input.Text = commits[list.SelectedIndex].Hash;
         };

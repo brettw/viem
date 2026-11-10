@@ -103,6 +103,27 @@ final class EVDiffModeTests: XCTestCase {
         XCTAssertFalse(base.persistenceState.isDirty)
     }
 
+    func testReloadUpdatesTheComparisonAgainstItsExistingBase() throws {
+        let path = "/tmp/viem-diff.md"
+        let original = "first\nsecond\nthird\n"
+        let new = try backend(original, type: try XCTUnwrap(EVDocument.markdownType), filename: path)
+        let (live, base, left, comparison) = try begin(new, base: original)
+        let baseView = try XCTUnwrap(left.session)
+        let baseCore = base.core
+
+        try new.read(source: Data("first\nreplacement\nthird\n".utf8), typeName: EVDocument.codeType,
+                     origin: .reload(path: path))
+        XCTAssertIdentical(left.session, baseView)
+        XCTAssertEqual(base.core, baseCore)
+        XCTAssertEqual(try source(base), original)
+        XCTAssertEqual(comparison.lineTotals.added, 1)
+        XCTAssertEqual(comparison.lineTotals.removed, 1)
+        XCTAssertEqual(try backgroundLines(live), [1])
+        XCTAssertEqual(try backgroundLines(left), [1])
+        comparison.end()
+        XCTAssertEqual(new.sourceFormat, .markdown)
+    }
+
     func testMarkdownPreviewIsComparedAsCodeAndRestoredAfterwards() throws {
         let new = try backend("# Title\n\ntext\n", type: try XCTUnwrap(EVDocument.markdownType), filename: "/tmp/viem-diff.md")
         XCTAssertEqual(new.sourceFormat, .markdown)

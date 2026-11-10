@@ -64,7 +64,8 @@ internal sealed partial class EditorWindow
     {
         if (diffToolbar == null) {
             diffToolbar = new(() => Safe(ChooseDiffFile), () => Safe(RefreshDiff), step => Safe(() => MoveDiffFile(step)),
-                next => Safe(() => { NavigateChange(next); return Task.CompletedTask; }));
+                next => Safe(() => { NavigateChange(next); return Task.CompletedTask; }),
+                () => Safe(() => { if (ActivePane is { } pane) NewWindow(pane.Document); return Task.CompletedTask; }));
             diffToolbar.BaseSelected += choice => Safe(() => ChooseDiffBase(choice));
             diffToolbar.FileSelected += index => Safe(() => SelectDiffFile(index));
             diffToolbar.AlignmentChanged += value => Safe(() => { SetDiffAlignment(value); return Task.CompletedTask; });
@@ -136,6 +137,27 @@ internal sealed partial class EditorWindow
         if (diffLive != pane) return;
         diffRequest?.Cancel();
         DetachDiff();
+    }
+
+    private void InstallReloadedPane(EditorPane pane, CoreDocument document, CoreView? view)
+    {
+        if (pane != diffLive) {
+            pane.InstallReplacement(document, view);
+            return;
+        }
+        ++diffGeneration;
+        diffRequest?.Cancel();
+        branchRequest?.Cancel();
+        // A successful disk read also means a formerly deleted file exists.
+        deletedSide = false;
+        pane.InstallReplacement(document, view, deferPresentation: true);
+        if (comparison != null) {
+            comparison.ReplaceLiveView(view!);
+            syncedRevision = 0;
+            pane.Run(() => SyncDiff());
+        }
+        pane.FinishReplacement();
+        UpdateDiffToolbar();
     }
 
     private void ClearDiffCache()
@@ -227,8 +249,10 @@ internal sealed partial class EditorWindow
         public void Dispose() { if (!Installed) Document.Dispose(); }
     }
 
-    private async Task<PreparedDiff> PrepareDiff(string? path, DiffBase basis, DiffFile[]? listedFiles,
-        Func<byte[]?>? savedSource, bool detectRepository, bool probeAvailability, CancellationToken token)
+    internal sealed record DiffFileSet(DiffBase Basis, DiffFile[] Files, bool Git);
+
+    private async Task<DiffFileSet> ListDiffFiles(string? path, DiffBase basis, DiffFile[]? listedFiles,
+        bool detectRepository, bool probeAvailability, CancellationToken token)
     {
         bool git = diffGit;
         var files = listedFiles ?? [];
@@ -253,6 +277,12 @@ internal sealed partial class EditorWindow
         token.ThrowIfCancellationRequested();
         if (!basis.IsGit) files = basis.Kind == VIEM_DIFF_BASE_LAST_SAVED && path != null ? [new(path, path, VIEM_DIFF_FILE_MODIFIED)] : [];
         if (singleFileDiff) files = files.Where(file => SamePath(file.Path, path)).ToArray();
+        return new(basis, files, git);
+    }
+
+    private async Task<PreparedDiff> PrepareDiff(string? path, DiffFileSet selection, Func<byte[]?>? savedSource, CancellationToken token)
+    {
+        var (basis, files, git) = selection;
         var entry = files.FirstOrDefault(f => SamePath(f.Path, path));
         string basePath = basis.Kind == VIEM_DIFF_BASE_FILE ? basis.Argument : entry?.BasePath ?? path ?? "";
         byte[] bytes;
@@ -273,11 +303,11 @@ internal sealed partial class EditorWindow
     }
 
     private async Task LoadDiff(bool detectRepository = false, bool refresh = false, DiffBase? requested = null,
-        DiffFile[]? listedFiles = null, bool probeAvailability = false)
+        DiffFile[]? listedFiles = null, bool probeAvailability = false, DiffRequest? folderOpen = null)
     {
         if (!diffEnabled || ActivePane is not { } live) return;
-        using var request = StartDiffRequest();
-        var token = request.Token;
+        using var request = folderOpen == null ? StartDiffRequest() : null;
+        var token = (folderOpen ?? request!).Token;
         try {
             if (diffLive != live) {
                 DetachDiff();
@@ -285,14 +315,33 @@ internal sealed partial class EditorWindow
             }
             UpdateDiffToolbar();
             var basis = requested ?? diffBase;
-            Func<byte[]?>? saved = refresh ? null : live.Document.SavedSource;
-            using var prepared = await PrepareDiff(live.Document.FilePath, basis, listedFiles, saved, detectRepository, probeAvailability, token);
+            var original = live.Document;
+            var selection = await ListDiffFiles(original.FilePath, basis, listedFiles, detectRepository, probeAvailability, token);
+            token.ThrowIfCancellationRequested();
+            if (live != ActivePane || live.Document != original) return;
+            if ((detectRepository || requested != null) && selection.Files.Length > 0
+                && !selection.Files.Any(f => SamePath(f.Path, original.FilePath))) {
+                if (!await ConfirmDiscard(live, alwaysReview: true)) {
+                    if (!token.IsCancellationRequested && comparison == null) EndDiff();
+                    return;
+                }
+                token.ThrowIfCancellationRequested();
+                if (live != ActivePane || live.Document != original) return;
+                ClearDiffCache();
+                await OpenPath(selection.Files[0].Path, targetPane: live, force: true, compareHere: true,
+                    diffGenerationAtOpen: diffGeneration, cancellation: token, selectedDiff: selection);
+                return;
+            }
+            if (requested != null) ClearDiffCache();
+            Func<byte[]?>? saved = refresh ? null : original.SavedSource;
+            using var prepared = await PrepareDiff(original.FilePath, selection, saved, token);
             await live.Ready.WaitAsync(token);
             token.ThrowIfCancellationRequested();
             await InstallDiff(live, prepared, token);
-        } catch when (token.IsCancellationRequested) { }
+        } catch when (folderOpen == null && token.IsCancellationRequested) { }
         catch {
-            if (comparison == null) EndDiff();
+            // The folder command rolls back its initial window as well as its comparison.
+            if (comparison == null && folderOpen == null) EndDiff();
             throw;
         } finally {
             if (!closed && !token.IsCancellationRequested) UpdateDiffToolbar();
@@ -611,7 +660,7 @@ internal sealed partial class EditorWindow
     {
         menusDirty = true;
         if (diffEnabled) diffToolbar?.Update(diffBase, diffGit, diffBranches, diffFiles, CurrentDiffFile,
-            ActivePane?.Document.Name ?? "Untitled", diffAligned, diffCollapsed, comparison != null, comparison?.LineTotals ?? default,
+            ActivePane?.Document.FilePath, diffAligned, diffCollapsed, comparison != null, comparison?.LineTotals ?? default,
             UseLiveTotals, noChanges: diffBase.IsGit && diffScope != null && diffFiles.Length == 0);
     }
 
@@ -622,7 +671,7 @@ internal sealed partial class EditorWindow
     {
         if (choice.Kind == VIEM_DIFF_BASE_COMMIT && choice.Argument.Length == 0) {
             UpdateDiffToolbar();
-            if ((ActivePane?.Document.FilePath ?? diffScope) is not { } path) return;
+            if ((diffScope ?? ActivePane?.Document.FilePath) is not { } path) return;
             branchRequest?.Cancel();
             using var request = new CancellationTokenSource();
             branchRequest = request;
@@ -635,7 +684,7 @@ internal sealed partial class EditorWindow
             choice = new(VIEM_DIFF_BASE_COMMIT, commit.Hash, commit.Short);
         }
         if (choice.Kind == VIEM_DIFF_BASE_BRANCH && choice.Argument.Length == 0) {
-            if (ActivePane?.Document.FilePath is not { } path) return;
+            if ((diffScope ?? ActivePane?.Document.FilePath) is not { } path) return;
             branchRequest?.Cancel();
             using var request = new CancellationTokenSource();
             branchRequest = request;
@@ -648,7 +697,6 @@ internal sealed partial class EditorWindow
             } finally { if (branchRequest == request) branchRequest = null; }
             return;
         }
-        ClearDiffCache();
         await LoadDiff(requested: choice);
     }
     private async Task ChooseDiffFile()
@@ -739,10 +787,9 @@ internal sealed partial class EditorWindow
                 target.diffBase = basis;
                 target.diffLive = target.ActivePane;
                 // A folder without changes shows an empty buffer and lists none.
-                var opening = files.Length == 0 ? target.LoadDiff(requested: basis, listedFiles: files)
-                    : target.OpenPath(files[0].Path, compareHere: true, cancellation: request.Token, initialDiffFiles: files);
+                using var folderOpen = target.StartDiffRequest(request.Token);
                 generation = target.diffGeneration;
-                await opening;
+                await target.LoadDiff(requested: basis, listedFiles: files, folderOpen: folderOpen);
             } catch {
                 if (generation != target.diffGeneration) throw;
                 if (target.diffEnabled && target.comparison == null && target.diffScope == path) target.EndDiff();

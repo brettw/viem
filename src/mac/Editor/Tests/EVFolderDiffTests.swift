@@ -153,6 +153,14 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertTrue(mode.toolbar.fileCountGroup.isHidden)
         XCTAssertEqual(mode.toolbar.addedLines.stringValue, "+1")
         XCTAssertEqual(mode.toolbar.removedLines.stringValue, "–1")
+        let document = try XCTUnwrap(target.activeDocument)
+        mode.toolbar.openWindowButton.performClick(nil)
+        let regular = try XCTUnwrap(document.windowControllers.compactMap { $0 as? EVDocumentWindowController }
+            .first { $0 !== target })
+        windows.append(regular)
+        XCTAssertTrue(regular.activeDocument === document)
+        XCTAssertFalse(regular.diffMode?.isEnabled ?? false)
+        XCTAssertTrue(mode.isEnabled)
     }
 
     func testDiffLaunchUsesCallerDirectoryAndOpensEachDirectorySeparately() throws {
@@ -287,6 +295,63 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertFalse(placeholder.diffMode?.isEnabled ?? false)
     }
 
+    func testChangingBaseFromAnEmptyFolderComparisonReviewsThePlaceholderBeforeOpeningTheFirstFile() throws {
+        let root = try repository()
+        let folder = root.appendingPathComponent("clean")
+        let file = folder.appendingPathComponent("c.txt")
+        try Data("staged\n".utf8).write(to: file)
+        try run(["add", "clean/c.txt"], in: root)
+        let source = try window(text: nil)
+        let target = try XCTUnwrap(diff(folder, from: source))
+        let mode = try XCTUnwrap(target.diffMode)
+        let placeholder = try XCTUnwrap(target.activeDocument)
+        XCTAssertTrue(mode.files.isEmpty)
+        XCTAssertTrue(mode.toolbar.basePopup.itemTitles.contains("HEAD"))
+        XCTAssertTrue(mode.toolbar.basePopup.itemTitles.contains("Branch…"))
+        let surface = try XCTUnwrap(target.editorSurface as? EVEditorSurfaceController)
+        surface.editorView.insertText("ikeep", replacementRange: NSRange(location: NSNotFound, length: 0))
+        XCTAssertTrue(placeholder.editorBackend.persistenceState.isDirty)
+        let cancelled = expectation(description: "save review cancelled")
+        placeholder.closeReviewDecisionHandler = { reply in reply(false); cancelled.fulfill() }
+        mode.setBase(.head)
+        wait(for: [cancelled], timeout: 20)
+        XCTAssertTrue(target.activeDocument === placeholder)
+        XCTAssertTrue(placeholder.editorBackend.persistenceState.isDirty)
+        XCTAssertEqual(mode.base, .unstaged)
+        XCTAssertTrue(mode.files.isEmpty)
+        XCTAssertEqual(mode.toolbar.basePopup.titleOfSelectedItem, "Unstaged")
+        placeholder.closeReviewDecisionHandler = { reply in reply(true) }
+        let presented = expectation(description: "first file against HEAD")
+        mode.didPresent = { if mode.base == .head { presented.fulfill() } }
+        mode.setBase(.head)
+        wait(for: [presented], timeout: 20)
+        XCTAssertEqual(mode.currentFileIndex, 0)
+        XCTAssertEqual(target.activeDocument?.fileURL?.standardizedFileURL, file.standardizedFileURL)
+        XCTAssertEqual(mode.toolbar.basePopup.titleOfSelectedItem, "HEAD")
+    }
+
+    func testDiscardCannotAbandonANewerRevisionDuringDiffFileReview() throws {
+        let root = try repository()
+        let source = try window(text: nil)
+        let target = try XCTUnwrap(diff(root, from: source))
+        let mode = try XCTUnwrap(target.diffMode)
+        let document = try XCTUnwrap(target.activeDocument)
+        let surface = try XCTUnwrap(target.editorSurface as? EVEditorSurfaceController)
+        let selection = NSRange(location: NSNotFound, length: 0)
+        surface.editorView.insertText("ikeep", replacementRange: selection)
+        let reviewed = expectation(description: "reviewed before opening another file")
+        document.closeReviewDecisionHandler = { reply in
+            surface.editorView.insertText(" editing", replacementRange: selection)
+            reply(true)
+            reviewed.fulfill()
+        }
+        target.argumentDocumentOpener = { _, _ in XCTFail("the stale discard must not open a replacement") }
+        mode.moveFile(by: 1)
+        wait(for: [reviewed], timeout: 20)
+        XCTAssertTrue(target.activeDocument === document)
+        XCTAssertTrue(document.editorBackend.persistenceState.isDirty)
+    }
+
     func testTheFilePopupListsSameNamedFilesSeparatelyAndFollowsTheShownFile() throws {
         let root = try repository()
         for folder in ["one", "two"] {
@@ -305,8 +370,9 @@ final class EVFolderDiffTests: XCTestCase {
         let popup = mode.toolbar.filePopup
         XCTAssertEqual(popup.numberOfItems, mode.files.count, "one item per listed file")
         XCTAssertEqual(Set(popup.itemTitles).count, popup.numberOfItems, "every title is distinct")
-        XCTAssertTrue(popup.itemTitles.contains("same.txt — one"))
-        XCTAssertTrue(popup.itemTitles.contains("same.txt — two"))
+        for folder in ["one", "two"] {
+            XCTAssertTrue(popup.itemTitles.contains(EVStatusFilePath.relative(root.appendingPathComponent("\(folder)/same.txt"))))
+        }
         for _ in 0..<mode.files.count {
             let presented = expectation(description: "presented")
             mode.didPresent = { presented.fulfill() }
@@ -394,7 +460,7 @@ final class EVFolderDiffTests: XCTestCase {
         XCTAssertNil(mode.scope)
         XCTAssertTrue(mode.files.isEmpty)
         XCTAssertFalse(mode.toolbar.filePopup.isEnabled)
-        XCTAssertEqual(mode.toolbar.filePopup.titleOfSelectedItem, document.fileURL?.lastPathComponent)
+        XCTAssertEqual(mode.toolbar.filePopup.titleOfSelectedItem, EVStatusFilePath.relative(try XCTUnwrap(document.fileURL)))
     }
 
     func testTheMenuNamesTheDirectoryClippedFromTheLeft() {

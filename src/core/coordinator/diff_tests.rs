@@ -145,6 +145,26 @@ fn undo_recomputes_the_diff() {
 }
 
 #[test]
+fn reloading_the_live_document_preserves_unaffected_base_layout() {
+    let original = lines(100, |line| Some(format!("line {line}")));
+    let (mut base, base_view) = core(&original);
+    let (mut live, live_view) = core(&original);
+    let mut session = DiffSession::new(base.document(), live.document(), false);
+    session.sync(&mut base, base_view, &mut live, live_view).unwrap();
+    base.materialize_requested_viewport(base_view, 0., f32::MAX).unwrap();
+    base.materialize_requested_viewport(base_view, 0., 0.).unwrap();
+    let distant_line_cached = |base: &TestCore| base.layout(base_view).unwrap()
+        .regional_cached_ranges().iter().any(|range| range.contains(&99));
+    assert!(distant_line_cached(&base));
+
+    let (mut reloaded, reloaded_view) = core(&original.replacen("line 1\n", "new\n", 1));
+    assert_eq!(session.sync(&mut base, base_view, &mut reloaded, reloaded_view).unwrap(), DiffSync::Full);
+    assert_eq!(background_lines(&base, base_view), vec![1]);
+    assert_eq!(background_lines(&reloaded, reloaded_view), vec![1]);
+    assert!(distant_line_cached(&base));
+}
+
+#[test]
 fn corresponding_tops_follow_lines_through_the_diff() {
     let lines: Vec<String> = (0..200).map(|n| format!("line {n}")).collect();
     let mut base_lines = lines.clone();

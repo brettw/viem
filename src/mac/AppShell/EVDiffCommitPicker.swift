@@ -12,9 +12,11 @@ final class EVDiffCommitPicker: NSObject, NSTableViewDataSource, NSTableViewDele
   let input = NSTextField()
   private let table = NSTableView()
   private let commits: [EVDiffCommit]
+  private let hashWidth: Int
 
   init(_ commits: [EVDiffCommit]) {
     self.commits = commits
+    hashWidth = commits.map(\.short.count).max() ?? 0
     super.init()
     alert.messageText = "Choose a commit"
     alert.addButton(withTitle: "Compare")
@@ -48,7 +50,14 @@ final class EVDiffCommitPicker: NSObject, NSTableViewDataSource, NSTableViewDele
 
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
     let commit = commits[row]
-    return NSTextField(labelWithString: "\(commit.short)  \(commit.title)")
+    let hash = commit.short.padding(toLength: hashWidth, withPad: " ", startingAt: 0)
+    let label = NSTextField(labelWithString: "\(hash)  \(commit.title)")
+    let text = NSMutableAttributedString(attributedString: label.attributedStringValue)
+    let size = label.font?.pointSize ?? NSFont.systemFontSize
+    text.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: size, weight: .regular),
+                      range: NSRange(location: 0, length: hashWidth))
+    label.attributedStringValue = text
+    return label
   }
 
   func tableViewSelectionDidChange(_ notification: Notification) {

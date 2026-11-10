@@ -8,6 +8,7 @@
 use super::eol::{checkout_line_endings, EolAttributes};
 use super::process::{run, CancellationToken, ProcessLimits, ProcessOutput};
 use super::{BaseError, BaseKind, BaseText, ChangedFile, FileChange};
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::path::{Component, Path, PathBuf};
 
@@ -71,6 +72,37 @@ impl GitRepository {
         &self.root
     }
 
+    /// Merge open buffers using Git's working-tree paths, then give their entries
+    /// the names used by the editor. A directory alias must not create a second
+    /// entry or hide the fact that the currently open file is already in the list.
+    pub fn files_for_document(
+        &self, kind: &BaseKind, current: &Path, unsaved: &[PathBuf], scope: Option<&Path>,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<ChangedFile>, BaseError> {
+        let mut files = self.changed_files(kind, scope, cancellation)?;
+        let canonical_root = std::fs::canonicalize(&self.root).map_err(|error| BaseError::Io(error.to_string()))?;
+        let canonical_scope = scope.map(std::fs::canonicalize).transpose().map_err(|error| BaseError::Io(error.to_string()))?;
+        let git_path = |path: &Path| {
+            // Resolve only the parent. A tracked symlink has its own blob in Git.
+            let parent = canonical_through_ancestors(path.parent()?)?;
+            if canonical_scope.as_ref().is_some_and(|scope| !parent.starts_with(scope)) { return None; }
+            Some(self.root.join(parent.strip_prefix(&canonical_root).ok()?).join(path.file_name()?))
+        };
+        let mut names: BTreeMap<PathBuf, &Path> = BTreeMap::new();
+        for path in unsaved {
+            if let Some(key) = git_path(path) { names.insert(key, path); }
+        }
+        super::include_unsaved(&mut files, names.keys().cloned());
+        if let Some(key) = git_path(current) { names.insert(key, current); }
+        for file in &mut files {
+            if let Some(&name) = names.get(&file.path) {
+                if file.base_path == file.path { file.base_path = name.to_owned(); }
+                file.path = name.to_owned();
+            }
+        }
+        Ok(files)
+    }
+
     /// `file` relative to the repository root, with `/` separators.
     pub fn relative_path(&self, file: &Path) -> Result<String, BaseError> {
         let root = std::fs::canonicalize(&self.root).map_err(|error| BaseError::Io(error.to_string()))?;
@@ -131,10 +163,14 @@ impl GitRepository {
         limits: ProcessLimits,
         cancellation: &CancellationToken,
     ) -> Result<BaseText, BaseError> {
+        let branch_ref;
         let revision = match kind {
             BaseKind::Unstaged => "",
             BaseKind::Head => "HEAD",
-            BaseKind::Branch(branch) => validated_revision(branch)?,
+            BaseKind::Branch(branch) => {
+                branch_ref = local_branch_ref(branch)?;
+                &branch_ref
+            }
             BaseKind::Commit(hash) => full_hash(hash)?,
             _ => return Err(BaseError::Unavailable("not a git base".into())),
         };
@@ -200,7 +236,7 @@ impl GitRepository {
         let object = match kind {
             BaseKind::Unstaged => self.index_object(&relative, cancellation)?,
             BaseKind::Head => self.tree_object("HEAD", &relative, cancellation)?,
-            BaseKind::Branch(branch) => self.tree_object(validated_revision(branch)?, &relative, cancellation)?,
+            BaseKind::Branch(branch) => self.tree_object(&local_branch_ref(branch)?, &relative, cancellation)?,
             BaseKind::Commit(hash) => self.tree_object(full_hash(hash)?, &relative, cancellation)?,
             _ => return Err(BaseError::Unavailable("not a git base".into())),
         };
@@ -230,10 +266,14 @@ impl GitRepository {
     ) -> Result<Vec<ChangedFile>, BaseError> {
         let folder = scope.map(|folder| self.relative_folder(folder)).transpose()?.flatten();
         let mut arguments = vec!["diff", "--raw", "--numstat", "-z", "--no-ext-diff", "--no-textconv"];
+        let branch_ref;
         match kind {
             BaseKind::Unstaged => {}
             BaseKind::Head => arguments.push("HEAD"),
-            BaseKind::Branch(branch) => arguments.push(validated_revision(branch)?),
+            BaseKind::Branch(branch) => {
+                branch_ref = local_branch_ref(branch)?;
+                arguments.push(&branch_ref);
+            }
             BaseKind::Commit(hash) => arguments.push(full_hash(hash)?),
             _ => return Err(BaseError::Unavailable("not a git base".into())),
         }
@@ -290,10 +330,10 @@ impl GitRepository {
         Ok(commits)
     }
 
-    /// Local and remote branch names for the Branch base.
+    /// Local branch names for the Branch base, including branches checked out in other worktrees.
     pub fn branches(&self, cancellation: &CancellationToken) -> Result<Vec<String>, BaseError> {
         let output = self.git(
-            &["for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes"],
+            &["branch", "--list", "--no-color", "--format=%(refname)"],
             cancellation,
         )?;
         if !output.success {
@@ -301,7 +341,7 @@ impl GitRepository {
         }
         Ok(String::from_utf8_lossy(&output.stdout)
             .lines()
-            .filter(|name| !name.is_empty() && !name.ends_with("/HEAD"))
+            .filter_map(|reference| reference.strip_prefix("refs/heads/"))
             .map(str::to_owned)
             .collect())
     }
@@ -444,13 +484,12 @@ fn command_error(output: ProcessOutput) -> BaseError {
     }
 }
 
-/// A branch or revision name that can't be mistaken for an option or a
-/// `revision:path` expression.
-fn validated_revision(name: &str) -> Result<&str, BaseError> {
+/// Qualify local branches so a tag with the same name cannot supply the base.
+fn local_branch_ref(name: &str) -> Result<String, BaseError> {
     if name.is_empty() || name.starts_with('-') || name.contains([':', '\0', '\n']) || name.contains("..") {
         return Err(BaseError::Unavailable(format!("{name:?} is not a branch name")));
     }
-    Ok(name)
+    Ok(format!("refs/heads/{name}"))
 }
 
 fn full_hash(hash: &str) -> Result<&str, BaseError> {
