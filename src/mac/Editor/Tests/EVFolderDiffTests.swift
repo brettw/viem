@@ -9,6 +9,9 @@ import XCTest
 final class EVFolderDiffTests: XCTestCase {
     private var windows: [EVDocumentWindowController] = []
     private var documents: [EVDocument] = []
+    /// Folder diffs a test started. Teardown cancels them, so one that
+    /// finishes after a timeout can't reach the real opener or alert.
+    private var folderDiffs: [Task<Void, Never>] = []
 
     override func setUp() {
         super.setUp()
@@ -36,6 +39,8 @@ final class EVFolderDiffTests: XCTestCase {
     }
 
     override func tearDown() {
+        for task in folderDiffs { task.cancel() }
+        folderDiffs = []
         EVDocumentWindowController.folderDiffUntitledDocument = nil
         EVDocumentWindowController.folderDiffDidOpen = nil
         EVDocumentWindowController.folderDiffReport = nil
@@ -109,7 +114,7 @@ final class EVFolderDiffTests: XCTestCase {
             XCTFail("reported instead of opening: \(message)")
             opened.fulfill()
         }
-        EVDocumentWindowController.diffFolder(folder, from: window)
+        folderDiffs.append(EVDocumentWindowController.diffFolder(folder, from: window))
         return (opened, { [unowned self] in
             if let target, !self.windows.contains(where: { $0 === target }) { self.windows.append(target) }
             return target
@@ -260,9 +265,25 @@ final class EVFolderDiffTests: XCTestCase {
         let outside = FileManager.default.temporaryDirectory.appendingPathComponent("viem-no-repo-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: outside) }
-        EVDocumentWindowController.diffFolder(outside, from: placeholder)
+        folderDiffs.append(EVDocumentWindowController.diffFolder(outside, from: placeholder))
         wait(for: [reported], timeout: 20)
         XCTAssertEqual(reports.count, 1)
+        XCTAssertFalse(placeholder.diffMode?.isEnabled ?? false)
+    }
+
+    func testACancelledFolderDiffNeitherOpensNorReports() async throws {
+        let root = try repository()
+        let placeholder = try window(text: nil)
+        EVDocumentWindowController.folderDiffDidOpen = { _ in XCTFail("a cancelled folder diff opened a window") }
+        EVDocumentWindowController.folderDiffReport = { XCTFail("a cancelled folder diff reported: \($0)") }
+        var completions: [EVDocumentWindowController?] = []
+        let task = EVDocumentWindowController.diffFolder(root.appendingPathComponent("sub"), from: placeholder) {
+            completions.append($0)
+        }
+        task.cancel()
+        await task.value
+        XCTAssertEqual(completions.count, 1)
+        XCTAssertNil(completions.first ?? nil)
         XCTAssertFalse(placeholder.diffMode?.isEnabled ?? false)
     }
 

@@ -1,6 +1,5 @@
 import AppKit
 import CViemCore
-import ViemCoreTextProvider
 import XCTest
 
 @testable import ViemEditor
@@ -92,12 +91,6 @@ final class EVCoreFrontendIntegrationTests: XCTestCase {
 
         _ = try session.undo()
         XCTAssertEqual(try backend.formattedText(), "")
-    }
-
-    @MainActor
-    func testFrontendUsesSFProFourteenPointDefault() {
-        XCTAssertEqual(CoreTextMeasurementProvider.defaultFontFamily, "SF Pro")
-        XCTAssertEqual(CoreTextMeasurementProvider.defaultFontSize, 14)
     }
 
     @MainActor

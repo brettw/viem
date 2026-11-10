@@ -20,6 +20,17 @@ impl ElidedLines {
         &self.runs
     }
 
+    /// The first and last lines of a document of `count` lines that are not
+    /// hidden, if any.
+    pub(crate) fn shown_ends(&self, count: usize) -> (Option<usize>, Option<usize>) {
+        if count == 0 {
+            return (None, None);
+        }
+        let first = self.run_at(0).map_or(0, |run| run.end);
+        let last = self.run_at(count - 1).map_or(Some(count - 1), |run| run.start.checked_sub(1));
+        (Some(first).filter(|line| *line < count), last)
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.runs.is_empty()
     }

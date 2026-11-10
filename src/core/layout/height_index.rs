@@ -100,10 +100,82 @@ pub enum ViewHeightIndexError {
 /// changes only the logarithmic split/join paths; following entries are not
 /// renumbered or shifted. Clones share immutable nodes, so staging a viewport
 /// update does not copy the heights learned while visiting earlier regions.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ViewHeightIndex {
     root: Link,
     estimated_line_height: f64,
+    /// The lines whose heights changed since [`Self::take_changes`], while a
+    /// consumer tracks them.
+    changes: Option<HeightChanges>,
+}
+
+impl PartialEq for ViewHeightIndex {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root && self.estimated_line_height == other.estimated_line_height
+    }
+}
+
+/// Hard lines whose heights changed, in an index's current numbering: sorted,
+/// disjoint ranges, or every line. A range is empty where lines were removed.
+/// At most [`HeightChanges::LIMIT`] ranges are kept; beyond that the closest
+/// ones merge, so a consumer revisits some unchanged lines instead.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct HeightChanges {
+    pub(crate) ranges: Vec<Range<usize>>,
+    pub(crate) all: bool,
+}
+
+impl HeightChanges {
+    const LIMIT: usize = 32;
+
+    pub(crate) fn is_empty(&self) -> bool {
+        !self.all && self.ranges.is_empty()
+    }
+
+    fn everything() -> Self {
+        Self { ranges: Vec::new(), all: true }
+    }
+
+    /// `removed` lines were replaced by `inserted` lines with new heights.
+    fn replace(&mut self, removed: Range<usize>, inserted: usize) {
+        if self.all {
+            return;
+        }
+        let removed_count = removed.end - removed.start;
+        let shift = |line: usize| line - removed_count + inserted;
+        let mut ranges = Vec::with_capacity(self.ranges.len() + 1);
+        for range in self.ranges.drain(..) {
+            if range.end <= removed.start {
+                ranges.push(range);
+            } else if range.start >= removed.end {
+                ranges.push(shift(range.start)..shift(range.end));
+            } else {
+                if range.start < removed.start {
+                    ranges.push(range.start..removed.start);
+                }
+                if range.end > removed.end {
+                    ranges.push(shift(removed.end)..shift(range.end));
+                }
+            }
+        }
+        ranges.push(removed.start..removed.start + inserted);
+        ranges.sort_by_key(|range| (range.start, range.end));
+        let mut merged: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
+        for range in ranges {
+            match merged.last_mut() {
+                Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                _ => merged.push(range),
+            }
+        }
+        while merged.len() > Self::LIMIT {
+            let closest = (1..merged.len())
+                .min_by_key(|&index| merged[index].start - merged[index - 1].end)
+                .expect("more than one range");
+            let next = merged.remove(closest);
+            merged[closest - 1].end = next.end;
+        }
+        self.ranges = merged;
+    }
 }
 
 impl ViewHeightIndex {
@@ -116,6 +188,7 @@ impl ViewHeightIndex {
         let mut result = Self {
             root: None,
             estimated_line_height,
+            changes: None,
         };
         if hard_line_count > 0 {
             let run = HeightRun {
@@ -139,6 +212,31 @@ impl ViewHeightIndex {
 
     pub fn estimated_line_height(&self) -> f64 {
         self.estimated_line_height
+    }
+
+    /// Start or stop recording which lines change height. Recording starts
+    /// with every line changed, since its consumer has seen none of them.
+    pub(crate) fn track_changes(&mut self, track: bool) {
+        match (track, self.changes.is_some()) {
+            (true, false) => self.changes = Some(HeightChanges::everything()),
+            (false, true) => self.changes = None,
+            _ => {}
+        }
+    }
+
+    /// The lines whose heights changed since the last call, while tracking.
+    /// Retiring certainty alone changes no height.
+    pub(crate) fn take_changes(&mut self) -> HeightChanges {
+        self.changes.as_mut().map(std::mem::take).unwrap_or_default()
+    }
+
+    /// The runs of equal height covering `range`, clipped to it and in
+    /// order. O(log n + k) for `k` runs.
+    pub(crate) fn runs_in(&self, range: Range<usize>) -> Result<Vec<(Range<usize>, f64)>, ViewHeightIndexError> {
+        self.validate_range(&range)?;
+        let mut runs: Vec<(Range<usize>, f64)> = Vec::new();
+        collect_runs_in(&self.root, 0, &range, &mut runs);
+        Ok(runs)
     }
 
     pub fn total_height(&self) -> HeightMeasurement {
@@ -440,17 +538,35 @@ impl ViewHeightIndex {
         }
         self.root = balanced_tree_from_runs(&merged);
         self.estimated_line_height = height;
+        if let Some(changes) = self.changes.as_mut() {
+            *changes = HeightChanges::everything();
+        }
         Ok(())
     }
 
-    /// Estimate one line not yet measured at `height`. A measured line keeps
-    /// its exact height. O(log n).
+    /// Estimate one line still at this index's estimate at `height`. A line
+    /// that is measured, or retains an earlier measurement, keeps its height.
+    /// O(log n).
     pub(crate) fn estimate_line(&mut self, hard_line: usize, height: f64) -> Result<(), ViewHeightIndexError> {
         validate_height(height)?;
         let range = hard_line..hard_line.checked_add(1).ok_or(ViewHeightIndexError::LineCountOverflow)?;
-        if self.range_height(range.clone())?.is_exact() {
+        let current = self.range_height(range.clone())?;
+        if current.is_exact() || current.height().to_bits() != self.estimated_line_height.to_bits() {
             return Ok(());
         }
+        self.validate_replacement(&range, 1, height)?;
+        self.replace_range(range, Some(Node::new(HeightRun { line_count: 1, height, extent: height, exact: false })))
+    }
+
+    /// Grow or shrink one line by `delta`, keeping the rest of its height, as
+    /// an estimate: margin added to or removed from a line keeps what was
+    /// learned about its text. A line that would lose all its height takes
+    /// the index's estimate instead. O(log n).
+    pub(crate) fn adjust_line(&mut self, hard_line: usize, delta: f64) -> Result<(), ViewHeightIndexError> {
+        let range = hard_line..hard_line.checked_add(1).ok_or(ViewHeightIndexError::LineCountOverflow)?;
+        let height = self.range_height(range.clone())?.height() + delta;
+        let height = if height > 0.0 { height } else { self.estimated_line_height };
+        validate_height(height)?;
         self.validate_replacement(&range, 1, height)?;
         self.replace_range(range, Some(Node::new(HeightRun { line_count: 1, height, extent: height, exact: false })))
     }
@@ -562,12 +678,16 @@ impl ViewHeightIndex {
         let root = self.root.clone();
         let (left, remainder) = split(root, range.start);
         let (_, right) = split(remainder, range.end - range.start);
+        let inserted = subtree_lines(&replacement);
         let joined = join(left, replacement);
         let next = join(joined, right);
         if !subtree_extent(&next).is_finite() {
             return Err(ViewHeightIndexError::HeightOverflow);
         }
         self.root = next;
+        if let Some(changes) = self.changes.as_mut() {
+            changes.replace(range, inserted);
+        }
         Ok(())
     }
 
@@ -743,6 +863,29 @@ fn collect_runs(link: &Link, stale: bool, runs: &mut Vec<HeightRun>) {
     run.exact &= !stale;
     runs.push(run);
     collect_runs(&node.right, stale_below, runs);
+}
+
+/// Append the parts of `link`'s runs inside `range`, where `link` starts at
+/// line `offset`, merging equal neighbours.
+fn collect_runs_in(link: &Link, offset: usize, range: &Range<usize>, runs: &mut Vec<(Range<usize>, f64)>) {
+    let Some(node) = link else { return };
+    let end = offset + node.subtree_lines;
+    if end <= range.start || offset >= range.end {
+        return;
+    }
+    let left_lines = subtree_lines(&node.left);
+    collect_runs_in(&node.left, offset, range, runs);
+    let start = offset + left_lines;
+    let lines = start.max(range.start)..(start + node.run.line_count).min(range.end);
+    if !lines.is_empty() {
+        let height = node.run.height;
+        match runs.last_mut() {
+            Some((last, last_height)) if last.end == lines.start && last_height.to_bits() == height.to_bits() =>
+                last.end = lines.end,
+            _ => runs.push((lines, height)),
+        }
+    }
+    collect_runs_in(&node.right, start + node.run.line_count, range, runs);
 }
 
 fn balanced_tree_from_runs(runs: &[HeightRun]) -> Link {
@@ -1077,6 +1220,75 @@ mod tests {
         assert_eq!(heights.range_height(1..2).unwrap(), HeightMeasurement { height: 21., exact: true });
         assert_eq!(heights.range_height(2..3).unwrap(), HeightMeasurement { height: 50., exact: false });
         assert_eq!(heights.total_height().height(), 16. + 21. + 50. + 16.);
+    }
+
+    #[test]
+    fn a_line_estimate_keeps_a_retired_measurement() {
+        let mut heights = ViewHeightIndex::new_estimated(3, 16.).unwrap();
+        heights.set_exact_height(1, 63.).unwrap();
+        heights.invalidate_retaining_estimates(0..3).unwrap();
+        heights.estimate_line(1, 37.).unwrap();
+        assert_eq!(heights.range_height(1..2).unwrap(), HeightMeasurement { height: 63., exact: false });
+    }
+
+    #[test]
+    fn adjusting_a_line_keeps_the_rest_of_its_height_as_an_estimate() {
+        let mut heights = ViewHeightIndex::new_estimated(3, 16.).unwrap();
+        heights.set_exact_height(1, 63.).unwrap();
+        heights.adjust_line(1, 21.).unwrap();
+        assert_eq!(heights.range_height(1..2).unwrap(), HeightMeasurement { height: 84., exact: false });
+        heights.adjust_line(1, -100.).unwrap();
+        assert_eq!(heights.range_height(1..2).unwrap().height(), 16.);
+    }
+
+    #[test]
+    fn tracked_changes_name_the_lines_whose_heights_changed_in_current_numbering() {
+        let mut heights = ViewHeightIndex::new_estimated(100, 16.).unwrap();
+        assert!(heights.take_changes().is_empty(), "nothing is recorded until tracking starts");
+        heights.track_changes(true);
+        assert!(heights.take_changes().all, "a new consumer has seen no line");
+        assert!(heights.take_changes().is_empty());
+        heights.set_exact_heights(10, &[20., 20.]).unwrap();
+        heights.set_exact_height(50, 30.).unwrap();
+        // Retiring certainty keeps every height.
+        heights.invalidate_retaining_estimates(0..100).unwrap();
+        // Three lines inserted before line 50 move it to 53.
+        heights.splice(20..20, 3).unwrap();
+        assert_eq!(heights.take_changes(), HeightChanges { ranges: vec![10..12, 20..23, 53..54], all: false });
+        heights.splice(5..8, 0).unwrap();
+        assert_eq!(heights.take_changes().ranges, vec![5..5], "a deletion leaves an empty range");
+        heights.set_estimated_line_height(18.).unwrap();
+        assert!(heights.take_changes().all);
+        heights.track_changes(false);
+        heights.set_exact_height(0, 20.).unwrap();
+        assert!(heights.take_changes().is_empty());
+    }
+
+    #[test]
+    fn tracked_changes_stay_bounded_by_merging_the_closest_ranges() {
+        let mut heights = ViewHeightIndex::new_estimated(10_000, 16.).unwrap();
+        heights.track_changes(true);
+        heights.take_changes();
+        for line in 0..100 {
+            heights.set_exact_height(line * 100 + if line == 7 { 50 } else { 0 }, 20.).unwrap();
+        }
+        let changes = heights.take_changes();
+        assert_eq!(changes.ranges.len(), HeightChanges::LIMIT);
+        assert_eq!(changes.ranges.first().unwrap().start, 0);
+        assert_eq!(changes.ranges.last().unwrap().end, 9_901);
+        for line in 0..100 {
+            let line = line * 100 + if line == 7 { 50 } else { 0 };
+            assert!(changes.ranges.iter().any(|range| range.contains(&line)), "line {line} is covered");
+        }
+    }
+
+    #[test]
+    fn runs_in_a_range_are_clipped_and_merged() {
+        let mut heights = ViewHeightIndex::new_estimated(10, 16.).unwrap();
+        heights.set_exact_heights(2, &[20., 20., 30.]).unwrap();
+        heights.set_exact_height(8, 16.).unwrap();
+        assert_eq!(heights.runs_in(1..9).unwrap(), vec![(1..2, 16.), (2..4, 20.), (4..5, 30.), (5..9, 16.)]);
+        assert_eq!(heights.runs_in(3..3).unwrap(), vec![]);
     }
 
     #[test]

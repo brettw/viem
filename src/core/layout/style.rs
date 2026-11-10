@@ -307,9 +307,31 @@ impl DiffLayoutInput {
         (if after { margin.filler_after } else { margin.filler_before }) + divider
     }
 
-    /// The points one margin adds to its line's height.
-    pub(crate) fn margin_points(&self, margin: &DiffMargin) -> f32 {
-        margin.filler_before + margin.filler_after + if margin.divider.is_some() { self.row_points } else { 0.0 }
+    /// The points each line's height band gains from these margins, sorted by
+    /// line. A band runs from a line's first row to the next line's, so the
+    /// filler above a line belongs to the line before it, unless the line
+    /// begins the laid-out document.
+    pub(crate) fn band_margins(&self) -> Vec<(usize, f32)> {
+        let mut bands: Vec<(usize, f32)> = Vec::with_capacity(self.margins.len() + 1);
+        let mut add = |line: usize, points: f32| {
+            if points == 0.0 {
+                return;
+            }
+            match bands.last_mut() {
+                Some((last, total)) if *last == line => *total += points,
+                _ => bands.push((line, points)),
+            }
+        };
+        for margin in &self.margins {
+            let own = margin.filler_after + if margin.divider.is_some() { self.row_points } else { 0.0 };
+            if margin.line == 0 || margin.divider.is_some_and(|(after, _)| !after) {
+                add(margin.line, margin.filler_before + own);
+            } else {
+                add(margin.line - 1, margin.filler_before);
+                add(margin.line, own);
+            }
+        }
+        bands
     }
 
     /// Stop drawing the divider in the margin of the hard line at `at`.
@@ -353,12 +375,13 @@ struct DiffParagraphKey {
 }
 
 /// The divider band from the sheet's Collapsed context block style.
-fn collapsed_divider(sheet: &StyleSheet, after: bool, document_edge: bool, height: f32) -> super::CollapsedDivider {
+fn collapsed_divider(sheet: &StyleSheet, after: bool, document_edge: bool, height: f32, offset: f32) -> super::CollapsedDivider {
     let block = sheet.block_style(&StyleId::diff_collapsed_context()).map(|style| style.block.clone()).unwrap_or_default();
     super::CollapsedDivider {
         after,
         document_edge,
         height,
+        offset,
         background: block.background,
         rules: [
             (block.border_top_width.unwrap_or(0.0), block.border_top_color),
@@ -813,8 +836,11 @@ impl DocumentLayoutStyles {
                         value.language_label = Some(block.language_label());
                         value.language_picker_disabled = !block.code_kind.language_editable();
                     }
-                    if let Some((diff, (after, edge))) = input.diff.and_then(|diff| diff.margin(block).divider.map(|divider| (diff, divider))) {
-                        value.collapsed_divider = Some(collapsed_divider(input.style_sheet, after, edge, diff.row_points));
+                    if let Some((diff, margin, (after, edge))) = input.diff
+                        .map(|diff| (diff, diff.margin(block)))
+                        .and_then(|(diff, margin)| margin.divider.map(|divider| (diff, margin, divider))) {
+                        let offset = if after { margin.filler_after } else { 0.0 };
+                        value.collapsed_divider = Some(collapsed_divider(input.style_sheet, after, edge, diff.row_points, offset));
                     }
                     value
                 },

@@ -11,6 +11,7 @@ import XCTest
 final class EVDiffPairTests: XCTestCase {
     private var windows: [EVDocumentWindowController] = []
     private var documents: [EVDocument] = []
+    private var folderDiffs: [Task<Void, Never>] = []
 
     override func setUp() {
         super.setUp()
@@ -40,6 +41,10 @@ final class EVDiffPairTests: XCTestCase {
     }
 
     override func tearDown() {
+        // A folder diff that finishes after a timeout must not reach the
+        // real opener or alert once the hooks are gone.
+        for task in folderDiffs { task.cancel() }
+        folderDiffs = []
         EVDocumentWindowController.folderDiffDidOpen = nil
         EVDocumentWindowController.folderDiffReport = nil
         EVDocumentWindowController.folderDiffDocumentOpener = nil
@@ -95,7 +100,7 @@ final class EVDiffPairTests: XCTestCase {
         var target: EVDocumentWindowController?
         EVDocumentWindowController.folderDiffDidOpen = { target = $0; opened.fulfill() }
         EVDocumentWindowController.folderDiffReport = { XCTFail("reported instead of opening: \($0)"); opened.fulfill() }
-        EVDocumentWindowController.diffFolder(folder, from: window)
+        folderDiffs.append(EVDocumentWindowController.diffFolder(folder, from: window))
         wait(for: [opened], timeout: 20)
         let controller = try XCTUnwrap(target)
         if !windows.contains(where: { $0 === controller }) { windows.append(controller) }

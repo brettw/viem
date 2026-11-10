@@ -2166,12 +2166,19 @@ extension EVDocumentWindowController: EVDiffModeHost {
   /// Show the first file `git diff -- <folder>` lists in diff mode, in the
   /// given window when it holds only a pristine untitled buffer, otherwise
   /// in a new window. A folder without changes shows an empty buffer there;
-  /// a folder outside a repository is reported instead.
+  /// a folder outside a repository is reported instead. Cancelling the
+  /// returned task before the listing finishes opens and reports nothing,
+  /// and completes with `nil`.
+  @discardableResult
   static func diffFolder(_ folder: URL, from controller: EVDocumentWindowController?,
-                         completion: ((EVDocumentWindowController?) -> Void)? = nil) {
+                         completion: ((EVDocumentWindowController?) -> Void)? = nil) -> Task<Void, Never> {
     let unsaved = (controller?.unsavedDocumentURLs() ?? []).map(\.path)
-    Task { @MainActor in
+    return Task { @MainActor in
       let listed = await EVDiffBaseLoader.listFiles(.unstaged, path: folder.path, unsaved: unsaved, scope: folder.path)
+      guard !Task.isCancelled else {
+        completion?(nil)
+        return
+      }
       let files: [EVDiffFile]
       switch listed {
       case let .success(found):

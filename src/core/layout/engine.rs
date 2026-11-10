@@ -2475,13 +2475,25 @@ impl ViewLayout {
         if self.diff_presentation == next {
             return false;
         }
-        self.diff_presentation = next;
+        let previous = std::mem::replace(&mut self.diff_presentation, next);
         // Margins left unapplied while an edit renumbered lines apply again.
         let reestimate = !self.diff_margins_current;
         self.diff_margins_current = self.diff_presentation.is_some();
+        self.height_index.track_changes(self.diff_presentation.is_some());
         self.apply_diff_row_estimate();
         match changed_lines {
             Some(lines) => {
+                // A line whose margin changed keeps what was measured of its
+                // text, so diff mode can compare it with its counterpart.
+                if let (false, Some((_, _, old)), Some((_, _, new))) = (reestimate, &previous, &self.diff_presentation) {
+                    let mut index = self.height_index.clone();
+                    for (line, delta) in margin_height_changes(old, new, self.scale) {
+                        if line < index.hard_line_count() && self.elided.run_at(line).is_none() {
+                            let _ = index.adjust_line(line, delta);
+                        }
+                    }
+                    self.height_index = index;
+                }
                 for lines in lines {
                     self.invalidate_geometry_lines(lines.clone());
                 }
@@ -2493,6 +2505,17 @@ impl ViewLayout {
             None => self.bump_configuration(true),
         }
         true
+    }
+
+    /// The lines whose heights changed since the last call, while diff mode
+    /// presents this view.
+    pub(crate) fn take_height_changes(&mut self) -> super::height_index::HeightChanges {
+        self.height_index.take_changes()
+    }
+
+    /// The runs of equal height covering `range`, clipped to it.
+    pub(crate) fn height_runs(&self, range: Range<usize>) -> Result<Vec<(Range<usize>, f64)>, ViewHeightIndexError> {
+        self.height_index.runs_in(range)
     }
 
     /// A diff view estimates a line it has not measured as one default row,
@@ -3633,12 +3656,25 @@ impl ViewLayout {
 
     fn restore_diff_heights_in(&self, index: &mut ViewHeightIndex, within: Option<Range<usize>>) {
         if let Some((_, _, input)) = self.diff_presentation.as_ref().filter(|_| self.diff_margins_current) {
+            let count = index.hard_line_count();
             let range = within.clone().unwrap_or(0..usize::MAX);
-            let end = range.end.min(index.hard_line_count());
-            let first = input.margins.partition_point(|margin| margin.line < range.start);
-            for margin in input.margins[first..].iter().take_while(|margin| margin.line < end) {
-                let height = (input.row_points + input.margin_points(margin)) * self.scale;
-                let _ = index.estimate_line(margin.line, f64::from(height));
+            let range = range.start..range.end.min(count);
+            // The first and last laid-out lines also hold the document's
+            // insets, as their measured heights do.
+            let (first, last) = self.elided.shown_ends(count);
+            let insets = self.snapshot.as_ref().map_or(self.insets, |snapshot| snapshot.content_insets);
+            let inset = |line: usize| f64::from(if Some(line) == first { insets.top } else { 0.0 })
+                + f64::from(if Some(line) == last { insets.bottom } else { 0.0 });
+            let mut bands = input.band_margins();
+            for line in [first, last].into_iter().flatten() {
+                if let Err(at) = bands.binary_search_by_key(&line, |(line, _)| *line) {
+                    bands.insert(at, (line, 0.0));
+                }
+            }
+            let start = bands.partition_point(|(line, _)| *line < range.start);
+            for &(line, points) in bands[start..].iter().take_while(|(line, _)| *line < range.end) {
+                let height = f64::from((input.row_points + points) * self.scale) + inset(line);
+                let _ = index.estimate_line(line, height);
             }
         }
         self.elided.hide_in(index, within);
@@ -4117,6 +4153,32 @@ fn content_width_from_row(row: &VisualRow, viewport_width: f32) -> f32 {
 
 fn snapshot_hard_line_count(snapshot: &LayoutSnapshot) -> usize {
     snapshot.coverage.document_hard_line_count()
+}
+
+/// The change, in scaled height, that diff margins make to each line's band
+/// from `old` to `new`.
+fn margin_height_changes(old: &super::style::DiffLayoutInput, new: &super::style::DiffLayoutInput, scale: f32)
+    -> Vec<(usize, f64)> {
+    let (old, new) = (old.band_margins(), new.band_margins());
+    let (mut i, mut j) = (0, 0);
+    let mut changes = Vec::new();
+    while i < old.len() || j < new.len() {
+        let (a, b) = (old.get(i), new.get(j));
+        let line = a.map_or(usize::MAX, |a| a.0).min(b.map_or(usize::MAX, |b| b.0));
+        let before = match a.filter(|a| a.0 == line) {
+            Some(a) => { i += 1; a.1 }
+            None => 0.0,
+        };
+        let after = match b.filter(|b| b.0 == line) {
+            Some(b) => { j += 1; b.1 }
+            None => 0.0,
+        };
+        let delta = f64::from(after * scale) - f64::from(before * scale);
+        if delta != 0.0 {
+            changes.push((line, delta));
+        }
+    }
+    changes
 }
 
 fn reconcile_height_index_count(
@@ -7653,7 +7715,7 @@ fn decorate_block_row_with(row: &mut VisualRow, paragraph: &ParagraphLayoutStyle
     if let Some(divider) = &paragraph.block_box.collapsed_divider {
         if (divider.after && last) || (!divider.after && first) {
             push_collapsed_divider(row, paragraph, divider, plan,
-                if divider.after { end_y } else { start_y - divider.height * scale });
+                if divider.after { end_y + divider.offset * scale } else { start_y - divider.height * scale });
         }
     }
     row.decorations.append(&mut child_decorations);

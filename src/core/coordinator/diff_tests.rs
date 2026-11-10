@@ -192,11 +192,13 @@ fn aligned_scrollbars_share_the_wrapped_tail_from_either_side() {
             assert_eq!(a.top(), top.min(a.estimated_maximum_top()));
             assert!(a.estimated_maximum_top() > 770.);
         }
+        // Filler on the shorter side stands for every row of the wrapped
+        // line, so its own range reaches the shared end.
         let (short, view) = if reverse { (&mut new, nv) } else { (&mut base, bv) };
         let own_end = short.layout(view).unwrap().own_vertical_bound().maximum;
         let shared_end = short.viewport_state(view).unwrap().estimated_maximum_top();
-        assert!(shared_end > own_end + 2.);
-        let blank = (own_end + shared_end) / 2.;
+        assert!((shared_end - own_end).abs() < 0.5, "{own_end} {shared_end}");
+        let blank = shared_end / 2.;
         short.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(blank) }).unwrap();
         session.sync_scroll(&mut base, bv, &mut new, nv, if reverse { Side::New } else { Side::Base }).unwrap();
         let (short, view) = if reverse { (&mut new, nv) } else { (&mut base, bv) };
@@ -793,4 +795,203 @@ fn aligned_sides_stay_level_when_an_edited_side_is_resized_before_its_next_prese
     session.navigate_change(&mut base, base_view, &mut new, new_view, ChangeDirection::Previous).unwrap();
     assert_eq!(cursor_line(&new, new_view), 1461);
     assert_level(&base, base_view, &new, new_view, &session);
+}
+
+/// Wrap `view` at `width`.
+fn wrap_at(core: &mut TestCore, view: ViewId, width: f32) {
+    core.handle(view, CoreEvent::Resize { width, height: 300. }).unwrap();
+    core.handle(view, CoreEvent::SetWrap(true)).unwrap();
+}
+
+/// Each new-side line of `lines` starts at the same height as the base line
+/// corresponding to it.
+fn assert_lines_level(base: &TestCore, base_view: ViewId, new: &TestCore, new_view: ViewId, session: &DiffSession,
+    lines: Range<usize>) {
+    for line in lines {
+        let other = session.corresponding_line(Side::New, line);
+        let (base_top, new_top) = (prefix(base, base_view, other), prefix(new, new_view, line));
+        assert!((base_top - new_top).abs() < 0.5, "new line {line} starts at {new_top}, base line {other} at {base_top}");
+    }
+}
+
+fn long_line() -> String {
+    "several words on a wrapped line ".repeat(12)
+}
+
+#[test]
+fn a_change_that_wraps_to_more_rows_on_one_side_keeps_later_lines_level() {
+    for long_side in [Side::New, Side::Base] {
+        let text = |side: Side| lines(300, |line| Some(if line == 100 && side == long_side { long_line() } else { format!("line {line}") }));
+        let (mut base, base_view) = core(&text(Side::Base));
+        let (mut new, new_view) = core(&text(Side::New));
+        for (core, view) in [(&mut base, base_view), (&mut new, new_view)] {
+            wrap_at(core, view, 300.);
+        }
+        let mut session = DiffSession::new(base.document(), new.document(), true);
+        session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+        let top = prefix(&new, new_view, 95) as f32;
+        new.handle(new_view, CoreEvent::SetViewportOrigin { left: 0., top: Some(top) }).unwrap();
+        session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+        let row = f64::from(new.default_row_height(new_view).unwrap());
+        let (long, view) = if long_side == Side::New { (&new, new_view) } else { (&base, base_view) };
+        assert!(long.layout(view).unwrap().hard_line_range_height(100..101).unwrap().height() > 3. * row, "the change wraps");
+        assert_lines_level(&base, base_view, &new, new_view, &session, 0..300);
+        assert_level(&base, base_view, &new, new_view, &session);
+    }
+}
+
+#[test]
+fn an_unchanged_line_wrapped_differently_on_each_side_keeps_later_lines_level() {
+    let text = |changed: bool| lines(300, |line| Some(match line {
+        50 => long_line(),
+        250 if changed => "changed".into(),
+        _ => format!("line {line}"),
+    }));
+    let (mut base, base_view) = core(&text(false));
+    let (mut new, new_view) = core(&text(true));
+    wrap_at(&mut base, base_view, 400.);
+    wrap_at(&mut new, new_view, 250.);
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    let top = prefix(&new, new_view, 45) as f32;
+    new.handle(new_view, CoreEvent::SetViewportOrigin { left: 0., top: Some(top) }).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+    let rows = |core: &TestCore, view: ViewId| core.layout(view).unwrap().snapshot().unwrap().rows.iter()
+        .filter(|row| row.hard_line_index == 50).count();
+    assert!(rows(&new, new_view) > rows(&base, base_view), "the narrower side wraps to more rows");
+    assert_lines_level(&base, base_view, &new, new_view, &session, 0..300);
+    // The comparison follows the line when its width changes again.
+    new.handle(new_view, CoreEvent::Resize { width: 400., height: 300. }).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+    assert_lines_level(&base, base_view, &new, new_view, &session, 0..300);
+}
+
+#[test]
+fn a_wrapped_line_only_one_side_has_measured_keeps_the_sides_level() {
+    let text = |changed: bool| lines(2000, |line| Some(match line {
+        300 => long_line(),
+        1500 if changed => "changed".into(),
+        _ => format!("line {line}"),
+    }));
+    let (mut base, base_view) = core(&text(false));
+    let (mut new, new_view) = core(&text(true));
+    for (core, view) in [(&mut base, base_view), (&mut new, new_view)] {
+        wrap_at(core, view, 300.);
+    }
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    // Only the new side measures the wrapped line.
+    let around = prefix(&new, new_view, 295) as f32;
+    new.materialize_requested_viewport(new_view, 0.0, around).unwrap();
+    assert!(new.layout(new_view).unwrap().hard_line_range_height(300..301).unwrap().is_exact());
+    session.navigate_change(&mut base, base_view, &mut new, new_view, ChangeDirection::Next).unwrap();
+    assert_eq!(cursor_line(&new, new_view), 1500);
+    assert!(!base.layout(base_view).unwrap().hard_line_range_height(300..301).unwrap().is_exact(),
+        "the base never measured it");
+    assert_level(&base, base_view, &new, new_view, &session);
+}
+
+#[test]
+fn a_divider_stays_level_below_a_line_wrapped_differently_on_each_side() {
+    let text = |changed: bool| lines(41, |line| Some(match line {
+        0 | 40 if changed => "changed".into(),
+        3 => long_line(),
+        _ => format!("line {line}"),
+    }));
+    let (mut base, base_view) = core(&text(false));
+    let (mut new, new_view) = core(&text(true));
+    wrap_at(&mut base, base_view, 400.);
+    wrap_at(&mut new, new_view, 250.);
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.set_collapsed(true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+    let divider = |core: &TestCore, view: ViewId| {
+        let snapshot = core.layout(view).unwrap().snapshot().unwrap();
+        snapshot.rows.iter().flat_map(|row| row.decorations.iter())
+            .find(|item| item.kind == DecorationKind::CollapsedContext { rule: false })
+            .map(|item| item.typographic_bounds.y)
+            .unwrap()
+    };
+    assert_eq!(divider_lines(&new, new_view), vec![3]);
+    assert!((divider(&base, base_view) - divider(&new, new_view)).abs() < 0.5,
+        "base divider at {}, new at {}", divider(&base, base_view), divider(&new, new_view));
+    assert_lines_level(&base, base_view, &new, new_view, &session, 37..41);
+}
+
+#[test]
+fn lines_after_additions_at_the_start_of_one_side_stay_level_with_padding() {
+    let (mut base, base_view) = core(&lines(100, |line| Some(format!("line {line}"))));
+    let (mut new, new_view) = core(&lines(103, |line| Some(if line < 3 { format!("added {line}") } else { format!("line {}", line - 3) })));
+    for (core, view) in [(&mut base, base_view), (&mut new, new_view)] {
+        core.set_view_insets(view, crate::layout::EdgeInsets { top: 20., left: 0., bottom: 30., right: 0. }).unwrap();
+    }
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+    // The first line's band starts above the padding and the filler.
+    assert_eq!(row_top(&base, base_view, 0), row_top(&new, new_view, 3));
+    assert_lines_level(&base, base_view, &new, new_view, &session, 4..103);
+}
+
+#[test]
+fn a_line_whose_filler_changes_keeps_the_height_measured_for_its_text() {
+    // The new side adds a line after the long line 9, so the base has filler
+    // below it.
+    let (mut base, base_view) = core(&lines(600, |line| Some(if line == 9 { long_line() } else { format!("line {line}") })));
+    let (mut new, new_view) = core(&lines(601, |line| Some(match line {
+        9 => long_line(),
+        10 => "added".into(),
+        11.. => format!("line {}", line - 1),
+        _ => format!("line {line}"),
+    })));
+    for (core, view) in [(&mut base, base_view), (&mut new, new_view)] {
+        wrap_at(core, view, 300.);
+    }
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+    let band = |core: &TestCore| core.layout(base_view).unwrap().hard_line_range_height(9..10).unwrap();
+    let row = f64::from(base.default_row_height(base_view).unwrap());
+    let measured = band(&base);
+    assert!(measured.is_exact() && measured.height() > 3. * row);
+    // With the base's long line far offscreen, a second added line grows the
+    // filler below it by one row.
+    let far = prefix(&new, new_view, 500) as f32;
+    new.handle(new_view, CoreEvent::SetViewportOrigin { left: 0., top: Some(far) }).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+    assert!(!base.layout(base_view).unwrap().snapshot().unwrap().rows.iter().any(|row| row.hard_line_index == 9));
+    place(&mut new, new_view, 10);
+    type_text(&mut new, new_view, "yyp");
+    assert_eq!(session.sync(&mut base, base_view, &mut new, new_view).unwrap(), DiffSync::Incremental);
+    assert!((band(&base).height() - (measured.height() + row)).abs() < 0.5,
+        "measured {} grows by one row to {}", measured.height(), band(&base).height());
+}
+
+#[test]
+fn padded_sides_share_one_extent_before_either_measures_its_end() {
+    // The new side adds lines after the base's unterminated last line, so
+    // only the base's last line is also the last of the unchanged run;
+    // neither side lays it out.
+    let text = |count: usize| (0..count).map(|line| if line < 2000 { format!("line {line}") } else { format!("added {line}") })
+        .collect::<Vec<_>>().join("\n");
+    let (mut base, base_view) = core(&text(2000));
+    let (mut new, new_view) = core(&text(2003));
+    for (core, view) in [(&mut base, base_view), (&mut new, new_view)] {
+        core.set_view_insets(view, crate::layout::EdgeInsets { top: 20., left: 0., bottom: 30., right: 0. }).unwrap();
+    }
+    let mut session = DiffSession::new(base.document(), new.document(), true);
+    session.sync(&mut base, base_view, &mut new, new_view).unwrap();
+    session.sync_scroll(&mut base, base_view, &mut new, new_view, Side::New).unwrap();
+    let end = |core: &TestCore, view: ViewId| core.layout(view).unwrap().hard_line_range_height(1990..core.document().line_count()).unwrap();
+    assert!(!end(&base, base_view).is_exact() && !end(&new, new_view).is_exact());
+    let total = |core: &TestCore, view: ViewId| core.layout(view).unwrap().content_height().height();
+    assert!((total(&base, base_view) - total(&new, new_view)).abs() < 0.5,
+        "base {} new {}", total(&base, base_view), total(&new, new_view));
+    assert_lines_level(&base, base_view, &new, new_view, &session, 1..2000);
+    // Estimates hold the padding as measurements do, so nothing needs
+    // balancing.
+    for side in [Side::Base, Side::New] {
+        assert_eq!(session.installed(side).balance, Balance::default(), "{side:?}");
+    }
 }

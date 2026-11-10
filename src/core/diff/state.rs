@@ -315,6 +315,18 @@ impl DiffState {
         })
     }
 
+    /// Every region in order, unchanged or changed, as its base lines, its
+    /// new lines and whether they are equal.
+    pub fn regions(&self) -> impl Iterator<Item = (Range<usize>, Range<usize>, bool)> + '_ {
+        let (mut base, mut new) = (0, 0);
+        self.chunks.iter().map(move |chunk| {
+            let region = (base..base + chunk.base, new..new + chunk.new, chunk.equal);
+            base += chunk.base;
+            new += chunk.new;
+            region
+        })
+    }
+
     pub fn hunk_count(&self) -> usize {
         self.chunks.iter().filter(|chunk| !chunk.equal).count()
     }

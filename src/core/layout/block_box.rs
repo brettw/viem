@@ -37,6 +37,9 @@ pub struct CollapsedDivider {
     /// so this paragraph lays out as the document's first or last.
     pub document_edge: bool,
     pub height: f32,
+    /// Filler between the paragraph's text and a divider below it, in
+    /// unscaled points, so the divider lines up with its counterpart.
+    pub offset: f32,
     pub background: Option<Color>,
     /// Top and bottom rule widths and colors; a missing color is the text's.
     pub rules: [(f32, Option<Color>); 2],

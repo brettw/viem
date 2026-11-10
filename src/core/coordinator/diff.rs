@@ -9,6 +9,7 @@ use super::*;
 use crate::diff::{CollapsibleRun, DiffLimits, DiffState, Hunk, LineEdit, LineSource, Side, SidePresentation, DIFF_CONTEXT_LINES};
 use crate::layout::{DiffLayoutInput, DiffMargin};
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -71,11 +72,54 @@ pub struct ScrollbarMark {
     pub added: bool,
 }
 
+/// Height differences, in unscaled points, below which two corresponding
+/// lines count as level.
+const BALANCE_TOLERANCE: f32 = 0.05;
+
+/// Filler that keeps an aligned pair level where the two sides' heights
+/// differ, for example because a line wraps to more rows on one side, in
+/// unscaled points.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Balance {
+    /// Below an unchanged line that is taller on the other side, by line.
+    lines: BTreeMap<usize, f32>,
+    /// Added to or taken from a change's filler on this side, keyed like
+    /// [`crate::diff::Filler::before_line`].
+    changes: BTreeMap<usize, f32>,
+}
+
+impl Balance {
+    /// The lines whose margins differ between `self` and `other`, sorted,
+    /// on a side of `count` lines.
+    fn changed_lines(&self, other: &Self, count: usize) -> Vec<Range<usize>> {
+        let mut lines: Vec<usize> = Vec::new();
+        let mut differ = |a: &BTreeMap<usize, f32>, b: &BTreeMap<usize, f32>, line: fn(usize, usize) -> usize| {
+            for (key, value) in a.iter() {
+                if b.get(key) != Some(value) {
+                    lines.push(line(*key, count));
+                }
+            }
+            for key in b.keys() {
+                if !a.contains_key(key) {
+                    lines.push(line(*key, count));
+                }
+            }
+        };
+        differ(&self.lines, &other.lines, |line, _| line);
+        differ(&self.changes, &other.changes, |before, count| before.min(count.saturating_sub(1)));
+        lines.sort_unstable();
+        lines.dedup();
+        lines.into_iter().map(|line| line..line + 1).collect()
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 struct InstalledSide {
     view: Option<ViewId>,
     document: Option<(DocumentId, Revision)>,
     presentation: SidePresentation,
+    /// Filler keeping the sides level beyond what line counts give.
+    balance: Balance,
     aligned: bool,
     /// One default row, unscaled: a filler line and a divider's height.
     row_points: f32,
@@ -306,6 +350,18 @@ impl DiffSession {
             .filter_map(|filler| Some(crate::diff::Filler { before_line: edit.map_boundary(filler.before_line)?, ..filler }))
             .collect();
         presentation.collapsed = presentation.collapsed.drain(..).filter_map(|run| edit.map_range(run)).collect();
+        let balance = &mut side.balance;
+        balance.lines = std::mem::take(&mut balance.lines).into_iter()
+            .filter_map(|(line, points)| Some((edit.map_line(line)?, points))).collect();
+        balance.changes = std::mem::take(&mut balance.changes).into_iter()
+            .filter_map(|(before, points)| Some((edit.map_boundary(before)?, points))).collect();
+    }
+
+    /// Whether `side`'s installed presentation describes `view` showing
+    /// `document` as it is now.
+    fn is_current(&self, side: Side, view: ViewId, document: &Document) -> bool {
+        let installed = self.installed(side);
+        installed.view == Some(view) && installed.document == Some((document.id(), document.revision()))
     }
 
     /// Publish each pane's own bound to its peer. Reading only natural bounds
@@ -325,24 +381,28 @@ impl DiffSession {
     /// filler spanning hundreds of rows has no meaningful text-line fraction.
     /// Returns which views need to republish geometry or scrollbar state.
     pub fn sync_scroll<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
-        &self, base: &mut Core<P>, base_view: ViewId, new: &mut Core<Q>, new_view: ViewId, leader: Side,
+        &mut self, base: &mut Core<P>, base_view: ViewId, new: &mut Core<Q>, new_view: ViewId, leader: Side,
     ) -> Result<(bool, bool), CoreError> {
-        let current = |side: Side, view: ViewId, document: &Document| {
-            let installed = self.installed(side);
-            installed.view == Some(view) && installed.document == Some((document.id(), document.revision()))
-        };
-        if !self.aligned || !current(Side::Base, base_view, base.document()) || !current(Side::New, new_view, new.document()) {
+        if !self.aligned || !self.is_current(Side::Base, base_view, base.document())
+            || !self.is_current(Side::New, new_view, new.document()) {
             return Ok((false, false));
         }
         let before_base = base.viewport_state(base_view)?;
         let before_new = new.viewport_state(new_view)?;
         let new_request = new.views[&new_view].layout.diff_scroll_request;
         let base_request = base.views[&base_view].layout.diff_scroll_request;
-        let (leader, request) = match leader {
-            Side::New => (before_new, new_request.or(base_request)),
-            Side::Base => (before_base, base_request.or(new_request)),
+        let request = match leader {
+            Side::New => new_request.or(base_request),
+            Side::Base => base_request.or(new_request),
         };
-        let requested_top = request.unwrap_or(leader.top());
+        // Balancing keeps each view's text where it was; the leader's
+        // position after it is the one to share.
+        let mut presented = self.balance(base, base_view, new, new_view)?;
+        let leader_top = |base: &Core<P>, new: &Core<Q>| match leader {
+            Side::New => new.views[&new_view].layout.viewport_top(),
+            Side::Base => base.views[&base_view].layout.viewport_top(),
+        };
+        let mut requested_top = request.unwrap_or(leader_top(base, new));
         let end = requested_top == f32::MAX;
         if end {
             // The shorter pane can reach its EOF before its peer knows the
@@ -363,11 +423,116 @@ impl DiffSession {
             if !move_base && !move_new { break; }
             if move_base { base.materialize_requested_viewport(base_view, before_base.left(), top)?; }
             if move_new { new.materialize_requested_viewport(new_view, before_new.left(), top)?; }
+            // Newly measured lines may differ from their counterparts.
+            let (base_balanced, new_balanced) = self.balance(base, base_view, new, new_view)?;
+            presented = (presented.0 | base_balanced, presented.1 | new_balanced);
+            let leader_balanced = match leader { Side::New => new_balanced, Side::Base => base_balanced };
+            if request.is_none() && !end && leader_balanced {
+                requested_top = leader_top(base, new);
+            }
         }
         self.share_scroll_bounds(base, base_view, new, new_view)?;
         base.views.get_mut(&base_view).unwrap().layout.diff_scroll_request = None;
         new.views.get_mut(&new_view).unwrap().layout.diff_scroll_request = None;
-        Ok((before_base != base.viewport_state(base_view)?, before_new != new.viewport_state(new_view)?))
+        Ok((presented.0 || before_base != base.viewport_state(base_view)?,
+            presented.1 || before_new != new.viewport_state(new_view)?))
+    }
+
+    /// Keep the aligned sides level where their heights differ: an unchanged
+    /// line taller on one side gets filler below it on the other, and a
+    /// change gets filler on its shorter side, beyond what line counts give.
+    /// Heights are compared as measured or estimated now, only where either
+    /// side's heights changed since the last call. Returns whether each
+    /// side's presentation changed.
+    fn balance<P: TextMeasurementProvider, Q: TextMeasurementProvider>(
+        &mut self, base: &mut Core<P>, base_view: ViewId, new: &mut Core<Q>, new_view: ViewId,
+    ) -> Result<(bool, bool), CoreError> {
+        // Changes wait in the views until their presentation is current.
+        if !self.is_current(Side::Base, base_view, base.document()) || !self.is_current(Side::New, new_view, new.document()) {
+            return Ok((false, false));
+        }
+        let base_changes = base.views.get_mut(&base_view).ok_or(CoreError::UnknownView(base_view))?.layout.take_height_changes();
+        let new_changes = new.views.get_mut(&new_view).ok_or(CoreError::UnknownView(new_view))?.layout.take_height_changes();
+        if !self.aligned || (base_changes.is_empty() && new_changes.is_empty()) {
+            return Ok((false, false));
+        }
+        let heights = [
+            SideHeights::new(&base.views[&base_view].layout, self.installed(Side::Base), base.document().line_count()),
+            SideHeights::new(&new.views[&new_view].layout, self.installed(Side::New), new.document().line_count()),
+        ];
+        let changes = [&base_changes, &new_changes];
+        let mut next = [self.installed(Side::Base).balance.clone(), self.installed(Side::New).balance.clone()];
+        for (base_lines, new_lines, equal) in self.state.regions() {
+            let lines = [base_lines, new_lines];
+            if equal {
+                let mut touched: Vec<Range<usize>> = Vec::new();
+                for side in 0..2 {
+                    if changes[side].all {
+                        touched = vec![0..lines[0].len()];
+                        break;
+                    }
+                    for changed in &changes[side].ranges {
+                        let (start, end) = (changed.start.max(lines[side].start), changed.end.min(lines[side].end));
+                        if start < end {
+                            touched.push(start - lines[side].start..end - lines[side].start);
+                        }
+                    }
+                }
+                for offsets in merge_ranges(touched) {
+                    for (side, balance) in next.iter_mut().enumerate() {
+                        let own = lines[side].start + offsets.start..lines[side].start + offsets.end;
+                        let inside = own.start.max(lines[side].start + 1)..own.end.min(lines[side].end);
+                        clear(&mut balance.lines, own);
+                        clear(&mut balance.changes, inside);
+                    }
+                    balance_unchanged(&heights, [&lines[0], &lines[1]], offsets, &mut next)?;
+                }
+            } else {
+                let touched = (0..2).any(|side| changes[side].all || changes[side].ranges.iter()
+                    .any(|changed| changed.start <= lines[side].end && lines[side].start <= changed.end));
+                if !touched {
+                    continue;
+                }
+                let content = [heights[0].content(lines[0].clone())?, heights[1].content(lines[1].clone())?];
+                let tallest = content[0].max(content[1]);
+                for (side, balance) in next.iter_mut().enumerate() {
+                    let own = &lines[side];
+                    clear(&mut balance.lines, own.clone());
+                    clear(&mut balance.changes, own.start..own.end + 1);
+                    let filler_rows = lines[1 - side].len().saturating_sub(own.len());
+                    let extra = tallest - content[side] - filler_rows as f32 * heights[side].row;
+                    if extra.abs() >= BALANCE_TOLERANCE {
+                        balance.changes.insert(own.end, extra);
+                    }
+                }
+            }
+        }
+        let mut presented = [false, false];
+        let [base_next, new_next] = next;
+        if base_next != self.installed(Side::Base).balance {
+            self.install_balance(base, base_view, Side::Base, base_next)?;
+            presented[0] = true;
+        }
+        if new_next != self.installed(Side::New).balance {
+            self.install_balance(new, new_view, Side::New, new_next)?;
+            presented[1] = true;
+        }
+        Ok((presented[0], presented[1]))
+    }
+
+    /// Install `side` again with a new balance, relaying out only the lines
+    /// whose margins it changes.
+    fn install_balance<P: TextMeasurementProvider>(&mut self, core: &mut Core<P>, view: ViewId, side: Side,
+        balance: Balance) -> Result<(), CoreError> {
+        let installed = self.installed(side);
+        let count = core.document().line_count();
+        let changed = installed.balance.changed_lines(&balance, count);
+        let filler_points = if installed.aligned { installed.row_points } else { 0.0 };
+        let input = layout_input(core.document(), side, &installed.presentation, &balance, filler_points, installed.row_points);
+        let collapsed = installed.presentation.collapsed.clone();
+        core.install_diff_presentation(view, Some(Arc::new(input)), Some(&changed), &collapsed)?;
+        self.installed_mut(side).balance = balance;
+        Ok(())
     }
 
     /// Update the diff and install both sides' presentations in their views.
@@ -392,6 +557,7 @@ impl DiffSession {
         self.relocate_carets = false;
         self.install(base, base_view, Side::Base, &runs)?;
         self.install(new, new_view, Side::New, &runs)?;
+        self.balance(base, base_view, new, new_view)?;
         self.share_scroll_bounds(base, base_view, new, new_view)?;
         self.runs = runs;
         Ok(sync)
@@ -411,11 +577,19 @@ impl DiffSession {
         if comparable && installed.document == Some(document) && installed.presentation == presentation {
             return Ok(());
         }
-        let changed = comparable.then(|| changed_lines(&installed.presentation, &presentation, core.document().line_count()));
+        // Balance found for the lines as they were stays until those lines
+        // are compared again; a full relayout compares every line.
+        let balance = if comparable { installed.balance.clone() } else { Balance::default() };
         let filler_points = if self.aligned { row_points } else { 0.0 };
-        let input = layout_input(core.document(), side, &presentation, filler_points, row_points);
+        let count = core.document().line_count();
+        let changed = comparable.then(|| changed_lines(
+            Margins { presentation: &installed.presentation, balance: &installed.balance, filler_points },
+            Margins { presentation: &presentation, balance: &balance, filler_points }, count));
+        let input = layout_input(core.document(), side, &presentation, &balance, filler_points, row_points);
         core.install_diff_presentation(view, Some(Arc::new(input)), changed.as_deref(), &presentation.collapsed)?;
-        *self.installed_mut(side) = InstalledSide { view: Some(view), document: Some(document), presentation, aligned: self.aligned, row_points };
+        *self.installed_mut(side) = InstalledSide {
+            view: Some(view), document: Some(document), presentation, balance, aligned: self.aligned, row_points,
+        };
         Ok(())
     }
 
@@ -478,7 +652,7 @@ impl DiffSession {
     ) -> Result<bool, CoreError> {
         let new_row = f64::from(new.default_row_height(new_view)?);
         let base_row = f64::from(base.default_row_height(base_view)?);
-        let (new_side, base_side) = (&self.installed(Side::New).presentation, &self.installed(Side::Base).presentation);
+        let (new_side, base_side) = (self.installed(Side::New), self.installed(Side::Base));
         let new_block = side_block(new, new_view, new_side, hunk.new.clone(), new_row)?;
         let base_block = side_block(base, base_view, base_side, hunk.base.clone(), base_row)?;
         let shows = |core_view: (f64, f64), block: &Range<f64>| {
@@ -556,20 +730,20 @@ impl DiffSession {
         let presentation = &installed.presentation;
         let mut marks = Vec::new();
         for range in &presentation.lines {
-            let block = side_block(core, view, presentation, range.start..range.end, 0.0)?;
+            let block = side_block(core, view, installed, range.start..range.end, 0.0)?;
             marks.push(ScrollbarMark { top: block.start as f32, bottom: block.end as f32, added: own });
         }
         if installed.aligned {
             for filler in &presentation.fillers {
                 let line = filler.before_line.min(count);
-                let block = side_block(core, view, presentation, line..line, row)?;
+                let block = side_block(core, view, installed, line..line, row)?;
                 marks.push(ScrollbarMark { top: block.start as f32, bottom: block.end as f32, added: !own });
             }
         } else {
             for hunk in self.state.hunks() {
                 let lines = hunk.side(side);
                 if lines.is_empty() {
-                    let block = side_block(core, view, presentation, lines.start..lines.start, 0.0)?;
+                    let block = side_block(core, view, installed, lines.start..lines.start, 0.0)?;
                     marks.push(ScrollbarMark { top: block.start as f32, bottom: block.start as f32, added: !own });
                 }
             }
@@ -593,11 +767,12 @@ fn viewport<P: TextMeasurementProvider>(core: &Core<P>, view: ViewId) -> Result<
 /// The vertical extent of `lines` on one side, in layout units, including
 /// the filler that follows them there. An empty range is the point between
 /// lines (with its filler, when aligned); a range at the end of the document
-/// covers the trailing filler. `row` sizes one filler line.
+/// covers the trailing filler. `row` sizes one filler line; with `row` zero,
+/// filler is left out.
 fn side_block<P: TextMeasurementProvider>(
     core: &Core<P>,
     view: ViewId,
-    presentation: &SidePresentation,
+    installed: &InstalledSide,
     lines: Range<usize>,
     row: f64,
 ) -> Result<Range<f64>, CoreError> {
@@ -606,16 +781,22 @@ fn side_block<P: TextMeasurementProvider>(
     let prefix = |line: usize| -> Result<f64, CoreError> {
         Ok(layout.hard_line_prefix_height(line.min(count)).map_err(LayoutError::from)?.height())
     };
+    let presentation = &installed.presentation;
+    let scale = f64::from(layout.scale());
     // Fillers are sorted by line: find each line's by binary search, so
     // marking every change stays linear in the changes.
-    let fillers_from = |line: usize| {
+    let filler = |line: usize| -> f64 {
+        if row == 0.0 {
+            return 0.0;
+        }
         let first = presentation.fillers.partition_point(|filler| filler.before_line < line);
-        presentation.fillers[first..].iter()
+        let rows: usize = presentation.fillers[first..].iter().take_while(|filler| filler.before_line == line)
+            .map(|filler| filler.lines).sum();
+        let balance = installed.balance.changes.get(&line).map_or(0.0, |points| f64::from(*points) * scale);
+        (rows as f64 * row + balance).max(0.0)
     };
-    let height = |filler: &crate::diff::Filler| filler.lines as f64 * row;
-    let filler = |line: usize| -> f64 { fillers_from(line).take_while(|filler| filler.before_line == line).map(height).sum() };
     let total = prefix(count)?;
-    let trailing: f64 = fillers_from(count).map(height).sum();
+    let trailing = filler(count);
     let start = if lines.start < count { prefix(lines.start)? } else { (total - trailing).max(0.0) };
     let end = if lines.end < count { prefix(lines.end)? + filler(lines.end) } else { total };
     Ok(start..end.max(start))
@@ -633,8 +814,8 @@ fn line_edit(document: &Document, change: &crate::document::LocalFormattedChange
 }
 
 /// Convert one side's presentation from hard lines to formatted offsets.
-fn layout_input(document: &Document, side: Side, presentation: &SidePresentation, filler_points: f32,
-    row_points: f32) -> DiffLayoutInput {
+fn layout_input(document: &Document, side: Side, presentation: &SidePresentation, balance: &Balance,
+    filler_points: f32, row_points: f32) -> DiffLayoutInput {
     let projection = document.projection();
     let count = document.line_count();
     let line = |index: usize| projection.hard_line_range(index.min(count.saturating_sub(1)));
@@ -657,13 +838,14 @@ fn layout_input(document: &Document, side: Side, presentation: &SidePresentation
             }
         }
     }
-    for (index, margin) in line_margins(presentation, count) {
+    let margins = Margins { presentation, balance, filler_points };
+    for (index, margin) in margins.by_line(count) {
         if let Some(range) = projection.hard_line_range(index) {
             input.margins.push(DiffMargin {
                 line: index,
                 at: range.start,
-                filler_before: margin.filler_before as f32 * filler_points,
-                filler_after: margin.filler_after as f32 * filler_points,
+                filler_before: margin.filler_before,
+                filler_after: margin.filler_after,
                 divider: margin.divider,
             });
         }
@@ -671,33 +853,208 @@ fn layout_input(document: &Document, side: Side, presentation: &SidePresentation
     input
 }
 
-/// The margins diff mode adds to one hard line: filler lines above it (and
-/// below the last line), and a collapsed run's divider.
+/// The margins diff mode adds to one hard line: filler above it, and below
+/// it for the last line or a line taller on the other side, in unscaled
+/// points, and a collapsed run's divider.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct LineMargin {
-    filler_before: usize,
-    filler_after: usize,
+    filler_before: f32,
+    filler_after: f32,
     /// Whether the divider follows the line, and whether its hidden lines
     /// reach the start or end of the file.
     divider: Option<(bool, bool)>,
 }
 
-/// One side's margins by hard line, for a document of `count` lines.
-fn line_margins(presentation: &SidePresentation, count: usize) -> std::collections::BTreeMap<usize, LineMargin> {
-    let mut margins = std::collections::BTreeMap::<usize, LineMargin>::new();
-    for filler in &presentation.fillers {
-        if filler.before_line >= count {
-            margins.entry(count.saturating_sub(1)).or_default().filler_after += filler.lines;
-        } else {
-            margins.entry(filler.before_line).or_default().filler_before += filler.lines;
+/// Everything that gives one side's lines margins.
+#[derive(Clone, Copy)]
+struct Margins<'a> {
+    presentation: &'a SidePresentation,
+    balance: &'a Balance,
+    /// One filler line's height; zero when the sides aren't aligned.
+    filler_points: f32,
+}
+
+impl Margins<'_> {
+    /// The margins by hard line, for a side of `count` lines.
+    fn by_line(&self, count: usize) -> BTreeMap<usize, LineMargin> {
+        let mut margins = BTreeMap::<usize, LineMargin>::new();
+        if self.filler_points > 0.0 {
+            let mut fillers = BTreeMap::<usize, f32>::new();
+            for filler in &self.presentation.fillers {
+                *fillers.entry(filler.before_line).or_default() += filler.lines as f32 * self.filler_points;
+            }
+            for (before, points) in &self.balance.changes {
+                *fillers.entry(*before).or_default() += points;
+            }
+            for (before, points) in fillers {
+                let points = points.max(0.0);
+                if points == 0.0 {
+                    continue;
+                }
+                if before >= count {
+                    margins.entry(count.saturating_sub(1)).or_default().filler_after += points;
+                } else {
+                    margins.entry(before).or_default().filler_before += points;
+                }
+            }
+            // Filler below a line goes above the next one where it is shown,
+            // so it adds to a change's filler there instead of collapsing
+            // with it.
+            let hidden = |line: usize| {
+                let index = self.presentation.collapsed.partition_point(|run| run.end <= line);
+                self.presentation.collapsed.get(index).is_some_and(|run| run.start <= line)
+            };
+            for (line, points) in &self.balance.lines {
+                if line + 1 < count && !hidden(line + 1) {
+                    margins.entry(line + 1).or_default().filler_before += points;
+                } else if *line < count {
+                    margins.entry(*line).or_default().filler_after += points;
+                }
+            }
         }
+        line_dividers(self.presentation, count, &mut margins);
+        margins
     }
+}
+
+/// Add each collapsed run's divider to the margins of the line it borders.
+fn line_dividers(presentation: &SidePresentation, count: usize, margins: &mut BTreeMap<usize, LineMargin>) {
     for run in &presentation.collapsed {
         if let Some((line, after)) = divider_line(run, count) {
             margins.entry(line).or_default().divider = Some((after, !after || run.end >= count));
         }
     }
-    margins
+}
+
+/// One side's measured and estimated heights, less what diff mode's own
+/// margins and the document's insets add, in unscaled points.
+struct SideHeights<'a> {
+    layout: &'a crate::layout::ViewLayoutState,
+    /// What margins and insets add to each line's height band.
+    extra: BTreeMap<usize, f32>,
+    scale: f32,
+    /// One filler line's height.
+    row: f32,
+}
+
+impl<'a> SideHeights<'a> {
+    fn new(layout: &'a crate::layout::ViewLayoutState, installed: &InstalledSide, count: usize) -> Self {
+        let filler_points = if installed.aligned { installed.row_points } else { 0.0 };
+        let margins = Margins { presentation: &installed.presentation, balance: &installed.balance, filler_points };
+        let scale = layout.scale();
+        let row = installed.row_points;
+        // A band runs from a line's first row to the next line's, so the
+        // filler above a line belongs to the line before it, unless the line
+        // begins the laid-out document (as `DiffLayoutInput::band_margins`).
+        let mut extra = BTreeMap::<usize, f32>::new();
+        for (line, margin) in margins.by_line(count) {
+            let own = margin.filler_after + if margin.divider.is_some() { row } else { 0.0 };
+            if line == 0 || margin.divider.is_some_and(|(after, _)| !after) {
+                *extra.entry(line).or_default() += margin.filler_before + own;
+            } else {
+                *extra.entry(line - 1).or_default() += margin.filler_before;
+                *extra.entry(line).or_default() += own;
+            }
+        }
+        let collapsed = &installed.presentation.collapsed;
+        let first = collapsed.first().filter(|run| run.start == 0).map_or(0, |run| run.end);
+        let last = collapsed.last().filter(|run| run.end >= count).map_or(count.checked_sub(1), |run| run.start.checked_sub(1));
+        if let Some(insets) = layout.snapshot().map(|snapshot| snapshot.content_insets) {
+            if first < count {
+                *extra.entry(first).or_default() += insets.top / scale;
+            }
+            if let Some(last) = last {
+                *extra.entry(last).or_default() += insets.bottom / scale;
+            }
+        }
+        extra.retain(|_, points| *points != 0.0);
+        Self { layout, extra, scale, row }
+    }
+
+    /// The height of `lines` without diff margins or insets.
+    fn content(&self, lines: Range<usize>) -> Result<f32, CoreError> {
+        let height = self.layout.hard_line_range_height(lines.clone()).map_err(LayoutError::from)?.height();
+        let extra: f32 = self.extra.range(lines).map(|(_, points)| points).sum();
+        Ok(height as f32 / self.scale - extra)
+    }
+
+    /// Runs of lines of equal height in `lines`, in unscaled points, with
+    /// each line that has margins or insets as its own run without them.
+    fn runs(&self, lines: Range<usize>) -> Result<Vec<(Range<usize>, f32)>, CoreError> {
+        let mut runs = Vec::new();
+        for (run, height) in self.layout.height_runs(lines).map_err(LayoutError::from)? {
+            let height = height as f32 / self.scale;
+            let mut start = run.start;
+            for (&line, extra) in self.extra.range(run.clone()) {
+                if start < line {
+                    runs.push((start..line, height));
+                }
+                runs.push((line..line + 1, height - extra));
+                start = line + 1;
+            }
+            if start < run.end {
+                runs.push((start..run.end, height));
+            }
+        }
+        Ok(runs)
+    }
+}
+
+/// Balance the lines at `offsets` of one unchanged region, whose lines are
+/// `lines` on each side: each line taller on one side gets filler below it on
+/// the other.
+fn balance_unchanged(heights: &[SideHeights; 2], lines: [&Range<usize>; 2], offsets: Range<usize>,
+    balance: &mut [Balance; 2]) -> Result<(), CoreError> {
+    let runs = [
+        heights[0].runs(lines[0].start + offsets.start..lines[0].start + offsets.end)?,
+        heights[1].runs(lines[1].start + offsets.start..lines[1].start + offsets.end)?,
+    ];
+    let (mut base_runs, mut new_runs) = (runs[0].iter().peekable(), runs[1].iter().peekable());
+    let mut offset = offsets.start;
+    while let (Some((base_run, base_height)), Some((new_run, new_height))) = (base_runs.peek(), new_runs.peek()) {
+        let base_end = base_run.end - lines[0].start;
+        let new_end = new_run.end - lines[1].start;
+        let end = base_end.min(new_end);
+        let difference = base_height - new_height;
+        if difference.abs() >= BALANCE_TOLERANCE {
+            let shorter = usize::from(difference > 0.0);
+            for line in offset..end {
+                balance[shorter].lines.insert(lines[shorter].start + line, difference.abs());
+            }
+        }
+        offset = end;
+        if base_end == end {
+            base_runs.next();
+        }
+        if new_end == end {
+            new_runs.next();
+        }
+    }
+    Ok(())
+}
+
+/// Remove the entries keyed in `keys`, visiting only those.
+fn clear(map: &mut BTreeMap<usize, f32>, keys: Range<usize>) {
+    if keys.is_empty() {
+        return;
+    }
+    let found: Vec<usize> = map.range(keys).map(|(key, _)| *key).collect();
+    for key in found {
+        map.remove(&key);
+    }
+}
+
+/// Sort ranges and join those that overlap or touch.
+fn merge_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    ranges.sort_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => merged.push(range),
+        }
+    }
+    merged
 }
 
 /// The hard line whose margin draws a collapsed run's divider, and whether
@@ -713,7 +1070,8 @@ fn divider_line(run: &Range<usize>, count: usize) -> Option<(usize, bool)> {
 
 /// Hard lines whose diff appearance differs between two presentations of
 /// the same side of `count` lines, as sorted ranges.
-fn changed_lines(old: &SidePresentation, new: &SidePresentation, count: usize) -> Vec<Range<usize>> {
+fn changed_lines(old_margins: Margins, new_margins: Margins, count: usize) -> Vec<Range<usize>> {
+    let (old, new) = (old_margins.presentation, new_margins.presentation);
     let mut lines: Vec<Range<usize>> = Vec::new();
     // Changed-line ranges: the symmetric difference of the two range sets.
     let mut edges: Vec<(usize, i32)> = Vec::new();
@@ -762,7 +1120,7 @@ fn changed_lines(old: &SidePresentation, new: &SidePresentation, count: usize) -
     // Lines whose filler or divider differs. Lines that become hidden or
     // shown need nothing here: hiding visits no lines and showing
     // invalidates them.
-    let (old_margins, new_margins) = (line_margins(old, count), line_margins(new, count));
+    let (old_margins, new_margins) = (old_margins.by_line(count), new_margins.by_line(count));
     for line in old_margins.keys().chain(new_margins.keys()) {
         if old_margins.get(line) != new_margins.get(line) {
             lines.push(*line..*line + 1);

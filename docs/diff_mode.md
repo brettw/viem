@@ -445,10 +445,29 @@ Layers are built bottom-up; each has focused tests before the next starts.
     lines the sides up only if both views agree on the height of every line
     above it, measured or not, so a diff view estimates an unmeasured line as
     layout will measure it: one default row (`DiffLayoutInput::row_points`,
-    the filler unit) plus that line's filler and divider (`DiffMargin`).
-    These estimates are reapplied after every invalidation, including a
-    regional install that resets the index, and wait for the next
-    presentation while an edit has renumbered the lines.
+    the filler unit) plus the margins in its height band
+    (`DiffLayoutInput::band_margins`) and, for the first and last laid-out
+    lines, the document's insets. A band runs from a line's first row to the
+    next line's, so filler above a line counts in the line before it. These
+    estimates are reapplied after every invalidation, including a regional
+    install that resets the index, but never replace a measured or retained
+    height, and wait for the next presentation while an edit has renumbered
+    the lines. When a presentation changes a band's margins, the band's
+    height moves by the difference (`ViewHeightIndex::adjust_line`), keeping
+    what was measured of its text.
+  - Balancing: wrapping (or an unmeasured line beside a measured one) can
+    still make corresponding lines differ in height, so `DiffSession` levels
+    them with extra filler, `Balance`, in unscaled points. An unchanged line
+    taller on one side gets filler below it on the other, placed above the
+    next shown line so it adds to (rather than collapses with) a change's
+    filler there; a change gets filler on its shorter side beyond what line
+    counts give, possibly negative. Each view's `ViewHeightIndex` records
+    which lines changed height while diff mode presents it (`HeightChanges`,
+    at most 32 ranges, merging the closest beyond that), and `sync` and every
+    step of `sync_scroll` compare only those regions on both sides, walking
+    equal runs of heights (`runs_in`) without the diff margins and insets.
+    The divider below a balanced line is drawn below its filler
+    (`CollapsedDivider::offset`), so dividers stay level too.
   - Coordinator: `coordinator/diff.rs` `DiffSession` (`new`, `update`,
     `sync`, `set_aligned`, `corresponding_line`, `sync_scroll`,
     `clear`),
@@ -663,13 +682,17 @@ context), built in this order:
   session installs the new one. Rebasing the presentation through the edit
   inside the core would remove the second pass.
 - Filler height is the measured default Code row (`default_line_height` with
-  the base paragraph's line spacing), so it is exact for uniform Code lines,
-  and so are the estimates for lines not yet measured. A line that wraps to
-  more rows on one side does not yet get extra filler on the other. With
-  different wrapping, corresponding text can sit at different heights within
-  the shared scroll range; so can a wrapped line that only one side has
-  measured, until the other measures it (at once for a pre-rendered
-  document).
+  the base paragraph's line spacing), and balancing adds whatever wrapping
+  needs beyond it. Balance follows the heights each side has now: a wrapped
+  line one side has measured is balanced against the other side's estimate
+  until that side measures it, which then moves the filler once. A change
+  with lines measured on one side only is balanced the same way. Two sides
+  at different zoom don't line up, since they share one raw coordinate.
+- Balancing costs one margin per unchanged line whose sides wrap
+  differently, so after the sides are given different widths each sync
+  rebuilds that many margins (like the per-hunk work it already does). A
+  regrouping of either side's heights, such as a full relayout, compares
+  every line once.
 - A session is created synchronously from both cores' current documents,
   so a very large initial diff blocks the calling thread within the work
   budget. Moving the first diff to a worker needs a snapshot-based create.

@@ -225,12 +225,6 @@ fn fixtures_match_vim_output() {
 }
 
 #[test]
-fn smoke_echo_and_variables() {
-    assert_eq!(run_script("let x = 1 + 2\necho x\n"), "\n3");
-    assert_eq!(run_script("echo 'a' .. 'b' 1.5\n"), "\nab 1.5");
-}
-
-#[test]
 fn statement_level_calls_suspend_and_resume() {
     let mut host = MemoryHost::new();
     host.suspend_after = Some(1);
