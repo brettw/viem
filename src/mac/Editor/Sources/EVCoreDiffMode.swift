@@ -111,15 +111,11 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
                         operation: "Compare with the diff base")
         self.handle = handle
         surface.liveDiffSession = self
-        surface.diffPresentationDidRefresh = { [weak self] scrolled in
-            self?.mirror(fromNew: scrolled)
-            self?.updateMarks(isNew: true)
-            self?.syncOpenedContext(isNew: true)
+        surface.diffPresentationDidRefresh = { [weak self] scrolled, afterLiveEdit in
+            self?.didRefresh(isNew: true, scrolled: scrolled, afterLiveEdit: afterLiveEdit)
         }
-        baseSurface.diffPresentationDidRefresh = { [weak self] scrolled in
-            self?.mirror(fromNew: !scrolled)
-            self?.updateMarks(isNew: false)
-            self?.syncOpenedContext(isNew: false)
+        baseSurface.diffPresentationDidRefresh = { [weak self] scrolled, afterLiveEdit in
+            self?.didRefresh(isNew: false, scrolled: scrolled, afterLiveEdit: afterLiveEdit)
         }
         surface.diffOpenCollapsedContext = { [weak self] line in self?.openCollapsedContext(isNew: true, line: line) ?? false }
         baseSurface.diffOpenCollapsedContext = { [weak self] line in
@@ -169,20 +165,25 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         return true
     }
 
-    /// A caret that moved onto collapsed context opened it in its own view;
-    /// sync so the other side opens it too, in the same turn.
-    private func syncOpenedContext(isNew: Bool) {
+    private func didRefresh(isNew: Bool, scrolled: Bool, afterLiveEdit: Bool) {
+        mirror(fromNew: afterLiveEdit || (scrolled ? isNew : !isNew))
+        updateMarks(isNew: isNew)
+        // A caret that entered collapsed context opened it in this view.
+        // Sync so the other side opens it in the same turn.
         guard handle != 0, let side = isNew ? surface : baseSurface,
               let core = isNew ? document?.core : base?.core, let view = side.session?.viewID else { return }
         var opened: UInt32 = 0
         guard viem_diff_view_opened_context(core, view, &opened) == UInt32(VIEM_STATUS_OK), opened != 0 else { return }
+        let wasMirroring = mirroring
+        mirroring = true
         sync()
         if !isNew { surface?.refreshPresentation() }
-        mirror(fromNew: isNew)
+        mirroring = wasMirroring
+        mirror(fromNew: afterLiveEdit || isNew)
     }
 
     /// Update the diff for the document's current revision and redraw.
-    func sync(force: Bool = false) {
+    func sync(force: Bool = false, afterLiveEdit: Bool = false) {
         guard handle != 0, let document, let base, let surface, let baseSurface,
               let newView = surface.session?.viewID, let baseView = baseSurface.session?.viewID else { return }
         var result = UInt32(VIEM_DIFF_SYNC_UNCHANGED)
@@ -202,7 +203,9 @@ final class EVCoreDiffSession: EVDiffSessionControlling {
         // unchanged base. Redraw its editor only when its own frame changed.
         if !aligned { markKeys.removeValue(forKey: ObjectIdentifier(baseSurface)) }
         if force || baseFrameChanged(baseSurface) {
-            baseSurface.refreshPresentation()
+            // Reflowing base filler during a live edit can move its text
+            // anchor. Keep the live pane in charge through both refreshes.
+            baseSurface.refreshPresentation(afterLiveDiffEdit: afterLiveEdit || result != UInt32(VIEM_DIFF_SYNC_UNCHANGED))
         } else {
             updateMarks(isNew: false)
         }

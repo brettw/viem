@@ -31,6 +31,30 @@ fn select(core: &mut Editor, view: ViewId, anchor: (usize, usize), active: (usiz
     )
     .unwrap();
 }
+
+#[test]
+fn formatting_selected_cells_after_scrolling_keeps_the_visible_text_in_place() {
+    let source = format!("{SOURCE}\n{}Landmark", "Paragraph\n\n".repeat(30));
+    let (mut core, view) = editor(&source);
+    select(&mut core, view, (0, 0), (1, 0));
+    let expected = core.list_selection_identity(view).unwrap();
+    core.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(f32::MAX) }).unwrap();
+    let landmark_y = |core: &Editor| {
+        let at = core.document().text().find("Landmark").unwrap();
+        let layout = core.layout(view).unwrap();
+        let snapshot = layout.snapshot().unwrap();
+        let row = snapshot.rows.iter().find(|row| row.text_range.contains(&at)).unwrap();
+        row.y - layout.viewport_top()
+    };
+    let before = landmark_y(&core);
+    assert!((0.0..core.layout(view).unwrap().height()).contains(&before));
+    let result = core.handle(view, CoreEvent::SetSelectionSemanticStyle {
+        expected, style: SemanticInlineStyle::Emphasis, enabled: true,
+    }).unwrap();
+    assert!(result.document_changed);
+    assert!((landmark_y(&core) - before).abs() < 0.01);
+}
+
 #[test]
 fn rectangle_formatting_does_not_touch_intervening_unselected_cells() {
     let (mut core, view) = editor(SOURCE);

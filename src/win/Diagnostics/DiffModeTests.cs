@@ -139,6 +139,38 @@ internal sealed partial class EditorWindow
         CheckPair(.95, left);
         CheckPair(.4, right);
         CheckPair(0, left);
+        right.SetWordWrap(false);
+        right.View!.Command("46Gzt2j");
+        var anchor = right.View.Layout().Rows.Single(row => row.hard_line_index == 45);
+        right.ScrollVerticallyFromScrollbar(anchor.y + anchor.line_advance / 4);
+        var beforeTop = right.View.Viewport.top;
+        var screenY = anchor.y - beforeTop;
+        right.View.Command("dd");
+        await InputRoutingTests.Settle();
+        CheckDiff(editor.Source == string.Join("\n", live.Split('\n').Where((_, index) => index != 47)),
+            "Normal dd removes the selected added line");
+        void CheckEditViewport(string operation) {
+            var anchorRow = right.View.Layout().Rows.Single(row => row.hard_line_index == 45);
+            CheckDiff(Math.Abs(anchorRow.y - right.View.Viewport.top - screenY) < .1
+                && Math.Abs(right.View.Viewport.top - beforeTop) < .1
+                && Math.Abs(left.VerticalScrollControl.Value - beforeTop) < .1
+                && Math.Abs(right.VerticalScrollControl.Value - beforeTop) < .1,
+                $"{operation} preserves the anchor's screen position and both scrollbar values");
+        }
+        CheckEditViewport("Deleting a visible added line");
+        right.View.Undo();
+        CheckDiff(editor.Source == live, "Native undo restores the deleted line in the live comparison");
+        CheckEditViewport("Undoing the deletion");
+        right.View.Command("qadduq");
+        ulong revision = right.Document.State.document_revision;
+        right.View.Command("@a");
+        var restored = right.View.Layout();
+        var addedRow = restored.Rows.Single(row => row.hard_line_index == 47);
+        CheckDiff(right.Document.State.document_revision == revision && editor.Source == live
+            && restored.Decorations.Any(d => d.row_index == addedRow.row_index
+                && (d.flags & VIEM_LAYOUT_DECORATION_BLOCK_BACKGROUND) != 0),
+            "A macro that deletes and undoes reinstalls added-line styling at the original revision");
+        CheckEditViewport("Deleting and undoing in one macro");
         window.SetDiffAlignment(false);
         CheckDiff(left.VerticalScrollControl.Maximum == 0 && right.VerticalScrollControl.Maximum > right.Canvas.ActualHeight,
             "Disabling alignment restores the short and long files' independent scroll ranges");

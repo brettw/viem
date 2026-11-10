@@ -26,7 +26,7 @@ internal sealed partial class EditorWindow
     private bool singleFileDiff;
     private bool diffEnabled, diffAligned, diffCollapsed, diffGit, mirroring, deletedSide, originalNumbers;
     private bool enteredDiff, changingNumbers;
-    private ulong syncedRevision;
+    private (ulong Revision, ulong Turn)? syncedSource;
     private DiffRequest? diffRequest;
     private CancellationTokenSource? folderRequest, branchRequest;
     private long diffGeneration;
@@ -153,7 +153,7 @@ internal sealed partial class EditorWindow
         pane.InstallReplacement(document, view, deferPresentation: true);
         if (comparison != null) {
             comparison.ReplaceLiveView(view!);
-            syncedRevision = 0;
+            syncedSource = null;
             pane.Run(() => SyncDiff());
         }
         pane.FinishReplacement();
@@ -512,7 +512,7 @@ internal sealed partial class EditorWindow
         originalNumbers = restoreNumbers;
         enteredDiff = true; deletedSide = protectedFile;
         comparison = next;
-        syncedRevision = document.State.document_revision;
+        syncedSource = document.SourceChangeIdentity;
         diffFiles = prepared.Files; diffBase = prepared.Basis; diffGit = prepared.Git;
         live.ClearDiffMarks(); left.ClearDiffMarks();
         if (firstBase) left.Refresh(); else left.FinishReplacement();
@@ -532,7 +532,7 @@ internal sealed partial class EditorWindow
     private void SyncDiff(bool fromLive = true)
     {
         comparison!.Sync();
-        syncedRevision = diffLive!.Document.State.document_revision;
+        syncedSource = diffLive!.Document.SourceChangeIdentity;
         diffLive.ClearDiffMarks();
         diffLeft!.ClearDiffMarks();
         // Reflow can move either viewport. Align from the pane that opened
@@ -545,26 +545,30 @@ internal sealed partial class EditorWindow
             diffLive.Refresh();
         } finally { mirroring = wasMirroring; }
     }
-    internal void BeforeDiffLayout(EditorPane pane)
+    // A source edit is anchored in the live pane. Even when base filler
+    // shifts during its nested refresh, both frames mirror the live origin.
+    internal bool BeforeDiffLayout(EditorPane pane)
     {
-        if (comparison != null && diffLive == pane && pane.Document.State.document_revision != syncedRevision) {
+        if (comparison != null && diffLive == pane && pane.Document.SourceChangeIdentity != syncedSource) {
             comparison.Sync();
-            syncedRevision = pane.Document.State.document_revision;
+            syncedSource = pane.Document.SourceChangeIdentity;
             if (UseLiveTotals) diffToolbar?.ShowLineTotals(comparison.LineTotals);
             else if (singleFileDiff) UpdateDiffToolbar();
             diffLeft!.RefreshDiffBaseAfterEdit(comparison, diffAligned);
+            return true;
         }
+        return false;
     }
-    internal void DiffLayoutUpdated(EditorPane pane, bool scrolled)
+    internal void DiffLayoutUpdated(EditorPane pane, bool scrolled, bool afterLiveEdit)
     {
         if (comparison == null || pane != diffLive && pane != diffLeft) return;
         bool fromLive = pane == diffLive;
         if (diffCollapsed && comparison.HasOpenedContext(fromLive)) {
-            SyncDiff(fromLive);
+            SyncDiff(afterLiveEdit || fromLive);
             return;
         }
         pane.UpdateDiffMarks(comparison, fromLive);
-        if (diffAligned) MirrorDiff(scrolled ? fromLive : !fromLive);
+        if (diffAligned) MirrorDiff(afterLiveEdit || (scrolled ? fromLive : !fromLive));
     }
     internal bool OpenCollapsedContext(EditorPane pane, ulong line)
     {

@@ -116,6 +116,18 @@ impl<P: TextMeasurementProvider> Core<P> {
     /// with the smallest movement. Large or sparsely materialized changes
     /// fall back to the restored caret without shaping the whole edit.
     pub(super) fn reveal_history_change(&mut self, view_id: ViewId, map: &PositionMap, previous: crate::document::HistoryNodeId) -> Result<(), CoreError> {
+        let changed = map.replacements().map(|(_, new)| new).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
+            .or_else(|| self.document.history_formatting_change_range(previous));
+        let pending = self.views[&view_id].diff_edit_viewport.is_some();
+        self.reveal_history_range(view_id, changed.as_ref())?;
+        if pending {
+            let view = self.views.get_mut(&view_id).expect("validated history view");
+            view.diff_edit_viewport = view.diff_edit_viewport.take().and_then(|edit| edit.after_history_reveal(view, changed));
+        }
+        Ok(())
+    }
+
+    pub(super) fn reveal_history_range(&mut self, view_id: ViewId, changed: Option<&std::ops::Range<usize>>) -> Result<(), CoreError> {
         let snapshot = self.views[&view_id].layout.snapshot().ok_or(LayoutError::NoRows)?;
         if snapshot.document_id != self.document.id() { return Err(LayoutError::WrongDocument.into()); }
         if snapshot.document_revision != self.document.revision() { return Err(LayoutError::WrongDocumentRevision.into()); }
@@ -127,11 +139,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             result => result?,
         }
         let cursor = self.views[&view_id].commands.cursor();
-        let changed = map.replacements().map(|(_, new)| new).reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
-            .or_else(|| self.document.history_formatting_change_range(previous));
         let view = self.views.get_mut(&view_id).expect("validated history view");
         if let Some(changed) = changed {
-            reveal_changed_area(&mut view.layout, changed, cursor)?;
+            reveal_changed_area(&mut view.layout, changed.clone(), cursor)?;
         }
         // The logical range edge can be on the other visual side in bidi
         // text. The restored caret's actual affinity and full cell win.

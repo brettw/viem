@@ -502,12 +502,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 before: after,
             });
         }
-        let composition_changes = self.refresh_views_after_native_change(view, &map)?;
-        if let Err(error) =
-            self.materialize_immediate_viewport(view, ImmediateLayoutIntent::RevealCaret)
-        {
-            self.record_presentation_error(view, error);
-        }
+        let intent = if preserve_selection { ImmediateLayoutIntent::PreserveViewport }
+            else { ImmediateLayoutIntent::PreserveViewportAndRevealCaret };
+        let composition_changes = self.refresh_views_after_native_change(view, &map, intent)?;
         Ok(CoreOutcome {
             command: None,
             document_changed: true,

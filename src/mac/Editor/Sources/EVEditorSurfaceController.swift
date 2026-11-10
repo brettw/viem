@@ -67,7 +67,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
     /// Diff mode refreshes this side's scrollbar marks after each verified
     /// frame, since layout can refine the heights they are measured in.
     weak var liveDiffSession: EVCoreDiffSession?
-    var diffPresentationDidRefresh: ((Bool) -> Void)?
+    var diffPresentationDidRefresh: ((_ scrolled: Bool, _ afterLiveEdit: Bool) -> Void)?
     /// Diff mode opens the collapsed context whose divider borders this hard
     /// line when it is clicked; returns whether a run opened.
     var diffOpenCollapsedContext: ((UInt64) -> Bool)?
@@ -338,9 +338,9 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if isViewLoaded { editorView.applyPresentation() }
     }
 
-    func refreshPresentation(advancingSearch: Bool = true) {
+    func refreshPresentation(advancingSearch: Bool = true, afterLiveDiffEdit: Bool = false) {
         guard session != nil, !isRefreshingPresentation else { return }
-        installPresentation(advancingSearch: advancingSearch)
+        installPresentation(advancingSearch: advancingSearch, afterLiveDiffEdit: afterLiveDiffEdit)
         followCodeWordWrap()
     }
 
@@ -391,17 +391,22 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         performInput { _ = try session.setWrap(wrap) }
     }
 
-    private func installPresentation(advancingSearch: Bool) {
+    private func installPresentation(advancingSearch: Bool, afterLiveDiffEdit: Bool = false) {
         guard let session, !isRefreshingPresentation else { return }
         speculativeExtentRefresh?.cancel(); speculativeExtentRefresh = nil
         isRefreshingPresentation = true
         EVStartupPerformance.mark("surface.refresh.begin")
         var installed = false
         let previousTop = viewportState.top
+        let previousDocument = layoutSnapshot?.info.identity
         defer {
             isRefreshingPresentation = false
             EVStartupPerformance.mark("surface.refresh.end")
-            if installed { diffPresentationDidRefresh?(previousTop != viewportState.top) }
+            if installed, let diffPresentationDidRefresh {
+                let liveChanged = liveDiffSession != nil && (previousDocument?.document_id != viewportState.document_id
+                    || previousDocument?.document_revision != viewportState.document_revision)
+                diffPresentationDidRefresh(previousTop != viewportState.top, afterLiveDiffEdit || liveChanged)
+            }
         }
         do {
             session.provider.imageRastersDidChange = { [weak self] in
@@ -846,7 +851,7 @@ public final class EVEditorSurfaceController: NSViewController, EVEditorSurface,
         if originatingViewIDs.count != 1 || !originatingViewIDs.contains(session?.viewID ?? 0) {
             session?.noteExternalDocumentChange()
         }
-        refreshPresentation()
+        refreshPresentation(afterLiveDiffEdit: true)
     }
 
     /// Font registration can retire core geometry without a native input turn.

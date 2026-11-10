@@ -525,7 +525,7 @@ mod tests {
             core.syntax.markdown.language_change, identity,
             "empty work before current layout must not retire the language scroll policy"
         );
-        core.refresh_views_after_native_change(view, &map).unwrap();
+        core.refresh_views_after_native_change(view, &map, ImmediateLayoutIntent::PreserveViewport).unwrap();
         core.restore_code_language_viewport(view, origin.0, origin.1)
             .unwrap();
         core.poll_syntax();
@@ -715,7 +715,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             HistoryRestoration::new(before, after),
         )?;
         self.syntax.markdown.language_change = Some((self.document.id(), self.document.revision()));
-        let composition_changes = self.refresh_views_after_native_change(view, &map)?;
+        let composition_changes = self.refresh_views_after_native_change(
+            view, &map, ImmediateLayoutIntent::PreserveViewport,
+        )?;
         // The language label is viewport furniture, independent of the caret.
         // Source refresh can refine regional height estimates while restoring
         // text anchors. Retain each view's actual scroll origin for this label

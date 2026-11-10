@@ -2512,10 +2512,12 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.poll_syntax();
         self.synchronize_whitespace(view_id)?;
         let _ = self.open_collapsed_at_caret(view_id)?;
-        // Font registration may advance metrics synchronously during shaping.
+        // Font registration can advance metrics during shaping. Publishing
+        // syntax on a subsequent slice can also invalidate a wrap checkpoint.
         // Retry only disposable layout work, never the input/source transaction.
         for attempt in 0..3 {
             let before = self.layout_provider_requirements(view_id)?;
+            let configuration = self.views[&view_id].layout.configuration_generation();
             let result = self.materialize_immediate_viewport_once(view_id, intent, allow_automatic_horizontal_focus);
             // A compound edit can place the caret far beyond the preserved
             // editing row. Its exact new location takes priority over that
@@ -2533,6 +2535,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             let after = self.layout_provider_requirements(view_id)?;
             if before.metrics_generation == after.metrics_generation
                 && before.measurement_environment_id == after.measurement_environment_id
+                && configuration == self.views[&view_id].layout.configuration_generation()
             {
                 return result;
             }
@@ -2781,6 +2784,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                 if intent != ImmediateLayoutIntent::RevealCaret {
                     view.viewport_anchor = preserved_anchor;
                     restore_viewport_anchor(view)?;
+                } else {
+                    // A distant caret needs a bounded band of its own. Its
+                    // estimated acquisition origin does not position the view:
+                    // reveal the exact row from the previous viewport.
+                    view.layout.set_viewport_top(viewport_top)?;
                 }
                 if intent != ImmediateLayoutIntent::PreserveViewport {
                     viewport::reveal_presentation_caret_row(&self.document, view)?;
@@ -3595,6 +3603,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             .flatten();
         for view in self.views.values_mut() {
             if map.source_revision() != map.target_revision() {
+                if let Some(edit) = view.diff_edit_viewport.take() {
+                    edit.continue_edit(view, map)?;
+                }
                 let change = document_layout_change(
                     &self.document,
                     &view.layout,
@@ -3658,15 +3669,14 @@ impl<P: TextMeasurementProvider> Core<P> {
                 ImmediateLayoutIntent::PreserveViewport
             };
             let view = &self.views[&view_id];
-            let diff_anchor = (intent == ImmediateLayoutIntent::PreserveViewportAndRevealCaret
-                && matches!(view.commands.mode(), Mode::Insert | Mode::Replace)
-                && view.layout.awaits_live_diff(self.document.id(), self.document.revision()))
-                .then_some(view.viewport_anchor).flatten();
+            let diff_anchor = view.viewport_anchor.filter(|_| intent != ImmediateLayoutIntent::RevealCaret
+                && view.layout.awaits_live_diff(self.document.id(), self.document.revision()));
+            let left = view.layout.viewport_left();
             if let Err(error) = self.materialize_immediate_viewport(view_id, intent) {
                 self.record_presentation_error(view_id, error);
             }
             let view = self.views.get_mut(&view_id).expect("attached view");
-            view.diff_edit_viewport = diff_anchor.and_then(|anchor| diff::DiffEditViewport::capture(view, anchor));
+            view.diff_edit_viewport = diff_anchor.and_then(|anchor| diff::DiffEditViewport::capture(view, anchor, left, intent));
         }
     }
 
@@ -4515,6 +4525,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         &mut self,
         view_id: ViewId,
         map: &PositionMap,
+        active_intent: ImmediateLayoutIntent,
     ) -> Result<Vec<ViewCompositionChange>, CoreError> {
         self.cancel_all_active_layout_work();
         self.rebase_viewport_anchors(map)?;
@@ -4535,10 +4546,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 });
             }
         }
-        self.materialize_views_after_document_change(
-            view_id,
-            ImmediateLayoutIntent::PreserveViewport,
-        );
+        self.materialize_views_after_document_change(view_id, active_intent);
         Ok(composition_changes)
     }
 
@@ -4659,7 +4667,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             HistoryRestoration::new(before_restoration, after_restoration),
         )?;
 
-        let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map)?;
+        let composition_changes = self.refresh_views_after_native_change(
+            view_id, &expected_map, ImmediateLayoutIntent::PreserveViewport,
+        )?;
         Ok(CoreOutcome {
             command: None,
             document_changed: changed,
@@ -4795,12 +4805,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             });
         }
 
-        let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map)?;
-        if comment_caret.is_some() {
-            if let Err(error) = self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret) {
-                self.record_presentation_error(view_id, error);
-            }
-        }
+        let intent = if comment_caret.is_some() { ImmediateLayoutIntent::PreserveViewportAndRevealCaret }
+            else { ImmediateLayoutIntent::PreserveViewport };
+        let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map, intent)?;
         let warnings = committed.summary().conversion_warnings();
         let command = if warnings.is_empty() {
             None
@@ -5015,7 +5022,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             )?;
         }
 
-        let composition_changes = self.refresh_views_after_native_change(view_id, &expected_map)?;
+        let composition_changes = self.refresh_views_after_native_change(
+            view_id, &expected_map, ImmediateLayoutIntent::PreserveViewport,
+        )?;
         Ok(CoreOutcome {
             command: None,
             document_changed: changed,
@@ -5349,6 +5358,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         } else { None };
         let autocmd_generation = self.autocmd_input_generation;
         let mode_before = self.views.get(&view_id).filter(|view| !view.commands.has_staged_script_action()).map(|view| view.commands.mode());
+        let explicit_navigation = matches!(&event, CoreEvent::SetViewportOrigin { .. } | CoreEvent::PlaceCursor { .. }
+            | CoreEvent::BeginPointerGesture { .. } | CoreEvent::SelectPointerWord { .. } | CoreEvent::SelectPointerRow { .. }
+            | CoreEvent::SelectAll { .. } | CoreEvent::GoToLine { .. } | CoreEvent::RevealSelection);
         // List actions can fail while resolving hidden source syntax. Their
         // checkpoint must precede retiring completion and closing style groups.
         let result = if matches!(&event, CoreEvent::SetListStyle { .. } | CoreEvent::ToggleCheckbox { .. }) {
@@ -5365,6 +5377,9 @@ impl<P: TextMeasurementProvider> Core<P> {
             },
             result => result?,
         };
+        if explicit_navigation {
+            self.views.get_mut(&view_id).expect("validated view").diff_edit_viewport = None;
+        }
         if let Some(cancelled) = cancelled {
             let mut accumulator = CoreOutcomeAccumulator::new(cancelled);
             accumulator.merge(outcome)?;
@@ -6292,7 +6307,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .views
                     .get_mut(&view_id)
                     .expect("view existence checked above");
-                view.diff_edit_viewport = None;
                 Ok(CoreOutcome {
                     command: None,
                     document_changed: false,
@@ -6429,6 +6443,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 // editing baseline would turn intentional paragraph/font changes
                 // into scrolling of otherwise unchanged surrounding content.
                 let cursor_moved = command.cursor_moved;
+                if !changed && (cursor_moved || viewport_command || command.revealed_search_match.is_some()) {
+                    target_view.diff_edit_viewport = None;
+                }
                 let history_navigation = command.history_navigation;
                 // Search prompts temporarily change mode while retaining the
                 // rectangle and its exact layout. Release dense geometry only

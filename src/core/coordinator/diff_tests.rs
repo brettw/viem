@@ -878,7 +878,7 @@ fn opening_a_line_below_deletion_filler_uses_the_viewport_before_the_edit() {
     let live = lines(20, |line| Some(format!("line {line}")));
     let removed = lines(12, |line| Some(format!("removed {line}")));
     let older = live.replace("line 8\n", &format!("{removed}line 8\n"));
-    for scroll_after_input in [false, true] {
+    for scroll_after_input in [None, Some(Side::Base), Some(Side::New)] {
         let (mut base, bv) = core(&older);
         let (mut new, nv) = core(&live);
         for (core, view) in [(&mut base, bv), (&mut new, nv)] {
@@ -896,13 +896,14 @@ fn opening_a_line_below_deletion_filler_uses_the_viewport_before_the_edit() {
         let before = screen_y(&new);
 
         key(&mut new, nv, Key::Enter);
-        if scroll_after_input {
-            new.handle(nv, CoreEvent::SetViewportOrigin { left: 0., top: Some(0.) }).unwrap();
+        if let Some(side) = scroll_after_input {
+            let (core, view) = if side == Side::New { (&mut new, nv) } else { (&mut base, bv) };
+            core.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(0.) }).unwrap();
         }
         session.sync(&mut base, bv, &mut new, nv).unwrap();
         assert_eq!(top(&base, bv), top(&new, nv));
-        if scroll_after_input {
-            assert_eq!(top(&new, nv), 0., "an explicit scroll supersedes the earlier typing viewport");
+        if scroll_after_input.is_some() {
+            assert_eq!(top(&new, nv), 0., "an explicit scroll on either side supersedes the earlier editing viewport");
         } else {
             assert!((screen_y(&new) - before).abs() < 0.01, "the row beside the deletion stays fixed");
             let layout = new.layout(nv).unwrap();
@@ -910,6 +911,56 @@ fn opening_a_line_below_deletion_filler_uses_the_viewport_before_the_edit() {
             let caret = layout.snapshot().unwrap().rows.iter().find(|r| r.hard_line_index == caret_line).unwrap();
             assert!(caret.reveal_bounds().end <= layout.viewport_top() + layout.height() + 0.01);
         }
+    }
+}
+
+#[test]
+fn deleting_added_lines_keeps_the_surviving_text_fixed_across_diff_layouts() {
+    let common = lines(20, |line| Some(format!("line {line}")));
+    let removed = lines(12, |line| Some(format!("removed {line}")));
+    let older = common.replace("line 8\n", &format!("{removed}line 8\n"));
+    let live = common.replace("line 11\n", "line 11\nadded one\nadded two\nadded three\n");
+    for (keys, external) in [("dd", false), ("Vd", false), (":d", false), ("dddd", false),
+        ("k3dd", false), ("ddu", false), ("dd", true)] {
+        let (mut base, bv) = core(&older);
+        let (mut new, nv) = core(&live);
+        for (core, view) in [(&mut base, bv), (&mut new, nv)] {
+            core.handle(view, CoreEvent::Resize { width: 600., height: 180. }).unwrap();
+        }
+        let mut session = DiffSession::new(base.document(), new.document(), true);
+        session.set_collapsed(true);
+        session.sync(&mut base, bv, &mut new, nv).unwrap();
+        // A peer editing this buffer must preserve the diff reader's
+        // viewport even when its own caret is outside that viewport.
+        let editor = if external { new.add_view(MockTextMeasurementProvider::new(), 600., 180.) } else { nv };
+        place(&mut new, editor, 13);
+        let reference = 9;
+        let top_in_filler = row_top(&new, nv, 8) - 3.75 * new.default_row_height(nv).unwrap();
+        new.handle(nv, CoreEvent::SetViewportOrigin { left: 0., top: Some(top_in_filler) }).unwrap();
+        session.sync_scroll(&mut base, bv, &mut new, nv, Side::New).unwrap();
+        let screen_y = |core: &TestCore| row_top(core, nv, reference) - core.layout(nv).unwrap().viewport_top();
+        let before = screen_y(&new);
+        type_text(&mut new, editor, keys);
+        if keys == ":d" { key(&mut new, editor, Key::Enter); }
+        if keys == "dd" && !external {
+            // A fresh publication at the same viewport can precede diff sync.
+            let first = new.layout(nv).unwrap().snapshot().unwrap().revision;
+            new.materialize_immediate_viewport(nv, ImmediateLayoutIntent::PreserveViewport).unwrap();
+            assert_ne!(new.layout(nv).unwrap().snapshot().unwrap().revision, first);
+        }
+        session.sync(&mut base, bv, &mut new, nv).unwrap();
+        session.sync_scroll(&mut base, bv, &mut new, nv, Side::Base).unwrap();
+        let expected = match keys {
+            "k3dd" => common.clone(),
+            "ddu" => live.clone(),
+            "dddd" => live.replace("added two\nadded three\n", ""),
+            _ => live.replace("added two\n", ""),
+        };
+        assert_eq!(new.document().source_bytes(), expected.as_bytes());
+        let hidden: Vec<_> = session.collapsed_runs().iter().map(|run| run.new.clone()).collect();
+        assert_eq!(new.layout(nv).unwrap().elided().runs(), hidden);
+        assert!((screen_y(&new) - before).abs() < 0.01, "{keys}, external={external}, before={before}, after={}", screen_y(&new));
+        assert_eq!(top(&base, bv), top(&new, nv));
     }
 }
 

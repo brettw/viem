@@ -45,7 +45,7 @@ internal sealed unsafe partial class CoreView
         for (long i = 0; i < Math.Abs(delta); i++) Key(VIEM_KEY_CONTROL_CHARACTER, delta > 0 ? 'n' : 'p');
         ulong before = Document.State.document_revision;
         byte changed = 0; Check(viem_core_view_accept_completion(Document.Handle, Id, &changed), "Accept completion");
-        if (Document.State.document_revision != before) Document.NotifyChanged();
+        if (Document.State.document_revision != before) Document.NotifySourceChanged();
         else if (changed != 0) Changed?.Invoke();
     }
     public WhitespaceExport Whitespace(ViemLayoutSnapshotInfoV1 layout)

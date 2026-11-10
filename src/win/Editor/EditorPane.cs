@@ -656,7 +656,9 @@ internal sealed partial class EditorPane : Grid, IDisposable
         Run(() => { RefreshScrollGeometry(); View.Scroll(View.Viewport.left, top); });
     }
 
-    public void Refresh()
+    public void Refresh() => Refresh(afterLiveEdit: false);
+
+    private void Refresh(bool afterLiveEdit)
     {
         using var measurement = Diagnostics.InputPerformance.Measure("refresh");
         if (View == null || disposed || installingDocument) return;
@@ -666,7 +668,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         bool installed = false;
         try
         {
-            window.BeforeDiffLayout(this);
+            afterLiveEdit |= window.BeforeDiffLayout(this);
             // The command/status surface must update even when document
             // geometry is temporarily unavailable (for example after scrolling).
             if (!StringComparer.OrdinalIgnoreCase.Equals(imageDocumentPath, Document.FilePath)) ResetImagePreviews();
@@ -753,7 +755,7 @@ internal sealed partial class EditorPane : Grid, IDisposable
         // Mirroring can refine this pane's range as well as its peer's.
         // Both can now publish the refined values in the same UI event.
         if (installed) {
-            try { window.DiffLayoutUpdated(this, previousTop != viewport.top); }
+            try { window.DiffLayoutUpdated(this, previousTop != viewport.top, afterLiveEdit); }
             catch (Exception error) { Report(error); }
         }
         FollowCodeWordWrap();

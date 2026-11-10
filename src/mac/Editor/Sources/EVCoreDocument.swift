@@ -534,7 +534,7 @@ public final class EVCoreDocumentBackend: EVDocumentBackend {
             _ = try? documentState()
             // Diff presentation must match this revision before views redraw.
             diffSessions.removeAll { $0.value == nil }
-            for session in diffSessions.compactMap(\.value) { session.sync() }
+            for session in diffSessions.compactMap(\.value) { session.sync(afterLiveEdit: true) }
             surfaces.removeAll { $0.value == nil }
             for surface in surfaces.compactMap(\.value) {
                 surface.sharedDocumentDidChange(originatingViewIDs: origins)

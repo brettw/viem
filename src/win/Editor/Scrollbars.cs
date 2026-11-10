@@ -90,7 +90,7 @@ internal sealed partial class EditorPane
         // With alignment off, a pure addition can move a base-side scrollbar
         // mark without changing the base text, layout or scroll range.
         if (!aligned) diffMarkLayout = null;
-        if (View == null || snapshot == null || !viewport.Equals(View.Viewport)) Refresh();
+        if (View == null || snapshot == null || !viewport.Equals(View.Viewport)) Refresh(afterLiveEdit: true);
         else UpdateDiffMarks(comparison, newSide: false);
     }
 

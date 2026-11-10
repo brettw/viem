@@ -84,10 +84,11 @@ Changing one view's state does not change other open views.
 - **Off:** each side is laid out as a normal file on its own, with additions
   and removals highlighted but no filler, and scrolls independently.
 
-When typing or opening a line, the live pane keeps its viewport anchor and
-scrolls only as far as needed to reveal the caret. In an aligned comparison,
-the base follows that position even when the edit changes the height of its
-filler.
+Edits keep the live pane's viewport anchored to its text across changes to
+diff filler and collapsed runs. This includes Normal-mode operators such as
+`dd`, Visual and Ex edits, and typing. If the resulting caret leaves the
+viewport, reveal it by the minimum distance. The aligned base follows the
+edited pane. A view receiving an edit from another view keeps its own place.
 
 ### Collapsed context
 

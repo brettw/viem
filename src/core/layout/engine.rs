@@ -2472,7 +2472,7 @@ impl ViewLayout {
         changed_lines: Option<&[Range<usize>]>,
     ) -> bool {
         let next = presentation.map(|input| (document, revision, input));
-        if self.diff_presentation == next {
+        if self.diff_presentation == next && (next.is_none() || self.diff_margins_current) {
             return false;
         }
         let previous = std::mem::replace(&mut self.diff_presentation, next);
@@ -2558,7 +2558,12 @@ impl ViewLayout {
     }
 
     pub(crate) fn awaits_live_diff(&self, document: DocumentId, revision: Revision) -> bool {
-        self.diff_presentation.as_ref().is_some_and(|(id, rev, diff)| *id == document && *rev != revision && diff.added)
+        self.diff_presentation.as_ref().is_some_and(|(id, rev, diff)| *id == document && diff.added
+            && (*rev != revision || !self.diff_margins_current))
+    }
+
+    pub(crate) fn has_current_diff(&self, document: DocumentId, revision: Revision) -> bool {
+        self.diff_margins_current && self.diff_presentation.as_ref().is_some_and(|(id, rev, _)| (*id, *rev) == (document, revision))
     }
 
     pub(crate) fn search_matches(&self, document: DocumentId, revision: Revision) -> &[Range<usize>] {

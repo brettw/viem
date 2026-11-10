@@ -61,6 +61,92 @@ fn assert_landmark_stationary(core: &Core<MockTextMeasurementProvider>, view: Vi
 }
 
 #[test]
+fn visible_line_edits_and_their_undo_and_redo_keep_the_regular_view_stationary() {
+    for format in [Format::PlainText, Format::Code, Format::Markdown] {
+        let separator = if format == Format::Markdown { "\n\n" } else { "\n" };
+        let source = ["Before", "Before", "Before", "Before", "Landmark", "Spacer", "Edit", "Next", "Last",
+            "After", "After", "After", "After", "After", "After"].join(separator);
+        for command in ["dd", "Vjd", "J", "o"] {
+            let document = Document::from_bytes(source.as_bytes().to_vec(), Encoding::Utf8, format).unwrap();
+            let mut core = Core::new(document);
+            let view = core.add_view(MockTextMeasurementProvider::new(), 320., 120.);
+            core.handle(view, CoreEvent::PlaceCursor {
+                document_revision: core.document.revision(), text_offset: core.document.text().find("Edit").unwrap(),
+                affinity: BoundaryAffinity::Downstream, extend_selection: false,
+            }).unwrap();
+            let top = caret_row(&core, view).y - 48.5;
+            core.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(top) }).unwrap();
+            let landmark = landmark_baseline(&core, view);
+            for key in command.chars() {
+                core.handle(view, CoreEvent::Input(InputEvent::key(key))).unwrap();
+                assert_landmark_stationary(&core, view, landmark);
+            }
+            core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape))).unwrap();
+            let edited = core.document.source_bytes();
+            assert_ne!(edited, source.as_bytes(), "{format:?}, {command}");
+            for (key, expected) in [(Key::Char('u'), source.as_bytes()), (Key::Ctrl('r'), edited.as_slice())] {
+                core.handle(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+                assert_eq!(core.document.source_bytes(), expected, "{format:?}, {command}, {key:?}");
+                assert_landmark_stationary(&core, view, landmark);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_distant_addressed_delete_reveals_the_result_at_the_nearest_viewport_edge() {
+    let lines: Vec<_> = (1..=80).map(|line| format!("Line {line}")).collect();
+    for (address, below) in [(6, false), (73, true)] {
+        let mut core = Core::new(Document::new(lines.join("\n")));
+        let view = core.add_view(MockTextMeasurementProvider::new(), 240., 120.);
+        let insets = crate::layout::EdgeInsets { top: 7., bottom: 12., ..Default::default() };
+        core.set_view_insets(view, insets).unwrap();
+        core.handle(view, CoreEvent::PlaceCursor {
+            document_revision: core.document.revision(), text_offset: core.document.text().find("Line 40").unwrap(),
+            affinity: BoundaryAffinity::Downstream, extend_selection: false,
+        }).unwrap();
+        let top = caret_row(&core, view).y - 50.;
+        core.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(top) }).unwrap();
+        for key in format!(":{address}d").chars().map(Key::Char).chain([Key::Enter]) {
+            core.handle(view, CoreEvent::Input(InputEvent::Key(key))).unwrap();
+        }
+        let mut expected = lines.clone();
+        expected.remove(address - 1);
+        assert_eq!(core.document.source_bytes(), expected.join("\n").as_bytes());
+        let bounds = caret_row(&core, view).reveal_bounds();
+        let layout = core.layout(view).unwrap();
+        let expected_top = if below { bounds.end - layout.height() + insets.bottom } else { bounds.start - insets.top };
+        assert!((layout.viewport_top() - expected_top).abs() < 0.05, "address {address}");
+    }
+}
+
+#[test]
+fn deleting_at_a_scrolled_away_caret_in_a_wrapped_line_reveals_the_edited_slice() {
+    // Revealing the editing row resumes a checkpoint after the initial
+    // viewport's frame is published.
+    let slice = crate::layout::MAX_LONG_LINE_LAYOUT_SLICE_BYTES;
+    let start = "start\n".repeat(40);
+    let words = "word ".repeat((slice + slice / 2 + 10_000) / 5);
+    let at = start.len() + (slice + slice / 4) / 5 * 5;
+    let source = format!("{start}{words}\nend");
+    let document = Document::from_bytes(source.into_bytes(), Encoding::Utf8, Format::Code).unwrap();
+    let mut core = Core::new(document);
+    let view = core.add_view(MockTextMeasurementProvider::new(), 250., 120.);
+    core.handle(view, CoreEvent::SetWrap(true)).unwrap();
+    core.handle(view, CoreEvent::PlaceCursor {
+        document_revision: core.document.revision(), text_offset: at,
+        affinity: BoundaryAffinity::Downstream, extend_selection: false,
+    }).unwrap();
+    core.handle(view, CoreEvent::SetViewportOrigin { left: 0., top: Some(0.) }).unwrap();
+    assert!(!core.layout(view).unwrap().snapshot().unwrap().coverage.contains_text_offset(at));
+    let outcome = core.handle_with_layout(view, CoreEvent::Input(InputEvent::key('x'))).unwrap();
+    assert!(outcome.document_changed);
+    assert!(core.document.text()[at..].starts_with("ord "));
+    let layout = core.layout(view).unwrap();
+    assert!((caret_row(&core, view).reveal_bounds().end - layout.viewport_top() - layout.height()).abs() < 0.05);
+}
+
+#[test]
 fn menu_code_block_creation_and_removal_keep_surrounding_text_stationary() {
     let (mut core, view) = block_fixture("Target");
     let landmark = landmark_baseline(&core, view);

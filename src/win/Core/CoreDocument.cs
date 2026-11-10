@@ -180,6 +180,15 @@ internal sealed unsafe partial class CoreDocument : IDisposable
         return diagnostics.ToArray();
     }
     public void NotifyChanged() => Changed?.Invoke();
+    // A macro can edit and undo in the same input turn, restoring the source
+    // revision after discarding view-local diff geometry.
+    private ulong sourceChangeTurns;
+    internal (ulong Revision, ulong Turn) SourceChangeIdentity => (State.document_revision, sourceChangeTurns);
+    internal void NotifySourceChanged()
+    {
+        checked { ++sourceChangeTurns; }
+        NotifyChanged();
+    }
     public void RedetectLanguage()
     {
         byte[] filename = Encoding.UTF8.GetBytes(FilePath ?? "");

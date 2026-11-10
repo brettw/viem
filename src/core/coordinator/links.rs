@@ -233,12 +233,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 before: after,
             });
         }
-        let composition_changes = self.refresh_views_after_native_change(view, &map)?;
-        if let Err(error) =
-            self.materialize_immediate_viewport(view, ImmediateLayoutIntent::RevealCaret)
-        {
-            self.record_presentation_error(view, error);
-        }
+        let composition_changes = self.refresh_views_after_native_change(
+            view, &map, ImmediateLayoutIntent::PreserveViewportAndRevealCaret,
+        )?;
         Ok(CoreOutcome {
             command: None,
             document_changed: true,
@@ -402,12 +399,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                 before: after,
             });
         }
-        let composition_changes = self.refresh_views_after_native_change(view, &map)?;
-        if let Err(error) =
-            self.materialize_immediate_viewport(view, ImmediateLayoutIntent::RevealCaret)
-        {
-            self.record_presentation_error(view, error);
-        }
+        let composition_changes = self.refresh_views_after_native_change(
+            view, &map, ImmediateLayoutIntent::PreserveViewportAndRevealCaret,
+        )?;
         Ok(CoreOutcome {
             command: None,
             document_changed: true,

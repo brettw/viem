@@ -219,6 +219,40 @@ final class EVDiffModeTests: XCTestCase {
         }
     }
 
+    func testDeletingAnAddedLineKeepsTheLiveViewportAndMirroredBaseInPlace() throws {
+        let lines = (0..<80).map { "line \($0)" }
+        var edited = lines
+        let added = (0..<30).map { "added \($0)" }
+        edited.insert(contentsOf: added, at: 25)
+        let new = try backend(edited.joined(separator: "\n"))
+        let (live, _, base, comparison) = try begin(new, base: lines.joined(separator: "\n"), collapsed: true)
+        defer { comparison.end() }
+        type("36Gzt2j", into: live)
+        func anchorY() throws -> CGFloat {
+            CGFloat(try XCTUnwrap(live.layoutSnapshot?.rows.first { $0.hard_line_index == 35 }).y)
+        }
+        let row = try XCTUnwrap(live.layoutSnapshot?.rows.first { $0.hard_line_index == 35 })
+        live.performInput {
+            _ = try XCTUnwrap(live.session).setViewportOrigin(left: 0, top: CGFloat(row.y + row.line_advance / 4))
+        }
+        let top = live.viewportState.top
+        let screenY = try anchorY() - CGFloat(top)
+        type("dd", into: live)
+        edited.remove(at: 37)
+        XCTAssertEqual(try source(new), edited.joined(separator: "\n"))
+        XCTAssertEqual(try anchorY() - CGFloat(live.viewportState.top), screenY, accuracy: 0.1)
+        XCTAssertEqual(live.viewportState.top, top, accuracy: 0.1)
+        XCTAssertEqual(base.viewportState.top, top, accuracy: 0.1)
+        type("qadduq", into: live)
+        let revision = live.documentState.document_revision
+        type("@a", into: live)
+        XCTAssertEqual(live.documentState.document_revision, revision)
+        XCTAssertEqual(try source(new), edited.joined(separator: "\n"))
+        XCTAssertTrue(try backgroundLines(live).contains(37))
+        XCTAssertEqual(try anchorY() - CGFloat(live.viewportState.top), screenY, accuracy: 0.1)
+        XCTAssertEqual(base.viewportState.top, live.viewportState.top, accuracy: 0.1)
+    }
+
     func testNextChangeMovesTheCaretAndScrollsBothSidesToTheChange() throws {
         var lines = (0..<300).map { "line \($0)" }
         let base = lines.joined(separator: "\n")

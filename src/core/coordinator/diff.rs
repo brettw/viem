@@ -598,7 +598,8 @@ impl DiffSession {
         new_view: ViewId,
     ) -> Result<DiffSync, CoreError> {
         new.views.get_mut(&new_view).ok_or(CoreError::UnknownView(new_view))?.diff_typing_line = None;
-        let live_changed = (self.new_document, self.new_revision) != (new.document().id(), new.document().revision());
+        let live_changed = (self.new_document, self.new_revision) != (new.document().id(), new.document().revision())
+            || new.views[&new_view].layout.awaits_live_diff(new.document().id(), new.document().revision());
         let sync = self.update(base.document(), new.document());
         self.take_opened(base, base_view, Side::Base);
         self.take_opened(new, new_view, Side::New);
@@ -641,7 +642,12 @@ impl DiffSession {
             && installed.aligned == self.aligned
             && installed.row_points == row_points
             && installed.document.is_some_and(|(id, _)| id == document.0);
-        if comparable && installed.document == Some(document) && installed.presentation == presentation {
+        // Undo can return to this exact revision before the host syncs. A
+        // full history rebase already discarded the layout's margins and
+        // elisions, even when the session's saved presentation still matches.
+        let layout = &core.views[&view].layout;
+        if comparable && installed.document == Some(document) && installed.presentation == presentation
+            && layout.has_current_diff(document.0, document.1) && layout.elided().runs() == presentation.collapsed {
             return Ok(());
         }
         // Balance found for the lines as they were stays until those lines
@@ -1218,29 +1224,49 @@ fn changed_lines(old_margins: Margins, new_margins: Margins, count: usize) -> Ve
     merge_ranges(lines)
 }
 
-/// The typing viewport before layout temporarily loses its diff margins.
-/// Apply it to the completed comparison only while that provisional frame
-/// and its editing location are still the ones the user is looking at.
+/// The mapped editing viewport while the live layout awaits its diff margins.
+/// The provisional frame can expose a different top row inside missing filler.
 pub(super) struct DiffEditViewport {
     anchor: ViewportTextAnchor,
-    provisional_layout: crate::layout::LayoutRevision,
+    left: f32,
+    intent: ImmediateLayoutIntent,
+    history: Option<Range<usize>>,
+    provisional_anchor: Option<ViewportTextAnchor>,
     origin: (f32, f32),
     caret: usize,
 }
 
 impl DiffEditViewport {
-    pub(super) fn capture<P: TextMeasurementProvider>(view: &View<P>, anchor: ViewportTextAnchor) -> Option<Self> {
+    pub(super) fn capture<P: TextMeasurementProvider>(view: &View<P>, anchor: ViewportTextAnchor, left: f32,
+        intent: ImmediateLayoutIntent) -> Option<Self> {
         let snapshot = view.layout.snapshot()?;
         (snapshot.document_id == anchor.anchor.document() && snapshot.document_revision == anchor.anchor.revision())
-            .then(|| Self { anchor, provisional_layout: snapshot.revision,
+            .then(|| Self { anchor, left, intent, history: None, provisional_anchor: view.viewport_anchor,
                 origin: (view.layout.viewport_left(), view.layout.viewport_top()), caret: view.commands.cursor() })
     }
 
-    fn is_current<P: TextMeasurementProvider>(&self, view: &View<P>, document: &Document) -> bool {
-        self.anchor.anchor.document() == document.id() && self.anchor.anchor.revision() == document.revision()
-            && view.layout.snapshot().is_some_and(|snapshot| snapshot.revision == self.provisional_layout)
-            && (view.layout.viewport_left(), view.layout.viewport_top()) == self.origin
-            && view.commands.cursor() == self.caret && matches!(view.commands.mode(), Mode::Insert | Mode::Replace)
+    fn matches_viewport<P: TextMeasurementProvider>(&self, view: &View<P>, id: DocumentId, revision: Revision) -> bool {
+        self.anchor.anchor.document() == id && self.anchor.anchor.revision() == revision
+            && view.layout.snapshot().is_some_and(|s| s.document_id == id && s.document_revision == revision)
+            && view.layout.viewport_left() == self.origin.0
+            && (view.layout.viewport_top() == self.origin.1
+                || self.provisional_anchor.is_some_and(|anchor| view.viewport_anchor == Some(anchor)))
+    }
+
+    /// More than one command or a macro can edit before the host synchronizes.
+    /// Map the original anchor through the next transaction as well.
+    pub(super) fn continue_edit<P: TextMeasurementProvider>(&self, view: &mut View<P>, map: &PositionMap) -> Result<(), LayoutError> {
+        if self.matches_viewport(view, map.document(), map.source_revision()) {
+            view.viewport_anchor = Some(self.anchor);
+            view.layout.set_viewport_left(self.left)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn after_history_reveal<P: TextMeasurementProvider>(self, view: &View<P>, range: Option<Range<usize>>) -> Option<Self> {
+        let mut next = Self::capture(view, self.anchor, self.left, ImmediateLayoutIntent::PreserveViewportAndRevealCaret)?;
+        next.history = range;
+        Some(next)
     }
 }
 
@@ -1257,7 +1283,8 @@ impl<P: TextMeasurementProvider> Core<P> {
     ) -> Result<(), CoreError> {
         let (id, revision) = (self.document.id(), self.document.revision());
         let view = self.views.get_mut(&view_id).ok_or(CoreError::UnknownView(view_id))?;
-        let editing = view.diff_edit_viewport.take().filter(|edit| presentation.is_some() && edit.is_current(view, &self.document));
+        let editing = view.diff_edit_viewport.take().filter(|edit| presentation.is_some()
+            && edit.matches_viewport(view, id, revision) && view.commands.cursor() == edit.caret);
         if presentation.is_none() {
             view.layout.set_diff_peer_bound(None);
             view.diff_typing_line = None;
@@ -1268,13 +1295,18 @@ impl<P: TextMeasurementProvider> Core<P> {
             return Ok(());
         }
         cancel_active_layout_work(view);
-        if let Some(edit) = &editing { view.viewport_anchor = Some(edit.anchor); }
+        if let Some(edit) = &editing {
+            view.viewport_anchor = Some(edit.anchor);
+            view.layout.set_viewport_left(edit.left)?;
+        }
         if hidden {
             self.anchor_viewport_beside_hidden_lines(view_id)?;
         }
-        let intent = if editing.is_some() { ImmediateLayoutIntent::PreserveViewportAndRevealCaret }
-            else { ImmediateLayoutIntent::PreserveViewport };
+        let intent = editing.as_ref().map_or(ImmediateLayoutIntent::PreserveViewport, |edit| edit.intent);
         self.materialize_immediate_viewport(view_id, intent)?;
+        if let Some(range) = editing.and_then(|edit| edit.history) {
+            self.reveal_history_range(view_id, Some(&range))?;
+        }
         Ok(())
     }
 

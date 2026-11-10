@@ -168,7 +168,7 @@ internal sealed unsafe partial class CoreView : IDisposable
     private void Finish(uint status, ViemCoreOutcomeV1 outcome, string? diagnostic = null)
     {
         Check(status, Provider.LastError ?? "Editor operation"); Outcome = outcome;
-        if ((outcome.flags & VIEM_OUTCOME_DOCUMENT_CHANGED) != 0) Document.NotifyChanged();
+        if ((outcome.flags & VIEM_OUTCOME_DOCUMENT_CHANGED) != 0) Document.NotifySourceChanged();
         else Changed?.Invoke();
         BackgroundLayout.Update();
         TableWidthRefinement.Update();
