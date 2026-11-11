@@ -301,7 +301,7 @@ impl Document {
         if !moved
             || paragraph.quote_depth != before.quote_depth
             || heading(&paragraph) != heading(before)
-            || paragraph.style.0 == "Code Block"
+            || paragraph.style.is_code_block()
             || !unchanged(&target.previous, &previous, true)
             || !following_unchanged
         {

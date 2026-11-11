@@ -31,7 +31,7 @@ impl Document {
         let mut regions = Vec::new();
         for block in self.projection().blocks_for_region(&range) {
             if block.range.is_empty() || block.markdown_html || block.thematic_break
-                || block.style.0 == "Code Block" || matches!(block.kind, BlockKind::Heading(_))
+                || block.style.is_code_block() || matches!(block.kind, BlockKind::Heading(_))
                 || block.containers.iter().any(|member| member.container.kind == crate::document::ContainerKind::CodeBlock)
                 || self.projection().table_at(block.range.start).is_some()
             {

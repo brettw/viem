@@ -45,7 +45,7 @@ pub(super) fn edit_changes_literal_html_grammar(
             continue;
         }
         for block in projection.blocks_for_region(&nearby) {
-            if block.style.0 == "Code Block" {
+            if block.style.is_code_block() {
                 continue;
             }
             if edit.range.start == block.range.start
@@ -604,7 +604,7 @@ impl Document {
         // and attributes, such as its language.
         if let [edit] = edits {
             let blocks = self.projection().blocks_for_region(&edit.range);
-            let code = blocks.iter().find(|block| block.style.0 == "Code Block" && block.range.end == edit.range.start);
+            let code = blocks.iter().find(|block| block.style.is_code_block() && block.range.end == edit.range.start);
             let following = blocks.iter().find(|block| block.range.start <= edit.range.end
                 && edit.range.end <= block.range.end && block.range.start > edit.range.start);
             if let (Some(code), Some(following)) = (code, following) {

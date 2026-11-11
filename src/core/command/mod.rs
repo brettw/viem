@@ -3352,75 +3352,31 @@ impl CommandInterpreter {
         }
     }
 
-    /// Layout-aware counterpart of [`Self::handle_with_clipboard_context`].
-    pub fn handle_with_layout_and_clipboard_context(
-        &mut self,
-        document: &mut Document,
-        event: InputEvent,
-        layout: &mut LayoutCommandContext<'_>,
-        clipboard: &ClipboardCommandContext,
-    ) -> Result<CommandOutput, DocumentError> {
-        let previous = std::mem::replace(&mut self.clipboard_context, clipboard.clone());
-        let result = self.handle_with_layout(document, event, layout);
-        self.clipboard_context = previous;
-        result
-    }
-
-    /// Execute exactly one input event for the serial core coordinator. A
-    /// macro or `:normal` command is returned as an internal continuation
+    /// Execute exactly one input event for the serial core coordinator, with
+    /// exact layout when the event needs it and the turn's clipboard capture.
+    /// A macro or `:normal` command is returned as an internal continuation
     /// instead of recursively entering the headless interpreter.
     pub(crate) fn handle_for_core(
         &mut self,
         document: &mut Document,
         event: InputEvent,
+        layout: Option<&mut LayoutCommandContext<'_>>,
         clipboard: Option<&ClipboardCommandContext>,
     ) -> Result<CommandStep, DocumentError> {
         debug_assert!(self.pending_replay.is_none());
         self.plan_compound_replay = true;
-        let result = match clipboard {
-            Some(clipboard) => self.handle_with_clipboard_context(document, event, clipboard),
+        let previous = clipboard
+            .map(|clipboard| std::mem::replace(&mut self.clipboard_context, clipboard.clone()));
+        let result = match layout {
+            Some(layout) => self.handle_with_layout(document, event, layout),
             None => self.handle(document, event),
         };
-        self.plan_compound_replay = false;
-        match result {
-            Ok(output) => Ok(CommandStep {
-                output,
-                replay: self.pending_replay.take(),
-            }),
-            Err(error) => {
-                self.pending_replay = None;
-                Err(error)
-            }
+        if let Some(previous) = previous {
+            self.clipboard_context = previous;
         }
-    }
-
-    /// Layout-aware one-event counterpart of [`Self::handle_for_core`].
-    pub(crate) fn handle_with_layout_for_core(
-        &mut self,
-        document: &mut Document,
-        event: InputEvent,
-        layout: &mut LayoutCommandContext<'_>,
-        clipboard: Option<&ClipboardCommandContext>,
-    ) -> Result<CommandStep, DocumentError> {
-        debug_assert!(self.pending_replay.is_none());
-        self.plan_compound_replay = true;
-        let result = match clipboard {
-            Some(clipboard) => {
-                self.handle_with_layout_and_clipboard_context(document, event, layout, clipboard)
-            }
-            None => self.handle_with_layout(document, event, layout),
-        };
         self.plan_compound_replay = false;
-        match result {
-            Ok(output) => Ok(CommandStep {
-                output,
-                replay: self.pending_replay.take(),
-            }),
-            Err(error) => {
-                self.pending_replay = None;
-                Err(error)
-            }
-        }
+        let replay = self.pending_replay.take();
+        result.map(|output| CommandStep { output, replay })
     }
 
     pub(crate) fn can_insert_list_paragraph(&self, document: &Document) -> bool {
@@ -16002,9 +15958,11 @@ fn command_document_error(error: ModelTransactionError) -> DocumentError {
             actual: expected,
         },
         ModelTransactionError::Style(_) => DocumentError::UnsupportedFormatting,
-        // The interpreter's public error type has no typed transaction
-        // failures, so the rest report a generic verification failure.
-        _ => DocumentError::VerificationFailed,
+        ModelTransactionError::Position(error) => DocumentError::Position(error),
+        ModelTransactionError::History(error) => DocumentError::History(error),
+        ModelTransactionError::StaleDocumentState | ModelTransactionError::RevisionExhausted => {
+            DocumentError::VerificationFailed
+        }
     }
 }
 
@@ -17043,6 +17001,20 @@ mod tests {
     use super::*;
     use crate::document::{Encoding, Format};
     use crate::layout::{LayoutEngine, MockTextMeasurementProvider, ViewLayout};
+
+    #[test]
+    fn transaction_position_and_history_failures_keep_their_typed_errors() {
+        let position = PositionError::ArithmeticOverflow;
+        assert_eq!(
+            command_document_error(ModelTransactionError::Position(position.clone())),
+            DocumentError::Position(position)
+        );
+        let history = crate::document::HistoryError::NotModifiable;
+        assert_eq!(
+            command_document_error(ModelTransactionError::History(history.clone())),
+            DocumentError::History(history)
+        );
+    }
 
     #[test]
     fn insert_delete_motions_keep_large_literal_snapshots_unmaterialized() {

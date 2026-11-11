@@ -105,7 +105,7 @@ impl Document {
         let paragraph = blocks.iter().find(|b| b.range == (cursor..cursor));
         if !retained.is_some_and(|b| b.style == block.style && b.code_language == block.code_language
             && b.code_kind == block.code_kind && b.quote_depth == block.quote_depth && b.list_level() == block.list_level())
-            || !paragraph.is_some_and(|b| b.style.0 != "Code Block" && b.quote_depth == block.quote_depth
+            || !paragraph.is_some_and(|b| !b.style.is_code_block() && b.quote_depth == block.quote_depth
                 && b.list_level() == block.list_level()
                 && b.list_item_owner() == retained.and_then(|retained| retained.list_item_owner())
                 && b.containers.iter().all(|member| member.container.kind != super::super::ContainerKind::CodeBlock)) {

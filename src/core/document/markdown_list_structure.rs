@@ -32,7 +32,7 @@ pub(super) fn joining_patches(
         return Ok(None);
     }
     for block in [first, last] {
-        if block.style.0 == "Code Block"
+        if block.style.is_code_block()
             || super::super::markdown_quotes::is_fenced_block(document, block)?
         {
             // The code adapter relocates fences and translates literal content.
@@ -226,9 +226,9 @@ pub(super) fn joining_patches(
             patches.push(SourcePatch::primary(line.start..end, document.encoding().encode_fragment(&prefix)?));
         }
     }
-    if first.style.0 != "Block quote"
+    if !first.style.is_block_quote()
         && first.quote_depth == 0
-        && (last.style.0 == "Block quote" || last.quote_depth > 0)
+        && (last.style.is_block_quote() || last.quote_depth > 0)
     {
         let lines = &document.state().source_hard_lines;
         let first_line = lines
@@ -298,7 +298,7 @@ pub(super) fn deletion_patches(
             return Ok(Some(patches));
         }
         for block in projection.blocks_for_region(range) {
-            if block.style.0 == "Code Block"
+            if block.style.is_code_block()
                 || super::super::markdown_quotes::is_fenced_block(document, &block)?
             {
                 return Ok(None);
@@ -375,7 +375,7 @@ pub(super) fn deletion_patches(
     }
     let source_line =
         |block: &super::super::Block, at_end: bool| -> Result<Range<usize>, DocumentError> {
-            if !at_end && block.style.0 == "Code Block" {
+            if !at_end && block.style.is_code_block() {
                 if let Some(fence) = super::super::markdown_code::fenced_source(document, block)? {
                     return Ok(fence.opening);
                 }
@@ -548,7 +548,7 @@ pub(super) fn empty_insertion_patches(
         .iter()
         .any(|block| {
             block.range.start == range.start
-                && block.style.0 != "Code Block"
+                && !block.style.is_code_block()
                 && matches!(
                     block.kind,
                     super::super::BlockKind::ListItem {
@@ -619,7 +619,7 @@ pub(super) fn empty_insertion_patches(
         )
         .into_iter()
         .find(|block| block.range.start == range.start + 1
-            && (block.style.0 == "Code Block"
+            && (block.style.is_code_block()
                 || matches!(block.kind, super::super::BlockKind::Paragraph)));
     let needs_separator = if let Some(block) = following_block {
         let source = document
@@ -712,7 +712,7 @@ pub(super) fn preserve_empty_item_boundaries(
             let text = decoded.text.trim_end_matches(['\r', '\n']);
             if text[super::super::markdown_quotes::prefix(text)..].trim().is_empty()
                 && !patches.iter().any(|patch| patch.range.start < row.end && row.start < patch.range.end) {
-                if next.as_ref().unwrap().style.0 == "Code Block" {
+                if next.as_ref().unwrap().style.is_code_block() {
                     // Literal code keeps a boundary after a bare marker.
                     patches.push(SourcePatch::primary(row, Vec::new()));
                 } else {
@@ -743,7 +743,7 @@ pub(super) fn preserve_empty_item_boundaries(
                 .into_iter().filter(|previous| previous.range.end < block.range.start)
                 .max_by_key(|previous| previous.range.start) else { continue; };
             if previous.range.is_empty() || edit.range.start < previous.range.end
-                || previous.style.0.starts_with("Heading") || previous.style.0 == "Code Block"
+                || previous.style.0.starts_with("Heading") || previous.style.is_code_block()
                 || previous.markdown_html
                 || !(previous.kind == BlockKind::Paragraph
                     || matches!(previous.kind, BlockKind::ListItem { level: parent, .. } if parent < level))
@@ -871,7 +871,7 @@ fn paragraph_insertion_patches(
         .blocks_for_region(&(at..at))
         .into_iter()
         .find(|block| block.range.start <= at && at <= block.range.end);
-    let Some(block) = block.filter(|block| block.style.0 != "Code Block") else {
+    let Some(block) = block.filter(|block| !block.style.is_code_block()) else {
         return Ok(None);
     };
     let super::super::BlockKind::ListItem {

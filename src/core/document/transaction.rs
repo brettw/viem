@@ -1956,7 +1956,7 @@ impl Document {
 
         if self.format().is_markdown() {
             if let PersistedStyleIntent::AssignCharacterStyle { range, style } = &intent {
-                if style.0 == "Comment" {
+                if style.is_comment() {
                     self.validate_style_text_range(*range)?;
                     return self.prepare_comment_choice(range.start().offset()..range.end().offset());
                 }
@@ -2198,7 +2198,7 @@ impl Document {
             // text, while the code adapter keeps its own enclosing syntax.
             let lines = self.hard_line_snapshot();
             if let Some(code) = self.projection().blocks_for_region(&selected).into_iter().find(|block|
-                block.style.0 == "Code Block" && block.range.start < selected.start
+                block.style.is_code_block() && block.range.start < selected.start
                     && selected.start <= block.range.end && selected.end == block.range.end + 1)
             {
                 if super::markdown_code::fenced_source(self, &code)?.is_none() {
@@ -3393,14 +3393,14 @@ impl Document {
         if let Some(kind) = super::AlertKind::from_style(&style) {
             return self.prepare_markdown_alert(range, Some(kind));
         }
-        if style.0 == "Block quote" && structural_style::selected_blocks(self, &range).iter()
+        if style.is_block_quote() && structural_style::selected_blocks(self, &range).iter()
             .any(|block| block.containers.first().is_some_and(|member| member.container.alert.is_some())) {
             return self.prepare_markdown_alert(range, None);
         }
         // A heading, code block, or list reset no longer owns a GFM task
         // marker. Remove that hidden syntax in the same transaction before
         // changing its leaf treatment. Wrapping the item in a quote retains it.
-        if style.0 != "Block quote" {
+        if !style.is_block_quote() {
             let patches = structural_style::selected_blocks(self, &range).iter()
                 .filter(|block| block.task_checkbox.is_some())
                 .map(|block| self.remove_checkbox_source_patches(block))
@@ -3410,7 +3410,7 @@ impl Document {
                     document.prepare_markdown_paragraph_style_raw(range.clone(), style.clone()));
             }
         }
-        if style.0 == "Code Block" {
+        if style.is_code_block() {
             return self.prepare_markdown_code_style(&range, true);
         }
         if self.format() == Format::Markdown {
@@ -3462,19 +3462,19 @@ impl Document {
                 return self.prepare_list_style_raw(range, None);
             }
         }
-        if style.0 == "Block quote"
+        if style.is_block_quote()
             || style.0 == "Paragraph"
                 && self
                     .projection()
                     .blocks_for_region(&range)
                     .iter()
                     .any(|block| {
-                        (block.style.0 == "Block quote" || block.quote_depth > 0)
+                        (block.style.is_block_quote() || block.quote_depth > 0)
                             && matches!(block.kind, super::BlockKind::Paragraph)
-                            && block.style.0 != "Code Block"
+                            && !block.style.is_code_block()
                     })
         {
-            return self.prepare_markdown_quote_style(range, style.0 == "Block quote");
+            return self.prepare_markdown_quote_style(range, style.is_block_quote());
         }
         let level = if style.0 == "Paragraph" {
             0
@@ -3707,7 +3707,7 @@ impl Document {
                 if let Some(style) = style {
                     if let Some(block) = self.projection().blocks_for_region(&line).into_iter()
                         .find(|block| block.range.start <= line.start && line.end <= block.range.end
-                            && block.style.0 == "Code Block"
+                            && block.style.is_code_block()
                             && !matches!(block.kind, super::BlockKind::ListItem { .. }))
                     {
                         if wrapped_code.insert(block.id) {
@@ -5971,7 +5971,7 @@ impl Document {
                 .blocks_for_region(&edit.range)
                 .iter()
                 .any(|block| {
-                    block.style.0 != "Code Block"
+                    !block.style.is_code_block()
                         && matches!(block.kind, super::BlockKind::ListItem { .. })
                         && self
                             .projection()
@@ -5983,7 +5983,7 @@ impl Document {
                 .projection()
                 .blocks_for_region(&edit.range)
                 .iter()
-                .any(|block| block.style.0 == "Code Block")
+                .any(|block| block.style.is_code_block())
                 && !markdown_list && !markdown_table && !markdown_inline_code
                 || edit.replacement.contains(['`', '~'])
                 || markdown_list && (edit.replacement.contains(['*', '_', '#', '\\'])
@@ -6501,7 +6501,7 @@ impl Document {
                 .find(|block| {
                     block.range.start <= edit.range.start
                         && edit.range.end <= block.range.end
-                        && block.style.0 != "Code Block"
+                        && !block.style.is_code_block()
                         && matches!(block.kind, super::BlockKind::ListItem { .. })
                 })
             else {
@@ -6618,7 +6618,7 @@ impl Document {
         // a tab or four spaces at this restart falsely gives it Code style.
         for block in &blocks {
             if !block.range.is_empty() || block.range.start < old_formatted.start
-                || block.range.end > old_formatted.end || block.style.0 == "Code Block"
+                || block.range.end > old_formatted.end || block.style.is_code_block()
                 || !matches!(block.kind, super::BlockKind::ListItem { .. })
                 || !block.containers.iter().rev()
                     .find(|member| member.container.kind == super::ContainerKind::ListItem)
@@ -6636,7 +6636,7 @@ impl Document {
                 .checked_sub(1).and_then(|index| blocks.get(index));
             if span.formatted.is_empty() || span.source.is_empty()
                 || !owner.is_some_and(|block| {
-                    span.formatted.end <= block.range.end && block.style.0 != "Code Block"
+                    span.formatted.end <= block.range.end && !block.style.is_code_block()
                         && matches!(block.kind, super::BlockKind::ListItem { .. })
                         && block.containers.iter().rev()
                             .find(|member| member.container.kind == super::ContainerKind::ListItem)

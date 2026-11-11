@@ -12,12 +12,12 @@ fn fragments(document: &Document, range: &Range<usize>) -> Vec<(Range<usize>, bo
         let mut at = start;
         for separator in document.projection().hard_breaks_for_region(&(start..end)) {
             if at < separator {
-                result.push((at..separator, block.style.0 == "Code Block"));
+                result.push((at..separator, block.style.is_code_block()));
             }
             at = separator + 1;
         }
         if at < end {
-            result.push((at..end, block.style.0 == "Code Block"));
+            result.push((at..end, block.style.is_code_block()));
         }
     }
     result
@@ -49,7 +49,7 @@ fn verify_assignment(
         let preserved_paragraph = before
             .blocks_for_region(&(at..at + 1))
             .iter()
-            .any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
+            .any(|block| block.style.is_code_block() && block.range.contains(&at));
         let expected = if range.contains(&at) && !preserved_paragraph {
             (!style.0.is_empty()).then(|| style.clone())
         } else {
@@ -232,7 +232,7 @@ impl Document {
     ) -> Result<PreparedModelTransaction, ModelTransactionError> {
         self.validate_range(&range)?;
         self.validate_typing_named_style(&style)?;
-        if style.0 == "Comment" { return self.prepare_comment_choice(range); }
+        if style.is_comment() { return self.prepare_comment_choice(range); }
         if range.is_empty() {
             return Ok(self.no_op_prepared());
         }
@@ -386,7 +386,7 @@ impl Document {
                         .projection()
                         .blocks_for_region(&(at..at + 1))
                         .iter()
-                        .any(|block| block.style.0 == "Code Block" && block.range.contains(&at));
+                        .any(|block| block.style.is_code_block() && block.range.contains(&at));
                 let expected = if original_range.contains(&at) && !code_paragraph {
                     self.clean_named_character_at(at, &style, &CharacterProperties::default())?
                 } else {

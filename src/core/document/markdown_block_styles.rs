@@ -251,7 +251,7 @@ pub(super) fn preserve_deleted_source_prefixes(
                 continue;
             }
             let blocks = document.projection().blocks_for_region(&span.formatted);
-            if blocks.iter().any(|block| block.style.0 == "Code Block") {
+            if blocks.iter().any(|block| block.style.is_code_block()) {
                 continue;
             }
             let bytes = document
@@ -459,7 +459,7 @@ pub(super) fn remove_empty_continuation_prefixes(
             .blocks_for_region(&edit.range)
             .iter()
             .any(|block| {
-                matches!(block.kind, BlockKind::ListItem { .. }) && block.style.0 != "Code Block"
+                matches!(block.kind, BlockKind::ListItem { .. }) && !block.style.is_code_block()
             })
         {
             continue;
@@ -557,7 +557,7 @@ pub(super) fn preserve_empty_continuation_paragraphs(
     for edit in &deletions {
         for block in projection.blocks_for_region(&edit.range) {
             if block.range.is_empty()
-                || block.style.0 == "Code Block"
+                || block.style.is_code_block()
                 || !matches!(
                     block.kind,
                     BlockKind::Paragraph |
@@ -992,7 +992,7 @@ pub(super) fn preserve_join_boundaries(
             || projection
                 .blocks_for_region(&edit.range)
                 .iter()
-                .any(|block| block.style.0 == "Code Block")
+                .any(|block| block.style.is_code_block())
         {
             continue;
         }
@@ -1450,7 +1450,7 @@ pub(super) fn preserve_split_boundaries<'a>(
                     }
                 }
             }
-            if previous.as_ref().is_some_and(|block| block.style.0 != "Code Block") {
+            if previous.as_ref().is_some_and(|block| !block.style.is_code_block()) {
                 if let Some(boundary) = hard_boundary_contributor(document, line.start - 1..line.start) {
                     let at = projection.source_insertion_point(range.start, true)
                         .ok_or(DocumentError::AmbiguousProjection)?;
@@ -1467,7 +1467,7 @@ pub(super) fn preserve_split_boundaries<'a>(
                     }
                 }
             }
-            if let Some(previous) = previous.filter(|block| block.style.0 == "Code Block") {
+            if let Some(previous) = previous.filter(|block| block.style.is_code_block()) {
                 let fence = crate::document::markdown_code::fenced_source(document, &previous)?;
                 let end = if let Some(fence) = fence {
                     fence.closing_content_end
@@ -1570,7 +1570,7 @@ pub(super) fn protect_structured_body(
     for block in projection.blocks_for_region(range).into_iter().filter(|block|
         if range.is_empty() { block.range.start <= range.start && range.start <= block.range.end }
         else { block.range.start < range.end && range.start < block.range.end }) {
-        if block.style.0 == "Code Block" {
+        if block.style.is_code_block() {
             continue;
         }
         let body = projection.text_tree().slice(block.range.clone())
@@ -1692,7 +1692,7 @@ fn support_patches_impl(
         let mut fenced = BTreeSet::new();
         for block in projection.blocks_for_region(&adjacent) {
             if !remove_code
-                && (block.style.0 == "Code Block"
+                && (block.style.is_code_block()
                     || crate::document::markdown_quotes::is_fenced_block(document, &block)?)
             {
                 fenced.insert(block.id);
@@ -1727,7 +1727,7 @@ fn support_patches_impl(
                     BlockKind::Paragraph | BlockKind::Heading(_) | BlockKind::ListItem { .. }
                 )
             } else {
-                block.kind == BlockKind::Paragraph && block.style.0 != "Code Block"
+                block.kind == BlockKind::Paragraph && !block.style.is_code_block()
             }
         };
         for index in boundaries {

@@ -2798,6 +2798,8 @@ fn document_status(error: DocumentError) -> ViemStatus {
         | DocumentError::InvalidHardLineTransferDestination { .. }
         | DocumentError::HardLineTransferDestinationInsideSource { .. } => ViemStatus::InvalidArgument,
         DocumentError::FormattedTextStorage(_) => ViemStatus::InternalError,
+        DocumentError::Position(error) => core_status(CoreError::Position(error)),
+        DocumentError::History(error) => core_status(CoreError::History(error)),
     }
 }
 
@@ -5432,56 +5434,70 @@ fn style_origin_to_ffi(origin: StyleDefinitionOrigin) -> u32 {
     }
 }
 
-fn style_property_to_ffi(property: StyleProperty) -> u32 {
-    match property {
-        StyleProperty::BlockMarginRight => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT,
-        StyleProperty::BlockMarginLeft => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT,
-        StyleProperty::BlockPaddingTop => VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP,
-        StyleProperty::BlockPaddingRight => VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT,
-        StyleProperty::BlockPaddingBottom => VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM,
-        StyleProperty::BlockPaddingLeft => VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT,
-        StyleProperty::BlockBorderTopWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH,
-        StyleProperty::BlockBorderTopColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR,
-        StyleProperty::BlockBorderRightWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH,
-        StyleProperty::BlockBorderRightColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR,
-        StyleProperty::BlockBorderBottomWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH,
-        StyleProperty::BlockBorderBottomColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR,
-        StyleProperty::BlockBorderLeftWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH,
-        StyleProperty::BlockBorderLeftColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR,
-        StyleProperty::BlockBackground => VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND,
-        StyleProperty::CanvasBackground => VIEM_STYLE_PROPERTY_CANVAS_BACKGROUND,
-        StyleProperty::CanvasPaddingTop => VIEM_STYLE_PROPERTY_CANVAS_PADDING_TOP,
-        StyleProperty::CanvasPaddingRight => VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT,
-        StyleProperty::CanvasPaddingBottom => VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM,
-        StyleProperty::CanvasPaddingLeft => VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT,
-        StyleProperty::BlockMarginTop => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP,
-        StyleProperty::BlockMarginBottom => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM,
-        StyleProperty::ParagraphLineSpacing => VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING,
-        StyleProperty::ParagraphFirstLineIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT,
-        StyleProperty::ParagraphLeadingIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT,
-        StyleProperty::ParagraphTrailingIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT,
-        StyleProperty::ParagraphAlignment => VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT,
-        StyleProperty::ParagraphBaseDirection => VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION,
-        StyleProperty::CharacterFontFamilies => VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES,
-        StyleProperty::CharacterFontFace => VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE,
-        StyleProperty::CharacterFontAxes => VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES,
-        StyleProperty::CharacterSize => VIEM_STYLE_PROPERTY_CHARACTER_SIZE,
-        StyleProperty::CharacterWeight => VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT,
-        StyleProperty::CharacterBold => VIEM_STYLE_PROPERTY_CHARACTER_BOLD,
-        StyleProperty::CharacterSlant => VIEM_STYLE_PROPERTY_CHARACTER_SLANT,
-        StyleProperty::CharacterForeground => VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND,
-        StyleProperty::CharacterBackground => VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND,
-        StyleProperty::CharacterUnderline => VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
-        StyleProperty::CharacterSuperscript => VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT,
-        StyleProperty::CharacterSubscript => VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT,
-        StyleProperty::CharacterStrikethrough => VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
-        StyleProperty::CharacterLanguage => VIEM_STYLE_PROPERTY_CHARACTER_LANGUAGE,
-        StyleProperty::CharacterDirection => VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION,
-        StyleProperty::CharacterOpenTypeFeatures => {
-            VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES
+/// The style property identifiers of the C ABI, in both directions.
+macro_rules! style_property_ids {
+    ($($property:ident => $id:ident,)*) => {
+        fn style_property_to_ffi(property: StyleProperty) -> u32 {
+            match property {
+                $(StyleProperty::$property => $id,)*
+            }
         }
-        StyleProperty::CharacterLetterSpacing => VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING,
-    }
+
+        fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
+            match raw {
+                $($id => Ok(StyleProperty::$property),)*
+                _ => Err(ViemStatus::InvalidStyleValue),
+            }
+        }
+    };
+}
+
+style_property_ids! {
+    BlockMarginRight => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT,
+    BlockMarginLeft => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT,
+    BlockPaddingTop => VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP,
+    BlockPaddingRight => VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT,
+    BlockPaddingBottom => VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM,
+    BlockPaddingLeft => VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT,
+    BlockBorderTopWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH,
+    BlockBorderTopColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR,
+    BlockBorderRightWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH,
+    BlockBorderRightColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR,
+    BlockBorderBottomWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH,
+    BlockBorderBottomColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR,
+    BlockBorderLeftWidth => VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH,
+    BlockBorderLeftColor => VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR,
+    BlockBackground => VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND,
+    CanvasBackground => VIEM_STYLE_PROPERTY_CANVAS_BACKGROUND,
+    CanvasPaddingTop => VIEM_STYLE_PROPERTY_CANVAS_PADDING_TOP,
+    CanvasPaddingRight => VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT,
+    CanvasPaddingBottom => VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM,
+    CanvasPaddingLeft => VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT,
+    BlockMarginTop => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP,
+    BlockMarginBottom => VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM,
+    ParagraphLineSpacing => VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING,
+    ParagraphFirstLineIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT,
+    ParagraphLeadingIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT,
+    ParagraphTrailingIndent => VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT,
+    ParagraphAlignment => VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT,
+    ParagraphBaseDirection => VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION,
+    CharacterFontFamilies => VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES,
+    CharacterFontFace => VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE,
+    CharacterFontAxes => VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES,
+    CharacterSize => VIEM_STYLE_PROPERTY_CHARACTER_SIZE,
+    CharacterWeight => VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT,
+    CharacterBold => VIEM_STYLE_PROPERTY_CHARACTER_BOLD,
+    CharacterSlant => VIEM_STYLE_PROPERTY_CHARACTER_SLANT,
+    CharacterForeground => VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND,
+    CharacterBackground => VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND,
+    CharacterUnderline => VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE,
+    CharacterSuperscript => VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT,
+    CharacterSubscript => VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT,
+    CharacterStrikethrough => VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH,
+    CharacterLanguage => VIEM_STYLE_PROPERTY_CHARACTER_LANGUAGE,
+    CharacterDirection => VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION,
+    CharacterOpenTypeFeatures => VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES,
+    CharacterLetterSpacing => VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING,
 }
 
 fn push_style_string(
@@ -7198,61 +7214,6 @@ fn parse_style_namespace(raw: u32) -> Result<StyleNamespace, ViemStatus> {
         VIEM_STYLE_NAMESPACE_BLOCK => Ok(StyleNamespace::Block),
         VIEM_STYLE_NAMESPACE_CHARACTER => Ok(StyleNamespace::Character),
         _ => Err(ViemStatus::InvalidArgument),
-    }
-}
-
-fn parse_style_property(raw: u32) -> Result<StyleProperty, ViemStatus> {
-    match raw {
-        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_RIGHT => Ok(StyleProperty::BlockMarginRight),
-        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_LEFT => Ok(StyleProperty::BlockMarginLeft),
-        VIEM_STYLE_PROPERTY_BLOCK_PADDING_TOP => Ok(StyleProperty::BlockPaddingTop),
-        VIEM_STYLE_PROPERTY_BLOCK_PADDING_RIGHT => Ok(StyleProperty::BlockPaddingRight),
-        VIEM_STYLE_PROPERTY_BLOCK_PADDING_BOTTOM => Ok(StyleProperty::BlockPaddingBottom),
-        VIEM_STYLE_PROPERTY_BLOCK_PADDING_LEFT => Ok(StyleProperty::BlockPaddingLeft),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_WIDTH => Ok(StyleProperty::BlockBorderTopWidth),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_TOP_COLOR => Ok(StyleProperty::BlockBorderTopColor),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_WIDTH => Ok(StyleProperty::BlockBorderRightWidth),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_RIGHT_COLOR => Ok(StyleProperty::BlockBorderRightColor),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_WIDTH => Ok(StyleProperty::BlockBorderBottomWidth),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_BOTTOM_COLOR => Ok(StyleProperty::BlockBorderBottomColor),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_WIDTH => Ok(StyleProperty::BlockBorderLeftWidth),
-        VIEM_STYLE_PROPERTY_BLOCK_BORDER_LEFT_COLOR => Ok(StyleProperty::BlockBorderLeftColor),
-        VIEM_STYLE_PROPERTY_BLOCK_BACKGROUND => Ok(StyleProperty::BlockBackground),
-        VIEM_STYLE_PROPERTY_CANVAS_BACKGROUND => Ok(StyleProperty::CanvasBackground),
-        VIEM_STYLE_PROPERTY_CANVAS_PADDING_TOP => Ok(StyleProperty::CanvasPaddingTop),
-        VIEM_STYLE_PROPERTY_CANVAS_PADDING_RIGHT => Ok(StyleProperty::CanvasPaddingRight),
-        VIEM_STYLE_PROPERTY_CANVAS_PADDING_BOTTOM => Ok(StyleProperty::CanvasPaddingBottom),
-        VIEM_STYLE_PROPERTY_CANVAS_PADDING_LEFT => Ok(StyleProperty::CanvasPaddingLeft),
-        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_TOP => Ok(StyleProperty::BlockMarginTop),
-        VIEM_STYLE_PROPERTY_BLOCK_MARGIN_BOTTOM => Ok(StyleProperty::BlockMarginBottom),
-        VIEM_STYLE_PROPERTY_PARAGRAPH_LINE_SPACING => Ok(StyleProperty::ParagraphLineSpacing),
-        VIEM_STYLE_PROPERTY_PARAGRAPH_FIRST_LINE_INDENT => {
-            Ok(StyleProperty::ParagraphFirstLineIndent)
-        }
-        VIEM_STYLE_PROPERTY_PARAGRAPH_LEADING_INDENT => Ok(StyleProperty::ParagraphLeadingIndent),
-        VIEM_STYLE_PROPERTY_PARAGRAPH_TRAILING_INDENT => Ok(StyleProperty::ParagraphTrailingIndent),
-        VIEM_STYLE_PROPERTY_PARAGRAPH_ALIGNMENT => Ok(StyleProperty::ParagraphAlignment),
-        VIEM_STYLE_PROPERTY_PARAGRAPH_BASE_DIRECTION => Ok(StyleProperty::ParagraphBaseDirection),
-        VIEM_STYLE_PROPERTY_CHARACTER_FONT_FAMILIES => Ok(StyleProperty::CharacterFontFamilies),
-        VIEM_STYLE_PROPERTY_CHARACTER_FONT_FACE => Ok(StyleProperty::CharacterFontFace),
-        VIEM_STYLE_PROPERTY_CHARACTER_FONT_AXES => Ok(StyleProperty::CharacterFontAxes),
-        VIEM_STYLE_PROPERTY_CHARACTER_SIZE => Ok(StyleProperty::CharacterSize),
-        VIEM_STYLE_PROPERTY_CHARACTER_WEIGHT => Ok(StyleProperty::CharacterWeight),
-        VIEM_STYLE_PROPERTY_CHARACTER_BOLD => Ok(StyleProperty::CharacterBold),
-        VIEM_STYLE_PROPERTY_CHARACTER_SLANT => Ok(StyleProperty::CharacterSlant),
-        VIEM_STYLE_PROPERTY_CHARACTER_FOREGROUND => Ok(StyleProperty::CharacterForeground),
-        VIEM_STYLE_PROPERTY_CHARACTER_BACKGROUND => Ok(StyleProperty::CharacterBackground),
-        VIEM_STYLE_PROPERTY_CHARACTER_UNDERLINE => Ok(StyleProperty::CharacterUnderline),
-        VIEM_STYLE_PROPERTY_CHARACTER_SUPERSCRIPT => Ok(StyleProperty::CharacterSuperscript),
-        VIEM_STYLE_PROPERTY_CHARACTER_SUBSCRIPT => Ok(StyleProperty::CharacterSubscript),
-        VIEM_STYLE_PROPERTY_CHARACTER_STRIKETHROUGH => Ok(StyleProperty::CharacterStrikethrough),
-        VIEM_STYLE_PROPERTY_CHARACTER_LANGUAGE => Ok(StyleProperty::CharacterLanguage),
-        VIEM_STYLE_PROPERTY_CHARACTER_DIRECTION => Ok(StyleProperty::CharacterDirection),
-        VIEM_STYLE_PROPERTY_CHARACTER_OPEN_TYPE_FEATURES => {
-            Ok(StyleProperty::CharacterOpenTypeFeatures)
-        }
-        VIEM_STYLE_PROPERTY_CHARACTER_LETTER_SPACING => Ok(StyleProperty::CharacterLetterSpacing),
-        _ => Err(ViemStatus::InvalidStyleValue),
     }
 }
 
@@ -10042,32 +10003,6 @@ pub unsafe extern "C" fn viem_core_view_set_wrap(
         let wrap = parse_ffi_bool(wrap)?;
         let outcome = with_core_mut(handle, |core| {
             dispatch_event(core, view, CoreEvent::SetWrap(wrap))
-        })?;
-        unsafe { out_outcome.write(outcome) };
-        Ok(())
-    })
-}
-
-/// Deprecated compatibility entry point. Word-boundary wrapping is mandatory:
-/// true returns the current state unchanged; false is invalid.
-///
-/// # Safety
-///
-/// `out_outcome` must identify one aligned writable outcome.
-#[no_mangle]
-pub unsafe extern "C" fn viem_core_view_set_linebreak(
-    handle: ViemCoreHandle,
-    view: ViemViewId,
-    linebreak: u32,
-    out_outcome: *mut ViemCoreOutcomeV1,
-) -> ViemStatus {
-    ffi_boundary(|| {
-        unsafe { clear_outcome(out_outcome)? };
-        if !parse_ffi_bool(linebreak)? {
-            return Err(ViemStatus::InvalidArgument);
-        }
-        let outcome = with_core(handle, |core| {
-            summarize_core_outcome(core, ViewId(view), None)
         })?;
         unsafe { out_outcome.write(outcome) };
         Ok(())

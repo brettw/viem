@@ -368,7 +368,7 @@ fn resolve_character_at(
     let block = blocks.iter().find(|block| block.range.contains(&at))?;
     let paragraph_style = match paragraph {
         Some(style) => style,
-        None if block.style.0 == "Image" => &style_sheet.base_paragraph,
+        None if block.style.is_image() => &style_sheet.base_paragraph,
         None => &block.style,
     };
     let paragraph_defaults = &block.direct_default_character;

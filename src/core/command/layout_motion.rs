@@ -293,7 +293,7 @@ pub(crate) fn g_dollar_for_document(
             .blocks_for_region(&(row.text_range.start..row.text_range.start))
             .iter()
             .any(|block| {
-                block.style.0 != "Code Block"
+                !block.style.is_code_block()
                     && matches!(
                         block.kind,
                         crate::document::BlockKind::ListItem {

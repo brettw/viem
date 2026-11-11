@@ -4,15 +4,16 @@
 //! prefix-sum tree. A local edit path-copies only the leaves containing changed
 //! lines; every later line moves implicitly through the changed aggregate.
 
+use crate::persistent::{at, Item, LeafSplit, Summary, Tree, Work};
 use std::ops::Range;
-use std::sync::Arc;
 
 const LEAF_LINES: usize = 64;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceHardLineIndex {
     content_start: usize,
-    root: Arc<Node>,
+    /// Never empty: a document has at least one physical line.
+    lines: Tree<Lengths>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -23,103 +24,110 @@ pub(crate) struct SourceHardLineSpliceStats {
     pub(crate) records_copied: usize,
 }
 
+/// Source byte lengths of up to `LEAF_LINES` consecutive lines.
 #[derive(Debug, Eq, PartialEq)]
-struct Node {
-    line_count: usize,
-    byte_len: usize,
-    height: u32,
-    kind: NodeKind,
+struct Lengths(Box<[usize]>);
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Extent {
+    lines: usize,
+    bytes: usize,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum NodeKind {
-    Leaf(Arc<[usize]>),
-    Branch { left: Arc<Node>, right: Arc<Node> },
+impl Summary for Extent {
+    fn add(&mut self, right: &Self) {
+        self.lines += right.lines;
+        self.bytes = self
+            .bytes
+            .checked_add(right.bytes)
+            .expect("validated source hard-line aggregate is representable");
+    }
+}
+
+impl Item for Lengths {
+    type Summary = Extent;
+
+    fn summary(&self) -> Extent {
+        Extent { lines: self.0.len(), bytes: self.0.iter().sum() }
+    }
+}
+
+fn lines(extent: &Extent) -> usize {
+    extent.lines
+}
+
+fn leaves(lengths: &[usize]) -> impl Iterator<Item = Lengths> + '_ {
+    lengths.chunks(LEAF_LINES).map(|chunk| Lengths(chunk.into()))
+}
+
+/// Byte lengths of consecutive ranges that begin at `start`.
+fn consecutive_lengths(start: usize, ranges: &[Range<usize>]) -> Option<Vec<usize>> {
+    let mut expected = start;
+    let mut lengths = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        if range.start != expected || range.start > range.end {
+            return None;
+        }
+        lengths.push(range.len());
+        expected = range.end;
+    }
+    Some(lengths)
 }
 
 impl SourceHardLineIndex {
     pub(super) fn visit_retained_memory(&self, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-        fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-            visitor.arc(node, |visitor| match &node.kind {
-                NodeKind::Leaf(lengths) => visitor.arc(lengths, |_| {}),
-                NodeKind::Branch { left, right } => {
-                    visit(left, visitor);
-                    visit(right, visitor);
-                }
-            });
-        }
-        visit(&self.root, visitor);
+        visitor.tree(&self.lines, |lengths| std::mem::size_of_val(&*lengths.0), |_, _| {});
     }
 
     pub(crate) fn new(ranges: Vec<Range<usize>>) -> Option<Self> {
         let content_start = ranges.first()?.start;
-        let mut expected = content_start;
-        let mut lengths = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            if range.start != expected || range.start > range.end {
-                return None;
-            }
-            lengths.push(range.len());
-            expected = range.end;
-        }
-        let leaves = lengths
-            .chunks(LEAF_LINES)
-            .map(Node::leaf)
-            .collect::<Vec<_>>();
-        let root = build_balanced(&leaves, 0..leaves.len())?;
+        let lengths = consecutive_lengths(content_start, &ranges)?;
         Some(Self {
             content_start,
-            root,
+            lines: Tree::from_items(leaves(&lengths), &mut Work::default()),
         })
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.root.line_count
+        self.lines.measure(lines)
     }
 
     pub(crate) fn get(&self, line: usize) -> Option<Range<usize>> {
-        let (relative_start, length) = lookup(&self.root, line, 0)?;
-        let start = self.content_start.checked_add(relative_start)?;
-        Some(start..start.checked_add(length)?)
+        if line >= self.len() {
+            return None;
+        }
+        let mut seek = at(line, lines);
+        let (leaf, before) = self.lines.find(&mut seek, &mut Work::default())?;
+        let preceding = leaf.0[..seek.remaining]
+            .iter()
+            .try_fold(before.bytes, |sum, length| sum.checked_add(*length))?;
+        let start = self.content_start.checked_add(preceding)?;
+        Some(start..start.checked_add(leaf.0[seek.remaining])?)
     }
 
     pub(crate) fn source_end(&self) -> usize {
         self.content_start
-            .checked_add(self.root.byte_len)
+            .checked_add(self.lines.measure(|extent| extent.bytes))
             .expect("validated source hard-line aggregate is representable")
     }
 
     /// Locate a physical source line through byte aggregates without binary
     /// searching repeatedly through the ordinal lookup API.
     pub(crate) fn line_at_offset(&self, offset: usize) -> Option<usize> {
-        let mut remaining = offset.checked_sub(self.content_start)?;
-        if remaining > self.root.byte_len {
+        let relative = offset.checked_sub(self.content_start)?;
+        if relative > self.lines.measure(|extent| extent.bytes) {
             return None;
         }
-        let mut node = self.root.as_ref();
-        let mut first_line = 0;
-        loop {
-            match &node.kind {
-                NodeKind::Leaf(lengths) => {
-                    for (index, length) in lengths.iter().enumerate() {
-                        if remaining < *length || index + 1 == lengths.len() {
-                            return Some(first_line + index);
-                        }
-                        remaining -= length;
-                    }
-                    return None;
-                }
-                NodeKind::Branch { left, right } => {
-                    if remaining < left.byte_len {
-                        node = left;
-                    } else {
-                        remaining -= left.byte_len;
-                        first_line += left.line_count;
-                        node = right;
-                    }
-                }
+        let mut seek = at(relative, |extent: &Extent| extent.bytes);
+        let (leaf, before) = self.lines.find(&mut seek, &mut Work::default())?;
+        let mut remaining = seek.remaining;
+        for (index, length) in leaf.0.iter().enumerate() {
+            if remaining < *length || index + 1 == leaf.0.len() {
+                return Some(before.lines + index);
             }
+            remaining -= length;
         }
+        None
     }
 
     #[cfg(test)]
@@ -134,280 +142,79 @@ impl SourceHardLineIndex {
 
     pub(crate) fn replace_ranges_with_stats(
         &self,
-        lines: Range<usize>,
+        target: Range<usize>,
         ranges: &[Range<usize>],
     ) -> Option<(Self, SourceHardLineSpliceStats)> {
-        if lines.start >= lines.end || lines.end > self.len() || ranges.is_empty() {
+        if target.start >= target.end || target.end > self.len() || ranges.is_empty() {
             return None;
         }
-        let expected_start = self.get(lines.start)?.start;
-        let mut expected = expected_start;
-        let mut lengths = Vec::with_capacity(ranges.len());
-        for range in ranges {
-            if range.start != expected || range.start > range.end {
-                return None;
-            }
-            lengths.push(range.len());
-            expected = range.end;
-        }
+        let lengths = consecutive_lengths(self.get(target.start)?.start, ranges)?;
         let mut stats = SourceHardLineSpliceStats::default();
-        let root = if ranges.len() == lines.len() {
-            replace_lengths(&self.root, 0, &lines, &lengths, &mut stats)
+        let mut work = Work::default();
+        let replaced = if ranges.len() == target.len() {
+            // The line count is unchanged: rewrite the affected leaves in
+            // place so every other leaf stays shared.
+            let mut tree = self.lines.clone();
+            let mut done = 0;
+            while done < lengths.len() {
+                tree = tree.update(
+                    &mut at(target.start + done, lines),
+                    |leaf, seek| {
+                        let mut values = leaf.0.to_vec();
+                        let count = (values.len() - seek.remaining).min(lengths.len() - done);
+                        values[seek.remaining..seek.remaining + count]
+                            .copy_from_slice(&lengths[done..done + count]);
+                        done += count;
+                        stats.leaves_copied += 1;
+                        stats.records_copied += values.len();
+                        Lengths(values.into())
+                    },
+                    &mut work,
+                );
+            }
+            tree
         } else {
-            let (prefix, tail) = split_lines(Some(self.root.clone()), lines.start, &mut stats);
-            let (_, suffix) = split_lines(tail, lines.len(), &mut stats);
-            let leaves = lengths.chunks(LEAF_LINES).map(Node::leaf).collect::<Vec<_>>();
+            let mut split = |tree: &Tree<Lengths>, line: usize, work: &mut Work| {
+                tree.split(
+                    &mut at(line, lines),
+                    |leaf, seek| match seek.remaining {
+                        0 => LeafSplit::Before,
+                        offset if offset == leaf.0.len() => LeafSplit::After,
+                        offset => {
+                            stats.leaves_copied += 2;
+                            stats.records_copied += leaf.0.len();
+                            LeafSplit::Parts(Lengths(leaf.0[..offset].into()), Lengths(leaf.0[offset..].into()))
+                        }
+                    },
+                    work,
+                )
+            };
+            let (prefix, tail) = split(&self.lines, target.start, &mut work);
+            let (_, suffix) = split(&tail, target.len(), &mut work);
+            let inserted = Tree::from_items(leaves(&lengths), &mut work);
             stats.records_copied += lengths.len();
-            stats.leaves_copied += leaves.len();
-            stats.nodes_copied += leaves.len();
-            join_lines(join_lines(prefix, build_balanced(&leaves, 0..leaves.len()), &mut stats), suffix, &mut stats)?
+            stats.leaves_copied += lengths.len().div_ceil(LEAF_LINES);
+            prefix.concat(&inserted, &mut work).concat(&suffix, &mut work)
         };
-        Some((
-            Self {
-                content_start: self.content_start,
-                root,
-            },
-            stats,
-        ))
+        stats.nodes_visited = work.visited;
+        stats.nodes_copied = work.created;
+        Some((Self { content_start: self.content_start, lines: replaced }, stats))
     }
 
     #[cfg(test)]
     pub(crate) fn shared_leaf_count_with(&self, other: &Self) -> usize {
-        shared_leaf_count(&self.root, &other.root)
+        self.lines.shared_leaf_count(&other.lines)
     }
 
     #[cfg(test)]
     pub(crate) fn leaf_count(&self) -> usize {
-        leaf_count(&self.root)
+        self.lines.iter().count()
     }
 
     #[cfg(test)]
     pub(crate) fn invariant_holds(&self) -> bool {
-        validate_node(&self.root).is_some_and(|(lines, bytes, _, _)| {
-            lines == self.len()
-                && bytes == self.root.byte_len
-                && self.source_end() == self.content_start + bytes
-        })
-    }
-}
-
-impl Node {
-    fn leaf(lengths: &[usize]) -> Arc<Self> {
-        Arc::new(Self {
-            line_count: lengths.len(),
-            byte_len: lengths.iter().sum(),
-            height: 1,
-            kind: NodeKind::Leaf(lengths.into()),
-        })
-    }
-
-    fn branch(left: Arc<Self>, right: Arc<Self>) -> Arc<Self> {
-        Arc::new(Self {
-            height: 1 + left.height.max(right.height),
-            line_count: left.line_count + right.line_count,
-            byte_len: left
-                .byte_len
-                .checked_add(right.byte_len)
-                .expect("validated source hard-line aggregate is representable"),
-            kind: NodeKind::Branch { left, right },
-        })
-    }
-}
-
-fn join_lines(left: Option<Arc<Node>>, right: Option<Arc<Node>>, stats: &mut SourceHardLineSpliceStats) -> Option<Arc<Node>> {
-    let (left, right) = match (left, right) { (None, r) => return r, (l, None) => return l, (Some(l), Some(r)) => (l, r) };
-    stats.nodes_visited += 1;
-    let result = if left.height > right.height + 1 {
-        let NodeKind::Branch { left: a, right: b } = &left.kind else { unreachable!() };
-        balance_lines(a.clone(), join_lines(Some(b.clone()), Some(right), stats).unwrap(), stats)
-    } else if right.height > left.height + 1 {
-        let NodeKind::Branch { left: a, right: b } = &right.kind else { unreachable!() };
-        balance_lines(join_lines(Some(left), Some(a.clone()), stats).unwrap(), b.clone(), stats)
-    } else { stats.nodes_copied += 1; Node::branch(left, right) };
-    Some(result)
-}
-
-fn balance_lines(left: Arc<Node>, right: Arc<Node>, stats: &mut SourceHardLineSpliceStats) -> Arc<Node> {
-    stats.nodes_copied += 1;
-    if left.height > right.height + 1 {
-        let NodeKind::Branch { left: a, right: b } = &left.kind else { unreachable!() };
-        if a.height >= b.height { stats.nodes_copied += 1; return Node::branch(a.clone(), Node::branch(b.clone(), right)); }
-        let NodeKind::Branch { left: c, right: d } = &b.kind else { unreachable!() };
-        stats.nodes_copied += 2;
-        return Node::branch(Node::branch(a.clone(), c.clone()), Node::branch(d.clone(), right));
-    }
-    if right.height > left.height + 1 {
-        let NodeKind::Branch { left: a, right: b } = &right.kind else { unreachable!() };
-        if b.height >= a.height { stats.nodes_copied += 1; return Node::branch(Node::branch(left, a.clone()), b.clone()); }
-        let NodeKind::Branch { left: c, right: d } = &a.kind else { unreachable!() };
-        stats.nodes_copied += 2;
-        return Node::branch(Node::branch(left, c.clone()), Node::branch(d.clone(), b.clone()));
-    }
-    Node::branch(left, right)
-}
-
-fn split_lines(node: Option<Arc<Node>>, at: usize, stats: &mut SourceHardLineSpliceStats) -> (Option<Arc<Node>>, Option<Arc<Node>>) {
-    let Some(node) = node else { return (None, None); };
-    stats.nodes_visited += 1;
-    if at == 0 { return (None, Some(node)); }
-    if at == node.line_count { return (Some(node), None); }
-    match &node.kind {
-        NodeKind::Leaf(values) => {
-            stats.nodes_copied += 2; stats.leaves_copied += 2; stats.records_copied += values.len();
-            (Some(Node::leaf(&values[..at])), Some(Node::leaf(&values[at..])))
-        }
-        NodeKind::Branch { left, right } if at < left.line_count => {
-            let (a, b) = split_lines(Some(left.clone()), at, stats);
-            (a, join_lines(b, Some(right.clone()), stats))
-        }
-        NodeKind::Branch { left, right } => {
-            let (a, b) = split_lines(Some(right.clone()), at - left.line_count, stats);
-            (join_lines(Some(left.clone()), a, stats), b)
-        }
-    }
-}
-
-fn build_balanced(leaves: &[Arc<Node>], range: Range<usize>) -> Option<Arc<Node>> {
-    match range.len() {
-        0 => None,
-        1 => Some(leaves[range.start].clone()),
-        _ => {
-            let middle = range.start + range.len() / 2;
-            Some(Node::branch(
-                build_balanced(leaves, range.start..middle)?,
-                build_balanced(leaves, middle..range.end)?,
-            ))
-        }
-    }
-}
-
-fn lookup(node: &Node, line: usize, prefix: usize) -> Option<(usize, usize)> {
-    if line >= node.line_count {
-        return None;
-    }
-    match &node.kind {
-        NodeKind::Leaf(lengths) => {
-            let preceding = lengths[..line]
-                .iter()
-                .try_fold(prefix, |sum, length| sum.checked_add(*length))?;
-            Some((preceding, lengths[line]))
-        }
-        NodeKind::Branch { left, right } => {
-            if line < left.line_count {
-                lookup(left, line, prefix)
-            } else {
-                lookup(
-                    right,
-                    line - left.line_count,
-                    prefix.checked_add(left.byte_len)?,
-                )
-            }
-        }
-    }
-}
-
-fn replace_lengths(
-    node: &Arc<Node>,
-    base_line: usize,
-    target: &Range<usize>,
-    replacements: &[usize],
-    stats: &mut SourceHardLineSpliceStats,
-) -> Arc<Node> {
-    stats.nodes_visited = stats.nodes_visited.saturating_add(1);
-    let node_end = base_line + node.line_count;
-    if node_end <= target.start || base_line >= target.end {
-        return node.clone();
-    }
-    match &node.kind {
-        NodeKind::Leaf(current) => {
-            let overlap_start = base_line.max(target.start);
-            let overlap_end = node_end.min(target.end);
-            let mut lengths = current.to_vec();
-            let destination = overlap_start - base_line..overlap_end - base_line;
-            let source = overlap_start - target.start..overlap_end - target.start;
-            lengths[destination].copy_from_slice(&replacements[source]);
-            stats.nodes_copied = stats.nodes_copied.saturating_add(1);
-            stats.leaves_copied = stats.leaves_copied.saturating_add(1);
-            stats.records_copied = stats.records_copied.saturating_add(lengths.len());
-            Node::leaf(&lengths)
-        }
-        NodeKind::Branch { left, right } => {
-            let left_after = replace_lengths(left, base_line, target, replacements, stats);
-            let right_after = replace_lengths(
-                right,
-                base_line + left.line_count,
-                target,
-                replacements,
-                stats,
-            );
-            if Arc::ptr_eq(&left_after, left) && Arc::ptr_eq(&right_after, right) {
-                node.clone()
-            } else {
-                stats.nodes_copied = stats.nodes_copied.saturating_add(1);
-                Node::branch(left_after, right_after)
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-fn shared_leaf_count(left: &Arc<Node>, right: &Arc<Node>) -> usize {
-    if Arc::ptr_eq(left, right) {
-        return leaf_count(left);
-    }
-    match (&left.kind, &right.kind) {
-        (
-            NodeKind::Branch {
-                left: left_left,
-                right: left_right,
-            },
-            NodeKind::Branch {
-                left: right_left,
-                right: right_right,
-            },
-        ) if left_left.line_count == right_left.line_count => {
-            shared_leaf_count(left_left, right_left) + shared_leaf_count(left_right, right_right)
-        }
-        _ => 0,
-    }
-}
-
-#[cfg(test)]
-fn leaf_count(node: &Node) -> usize {
-    match &node.kind {
-        NodeKind::Leaf(_) => 1,
-        NodeKind::Branch { left, right } => leaf_count(left) + leaf_count(right),
-    }
-}
-
-#[cfg(test)]
-fn validate_node(node: &Node) -> Option<(usize, usize, usize, usize)> {
-    match &node.kind {
-        NodeKind::Leaf(lengths) => {
-            let bytes = lengths
-                .iter()
-                .try_fold(0usize, |sum, length| sum.checked_add(*length))?;
-            (!lengths.is_empty()
-                && lengths.len() <= LEAF_LINES
-                && node.height == 1
-                && node.line_count == lengths.len()
-                && node.byte_len == bytes)
-                .then_some((lengths.len(), bytes, 1, 1))
-        }
-        NodeKind::Branch { left, right } => {
-            let (left_lines, left_bytes, left_leaves, left_height) = validate_node(left)?;
-            let (right_lines, right_bytes, right_leaves, right_height) = validate_node(right)?;
-            (left_height.abs_diff(right_height) <= 1
-                && node.height as usize == left_height.max(right_height)+1
-                && node.line_count == left_lines + right_lines
-                && node.byte_len == left_bytes.checked_add(right_bytes)?)
-            .then_some((
-                node.line_count,
-                node.byte_len,
-                left_leaves + right_leaves,
-                left_height.max(right_height) + 1,
-            ))
-        }
+        self.lines.invariant_holds()
+            && self.lines.iter().all(|leaf| !leaf.0.is_empty() && leaf.0.len() <= LEAF_LINES)
     }
 }
 

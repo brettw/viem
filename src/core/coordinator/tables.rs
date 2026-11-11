@@ -310,13 +310,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.finalize_style_edit_group()?;
         self.finalize_open_edit_group(view)?;
         self.views.get_mut(&view).expect("validated view").commands = commands;
-        Ok(CoreOutcome {
-            command: None,
-            document_changed: false,
-            position_map: None,
-            layout_changed: false,
-            composition_changes: Vec::new(),
-        })
+        Ok(CoreOutcome::default())
     }
 
     pub(super) fn apply_table_selection_edit(
@@ -435,83 +429,44 @@ impl<P: TextMeasurementProvider> Core<P> {
             .prepare_table_edit(document, revision, intent)
             .map_err(command_model_transaction_error)?;
         if preflight.is_no_op() {
-            return Ok(CoreOutcome {
-                command: None,
-                document_changed: false,
-                position_map: None,
-                layout_changed: false,
-                composition_changes: Vec::new(),
-            });
+            return Ok(CoreOutcome::default());
         }
         self.document.prepared_text_point(&preflight, caret)?;
-        let map = preflight.text_position_map().clone();
-        let before = self.views[&view]
-            .commands
-            .capture_history_restoration(&self.document)?;
-        let mapped =
-            self.prepare_mapped_commands(&map, CommandInterpreter::capture_position_anchors)?;
-        self.finalize_open_edit_group(view)?;
-        let prepared = self
-            .document
-            .rebind_prepared_after_group_close(preflight)
-            .map_err(command_model_transaction_error)?;
-        self.document
-            .commit_model_transaction(prepared)
-            .map_err(command_model_transaction_error)?;
-        for (id, commands) in mapped {
-            self.views.get_mut(&id).expect("prepared view").commands = commands;
-        }
-        // A structural edit can renumber the table identity; the caret cell
-        // names the edited table in the published projection.
-        let reselected = selection.is_some_and(|extent| {
-            let Some(table) = self.document.projection().table_at(caret) else {
-                return false;
-            };
-            let commands = &mut self.views.get_mut(&view).expect("prepared view").commands;
-            let mut candidate = commands.clone();
-            if candidate.mode() == Mode::VisualLine && extent.columns() == (0..table.columns.len()) {
-                let range = table.rows[extent.rows().start].range.start..table.rows[extent.rows().end - 1].range.end;
-                candidate.select_pointer_row_range(&self.document, range, false);
-            } else if candidate.select_table_cells(&self.document, &TableSelectionExtent { table: table.id, ..extent }).is_err() {
-                return false;
-            }
-            *commands = candidate;
-            true
-        });
-        if !preserve_selection && !reselected {
-            self.views
-                .get_mut(&view)
-                .expect("prepared view")
-                .commands
-                .finish_native_table_edit(&mut self.document, caret, enter_insert);
-        }
-        let after = self.views[&view]
-            .commands
-            .capture_history_restoration(&self.document)?;
-        self.document.attach_history_restoration(
-            self.document.history_status().current.node,
-            HistoryRestoration::new(before, after.clone()),
-        )?;
-        // The edit is its own undo unit. Typing after it opens the next unit,
-        // which begins at this edit's result rather than before it.
-        if enter_insert && !reselected {
-            self.edit_group_owner = Some(view);
-            self.edit_group_restoration = Some(OpenGroupRestoration {
-                generation: self.document.edit_group_generation(),
-                parent: self.document.history_status().current,
-                before: after,
+        let map = self.commit_native_edit(view, preflight, |core| {
+            // A structural edit can renumber the table identity; the caret cell
+            // names the edited table in the published projection.
+            let reselected = selection.is_some_and(|extent| {
+                let Some(table) = core.document.projection().table_at(caret) else {
+                    return false;
+                };
+                let commands = &mut core.views.get_mut(&view).expect("prepared view").commands;
+                let mut candidate = commands.clone();
+                if candidate.mode() == Mode::VisualLine && extent.columns() == (0..table.columns.len()) {
+                    let range = table.rows[extent.rows().start].range.start..table.rows[extent.rows().end - 1].range.end;
+                    candidate.select_pointer_row_range(&core.document, range, false);
+                } else if candidate.select_table_cells(&core.document, &TableSelectionExtent { table: table.id, ..extent }).is_err() {
+                    return false;
+                }
+                *commands = candidate;
+                true
             });
-        }
-        let intent = if preserve_selection { ImmediateLayoutIntent::PreserveViewport }
-            else { ImmediateLayoutIntent::PreserveViewportAndRevealCaret };
-        let composition_changes = self.refresh_views_after_native_change(view, &map, intent)?;
-        Ok(CoreOutcome {
-            command: None,
-            document_changed: true,
-            position_map: Some(map),
-            layout_changed: true,
-            composition_changes,
-        })
+            if !preserve_selection && !reselected {
+                core.views
+                    .get_mut(&view)
+                    .expect("prepared view")
+                    .commands
+                    .finish_native_table_edit(&mut core.document, caret, enter_insert);
+            }
+            // The edit is its own undo unit. Typing after it opens the next
+            // unit, which begins at this edit's result rather than before it.
+            enter_insert && !reselected
+        })?;
+        let intent = if preserve_selection {
+            ImmediateLayoutIntent::PreserveViewport
+        } else {
+            ImmediateLayoutIntent::PreserveViewportAndRevealCaret
+        };
+        self.finish_native_change(view, map, intent)
     }
 
     pub(super) fn table_logical_selection(

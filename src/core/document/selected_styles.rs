@@ -166,13 +166,13 @@ impl FormattedDocument {
                 .and_then(|index| blocks.get(index))
                 .or_else(|| blocks.first());
             let paragraph = block.map(|block| {
-                    if block.style == self.style_sheet().base_paragraph || block.style.0 == "Code Block" {
+                    if block.style == self.style_sheet().base_paragraph || block.style.is_code_block() {
                         block.containers.iter().rev().find(|member| matches!(member.container.kind, super::ContainerKind::Quote | super::ContainerKind::CodeBlock))
                             .map(|member| member.container.style.clone()).unwrap_or_else(|| block.style.clone())
                     } else { block.style.clone() }
                 })
                 .unwrap_or_else(|| self.style_sheet().base_paragraph.clone());
-            has_code_block |= block.is_some_and(|block| block.style.0 == "Code Block"
+            has_code_block |= block.is_some_and(|block| block.style.is_code_block()
                 || block.containers.iter().any(|member| member.container.kind == super::ContainerKind::CodeBlock));
             if block.is_some_and(|block| block.quote_depth > 0) { has_quotes = true; }
             else { has_non_quote = true; }
@@ -193,7 +193,7 @@ impl FormattedDocument {
             let character = active_characters
                 .last_key_value()
                 .map(|(_, id)| id.clone())
-                .or_else(|| (!active_code.is_empty() && paragraph.0 != "Code Block").then(|| StyleId::from("Code")));
+                .or_else(|| (!active_code.is_empty() && !paragraph.is_code_block()).then(|| StyleId::from("Code")));
             paragraphs.insert(paragraph);
             // Character assignments attach to text within each containing
             // block. Separators between those wrappers carry no competing

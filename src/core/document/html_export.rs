@@ -495,7 +495,7 @@ fn render_projection(
                     .and_then(|n| n.parse::<u8>().ok())
                     .filter(|n| (1..=6).contains(n)),
             };
-            let code = block.style.0 == "Code Block"
+            let code = block.style.is_code_block()
                 || path.iter().any(|c| c.kind == ContainerKind::CodeBlock);
             let tag = if paragraph.thematic_break {
                 "hr".to_owned()

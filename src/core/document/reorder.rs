@@ -43,7 +43,7 @@ pub(super) fn plan(
             // body depends on indentation/fences outside the visible row.
             // Moving those raw bodies as independent paragraphs is not a
             // verified structure-preserving permutation capability.
-            if block.range != line || block.style.0 == "Code Block" || indented
+            if block.range != line || block.style.is_code_block() || indented
                 || matches!(block.kind, super::BlockKind::ListItem { .. })
             {
                 return Err(DocumentError::UnsupportedFormatting);

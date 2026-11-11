@@ -22,7 +22,7 @@ impl Document {
         let blocks = self.projection().blocks_for_region(&range);
         if blocks
             .iter()
-            .any(|block| block.style.0 == "Code Block" || block.markdown_html)
+            .any(|block| block.style.is_code_block() || block.markdown_html)
         {
             return false;
         }

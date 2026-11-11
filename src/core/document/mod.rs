@@ -463,6 +463,12 @@ pub enum DocumentError {
     DocumentIdentityExhausted,
     BlockIdentityExhausted,
     FormattedTextStorage(FormattedTextError),
+    /// A model transaction failed with a typed coordinate error. Callers
+    /// whose error type is `DocumentError` keep it instead of a generic
+    /// verification failure.
+    Position(PositionError),
+    /// As `Position`, for a typed history failure.
+    History(HistoryError),
 }
 
 impl fmt::Display for DocumentError {
@@ -569,6 +575,8 @@ impl fmt::Display for DocumentError {
                 formatter.write_str("projected block identities were exhausted")
             }
             Self::FormattedTextStorage(error) => error.fmt(formatter),
+            Self::Position(error) => error.fmt(formatter),
+            Self::History(error) => error.fmt(formatter),
         }
     }
 }
@@ -1736,7 +1744,7 @@ impl Document {
                 .into_iter()
                 .find(|block| block.range.start <= at && at <= block.range.end)
                 .ok_or(DocumentError::VerificationFailed)?;
-            if self.format() == Format::Markdown && block.style.0 == "Code Block" {
+            if self.format() == Format::Markdown && block.style.is_code_block() {
                 return Ok(None);
             }
             let BlockKind::ListItem { item_start, .. } = block.kind else {

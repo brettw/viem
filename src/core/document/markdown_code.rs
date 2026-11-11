@@ -92,7 +92,7 @@ pub(super) fn patches(
         .transpose()?.unwrap_or(false);
     let code_block = quoted_code || block
         .as_ref()
-        .is_some_and(|block| block.style.0 == "Code Block");
+        .is_some_and(|block| block.style.is_code_block());
     if code_block && block.as_ref().is_some_and(|block| block.range.is_empty()) {
         return empty_body_patches(document, block.as_ref().unwrap(), replacement, quoted_code).map(Some);
     }
@@ -937,7 +937,7 @@ pub(super) fn list_wrapper_patches(
 }
 
 fn is_fenced_paragraph(document: &Document, block: &super::Block) -> Result<bool, DocumentError> {
-    Ok(block.style.0 == "Code Block" || super::markdown_quotes::is_fenced_block(document, block)?)
+    Ok(block.style.is_code_block() || super::markdown_quotes::is_fenced_block(document, block)?)
 }
 
 /// Fence syntax belongs to the paragraph even when its body has no characters.
@@ -1036,7 +1036,7 @@ pub(super) fn delimiter_ranges(
     if document.projection().map_source_boundary(document.revision(), source.start,
         super::BoundaryAffinity::Downstream).ok().is_some_and(|point| {
             document.projection().blocks_for_region(&(point.formatted_offset..point.formatted_offset))
-                .iter().any(|block| block.style.0 == "Code Block")
+                .iter().any(|block| block.style.is_code_block())
         })
     {
         // Block fences own literal endings and their own empty-body repair.

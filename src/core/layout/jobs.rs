@@ -777,6 +777,69 @@ pub(crate) fn prepare_cache_layout_job(
     Ok(request)
 }
 
+/// Capture every hard line of the document, each laid out whole however long
+/// it is, as the view's current job. The caller accepts work proportional to
+/// the document; foreground layout uses [`prepare_layout_job`] instead.
+pub(crate) fn prepare_whole_document_layout_job(
+    document: &Document,
+    view: &mut ViewLayout,
+    requirements: LayoutProviderRequirements,
+    job_id: LayoutJobId,
+) -> Result<LayoutJobRequest, LayoutJobError> {
+    let lines = 0..document.projection().presentation_line_count();
+    let region = ViewportLayoutRegion::new(lines, view.viewport_top(), view.height().max(f32::MIN_POSITIVE))?
+        .with_complete_horizontal_geometry();
+    prepare_layout_job_with_registration_hooks(document, view, requirements, job_id,
+        LayoutJobPriority::ChangedVisibleRows, LayoutJobRegion::Viewport(region), LayoutCancellationToken::new(),
+        true, true, || {}, || {})
+}
+
+/// As [`prepare_whole_document_layout_job`], for text with no owning document
+/// whose styles the caller resolved itself. `line_ranges` are its hard lines.
+pub(crate) fn prepare_styled_text_layout_job(
+    (document_id, document_revision): (DocumentId, Revision),
+    text: &str,
+    line_ranges: Vec<Range<usize>>,
+    styles: DocumentLayoutStyles,
+    view: &mut ViewLayout,
+    provider_requirements: LayoutProviderRequirements,
+    job_id: LayoutJobId,
+) -> Result<LayoutJobRequest, LayoutJobError> {
+    let region = ViewportLayoutRegion::new(0..line_ranges.len(), view.viewport_top(), view.height().max(f32::MIN_POSITIVE))?
+        .with_complete_horizontal_geometry();
+    let mut captured_view = view.capture_for_regional_layout_job(0..text.len());
+    captured_view.complete_horizontal_geometry = true;
+    let cancellation = LayoutCancellationToken::new();
+    cancellation.try_register().expect("a new token registers once");
+    if !view.begin_layout_job(job_id) {
+        return Err(LayoutJobError::NonMonotonicJobId { requested: job_id, newest: view.active_layout_job() });
+    }
+    Ok(LayoutJobRequest {
+        job_id,
+        priority: LayoutJobPriority::ChangedVisibleRows,
+        document_id,
+        document_revision,
+        configuration_generation: view.configuration_generation(),
+        geometry_generation: view.geometry_generation(),
+        provider_requirements,
+        region: LayoutJobRegion::Viewport(region),
+        cancellation,
+        projection_text_len: text.len(),
+        input: CapturedLayoutInput::Regional {
+            text: Arc::from(text),
+            text_origin: 0,
+            document_hard_line_count: line_ranges.len(),
+            line_ranges,
+            following_line_range: None,
+            styles: Arc::new(styles),
+        },
+        captured_view,
+        table_measurements: None,
+        indent_projection: None,
+        indent_index: view.indent_index.clone(),
+    })
+}
+
 /// The callbacks are deterministic test seams around registration. Production
 /// callers always use the no-op wrapper above.
 #[allow(clippy::too_many_arguments)]
@@ -2075,13 +2138,17 @@ mod tests {
         let mut view = ViewLayout::new(90.0, 100.0);
         full_engine.relayout(&document, &mut view).unwrap();
         let full_snapshot = view.snapshot().unwrap().clone();
+        let full_height = view.hard_line_range_height(1..2).unwrap().height();
+        let cached = view.regional_cached_ranges();
 
+        // With nothing retained, the job captures and shapes only its line.
         let provider = InstrumentedProvider::new(ProviderThreading::AnyWorker);
         let mut engine = LayoutEngine::new(provider);
         let requirements = inspect_layout_provider(&engine);
+        let mut fresh = ViewLayout::new(90.0, 100.0);
         let request = prepare_layout_job(
             &document,
-            &mut view,
+            &mut fresh,
             requirements,
             LayoutJobId(1),
             LayoutJobPriority::Background,
@@ -2089,7 +2156,6 @@ mod tests {
             LayoutCancellationToken::new(),
         )
         .unwrap();
-        assert!(request.captured_view.default_font_metrics.is_some());
         let expected = document.line_start(1).unwrap()..document.line_end(1).unwrap();
         assert_eq!(request.captured_text_len(), expected.len());
         assert!(request.captured_text_len() < request.projection_text_len());
@@ -2113,24 +2179,40 @@ mod tests {
             .flat_map(|row| &row.clusters)
             .all(|cluster| expected.start <= cluster.text_range.start
                 && cluster.text_range.end <= expected.end));
-        let full_height = view.hard_line_range_height(1..2).unwrap().height();
         assert!((regional.lines()[0].height() - full_height).abs() < 1.0e-5);
-        assert_eq!(engine.provider().request_ranges, vec![expected]);
-        assert!(engine
-            .provider()
-            .request_default_sizes
+        // A view without retained metrics also probes the default font once.
+        let provider = engine.provider();
+        let shaped = provider
+            .request_ranges
             .iter()
-            .all(|size| *size == 31.0));
+            .zip(&provider.request_default_sizes)
+            .filter(|(range, _)| !range.is_empty())
+            .collect::<Vec<_>>();
+        assert_eq!(shaped, vec![(&expected, &31.0)]);
 
-        install_layout_job(
+        // On the laid-out view the same job reuses the retained font metrics
+        // and leaves the installed snapshot and measurements alone.
+        let request = prepare_layout_job(
+            &document,
+            &mut view,
+            requirements,
+            LayoutJobId(1),
+            LayoutJobPriority::Background,
+            hard_lines(1..2),
+            LayoutCancellationToken::new(),
+        )
+        .unwrap();
+        assert!(request.captured_view.default_font_metrics.is_some());
+        let candidate =
+            compute_layout_job(&mut engine, &request, LayoutExecutionContext::WorkerPool).unwrap();
+        install_layout_job_cache(
             &mut view,
             target(&document, requirements.metrics_generation),
             candidate,
         )
         .unwrap();
-        assert_eq!(view.snapshot(), Some(&full_snapshot));
-        assert_eq!(view.regional_cached_ranges(), vec![1..2]);
-        assert_eq!(view.regional_cache_statistics().hard_line_count(), 1);
+        assert!(view.snapshot() == Some(&full_snapshot));
+        assert_eq!(view.regional_cached_ranges(), cached);
         assert!(view.content_height().is_exact());
     }
 

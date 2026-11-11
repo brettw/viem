@@ -649,8 +649,6 @@ static void typecheck(void) {{
       viem_core_view_set_viewport_origin;
   ViemStatus (*set_scale)(ViemCoreHandle, ViemViewId, float,
       ViemCoreOutcomeV1 *) = viem_core_view_set_scale;
-  ViemStatus (*set_linebreak)(ViemCoreHandle, ViemViewId, uint32_t,
-      ViemCoreOutcomeV1 *) = viem_core_view_set_linebreak;
   ViemStatus (*set_file_format)(ViemCoreHandle, ViemViewId,
       const ViemSetFileFormatV1 *, ViemCoreOutcomeV1 *) =
       viem_core_view_set_file_format;
@@ -721,7 +719,7 @@ static void typecheck(void) {{
   (void)visual_selection_info; (void)copy_visual_selection;
   (void)use_selection_for_find; (void)reveal_selection;
   (void)set_viewport_origin; (void)set_scale;
-  (void)set_linebreak; (void)set_file_format;
+  (void)set_file_format;
   (void)prepare_html_export; (void)render_html_export; (void)copy_html_export;
   (void)release_html_export; (void)import_clipboard;
   (void)edit_style; (void)begin_style_group; (void)edit_style_in_group;

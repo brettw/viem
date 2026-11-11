@@ -14,10 +14,7 @@ fn completion_followup_failure(error: CoreError) -> CoreOutcome {
         command: Some(crate::command::completion::failed_completion_terminator(
             message,
         )),
-        document_changed: false,
-        position_map: None,
-        layout_changed: false,
-        composition_changes: Vec::new(),
+        ..CoreOutcome::default()
     }
 }
 
@@ -163,10 +160,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .completion
                     .as_ref()
                     .map(CompletionSession::output),
-                document_changed: false,
-                position_map: None,
                 layout_changed: true,
-                composition_changes: Vec::new(),
+                ..CoreOutcome::default()
             }));
         }
         if self.views[&view_id].completion.is_none() {
@@ -204,23 +199,15 @@ impl<P: TextMeasurementProvider> Core<P> {
             .get_mut(&view_id)
             .ok_or(CoreError::UnknownView(view_id))?;
         let Some(session) = view.completion.take() else {
-            return Ok(CoreOutcome {
-                command: None,
-                document_changed: false,
-                position_map: None,
-                layout_changed: false,
-                composition_changes: Vec::new(),
-            });
+            return Ok(CoreOutcome::default());
         };
         let previous_layout = view.composition_layout.take();
         let suffix = session.accepted_suffix().to_owned();
         if suffix.is_empty() {
             return Ok(CoreOutcome {
                 command: Some(session.output()),
-                document_changed: false,
-                position_map: None,
                 layout_changed: true,
-                composition_changes: Vec::new(),
+                ..CoreOutcome::default()
             });
         }
         match self.handle(view_id, CoreEvent::Input(InputEvent::Text(suffix))) {

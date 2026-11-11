@@ -14,13 +14,13 @@ impl Document {
         let blocks = self.projection().blocks_for_region(range);
         let snapshot = self.hard_line_snapshot();
         let selects_empty_tail = |block: &super::super::Block| {
-            block.style.0 == "Code Block" && selected_rows.contains(&block.range.end)
+            block.style.is_code_block() && selected_rows.contains(&block.range.end)
                 && snapshot.line_at_offset(block.range.end).is_ok_and(|line| line.content_range().is_empty())
         };
         let selected = blocks.iter().filter(|block| {
             if block.range.is_empty() {
                 (selected_rows.contains(&block.range.start) || *selected_rows == block.range) && !block.thematic_break
-                    && (block.style.0 == "Code Block" || !block.markdown_html && block.containers.is_empty())
+                    && (block.style.is_code_block() || !block.markdown_html && block.containers.is_empty())
             } else {
                 block.range.start < selected_rows.end && (selected_rows.start < block.range.end || selects_empty_tail(block))
             }
@@ -28,15 +28,15 @@ impl Document {
         // An empty passive-HTML row (such as a closing `</details>`) owns tag
         // syntax this adapter does not remove. Decline rather than leave it.
         let skips_html_row = blocks.iter().any(|block| block.range.is_empty() && block.markdown_html
-            && block.style.0 != "Code Block" && selected_rows.contains(&block.range.start));
+            && !block.style.is_code_block() && selected_rows.contains(&block.range.start));
         if skips_html_row || selected.is_empty() || selected.iter().any(|block|
-            matches!(block.kind, super::super::BlockKind::ListItem { .. }) && block.style.0 != "Code Block"
+            matches!(block.kind, super::super::BlockKind::ListItem { .. }) && !block.style.is_code_block()
                 || self.projection().table_at(block.range.start).is_some()) {
             return Ok(None);
         }
         let mut patches = Vec::new();
         for block in selected {
-            if block.range.is_empty() && block.style.0 != "Code Block" {
+            if block.range.is_empty() && !block.style.is_code_block() {
                 let body = self.projection().paragraph_source_extent(block)
                     .ok_or(DocumentError::AmbiguousProjection)?;
                 let mut start = self.physical_line_source_range(body.start)?.start;
@@ -53,7 +53,7 @@ impl Document {
             }
             let body = range.start.max(block.range.start)..range.end.min(block.range.end);
             let complete = body == block.range;
-            if !complete && block.style.0 != "Code Block" { return Ok(None); }
+            if !complete && !block.style.is_code_block() { return Ok(None); }
             let html_owner = if block.markdown_html {
                 if !complete { return Ok(None); }
                 let Some((source, formatted)) = self.markdown_html_row_owner(block)? else {
@@ -64,7 +64,7 @@ impl Document {
                 if formatted != block.range { return Ok(None); }
                 Some(source)
             } else { None };
-            let fence = if block.style.0 == "Code Block" {
+            let fence = if block.style.is_code_block() {
                 super::super::markdown_code::fenced_source(self, block)?
             } else { None };
             // Indented code may need a supporting fence to retain a blank
@@ -105,7 +105,7 @@ impl Document {
                 let next = self.projection().source_insertion_point(next_at, true)
                     .ok_or(DocumentError::AmbiguousProjection)?;
                 end = self.physical_line_at_source(next)?.content_range.start;
-            } else if !complete && block.style.0 == "Code Block" {
+            } else if !complete && block.style.is_code_block() {
                 // The last selected body row does not own the enclosing
                 // closing fence or the following paragraph's separator.
                 end = last_source.source_range.end;
@@ -164,7 +164,7 @@ impl Document {
         ).to_source(&input);
         let source = self.projection().source_range(block.range.clone())
             .ok_or(DocumentError::AmbiguousProjection)?;
-        if block.style.0 == "Code Block" {
+        if block.style.is_code_block() {
             let at = input.normalized_at(source.start);
             if let Some(owner) = super::super::projection::markdown_html_pre_owners(&input.text, &[])
                 .into_iter().find(|owner| owner.range.start <= at && at <= owner.range.end) {

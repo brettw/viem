@@ -4,7 +4,7 @@
 //! slices of the same buffer and concatenation builds a balanced persistent
 //! rope, so a revision shares every untouched byte with its predecessor.
 
-use std::cmp::Ordering;
+use crate::persistent::{Item, Tree, View, Work};
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
@@ -51,7 +51,7 @@ impl SourceArtifactDigest {
 #[derive(Clone, Debug)]
 pub(crate) struct SourceSnapshot {
     identity: SourceSnapshotIdentity,
-    root: Option<Arc<Node>>,
+    pieces: Tree<Piece>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -60,16 +60,7 @@ pub(crate) struct SourceDiffStats {
     pub bytes_compared: usize,
 }
 
-#[derive(Debug)]
-enum Node {
-    Leaf(Piece),
-    Branch {
-        left: Arc<Node>,
-        right: Arc<Node>,
-        len: usize,
-        height: u8,
-    },
-}
+type Node = crate::persistent::Node<Piece>;
 
 #[derive(Debug)]
 struct Piece {
@@ -78,30 +69,54 @@ struct Piece {
     len: usize,
 }
 
+impl Piece {
+    fn slice(&self) -> &[u8] {
+        &self.bytes[self.start..self.start + self.len]
+    }
+}
+
+impl Item for Piece {
+    type Summary = usize;
+
+    fn summary(&self) -> usize {
+        self.len
+    }
+}
+
+fn length(length: &usize) -> usize {
+    *length
+}
+
+fn split(pieces: &Tree<Piece>, at: usize) -> (Tree<Piece>, Tree<Piece>) {
+    pieces.split_at(
+        at,
+        length,
+        |piece, offset| {
+            (
+                Piece { bytes: piece.bytes.clone(), start: piece.start, len: offset },
+                Piece { bytes: piece.bytes.clone(), start: piece.start + offset, len: piece.len - offset },
+            )
+        },
+        &mut Work::default(),
+    )
+}
+
+fn concat(left: &Tree<Piece>, right: &Tree<Piece>) -> Tree<Piece> {
+    left.concat(right, &mut Work::default())
+}
+
 impl SourceSnapshot {
     pub(super) fn visit_retained_memory(
         &self,
         visitor: &mut super::history_memory::MemoryVisitor<'_>,
     ) {
-        fn visit(node: &Arc<Node>, visitor: &mut super::history_memory::MemoryVisitor<'_>) {
-            visitor.arc(node, |visitor| match node.as_ref() {
-                Node::Leaf(piece) => visitor.arc(&piece.bytes, |_| {}),
-                Node::Branch { left, right, .. } => {
-                    visit(left, visitor);
-                    visit(right, visitor);
-                }
-            });
-        }
-        if let Some(root) = &self.root {
-            visit(root, visitor);
-        }
+        visitor.tree(&self.pieces, |_| 0, |piece, visitor| visitor.arc(&piece.bytes, |_| {}));
     }
 
     pub(crate) fn new(bytes: Vec<u8>) -> Self {
-        let root = tree_from_bytes(&bytes);
         Self {
             identity: SourceSnapshotIdentity::fresh(),
-            root,
+            pieces: pieces_from_bytes(&bytes),
         }
     }
 
@@ -110,7 +125,7 @@ impl SourceSnapshot {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.root.as_deref().map(Node::len).unwrap_or(0)
+        self.pieces.measure(length)
     }
 
     pub(crate) fn bytes(&self) -> Vec<u8> {
@@ -119,8 +134,8 @@ impl SourceSnapshot {
             stats.source_full_materialized_bytes += self.len();
         });
         let mut result = Vec::with_capacity(self.len());
-        if let Some(root) = &self.root {
-            root.append_to(&mut result);
+        for piece in self.pieces.iter() {
+            result.extend_from_slice(piece.slice());
         }
         result
     }
@@ -169,11 +184,11 @@ impl SourceSnapshot {
             document: usize,
         }
         fn collect(node: &Node, at: usize, range: &Range<usize>, into: &mut Vec<PieceRange>) {
-            if at >= range.end || at + node.len() <= range.start {
+            if at >= range.end || at + node.summary() <= range.start {
                 return;
             }
-            match node {
-                Node::Leaf(piece) => {
+            match node.view() {
+                View::Leaf(piece) => {
                     let begin = at.max(range.start);
                     let end = (at + piece.len).min(range.end);
                     into.push(PieceRange {
@@ -183,22 +198,22 @@ impl SourceSnapshot {
                         document: begin,
                     });
                 }
-                Node::Branch { left, right, .. } => {
+                View::Branch(left, right) => {
                     collect(left, at, range, into);
-                    collect(right, at + left.len(), range, into);
+                    collect(right, at + left.summary(), range, into);
                 }
             }
         }
         let mut previous = Vec::new();
         let mut following = Vec::new();
         collect(
-            self.root.as_deref().expect("nonempty source"),
+            self.pieces.root().expect("nonempty source"),
             0,
             &old,
             &mut previous,
         );
         collect(
-            next.root.as_deref().expect("nonempty source"),
+            next.pieces.root().expect("nonempty source"),
             0,
             &new,
             &mut following,
@@ -278,11 +293,11 @@ impl SourceSnapshot {
             stats.source_range_materializations += 1;
             stats.source_range_materialized_bytes += range.len();
         });
-        let (_, suffix) = split(self.root.clone(), range.start);
-        let (selected, _) = split(suffix, range.end - range.start);
+        let (_, suffix) = split(&self.pieces, range.start);
+        let (selected, _) = split(&suffix, range.end - range.start);
         let mut result = Vec::with_capacity(range.end - range.start);
-        if let Some(selected) = selected {
-            selected.append_to(&mut result);
+        for piece in selected.iter() {
+            result.extend_from_slice(piece.slice());
         }
         Some(result)
     }
@@ -293,8 +308,8 @@ impl SourceSnapshot {
         // physical byte sequence, rather than a derived projection, the sole
         // authority for the result.
         let mut digest = Sha256::new();
-        if let Some(root) = &self.root {
-            root.visit_bytes(&mut |bytes| digest.update(bytes));
+        for piece in self.pieces.iter() {
+            digest.update(piece.slice());
         }
         SourceArtifactDigest(digest.finish())
     }
@@ -304,8 +319,8 @@ impl SourceSnapshot {
     /// that aggregate snapshots deduplicate the allocation identity.
     #[cfg(test)]
     pub(crate) fn visit_retained_buffers(&self, visitor: &mut dyn FnMut(usize, usize)) {
-        if let Some(root) = &self.root {
-            root.visit_retained_buffers(visitor);
+        for piece in self.pieces.iter() {
+            visitor(Arc::as_ptr(&piece.bytes).cast::<u8>() as usize, piece.bytes.len());
         }
     }
 
@@ -316,18 +331,18 @@ impl SourceSnapshot {
         visitor: &mut super::history_source::SourceRetentionVisitor<'_>,
     ) {
         fn visit(node: &Arc<Node>, visitor: &mut super::history_source::SourceRetentionVisitor<'_>) {
-            visitor.node(Arc::as_ptr(node) as usize, |visitor| match node.as_ref() {
-                Node::Leaf(piece) => visitor.buffer(
+            visitor.node(Arc::as_ptr(node) as usize, |visitor| match node.view() {
+                View::Leaf(piece) => visitor.buffer(
                     Arc::as_ptr(&piece.bytes).cast::<u8>() as usize,
                     piece.bytes.len(),
                 ),
-                Node::Branch { left, right, .. } => {
+                View::Branch(left, right) => {
                     visit(left, visitor);
                     visit(right, visitor);
                 }
             });
         }
-        if let Some(root) = &self.root {
+        if let Some(root) = self.pieces.root() {
             visit(root, visitor);
         }
     }
@@ -343,18 +358,17 @@ impl SourceSnapshot {
             return Some(self.clone());
         }
 
-        let (before, rest) = split(self.root.clone(), start);
-        let (_, after) = split(rest, end - start);
-        let inserted = tree_from_bytes(&replacement);
+        let (before, rest) = split(&self.pieces, start);
+        let (_, after) = split(&rest, end - start);
         Some(Self {
             identity: SourceSnapshotIdentity::fresh(),
-            root: concat(concat(before, inserted), after),
+            pieces: concat(&concat(&before, &pieces_from_bytes(&replacement)), &after),
         })
     }
 
     #[cfg(test)]
     fn height(&self) -> u8 {
-        self.root.as_deref().map(Node::height).unwrap_or(0)
+        self.pieces.height()
     }
 }
 
@@ -365,7 +379,7 @@ fn shared_source_edge(
     stats: &mut SourceDiffStats,
 ) -> usize {
     fn expand<'a>(stack: &mut Vec<(&'a Node, usize)>, reverse: bool) -> bool {
-        let Some((Node::Branch { left, right, .. }, _)) = stack.last() else {
+        let Some(View::Branch(left, right)) = stack.last().map(|(node, _)| node.view()) else {
             return false;
         };
         let (left, right) = (left.as_ref(), right.as_ref());
@@ -379,35 +393,35 @@ fn shared_source_edge(
         }
         true
     }
-    let mut left = a.root.as_deref().map(|n| vec![(n, 0)]).unwrap_or_default();
-    let mut right = b.root.as_deref().map(|n| vec![(n, 0)]).unwrap_or_default();
+    let mut left = a.pieces.root().map(|n| vec![(n.as_ref(), 0)]).unwrap_or_default();
+    let mut right = b.pieces.root().map(|n| vec![(n.as_ref(), 0)]).unwrap_or_default();
     let mut count = 0;
     while let (Some(&(l, lo)), Some(&(r, ro))) = (left.last(), right.last()) {
         stats.nodes_visited += 1;
         if lo == 0 && ro == 0 && std::ptr::eq(l, r) {
-            count += l.len();
+            count += l.summary();
             left.pop();
             right.pop();
             continue;
         }
-        match (l, r) {
-            (Node::Branch { .. }, Node::Branch { .. }) => {
-                if l.len() >= r.len() {
+        match (l.view(), r.view()) {
+            (View::Branch(..), View::Branch(..)) => {
+                if l.summary() >= r.summary() {
                     expand(&mut left, reverse);
                 } else {
                     expand(&mut right, reverse);
                 }
                 continue;
             }
-            (Node::Branch { .. }, _) => {
+            (View::Branch(..), _) => {
                 expand(&mut left, reverse);
                 continue;
             }
-            (_, Node::Branch { .. }) => {
+            (_, View::Branch(..)) => {
                 expand(&mut right, reverse);
                 continue;
             }
-            (Node::Leaf(l), Node::Leaf(r)) => {
+            (View::Leaf(l), View::Leaf(r)) => {
                 let n = (l.len - lo).min(r.len - ro);
                 let (lb, rb) = if reverse {
                     (l.start + l.len - lo, r.start + r.len - ro)
@@ -438,85 +452,15 @@ fn shared_source_edge(
     count
 }
 
-impl Node {
-    fn len(&self) -> usize {
-        match self {
-            Self::Leaf(piece) => piece.len,
-            Self::Branch { len, .. } => *len,
-        }
-    }
-
-    fn height(&self) -> u8 {
-        match self {
-            Self::Leaf(_) => 1,
-            Self::Branch { height, .. } => *height,
-        }
-    }
-
-    fn visit_bytes(&self, visitor: &mut dyn FnMut(&[u8])) {
-        match self {
-            Self::Leaf(piece) => visitor(&piece.bytes[piece.start..piece.start + piece.len]),
-            Self::Branch { left, right, .. } => {
-                left.visit_bytes(visitor);
-                right.visit_bytes(visitor);
-            }
-        }
-    }
-
-    fn append_to(&self, output: &mut Vec<u8>) {
-        match self {
-            Self::Leaf(piece) => {
-                output.extend_from_slice(&piece.bytes[piece.start..piece.start + piece.len]);
-            }
-            Self::Branch { left, right, .. } => {
-                left.append_to(output);
-                right.append_to(output);
-            }
-        }
-    }
-
-    #[cfg(test)]
-    fn visit_retained_buffers(&self, visitor: &mut dyn FnMut(usize, usize)) {
-        match self {
-            Self::Leaf(piece) => visitor(
-                Arc::as_ptr(&piece.bytes).cast::<u8>() as usize,
-                piece.bytes.len(),
-            ),
-            Self::Branch { left, right, .. } => {
-                left.visit_retained_buffers(visitor);
-                right.visit_retained_buffers(visitor);
-            }
-        }
-    }
-}
-
 /// Bound backing allocations independently of rope pieces, so keeping a tiny
 /// surviving slice does not pin a whole deleted or replaced artifact.
-fn tree_from_bytes(bytes: &[u8]) -> Option<Arc<Node>> {
-    fn balanced(nodes: &[Arc<Node>]) -> Option<Arc<Node>> {
-        match nodes.len() {
-            0 => None,
-            1 => Some(nodes[0].clone()),
-            length => {
-                let middle = length / 2;
-                Some(branch(
-                    balanced(&nodes[..middle]).unwrap(),
-                    balanced(&nodes[middle..]).unwrap(),
-                ))
-            }
-        }
-    }
-    let leaves: Vec<_> = bytes
-        .chunks(SOURCE_BUFFER_BYTES)
-        .map(|bytes| {
-            Arc::new(Node::Leaf(Piece {
-                bytes: Arc::from(bytes),
-                start: 0,
-                len: bytes.len(),
-            }))
-        })
-        .collect();
-    balanced(&leaves)
+fn pieces_from_bytes(bytes: &[u8]) -> Tree<Piece> {
+    Tree::from_items(
+        bytes
+            .chunks(SOURCE_BUFFER_BYTES)
+            .map(|bytes| Piece { bytes: Arc::from(bytes), start: 0, len: bytes.len() }),
+        &mut Work::default(),
+    )
 }
 
 // SHA-256 consumes source pieces directly and retains one partial block.
@@ -705,148 +649,6 @@ fn sha256(input: &[u8]) -> [u8; 32] {
     digest.finish()
 }
 
-fn branch(left: Arc<Node>, right: Arc<Node>) -> Arc<Node> {
-    Arc::new(Node::Branch {
-        len: left.len() + right.len(),
-        height: left.height().max(right.height()).saturating_add(1),
-        left,
-        right,
-    })
-}
-
-/// Join two AVL-like ropes without flattening either side.
-fn concat(left: Option<Arc<Node>>, right: Option<Arc<Node>>) -> Option<Arc<Node>> {
-    match (left, right) {
-        (None, other) | (other, None) => other,
-        (Some(left), Some(right)) => Some(join(left, right)),
-    }
-}
-
-fn join(left: Arc<Node>, right: Arc<Node>) -> Arc<Node> {
-    let left_height = left.height();
-    let right_height = right.height();
-    if left_height > right_height.saturating_add(1) {
-        let Node::Branch {
-            left: outer,
-            right: inner,
-            ..
-        } = left.as_ref()
-        else {
-            unreachable!("a leaf cannot be more than one level taller")
-        };
-        return balance(outer.clone(), join(inner.clone(), right));
-    }
-    if right_height > left_height.saturating_add(1) {
-        let Node::Branch {
-            left: inner,
-            right: outer,
-            ..
-        } = right.as_ref()
-        else {
-            unreachable!("a leaf cannot be more than one level taller")
-        };
-        return balance(join(left, inner.clone()), outer.clone());
-    }
-    branch(left, right)
-}
-
-fn balance(left: Arc<Node>, right: Arc<Node>) -> Arc<Node> {
-    if left.height() > right.height().saturating_add(1) {
-        let Node::Branch {
-            left: left_outer,
-            right: left_inner,
-            ..
-        } = left.as_ref()
-        else {
-            unreachable!("unbalanced left side must be a branch")
-        };
-        if left_outer.height() >= left_inner.height() {
-            return branch(left_outer.clone(), branch(left_inner.clone(), right));
-        }
-        let Node::Branch {
-            left: middle_left,
-            right: middle_right,
-            ..
-        } = left_inner.as_ref()
-        else {
-            unreachable!("inner-heavy branch must contain a branch")
-        };
-        return branch(
-            branch(left_outer.clone(), middle_left.clone()),
-            branch(middle_right.clone(), right),
-        );
-    }
-
-    if right.height() > left.height().saturating_add(1) {
-        let Node::Branch {
-            left: right_inner,
-            right: right_outer,
-            ..
-        } = right.as_ref()
-        else {
-            unreachable!("unbalanced right side must be a branch")
-        };
-        if right_outer.height() >= right_inner.height() {
-            return branch(branch(left, right_inner.clone()), right_outer.clone());
-        }
-        let Node::Branch {
-            left: middle_left,
-            right: middle_right,
-            ..
-        } = right_inner.as_ref()
-        else {
-            unreachable!("inner-heavy branch must contain a branch")
-        };
-        return branch(
-            branch(left, middle_left.clone()),
-            branch(middle_right.clone(), right_outer.clone()),
-        );
-    }
-
-    branch(left, right)
-}
-
-fn split(root: Option<Arc<Node>>, at: usize) -> (Option<Arc<Node>>, Option<Arc<Node>>) {
-    let Some(root) = root else {
-        return (None, None);
-    };
-    debug_assert!(at <= root.len());
-
-    if at == 0 {
-        return (None, Some(root));
-    }
-    if at == root.len() {
-        return (Some(root), None);
-    }
-
-    match root.as_ref() {
-        Node::Leaf(piece) => {
-            let left = Arc::new(Node::Leaf(Piece {
-                bytes: piece.bytes.clone(),
-                start: piece.start,
-                len: at,
-            }));
-            let right = Arc::new(Node::Leaf(Piece {
-                bytes: piece.bytes.clone(),
-                start: piece.start + at,
-                len: piece.len - at,
-            }));
-            (Some(left), Some(right))
-        }
-        Node::Branch { left, right, .. } => match at.cmp(&left.len()) {
-            Ordering::Less => {
-                let (a, b) = split(Some(left.clone()), at);
-                (a, concat(b, Some(right.clone())))
-            }
-            Ordering::Equal => (Some(left.clone()), Some(right.clone())),
-            Ordering::Greater => {
-                let (a, b) = split(Some(right.clone()), at - left.len());
-                (concat(Some(left.clone()), a), b)
-            }
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -859,8 +661,8 @@ mod tests {
         assert_eq!(unchanged.bytes(), b"abcdef");
         assert_eq!(unchanged.identity(), original.identity());
         assert!(Arc::ptr_eq(
-            original.root.as_ref().unwrap(),
-            unchanged.root.as_ref().unwrap()
+            original.pieces.root().unwrap(),
+            unchanged.pieces.root().unwrap()
         ));
     }
 
@@ -1156,15 +958,15 @@ mod tests {
     #[test]
     fn sparse_source_diff_handles_shared_piece_reordering_and_repetition() {
         let original = SourceSnapshot::new(b"abcdEFGHijklMNOP".to_vec());
-        let (first, rest) = split(original.root.clone(), 4);
-        let (middle, last) = split(rest, 8);
-        for root in [
-            concat(concat(last.clone(), middle.clone()), first.clone()),
-            concat(concat(first.clone(), middle.clone()), first.clone()),
+        let (first, rest) = split(&original.pieces, 4);
+        let (middle, last) = split(&rest, 8);
+        for pieces in [
+            concat(&concat(&last, &middle), &first),
+            concat(&concat(&first, &middle), &first),
         ] {
             let changed = SourceSnapshot {
                 identity: SourceSnapshotIdentity::fresh(),
-                root,
+                pieces,
             };
             assert_diff_reconstructs(&original, &changed);
             assert_diff_reconstructs(&changed, &original);

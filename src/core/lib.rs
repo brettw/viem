@@ -12,6 +12,7 @@ pub mod layout;
 pub mod vimscript;
 
 mod coordinator;
+mod persistent;
 
 pub use command::clipboard::{
     ClipboardCommandContext, ClipboardContent, ClipboardContentError, ClipboardGeneration,

@@ -1904,40 +1904,12 @@ fn typed_view_options_are_local_or_shared_and_fail_atomically() {
         assert_eq!(first_state, scaled_state);
     }
 
-    let before_compatibility_call = first_state;
-    assert_eq!(
-        unsafe { viem_core_view_set_linebreak(core.handle, first, 1, &mut outcome) },
-        ViemStatus::Ok
-    );
-    assert_eq!(outcome.flags & VIEM_OUTCOME_LAYOUT_CHANGED, 0);
-    assert_eq!(
-        unsafe { viem_core_view_viewport_state(core.handle, first, &mut first_state) },
-        ViemStatus::Ok
-    );
-    assert_eq!(first_state, before_compatibility_call);
-    assert_eq!(
-        unsafe { viem_core_view_set_linebreak(core.handle, first, 0, &mut outcome) },
-        ViemStatus::InvalidArgument
-    );
-    assert_eq!(
-        unsafe { viem_core_view_viewport_state(core.handle, first, &mut first_state) },
-        ViemStatus::Ok
-    );
     assert_eq!(
         unsafe { viem_core_view_viewport_state(core.handle, second, &mut second_state) },
         ViemStatus::Ok
     );
     assert_ne!(first_state.flags & VIEM_VIEWPORT_STATE_LINEBREAK, 0);
     assert_ne!(second_state.flags & VIEM_VIEWPORT_STATE_LINEBREAK, 0);
-    assert_eq!(
-        unsafe { viem_core_view_set_linebreak(core.handle, first, 2, &mut outcome) },
-        ViemStatus::InvalidArgument
-    );
-    assert_eq!(
-        unsafe { viem_core_view_viewport_state(core.handle, first, &mut first_state) },
-        ViemStatus::Ok
-    );
-    assert_ne!(first_state.flags & VIEM_VIEWPORT_STATE_LINEBREAK, 0);
 
     let before = document_state(&core);
     let invalid = ViemSetFileFormatV1 {

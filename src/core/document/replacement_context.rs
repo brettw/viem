@@ -27,7 +27,7 @@ pub(crate) struct ReplacementParagraphStyle {
 
 impl Document {
     fn markdown_replacement_prefix(&self, owner: &super::Block) -> Result<Option<String>, DocumentError> {
-        if self.format() != Format::Markdown || owner.style.0 == "Code Block"
+        if self.format() != Format::Markdown || owner.style.is_code_block()
             || owner.markdown_html || owner.thematic_break
             || owner.quote_depth == 0 && !matches!(owner.kind, super::BlockKind::ListItem { .. } | super::BlockKind::Heading(_))
         { return Ok(None); }
@@ -73,7 +73,7 @@ impl Document {
             // Image appearance is derived from the paragraph's contents. Once
             // replacement turns it into prose there is no image-only owner to
             // restore in source.
-            style: if owner.style.0 == "Image" { self.projection().style_sheet().base_paragraph.clone() } else { owner.style.clone() },
+            style: if owner.style.is_image() { self.projection().style_sheet().base_paragraph.clone() } else { owner.style.clone() },
             removes_table,
             quote_depth: owner.quote_depth,
             markdown_prefix: self.markdown_replacement_prefix(owner)? ,

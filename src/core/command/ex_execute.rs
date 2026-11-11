@@ -2873,45 +2873,21 @@ fn apply_option_operation(
         if old != *current { plan.outcome.option_effects.push(ExOptionEffect { scope, name: key, old_value: ExOptionValue::String(old), new_value: ExOptionValue::String(current.clone()) }); }
         return Ok(());
     }
+    let boolean = match name.as_str() {
+        "autoselect" => Some((ExOptionName::AutoSelect, true, &mut values.selection_options.autoselect)),
+        "hlsearch" | "hls" => Some((ExOptionName::HlSearch, false, &mut values.search_options.hlsearch)),
+        "incsearch" | "is" => Some((ExOptionName::IncSearch, true, &mut values.search_options.incsearch)),
+        "ignorecase" | "ic" => Some((ExOptionName::IgnoreCase, false, &mut values.search_options.ignorecase)),
+        "smartcase" | "scs" => Some((ExOptionName::SmartCase, false, &mut values.search_options.smartcase)),
+        "wrapscan" | "ws" => Some((ExOptionName::WrapScan, true, &mut values.search_options.wrapscan)),
+        "number" | "nu" => Some((ExOptionName::Number, false, &mut values.number)),
+        "wrap" => Some((ExOptionName::Wrap, false, &mut values.wrap)),
+        _ => None,
+    };
+    if let Some((key, default, current)) = boolean {
+        return apply_boolean_option(scope, key, default, &operation.action, current, plan);
+    }
     match name.as_str() {
-        "autoselect" => apply_boolean_option(scope, ExOptionName::AutoSelect, true, &operation.action, &mut values.selection_options.autoselect, plan),
-        "hlsearch" | "hls" => apply_boolean_option(scope, ExOptionName::HlSearch, false, &operation.action, &mut values.search_options.hlsearch, plan),
-        "incsearch" | "is" => apply_boolean_option(scope, ExOptionName::IncSearch, true, &operation.action, &mut values.search_options.incsearch, plan),
-        "ignorecase" | "ic" => apply_boolean_option(
-            scope,
-            ExOptionName::IgnoreCase,
-            false,
-            &operation.action,
-            &mut values.search_options.ignorecase,
-            plan,
-        ),
-        "smartcase" | "scs" => apply_boolean_option(
-            scope,
-            ExOptionName::SmartCase,
-            false,
-            &operation.action,
-            &mut values.search_options.smartcase,
-            plan,
-        ),
-        "wrapscan" | "ws" => apply_boolean_option(
-            scope,
-            ExOptionName::WrapScan,
-            true,
-            &operation.action,
-            &mut values.search_options.wrapscan,
-            plan,
-        ),
-        "number" | "nu" => apply_boolean_option(
-            scope, ExOptionName::Number, false, &operation.action, &mut values.number, plan,
-        ),
-        "wrap" => apply_boolean_option(
-            scope,
-            ExOptionName::Wrap,
-            false,
-            &operation.action,
-            &mut values.wrap,
-            plan,
-        ),
         "textwidth" | "tw" => {
             // Both `:set` and `:setlocal` forms set a buffer override; the
             // application default is owned by Settings, never by Ex.

@@ -20,7 +20,7 @@ fn block_fixture(middle: &str) -> (Core<MockTextMeasurementProvider>, ViewId) {
     let mut core = Core::new(document);
     core.set_syntax_provider_factory(Arc::new(|| Box::new(DeferredProvider)));
     let at = core.document.projection().blocks().iter()
-        .find(|block| block.style.0 == "Code Block")
+        .find(|block| block.style.is_code_block())
         .map(|block| block.range.start)
         .unwrap_or_else(|| core.document.text().find("Target").unwrap());
     let view = core.add_view(MockTextMeasurementProvider::new(), 600., 400.);
@@ -199,7 +199,7 @@ fn check_empty_code_backspace(pending_syntax: bool) {
     }
     let outcome = core.handle_with_layout(view, CoreEvent::Input(InputEvent::Key(Key::Backspace))).unwrap();
     assert_eq!(outcome.command.unwrap().status, CommandStatus::Complete);
-    assert!(core.document.projection().blocks().iter().all(|block| block.style.0 != "Code Block"));
+    assert!(core.document.projection().blocks().iter().all(|block| !block.style.is_code_block()));
     assert_landmark_stationary(&core, view, landmark);
     assert!(baseline(&core, view) < code_baseline - 20.,
         "removing padding should move the caret up, without moving unchanged text");

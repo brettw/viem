@@ -57,7 +57,7 @@ impl Document {
         let selected = structural_style::selected_blocks(self, &range);
         !selected.is_empty() && selected.iter().all(|block| {
             let lists = count(block, |kind| matches!(kind, ContainerKind::List { .. }));
-            let code = block.style.0 == "Code Block" || count(block, |kind| *kind == ContainerKind::CodeBlock) > 0;
+            let code = block.style.is_code_block() || count(block, |kind| *kind == ContainerKind::CodeBlock) > 0;
             !block.is_front_matter() && match count(block, |kind| *kind == ContainerKind::Quote) {
                 0 => lists == 0 || lists == 1 && !code,
                 1 => Self::top_level_quote(block).is_some(),

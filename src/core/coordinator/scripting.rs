@@ -611,8 +611,10 @@ impl<P: TextMeasurementProvider> Core<P> {
         if self.pending_scripts.get(&view).is_none_or(|pending| pending.token != token) {
             return Err(CoreError::StaleScriptContinuation);
         }
-        let initial = CoreOutcome { command: Some(crate::command::mappings::empty_mapping_output()),
-            document_changed: false, position_map: None, layout_changed: false, composition_changes: Vec::new() };
+        let initial = CoreOutcome {
+ command: Some(crate::command::mappings::empty_mapping_output()),
+            ..CoreOutcome::default()
+        };
         if !success {
             self.cancel_pending_script(view);
             self.install_buffer_commands(view);

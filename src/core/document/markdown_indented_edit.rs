@@ -83,7 +83,7 @@ impl Document {
         let mut blocks = Vec::new();
         for edit in edits {
             for block in self.projection().blocks_for_region(&edit.range) {
-                if block.style.0 != "Code Block"
+                if !block.style.is_code_block()
                     || blocks
                         .iter()
                         .any(|old: &super::super::Block| old.id == block.id)

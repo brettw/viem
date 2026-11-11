@@ -362,7 +362,7 @@ impl Document {
                 local.kind != block.kind || local.style != block.style)
             || !guarded && regional.block_records().iter().any(|block| block.markdown_html
                 || !block.containers.is_empty() || matches!(block.kind, super::super::BlockKind::ListItem { .. })
-                || block.style.0 == "Code Block")
+                || block.style.is_code_block())
         { return candidate::decline(Strategy::IndependentParagraph, "standalone parse differs from the document or creates structure"); }
         if guarded {
             // Matching the original standalone parse establishes the captured
@@ -471,7 +471,7 @@ impl Document {
                 || block.kind == super::super::BlockKind::Paragraph && block.range.is_empty()
                     && block.containers.first().is_some_and(|member|
                         matches!(member.container.kind, super::super::ContainerKind::List { .. })))
-                && !block.markdown_html && block.quote_depth == 0 && block.style.0 != "Code Block"
+                && !block.markdown_html && block.quote_depth == 0 && !block.style.is_code_block()
                 && !block.thematic_break
         };
         if run.iter().any(|block| !supported_body(block)
@@ -568,7 +568,7 @@ impl Document {
                 && !(block.kind == super::super::BlockKind::Paragraph
                     && block.containers.is_empty() && block.quote_depth == 0
                     && !block.markdown_html && !block.thematic_break
-                    && block.style.0 != "Code Block"))
+                    && !block.style.is_code_block()))
         { return candidate::decline(Strategy::ListParagraph, "standalone list parse differs or creates structure"); }
         // Pasted paragraphs may divide this complete owner into several
         // lists. Container starts follow that parsed partition; the authored

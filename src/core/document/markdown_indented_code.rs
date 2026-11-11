@@ -140,7 +140,7 @@ pub(super) fn source_block(
     document: &super::Document,
     block: &super::Block,
 ) -> Result<Option<CodeBlock>, super::DocumentError> {
-    if block.style.0 != "Code Block" || block.is_front_matter() {
+    if !block.style.is_code_block() || block.is_front_matter() {
         return Ok(None);
     }
     let at = document

@@ -349,7 +349,7 @@ impl Document {
         let BlockKind::ListItem { level, .. } = block.kind else {
             return Err(DocumentError::AmbiguousProjection);
         };
-        if block.style.0 == "Code Block" && ordered_marker_prefix(&text, level).is_none() {
+        if block.style.is_code_block() && ordered_marker_prefix(&text, level).is_none() {
             // The first visible code character follows its fenced opener.
             // That hidden opening line, rather than the literal body, carries
             // the list item's marker and indentation width.

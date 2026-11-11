@@ -80,7 +80,7 @@ impl Document {
         }
         self.validate_range(&range)?;
         let wants_quote =
-            matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Block quote");
+            matches!(&assignment, Assignment::Paragraph(style) if style.is_block_quote());
         if wants_quote {
             return Ok(None);
         }
@@ -90,17 +90,17 @@ impl Document {
             return self.prepare_contextual_base_style(range).map(Some);
         }
         let wants_code =
-            matches!(&assignment, Assignment::Paragraph(style) if style.0 == "Code Block");
+            matches!(&assignment, Assignment::Paragraph(style) if style.is_code_block());
         let wants_list = matches!(&assignment, Assignment::List(_));
         let selected = selected_blocks(self, &range);
         let needs_normalization = selected.iter().any(|block| {
             if wants_quote {
                 structural_body(block)
             } else {
-                wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
+                wants_plain && (block.style.is_block_quote() || block.quote_depth > 0)
                     || self.format().is_markdown() && !wants_code && !wants_list
-                        && block.style.0 == "Code Block"
-                    || (wants_plain || wants_code && block.style.0 != "Code Block"
+                        && block.style.is_code_block()
+                    || (wants_plain || wants_code && !block.style.is_code_block()
                         && !list_continuation(block))
                         && structural_body(block)
             }
@@ -120,11 +120,11 @@ impl Document {
         loop {
             let blocks = selected_blocks(&scratch, &selected_range);
             let incompatible = |block: &&super::super::Block| {
-                (wants_plain || wants_code || block.style.0 == "Code Block")
+                (wants_plain || wants_code || block.style.is_code_block())
                     && structural_body(block)
-                    && !(wants_code && block.style.0 == "Code Block")
+                    && !(wants_code && block.style.is_code_block())
                     && !(wants_code && list_continuation(block))
-                    || wants_plain && (block.style.0 == "Block quote" || block.quote_depth > 0)
+                    || wants_plain && (block.style.is_block_quote() || block.quote_depth > 0)
             };
             let Some(first) = blocks.iter().position(|block| incompatible(&block)) else {
                 break;
@@ -211,7 +211,7 @@ impl Document {
         let selected = selected_blocks(self, &range);
         let empty_list_reset = selected.len() == 1 && selected[0].range.is_empty()
             && matches!(selected[0].kind, super::super::BlockKind::ListItem { item_start: true, .. });
-        if selected.len() == 1 && selected[0].range.is_empty() && selected[0].style.0 == "Code Block" {
+        if selected.len() == 1 && selected[0].range.is_empty() && selected[0].style.is_code_block() {
             // This adapter removes exactly one code treatment and verifies
             // the retained paragraph and its enclosing containers itself.
             // Replaying it through a scratch document adds no proof and would
@@ -226,7 +226,7 @@ impl Document {
                 block.quote_depth > 0
                     && matches!(block.kind, super::super::BlockKind::Paragraph)
                     && (block.style == self.projection().style_sheet().base_paragraph
-                        || block.style.0 == "Block quote")
+                        || block.style.is_block_quote())
             })
         {
             return self.prepare_structural_assignment_raw(
@@ -311,7 +311,7 @@ impl Document {
         if !self.format().is_markdown()
             || !selected_blocks(self, range)
                 .iter()
-                .any(|block| block.style.0 == "Code Block")
+                .any(|block| block.style.is_code_block())
         {
             return Ok(None);
         }
@@ -341,7 +341,7 @@ fn structural_body(block: &super::super::Block) -> bool {
     matches!(
         block.kind,
         super::super::BlockKind::ListItem { .. } | super::super::BlockKind::Heading(_)
-    ) || block.style.0 == "Code Block"
+    ) || block.style.is_code_block()
 }
 
 fn list_continuation(block: &super::super::Block) -> bool {

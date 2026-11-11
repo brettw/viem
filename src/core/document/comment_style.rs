@@ -3,7 +3,7 @@ use super::replacement::PatchComposition;
 use super::*;
 
 fn is_comment(span: &StyleSpan) -> bool {
-    matches!(&span.application, StyleApplication::Automatic(id) if id.0 == "Comment")
+    matches!(&span.application, StyleApplication::Automatic(id) if id.is_comment())
 }
 
 impl Document {
@@ -248,7 +248,7 @@ impl Document {
         let blocks = self.projection().blocks_for_region(&range);
         if blocks
             .iter()
-            .any(|block| block.style.0 == "Code Block" || block.is_front_matter())
+            .any(|block| block.style.is_code_block() || block.is_front_matter())
         {
             return Err(DocumentError::UnsupportedFormatting.into());
         }

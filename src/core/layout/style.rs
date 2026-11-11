@@ -524,7 +524,7 @@ impl DocumentLayoutStyles {
         let range = at..end.min(block.range.end);
         let images = if automatic { document.inline_images_for_region(&range) } else { Vec::new() };
         let mut block = block.clone();
-        if !automatic && block.style.0 == "Image" {
+        if !automatic && block.style.is_image() {
             block.style = document.style_sheet().base_paragraph.clone();
         }
         let mut spans = if automatic { document.layout_style_spans_for_region(&range) } else { document.style_spans_for_region(&range) };
@@ -758,7 +758,7 @@ impl DocumentLayoutStyles {
             let mut assigned = Some(&block.style);
             let mut quote_border = block.quote_depth > 0;
             while let Some(id) = assigned {
-                if id.0 == "Block quote" {
+                if id.is_block_quote() {
                     quote_border = true;
                     break;
                 }

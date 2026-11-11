@@ -40,7 +40,7 @@ impl Document {
             .blocks_for_region(&(at..at))
             .into_iter()
             .find(|block| {
-                block.style.0 == "Code Block" && block.range.start <= at && at <= block.range.end
+                block.style.is_code_block() && block.range.start <= at && at <= block.range.end
             })
             .ok_or(DocumentError::UnsupportedFormatting)?;
         if !block.code_kind.language_editable() {
@@ -114,7 +114,7 @@ impl Document {
             .blocks_for_region(&(at..at))
             .into_iter()
             .find(|block| {
-                block.style.0 == "Code Block" && block.range.start <= at && at <= block.range.end
+                block.style.is_code_block() && block.range.start <= at && at <= block.range.end
             });
         if candidate.projection.text_tree().byte_len() != self.projection().text_tree().byte_len()
             || matched.is_none_or(|matched| {

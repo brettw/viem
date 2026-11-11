@@ -28,7 +28,7 @@ impl Document {
         let mut patches = Vec::new();
         let mut targets = Vec::new();
         for block in blocks {
-            let is_code = block.style.0 == "Code Block"
+            let is_code = block.style.is_code_block()
                 || super::super::markdown_quotes::is_fenced_block(self, &block)?;
             if is_code == enabled {
                 continue;

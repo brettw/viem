@@ -30,13 +30,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let (edit, cursor) = match edit {
             Ok(Some(edit)) => edit,
             Ok(None) => {
-                return Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: false,
-                    composition_changes: Vec::new(),
-                })
+                return Ok(CoreOutcome::default())
             }
             Err(message) => {
                 return Ok(CoreOutcome {
@@ -50,10 +44,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                         clipboard_writes: Vec::new(),
                         revealed_search_match: None,
                     }),
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: false,
-                    composition_changes: Vec::new(),
+                    ..CoreOutcome::default()
                 })
             }
         };

@@ -637,7 +637,7 @@ impl Document {
             .any(|block| {
                 block.range.start <= sample
                     && sample <= block.range.end
-                    && (block.style.0 == "Code Block"
+                    && (block.style.is_code_block()
                         || block.containers.iter().any(|member| {
                             member.container.kind == super::super::ContainerKind::CodeBlock
                         }))
@@ -1061,7 +1061,7 @@ impl Document {
             self.validate_typing_named_style(style)?;
         }
         self.validate_typing_payload(&edit)?;
-        if named.is_some_and(|style| style.0 == "Comment") {
+        if named.is_some_and(|style| style.is_comment()) {
             // Comment bodies are literal; do not silently discard an explicit
             // inline formatting choice that their source cannot represent.
             if !values.is_empty() { return Err(DocumentError::UnsupportedFormatting.into()); }

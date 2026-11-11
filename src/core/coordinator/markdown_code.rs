@@ -677,43 +677,14 @@ impl<P: TextMeasurementProvider> Core<P> {
             .prepare_code_block_language(document, revision, at, language)
             .map_err(command_model_transaction_error)?;
         if prepared.is_no_op() {
-            return Ok(CoreOutcome {
-                command: None,
-                document_changed: false,
-                position_map: None,
-                layout_changed: false,
-                composition_changes: Vec::new(),
-            });
+            return Ok(CoreOutcome::default());
         }
         let viewport_origins: Vec<_> = self
             .views
             .iter()
             .map(|(id, view)| (*id, view.layout.viewport_left(), view.layout.viewport_top()))
             .collect();
-        let map = prepared.text_position_map().clone();
-        let before = self.views[&view]
-            .commands
-            .capture_history_restoration(&self.document)?;
-        let mapped =
-            self.prepare_mapped_commands(&map, CommandInterpreter::capture_position_anchors)?;
-        self.finalize_open_edit_group(view)?;
-        let prepared = self
-            .document
-            .rebind_prepared_after_group_close(prepared)
-            .map_err(command_model_transaction_error)?;
-        self.document
-            .commit_model_transaction(prepared)
-            .map_err(command_model_transaction_error)?;
-        for (id, commands) in mapped {
-            self.views.get_mut(&id).expect("prepared view").commands = commands;
-        }
-        let after = self.views[&view]
-            .commands
-            .capture_history_restoration(&self.document)?;
-        self.document.attach_history_restoration(
-            self.document.history_status().current.node,
-            HistoryRestoration::new(before, after),
-        )?;
+        let map = self.commit_native_edit(view, prepared, |_| false)?;
         self.syntax.markdown.language_change = Some((self.document.id(), self.document.revision()));
         let composition_changes = self.refresh_views_after_native_change(
             view, &map, ImmediateLayoutIntent::PreserveViewport,
@@ -728,11 +699,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
         }
         Ok(CoreOutcome {
-            command: None,
             document_changed: true,
             position_map: Some(map),
             layout_changed: true,
             composition_changes,
+            ..CoreOutcome::default()
         })
     }
 
@@ -769,7 +740,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         for view in self.views.values() {
             let visible = self.visible_syntax_range(&full, view);
             for block in self.document.projection().blocks_for_region(&visible) {
-                if block.style.0 != "Code Block"
+                if !block.style.is_code_block()
                     || block.code_language.is_none()
                     || block.range.is_empty()
                 {
@@ -803,7 +774,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .blocks_for_region(&(0..projection.text_tree().byte_len()))
                     .into_iter()
                     .filter(|block| {
-                        block.style.0 == "Code Block" && block.code_language.is_some() && !block.range.is_empty()
+                        block.style.is_code_block() && block.code_language.is_some() && !block.range.is_empty()
                     })
                     .take(MAX_RETAINED_CODE_BLOCKS)
                     .collect();

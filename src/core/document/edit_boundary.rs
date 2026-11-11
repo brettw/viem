@@ -41,7 +41,7 @@ pub(super) fn paragraph_at(document: &Document, at: usize) -> Result<Option<Bloc
 /// Code is structural context, including a fence nested in a quote or item;
 /// its current named paragraph assignment alone does not identify that context.
 pub(super) fn is_code_paragraph(document: &Document, block: &Block) -> Result<bool, DocumentError> {
-    if block.style.0 == "Code Block" {
+    if block.style.is_code_block() {
         return Ok(true);
     }
     match document.format() {

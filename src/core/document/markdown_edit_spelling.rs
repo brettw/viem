@@ -168,7 +168,7 @@ impl Document {
                     {
                         if let Some(line) = lines.line_at_offset(at) {
                             let owner_line =
-                                if preceding.markdown_html || preceding.style.0 == "Code Block" {
+                                if preceding.markdown_html || preceding.style.is_code_block() {
                                     line.saturating_sub(1)
                                 } else {
                                     line
@@ -177,7 +177,7 @@ impl Document {
                         }
                     }
                 }
-                if block.markdown_html || block.style.0 == "Code Block" {
+                if block.markdown_html || block.style.is_code_block() {
                     first_line = first_line.saturating_sub(1);
                 }
                 let Some(last_line) = lines.line_at_offset(last) else {

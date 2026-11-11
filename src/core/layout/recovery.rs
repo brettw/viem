@@ -76,7 +76,7 @@ pub(super) fn shape_with_fallback<P: TextMeasurementProvider>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::{DocumentId, Revision};
+    use crate::document::{Document, DocumentId, Revision};
     use crate::layout::*;
 
     struct FaultProvider {
@@ -217,7 +217,7 @@ mod tests {
             let mut view = ViewLayout::new(320.0, 200.0);
             view.set_default_style(style()).unwrap();
             assert!(engine
-                .relayout_text(DocumentId(1), Revision(1), "hello", &mut view)
+                .relayout(&Document::new("hello"), &mut view)
                 .is_err());
             assert_eq!(engine.provider().calls, expected_calls);
             assert!(view.snapshot().is_none());
@@ -230,7 +230,7 @@ mod tests {
         let mut view = ViewLayout::new(320.0, 200.0);
         view.set_default_style(style()).unwrap();
         assert!(engine
-            .relayout_text(DocumentId(1), Revision(1), "hello", &mut view)
+            .relayout(&Document::new("hello"), &mut view)
             .is_err());
         assert_eq!(engine.provider().calls, 2);
         assert!(view.snapshot().is_none());
@@ -241,14 +241,14 @@ mod tests {
         let mut engine = LayoutEngine::new(provider(1));
         let mut view = ViewLayout::new(320.0, 200.0);
         view.set_default_style(style()).unwrap();
-        let text = "word e\u{301} 👩‍💻 אב\n".repeat(10_000);
+        let document = Document::new("word e\u{301} 👩‍💻 אב\n".repeat(10_000));
         engine
-            .relayout_text(DocumentId(1), Revision(1), &text, &mut view)
+            .relayout(&document, &mut view)
             .unwrap();
         assert!(!view.snapshot().unwrap().diagnostics.is_empty());
         let calls = engine.provider().calls;
         engine
-            .relayout_text(DocumentId(1), Revision(1), &text, &mut view)
+            .relayout(&document, &mut view)
             .unwrap();
         assert_eq!(engine.provider().calls, calls);
         engine
@@ -256,7 +256,7 @@ mod tests {
             .inner
             .set_metrics_generation(MetricsGeneration(2));
         engine
-            .relayout_text(DocumentId(1), Revision(1), &text, &mut view)
+            .relayout(&document, &mut view)
             .unwrap();
         assert!(engine.provider().calls > calls);
         assert_eq!(
@@ -265,7 +265,7 @@ mod tests {
         );
         // Empty lines retain genuine caret geometry under recovery too.
         engine
-            .relayout_text(DocumentId(1), Revision(2), "", &mut view)
+            .relayout(&Document::new(""), &mut view)
             .unwrap();
         assert!(!view.snapshot().unwrap().rows.is_empty());
     }

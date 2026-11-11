@@ -111,7 +111,7 @@ pub(super) fn markdown_document(document: &FormattedDocument) -> String {
                 output.push('\n');
             }
         }
-        if block.style.0 == "Code Block" {
+        if block.style.is_code_block() {
             let start = block.range.start;
             // One block is one paragraph, even when a fence/pre contains
             // several hard lines. Adjacent code paragraphs stay distinct.
@@ -130,7 +130,7 @@ pub(super) fn markdown_document(document: &FormattedDocument) -> String {
         }
         let body = block.range.clone();
 
-        let quoted = block.style.0 == "Block quote";
+        let quoted = block.style.is_block_quote();
         let (open, close) = match &block.kind {
             BlockKind::Heading(level) => (
                 format!("{} ", "#".repeat(usize::from(*level))),

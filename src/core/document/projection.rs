@@ -250,14 +250,14 @@ impl RangedItem for Block {
             minimum_start: if self.list_editing.item_start { key } else { u16::MAX },
             flags: u16::from(!self.list_editing.indent && !owned_paragraph)
                 | (u16::from(!self.list_editing.unindent && !owned_paragraph) << 1)
-                | if self.style.0 == "Code Block" && self.code_kind.supplies_language_default() { 4 } else { 0 }
+                | if self.style.is_code_block() && self.code_kind.supplies_language_default() { 4 } else { 0 }
                 | if matches!(self.kind, BlockKind::Heading(_)) || self.style.0.strip_prefix("Heading")
                     .and_then(|level| level.parse::<u8>().ok()).is_some_and(|level| (1..=6).contains(&level)) { 8 } else { 0 }
                 // A list grammar restart may cross ordinary empty paragraphs,
                 // but must stop at every other unrelated owner.
                 | if key == 0 && !(self.range.is_empty() && self.kind == BlockKind::Paragraph
                     && self.containers.is_empty() && !self.thematic_break
-                    && !self.markdown_html && self.style.0 != "Code Block") { 16 } else { 0 },
+                    && !self.markdown_html && !self.style.is_code_block()) { 16 } else { 0 },
         }
     }
 
@@ -3241,7 +3241,7 @@ impl FormattedDocument {
                 let scope = &scopes[index];
                 at < scope.range.end || block.range.is_empty() && at == scope.range.end && (scope.owns_empty_end || match scope.kind {
                     super::ContainerKind::Quote => block.quote_depth > 0,
-                    super::ContainerKind::CodeBlock => block.style.0 == "Code Block",
+                    super::ContainerKind::CodeBlock => block.style.is_code_block(),
                     super::ContainerKind::List { .. } | super::ContainerKind::ListItem => matches!(block.kind, BlockKind::ListItem { .. }),
                 })
             };
@@ -4070,7 +4070,7 @@ impl FormattedDocument {
     }
 
     pub(crate) fn has_block_style_assignment(&self, style: &StyleId) -> bool {
-        (style.0 == "Image" && !self.inline_images.is_empty()) || self.document_style.style == *style || self.blocks.items().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
+        (style.is_image() && !self.inline_images.is_empty()) || self.document_style.style == *style || self.blocks.items().any(|block| block.style == *style || block.containers.iter().any(|member| member.container.style == *style))
     }
 
     pub(crate) fn has_character_style_assignment(&self, style: &StyleId) -> bool {
@@ -4408,7 +4408,7 @@ impl FormattedDocument {
     pub(crate) fn markdown_replacement_begins_in_code(&self, range: &Range<usize>) -> bool {
         let at = range.start;
         if self.blocks_for_region(range).iter().any(|block| {
-            block.style.0 == "Code Block" && block.range.start <= at && range.end <= block.range.end
+            block.style.is_code_block() && block.range.start <= at && range.end <= block.range.end
         }) {
             return true;
         }
@@ -6101,8 +6101,8 @@ fn project_markdown(
                     || matches!((&previous.kind, &block.kind),
                         (BlockKind::ListItem { ordered:a, ordinal:b, level:c, .. }, BlockKind::ListItem { ordered:d, ordinal:e, level:f, item_start:false, .. })
                         if a == d && b == e && c == f))
-                    && previous.style.0 != "Code Block"
-                    && block.style.0 != "Code Block"
+                    && !previous.style.is_code_block()
+                    && !block.style.is_code_block()
                     && !projected.range_intersects_table(&previous.range)
                     && !projected.range_intersects_table(&block.range)
                     && previous.quote_depth == block.quote_depth && previous.style == block.style

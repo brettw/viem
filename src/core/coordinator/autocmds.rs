@@ -24,8 +24,10 @@ pub(super) fn file_type_change(outcome: &CoreOutcome) -> Option<crate::document:
 /// Buffer events fired when a document's first view attaches, in Vim's
 /// order for opening a file in a new GUI session.
 fn empty_outcome() -> CoreOutcome {
-    CoreOutcome { command: Some(crate::command::mappings::empty_mapping_output()), document_changed: false,
-        position_map: None, layout_changed: false, composition_changes: Vec::new() }
+    CoreOutcome {
+ command: Some(crate::command::mappings::empty_mapping_output()),
+        ..CoreOutcome::default()
+    }
 }
 
 impl<P: TextMeasurementProvider> Core<P> {

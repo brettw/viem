@@ -865,7 +865,7 @@ impl Document {
         // Its ordinary payload path can preserve the copied code treatment
         // without opening a following-style paragraph outside the fence.
         if self.projection().blocks_for_region(&(origin..origin)).iter().any(|block|
-            block.style.0 == "Code Block" && block.range.start <= origin && origin <= block.range.end) {
+            block.style.is_code_block() && block.range.start <= origin && origin <= block.range.end) {
             return Ok(None);
         }
         let export: Export = serde_json::from_str(fragment.json())
@@ -1517,7 +1517,7 @@ fn selected_markdown_source(
         // its last body character owns the closing fence too. Without it the
         // pasted fence would absorb whatever follows the paste.
         for block in document.projection().blocks_for_region(&(range.end..range.end)) {
-            if block.range.end != range.end || block.range.start <= range.start || block.style.0 != "Code Block" {
+            if block.range.end != range.end || block.range.start <= range.start || !block.style.is_code_block() {
                 continue;
             }
             let closing_end = if block.markdown_html {

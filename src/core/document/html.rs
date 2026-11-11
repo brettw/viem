@@ -1131,7 +1131,7 @@ fn project_tokens(
     if !code_languages.is_empty() {
         let mut blocks = result.blocks().to_vec();
         for block in &mut blocks {
-            if block.style.0 != "Code Block" { continue; }
+            if !block.style.is_code_block() { continue; }
             let at = result.provenance_touching(&(block.range.start..block.range.start)).into_iter()
                 .find(|span| span.formatted.start <= block.range.start &&
                     (block.range.start < span.formatted.end || span.formatted.is_empty()))

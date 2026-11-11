@@ -42,8 +42,10 @@ impl<P: TextMeasurementProvider> Core<P> {
             command.ex_outcome.get_or_insert_with(ExOutcome::default).frontend_requests =
                 std::mem::take(&mut self.startup_effects);
         }
-        Ok(CoreOutcome { command: Some(command), document_changed: false,
-            position_map: None, layout_changed: false, composition_changes: Vec::new() })
+        Ok(CoreOutcome {
+ command: Some(command),
+            ..CoreOutcome::default()
+        })
     }
 
     pub fn has_pending_mapping(&self, view_id: ViewId) -> bool {

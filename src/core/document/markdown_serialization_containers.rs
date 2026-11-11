@@ -144,7 +144,7 @@ fn markdown(
         if path
             .iter()
             .any(|m| m.container.kind == ContainerKind::CodeBlock)
-            || block.style.0 == "Code Block"
+            || block.style.is_code_block()
         {
             let text = &document.text()[block.range.clone()];
             let fence = "`".repeat(longest_run(&text, '`').max(2) + 1);

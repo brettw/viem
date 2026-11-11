@@ -150,7 +150,7 @@ impl Document {
             return Ok(false);
         }
         Ok(self.projection().blocks_for_region(&(at..at)).iter().all(|block| {
-            block.style.0 != "Code Block" && !block.thematic_break && !block.markdown_html
+            !block.style.is_code_block() && !block.thematic_break && !block.markdown_html
                 && block.containers.iter().all(|membership| membership.container.kind != ContainerKind::CodeBlock)
         }))
     }

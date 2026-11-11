@@ -220,6 +220,10 @@ fn background_request_capture_excludes_viewport_cache_and_height_state() {
     full_engine.relayout(&document, &mut view).unwrap();
     assert_eq!(view.snapshot().unwrap().rows.len(), 2_000);
     assert_eq!(view.height_index_statistics().hard_line_count(), 2_000);
+    // Empty the line cache: the capture below must not depend on retained lines.
+    let limits = view.regional_cache_limits();
+    view.set_regional_cache_limits(RegionalLayoutCacheLimits { max_hard_lines: 0, ..limits });
+    view.set_regional_cache_limits(limits);
 
     let worker = LayoutEngine::new(MockTextMeasurementProvider::new());
     let requirements = inspect_layout_provider(&worker);

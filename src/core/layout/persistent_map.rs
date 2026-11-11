@@ -1,49 +1,61 @@
 //! Small persistent ordered map for immutable measurement snapshots. Updating a
 //! contribution copies only a balanced search path; worker captures share roots.
-use std::cmp::Ordering;
-use std::sync::Arc;
+use crate::persistent::{Item, LeafSplit, Seek, Side, Summary, Tree, Work};
 
 #[derive(Clone, Debug)]
-pub(super) struct PersistentMap<K, V> {
-    root: Link<K, V>,
+pub(super) struct PersistentMap<K: Ord + Clone, V> {
+    entries: Tree<Entry<K, V>>,
 }
-
-type Link<K, V> = Option<Arc<Node<K, V>>>;
 
 #[derive(Debug)]
-struct Node<K, V> {
+struct Entry<K, V> {
     key: K,
     value: V,
-    left: Link<K, V>,
-    right: Link<K, V>,
-    height: u16,
-    len: usize,
 }
 
-fn height<K, V>(node: &Link<K, V>) -> u16 {
-    node.as_ref().map_or(0, |node| node.height)
+#[derive(Clone, Debug, PartialEq)]
+struct Keys<K> {
+    count: usize,
+    last: Option<K>,
 }
 
-fn len<K, V>(node: &Link<K, V>) -> usize {
-    node.as_ref().map_or(0, |node| node.len)
-}
-
-impl<K, V> Node<K, V> {
-    fn new(key: K, value: V, left: Link<K, V>, right: Link<K, V>) -> Arc<Self> {
-        Arc::new(Self {
-            height: 1 + height(&left).max(height(&right)),
-            len: 1 + len(&left) + len(&right),
-            key,
-            value,
-            left,
-            right,
-        })
+impl<K> Default for Keys<K> {
+    fn default() -> Self {
+        Self { count: 0, last: None }
     }
 }
 
-impl<K, V> Default for PersistentMap<K, V> {
+impl<K: Clone> Summary for Keys<K> {
+    fn add(&mut self, right: &Self) {
+        self.count += right.count;
+        if right.last.is_some() {
+            self.last.clone_from(&right.last);
+        }
+    }
+}
+
+impl<K: Ord + Clone, V> Item for Entry<K, V> {
+    type Summary = Keys<K>;
+
+    fn summary(&self) -> Keys<K> {
+        Keys { count: 1, last: Some(self.key.clone()) }
+    }
+}
+
+/// The first entry whose key is not less than the target.
+struct NotBefore<'a, K>(&'a K);
+
+impl<K: Ord> Seek<Keys<K>> for NotBefore<'_, K> {
+    fn side(&self, left: &Keys<K>) -> Side {
+        if left.last.as_ref().is_some_and(|last| self.0 <= last) { Side::Left } else { Side::Right }
+    }
+
+    fn advance(&mut self, _left: &Keys<K>) {}
+}
+
+impl<K: Ord + Clone, V> Default for PersistentMap<K, V> {
     fn default() -> Self {
-        Self { root: None }
+        Self { entries: Tree::new() }
     }
 }
 
@@ -53,23 +65,16 @@ impl<K: Ord + Clone, V: Clone> PersistentMap<K, V> {
     }
 
     pub(super) fn len(&self) -> usize {
-        len(&self.root)
+        self.entries.measure(|keys| keys.count)
     }
 
     pub(super) fn clear(&mut self) {
-        self.root = None;
+        self.entries = Tree::new();
     }
 
     pub(super) fn get(&self, key: &K) -> Option<&V> {
-        let mut current = self.root.as_deref();
-        while let Some(node) = current {
-            current = match key.cmp(&node.key) {
-                Ordering::Less => node.left.as_deref(),
-                Ordering::Greater => node.right.as_deref(),
-                Ordering::Equal => return Some(&node.value),
-            };
-        }
-        None
+        let (entry, _) = self.entries.find(&mut NotBefore(key), &mut Work::default())?;
+        (entry.key == *key).then_some(&entry.value)
     }
 
     pub(super) fn contains_key(&self, key: &K) -> bool {
@@ -77,197 +82,44 @@ impl<K: Ord + Clone, V: Clone> PersistentMap<K, V> {
     }
 
     pub(super) fn last_key_value(&self) -> Option<(&K, &V)> {
-        let mut node = self.root.as_deref()?;
-        while let Some(right) = node.right.as_deref() {
-            node = right;
-        }
-        Some((&node.key, &node.value))
+        self.entries.last().map(|entry| (&entry.key, &entry.value))
     }
 
     pub(super) fn insert(&mut self, key: K, value: V) -> Option<V> {
-        let (root, previous) = insert(&self.root, key, value);
-        self.root = Some(root);
+        let work = &mut Work::default();
+        let (before, previous, after) = self.without(&key, work);
+        let entry = Tree::from_items([Entry { key, value }], work);
+        self.entries = before.concat(&entry, work).concat(&after, work);
         previous
     }
 
     pub(super) fn remove(&mut self, key: &K) -> Option<V> {
-        let (root, previous) = remove(&self.root, key);
-        self.root = root;
+        let work = &mut Work::default();
+        let (before, previous, after) = self.without(key, work);
+        if previous.is_some() {
+            self.entries = before.concat(&after, work);
+        }
         previous
     }
-}
 
-fn rotate_left<K: Clone, V: Clone>(node: Arc<Node<K, V>>) -> Arc<Node<K, V>> {
-    let pivot = node.right.as_ref().expect("right-heavy node");
-    let left = Node::new(
-        node.key.clone(),
-        node.value.clone(),
-        node.left.clone(),
-        pivot.left.clone(),
-    );
-    Node::new(
-        pivot.key.clone(),
-        pivot.value.clone(),
-        Some(left),
-        pivot.right.clone(),
-    )
-}
-
-fn rotate_right<K: Clone, V: Clone>(node: Arc<Node<K, V>>) -> Arc<Node<K, V>> {
-    let pivot = node.left.as_ref().expect("left-heavy node");
-    let right = Node::new(
-        node.key.clone(),
-        node.value.clone(),
-        pivot.right.clone(),
-        node.right.clone(),
-    );
-    Node::new(
-        pivot.key.clone(),
-        pivot.value.clone(),
-        pivot.left.clone(),
-        Some(right),
-    )
-}
-
-fn balance<K: Clone, V: Clone>(mut node: Arc<Node<K, V>>) -> Arc<Node<K, V>> {
-    if height(&node.left) > height(&node.right) + 1 {
-        let left = node.left.as_ref().expect("left-heavy node");
-        if height(&left.right) > height(&left.left) {
-            node = Node::new(
-                node.key.clone(),
-                node.value.clone(),
-                Some(rotate_left(left.clone())),
-                node.right.clone(),
-            );
+    /// The entries before and after `key`, and the value stored at it.
+    #[allow(clippy::type_complexity)]
+    fn without(&self, key: &K, work: &mut Work) -> (Tree<Entry<K, V>>, Option<V>, Tree<Entry<K, V>>) {
+        let (before, from) = self.entries.split(
+            &mut NotBefore(key),
+            |entry, seek| if entry.key < *seek.0 { LeafSplit::After } else { LeafSplit::Before },
+            work,
+        );
+        match from.first() {
+            Some(entry) if entry.key == *key => {
+                let previous = Some(entry.value.clone());
+                let (_, after) =
+                    from.split_at(1, |keys| keys.count, |_, _| unreachable!("entries are whole"), work);
+                (before, previous, after)
+            }
+            _ => (before, None, from),
         }
-        rotate_right(node)
-    } else if height(&node.right) > height(&node.left) + 1 {
-        let right = node.right.as_ref().expect("right-heavy node");
-        if height(&right.left) > height(&right.right) {
-            node = Node::new(
-                node.key.clone(),
-                node.value.clone(),
-                node.left.clone(),
-                Some(rotate_right(right.clone())),
-            );
-        }
-        rotate_left(node)
-    } else {
-        node
     }
-}
-
-fn insert<K: Ord + Clone, V: Clone>(
-    root: &Link<K, V>,
-    key: K,
-    value: V,
-) -> (Arc<Node<K, V>>, Option<V>) {
-    let Some(node) = root else {
-        return (Node::new(key, value, None, None), None);
-    };
-    let (next, previous) = match key.cmp(&node.key) {
-        Ordering::Less => {
-            let (left, previous) = insert(&node.left, key, value);
-            (
-                Node::new(
-                    node.key.clone(),
-                    node.value.clone(),
-                    Some(left),
-                    node.right.clone(),
-                ),
-                previous,
-            )
-        }
-        Ordering::Greater => {
-            let (right, previous) = insert(&node.right, key, value);
-            (
-                Node::new(
-                    node.key.clone(),
-                    node.value.clone(),
-                    node.left.clone(),
-                    Some(right),
-                ),
-                previous,
-            )
-        }
-        Ordering::Equal => (
-            Node::new(
-                node.key.clone(),
-                value,
-                node.left.clone(),
-                node.right.clone(),
-            ),
-            Some(node.value.clone()),
-        ),
-    };
-    (balance(next), previous)
-}
-
-fn remove_first<K: Clone, V: Clone>(node: &Arc<Node<K, V>>) -> (Link<K, V>, K, V) {
-    let Some(left) = &node.left else {
-        return (node.right.clone(), node.key.clone(), node.value.clone());
-    };
-    let (left, key, value) = remove_first(left);
-    (
-        Some(balance(Node::new(
-            node.key.clone(),
-            node.value.clone(),
-            left,
-            node.right.clone(),
-        ))),
-        key,
-        value,
-    )
-}
-
-fn remove<K: Ord + Clone, V: Clone>(root: &Link<K, V>, key: &K) -> (Link<K, V>, Option<V>) {
-    let Some(node) = root else {
-        return (None, None);
-    };
-    let (next, previous) = match key.cmp(&node.key) {
-        Ordering::Less => {
-            let (left, previous) = remove(&node.left, key);
-            if previous.is_none() {
-                return (root.clone(), None);
-            }
-            (
-                Node::new(
-                    node.key.clone(),
-                    node.value.clone(),
-                    left,
-                    node.right.clone(),
-                ),
-                previous,
-            )
-        }
-        Ordering::Greater => {
-            let (right, previous) = remove(&node.right, key);
-            if previous.is_none() {
-                return (root.clone(), None);
-            }
-            (
-                Node::new(
-                    node.key.clone(),
-                    node.value.clone(),
-                    node.left.clone(),
-                    right,
-                ),
-                previous,
-            )
-        }
-        Ordering::Equal => {
-            let previous = Some(node.value.clone());
-            if node.left.is_none() {
-                return (node.right.clone(), previous);
-            }
-            let Some(right) = &node.right else {
-                return (node.left.clone(), previous);
-            };
-            let (right, key, value) = remove_first(right);
-            (Node::new(key, value, node.left.clone(), right), previous)
-        }
-    };
-    (Some(balance(next)), previous)
 }
 
 #[cfg(test)]
@@ -275,16 +127,11 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    fn validate(node: &Link<u32, u32>, output: &mut BTreeMap<u32, u32>) {
-        let Some(node) = node else {
-            return;
-        };
-        assert!(height(&node.left).abs_diff(height(&node.right)) <= 1);
-        assert_eq!(node.height, 1 + height(&node.left).max(height(&node.right)));
-        assert_eq!(node.len, 1 + len(&node.left) + len(&node.right));
-        validate(&node.left, output);
-        assert!(output.insert(node.key, node.value).is_none());
-        validate(&node.right, output);
+    fn validate(map: &PersistentMap<u32, u32>) -> BTreeMap<u32, u32> {
+        assert!(map.entries.invariant_holds());
+        let entries = map.entries.iter().map(|entry| (entry.key, entry.value)).collect::<Vec<_>>();
+        assert!(entries.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        entries.into_iter().collect()
     }
 
     #[test]
@@ -313,15 +160,14 @@ mod tests {
         map.clear();
         assert_eq!(map.len(), 0);
         for (map, expected) in retained {
-            let mut actual = BTreeMap::new();
-            validate(&map.root, &mut actual);
-            assert_eq!(actual, expected);
+            assert_eq!(validate(&map), expected);
         }
     }
 
     #[test]
     fn one_update_copies_only_a_balanced_path() {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
         #[derive(Debug)]
         struct Counted(Arc<AtomicUsize>);
         impl Clone for Counted {

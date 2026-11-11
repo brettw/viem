@@ -251,7 +251,7 @@ impl Document {
         let mut affinity = affinity;
         let mut exit_source = exit.map(|point| point.offset());
         for inserted in input.graphemes(true) {
-            let comment_target = named.filter(|style| style.0 == "Comment")
+            let comment_target = named.filter(|style| style.is_comment())
                 .and_then(|_| scratch.comment_replace_target(target));
             let replacement_target = comment_target.unwrap_or(target);
             let lines = scratch.hard_line_snapshot();

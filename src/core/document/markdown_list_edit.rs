@@ -131,7 +131,7 @@ impl Document {
             && self.projection().table_cell_at(at).is_none()
             && edit_boundary::paragraph_at(self, at).ok().flatten().is_some_and(|block| {
                 block.list_level().is_some()
-                    && block.style.0 != "Code Block"
+                    && !block.style.is_code_block()
                     && !block.markdown_html
                     && !block.thematic_break
             })
@@ -748,7 +748,7 @@ impl Document {
                 scratch.prepare_structural_list_enter(at)?
             }
         } else if self.format() == Format::Markdown
-            && (block.style.0 == "Block quote" || block.quote_depth > 0)
+            && (block.style.is_block_quote() || block.quote_depth > 0)
         {
             scratch
                 .prepare_markdown_quote_enter(at)?
@@ -792,8 +792,8 @@ impl Document {
                 .ok_or(DocumentError::VerificationFailed)?;
             // Image is derived from the retained object, not an authored
             // paragraph assignment for the empty side of a split.
-            let style = if style.0 == "Image" {
-                if actual.style.0 == "Image" { actual.style.clone() }
+            let style = if style.is_image() {
+                if actual.style.is_image() { actual.style.clone() }
                 else { scratch.projection().style_sheet().base_paragraph.clone() }
             } else { style };
             if actual.style != style {

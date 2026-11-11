@@ -35,6 +35,27 @@ impl From<&str> for StyleId {
 }
 
 impl StyleId {
+    pub const CODE_BLOCK: &'static str = "Code Block";
+    pub const BLOCK_QUOTE: &'static str = "Block quote";
+    pub const IMAGE: &'static str = "Image";
+    pub const COMMENT: &'static str = "Comment";
+
+    pub fn is_code_block(&self) -> bool {
+        self.0 == Self::CODE_BLOCK
+    }
+
+    pub fn is_block_quote(&self) -> bool {
+        self.0 == Self::BLOCK_QUOTE
+    }
+
+    pub fn is_image(&self) -> bool {
+        self.0 == Self::IMAGE
+    }
+
+    pub fn is_comment(&self) -> bool {
+        self.0 == Self::COMMENT
+    }
+
     /// Markdown can author only these paragraph treatments; other definitions
     /// configure projection appearance without introducing new source syntax.
     pub(crate) fn supports_markdown_paragraph_assignment(&self) -> bool {

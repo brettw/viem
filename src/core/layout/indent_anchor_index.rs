@@ -9,8 +9,8 @@
 //! leaves are repaired at splice boundaries, so editing does not gradually turn
 //! the index into a node per line. Snapshots share immutable AVL nodes.
 
+use crate::persistent::{at, Item, Summary, Tree, View, Work};
 use std::ops::Range;
-use std::sync::Arc;
 
 const BLOCK_LINES: usize = 128;
 const MIN_BLOCK_LINES: usize = BLOCK_LINES / 2;
@@ -63,70 +63,128 @@ pub struct IndentAnchorStatistics {
 
 #[derive(Clone, Debug, Default)]
 pub struct IndentAnchorIndex {
-    root: Link,
+    blocks: Tree<Block>,
 }
 
-type Link = Option<Arc<Node>>;
+type Node = crate::persistent::Node<Block>;
 
+/// Column counts of up to `BLOCK_LINES` lines and their eligibility bitset.
 #[derive(Debug)]
-struct Node {
-    summary: Summary,
-    content: Content,
+struct Block {
+    columns: Box<[usize]>,
+    eligible: u128,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Summary {
+struct Minima {
     lines: usize,
     blocks: usize,
-    height: usize,
     min_eligible: Option<usize>,
     min_all: usize,
 }
 
-#[derive(Debug)]
-enum Content {
-    Block {
-        columns: Box<[usize]>,
-        eligible: u128,
-    },
-    Branch {
-        left: Arc<Node>,
-        right: Arc<Node>,
-    },
+impl Default for Minima {
+    fn default() -> Self {
+        Self { lines: 0, blocks: 0, min_eligible: None, min_all: usize::MAX }
+    }
+}
+
+impl Summary for Minima {
+    fn add(&mut self, right: &Self) {
+        self.lines += right.lines;
+        self.blocks += right.blocks;
+        self.min_eligible = match (self.min_eligible, right.min_eligible) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, None) | (None, a) => a,
+        };
+        self.min_all = self.min_all.min(right.min_all);
+    }
+}
+
+impl Item for Block {
+    type Summary = Minima;
+
+    fn summary(&self) -> Minima {
+        let mut summary = Minima { lines: self.columns.len(), blocks: 1, ..Minima::default() };
+        for (index, &columns) in self.columns.iter().enumerate() {
+            summary.min_all = summary.min_all.min(columns);
+            if self.eligible & (1 << index) != 0 {
+                summary.min_eligible = Some(summary.min_eligible.unwrap_or(usize::MAX).min(columns));
+            }
+        }
+        summary
+    }
+}
+
+impl Block {
+    fn new(lines: &[LineIndentation], work: &mut IndentAnchorWork) -> Self {
+        debug_assert!(!lines.is_empty() && lines.len() <= BLOCK_LINES);
+        work.lines_copied += lines.len();
+        let mut eligible = 0u128;
+        let columns = lines
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                if line.anchor_eligible {
+                    eligible |= 1 << index;
+                }
+                line.columns
+            })
+            .collect();
+        Self { columns, eligible }
+    }
+
+    fn line(&self, index: usize) -> LineIndentation {
+        LineIndentation {
+            columns: self.columns[index],
+            anchor_eligible: self.eligible & (1 << index) != 0,
+        }
+    }
+
+    fn lines(&self) -> Vec<LineIndentation> {
+        (0..self.columns.len()).map(|index| self.line(index)).collect()
+    }
+}
+
+fn lines(summary: &Minima) -> usize {
+    summary.lines
+}
+
+/// Run one tree operation and add its node counts to `work`.
+fn counted<R>(work: &mut IndentAnchorWork, operation: impl FnOnce(&mut Work) -> R) -> R {
+    let mut tree_work = Work::default();
+    let result = operation(&mut tree_work);
+    work.nodes_visited += tree_work.visited;
+    work.nodes_created += tree_work.created;
+    result
 }
 
 impl IndentAnchorIndex {
     pub(crate) fn shares_root_with(&self, other: &Self) -> bool {
-        match (&self.root, &other.root) {
-            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
-            (None, None) => true,
-            _ => false,
-        }
+        self.blocks.ptr_eq(&other.blocks)
     }
 
     pub fn from_lines(lines: impl IntoIterator<Item = LineIndentation>) -> Self {
         let mut work = IndentAnchorWork::default();
-        Self {
-            root: build(lines, &mut work),
-        }
+        Self { blocks: build(lines, &mut work) }
     }
 
     pub fn len(&self) -> usize {
-        line_count(&self.root)
+        self.blocks.measure(lines)
     }
     pub fn is_empty(&self) -> bool {
-        self.root.is_none()
+        self.blocks.is_empty()
     }
 
     pub fn statistics(&self) -> IndentAnchorStatistics {
-        let Some(root) = &self.root else {
+        if self.blocks.is_empty() {
             return IndentAnchorStatistics::default();
-        };
-        let summary = root.summary;
+        }
+        let summary = self.blocks.summary();
         IndentAnchorStatistics {
             line_count: summary.lines,
             block_count: summary.blocks,
-            tree_height: summary.height,
+            tree_height: usize::from(self.blocks.height()),
             payload_bytes: (summary.blocks * 2 - 1) * std::mem::size_of::<Node>()
                 + summary.lines * std::mem::size_of::<usize>(),
         }
@@ -138,33 +196,16 @@ impl IndentAnchorIndex {
 
     fn line_with_work(
         &self,
-        mut line: usize,
+        line: usize,
         work: &mut IndentAnchorWork,
     ) -> Option<LineIndentation> {
         if line >= self.len() {
             return None;
         }
-        let mut node = self.root.as_deref()?;
-        loop {
-            work.nodes_visited += 1;
-            match &node.content {
-                Content::Block { columns, eligible } => {
-                    work.lines_examined += 1;
-                    return Some(LineIndentation {
-                        columns: columns[line],
-                        anchor_eligible: eligible & (1 << line) != 0,
-                    });
-                }
-                Content::Branch { left, right } => {
-                    if line < left.summary.lines {
-                        node = left;
-                    } else {
-                        line -= left.summary.lines;
-                        node = right;
-                    }
-                }
-            }
-        }
+        let mut seek = at(line, lines);
+        let (block, _) = counted(work, |work| self.blocks.find(&mut seek, work))?;
+        work.lines_examined += 1;
+        Some(block.line(seek.remaining))
     }
 
     pub fn anchor(&self, line: usize) -> Option<usize> {
@@ -193,7 +234,7 @@ impl IndentAnchorIndex {
             return None;
         }
         search(
-            self.root.as_deref()?,
+            self.blocks.root()?,
             0,
             &(0..before),
             maximum,
@@ -218,7 +259,7 @@ impl IndentAnchorIndex {
             return None;
         }
         search(
-            self.root.as_deref()?,
+            self.blocks.root()?,
             0,
             &(from..self.len()),
             maximum,
@@ -292,15 +333,14 @@ impl IndentAnchorIndex {
         }
         let inserted = build(replacement, work);
         (self.len() - removed.len())
-            .checked_add(line_count(&inserted))
+            .checked_add(inserted.measure(lines))
             .ok_or(IndentAnchorIndexError::LineCountOverflow)?;
-        if removed.is_empty() && inserted.is_none() {
+        if removed.is_empty() && inserted.is_empty() {
             return Ok(());
         }
-        let (left, tail) = split(self.root.clone(), removed.start, work);
-        let (_, right) = split(tail, removed.len(), work);
-        let next = concat(left, inserted, work);
-        self.root = concat(next, right, work);
+        let (left, tail) = split(&self.blocks, removed.start, work);
+        let (_, right) = split(&tail, removed.len(), work);
+        self.blocks = concat(&concat(&left, &inserted, work), &right, work);
         Ok(())
     }
 }
@@ -319,7 +359,7 @@ impl Iterator for IndentDependents<'_> {
         loop {
             let maximum = self.maximum?;
             let found = search(
-                self.index.root.as_deref()?,
+                self.index.blocks.root()?,
                 0,
                 &(self.next..self.index.len()),
                 maximum,
@@ -343,221 +383,55 @@ impl Iterator for IndentDependents<'_> {
     }
 }
 
-fn line_count(link: &Link) -> usize {
-    link.as_ref().map_or(0, |node| node.summary.lines)
+fn build(
+    lines: impl IntoIterator<Item = LineIndentation>,
+    work: &mut IndentAnchorWork,
+) -> Tree<Block> {
+    let lines = lines.into_iter().collect::<Vec<_>>();
+    let blocks = lines.chunks(BLOCK_LINES).map(|chunk| Block::new(chunk, work)).collect::<Vec<_>>();
+    counted(work, |work| Tree::from_items(blocks, work))
 }
 
-fn block(lines: &[LineIndentation], work: &mut IndentAnchorWork) -> Arc<Node> {
-    debug_assert!(!lines.is_empty() && lines.len() <= BLOCK_LINES);
-    work.nodes_created += 1;
-    work.lines_copied += lines.len();
-    let mut eligible = 0u128;
-    let mut min_eligible = None;
-    let mut min_all = usize::MAX;
-    let columns = lines
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            min_all = min_all.min(line.columns);
-            if line.anchor_eligible {
-                eligible |= 1 << i;
-                min_eligible = Some(min_eligible.unwrap_or(usize::MAX).min(line.columns));
-            }
-            line.columns
-        })
-        .collect();
-    Arc::new(Node {
-        summary: Summary {
-            lines: lines.len(),
-            blocks: 1,
-            height: 1,
-            min_eligible,
-            min_all,
-        },
-        content: Content::Block { columns, eligible },
-    })
-}
-
-fn branch(left: Arc<Node>, right: Arc<Node>, work: &mut IndentAnchorWork) -> Arc<Node> {
-    work.nodes_created += 1;
-    Arc::new(Node {
-        summary: Summary {
-            lines: left.summary.lines + right.summary.lines,
-            blocks: left.summary.blocks + right.summary.blocks,
-            height: left.summary.height.max(right.summary.height) + 1,
-            min_eligible: match (left.summary.min_eligible, right.summary.min_eligible) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (a, None) | (None, a) => a,
+fn split(tree: &Tree<Block>, at: usize, work: &mut IndentAnchorWork) -> (Tree<Block>, Tree<Block>) {
+    let mut cut_work = IndentAnchorWork::default();
+    let parts = counted(work, |work| {
+        tree.split_at(
+            at,
+            lines,
+            |block, offset| {
+                let all = block.lines();
+                (Block::new(&all[..offset], &mut cut_work), Block::new(&all[offset..], &mut cut_work))
             },
-            min_all: left.summary.min_all.min(right.summary.min_all),
-        },
-        content: Content::Branch { left, right },
-    })
+            work,
+        )
+    });
+    work.lines_copied += cut_work.lines_copied;
+    parts
 }
 
-fn build(lines: impl IntoIterator<Item = LineIndentation>, work: &mut IndentAnchorWork) -> Link {
-    let mut blocks = Vec::new();
-    let mut pending = Vec::with_capacity(BLOCK_LINES);
-    for line in lines {
-        pending.push(line);
-        if pending.len() == BLOCK_LINES {
-            blocks.push(block(&pending, work));
-            pending.clear();
-        }
-    }
-    if !pending.is_empty() {
-        blocks.push(block(&pending, work));
-    }
-    fn balanced(blocks: &[Arc<Node>], work: &mut IndentAnchorWork) -> Link {
-        match blocks.len() {
-            0 => None,
-            1 => Some(blocks[0].clone()),
-            count => {
-                let middle = count / 2;
-                Some(branch(
-                    balanced(&blocks[..middle], work).unwrap(),
-                    balanced(&blocks[middle..], work).unwrap(),
-                    work,
-                ))
-            }
-        }
-    }
-    balanced(&blocks, work)
-}
-
-fn children(node: &Node) -> (&Arc<Node>, &Arc<Node>) {
-    let Content::Branch { left, right } = &node.content else {
-        unreachable!("branch height");
+/// Concatenate, first repairing an underfull block at the seam so editing
+/// does not gradually turn the index into a node per line.
+fn concat(left: &Tree<Block>, right: &Tree<Block>, work: &mut IndentAnchorWork) -> Tree<Block> {
+    let (Some(a), Some(b)) = (left.last(), right.first()) else {
+        return if left.is_empty() { right.clone() } else { left.clone() };
     };
-    (left, right)
-}
-
-fn join(left: Link, right: Link, work: &mut IndentAnchorWork) -> Link {
-    let (Some(left), Some(right)) = (left.clone(), right.clone()) else {
-        return left.or(right);
-    };
-    work.nodes_visited += 1;
-    if left.summary.height > right.summary.height + 1 {
-        let (a, b) = children(&left);
-        let joined = join(Some(b.clone()), Some(right), work).unwrap();
-        Some(balance(a.clone(), joined, work))
-    } else if right.summary.height > left.summary.height + 1 {
-        let (a, b) = children(&right);
-        let joined = join(Some(left), Some(a.clone()), work).unwrap();
-        Some(balance(joined, b.clone(), work))
-    } else {
-        Some(branch(left, right, work))
+    let (a_count, b_count) = (a.columns.len(), b.columns.len());
+    if a_count >= MIN_BLOCK_LINES && b_count >= MIN_BLOCK_LINES {
+        return counted(work, |work| left.concat(right, work));
     }
-}
-
-fn balance(left: Arc<Node>, right: Arc<Node>, work: &mut IndentAnchorWork) -> Arc<Node> {
-    if left.summary.height > right.summary.height + 1 {
-        let (a, b) = children(&left);
-        if a.summary.height >= b.summary.height {
-            let nested = branch(b.clone(), right, work);
-            branch(a.clone(), nested, work)
-        } else {
-            let (c, d) = children(b);
-            let first = branch(a.clone(), c.clone(), work);
-            let last = branch(d.clone(), right, work);
-            branch(first, last, work)
-        }
-    } else if right.summary.height > left.summary.height + 1 {
-        let (a, b) = children(&right);
-        if b.summary.height >= a.summary.height {
-            let nested = branch(left, a.clone(), work);
-            branch(nested, b.clone(), work)
-        } else {
-            let (c, d) = children(a);
-            let first = branch(left, c.clone(), work);
-            let last = branch(d.clone(), b.clone(), work);
-            branch(first, last, work)
-        }
-    } else {
-        branch(left, right, work)
-    }
-}
-
-fn block_lines(node: &Node) -> Vec<LineIndentation> {
-    let Content::Block { columns, eligible } = &node.content else {
-        unreachable!("block");
-    };
-    columns
-        .iter()
-        .enumerate()
-        .map(|(i, &columns)| LineIndentation {
-            columns,
-            anchor_eligible: eligible & (1 << i) != 0,
-        })
-        .collect()
-}
-
-fn split(root: Link, at: usize, work: &mut IndentAnchorWork) -> (Link, Link) {
-    let Some(node) = root else {
-        return (None, None);
-    };
-    work.nodes_visited += 1;
-    if at == 0 {
-        return (None, Some(node));
-    }
-    if at == node.summary.lines {
-        return (Some(node), None);
-    }
-    match &node.content {
-        Content::Block { .. } => {
-            let lines = block_lines(&node);
-            (
-                Some(block(&lines[..at], work)),
-                Some(block(&lines[at..], work)),
-            )
-        }
-        Content::Branch { left, right } => {
-            if at < left.summary.lines {
-                let (before, after) = split(Some(left.clone()), at, work);
-                (before, join(after, Some(right.clone()), work))
-            } else {
-                let (before, after) = split(Some(right.clone()), at - left.summary.lines, work);
-                (join(Some(left.clone()), before, work), after)
-            }
-        }
-    }
-}
-
-fn edge_block<'a>(mut node: &'a Node, last: bool, work: &mut IndentAnchorWork) -> &'a Node {
-    loop {
-        work.nodes_visited += 1;
-        match &node.content {
-            Content::Block { .. } => return node,
-            Content::Branch { left, right } => node = if last { right } else { left },
-        }
-    }
-}
-
-fn concat(left: Link, right: Link, work: &mut IndentAnchorWork) -> Link {
-    let (Some(a), Some(b)) = (left.as_deref(), right.as_deref()) else {
-        return left.or(right);
-    };
-    let a = edge_block(a, true, work);
-    let b = edge_block(b, false, work);
-    if a.summary.lines >= MIN_BLOCK_LINES && b.summary.lines >= MIN_BLOCK_LINES {
-        return join(left, right, work);
-    }
-    let (a_count, b_count) = (a.summary.lines, b.summary.lines);
-    let mut lines = block_lines(a);
-    lines.extend(block_lines(b));
-    let left_count = line_count(&left);
-    let (left, _) = split(left, left_count - a_count, work);
+    let mut seam = a.lines();
+    seam.extend(b.lines());
+    let (left, _) = split(left, left.measure(lines) - a_count, work);
     let (_, right) = split(right, b_count, work);
-    let middle = if lines.len() <= BLOCK_LINES {
-        Some(block(&lines, work))
+    let middle = if seam.len() <= BLOCK_LINES {
+        vec![Block::new(&seam, work)]
     } else {
-        let middle = lines.len() / 2;
-        let a = block(&lines[..middle], work);
-        let b = block(&lines[middle..], work);
-        Some(branch(a, b, work))
+        let (first, last) = seam.split_at(seam.len() / 2);
+        vec![Block::new(first, work), Block::new(last, work)]
     };
-    let joined = join(left, middle, work);
-    join(joined, right, work)
+    counted(work, |work| {
+        left.concat(&Tree::from_items(middle, work), work).concat(&right, work)
+    })
 }
 
 fn search(
@@ -570,19 +444,16 @@ fn search(
     work: &mut IndentAnchorWork,
 ) -> Option<usize> {
     work.nodes_visited += 1;
-    if start >= range.end || start + node.summary.lines <= range.start {
+    let summary = node.summary();
+    if start >= range.end || start + summary.lines <= range.start {
         return None;
     }
-    let minimum = if eligible_only {
-        node.summary.min_eligible
-    } else {
-        Some(node.summary.min_all)
-    };
+    let minimum = if eligible_only { summary.min_eligible } else { Some(summary.min_all) };
     if minimum.is_none_or(|minimum| minimum > maximum) {
         return None;
     }
-    match &node.content {
-        Content::Block { columns, eligible } => {
+    match node.view() {
+        View::Leaf(Block { columns, eligible }) => {
             let lo = range.start.saturating_sub(start);
             let hi = (range.end - start).min(columns.len());
             let matches = |index: usize, work: &mut IndentAnchorWork| {
@@ -598,8 +469,8 @@ fn search(
                 (lo..hi).find(|&i| matches(i, work)).map(|i| start + i)
             }
         }
-        Content::Branch { left, right } => {
-            let right_start = start + left.summary.lines;
+        View::Branch(left, right) => {
+            let right_start = start + left.summary().lines;
             let (first, first_start, last, last_start) = if reverse {
                 (right, right_start, left, start)
             } else {

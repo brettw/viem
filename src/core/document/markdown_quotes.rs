@@ -18,7 +18,7 @@ pub(super) fn empty_insertion_patches(
         .into_iter()
         .find(|block| {
             block.range == *range
-                && (block.style.0 == "Block quote" || block.quote_depth > 0)
+                && (block.style.is_block_quote() || block.quote_depth > 0)
                 && matches!(block.kind, BlockKind::Paragraph)
         })
     else {
@@ -88,7 +88,7 @@ pub(super) fn is_fenced_block(
     document: &super::Document,
     block: &super::Block,
 ) -> Result<bool, super::DocumentError> {
-    if block.style.0 != "Block quote" && block.quote_depth == 0 {
+    if !block.style.is_block_quote() && block.quote_depth == 0 {
         return Ok(false);
     }
     if !block.range.is_empty()

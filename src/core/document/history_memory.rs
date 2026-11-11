@@ -260,6 +260,35 @@ impl MemoryVisitor<'_> {
         self.arc_owning(value, 0, visit_children);
     }
 
+    /// Every node of a persistent tree. `owned` reports the further heap a
+    /// leaf's item alone owns; `shared` visits allocations it shares.
+    pub(super) fn tree<T: crate::persistent::Item>(
+        &mut self,
+        tree: &crate::persistent::Tree<T>,
+        owned: impl Fn(&T) -> usize + Copy,
+        shared: impl Fn(&T, &mut MemoryVisitor<'_>) + Copy,
+    ) {
+        fn visit<T: crate::persistent::Item>(
+            visitor: &mut MemoryVisitor<'_>,
+            node: &Arc<crate::persistent::Node<T>>,
+            owned: impl Fn(&T) -> usize + Copy,
+            shared: impl Fn(&T, &mut MemoryVisitor<'_>) + Copy,
+        ) {
+            match node.view() {
+                crate::persistent::View::Leaf(item) => {
+                    visitor.arc_owning(node, owned(item), |visitor| shared(item, visitor));
+                }
+                crate::persistent::View::Branch(left, right) => visitor.arc(node, |visitor| {
+                    visit(visitor, left, owned, shared);
+                    visit(visitor, right, owned, shared);
+                }),
+            }
+        }
+        if let Some(root) = tree.root() {
+            visit(self, root, owned, shared);
+        }
+    }
+
     /// An `Arc` whose immutable payload alone owns `owned_bytes` of further
     /// heap, such as a persistent node's item vector. One ledger entry then
     /// covers both allocations.

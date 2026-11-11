@@ -2799,10 +2799,6 @@ ViemStatus viem_core_view_set_smart_home(ViemCoreHandle core, ViemViewId view, u
 ViemStatus viem_core_view_set_wrap(ViemCoreHandle core, ViemViewId view,
                                    uint32_t wrap,
                                    ViemCoreOutcomeV1 *out_outcome);
-/* Deprecated compatibility entry point: 1 is a no-op; 0 is invalid. */
-ViemStatus viem_core_view_set_linebreak(ViemCoreHandle core, ViemViewId view,
-                                        uint32_t linebreak,
-                                        ViemCoreOutcomeV1 *out_outcome);
 ViemStatus viem_core_view_set_file_format(
     ViemCoreHandle core, ViemViewId view,
     const ViemSetFileFormatV1 *request, ViemCoreOutcomeV1 *out_outcome);

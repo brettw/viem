@@ -19,11 +19,11 @@ use crate::document::StyleProperty;
 use crate::document::{
     ArtifactOverwrite, ArtifactPath, ArtifactWriteCompletion, ArtifactWriteCompletionStatus,
     ArtifactWriteIntent, ArtifactWriteScope, ArtifactWriteToken, Association, BoundaryAffinity,
-    ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, Encoding,
+    CommittedModelTransaction, ConfigurationStyleIntent, DeletionRecovery, Document, DocumentError, DocumentId, Encoding,
     FileFormat, Format, HardLineSourceRangeError, HistoryError, HistoryLocation,
     HistoryNavigationRequest, HistoryRestoration, HistoryRestorationSnapshot, MappingOutcome,
     ModelRequest, ModelTransactionError, PersistenceError, PositionError,
-    PositionMap, PreparedArtifactWrite, Revision, SemanticInlineStyle, StyleApplication,
+    PositionMap, PreparedArtifactWrite, PreparedModelTransaction, Revision, SemanticInlineStyle, StyleApplication,
     StyleDefinitionFieldEdit, StyleId, StyleModelIntent, StyleModelRequest, StyleNamespace,
     StyleSheetRevision, TextAnchor,
 };
@@ -499,7 +499,8 @@ pub enum CoreEvent {
     NavigateHistory(HistoryNavigationRequest),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// The default is an event that changed nothing.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct CoreOutcome {
     pub command: Option<CommandOutput>,
     pub document_changed: bool,
@@ -698,8 +699,14 @@ pub enum CoreError {
 }
 
 impl From<DocumentError> for CoreError {
+    /// Typed transaction failures carried through the command interpreter's
+    /// `DocumentError` surface again as their own core errors.
     fn from(value: DocumentError) -> Self {
-        Self::Document(value)
+        match value {
+            DocumentError::Position(error) => Self::Position(error),
+            DocumentError::History(error) => Self::History(error),
+            value => Self::Document(value),
+        }
     }
 }
 
@@ -4178,8 +4185,11 @@ impl<P: TextMeasurementProvider> Core<P> {
         // it must neither scroll sideways nor shape its unseen text. Native
         // drag autoscroll supplies subsequent explicit viewport requests.
         if keep_pointer_viewport {
-            return Ok(CoreOutcome { command: None, document_changed: false,
-                position_map: None, layout_changed: true, composition_changes });
+            return Ok(CoreOutcome {
+ layout_changed: true,
+ composition_changes,
+                ..CoreOutcome::default()
+            });
         }
 
         // An on-screen pointer move changes selection, not text geometry. Keep
@@ -4287,10 +4297,9 @@ impl<P: TextMeasurementProvider> Core<P> {
         self.materialize_immediate_viewport(view_id, ImmediateLayoutIntent::RevealCaret)?;
         Ok(CoreOutcome {
             command: Some(command),
-            document_changed: false,
-            position_map: None,
             layout_changed: true,
             composition_changes,
+            ..CoreOutcome::default()
         })
     }
 
@@ -4463,11 +4472,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             }
         }
         Ok(CoreOutcome {
-            command: None,
-            document_changed: false,
-            position_map: None,
             layout_changed: moved || entered,
-            composition_changes: Vec::new(),
+            ..CoreOutcome::default()
         })
     }
 
@@ -4517,6 +4523,106 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
         self.retire_syntax_baseline_anchors();
         Ok(next_commands)
+    }
+
+    /// Commit one prepared native edit as its own undo unit.
+    ///
+    /// Preparation happened before any open Insert/Replace group is closed, so
+    /// a rejected edit changes neither the document nor controller grouping.
+    /// The owner of an open group keeps its exact restoration endpoint; the
+    /// verified candidate is then rebound only to the closed group. Every
+    /// view's controller is rebased through the edit's position map before
+    /// any is replaced. `install` adjusts each rebased controller, and
+    /// `finish` places the invoking view's caret and reports whether typing
+    /// resumes, which opens the next undo unit at this edit's result. Returns
+    /// the prepared position map the views were rebased through.
+    pub(super) fn commit_native_transaction(
+        &mut self,
+        view: ViewId,
+        preflight: PreparedModelTransaction,
+        capture_anchors: fn(
+            &CommandInterpreter,
+            &Document,
+        ) -> Result<crate::command::CommandPositionAnchors, DocumentError>,
+        mut install: impl FnMut(&mut Self, ViewId, &mut CommandInterpreter),
+        finish: impl FnOnce(&mut Self) -> bool,
+    ) -> Result<(PositionMap, CommittedModelTransaction), CoreError> {
+        let before_revision = self.document.revision();
+        let map = preflight.text_position_map().clone();
+        let before = self.views[&view]
+            .commands
+            .capture_history_restoration(&self.document)?;
+        let mapped = self.prepare_mapped_commands(&map, capture_anchors)?;
+        self.finalize_open_edit_group(view)?;
+        let prepared = self
+            .document
+            .rebind_prepared_after_group_close(preflight)
+            .map_err(command_model_transaction_error)?;
+        let committed = self
+            .document
+            .commit_model_transaction(prepared)
+            .map_err(command_model_transaction_error)?;
+        debug_assert_eq!(committed.before_revision(), before_revision);
+        debug_assert_ne!(committed.after_revision(), before_revision);
+        for (id, mut commands) in mapped {
+            install(self, id, &mut commands);
+            self.views.get_mut(&id).expect("prepared view").commands = commands;
+        }
+        let resumes_typing = finish(self);
+        let after = self.views[&view]
+            .commands
+            .capture_history_restoration(&self.document)?;
+        let parent = self.document.history_status().current;
+        self.document.attach_history_restoration(
+            parent.node,
+            HistoryRestoration::new(before, after.clone()),
+        )?;
+        if resumes_typing {
+            self.edit_group_owner = Some(view);
+            self.edit_group_restoration = Some(OpenGroupRestoration {
+                generation: self.document.edit_group_generation(),
+                parent,
+                before: after,
+            });
+        }
+        Ok((map, committed))
+    }
+
+    /// [`Self::commit_native_transaction`] with ordinary anchors and no
+    /// per-view adjustment.
+    pub(super) fn commit_native_edit(
+        &mut self,
+        view: ViewId,
+        preflight: PreparedModelTransaction,
+        finish: impl FnOnce(&mut Self) -> bool,
+    ) -> Result<PositionMap, CoreError> {
+        let (map, _) = self.commit_native_transaction(
+            view,
+            preflight,
+            CommandInterpreter::capture_position_anchors,
+            |_, _, _| {},
+            finish,
+        )?;
+        Ok(map)
+    }
+
+    /// Refresh every view after a committed native edit using the invoking
+    /// view's viewport and caret policy.
+    fn finish_native_change(
+        &mut self,
+        view: ViewId,
+        map: PositionMap,
+        active_intent: ImmediateLayoutIntent,
+    ) -> Result<CoreOutcome, CoreError> {
+        let composition_changes =
+            self.refresh_views_after_native_change(view, &map, active_intent)?;
+        Ok(CoreOutcome {
+            document_changed: true,
+            position_map: Some(map),
+            layout_changed: true,
+            composition_changes,
+            ..CoreOutcome::default()
+        })
     }
 
     /// Publish native model changes to viewport and composition state only
@@ -4610,13 +4716,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .prepare_model_request(request())
             .map_err(command_model_transaction_error)?;
         if preflight.is_no_op() {
-            return Ok(CoreOutcome {
-                command: None,
-                document_changed: false,
-                position_map: None,
-                layout_changed: false,
-                composition_changes: Vec::new(),
-            });
+            return Ok(CoreOutcome::default());
         }
 
         let before_revision = self.document.revision();
@@ -4671,11 +4771,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             view_id, &expected_map, ImmediateLayoutIntent::PreserveViewport,
         )?;
         Ok(CoreOutcome {
-            command: None,
             document_changed: changed,
             position_map: Some(expected_map),
             layout_changed: true,
             composition_changes,
+            ..CoreOutcome::default()
         })
     }
 
@@ -4703,7 +4803,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         let quote_at_end = match &request {
             ModelRequest::AssignNamedStyle { range, namespace: StyleNamespace::Block, style, .. }
             | ModelRequest::SetParagraphStyle { range, style, .. }
-                if range.is_empty() && style.0 == "Block quote"
+                if range.is_empty() && style.is_block_quote()
                     && self.list_selection_identity(view_id)?.kind() == LogicalSelectionKind::None =>
             {
                 self.document.prepare_quote_after_paragraph(range.start)
@@ -4713,7 +4813,7 @@ impl<P: TextMeasurementProvider> Core<P> {
         };
         let empty_comment = match &request {
             ModelRequest::AssignNamedStyle { range, namespace: StyleNamespace::Character, style, .. }
-                if range.is_empty() && style.0 == "Comment" =>
+                if range.is_empty() && style.is_comment() =>
                 Some(self.document.prepare_empty_comment(range.start).map_err(command_model_transaction_error)?),
             _ => None,
         };
@@ -4727,83 +4827,38 @@ impl<P: TextMeasurementProvider> Core<P> {
             .map_err(command_model_transaction_error)?;
         if preflight.is_no_op() {
             self.publish_select_typing(view_id, pending_typing);
-            return Ok(CoreOutcome {
-                command: None,
-                document_changed: false,
-                position_map: None,
-                layout_changed: false,
-                composition_changes: Vec::new(),
-            });
+            return Ok(CoreOutcome::default());
         }
 
-        let before_revision = self.document.revision();
-        let expected_map = preflight.text_position_map().clone();
-        let before_restoration = self
-            .views
-            .get(&view_id)
-            .expect("view existence checked before native file-format change")
-            .commands
-            .capture_history_restoration(&self.document)?;
         let projection_change = matches!(request, ModelRequest::SetViewFormat { .. });
         let capture_anchors = if projection_change {
             CommandInterpreter::capture_format_position_anchors
         } else {
             CommandInterpreter::capture_position_anchors
         };
-        let next_commands = self.prepare_mapped_commands(&expected_map, capture_anchors)?;
-        // Preserve the restoration endpoint of the view which owns an open
-        // edit group, even when another view invoked this native operation.
-        self.finalize_open_edit_group(view_id)?;
-        let prepared = self
-            .document
-            .rebind_prepared_after_group_close(preflight)
-            .map_err(command_model_transaction_error)?;
-        debug_assert!(!prepared.is_no_op());
-        debug_assert_eq!(prepared.text_position_map(), &expected_map);
-        let committed = self
-            .document
-            .commit_model_transaction(prepared)
-            .map_err(command_model_transaction_error)?;
-        debug_assert_eq!(committed.before_revision(), before_revision);
+        let (expected_map, committed) = self.commit_native_transaction(
+            view_id,
+            preflight,
+            capture_anchors,
+            |core, id, commands| {
+                if projection_change {
+                    commands.retire_table_selection(&core.document);
+                    commands.follow_format_line_mode(core.document.format());
+                    if let Some(view) = core.views.get_mut(&id) { view.fresh_projection = true; }
+                }
+            },
+            |core| {
+                let Some(caret) = comment_caret else { return false };
+                core.views
+                    .get_mut(&view_id)
+                    .expect("prepared view")
+                    .commands
+                    .finish_native_comment_edit(&mut core.document, caret);
+                true
+            },
+        )?;
         debug_assert_eq!(committed.text_position_map(), &expected_map);
         let changed = committed.after_revision() != committed.before_revision();
-        debug_assert!(changed);
-
-        for (id, mut commands) in next_commands {
-            if projection_change {
-                commands.retire_table_selection(&self.document);
-                commands.follow_format_line_mode(self.document.format());
-                if let Some(view) = self.views.get_mut(&id) { view.fresh_projection = true; }
-            }
-            if id == view_id {
-                if let Some(caret) = comment_caret {
-                    commands.finish_native_comment_edit(&mut self.document, caret);
-                }
-            }
-            self.views
-                .get_mut(&id)
-                .expect("prepared view remains attached during serial dispatch")
-                .commands = commands;
-        }
-        let after_restoration = self
-            .views
-            .get(&view_id)
-            .expect("invoking view remains attached after file-format change")
-            .commands
-            .capture_history_restoration(&self.document)?;
-        let history_after = self.document.history_status().current;
-        self.document.attach_history_restoration(
-            history_after.node,
-            HistoryRestoration::new(before_restoration, after_restoration.clone()),
-        )?;
-        if comment_caret.is_some() {
-            self.edit_group_owner = Some(view_id);
-            self.edit_group_restoration = Some(OpenGroupRestoration {
-                generation: self.document.edit_group_generation(),
-                parent: history_after,
-                before: after_restoration,
-            });
-        }
 
         let intent = if comment_caret.is_some() { ImmediateLayoutIntent::PreserveViewportAndRevealCaret }
             else { ImmediateLayoutIntent::PreserveViewport };
@@ -4948,13 +5003,7 @@ impl<P: TextMeasurementProvider> Core<P> {
             .prepare_style_request(request)
             .map_err(command_model_transaction_error)?;
         if preflight.is_no_op() {
-            return Ok(CoreOutcome {
-                command: None,
-                document_changed: false,
-                position_map: None,
-                layout_changed: false,
-                composition_changes: Vec::new(),
-            });
+            return Ok(CoreOutcome::default());
         }
 
         let expected_map = preflight.text_position_map().clone();
@@ -5026,11 +5075,11 @@ impl<P: TextMeasurementProvider> Core<P> {
             view_id, &expected_map, ImmediateLayoutIntent::PreserveViewport,
         )?;
         Ok(CoreOutcome {
-            command: None,
             document_changed: changed,
             position_map: Some(expected_map),
             layout_changed: true,
             composition_changes,
+            ..CoreOutcome::default()
         })
     }
 
@@ -5078,10 +5127,9 @@ impl<P: TextMeasurementProvider> Core<P> {
                     clipboard_writes: Vec::new(),
                     revealed_search_match: None,
                 }),
-                document_changed: false,
-                position_map: None,
                 layout_changed: !composition_changes.is_empty(),
                 composition_changes,
+                ..CoreOutcome::default()
             });
         }
 
@@ -5372,9 +5420,8 @@ impl<P: TextMeasurementProvider> Core<P> {
             Err(CoreError::Document(DocumentError::NotModifiable)
                 | CoreError::ModelTransaction(ModelTransactionError::Document(DocumentError::NotModifiable))) => CoreOutcome {
                 command: Some(CommandOutput::not_modifiable()),
-                document_changed: false, position_map: None, layout_changed: false,
-                composition_changes: Vec::new(),
-            },
+                    ..CoreOutcome::default()
+                },
             result => result?,
         };
         if explicit_navigation {
@@ -5483,7 +5530,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let clipboard = match event { CoreEvent::FlushMappingPrefixWithClipboard(value) => Some(value), _ => None };
                 self.install_buffer_commands(view_id);
                 let plan = self.views.get_mut(&view_id).expect("validated view").commands.flush_mapping(&mut self.document);
-                let initial = CoreOutcome { command: Some(crate::command::mappings::empty_mapping_output()), document_changed: false, position_map: None, layout_changed: false, composition_changes: Vec::new() };
+                let initial = CoreOutcome { command: Some(crate::command::mappings::empty_mapping_output()), ..CoreOutcome::default() };
                 let Some(plan) = plan else { return Ok(initial); };
                 return self.run_compound_replay(view_id, clipboard, initial, ReplayPlan::Mapping(plan));
             }
@@ -5501,10 +5548,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 self.publish_buffer_commands(view_id);
                 return Ok(CoreOutcome {
                     command: Some(command),
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: false,
-                    composition_changes: Vec::new(),
+                    ..CoreOutcome::default()
                 });
             }
             CoreEvent::SetInlineProperty { expected, property, enabled } => {
@@ -5724,7 +5768,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                 )?;
                 if namespace == StyleNamespace::Character
                     && expected.range().is_empty()
-                    && style.0 != "Comment"
+                    && !style.is_comment()
                 {
                     self.document.validate_typing_named_style_at(self.views[&view_id].commands.cursor(),
                         if self.views[&view_id].commands.mode() == Mode::Normal { BoundaryAffinity::Downstream }
@@ -5996,13 +6040,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     // AppKit can lay out its unchanged surface after every key.
                     // A current viewport needs neither another shaping pass nor
                     // cancellation of useful intrinsic-width refinement.
-                    Ok(CoreOutcome {
-                        command: None,
-                        document_changed: false,
-                        position_map: None,
-                        layout_changed: false,
-                        composition_changes: Vec::new(),
-                    })
+                    Ok(CoreOutcome::default())
                 } else {
                     let caret = (view.commands.cursor(), view.commands.boundary_affinity());
                     let horizontal_focus = view
@@ -6104,11 +6142,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                     }
                     self.rematerialize_active_composition(view_id, true)?;
                     Ok(CoreOutcome {
-                        command: None,
-                        document_changed: false,
-                        position_map: None,
                         layout_changed: true,
-                        composition_changes: Vec::new(),
+                        ..CoreOutcome::default()
                     })
                 }
             }
@@ -6135,11 +6170,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                     self.rematerialize_active_composition(view_id, true)?;
                 }
                 Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
                     layout_changed: changed,
-                    composition_changes: Vec::new(),
+                    ..CoreOutcome::default()
                 })
             }
             CoreEvent::SetFindPattern(pattern) => {
@@ -6157,13 +6189,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     return Err(CoreError::NoVisualSelection);
                 }
                 self.publish_buffer_commands(view_id);
-                Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: false,
-                    composition_changes: Vec::new(),
-                })
+                Ok(CoreOutcome::default())
             }
             CoreEvent::RevealSelection => {
                 let mode = self
@@ -6197,24 +6223,19 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .expect("view remains attached after selection reveal")
                     .layout;
                 Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
                     layout_changed: layout.viewport_top() != before_top
                         || layout.viewport_left() != before_left
                         || layout.snapshot().map(|snapshot| snapshot.revision) != before_layout,
-                    composition_changes: Vec::new(),
+                    ..CoreOutcome::default()
                 })
             }
             CoreEvent::SetMarkdownAutodetect(enabled) => {
                 self.views.get_mut(&view_id).expect("view checked").commands.set_markdown_autodetect(enabled);
-                Ok(CoreOutcome { command: None, document_changed: false, position_map: None,
-                    layout_changed: false, composition_changes: Vec::new() })
+                Ok(CoreOutcome::default())
             }
             CoreEvent::SetSmartHome(enabled) => {
                 self.views.get_mut(&view_id).expect("view checked").commands.set_smart_home(enabled);
-                Ok(CoreOutcome { command: None, document_changed: false, position_map: None,
-                    layout_changed: false, composition_changes: Vec::new() })
+                Ok(CoreOutcome::default())
             }
             CoreEvent::SetSmartQuotes(enabled) => {
                 self.views
@@ -6222,13 +6243,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .expect("view checked")
                     .commands
                     .set_smart_quotes(enabled);
-                Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: false,
-                    composition_changes: Vec::new(),
-                })
+                Ok(CoreOutcome::default())
             }
             CoreEvent::SetLineMode(mode) => {
                 let view = self
@@ -6236,13 +6251,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .get_mut(&view_id)
                     .expect("view existence checked above");
                 view.commands.set_line_mode(&self.document, mode)?;
-                Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
-                    layout_changed: false,
-                    composition_changes: Vec::new(),
-                })
+                Ok(CoreOutcome::default())
             }
             CoreEvent::SetWrap(wrap) => {
                 let view = self
@@ -6265,11 +6274,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                 )?;
                 self.rematerialize_active_composition(view_id, true)?;
                 Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
                     layout_changed: true,
-                    composition_changes: Vec::new(),
+                    ..CoreOutcome::default()
                 })
             }
             CoreEvent::SetViewportOrigin { left, top } => {
@@ -6308,14 +6314,11 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .get_mut(&view_id)
                     .expect("view existence checked above");
                 Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
                     layout_changed: view.layout.viewport_left() != previous_left
                         || view.layout.viewport_top() != previous_top
                         || view.layout.snapshot().map(|snapshot| snapshot.revision)
                             != previous_layout_revision,
-                    composition_changes: Vec::new(),
+                    ..CoreOutcome::default()
                 })
             }
             event @ (CoreEvent::Input(_) | CoreEvent::InsertListParagraph { .. }) => {
@@ -6369,10 +6372,10 @@ impl<P: TextMeasurementProvider> Core<P> {
                                 target_view.layout.wrap(),
                                 viewport,
                             ).with_viewport_left(target_view.layout.viewport_left());
-                            let step = target_view.commands.handle_with_layout_for_core(
+                            let step = target_view.commands.handle_for_core(
                                 document,
                                 input,
-                                &mut context,
+                                Some(&mut context),
                                 clipboard_context.as_ref(),
                             )?;
                             Ok((step, context.viewport().top, context.viewport_command(), context.requested_viewport_left()))
@@ -6380,6 +6383,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             let step = target_view.commands.handle_for_core(
                                 document,
                                 input,
+                                None,
                                 clipboard_context.as_ref(),
                             )?;
                             Ok((step, old_viewport_top, false, None))
@@ -6405,10 +6409,8 @@ impl<P: TextMeasurementProvider> Core<P> {
                     target_view.layout.set_viewport_top(old_viewport_top)?;
                     return Ok(CoreOutcome {
                         command: Some(command),
-                        document_changed: false,
-                        position_map: None,
                         layout_changed: layout_is_stale,
-                        composition_changes: Vec::new(),
+                        ..CoreOutcome::default()
                     });
                 }
                 target_view.layout.set_viewport_top(viewport_top)?;
@@ -6481,14 +6483,13 @@ impl<P: TextMeasurementProvider> Core<P> {
                 let mut outcome = CoreOutcome {
                     command: Some(command),
                     document_changed: changed,
-                    position_map: None,
                     layout_changed: layout_is_stale
                         || changed
                         || option_layout_changed
                         || command_requests_relayout
                         || command_requests_reveal
                         || viewport_changed,
-                    composition_changes: Vec::new(),
+                    ..CoreOutcome::default()
                 };
                 let mut rebased = Vec::with_capacity(inactive_positions.len());
                 let mut change_offset = None;
@@ -7557,9 +7558,6 @@ impl<P: TextMeasurementProvider> Core<P> {
             .expect("view remains attached during serial dispatch")
             .composition_layout = None;
         Ok(CoreOutcome {
-            command: None,
-            document_changed: false,
-            position_map: None,
             layout_changed: true,
             composition_changes: vec![ViewCompositionChange {
                 view: view_id,
@@ -7568,6 +7566,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                     restoration,
                 },
             }],
+            ..CoreOutcome::default()
         })
     }
 
@@ -7619,14 +7618,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                     return Err(error);
                 }
                 Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
                     layout_changed: true,
                     composition_changes: vec![ViewCompositionChange {
                         view: view_id,
                         outcome: ViewCompositionOutcome::Began(overlay),
                     }],
+                    ..CoreOutcome::default()
                 })
             }
             CompositionEvent::Update(update) => {
@@ -7658,14 +7655,12 @@ impl<P: TextMeasurementProvider> Core<P> {
                     return Err(error);
                 }
                 Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
                     layout_changed: true,
                     composition_changes: vec![ViewCompositionChange {
                         view: view_id,
                         outcome: ViewCompositionOutcome::Updated(overlay),
                     }],
+                    ..CoreOutcome::default()
                 })
             }
             CompositionEvent::Cancel => {
@@ -7687,9 +7682,6 @@ impl<P: TextMeasurementProvider> Core<P> {
                     .expect("view remains attached during serial dispatch")
                     .composition_layout = None;
                 Ok(CoreOutcome {
-                    command: None,
-                    document_changed: false,
-                    position_map: None,
                     layout_changed: true,
                     composition_changes: vec![ViewCompositionChange {
                         view: view_id,
@@ -7698,6 +7690,7 @@ impl<P: TextMeasurementProvider> Core<P> {
                             restoration,
                         },
                     }],
+                    ..CoreOutcome::default()
                 })
             }
             CompositionEvent::Commit => self.commit_composition(view_id),
@@ -7872,11 +7865,11 @@ impl<P: TextMeasurementProvider> Core<P> {
         }
 
         Ok(CoreOutcome {
-            command: None,
             document_changed: changed,
             position_map: changed.then_some(exact_position_map),
             layout_changed: true,
             composition_changes,
+            ..CoreOutcome::default()
         })
     }
 }
@@ -8215,10 +8208,7 @@ fn rebase_replay_ex_normal_targets(
 fn replay_error_outcome(message: String) -> CoreOutcome {
     CoreOutcome {
         command: Some(CommandOutput::unsupported(message)),
-        document_changed: false,
-        position_map: None,
-        layout_changed: false,
-        composition_changes: Vec::new(),
+        ..CoreOutcome::default()
     }
 }
 
@@ -12766,6 +12756,22 @@ mod tests {
         core.handle(view, CoreEvent::Input(InputEvent::Key(Key::Escape)))
             .unwrap();
         assert_eq!(core.document().text(), "xbase");
+    }
+
+    #[test]
+    fn interpreter_position_and_history_errors_surface_as_typed_core_errors() {
+        assert!(matches!(
+            CoreError::from(DocumentError::Position(PositionError::ArithmeticOverflow)),
+            CoreError::Position(PositionError::ArithmeticOverflow)
+        ));
+        assert!(matches!(
+            CoreError::from(DocumentError::History(HistoryError::NotModifiable)),
+            CoreError::History(HistoryError::NotModifiable)
+        ));
+        assert!(matches!(
+            CoreError::from(DocumentError::VerificationFailed),
+            CoreError::Document(DocumentError::VerificationFailed)
+        ));
     }
 
     #[test]

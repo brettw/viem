@@ -36,10 +36,10 @@ pub(super) fn replacement_insertion(
             }
         }
     }
-    if inherited.paragraph.style.0 == "Code Block"
+    if inherited.paragraph.style.is_code_block()
         && document.projection().text_tree().byte_len() == 0
         && !document.projection().blocks_for_region(&(at..at)).iter()
-            .any(|block| block.style.0 == "Code Block")
+            .any(|block| block.style.is_code_block())
     {
         // Whole-document replacement cleared the original fence. Recreate
         // its paragraph role before inserting literal code, including syntax

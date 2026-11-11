@@ -3767,26 +3767,6 @@ impl ViewLayout {
         self.elided.step(line, count, forward, self.height_index.hard_line_count())
     }
 
-    fn height_index_for_snapshot(
-        &self,
-        snapshot: &LayoutSnapshot,
-    ) -> Result<ViewHeightIndex, ViewHeightIndexError> {
-        let heights = snapshot_hard_line_heights(snapshot)?;
-        let mut next = self.height_index.clone();
-        reconcile_height_index_count(&mut next, heights.len())?;
-        let mut measurements = heights.iter().map(|height| (*height, *height)).collect::<Vec<_>>();
-        let mut starts = Vec::with_capacity(heights.len());
-        let mut top = 0.;
-        for height in &heights { starts.push(top); top += height; }
-        for row in snapshot.rows.iter() {
-            if let Some((_, extent)) = measurements.get_mut(row.hard_line_index) {
-                *extent = extent.max(f64::from(row.reveal_bounds().end + snapshot.content_insets.bottom) - starts[row.hard_line_index]);
-            }
-        }
-        next.set_exact_heights_with_extents(0, &measurements)?;
-        Ok(next)
-    }
-
     fn clamp_viewport_top(&self, requested: f32) -> f32 {
         if self.has_shared_scroll_range() {
             let bound = self.vertical_bound();
@@ -4216,84 +4196,6 @@ fn reconcile_height_index_count(
         Ordering::Less => index.splice(old_count..old_count, new_count - old_count),
         Ordering::Equal => Ok(()),
     }
-}
-
-/// Convert full-document row geometry into exact hard-line bands. The first
-/// band owns the document's top contribution, gaps between hard lines belong
-/// to the preceding band, and the last band owns the bottom contribution.
-/// Consequently prefixes line up with the first visual row of every hard line
-/// and all bands sum to `LayoutSnapshot::total_height`.
-fn snapshot_hard_line_heights(snapshot: &LayoutSnapshot) -> Result<Vec<f64>, ViewHeightIndexError> {
-    if !snapshot.coverage.is_full_document() {
-        return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-            "partial snapshots cannot replace a complete height index",
-        ));
-    }
-    if !snapshot.total_height_is_exact {
-        return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-            "a partial layout cannot publish every hard-line height as exact",
-        ));
-    }
-    let total_height = f64::from(snapshot.total_height);
-    if !total_height.is_finite() || total_height <= 0.0 {
-        return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-            "total layout height must be finite and positive",
-        ));
-    }
-
-    let mut starts = Vec::new();
-    let mut current_hard_line = None;
-    for row in snapshot.rows.iter() {
-        if !row.y.is_finite() || row.y < 0.0 || !row.height().is_finite() || row.height() <= 0.0 {
-            return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-                "visual-row geometry must be finite, non-negative, and advancing",
-            ));
-        }
-        match current_hard_line {
-            None => {
-                if row.hard_line_index != 0 {
-                    return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-                        "hard-line row groups must begin at zero",
-                    ));
-                }
-                starts.push(f64::from(row.table_cell.as_ref().map_or(row.y, |cell| cell.rect.y)));
-                current_hard_line = Some(0usize);
-            }
-            Some(current) if row.hard_line_index == current => {}
-            Some(current) if row.hard_line_index == current.saturating_add(1) => {
-                starts.push(f64::from(row.table_cell.as_ref().map_or(row.y, |cell| cell.rect.y)));
-                current_hard_line = Some(row.hard_line_index);
-            }
-            Some(_) => {
-                return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-                    "hard-line row groups must be contiguous and ordered",
-                ));
-            }
-        }
-    }
-    if starts.is_empty() {
-        return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-            "a formatted document must have at least one hard-line row",
-        ));
-    }
-
-    let mut heights = Vec::with_capacity(starts.len());
-    for hard_line in 0..starts.len() {
-        let band_start = if hard_line == 0 {
-            0.0
-        } else {
-            starts[hard_line]
-        };
-        let band_end = starts.get(hard_line + 1).copied().unwrap_or(total_height);
-        let height = band_end - band_start;
-        if !height.is_finite() || height <= 0.0 {
-            return Err(ViewHeightIndexError::InconsistentLayoutSnapshot(
-                "hard-line vertical bands must be finite, ordered, and non-empty",
-            ));
-        }
-        heights.push(height);
-    }
-    Ok(heights)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -4840,41 +4742,54 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         }
     }
 
+    /// Lay out the whole document now, through the same job pipeline that
+    /// serves a viewport. Work is proportional to the document, so this is for
+    /// headless callers and tests; a frontend view schedules bounded jobs.
     pub fn relayout(
         &mut self,
         document: &Document,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
-        self.prepare_indent_alignment((view.whitespace.options.align_indents_to_previous_line && document.format().is_code())
-            .then(|| Arc::new(document.projection().clone())), view.indent_index.clone(), view.whitespace.tabstop);
-        let document_styles = DocumentLayoutStyles::resolve_region_for_presentation(document.projection(), 0..document.projection().text_tree().byte_len(), view.presentation_overlays(document.id(), document.revision()), document.format())?;
-        let hard_lines = (0..document.projection().presentation_line_count())
-            .filter_map(|index| document.projection().presentation_line_range(index))
-            .collect::<Vec<_>>();
-        self.relayout_text_with_document_styles_and_hard_lines(
-            document.id(),
-            document.revision(),
-            document.text(),
-            &hard_lines,
-            view,
-            Some(document_styles),
-        )?;
-        view.indent_index = self.indent_alignment.snapshot.clone();
-        Ok(())
+        self.lay_out_whole(view, (document.id(), document.revision()), |view, requirements, job| {
+            super::jobs::prepare_whole_document_layout_job(document, view, requirements, job)
+        })
     }
 
-    /// Snapshot-oriented entry point useful to background jobs and unit tests.
-    /// Lacking an owning projection, this compatibility API interprets each
-    /// U+000A in `text` as an explicit hard-line boundary. Document-backed
-    /// layout uses the projection's authoritative semantic hard-line index.
-    pub fn relayout_text(
+    fn lay_out_whole(
         &mut self,
-        document_id: DocumentId,
-        document_revision: Revision,
-        text: &str,
         view: &mut ViewLayout,
+        (document_id, document_revision): (DocumentId, Revision),
+        prepare: impl FnOnce(
+            &mut ViewLayout,
+            super::jobs::LayoutProviderRequirements,
+            super::jobs::LayoutJobId,
+        ) -> Result<super::jobs::LayoutJobRequest, super::jobs::LayoutJobError>,
     ) -> Result<(), LayoutError> {
-        self.relayout_text_with_document_styles(document_id, document_revision, text, view, None)
+        use super::jobs::{
+            compute_layout_job, inspect_layout_provider, install_layout_job, LayoutExecutionContext,
+            LayoutInstallTarget, LayoutJobError, LayoutJobId,
+        };
+        let job_error = |error| match error {
+            LayoutJobError::Layout(error) => error,
+            error => panic!("whole-document layout job failed: {error:?}"),
+        };
+        let requirements = inspect_layout_provider(self);
+        // This layout is outside the caller's job sequence: it borrows the
+        // next identifier and returns it, so later jobs keep their numbering.
+        let installed = view.last_installed_layout_job;
+        let newest = view.active_layout_job().into_iter().chain(installed).max();
+        let job = LayoutJobId(newest.map_or(1, |newest| newest.0 + 1));
+        let request = prepare(view, requirements, job).map_err(job_error)?;
+        let candidate = compute_layout_job(self, &request, LayoutExecutionContext::FrontendMainThread)
+            .map_err(job_error)?;
+        install_layout_job(view, LayoutInstallTarget {
+            document_id,
+            document_revision,
+            measurement_environment_id: requirements.measurement_environment_id,
+            metrics_generation: requirements.metrics_generation,
+        }, candidate).unwrap_or_else(|rejection| panic!("whole-document layout was rejected: {rejection:?}"));
+        view.last_installed_layout_job = installed;
+        Ok(())
     }
 
     /// Snapshot-oriented entry point for a normalized projection whose style
@@ -4890,40 +4805,12 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         document_styles: DocumentLayoutStyles,
         view: &mut ViewLayout,
     ) -> Result<(), LayoutError> {
-        self.relayout_text_with_document_styles(
-            document_id,
-            document_revision,
-            text,
-            view,
-            Some(document_styles),
-        )
-    }
-
-    /// Build and install one immutable snapshot using cooperative cancellation.
-    /// The view is changed only after all shaping and positioning succeeds and
-    /// the final cancellation checkpoint passes. Completed shaping fragments
-    /// may remain in the engine cache so a later revision-compatible request
-    /// can reuse them.
-    pub fn relayout_styled_text_cancellable(
-        &mut self,
-        document_id: DocumentId,
-        document_revision: Revision,
-        text: &str,
-        document_styles: DocumentLayoutStyles,
-        view: &mut ViewLayout,
-        cancellation: &dyn LayoutCancellationProbe,
-    ) -> Result<(), LayoutComputationError> {
-        let control = LayoutRunControl::cancellable(cancellation);
-        let hard_lines = hard_line_ranges_cancellable(text, 0, &control)?;
-        self.relayout_text_with_document_styles_controlled(
-            document_id,
-            document_revision,
-            text,
-            &hard_lines,
-            view,
-            Some(document_styles),
-            &control,
-        )
+        let lines = hard_line_ranges(text, 0);
+        self.lay_out_whole(view, (document_id, document_revision), |view, requirements, job| {
+            super::jobs::prepare_styled_text_layout_job(
+                (document_id, document_revision), text, lines, document_styles, view, requirements, job,
+            )
+        })
     }
 
     /// Compute exact layout for a bounded, contiguous hard-line region. The
@@ -5771,561 +5658,6 @@ impl<P: TextMeasurementProvider> LayoutEngine<P> {
         control.checkpoint()?;
         self.next_layout_revision = layout_revision.0.wrapping_add(1).max(1);
         Ok(result)
-    }
-
-    fn relayout_text_with_document_styles(
-        &mut self,
-        document_id: DocumentId,
-        document_revision: Revision,
-        text: &str,
-        view: &mut ViewLayout,
-        document_styles: Option<DocumentLayoutStyles>,
-    ) -> Result<(), LayoutError> {
-        let hard_lines = hard_line_ranges(text, 0);
-        self.relayout_text_with_document_styles_and_hard_lines(
-            document_id,
-            document_revision,
-            text,
-            &hard_lines,
-            view,
-            document_styles,
-        )
-    }
-
-    fn relayout_text_with_document_styles_and_hard_lines(
-        &mut self,
-        document_id: DocumentId,
-        document_revision: Revision,
-        text: &str,
-        hard_lines: &[Range<usize>],
-        view: &mut ViewLayout,
-        document_styles: Option<DocumentLayoutStyles>,
-    ) -> Result<(), LayoutError> {
-        let cancellation = NeverCancelled;
-        let control = LayoutRunControl::synchronous(&cancellation);
-        match self.relayout_text_with_document_styles_controlled(
-            document_id,
-            document_revision,
-            text,
-            hard_lines,
-            view,
-            document_styles,
-            &control,
-        ) {
-            Ok(()) => Ok(()),
-            Err(LayoutComputationError::Layout(error)) => Err(error),
-            Err(LayoutComputationError::Cancelled) => {
-                unreachable!("the synchronous layout probe never cancels")
-            }
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn relayout_text_with_document_styles_controlled(
-        &mut self,
-        document_id: DocumentId,
-        document_revision: Revision,
-        text: &str,
-        hard_lines: &[Range<usize>],
-        view: &mut ViewLayout,
-        document_styles: Option<DocumentLayoutStyles>,
-        control: &LayoutRunControl<'_>,
-    ) -> Result<(), LayoutComputationError> {
-        control.checkpoint()?;
-        let default_style = if view.default_style_is_override {
-            view.default_style.clone()
-        } else {
-            document_styles.as_ref().map_or_else(
-                || view.default_style.clone(),
-                |styles| styles.default_shaping_style.clone(),
-            )
-        };
-        let style_runs = if view.style_runs_are_override {
-            view.style_runs.as_ref().clone()
-        } else {
-            document_styles.as_ref().map_or_else(
-                || view.style_runs.as_ref().clone(),
-                |styles| styles.shaping_runs.clone(),
-            )
-        };
-        let document_insets = document_styles
-            .as_ref()
-            .map_or_else(EdgeInsets::default, |styles| styles.document_insets);
-        let content_insets = add_insets(view.insets, document_insets);
-        let usable_width = usable_width(view.width, content_insets);
-        let document_style_revision = document_styles
-            .as_ref()
-            .map(|styles| styles.style_sheet_revision);
-        let canvas_background = document_styles.as_ref().map_or_else(
-            || Color {
-                red: 1.0,
-                green: 1.0,
-                blue: 1.0,
-                alpha: 1.0,
-            },
-            |styles| styles.canvas_background,
-        );
-        let canvas_background_is_default = document_styles
-            .as_ref()
-            .map_or(true, |styles| styles.canvas_background_is_default);
-        let default_paint = document_styles
-            .as_ref()
-            .map_or_else(ResolvedTextPaint::default, |styles| {
-                styles.default_paint.clone()
-            });
-        let mut paint_runs = document_styles
-            .as_ref()
-            .map_or_else(Vec::new, |styles| styles.paint_runs.clone());
-        let paragraph_styles = document_styles
-            .as_ref()
-            .map_or_else(Vec::new, |styles| styles.paragraphs.clone());
-
-        validate_style_runs_for_text(&style_runs, text)?;
-        if !default_style.is_valid() {
-            return Err(LayoutError::InvalidStyle.into());
-        }
-
-        validate_hard_line_ranges(text, hard_lines, control)?;
-        let measurement_environment_id = self.provider.measurement_environment_id();
-        let metrics_generation = self.provider.metrics_generation();
-        let mut line_paragraphs = Vec::with_capacity(hard_lines.len());
-        for line in hard_lines {
-            control.checkpoint()?;
-            line_paragraphs.push(resolve_flow_line_paragraph(
-                line,
-                &paragraph_styles,
-                &default_style,
-                document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()),
-            )?);
-        }
-        let fragment_ranges: Vec<Vec<Range<usize>>> = hard_lines
-            .iter()
-            .map(|line| if document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()).is_some_and(|context| context.contains_line(line)) {
-                Ok(Vec::new())
-            } else { fragment_range_at_graphemes(text, line.clone(), control) })
-            .collect::<Result<_, _>>()?;
-        let mut flat_fragment_ranges = Vec::new();
-        let mut fragment_default_styles = Vec::new();
-        let mut fragment_base_directions = Vec::new();
-        let mut fragment_line_bounds = Vec::new();
-        for ((ranges, paragraph), line) in
-            fragment_ranges.iter().zip(&line_paragraphs).zip(hard_lines)
-        {
-            let style = if view.default_style_is_override {
-                &default_style
-            } else {
-                &paragraph.style.default_shaping_style
-            };
-            let direction = if paragraph_is_right_to_left(&paragraph.style, &text[line.clone()], line.start) {
-                TextDirection::RightToLeft
-            } else { TextDirection::LeftToRight };
-            for (index, range) in ranges.iter().enumerate() {
-                if index % MAX_CANCELLABLE_SHAPE_BATCH_FRAGMENTS == 0 {
-                    control.checkpoint()?;
-                }
-                flat_fragment_ranges.push(range.clone());
-                fragment_default_styles.push(style.clone());
-                fragment_base_directions.push(direction);
-                fragment_line_bounds.push(line.clone());
-            }
-        }
-        let shaped = self.shape_ranges(
-            document_id,
-            document_revision,
-            text,
-            &flat_fragment_ranges,
-            &fragment_line_bounds,
-            &style_runs,
-            document_styles.as_ref().map_or(&[], |styles| styles.inline_images.as_slice()),
-            &fragment_default_styles,
-            &fragment_base_directions,
-            view.scale,
-            measurement_environment_id,
-            metrics_generation,
-            control,
-        )?;
-
-        control.checkpoint()?;
-        if self.provider.measurement_environment_id() != measurement_environment_id {
-            return Err(LayoutError::MeasurementEnvironmentChangedDuringShape.into());
-        }
-        if self.provider.metrics_generation() != metrics_generation {
-            return Err(LayoutError::MetricsChangedDuringShape.into());
-        }
-
-        let layout_revision = LayoutRevision(view.snapshot.as_ref().map_or(
-            self.next_layout_revision,
-            |snapshot| {
-                self.next_layout_revision
-                    .max(snapshot.revision.0.wrapping_add(1).max(1))
-            },
-        ));
-        let mut diagnostics: Vec<_> = shaped
-            .iter()
-            .flat_map(|fragment| fragment.diagnostics.iter().cloned())
-            .collect();
-        let mut fragment_cursor = 0;
-        if let Some(styles) = &document_styles {
-            diagnostics.extend(styles.recovery_diagnostic.iter().cloned());
-        }
-        let whitespace_style = document_styles.as_ref().map_or(&default_style, |styles| &styles.whitespace_shaping_style);
-        let whitespace_unit = whitespace_style.size * view.scale * 0.5;
-        let whitespace_view = view.capture_layout_job_with_style_runs(Vec::new());
-        let mut rows = Vec::new();
-        let mut y = content_insets.top;
-        let mut previous_paragraph_index = None;
-        let mut previous_style: Option<&ParagraphLayoutStyle> = None;
-        let mut previous_row_start = None;
-        let mut resolved_gaps = vec![0.; hard_lines.len()];
-        let mut line_directions = Vec::with_capacity(hard_lines.len());
-        let mut has_previous_paragraph = false;
-        if let Some(context) = document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()) {
-            for (index, range) in hard_lines.iter().enumerate() {
-                if context.contains_line(range) {
-                    self.table_line(context, range, document_id, document_revision, &whitespace_view,
-                        index, layout_revision, content_insets, &line_paragraphs[index].style, 0., true, control)?;
-                }
-            }
-        }
-
-        for (hard_line_index, line_range) in hard_lines.iter().enumerate() {
-            control.checkpoint()?;
-            let paragraph = &line_paragraphs[hard_line_index];
-            let begins_paragraph = !has_previous_paragraph
-                || paragraph.paragraph_index.is_none()
-                || paragraph.paragraph_index != previous_paragraph_index;
-            if begins_paragraph {
-                let (position, limited) = block_box::editable_flow_position(previous_row_start,
-                    y + previous_style.map_or_else(|| block_box::before(&paragraph.style), |previous| block_box::between(previous, &paragraph.style)) * view.scale, view.scale);
-                if hard_line_index > 0 { resolved_gaps[hard_line_index - 1] = position - y; }
-                y = position;
-                if limited { diagnostics.push(ShapingDiagnostic { text_range: line_range.clone(), message: block_box::REVERSE_FLOW_DIAGNOSTIC.into() }); }
-            }
-            previous_paragraph_index = paragraph.paragraph_index;
-            previous_style = Some(&paragraph.style);
-            has_previous_paragraph = true;
-            if let Some(context) = document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()) {
-                if let Some((mut table_rows, height)) = self.table_line(context, line_range, document_id,
-                    document_revision, &whitespace_view, hard_line_index, layout_revision, content_insets, &paragraph.style, y, true, control)? {
-                    y += height;
-                    previous_row_start = table_rows.last().map(|row| row.y);
-                    rows.append(&mut table_rows);
-                    line_directions.push(paragraph.style.base_direction == WritingDirection::RightToLeft);
-                    continue;
-                }
-            }
-            let count = fragment_ranges[hard_line_index].len();
-            let line_fragments = &shaped[fragment_cursor..fragment_cursor + count];
-            fragment_cursor += count;
-            let (mut clusters, empty_metrics) =
-                flatten_line_fragments(line_range, line_fragments, control)?;
-            let line_default_style = if view.default_style_is_override {
-                &default_style
-            } else {
-                &paragraph.style.default_shaping_style
-            };
-            let (_, _, tab_units) = self.layout_whitespace_clusters(&mut clusters, text, 0, &view.whitespace, whitespace_unit,
-                if view.default_style_is_override { &default_style } else { &paragraph.style.default_shaping_style }, &style_runs,
-                view.scale, document_id, document_revision, control, true, 0.0)?;
-            self.align_indent_clusters(&mut clusters, line_range.start, &whitespace_view,
-                whitespace_style, document_id, document_revision, control)?;
-            let right_to_left = paragraph_is_right_to_left(
-                &paragraph.style,
-                &text[line_range.clone()],
-                line_range.start,
-            );
-            line_directions.push(right_to_left);
-            let (paragraph_first_box, continuation_box) = paragraph_row_boxes(
-                content_insets.left,
-                usable_width,
-                &paragraph.style,
-                right_to_left,
-                view.scale,
-            );
-            fit_inline_images(&mut clusters,
-                document_styles.as_ref().map_or(&[], |styles| styles.inline_images.as_slice()),
-                continuation_box.width, view.scale);
-            let first_row_box = if paragraph.is_first_hard_line {
-                list_first_row_box(
-                    paragraph_first_box,
-                    continuation_box,
-                    &paragraph.style,
-                    &clusters,
-                    right_to_left,
-                )
-            } else {
-                continuation_box
-            };
-            let continuation_box = if view.wrap && view.whitespace.format.is_code() {
-                let leading = whitespace_geometry::leading_indent_advance(&clusters, text, 0);
-                let extra = self.code_wrap_extra_indent(line_range.start, &whitespace_view,
-                    whitespace_style, line_default_style, &style_runs,
-                    document_id, document_revision, control)?;
-                let indent = (leading + f64::from(extra)) as f32;
-                if !indent.is_finite() {
-                    return Err(LayoutError::InvalidGeometry.into());
-                }
-                code_continuation_box(continuation_box, indent, right_to_left)
-            } else {
-                continuation_box
-            };
-            let breaks = if view.wrap {
-                line_break_opportunities(
-                    &text[line_range.clone()],
-                    line_range.start,
-                    WrapBreakState::new(view.whitespace.format.is_code()),
-                    control,
-                )?
-            } else {
-                BTreeSet::new()
-            };
-            let row_cluster_ranges = wrap_cluster_ranges(
-                &clusters,
-                first_row_box.width,
-                continuation_box.width,
-                view.wrap,
-                &breaks,
-                control,
-            )?;
-
-            if clusters.is_empty() {
-                let row_index = rows.len();
-                let line_advance =
-                    line_advance(empty_metrics.height(), paragraph.style.line_spacing);
-                let x = aligned_row_x(first_row_box, 0.0, paragraph.style.alignment, right_to_left);
-                let point_downstream = CaretPoint {
-                    document_id,
-                    document_revision,
-                    layout_revision,
-                    text_offset: line_range.start,
-                    affinity: BoundaryAffinity::Downstream,
-                };
-                let point_upstream = CaretPoint {
-                    affinity: BoundaryAffinity::Upstream,
-                    ..point_downstream
-                };
-                rows.push(VisualRow {
-                    table_cell: None,
-                    table_widths_are_exact: None,
-                    paragraph_id: paragraph.paragraph_id,
-                    hard_line_index,
-                    fragment_index: 0,
-                    hard_line_range: line_range.clone(),
-                    text_range: line_range.clone(),
-                    y,
-                    baseline: y + empty_metrics.ascent,
-                    ascent: empty_metrics.ascent,
-                    descent: empty_metrics.descent,
-                    leading: empty_metrics.leading,
-                    line_advance,
-                    width: 0.0,
-                    paragraph_content_x: first_row_box.x,
-                    paragraph_content_width: first_row_box.width,
-                    wrapped_from_previous: false,
-                    wraps_to_next: false,
-                    clusters: Vec::new(),
-                    decorations: Vec::new(),
-                    carets: vec![
-                        PositionedCaret {
-                            point: point_downstream.into(),
-                            x,
-                            row_index,
-                        },
-                        PositionedCaret {
-                            point: point_upstream.into(),
-                            x,
-                            row_index,
-                        },
-                    ],
-                });
-                if paragraph.is_first_hard_line {
-                    self.decorate_list_row(
-                        rows.last_mut().unwrap(),
-                        &paragraph.style,
-                        right_to_left,
-                        document_id,
-                        document_revision,
-                        view.default_style_is_override
-                            .then_some(&view.default_style),
-                        view.scale,
-                        measurement_environment_id,
-                        metrics_generation,
-                        control,
-                    )?;
-                }
-                decorate_quote_row(rows.last_mut().unwrap(), &paragraph.style, view.scale);
-                y += rows.last().unwrap().height();
-                previous_row_start = rows.last().map(|row| row.y);
-                continue;
-            }
-
-            for (row_in_line, cluster_range) in row_cluster_ranges.iter().enumerate() {
-                control.checkpoint()?;
-                let logical_clusters = &clusters[cluster_range.clone()];
-                let row_box = if row_in_line == 0 {
-                    first_row_box
-                } else {
-                    continuation_box
-                };
-                let mut row = position_row(
-                    logical_clusters,
-                    paragraph.paragraph_id,
-                    row_box,
-                    paragraph.style.alignment,
-                    right_to_left,
-                    paragraph.style.line_spacing,
-                    hard_line_index,
-                    line_range.clone(),
-                    rows.len(),
-                    row_in_line,
-                    row_cluster_ranges.len(),
-                    y,
-                    document_id,
-                    document_revision,
-                    layout_revision,
-                    control,
-                )?;
-                attach_whitespace_units(&mut row, &tab_units);
-                if paragraph.is_first_hard_line && row_in_line == 0 {
-                    self.decorate_list_row(
-                        &mut row,
-                        &paragraph.style,
-                        right_to_left,
-                        document_id,
-                        document_revision,
-                        view.default_style_is_override
-                            .then_some(&view.default_style),
-                        view.scale,
-                        measurement_environment_id,
-                        metrics_generation,
-                        control,
-                    )?;
-                }
-                decorate_quote_row(&mut row, &paragraph.style, view.scale);
-                y += row.height();
-                rows.push(row);
-            }
-            previous_row_start = rows.last().map(|row| row.y);
-        }
-
-        if self.provider.measurement_environment_id() != measurement_environment_id {
-            return Err(LayoutError::MeasurementEnvironmentChangedDuringShape.into());
-        }
-        if self.provider.metrics_generation() != metrics_generation {
-            return Err(LayoutError::MetricsChangedDuringShape.into());
-        }
-        let mut decorated_table_line = None;
-        let mut hard_line_text_insets = BTreeMap::new();
-        let mut plan: Option<(usize, BlockDecorationPlan)> = None;
-        for row in &mut rows {
-            if document_styles.as_ref().and_then(|styles| styles.table_context.as_ref()).is_some_and(|context| context.contains_line(&row.hard_line_range)) {
-                if row.table_cell.is_none() || decorated_table_line == Some(row.hard_line_index) { continue; }
-                decorated_table_line = Some(row.hard_line_index);
-            }
-            let paragraph = &line_paragraphs[row.hard_line_index];
-            if plan.as_ref().is_none_or(|(line, _)| *line != row.hard_line_index) {
-                plan = Some((row.hard_line_index, BlockDecorationPlan::new(&paragraph.style,
-                    content_insets.left, usable_width, view.scale, line_directions[row.hard_line_index])));
-            }
-            let (_, paragraph_plan) = plan.as_ref().expect("current paragraph plan");
-            decorate_block_row_with(row, &paragraph.style, paragraph_plan, resolved_gaps[row.hard_line_index]);
-            self.shape_alert_titles(row, &paragraph.style, document_id, document_revision, view.scale, control)?;
-        }
-        y = document_end_extent(
-            y,
-            rows.last(),
-            previous_style.map_or(0., block_box::after) * view.scale,
-            content_insets.bottom,
-        );
-        if let Some(last) = rows.last().filter(|row| row.table_cell.is_none()) {
-            // Other line boundaries can recover their nonnegative gap from
-            // local style inputs. Only the document end needs retained ink
-            // overflow and canvas spacing, independent of document length.
-            hard_line_text_insets.insert(last.hard_line_index, HardLineTextInsets {
-                before: if last.hard_line_index == 0 { rows[0].y } else { 0. },
-                after: y - last.y - last.height(),
-                after_is_exact: true,
-            });
-        }
-        let row_content_widths = rows
-            .iter()
-            .map(|row| content_width_from_row(row, view.width))
-            .collect::<Vec<_>>();
-        let content_width = row_content_widths
-            .iter()
-            .copied()
-            .fold(view.width, f32::max);
-        normalize_search_paint(
-            &mut paint_runs,
-            &default_paint,
-            rows.iter().flat_map(|row| &row.clusters).map(|cluster| &cluster.text_range),
-            document_styles.as_ref().and_then(|styles| styles.search_paint_overlay.as_ref()),
-        );
-        y = rows.iter().map(|row| row.reveal_bounds().end + content_insets.bottom)
-            .fold(y, f32::max);
-        for (index, row) in rows.iter_mut().enumerate() {
-            for caret in &mut row.carets { caret.row_index = index; }
-        }
-        let default_row_advance = self.default_row_advance(
-            document_id, document_revision,
-            if view.default_style_is_override { &default_style } else {
-                document_styles.as_ref().map_or(&default_style, |styles| &styles.whitespace_shaping_style)
-            },
-            document_styles.as_ref().map_or(LineSpacing::Normal, |styles| styles.default_line_spacing),
-            view.scale, measurement_environment_id, metrics_generation, control,
-        )?;
-        let snapshot = LayoutSnapshot {
-            table_navigation: tables::TableNavigationIndex::new(&rows),
-        table_cells: tables::collect_cells(&rows),
-            tables: tables::collect_tables(&rows),
-            whitespace_unit,
-            default_row_advance,
-            default_font_metrics: self.default_font_metrics.clone(),
-            hard_line_text_insets,
-            revision: layout_revision,
-            document_id,
-            document_revision,
-            configuration_generation: view.configuration_generation,
-            measurement_environment_id,
-            metrics_generation,
-            viewport_width: view.width,
-            viewport_height: view.height,
-            usable_width,
-            content_insets,
-            document_insets,
-            document_style_revision,
-            canvas_background,
-            canvas_background_is_default,
-            default_paint,
-            paint_runs,
-            coverage: LayoutCoverage::FullDocument {
-                hard_line_count: hard_lines.len(),
-            },
-            row_intervals: super::row_intervals::RowIntervalIndex::new(rows.iter().map(|row| (row.y, row.y + row.height()))),
-            rows: Arc::new(rows),
-            content_width,
-            content_width_is_exact: true,
-            row_content_widths,
-            total_height: y,
-            total_height_is_exact: true,
-            diagnostics,
-            text_len: text.len(),
-            grapheme_boundaries: logical_grapheme_boundaries(text, 0, control)?,
-            horizontal_materialization: None,
-        };
-        let height_index = view
-            .height_index_for_snapshot(&snapshot)
-            .map_err(LayoutError::from)?;
-        control.checkpoint()?;
-        self.next_layout_revision = layout_revision.0.wrapping_add(1).max(1);
-        view.snapshot = Some(snapshot);
-        view.height_index = height_index;
-        view.regional_cache = view.regional_cache.replacement(None);
-        view.viewport_top = view.clamp_viewport_top(view.viewport_top);
-        view.viewport_left = view.clamp_viewport_left(view.viewport_left);
-        view.last_error = None;
-        view.active_layout_job = None;
-        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -7192,14 +6524,6 @@ fn fit_inline_images(clusters: &mut [ShapedCluster], images: &[ShapeInlineImage]
         }
         for caret in &mut cluster.caret_stops { caret.inline_offset *= horizontal; }
     }
-}
-
-fn flatten_line_fragments(
-    line_range: &Range<usize>,
-    fragments: &[ShapedFragment],
-    control: &LayoutRunControl<'_>,
-) -> Result<(Vec<ShapedCluster>, TextMetrics), LayoutComputationError> {
-    flatten_line_fragments_for_slice(line_range, fragments, false, control)
 }
 
 fn flatten_line_fragments_for_slice(
@@ -8156,49 +7480,6 @@ fn boundaries_in_ordered_ranges(
     Ok(selected)
 }
 
-fn validate_hard_line_ranges(
-    text: &str,
-    lines: &[Range<usize>],
-    control: &LayoutRunControl<'_>,
-) -> Result<(), LayoutComputationError> {
-    control.checkpoint()?;
-    if lines.is_empty()
-        || lines.first().map(|line| line.start) != Some(0)
-        || lines.last().map(|line| line.end) != Some(text.len())
-    {
-        return Err(
-            LayoutError::MalformedMeasurement("hard lines do not cover the complete text").into(),
-        );
-    }
-    for line in lines {
-        control.checkpoint()?;
-        if line.start > line.end
-            || line.end > text.len()
-            || !text.is_char_boundary(line.start)
-            || !text.is_char_boundary(line.end)
-        {
-            return Err(LayoutError::MalformedMeasurement(
-                "hard-line range is not a valid UTF-8 text range",
-            )
-            .into());
-        }
-    }
-    for pair in lines.windows(2) {
-        control.checkpoint()?;
-        let separator = pair[0].end..pair[1].start;
-        if separator.start > separator.end
-            || separator.end > text.len()
-            || text.get(separator.clone()) != Some("\n")
-        {
-            return Err(LayoutError::MalformedMeasurement(
-                "adjacent hard lines lack one explicit U+000A break item",
-            )
-            .into());
-        }
-    }
-    Ok(())
-}
-
 fn fragment_range_at_graphemes(
     text: &str,
     range: Range<usize>,
@@ -8314,29 +7595,6 @@ fn validate_style_runs_structure(style_runs: &[ShapeStyleRun]) -> Result<(), Lay
             });
         }
         previous_end = run.text_range.end;
-    }
-    Ok(())
-}
-
-fn validate_style_runs_for_text(
-    style_runs: &[ShapeStyleRun],
-    text: &str,
-) -> Result<(), LayoutError> {
-    validate_style_runs_structure(style_runs)?;
-    let grapheme_boundaries: BTreeSet<usize> = std::iter::once(0)
-        .chain(text.grapheme_indices(true).map(|(offset, _)| offset))
-        .chain(std::iter::once(text.len()))
-        .collect();
-    for (index, run) in style_runs.iter().enumerate() {
-        if run.text_range.end > text.len()
-            || !grapheme_boundaries.contains(&run.text_range.start)
-            || !grapheme_boundaries.contains(&run.text_range.end)
-        {
-            return Err(LayoutError::InvalidStyleRun {
-                index,
-                reason: "style run is outside text or splits UTF-8",
-            });
-        }
     }
     Ok(())
 }
@@ -8919,13 +8177,9 @@ mod tests {
             .any(|cluster| { cluster.text_range == (second_literal_lf..second_literal_lf + 1) }));
 
         let mut raw_view = ViewLayout::new(1_000.0, 200.0);
+        let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
         engine
-            .relayout_text(
-                document.id(),
-                document.revision(),
-                document.text(),
-                &mut raw_view,
-            )
+            .relayout_styled_text(document.id(), document.revision(), document.text(), styles, &mut raw_view)
             .unwrap();
         assert_eq!(raw_view.snapshot().unwrap().rows.len(), 4);
     }
@@ -9411,7 +8665,6 @@ mod tests {
         let (document, mut engine, mut view) = lay_out("one\ntwo\nthree", 200.0);
         let measured_height = view.content_height();
         assert!(measured_height.is_exact());
-        assert!(view.regional_cache.identity.is_none());
 
         view.resize(200.0, 20.0);
         let region = lay_out_regional_line(&mut engine, &document, &view, 0);
@@ -10210,7 +9463,6 @@ mod tests {
 
     #[test]
     fn shaped_payload_budgets_bound_repeated_large_document_regions() {
-        let document = Document::new("");
         let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
         let mut view = ViewLayout::new(600.0, 100.0);
         let budget = 2 * 1024 * 1024;
@@ -10221,7 +9473,7 @@ mod tests {
         for region in 0..256 {
             let mut text = format!("region {region:04} ");
             text.push_str(&"AV fi word ".repeat(410));
-            engine.relayout_text(document.id(), document.revision(), &text, &mut view).unwrap();
+            engine.relayout(&Document::new(text), &mut view).unwrap();
             let statistics = engine.shaping_cache_statistics();
             assert!(statistics.estimated_bytes <= budget);
             assert!(statistics.fragment_count > 0);
@@ -10513,9 +9765,10 @@ mod tests {
             legacy_tail_contract_request.text,
         )
         .unwrap();
-        flatten_line_fragments(
+        flatten_line_fragments_for_slice(
             &(10..12),
             &[legacy_head, legacy_tail],
+            false,
             &LayoutRunControl::synchronous(&NeverCancelled),
         )
         .unwrap();
@@ -10569,9 +9822,10 @@ mod tests {
         };
         let duplicate_next = provider.shape_batch(&[next_request]).unwrap().remove(0);
         assert!(matches!(
-            flatten_line_fragments(
+            flatten_line_fragments_for_slice(
                 &(10..12),
                 &[valid.clone(), duplicate_next],
+                false,
                 &LayoutRunControl::synchronous(&NeverCancelled),
             ),
             Err(LayoutComputationError::Layout(
@@ -10605,59 +9859,4 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn cancellation_during_positioning_keeps_the_previous_snapshot_atomic() {
-        struct CancelAfterPolls {
-            cancel_at: usize,
-            polls: std::cell::Cell<usize>,
-        }
-
-        impl LayoutCancellationProbe for CancelAfterPolls {
-            fn is_cancelled(&self) -> bool {
-                let polls = self.polls.get() + 1;
-                self.polls.set(polls);
-                polls >= self.cancel_at
-            }
-        }
-
-        let line_count = 5_000;
-        let document = Document::new(vec!["x"; line_count].join("\n"));
-        let mut engine = LayoutEngine::new(crate::layout::MockTextMeasurementProvider::new());
-        engine.set_cache_capacity(line_count + 1);
-        let mut view = ViewLayout::new(100.0, 100.0);
-        engine.relayout(&document, &mut view).unwrap();
-        let original = view.snapshot().unwrap().clone();
-        let original_height = view.content_height();
-        let shape_requests = engine.provider().request_calls();
-
-        // With every fragment cached, shaping performs at most one poll per
-        // cancellable batch plus its boundary polls. This threshold therefore
-        // lets positioning begin, but is far below the work needed for every
-        // hard line.
-        let shape_poll_upper_bound = (line_count + MAX_CANCELLABLE_SHAPE_BATCH_FRAGMENTS - 1)
-            / MAX_CANCELLABLE_SHAPE_BATCH_FRAGMENTS
-            + 3;
-        let probe = CancelAfterPolls {
-            cancel_at: 500,
-            polls: std::cell::Cell::new(0),
-        };
-        assert!(probe.cancel_at > shape_poll_upper_bound);
-        let styles = DocumentLayoutStyles::resolve(document.projection()).unwrap();
-
-        assert_eq!(
-            engine.relayout_styled_text_cancellable(
-                document.id(),
-                document.revision(),
-                document.text(),
-                styles,
-                &mut view,
-                &probe,
-            ),
-            Err(LayoutComputationError::Cancelled)
-        );
-        assert_eq!(probe.polls.get(), probe.cancel_at);
-        assert_eq!(engine.provider().request_calls(), shape_requests);
-        assert_eq!(view.snapshot(), Some(&original));
-        assert_eq!(view.content_height(), original_height);
-    }
 }

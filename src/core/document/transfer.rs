@@ -121,7 +121,7 @@ pub(crate) fn plan(
         else { snapshot.text_length() };
     let literal_boundary = document.format().is_markdown()
         && document.projection().blocks_for_region(&(origin..origin)).iter().any(|block|
-            block.style.0 == "Code Block" && block.range.start <= origin && origin <= block.range.end
+            block.style.is_code_block() && block.range.start <= origin && origin <= block.range.end
                 && block.range.start <= destination_at && destination_at <= block.range.end);
     let mut boundary = document
         .encoding()
@@ -546,7 +546,7 @@ fn projected_markdown_rows(document: &Document, required: &std::collections::BTr
         }
         if let Some(block) = projection.blocks_for_region(&range).into_iter()
             .find(|block| block.range.start <= range.start && range.end <= block.range.end
-                && block.style.0 == "Code Block") {
+                && block.style.is_code_block()) {
             if let Some(fence) = super::markdown_code::fenced_source(document, &block)? {
                 if range.start == block.range.start { content.start = fence.opening.start; }
                 if range.end == block.range.end {
