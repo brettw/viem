@@ -1,9 +1,10 @@
 # Per-view presentation: plan
 
 Status: **plan only; nothing is implemented.** This document is the study and
-the staged plan for making Markdown Preview, Text/Code and the syntax language
-properties of a view instead of the buffer, so a diff can show literal source
-while another view of the same document shows Preview.
+the staged plan for making Markdown Preview and Text/Code properties of a view
+instead of the buffer, so a diff can show literal source while another view of
+the same document shows Preview. The syntax language stays a buffer property,
+but moves into its own styling layer.
 
 Read [AGENTS.md](AGENTS.md) and [docs/diff_mode.md](docs/diff_mode.md) first.
 Line numbers below are from `main` at `1fc266e`.
@@ -19,7 +20,7 @@ Line numbers below are from `main` at `1fc266e`.
 7. [C ABI and frontends](#7-c-abi-and-frontends)
 8. [Tests and validation](#8-tests-and-validation)
 9. [Risks](#9-risks)
-10. [Open decisions](#10-open-decisions)
+10. [Decisions](#10-decisions)
 11. [Requirement and document updates](#11-requirement-and-document-updates)
 
 ## 1. The two problems and their cause
@@ -62,7 +63,8 @@ so its line pairing no longer describes what is drawn.
 | --- | --- | --- |
 | What the file is (Text, Code, Markdown) | `DocumentState.format` | Buffer default |
 | Which projection is shown (literal or Preview) | `DocumentState.format` + `DocumentState.projection` | View |
-| How the literal projection is styled (Text sheet, or Code sheet with a language) | `DocumentState.format` + one `SyntaxService` per `Core` | View, shared by key |
+| Whether a literal view is styled as Text or as Code | `DocumentState.format` | View |
+| Which language Code uses | One `SyntaxService` per `Core` | Buffer (unchanged), in its own layer |
 
 `DocumentState` (`src/core/document/mod.rs:634`) is the undo tree's payload,
 so the choice of projection is also part of history.
@@ -164,13 +166,13 @@ Buffer (one per file; the serial owner is still Core)
 │     ├─ Literal        decoded text, one block per hard line
 │     └─ Preview        the Markdown formatted projection
 │
-├─ 3. Style layers      keyed, built on first use, shared by equal keys:
-│     ├─ on Literal:    Text | Code{language}
-│     │                 Code{language} owns one SyntaxService and one
+├─ 3. Style layers      built on first use, shared by every view using them:
+│     ├─ on Literal:    Text | Code
+│     │                 Code owns the buffer's one SyntaxService and one
 │     │                 styled clone of the Literal projection
 │     └─ on Preview:    Preview (theme defaults, code-block syntax)
 │
-└─ 4. Views             presentation = (projection kind, style key)
+└─ 4. Views             presentation = (projection kind, style layer)
                         + own overlays: diff, search, composition, whitespace
                         + own cursor, selection, layout, viewport, wrapping
 ```
@@ -180,32 +182,35 @@ How the user-facing modes compose:
 | A view showing… | Projection | Style layer | Overlay |
 | --- | --- | --- | --- |
 | Text | Literal | Text | |
-| Code, C++ | Literal | Code{cpp} | |
-| Code, Python, same file | Literal | Code{python} | |
-| Markdown with Preview off | Literal | Code{markdown} | |
+| Code (the buffer's language) | Literal | Code | |
+| Markdown with Preview off | Literal | Code (Markdown) | |
 | Markdown Preview | Preview | Preview | |
-| Diff, live side | Literal | Code{language} | diff |
+| Diff, live side | Literal | Code | diff |
+
+**One language per buffer.** The language stays a buffer property, chosen by
+detection, the language menu or `:set filetype`, exactly as today. Every
+Code view of a buffer uses it, so there is one Code layer and one syntax
+service, not a map of them. The layer is still a separate type with a
+narrow interface (D7), so a second language per buffer, or another kind of
+styling, can be added later by changing how layers are held, not how they
+work.
 
 What is shared, by construction:
 
 - Every view of a file shares the source, history, registers and edits.
-- Every literal view (Text, Code in any language, diff) shares one text tree,
-  block list and provenance index.
-- Two views with the same language share one syntax service, one run store
-  and one styled projection. Analysis happens once for the union of their
-  visible ranges.
-- Two views with different languages run two services over **the same text
-  tree snapshot**. Nothing below the run store is duplicated.
-- A diff view and an ordinary Code view in the same language share the
-  language's style layer. The diff adds only its per-view line overlay.
+- Every literal view (Text, Code, diff) shares one text tree, block list and
+  provenance index.
+- Every Code view, including a diff's live side, shares the one syntax
+  service, run store and styled projection. Analysis happens once for the
+  union of their visible ranges. The diff adds only its per-view line
+  overlay.
 - Every Preview view shares the Preview projection, its code-block syntax,
   reference cache and image snapshots.
 - A kind or style layer no view uses costs nothing: it is never built, and
   it is released when its last view leaves.
 
 Memory per buffer becomes: one source, at most one Literal projection, at
-most one Preview projection, one run store per language in use, and each
-view's layout. Today's switch transiently holds both projections and keeps
+most one Preview projection, one syntax run store, and each view's layout. Today's switch transiently holds both projections and keeps
 both in history; the new model holds both only while views of both kinds are
 open.
 
@@ -269,34 +274,120 @@ dirty state and no register effect, like `modifiable`. It changes one view.
 `ModelRequest::SetViewFormat`, `prepare_view_format_change` and the
 `SourceMetadata` nodes it creates are deleted.
 
-**This changes documented behaviour** (AGENTS.md: "Toggling Preview is an
-undoable buffer transaction"). After the change, undo no longer steps back
-through a Preview toggle. See [section 11](#11-requirement-and-document-updates).
+**Decided:** undo never reverses a view toggle of any kind (Preview, Text or
+Code, wrap, line numbers, line meaning). This changes documented behaviour
+(AGENTS.md: "Toggling Preview is an undoable buffer transaction"). See
+[section 11](#11-requirement-and-document-updates).
 
-### D5. Views follow the buffer default unless overridden
+### D5. What is per view and what is per buffer
 
-The buffer keeps a default mode and language policy (today's `DocumentMode`,
-`LanguageSelection`, detection). A view's presentation is either *Follow*
-(the default) or an explicit override. Recommended rules, to confirm in
-[section 10](#10-open-decisions):
+| Choice | Scope | Set by |
+| --- | --- | --- |
+| Preview on or off | View, while the buffer is Markdown | The Preview toggle; choosing the Markdown language (turns it off) |
+| Text or Code styling of literal views | Buffer | Detection, the mode and language menu, `:set filetype` |
+| Language | Buffer | The same |
+| Diff | Window; its live views are always Code | Diff mode |
 
-- The language menu, `:set filetype` and redetection change the buffer
-  default, so every following view changes, as today and as in Vim.
-- Toggling Preview overrides the active view only.
-- A split copies its source view's presentation. A new window uses the
-  buffer default.
-- A diff's live view is an override to Code with the default language
-  policy. It is fixed while the pair exists.
-- A view can take its own language with a new `:ownsyntax {language}`
-  (Vim's command for window-local syntax). A menu item can follow later.
+- **Decided:** Preview is per view. Toggling it changes the active view
+  only; every other view keeps what it shows.
+- **Decided:** the language menu, `:set filetype` and redetection stay
+  buffer-wide, as today and as in Vim. The language belongs to Code only; a
+  Preview view has no language. A language change recolours every Code view
+  and never invalidates a Preview view.
+- **Decided:** choosing a language on a Markdown file sets the buffer's
+  language to that selection and its mode to Code, as today. Preview exists
+  only for a Markdown buffer, so:
+  - choosing a language other than Markdown makes the buffer Code in that
+    language, and every view of it, including views that were showing
+    Preview, shows Code. Preview is unavailable until the buffer is set back
+    to Markdown from the mode menu;
+  - choosing Markdown as the language turns Preview off in the active view
+    only; other Preview views stay in Preview.
+- **Decided:** a split copies its source view's Preview state. A new window
+  of a Markdown buffer uses the saved setting (D8).
+- **Decided:** a diff's live view is created as Code and stays Code for its
+  whole life (D9). That is not a Preview toggle and never writes the saved
+  setting.
+
+A view therefore stores one thing: whether it shows Preview. Whether a
+literal view is drawn as Text or Code comes from the buffer, except that a
+diff view is always Code. There is no "follow or override" state to keep
+consistent.
+
+### D8. The Preview toggle is remembered
+
+A new setting in `config.json`, `markdown.preview`, holds the last state the
+user explicitly set with the Preview toggle, in any view of any document. It
+is on until first set. It follows the pattern of `code.wordWrap`.
+
+- It is the last state *set*, not the state of the last view used. Focusing
+  or closing a view never writes it.
+- A view created without a source view to copy (opening a Markdown
+  document, a new window) reads it: Preview when on, Code when off.
+- Views that already exist never change when it changes.
+- Only the explicit toggle writes it. Diff views, splits, reloads and a
+  language choice that turns Preview off do not.
+
+Settings changes create no source edit and no document undo, as for every
+other preference.
+
+### D9. Diff mode has its own window
+
+**On.** Turning Diff Mode on from an ordinary window leaves that window and
+its views exactly as they are and opens the comparison in a new window,
+using the diff window frame defaults (`windows.diffFrame`, cascading as
+today). The new window shows the same buffer, with unsaved edits, through
+new views created as Code.
+
+**Off.** Turning Diff Mode off in a diff window opens the current file in an
+ordinary window, exactly as **Open in New Editor Window** does, and then
+closes the diff window. The buffer stays open throughout, so there is no
+save review and unsaved edits carry over. If the file is already shown in an
+ordinary window, that window is brought forward instead of opening another.
+
+Consequences:
+
+- Entering or leaving diff mode never changes an existing view's
+  presentation, wrap, line numbers or scroll position, so nothing has to be
+  restored.
+- The "restore the format when the last pair ends" logic disappears from
+  both frontends rather than being rewritten per view.
+- A window is a diff window from creation to close. Folder diffs and
+  `viem --diff` already work this way.
 
 ### D6. Followers catch up inside the same transaction
 
-When an edit commits, every *other* live lineage is advanced to the new
-source before publication, so `Document::revision()` stays the single
-revision of source and all live projections. A lineage with no views is not
-advanced. The cost and the later option of lagging followers are in
+**Decided:** the simple form. When an edit commits, every *other* live
+lineage is advanced to the new source before publication, so
+`Document::revision()` stays the single revision of source and all live
+projections. A lineage with no views is not advanced. The known cost and the
+recorded improvement are in
 [section 5.1](#51-follow-moving-a-lineage-across-a-source-change).
+
+### D7. Styling is a layer with its own interface, held singly for now
+
+A style layer is the only thing that knows how a projection gets its sheet
+and automatic spans. Its interface is small:
+
+```
+input:   the projection's text tree at a revision, an exact transition map,
+         the visible ranges of the views using it
+output:  a styled clone of that projection, and the lines whose paint or
+         metrics changed
+```
+
+Nothing above it (views, layout, diff, commands) and nothing below it
+(lineages, history, follow) knows what is inside. `Document::projection()`
+asks the focused view's layer for its styled clone and falls back to the
+unstyled structure.
+
+With one language per buffer the Literal lineage holds its Code layer as a
+single optional slot, and Preview holds its own. That keeps the first
+version free of keyed maps, eviction and per-layer bookkeeping. Because
+views name a layer by *kind* (Text, Code, Preview) and reach it only through
+the interface, replacing the slot with a keyed collection later touches the
+slot's owner and the view's presentation type, not the layer, layout or the
+syntax service.
 
 ## 5. Mechanisms
 
@@ -346,11 +437,19 @@ Code view and a Preview view of one Markdown file open, each keystroke pays
 one bounded Preview follow, or a complete Preview projection when the
 strategies decline. That fallback is the cost editing in Preview already has
 when its own strategies decline, but it is new for typing in the Code view.
-Phase 4 measures it on the large-document fixtures. If it is not acceptable,
-the follow-up is a *lagging* follower (worker reprojection installed when
-current, with input to a lagging view forcing catch-up). That needs a
-projection revision distinct from the source revision throughout layout, so
-it is deliberately not in the first version.
+This is accepted for the first version.
+
+**Known improvement, not planned.** If typing is slow with both kinds of
+view open on a large Markdown file, the fix is a *lagging* follower: the
+edit publishes without the other projection, a worker reprojects it from the
+immutable source snapshot and installs it when still current, and input to a
+lagging view forces catch-up first. It needs a projection revision distinct
+from the source revision throughout layout, which is why it is left out.
+Phase 4 records this in three places so it is found again: a comment at the
+synchronous follow call, an entry under open work in
+[docs/performance.md](docs/performance.md#open-work) with the measured
+dual-view typing numbers, and a work counter for complete follower
+reprojections so a slow session can be diagnosed.
 
 ### 5.2 Translate: one position between projections
 
@@ -406,28 +505,29 @@ prelayout, search presentation) addresses lineages explicitly through
 
 ### 5.5 Style layers and syntax sharing
 
-`CoreSyntax` splits in two:
+`CoreSyntax` splits in two, with no new collections:
 
-- **Buffer policy** (unchanged meaning): `selection`, `automatic_mode`,
-  detection, filename, associations. It resolves the default language.
-- **`SyntaxLayers`**: a small map from resolved language to a layer holding
-  the `SyntaxService`, the publication state (`published`,
+- **Buffer policy** (unchanged): `selection`, `automatic_mode`, detection,
+  filename, associations. It resolves the buffer's one language.
+- **`CodeLayer`**: the `SyntaxService`, the publication state (`published`,
   `referenced_names`, `complete_progress`) and the styled clone of the
-  Literal projection with its transition map (today's `CodePresentation`).
+  Literal projection with its transition map (today's `CodePresentation`,
+  which moves here from `Document`). It implements the D7 interface. The
+  Literal lineage holds an `Option<CodeLayer>`.
 
-Each poll: for every layer with views, rebase its input to the current
-Literal text tree, request the union of its views' visible ranges, and
-publish its delta into its own styled clone. Layout invalidation after a
-publication touches only that layer's views. A layer whose last view left is
+Each poll, when at least one view shows Code: rebase the layer's input to
+the current Literal text tree, request the union of those views' visible
+ranges, and publish the delta into the styled clone. Layout invalidation
+after a publication touches only Code views; a Text or Preview view of the
+same buffer is not invalidated. When the last Code view leaves, the layer is
 cancelled and dropped; the worker pool's idle-session limits already bound
-what its provider retained. The number of layers per buffer is bounded by
-the number of views.
+what its provider retained. A language change reconfigures the one layer, as
+`set_code_language` does today.
 
-`Document::projection()` under a focus of `Code{language}` returns that
-layer's styled clone when it is current, else the plain Literal structure
-with the Code sheet, exactly as `code_presentation` falls back today. Under
-`Text` it returns the Literal structure with the Text sheet and theme
-defaults.
+`Document::projection()` under a Code focus returns the layer's styled clone
+when it is current, else the plain Literal structure with the Code sheet,
+exactly as `code_presentation` falls back today. Under Text it returns the
+Literal structure with the Text sheet and theme defaults.
 
 `Format::Code` stops being stored: `initialize_code_format`,
 `install_code_styles` inside `project`, and `Configuration.format` become
@@ -476,18 +576,19 @@ Each phase leaves the suites green and is separately reviewable. Phases 1 to
 
 Core:
 
-- Introduce `Presentation`, `StyleKey` and `Document.focus` with only the
-  style key varying. A wrong focus here can only pick the wrong colours.
-- Store Literal structure without Code styles; build Text and Code styled
-  clones as layers. Remove `Format::Code` from `DocumentState`.
-- Split `CoreSyntax` into buffer policy and `SyntaxLayers`.
-- Per-view presentation override in `View`; `Core::focus_view`.
-- `:ownsyntax`.
+- Introduce `Presentation` and `Document.focus` with only the style layer
+  (Text or Code) varying. A wrong focus here can only pick the wrong
+  colours.
+- Store Literal structure without Code styles; build the Text and Code
+  styled clones through the D7 interface. Remove `Format::Code` from
+  `DocumentState`.
+- Split `CoreSyntax` into buffer policy and the single `CodeLayer`.
+- Per-view presentation in `View` (Preview flag, diff forces Code);
+  `Core::focus_view`.
 
-Delivers: two views of one file with different languages, or Text beside
-Code, sharing one text tree; two views with one language sharing one
-service. A diff of a Text or Code file no longer touches buffer state.
-Markdown diffs still use the old switch.
+Delivers: a Text view beside a Code view of one file, sharing one text tree.
+A diff of a Text or Code file no longer touches buffer state. Markdown diffs
+still use the old switch. The language stays buffer-wide.
 
 ### Phase 2. Domain tags
 
@@ -518,7 +619,8 @@ Delivers: Preview toggles and diff entry no longer appear in undo history.
   domains.
 - Per-view presentation for Preview; release of a lineage with no views.
 - `VIEM_SHADOW_LINEAGE` test mode (section 8).
-- Measure dual-presentation typing; decide on lagging followers.
+- Measure dual-presentation typing and record it, with the lagging-follower
+  note, in `docs/performance.md` and at the follow call site.
 
 Delivers: problem 2 in the core.
 
@@ -557,8 +659,8 @@ header and `ffi.rs` use CRLF.
 | Today | After |
 | --- | --- |
 | `ViemDocumentOptions.format` selects the projection built at create | Buffer default only; create builds no projection |
-| `ViemViewOptions` has no mode | Adds presentation: follow, or mode plus optional language |
-| `viem_core_view_set_document_mode_with_effects(core, view, …)` changes the buffer | Split: `viem_core_set_default_mode…` (buffer) and `viem_core_view_set_presentation…` (view) |
+| `ViemViewOptions` has no mode | Adds presentation flags: Preview, and diff (always Code). No language |
+| `viem_core_view_set_document_mode_with_effects(core, view, …)` changes the buffer | Keeps its buffer-wide meaning, including the language; a new `viem_core_view_set_preview…` changes one view and is rejected unless the buffer is Markdown |
 | `viem_core_copy_document_mode_json(core)` | Adds a view argument; reports default and the view's effective presentation |
 | `ViemDocumentState.format`, `VIEM_DOCUMENT_STATE_MARKDOWN_SOURCE` | Describe the buffer default; a per-view state query reports the effective format |
 | `ViemFormattedSnapshotIdentity { document, revision }` | Adds the projection kind |
@@ -569,14 +671,25 @@ header and `ffi.rs` use CRLF.
 
 - `EVCoreDocumentBackend`: `sourceFormat` and the mode queries move to
   `EVEditorSurfaceController` (per view). The backend keeps the default.
-- `EVDocumentContentViewController` / pane: when its window is in diff mode
-  it creates the document's view with the Code override, so a file chosen
-  from the popup is literal in its first frame, before the base has loaded.
+- `EVDiffModeController.toggle` / `enable`: from an ordinary window, open a
+  new window on the same `EVDocument` (as `showAdditionalWindow` does) sized
+  from `windows.diffFrame`, and enable diff mode there. The originating
+  window is not touched. The pristine-untitled-window reuse stays for
+  folder diffs only.
+- A pane in a diff window creates every view with the Code override, so a
+  file chosen from the popup is literal in its first frame, before the base
+  has loaded.
 - `EVCoreDiffSession`: delete `restoreMode`, the mode switch in `init`, the
-  heir hand-off and the restore in `end()`. Ending a pair returns its view
-  to *Follow*.
-- "Open in New Editor Window" needs no change: the new window's view follows
-  the buffer default, which for `.md` is Preview.
+  heir hand-off and the restore in `end()`. Nothing is restored.
+- The Preview toggle saves `markdown.preview` through
+  `EVConfigurationStore`; opening a Markdown document reads it.
+- "Open in New Editor Window" needs no change: the new window's view reads
+  the saved Preview setting.
+- **Diff Mode** off in a diff window: show the document in an ordinary
+  window (reusing one that already shows it, else `showAdditionalWindow`),
+  then close the diff window. No save review, since the buffer stays open.
+- Choosing a language keeps its buffer-wide call. Surfaces showing Preview
+  refresh to Code when the buffer stops being Markdown.
 - Menus, toolbar and status bar validate against the active view: Preview
   checkmark, language menu, formatting toolbar, the line-mode eye.
 - Saved `code.wordWrap` and `code.lineNumbers` apply when a *view* starts
@@ -589,8 +702,13 @@ header and `ffi.rs` use CRLF.
 - `CoreDocument`: delete `EnterDiff`, `LeaveDiff`, `InheritDiffMode`,
   `priorDiffMode`, `diffViews` and `SwitchingDiffProjection`
   (`src/win/Core/DiffComparison.cs:31-70`).
-- `DiffMode.cs`: create or reconfigure the live `CoreView` with the Code
-  override before installing the pair; return it to *Follow* on leaving.
+- `DiffMode.cs`: turning diff mode on from an ordinary window opens a new
+  window on the same `CoreDocument` with the diff frame and creates its live
+  `CoreView` as Code. The originating window is not touched.
+- The Preview toggle saves `markdown.preview`; a view created without a
+  source view reads it.
+- Diff mode off opens the document in an ordinary window and closes the diff
+  window. A language choice that makes the buffer non-Markdown shows Code in every view.
 - `State.format` consumers (menus, toolbar, Ctrl-0…5 accelerators, status
   bar) read the active view's effective format.
 - The Windows changes cannot be built on the Mac; they need
@@ -627,8 +745,14 @@ are deterministic. Each asserts what its name says.
   and redo from each; the other view's cursor, selection and viewport anchor
   stay on the same text.
 - Marks set in one presentation and used in the other.
-- Two views with one language: one service, analysis counted once. Two
-  languages: two services whose inputs have the same text-tree identity.
+- Two Code views and a diff view of one buffer: one service, each visible
+  range analyzed once. A Text view of the same buffer requests no analysis
+  and is not invalidated by a syntax publication.
+- Changing the buffer's language recolours every Code view and leaves Text
+  and Preview views untouched.
+- The layer boundary holds: layout, diff and command code compile without
+  access to `CodeLayer`'s fields (kept private to its module, as the
+  architecture dependency checks do for other layers).
 - A diff session with a Preview view open on the same buffer: toggling,
   typing and undo in the Preview view leave the diff's pairing equal to a
   fresh diff.
@@ -674,7 +798,7 @@ quick probe and memory measurements.
 | A code path reads `document.projection()` under the wrong focus | Domain tags (D3) make it an error; debug assertion in `Core` entry points; phase 1 introduces focus where a mistake is cosmetic |
 | Buffer-shared raw offsets missed by the audit | Tag the containers, not the call sites; shadow-lineage runs alternate focus |
 | Follower regional strategy wrong | Existing Verified/Declined/Rejected discipline and shadow verification against complete reprojection |
-| Typing with both kinds open scales with the document | Measure in phase 4; bounded strategies first; lagging followers as a designed follow-up |
+| Typing with both kinds open scales with the document when the bounded follow declines | Accepted; measured and recorded in phase 4 with the lagging-follower improvement noted in code and `docs/performance.md` |
 | Undo to an uncached node changes block identities or caret recovery | Cache hit path is today's behaviour; miss path uses the switch's reconciliation; anchors fall back to provenance; tests cover both |
 | History memory accounting drifts | Lineage tables have their own visitor and budget; keep `assert_memory_matches_full_recount` for history and add the equivalent for lineages |
 | Command checkpoint rollback leaves a lineage ahead | Checkpoint captures lineage tables; rollback test per kind |
@@ -682,37 +806,43 @@ quick probe and memory measurements.
 | Accessibility and text-service queries cross domains | Snapshot identity carries the kind; they already pass identities |
 | Windows side cannot be verified on the Mac | Land the C# with the ABI change but gate the phase on a Windows run |
 
-## 10. Open decisions
+## 10. Decisions
 
-AGENTS.md asks that product questions not be settled silently. These need an
-answer before the phase named.
+AGENTS.md asks that product questions not be settled silently. All of the
+questions this plan raised are answered; record them in AGENTS.md and the
+docs as section 11 lists.
 
-1. **Scope of the language menu and `:set filetype`** (phase 1).
-   Recommended: buffer default, with `:ownsyntax` for one view (D5). The
-   alternative, per view by default, changes what two splits of one file do
-   today.
-2. **What a new window shows** (phase 5). Recommended: the buffer default.
-   Alternative: copy the presentation of the view it was opened from, which
-   would open a literal view from a diff.
-3. **`FileType` autocommands and `&filetype`** (phase 1). Script state is
-   per buffer. Recommended: `FileType` fires when the buffer default
-   changes; `&filetype` read inside a view reports that view's effective
-   language.
-4. **Undo no longer reverses a Preview toggle** (phase 3, D4). This follows
-   from the request but contradicts a current requirement.
-5. **Follower cost** (phase 4): accept synchronous catch-up, or build
-   lagging followers, decided on measurements.
-6. **Remembering Preview off.** Today turning Preview off affects the
-   buffer for the session. Recommended: it is view state only; a new window
-   of that file shows Preview again.
+| Question | Decision | Where |
+| --- | --- | --- |
+| Scope of the language | Buffer-wide, one language per buffer; `FileType` and `&filetype` keep their meaning | D5 |
+| Language and Preview | The language applies to Code only; Preview views are untouched by a language change | D5 |
+| Choosing a language on a Markdown file | Sets the buffer language and Code mode; Preview applies only while the buffer is Markdown | D5 |
+| Scope of Preview | Per view | D5 |
+| Splits and new windows | A split copies its source view; a new window uses the saved setting | D5, D8 |
+| Remembering the toggle | One application-wide setting holding the last state explicitly set | D8 |
+| Undo and view toggles | Undo never reverses a view toggle | D4 |
+| Diff Mode on | New window with the diff frame; the existing window is unchanged | D9 |
+| Diff Mode off | Open the file in an ordinary window, then close the diff window | D9 |
+| Follower cost | Synchronous catch-up; lagging followers recorded as a possible improvement | D6, 5.1 |
+
+Small points decided here by inference; say if any is wrong:
+
+- A language choice that turns Preview off does not write
+  `markdown.preview`; only the Preview toggle does.
+- Choosing a non-Markdown language makes the whole buffer Code, so its
+  other Preview views switch to Code as well, since Preview has no meaning
+  for a buffer that is not Markdown. The views keep their own Preview flag,
+  so setting the buffer back to Markdown shows Preview again where it was.
+- Diff Mode off reuses an ordinary window that already shows the file
+  instead of opening a second one.
 
 ## 11. Requirement and document updates
 
 Update together with the code that changes the behaviour:
 
 - **AGENTS.md, Product:** "Changing format, Preview or view mode reprojects
-  the same source" stays true; add that Preview and the syntax language are
-  per view over one shared source.
+  the same source" stays true; add that Preview, and Text versus Code, are
+  per view over one shared source, while the language is per buffer.
 - **AGENTS.md, Core architecture:** state that the undo tree holds source
   only; that each projection kind is a coordinate domain; that follower
   projections are regional candidates under the same proof rules.
@@ -720,16 +850,19 @@ Update together with the code that changes the behaviour:
   undoable buffer transaction…" with the per-view rule and its guarantees
   (no bytes, revision, dirty state or history change; caret and viewport
   recovered; not quadratic; idle preparation).
-- **AGENTS.md, Code and syntax highlighting:** highlighting is shared by
-  views with the same language; a view may override the buffer's language.
+- **AGENTS.md, Code and syntax highlighting:** a buffer has one language and
+  one highlighting layer shared by all of its Code views; styling is a
+  separate layer over the projection.
 - **AGENTS.md, Files:** reload keeps each view's presentation.
 - **docs/diff_mode.md:** remove "a format switched to Code for the
   comparison is restored when the last pair … ends" and the Preview-switch
   notes in the macOS and Windows status; "Showing the new side in Code" is
-  now a view presentation.
+  now a view presentation. Rewrite the Diff menu section: **Diff Mode**
+  on opens a new diff window and leaves the current one unchanged; off
+  opens the file in an ordinary window and closes the diff window (D9).
+- **AGENTS.md, Configuration:** `markdown.preview` and its rules (D8).
 - **docs/window-panes.md:** a split copies the presentation; views of one
   buffer may differ.
-- **docs/vimscript.md:** `:ownsyntax`, and the `filetype` answers from
-  section 10.
-- **docs/performance.md:** per-buffer memory model and the dual-presentation
-  typing measurement.
+- **docs/performance.md:** per-buffer memory model, the dual-presentation
+  typing measurement, and under open work the lagging-follower improvement
+  (5.1) with the symptom that should prompt it.
